@@ -2,16 +2,15 @@ use std::collections::BTreeMap;
 
 use super::{
     SurfaceAbiJson, SurfaceCreateOperationKindJson, SurfaceDeleteOperationKindJson,
-    SurfaceOperationProfile, SurfaceOperationRequestBodyJson, SurfaceReadOperationKindJson,
-    SurfaceRouteRequestJson, SurfaceUpdateOperationKindJson,
+    SurfaceOperationRequestBodyJson, SurfaceReadOperationKindJson, SurfaceRouteRequestJson,
+    SurfaceUpdateOperationKindJson,
 };
 
-const SURFACE_V1_READ_ROUTE_PREFIX: &str = "/surface/v1/read/";
-const SURFACE_V1_UPDATE_ROUTE_PREFIX: &str = "/surface/v1/update/";
-const SURFACE_V1_CREATE_ROUTE_PREFIX: &str = "/surface/v1/create/";
-const SURFACE_V1_DELETE_ROUTE_PREFIX: &str = "/surface/v1/delete/";
-const SURFACE_V1_ACTION_ROUTE_PREFIX: &str = "/surface/v1/action/";
-const SURFACE_V2_READ_ROUTE_PREFIX: &str = "/surface/v2/read/";
+const SURFACE_READ_ROUTE_PREFIX: &str = "/surface/v1/read/";
+const SURFACE_UPDATE_ROUTE_PREFIX: &str = "/surface/v1/update/";
+const SURFACE_CREATE_ROUTE_PREFIX: &str = "/surface/v1/create/";
+const SURFACE_DELETE_ROUTE_PREFIX: &str = "/surface/v1/delete/";
+const SURFACE_ACTION_ROUTE_PREFIX: &str = "/surface/v1/action/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceOperationKind {
@@ -34,7 +33,6 @@ pub enum SurfaceOperationKind {
 pub struct SurfaceOperationBinding {
     pub operation_tag: String,
     pub kind: SurfaceOperationKind,
-    pub profile: SurfaceOperationProfile,
     pub path: String,
     pub surface_module: String,
     pub surface_name: String,
@@ -43,7 +41,6 @@ pub struct SurfaceOperationBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceOperationCatalog {
-    profile: SurfaceOperationProfile,
     by_tag: BTreeMap<String, SurfaceOperationBinding>,
 }
 
@@ -138,38 +135,18 @@ impl SurfaceOperationKind {
         )
     }
 
-    pub(crate) fn route_prefix(self, profile: SurfaceOperationProfile) -> Option<&'static str> {
-        if !profile.admits_operation_kind(self) {
-            return None;
-        }
-        match profile {
-            SurfaceOperationProfile::V1 => match self {
-                Self::SingletonRead
-                | Self::PointRead
-                | Self::Page
-                | Self::UniqueLookup
-                | Self::ComputedRead => Some(SURFACE_V1_READ_ROUTE_PREFIX),
-                Self::SingletonUpdate | Self::PointUpdate => Some(SURFACE_V1_UPDATE_ROUTE_PREFIX),
-                Self::SingletonCreate | Self::PointCreate => Some(SURFACE_V1_CREATE_ROUTE_PREFIX),
-                Self::SingletonDelete | Self::PointDelete => Some(SURFACE_V1_DELETE_ROUTE_PREFIX),
-                Self::Action => Some(SURFACE_V1_ACTION_ROUTE_PREFIX),
-                Self::RangePage => None,
-            },
-            SurfaceOperationProfile::V2 => match self {
-                Self::RangePage => Some(SURFACE_V2_READ_ROUTE_PREFIX),
-                Self::SingletonRead
-                | Self::PointRead
-                | Self::Page
-                | Self::UniqueLookup
-                | Self::ComputedRead
-                | Self::SingletonUpdate
-                | Self::PointUpdate
-                | Self::SingletonCreate
-                | Self::PointCreate
-                | Self::SingletonDelete
-                | Self::PointDelete
-                | Self::Action => None,
-            },
+    pub(crate) fn route_prefix(self) -> &'static str {
+        match self {
+            Self::SingletonRead
+            | Self::PointRead
+            | Self::Page
+            | Self::RangePage
+            | Self::UniqueLookup
+            | Self::ComputedRead => SURFACE_READ_ROUTE_PREFIX,
+            Self::SingletonUpdate | Self::PointUpdate => SURFACE_UPDATE_ROUTE_PREFIX,
+            Self::SingletonCreate | Self::PointCreate => SURFACE_CREATE_ROUTE_PREFIX,
+            Self::SingletonDelete | Self::PointDelete => SURFACE_DELETE_ROUTE_PREFIX,
+            Self::Action => SURFACE_ACTION_ROUTE_PREFIX,
         }
     }
 
@@ -223,7 +200,6 @@ impl SurfaceOperationKind {
 
     pub(crate) fn from_program_tag(
         program: &marrow_check::CheckedProgram,
-        profile: SurfaceOperationProfile,
         operation_tag: &str,
     ) -> Result<Option<Self>, SurfaceOperationCatalogError> {
         let mut matched = None;
@@ -240,58 +216,44 @@ impl SurfaceOperationKind {
                         program, surface, operation,
                     )
                     .filter(|descriptor| descriptor.operation_tag == operation_tag)
-                    && let Some(kind) = Self::from_read_descriptor_kind(descriptor.kind, profile)
                 {
-                    record_kind_match(&mut matched, kind, operation_tag)?;
+                    record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
                 }
             }
             if let Some(descriptor) =
                 marrow_check::SurfaceUpdateOperationDescriptor::from_surface(program, surface)
                     .filter(|descriptor| descriptor.operation_tag == operation_tag)
             {
-                let kind = Self::from(descriptor.kind);
-                if profile.admits_operation_kind(kind) {
-                    record_kind_match(&mut matched, kind, operation_tag)?;
-                }
+                record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
             }
             if let Some(descriptor) =
                 marrow_check::SurfaceCreateOperationDescriptor::from_surface(program, surface)
                     .filter(|descriptor| descriptor.operation_tag == operation_tag)
             {
-                let kind = Self::from(descriptor.kind);
-                if profile.admits_operation_kind(kind) {
-                    record_kind_match(&mut matched, kind, operation_tag)?;
-                }
+                record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
             }
             if let Some(descriptor) =
                 marrow_check::SurfaceDeleteOperationDescriptor::from_surface(program, surface)
                     .filter(|descriptor| descriptor.operation_tag == operation_tag)
             {
-                let kind = Self::from(descriptor.kind);
-                if profile.admits_operation_kind(kind) {
-                    record_kind_match(&mut matched, kind, operation_tag)?;
-                }
+                record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
             }
             for action in &surface.actions {
-                if let Some(_descriptor) =
-                    marrow_check::SurfaceActionOperationDescriptor::from_action(
-                        program, surface, action,
-                    )
-                    .filter(|descriptor| descriptor.operation_tag == operation_tag)
-                    && profile.admits_operation_kind(Self::Action)
+                if marrow_check::SurfaceActionOperationDescriptor::from_action(
+                    program, surface, action,
+                )
+                .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
                 {
                     record_kind_match(&mut matched, Self::Action, operation_tag)?;
                 }
             }
             for computed_read in &surface.computed_reads {
-                if let Some(_descriptor) =
-                    marrow_check::SurfaceComputedReadOperationDescriptor::from_computed_read(
-                        program,
-                        surface,
-                        computed_read,
-                    )
-                    .filter(|descriptor| descriptor.operation_tag == operation_tag)
-                    && profile.admits_operation_kind(Self::ComputedRead)
+                if marrow_check::SurfaceComputedReadOperationDescriptor::from_computed_read(
+                    program,
+                    surface,
+                    computed_read,
+                )
+                .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
                 {
                     record_kind_match(&mut matched, Self::ComputedRead, operation_tag)?;
                 }
@@ -303,32 +265,16 @@ impl SurfaceOperationKind {
 
 impl SurfaceOperationCatalog {
     pub fn from_abi(abi: &SurfaceAbiJson) -> Result<Self, SurfaceOperationCatalogError> {
-        Self::from_abi_for_profile(abi, SurfaceOperationProfile::V1)
-    }
-
-    pub fn from_abi_v2(abi: &SurfaceAbiJson) -> Result<Self, SurfaceOperationCatalogError> {
-        Self::from_abi_for_profile(abi, SurfaceOperationProfile::V2)
-    }
-
-    pub fn from_abi_for_profile(
-        abi: &SurfaceAbiJson,
-        profile: SurfaceOperationProfile,
-    ) -> Result<Self, SurfaceOperationCatalogError> {
         let mut by_tag = BTreeMap::new();
         for surface in &abi.surfaces {
             for read in &surface.read {
                 let kind = SurfaceOperationKind::from(&read.kind);
-                if !profile.admits_operation_kind(kind) {
-                    continue;
-                }
                 insert_binding(
                     &mut by_tag,
                     SurfaceOperationBinding {
                         operation_tag: read.operation_tag.clone(),
                         kind,
-                        profile,
-                        path: operation_path(profile, kind, &read.operation_tag)
-                            .expect("profile admits read operation"),
+                        path: operation_path(kind, &read.operation_tag),
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: read.alias.clone(),
@@ -337,17 +283,12 @@ impl SurfaceOperationCatalog {
             }
             if let Some(create) = &surface.create {
                 let kind = SurfaceOperationKind::from(&create.kind);
-                if !profile.admits_operation_kind(kind) {
-                    continue;
-                }
                 insert_binding(
                     &mut by_tag,
                     SurfaceOperationBinding {
                         operation_tag: create.operation_tag.clone(),
                         kind,
-                        profile,
-                        path: operation_path(profile, kind, &create.operation_tag)
-                            .expect("profile admits create operation"),
+                        path: operation_path(kind, &create.operation_tag),
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: "create".into(),
@@ -356,17 +297,12 @@ impl SurfaceOperationCatalog {
             }
             if let Some(update) = &surface.update {
                 let kind = SurfaceOperationKind::from(&update.kind);
-                if !profile.admits_operation_kind(kind) {
-                    continue;
-                }
                 insert_binding(
                     &mut by_tag,
                     SurfaceOperationBinding {
                         operation_tag: update.operation_tag.clone(),
                         kind,
-                        profile,
-                        path: operation_path(profile, kind, &update.operation_tag)
-                            .expect("profile admits update operation"),
+                        path: operation_path(kind, &update.operation_tag),
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: "update".into(),
@@ -375,17 +311,12 @@ impl SurfaceOperationCatalog {
             }
             if let Some(delete) = &surface.delete {
                 let kind = SurfaceOperationKind::from(&delete.kind);
-                if !profile.admits_operation_kind(kind) {
-                    continue;
-                }
                 insert_binding(
                     &mut by_tag,
                     SurfaceOperationBinding {
                         operation_tag: delete.operation_tag.clone(),
                         kind,
-                        profile,
-                        path: operation_path(profile, kind, &delete.operation_tag)
-                            .expect("profile admits delete operation"),
+                        path: operation_path(kind, &delete.operation_tag),
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: "delete".into(),
@@ -394,17 +325,12 @@ impl SurfaceOperationCatalog {
             }
             for action in &surface.actions {
                 let kind = SurfaceOperationKind::Action;
-                if !profile.admits_operation_kind(kind) {
-                    continue;
-                }
                 insert_binding(
                     &mut by_tag,
                     SurfaceOperationBinding {
                         operation_tag: action.operation_tag.clone(),
                         kind,
-                        profile,
-                        path: operation_path(profile, kind, &action.operation_tag)
-                            .expect("profile admits action operation"),
+                        path: operation_path(kind, &action.operation_tag),
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: action.alias.clone(),
@@ -413,17 +339,12 @@ impl SurfaceOperationCatalog {
             }
             for computed_read in &surface.computed_reads {
                 let kind = SurfaceOperationKind::ComputedRead;
-                if !profile.admits_operation_kind(kind) {
-                    continue;
-                }
                 insert_binding(
                     &mut by_tag,
                     SurfaceOperationBinding {
                         operation_tag: computed_read.operation_tag.clone(),
                         kind,
-                        profile,
-                        path: operation_path(profile, kind, &computed_read.operation_tag)
-                            .expect("profile admits computed-read operation"),
+                        path: operation_path(kind, &computed_read.operation_tag),
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: computed_read.alias.clone(),
@@ -431,7 +352,7 @@ impl SurfaceOperationCatalog {
                 )?;
             }
         }
-        Ok(Self { profile, by_tag })
+        Ok(Self { by_tag })
     }
 
     pub fn binding(&self, operation_tag: &str) -> Option<&SurfaceOperationBinding> {
@@ -452,10 +373,6 @@ impl SurfaceOperationCatalog {
 
     pub fn is_empty(&self) -> bool {
         self.by_tag.is_empty()
-    }
-
-    pub fn profile(&self) -> SurfaceOperationProfile {
-        self.profile
     }
 }
 
@@ -585,27 +502,8 @@ impl std::fmt::Display for SurfaceOperationCatalogError {
 
 impl std::error::Error for SurfaceOperationCatalogError {}
 
-impl SurfaceOperationKind {
-    fn from_read_descriptor_kind(
-        kind: marrow_check::SurfaceReadOperationDescriptorKind,
-        profile: SurfaceOperationProfile,
-    ) -> Option<Self> {
-        let kind = Self::from(kind);
-        if !profile.admits_operation_kind(kind) {
-            None
-        } else {
-            Some(kind)
-        }
-    }
-}
-
-pub(crate) fn operation_path(
-    profile: SurfaceOperationProfile,
-    kind: SurfaceOperationKind,
-    operation_tag: &str,
-) -> Option<String> {
-    kind.route_prefix(profile)
-        .map(|prefix| format!("{prefix}{operation_tag}"))
+pub(crate) fn operation_path(kind: SurfaceOperationKind, operation_tag: &str) -> String {
+    format!("{}{operation_tag}", kind.route_prefix())
 }
 
 fn insert_binding(

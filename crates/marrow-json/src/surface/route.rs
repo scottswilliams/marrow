@@ -1,12 +1,11 @@
 use serde::Serialize;
 
 use super::{
-    SurfaceAbiJson, SurfaceOperationCatalog, SurfaceOperationProfile,
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceOperationCatalog,
     operation_catalog::SurfaceOperationBinding,
 };
 
 pub const SURFACE_ROUTE_PROFILE_VERSION: &str = "surface.route.v1";
-pub const SURFACE_ROUTE_PROFILE_VERSION_V2: &str = "surface.route.v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SurfaceRouteManifestJson {
@@ -57,15 +56,7 @@ pub enum SurfaceRouteRequestJson {
 
 impl SurfaceRouteManifestJson {
     pub fn from_abi(abi: &SurfaceAbiJson) -> Self {
-        Self::from_abi_for_profile(abi, SurfaceOperationProfile::V1)
-    }
-
-    pub fn from_abi_v2(abi: &SurfaceAbiJson) -> Self {
-        Self::from_abi_for_profile(abi, SurfaceOperationProfile::V2)
-    }
-
-    pub fn from_abi_for_profile(abi: &SurfaceAbiJson, profile: SurfaceOperationProfile) -> Self {
-        let catalog = SurfaceOperationCatalog::from_abi_for_profile(abi, profile)
+        let catalog = SurfaceOperationCatalog::from_abi(abi)
             .expect("surface route manifest requires unique ABI operation tags");
         let mut routes = Vec::new();
         for surface in &abi.surfaces {
@@ -98,8 +89,8 @@ impl SurfaceRouteManifestJson {
             }
         }
         Self {
-            profile_version: route_profile_version(profile).into(),
-            operation_profile_version: profile.version().into(),
+            profile_version: SURFACE_ROUTE_PROFILE_VERSION.into(),
+            operation_profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
             routes,
         }
     }
@@ -113,13 +104,6 @@ fn push_route_for_tag(
 ) {
     if let Some(binding) = catalog.binding(operation_tag) {
         routes.push(route_from_binding(binding, surface.clone()));
-    }
-}
-
-pub(crate) fn route_profile_version(profile: SurfaceOperationProfile) -> &'static str {
-    match profile {
-        SurfaceOperationProfile::V1 => SURFACE_ROUTE_PROFILE_VERSION,
-        SurfaceOperationProfile::V2 => SURFACE_ROUTE_PROFILE_VERSION_V2,
     }
 }
 

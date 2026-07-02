@@ -26,6 +26,9 @@ type SurfaceCursorJson = { operation_tag: string; [key: string]: unknown };
 
 export type Page<Row, Cursor> = { rows: Row[]; next: Cursor | null };
 
+export type MarrowRangeBound<T> = { value: T; inclusive: boolean };
+export type MarrowRange<T> = { lower?: MarrowRangeBound<T>; upper?: MarrowRangeBound<T> };
+
 type SurfaceOperationResponseJson = {
   profile_version: string;
   operation_tag: string;
@@ -618,4 +621,30 @@ function base64ToHex(text: string): string {
 
 function encodeWriteValue(value: unknown): SurfaceWireValueJson {
   return value as SurfaceWireValueJson;
+}
+
+type SurfacePageRangeWireJson = {
+  lower?: SurfaceWireValueJson;
+  lower_inclusive?: boolean;
+  upper?: SurfaceWireValueJson;
+  upper_inclusive?: boolean;
+};
+
+/// Encode a typed range over a ranged index key into the page request `range` shape. Each supplied
+/// bound carries its encoded key value and inclusivity flag; the server rejects a range with neither
+/// bound, so a caller must pass at least a lower or an upper bound.
+function encodeRange<T>(
+  range: MarrowRange<T>,
+  encode: (value: T) => SurfaceWireValueJson,
+): SurfacePageRangeWireJson {
+  const wire: SurfacePageRangeWireJson = {};
+  if (range.lower !== undefined) {
+    wire.lower = encode(range.lower.value);
+    wire.lower_inclusive = range.lower.inclusive;
+  }
+  if (range.upper !== undefined) {
+    wire.upper = encode(range.upper.value);
+    wire.upper_inclusive = range.upper.inclusive;
+  }
+  return wire;
 }

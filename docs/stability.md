@@ -87,9 +87,10 @@ descriptors; those rows name JSON `POST` operation-tag paths and render aliases,
 but they do not make aliases operation identity. The current serving profile is
 `marrow serve`: loopback-bound, JSON-only, optional exact loopback CORS with
 `--cors-origin`, at most one processed request per connection, backed by
-`ProjectSurfaceReadSession` in default read-only mode for v1 read/computed-read
-routes plus v2 ranged index page routes, and backed by `ProjectSurfaceSession`
-for v1 create/update/delete/action routes when `--write` is passed.
+`ProjectSurfaceReadSession` in default read-only mode for v1 read routes,
+including computed reads and ranged index page reads, and backed by
+`ProjectSurfaceSession` for v1 create/update/delete/action routes when `--write`
+is passed.
 `marrow client typescript` is the current
 generated-client profile: it renders a self-contained TypeScript wrapper over
 the same ABI, route manifest, and operation envelope without opening the store.

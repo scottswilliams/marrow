@@ -122,9 +122,8 @@ The active surface foundation has these owners:
   HTTP parser over
   descriptor-derived
   `/surface/v1/{read|create|update|delete|action}/<operation-tag>` routes and
-  `surface.operation.v1` envelopes, plus explicit
-  `surface.route.v2`/`surface.operation.v2` range page routes under
-  `/surface/v2/read/<operation-tag>`. Computed reads use the read route prefix. It
+  `surface.operation.v1` envelopes. Range page reads and computed reads use the
+  read route prefix. It
   defaults to read-only serving and exposes create/update/delete/action routes
   only with `--write`. The remote profile can wrap page cursors in
   `surface.cursor_token.v1` tokens without changing checker or runtime cursor
@@ -145,15 +144,13 @@ profile version and accept stale cached operation identity.
 
 ## Operation Envelope Profile
 
-The default JSON operation envelope is `surface.operation.v1`. It is
+The JSON operation envelope is `surface.operation.v1`. It is
 transport-neutral: callers supply a profile version, an operation tag, and one
 typed request body; `marrow-json` admits the tag through `marrow-run` and then
 lets the admitted read, computed-read, create, update, delete, or action handle
-validate the requested body shape.
-`surface.operation.v2` admits ranged index page reads only, using the same page
-request/result envelope shape as v1 page reads. V1 intentionally omits range
-operations so existing route manifests and generated TypeScript clients stay
-stable.
+validate the requested body shape. Ranged index page reads share the single
+profile and reuse the page request/result envelope shape, so every checked
+operation is reachable from one route manifest and one generated client.
 
 The operation envelope and the surface-owned request DTOs are closed JSON
 objects. Unknown fields are request errors rather than extension points; new
@@ -278,20 +275,18 @@ surface label, operation alias, and expected request-body kind. Read routes use
 `/surface/v1/create/{operation_tag}`, sparse-update routes use
 `/surface/v1/update/{operation_tag}`, delete routes use
 `/surface/v1/delete/{operation_tag}`, and action routes use
-`/surface/v1/action/{operation_tag}`. Route paths are derived from operation
-tags, not source names, aliases, ordinals, or raw saved paths. Aliases remain
-render/client labels; they are not route identity or operation equality.
+`/surface/v1/action/{operation_tag}`. Ranged index page reads are ordinary read
+routes under `/surface/v1/read/{operation_tag}`. Route paths are derived from
+operation tags, not source names, aliases, ordinals, or raw saved paths. Aliases
+remain render/client labels; they are not route identity or operation equality.
 Source-only surfaces and duplicate-tag operations have no route rows because
 they have no callable descriptor rows.
 
-`surface.operation.v2` and `surface.route.v2` are explicit profile-aware
-constructors over the same checked descriptors. V2 includes
-`paged_index_range_collection` read descriptors as `range_page` routes under
-`/surface/v2/read/{operation_tag}`. The descriptor carries the index catalog id,
+A `paged_index_range_collection` read descriptor becomes a `range_page` route
+under the read prefix. The descriptor carries the index catalog id,
 `exact_key_count`, `range_key_index`, `identity_key_count`, and the existing
 `index_keys` array so clients can identify the exact, ranged, and identity
-components without reclassifying the index. V1 constructors keep omitting these
-range operations.
+components without reclassifying the index.
 
 Range page request bodies use the normal page body plus a required `range`
 object:
@@ -370,10 +365,8 @@ a local HTTP process:
 - serving routes are taken from explicit route profiles, not source names or
   ordinals;
 - default mode exposes only descriptor-derived
-  `/surface/v1/read/<operation-tag>` paths, including computed reads;
-- range page operations are exposed through descriptor-derived
-  `/surface/v2/read/<operation-tag>` paths and require
-  `surface.operation.v2` request envelopes;
+  `/surface/v1/read/<operation-tag>` paths, including computed reads and range
+  page reads;
 - `--write` additionally exposes descriptor-derived
   `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
@@ -411,9 +404,8 @@ The TypeScript client maps the active serialized ABI and `surface.route.v1`
 manifest to a self-contained TypeScript operation client. It validates route/ABI
 agreement before rendering and requires a bijection: every exported operation
 descriptor must have exactly one route row. It does not read or open the
-saved-data store.
-Range page helpers are not generated in this profile; they require a later
-client profile over `surface.operation.v2`/`surface.route.v2`.
+saved-data store. A ranged index page read generates a typed range method (and a
+`...Pages` iterator) that takes a `MarrowRange<T>` bound over the ranged key.
 
 The exported factory is `createClient`. Every generated file begins with a
 do-not-edit header, `// marrow-client-profile: typescript.v2`,

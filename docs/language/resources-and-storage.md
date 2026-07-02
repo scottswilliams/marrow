@@ -318,8 +318,8 @@ them, not language constructs. Stable surface reads, computed reads, creates,
 sparse updates, deletes, and actions have
 checker-owned descriptors and operation tags. `marrow-json` can render a
 `surface.route.v1` manifest from those descriptors, using operation-tag paths
-and aliases as labels; `surface.route.v2` adds ranged index page routes under
-`/surface/v2/read/` with `surface.operation.v2` envelopes. `marrow serve` is
+and aliases as labels; ranged index page reads route under `/surface/v1/read/`
+with the same `surface.operation.v1` envelope. `marrow serve` is
 loopback-only by default over manifest routes; `--remote` is the explicit
 authenticated remote profile, and remote page routes may opt into opaque cursor
 tokens at the HTTP boundary. Default mode serves read routes, including computed

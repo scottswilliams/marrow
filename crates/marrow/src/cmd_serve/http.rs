@@ -3,9 +3,9 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use marrow_json::surface::{
-    SurfaceCursorJson, SurfaceCursorTokenCodec, SurfaceCursorTokenError,
-    SurfaceCursorTokenErrorKind, SurfaceOperationErrorJson, SurfaceOperationRequestJson,
-    SurfaceOperationResponseJson,
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceCursorJson, SurfaceCursorTokenCodec,
+    SurfaceCursorTokenError, SurfaceCursorTokenErrorKind, SurfaceOperationErrorJson,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson,
 };
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
@@ -411,7 +411,7 @@ fn execute_http_request_body(
         )
         .with_cors_match(cors_match);
     }
-    if operation.profile_version != route.operation_profile.version() {
+    if operation.profile_version != SURFACE_OPERATION_PROFILE_VERSION {
         return SurfaceHttpResponse::error(
             HttpStatus::NotFound,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
@@ -468,7 +468,7 @@ fn operation_from_http_body(
     let Some(profile_version) = value.get("profile_version").and_then(Json::as_str) else {
         return serde_json::from_value(value).map_err(|_| request_body_error());
     };
-    if profile_version != route.operation_profile.version() {
+    if profile_version != SURFACE_OPERATION_PROFILE_VERSION {
         return Err(surface_error(
             SURFACE_ABI_MISMATCH,
             "surface operation is not active",
@@ -1188,9 +1188,7 @@ fn error_value(value: SurfaceOperationErrorJson) -> serde_json::Value {
 mod tests {
     use super::super::cursor_token::CursorTokenKeySource;
     use super::*;
-    use marrow_json::surface::{
-        SurfaceOperationKind, SurfaceOperationProfile, SurfaceRouteBinding,
-    };
+    use marrow_json::surface::{SurfaceOperationKind, SurfaceRouteBinding};
 
     const VALID_CURSOR_TOKEN_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
@@ -1289,16 +1287,15 @@ mod tests {
                 .expect("load cursor token key");
         let _ = std::fs::remove_file(&key_path);
         let route = SurfaceRouteBinding {
-            path: "/surface/v2/read/op_tag".into(),
+            path: "/surface/v1/read/op_tag".into(),
             operation_tag: "op_tag".into(),
             kind: SurfaceOperationKind::RangePage,
-            operation_profile: SurfaceOperationProfile::V2,
             surface_module: "test".into(),
             surface_name: "Posts".into(),
             alias: "byDate".into(),
         };
         let body = serde_json::to_vec(&serde_json::json!({
-            "profile_version": "surface.operation.v1",
+            "profile_version": "surface.operation.v0",
             "operation_tag": "op_tag",
             "request": {
                 "kind": "page",

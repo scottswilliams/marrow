@@ -1,9 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    SurfaceOperationCatalog, SurfaceOperationKind, SurfaceOperationProfile,
-    SurfaceRouteManifestJson, SurfaceRouteMethodJson,
-    route::{SURFACE_ROUTE_PROFILE_VERSION, SURFACE_ROUTE_PROFILE_VERSION_V2},
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceOperationCatalog, SurfaceOperationKind,
+    SurfaceRouteManifestJson, SurfaceRouteMethodJson, route::SURFACE_ROUTE_PROFILE_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +10,6 @@ pub struct SurfaceRouteBinding {
     pub path: String,
     pub operation_tag: String,
     pub kind: SurfaceOperationKind,
-    pub operation_profile: SurfaceOperationProfile,
     pub surface_module: String,
     pub surface_name: String,
     pub alias: String,
@@ -112,25 +110,13 @@ fn validate_routes(
     manifest: &SurfaceRouteManifestJson,
     catalog: &SurfaceOperationCatalog,
 ) -> Result<Vec<SurfaceRouteBinding>, SurfaceRouteBindingError> {
-    let manifest_profile = match manifest.profile_version.as_str() {
-        SURFACE_ROUTE_PROFILE_VERSION => SurfaceOperationProfile::V1,
-        SURFACE_ROUTE_PROFILE_VERSION_V2 => SurfaceOperationProfile::V2,
-        _ => {
-            return Err(error(
-                SurfaceRouteBindingErrorKind::InactiveRouteProfile,
-                "surface route profile version is not active",
-            ));
-        }
-    };
-    let Some(operation_profile) =
-        SurfaceOperationProfile::parse(&manifest.operation_profile_version)
-    else {
+    if manifest.profile_version != SURFACE_ROUTE_PROFILE_VERSION {
         return Err(error(
-            SurfaceRouteBindingErrorKind::InactiveOperationProfile,
-            "surface route operation profile version is not active",
+            SurfaceRouteBindingErrorKind::InactiveRouteProfile,
+            "surface route profile version is not active",
         ));
-    };
-    if operation_profile != manifest_profile || operation_profile != catalog.profile() {
+    }
+    if manifest.operation_profile_version != SURFACE_OPERATION_PROFILE_VERSION {
         return Err(error(
             SurfaceRouteBindingErrorKind::InactiveOperationProfile,
             "surface route operation profile version is not active",
@@ -220,7 +206,6 @@ fn validate_routes(
                 path: route.path.clone(),
                 operation_tag: route.operation_tag.clone(),
                 kind: expected.kind,
-                operation_profile,
                 surface_module: expected.surface_module.clone(),
                 surface_name: expected.surface_name.clone(),
                 alias: expected.alias.clone(),

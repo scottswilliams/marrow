@@ -43,12 +43,12 @@ pub use execute::{
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
 };
 pub use operation::{
-    SURFACE_OPERATION_PROFILE_VERSION, SURFACE_OPERATION_PROFILE_VERSION_V2,
-    SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceComputedReadInvocationResultJson,
-    SurfaceComputedReadRequestJson, SurfaceEmptyRequestJson, SurfaceOperationErrorJson,
-    SurfaceOperationProfile, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
-    SurfaceOperationResponseJson, SurfaceOperationResultJson, execute_project_surface_operation,
-    execute_project_surface_operation_read_only, execute_project_surface_operation_with_host,
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceActionRequestJson, SurfaceActionResultJson,
+    SurfaceComputedReadInvocationResultJson, SurfaceComputedReadRequestJson,
+    SurfaceEmptyRequestJson, SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceOperationResultJson,
+    execute_project_surface_operation, execute_project_surface_operation_read_only,
+    execute_project_surface_operation_with_host,
 };
 pub use operation_catalog::{
     SurfaceOperationBinding, SurfaceOperationCatalog, SurfaceOperationCatalogError,
@@ -65,9 +65,8 @@ pub use request::{
     SurfaceWriteValueJson,
 };
 pub use route::{
-    SURFACE_ROUTE_PROFILE_VERSION, SURFACE_ROUTE_PROFILE_VERSION_V2, SurfaceRouteJson,
-    SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
-    SurfaceRouteSurfaceJson,
+    SURFACE_ROUTE_PROFILE_VERSION, SurfaceRouteJson, SurfaceRouteManifestJson,
+    SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceRouteSurfaceJson,
 };
 pub use route_binding::{
     SurfaceRouteBinding, SurfaceRouteBindingError, SurfaceRouteBindingErrorKind,
@@ -479,24 +478,13 @@ pub struct SurfacePageJson {
 
 impl SurfaceAbiJson {
     pub fn from_program(program: &marrow_check::CheckedProgram) -> Self {
-        Self::from_program_for_profile(program, SurfaceOperationProfile::V1)
-    }
-
-    pub fn from_program_v2(program: &marrow_check::CheckedProgram) -> Self {
-        Self::from_program_for_profile(program, SurfaceOperationProfile::V2)
-    }
-
-    pub fn from_program_for_profile(
-        program: &marrow_check::CheckedProgram,
-        profile: SurfaceOperationProfile,
-    ) -> Self {
         let mut surfaces = program
             .facts
             .surfaces()
             .iter()
             .map(|surface| {
                 let module = &program.facts.modules()[surface.module.0 as usize];
-                SurfaceDescriptorJson::from_surface(program, &module.name, surface, profile)
+                SurfaceDescriptorJson::from_surface(program, &module.name, surface)
             })
             .collect::<Vec<_>>();
         omit_uncallable_operation_tags(&mut surfaces);
@@ -514,7 +502,6 @@ impl SurfaceDescriptorJson {
         program: &marrow_check::CheckedProgram,
         module: &str,
         surface: &marrow_check::SurfaceFact,
-        profile: SurfaceOperationProfile,
     ) -> Self {
         let stable = matches!(
             surface.catalog_status,
@@ -532,7 +519,6 @@ impl SurfaceDescriptorJson {
                         marrow_check::SurfaceReadOperationDescriptor::from_operation(
                             program, surface, operation,
                         )
-                        .filter(|descriptor| read_descriptor_in_profile(&descriptor.kind, profile))
                         .map(SurfaceReadOperationDescriptorJson::from)
                     })
                     .collect()
@@ -669,16 +655,6 @@ fn duplicate_operation_tags<'a>(tags: impl Iterator<Item = &'a str>) -> BTreeSet
         .filter(|(_, count)| *count > 1)
         .map(|(tag, _)| tag.to_string())
         .collect()
-}
-
-fn read_descriptor_in_profile(
-    kind: &marrow_check::SurfaceReadOperationDescriptorKind,
-    profile: SurfaceOperationProfile,
-) -> bool {
-    !matches!(
-        kind,
-        marrow_check::SurfaceReadOperationDescriptorKind::PagedIndexRangeCollection { .. }
-    ) || profile.includes_range_pages()
 }
 
 impl From<&marrow_check::SurfaceCatalogStatus> for SurfaceCatalogStatusJson {
@@ -1795,8 +1771,7 @@ mod tests {
 
     use crate::surface::{
         SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT, SURFACE_CLIENT_PROFILE_PREFIX,
-        SURFACE_OPERATION_PROFILE_VERSION, SURFACE_OPERATION_PROFILE_VERSION_V2,
-        SURFACE_ROUTE_PROFILE_VERSION_V2, SurfaceAbiJson, SurfaceActionRequestJson,
+        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
         SurfaceCallableArgumentShapeJson, SurfaceCallableParameterPresenceJson,
         SurfaceCatalogStatusJson, SurfaceClientCursorProfile, SurfaceClientRenderErrorKind,
@@ -1806,8 +1781,8 @@ mod tests {
         SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
         SurfaceEmptyRequestJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
         SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
-        SurfaceOperationProfile, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
-        SurfaceOperationResultJson, SurfacePageJson, SurfacePageRangeJson, SurfacePageRequestJson,
+        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
+        SurfacePageJson, SurfacePageRangeJson, SurfacePageRequestJson,
         SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
         SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
         SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
@@ -3340,35 +3315,19 @@ pub fn seed()
     }
 
     #[test]
-    fn surface_operation_profiles_expose_range_reads_only_in_v2() {
+    fn single_profile_exposes_range_reads_in_abi_routes_and_client() {
         let (program, runtime) = checked_surface_program(SURFACE_WITH_INDEX_RANGE_COLLECTION);
-        let v1 = SurfaceAbiJson::from_program(&program);
-        let v2 = SurfaceAbiJson::from_program_v2(&program);
-        let v1_posts = v1
+        let abi = SurfaceAbiJson::from_program(&program);
+        let posts = abi
             .surfaces
             .iter()
             .find(|surface| surface.name == "Posts")
-            .expect("v1 Posts descriptor");
-        let v2_posts = v2
-            .surfaces
-            .iter()
-            .find(|surface| surface.name == "Posts")
-            .expect("v2 Posts descriptor");
-
-        assert_eq!(
-            v1_posts
-                .read
-                .iter()
-                .map(|read| read.alias.as_str())
-                .collect::<Vec<_>>(),
-            vec!["get", "byCategoryDate"]
-        );
-        let range = v2_posts
+            .expect("Posts descriptor");
+        let range = posts
             .read
             .iter()
             .find(|read| read.alias == "byCategoryDateRange")
-            .expect("v2 range descriptor");
-        assert_eq!(range.profile_version, "surface.read.v1");
+            .expect("range read present in the single ABI");
         assert_eq!(
             range.kind,
             SurfaceReadOperationKindJson::PagedIndexRangeCollection {
@@ -3381,97 +3340,44 @@ pub fn seed()
             }
         );
 
-        let v1_catalog = SurfaceOperationCatalog::from_abi(&v1).expect("v1 catalog");
-        assert_eq!(v1_catalog.profile(), SurfaceOperationProfile::V1);
-        assert!(v1_catalog.binding(&range.operation_tag).is_none());
-        let v2_catalog = SurfaceOperationCatalog::from_abi_v2(&v2).expect("v2 catalog");
-        assert!(
-            v2_posts
-                .read
-                .iter()
-                .filter(|read| read.operation_tag != range.operation_tag)
-                .all(|read| v2_catalog.binding(&read.operation_tag).is_none())
-        );
-        let binding = v2_catalog
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("catalog");
+        let binding = catalog
             .binding(&range.operation_tag)
-            .expect("v2 range binding");
+            .expect("range binding present in the single catalog");
         assert_eq!(binding.kind, SurfaceOperationKind::RangePage);
-        assert_eq!(binding.profile, SurfaceOperationProfile::V2);
-        assert!(binding.path.starts_with("/surface/v2/read/"));
-
-        let v1_routes = SurfaceRouteManifestJson::from_abi(&v1);
-        assert!(
-            !v1_routes
-                .routes
-                .iter()
-                .any(|route| route.operation_tag == range.operation_tag)
-        );
-        let v2_routes = SurfaceRouteManifestJson::from_abi_v2(&v2);
-        assert_eq!(v2_routes.profile_version, SURFACE_ROUTE_PROFILE_VERSION_V2);
         assert_eq!(
-            v2_routes.operation_profile_version,
-            SURFACE_OPERATION_PROFILE_VERSION_V2
+            binding.path,
+            format!("/surface/v1/read/{}", range.operation_tag)
         );
-        let route = v2_routes
+
+        let routes = SurfaceRouteManifestJson::from_abi(&abi);
+        let route = routes
             .routes
             .iter()
             .find(|route| route.operation_tag == range.operation_tag)
-            .expect("v2 range route");
+            .expect("range route present in the single manifest");
         assert_eq!(route.request, SurfaceRouteRequestJson::RangePage);
-        assert!(route.path.starts_with("/surface/v2/read/"));
-        assert!(
-            v2_routes
-                .routes
-                .iter()
-                .all(|route| route.request == SurfaceRouteRequestJson::RangePage)
-        );
+        assert!(route.path.starts_with("/surface/v1/read/"));
 
-        SurfaceRouteBindings::from_manifest(&v1_routes, &v1_catalog).expect("v1 routes bind");
-        SurfaceRouteBindings::from_manifest(&v2_routes, &v2_catalog).expect("v2 routes bind");
-        assert_eq!(
-            SurfaceRouteBindings::from_manifest(&v2_routes, &v1_catalog)
-                .expect_err("mixed route/catalog profiles are rejected")
-                .kind(),
-            SurfaceRouteBindingErrorKind::InactiveOperationProfile
+        let client = render_typescript_client(&abi, &routes).expect("client renders");
+        assert!(
+            client.contains("byCategoryDateRange:"),
+            "generated client exposes the range read method: {client}"
         );
     }
 
     #[test]
-    fn surface_operation_v2_admits_only_range_pages() {
-        let (write_program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
-        let write_abi = SurfaceAbiJson::from_program_v2(&write_program);
-        let write_catalog = SurfaceOperationCatalog::from_abi_v2(&write_abi).expect("v2 catalog");
-        let update_tag = update_operation_tag(&write_program, "Books");
-        let action_tag = checker_action_operation_tag(&write_program, "Books", "addBook");
-        assert!(write_catalog.binding(&update_tag).is_none());
-        assert!(write_catalog.binding(&action_tag).is_none());
-
-        let (create_program, _runtime) = checked_surface_program(SURFACE_CREATE_DELETE);
-        let create_abi = SurfaceAbiJson::from_program_v2(&create_program);
-        let create_catalog = SurfaceOperationCatalog::from_abi_v2(&create_abi).expect("v2 catalog");
-        assert!(
-            create_catalog
-                .binding(&create_operation_tag(&create_program, "Books"))
-                .is_none()
-        );
-        assert!(
-            create_catalog
-                .binding(&delete_operation_tag(&create_program, "Books"))
-                .is_none()
-        );
-
-        let (computed_program, _runtime) = checked_surface_program(SURFACE_COMPUTED_READ);
-        let computed_abi = SurfaceAbiJson::from_program_v2(&computed_program);
-        let computed_catalog =
-            SurfaceOperationCatalog::from_abi_v2(&computed_abi).expect("v2 catalog");
-        assert!(
-            computed_catalog
-                .binding(&checker_computed_read_operation_tag(
-                    &computed_program,
-                    "Books",
-                    "page"
-                ))
-                .is_none()
+    fn surface_route_manifest_with_a_foreign_operation_profile_is_rejected() {
+        let (program, _runtime) = checked_surface_program(SURFACE_WITH_INDEX_RANGE_COLLECTION);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("catalog");
+        let mut manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        manifest.operation_profile_version = "surface.operation.v0".into();
+        assert_eq!(
+            SurfaceRouteBindings::from_manifest(&manifest, &catalog)
+                .expect_err("a foreign operation profile version is rejected")
+                .kind(),
+            SurfaceRouteBindingErrorKind::InactiveOperationProfile
         );
     }
 

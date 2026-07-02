@@ -193,6 +193,18 @@ pub(super) enum SurfaceMethodInput {
     PageIterator {
         exact_keys: Vec<SurfaceMethodParam>,
     },
+    /// A ranged index page: the exact keys that precede the ranged key, plus the ranged key's own
+    /// type so the caller can pass a typed lower/upper bound over it.
+    RangePage {
+        exact_keys: Vec<SurfaceFieldType>,
+        range_key: SurfaceFieldType,
+    },
+    /// A ranged index page iterator: the exact keys that precede the ranged key, plus the ranged
+    /// key's own type so the caller can pass a typed lower/upper bound over it.
+    RangePageIterator {
+        exact_keys: Vec<SurfaceMethodParam>,
+        range_key: SurfaceFieldType,
+    },
     UniqueLookup {
         keys: Vec<SurfaceFieldType>,
     },
@@ -243,10 +255,7 @@ impl SurfaceClientModel {
             .map(|binding| SurfaceOperationRoute {
                 operation_tag: binding.operation_tag.clone(),
                 request_kind: binding.kind.operation_request_kind(),
-                route_prefix: binding
-                    .kind
-                    .route_prefix(binding.operation_profile)
-                    .expect("route binding profile admits operation"),
+                route_prefix: binding.kind.route_prefix(),
             })
             .collect();
         model
@@ -401,12 +410,6 @@ impl ModelBuilder {
         }
 
         for read in &surface.read {
-            if matches!(
-                read.kind,
-                SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. }
-            ) {
-                continue;
-            }
             self.register_store(&read.store_catalog_id, &read.identity_keys);
             let brand = self.store_brand(&read.store_catalog_id);
             let cursor_brand = format!("{surface_name}Cursor");
@@ -575,6 +578,19 @@ impl ModelBuilder {
                     record: record_type.into(),
                 },
             ),
+            SurfaceReadOperationKindJson::PagedIndexRangeCollection {
+                exact_key_count,
+                range_key_index,
+                ..
+            } => (
+                SurfaceMethodInput::RangePage {
+                    exact_keys: self.index_exact_key_types(read, *exact_key_count, enums),
+                    range_key: self.value_type(&read.index_keys[*range_key_index].value, enums),
+                },
+                SurfaceMethodResult::Page {
+                    record: record_type.into(),
+                },
+            ),
             SurfaceReadOperationKindJson::UniqueIndexLookup { key_count, .. } => (
                 SurfaceMethodInput::UniqueLookup {
                     keys: self.index_exact_key_types(read, *key_count, enums),
@@ -583,18 +599,13 @@ impl ModelBuilder {
                     record: record_type.into(),
                 },
             ),
-            SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. } => {
-                unreachable!("range read descriptors are omitted from TypeScript client methods")
-            }
         };
         let result_kind = match read.kind {
             SurfaceReadOperationKindJson::SingletonRead
             | SurfaceReadOperationKindJson::PointRead => "record",
             SurfaceReadOperationKindJson::PagedRootCollection
-            | SurfaceReadOperationKindJson::PagedIndexCollection { .. } => "page",
-            SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. } => {
-                unreachable!("range read descriptors are omitted from TypeScript client methods")
-            }
+            | SurfaceReadOperationKindJson::PagedIndexCollection { .. }
+            | SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. } => "page",
             SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => "optional_record",
         };
         SurfaceMethod {
@@ -615,14 +626,25 @@ impl ModelBuilder {
         alias: &str,
         enums: &mut Vec<String>,
     ) -> Option<SurfaceMethod> {
-        let exact_keys = match &read.kind {
-            SurfaceReadOperationKindJson::PagedRootCollection => Vec::new(),
+        let input = match &read.kind {
+            SurfaceReadOperationKindJson::PagedRootCollection => SurfaceMethodInput::PageIterator {
+                exact_keys: Vec::new(),
+            },
             SurfaceReadOperationKindJson::PagedIndexCollection {
                 exact_key_count, ..
-            } => self.index_exact_key_params(read, *exact_key_count, enums),
+            } => SurfaceMethodInput::PageIterator {
+                exact_keys: self.index_exact_key_params(read, *exact_key_count, enums),
+            },
+            SurfaceReadOperationKindJson::PagedIndexRangeCollection {
+                exact_key_count,
+                range_key_index,
+                ..
+            } => SurfaceMethodInput::RangePageIterator {
+                exact_keys: self.index_exact_key_params(read, *exact_key_count, enums),
+                range_key: self.value_type(&read.index_keys[*range_key_index].value, enums),
+            },
             SurfaceReadOperationKindJson::SingletonRead
             | SurfaceReadOperationKindJson::PointRead
-            | SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. }
             | SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => return None,
         };
         Some(SurfaceMethod {
@@ -630,7 +652,7 @@ impl ModelBuilder {
             operation_tag: read.operation_tag.clone(),
             result_kind: "page",
             cursor_brand: cursor_brand.into(),
-            input: SurfaceMethodInput::PageIterator { exact_keys },
+            input,
             result: SurfaceMethodResult::PageIterator {
                 record: record_type.into(),
             },

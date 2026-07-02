@@ -491,6 +491,14 @@ fn method_signature(method: &SurfaceMethod) -> String {
         SurfaceMethodInput::PageIterator { exact_keys } => {
             page_iterator_signature(exact_keys, &method.cursor_brand)
         }
+        SurfaceMethodInput::RangePage {
+            exact_keys,
+            range_key,
+        } => range_page_signature(exact_keys, range_key, &method.cursor_brand),
+        SurfaceMethodInput::RangePageIterator {
+            exact_keys,
+            range_key,
+        } => range_page_iterator_signature(exact_keys, range_key, &method.cursor_brand),
         SurfaceMethodInput::UniqueLookup { keys } => keys
             .iter()
             .enumerate()
@@ -520,6 +528,41 @@ fn page_iterator_signature(exact_keys: &[SurfaceMethodParam], cursor_brand: &str
         .collect::<Vec<_>>();
     params.push(format!(
         "options: {{ limit: number; initialCursor?: {cursor_brand} | null }}"
+    ));
+    params.join(", ")
+}
+
+fn range_page_signature(
+    exact_keys: &[SurfaceFieldType],
+    range_key: &SurfaceFieldType,
+    cursor_brand: &str,
+) -> String {
+    let mut params = exact_keys
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| format!("exactKey{index}: {}", argument_ts_type(ty)))
+        .collect::<Vec<_>>();
+    params.push(format!(
+        "range: MarrowRange<{}>",
+        argument_ts_type(range_key)
+    ));
+    params.push("limit: number".to_string());
+    params.push(format!("cursor?: {cursor_brand} | null"));
+    params.join(", ")
+}
+
+fn range_page_iterator_signature(
+    exact_keys: &[SurfaceMethodParam],
+    range_key: &SurfaceFieldType,
+    cursor_brand: &str,
+) -> String {
+    let mut params = exact_keys
+        .iter()
+        .map(|param| format!("{}: {}", param.name, argument_ts_type(&param.ty)))
+        .collect::<Vec<_>>();
+    params.push(format!(
+        "options: {{ range: MarrowRange<{}>; limit: number; initialCursor?: {cursor_brand} | null }}",
+        argument_ts_type(range_key)
     ));
     params.join(", ")
 }
@@ -556,6 +599,14 @@ fn method_request_expr(method: &SurfaceMethod) -> String {
         }
         SurfaceMethodInput::Page { exact_keys } => page_request_expr(exact_keys),
         SurfaceMethodInput::PageIterator { exact_keys } => page_iterator_request_expr(exact_keys),
+        SurfaceMethodInput::RangePage {
+            exact_keys,
+            range_key,
+        } => range_page_request_expr(exact_keys, range_key),
+        SurfaceMethodInput::RangePageIterator {
+            exact_keys,
+            range_key,
+        } => range_page_iterator_request_expr(exact_keys, range_key),
         SurfaceMethodInput::UniqueLookup { keys } => {
             let keys = keys
                 .iter()
@@ -629,6 +680,51 @@ fn page_iterator_request_expr(exact_keys: &[SurfaceMethodParam]) -> String {
             .join(", ");
         parts.push(format!("exact_keys: [{keys}]"));
     }
+    parts.push("limit: options.limit".to_string());
+    parts.push("cursor: cursor ?? undefined".to_string());
+    format!("{{ {} }}", parts.join(", "))
+}
+
+fn range_page_request_expr(
+    exact_keys: &[SurfaceFieldType],
+    range_key: &SurfaceFieldType,
+) -> String {
+    let mut parts = Vec::new();
+    if !exact_keys.is_empty() {
+        let keys = exact_keys
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| request_value_expr(ty, &format!("exactKey{index}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("exact_keys: [{keys}]"));
+    }
+    parts.push(format!(
+        "range: encodeRange(range, (value) => {})",
+        request_value_expr(range_key, "value")
+    ));
+    parts.push("limit".to_string());
+    parts.push("cursor: cursor ?? undefined".to_string());
+    format!("{{ {} }}", parts.join(", "))
+}
+
+fn range_page_iterator_request_expr(
+    exact_keys: &[SurfaceMethodParam],
+    range_key: &SurfaceFieldType,
+) -> String {
+    let mut parts = Vec::new();
+    if !exact_keys.is_empty() {
+        let keys = exact_keys
+            .iter()
+            .map(|param| request_value_expr(&param.ty, &param.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("exact_keys: [{keys}]"));
+    }
+    parts.push(format!(
+        "range: encodeRange(options.range, (value) => {})",
+        request_value_expr(range_key, "value")
+    ));
     parts.push("limit: options.limit".to_string());
     parts.push("cursor: cursor ?? undefined".to_string());
     format!("{{ {} }}", parts.join(", "))

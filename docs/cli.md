@@ -314,8 +314,8 @@ marrow serve --remote --addr <addr> [--write] \
 
 Run the HTTP serving profile for checked application surfaces. By default the
 command binds loopback only, opens the project through `ProjectSurfaceReadSession`,
-and serves v1 read routes, including computed reads, plus v2 ranged index page
-read routes. With `--write`, it opens `ProjectSurfaceSession` and also exposes
+and serves v1 read routes, including computed reads and ranged index page reads.
+With `--write`, it opens `ProjectSurfaceSession` and also exposes
 v1 create, sparse-update, delete, and action routes. Both modes require an
 already accepted native store and never create, freeze, migrate, repair, or
 auto-apply saved data.
@@ -372,9 +372,8 @@ auto-apply saved data.
   and `503 {"status":"unavailable"}` during the brief `--watch` re-check window
   or after a re-check fails. Any method other than `GET` returns `405`.
 - The active route set is derived from descriptor route manifests. Default mode
-  serves `/surface/v1/read/<operation-tag>` rows, including computed reads, and
-  `/surface/v2/read/<operation-tag>` ranged index page rows that require
-  `surface.operation.v2` envelopes; `--write` additionally serves
+  serves `/surface/v1/read/<operation-tag>` rows, including computed reads and
+  ranged index page reads; `--write` additionally serves
   `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
   `/surface/v1/delete/<operation-tag>`, and

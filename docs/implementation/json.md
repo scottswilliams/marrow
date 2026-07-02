@@ -10,12 +10,12 @@ read/computed-read request decode, generated write request-body decode, and
 action argument/result rendering. Surface descriptors
 include checked read/computed-read/action aliases as labels for later route or
 client renderers; those aliases are not operation identity. For surfaces it also
-renders profile-aware route manifests from the active descriptor export and
+renders `surface.route.v1` route manifests from the active descriptor export and
 provides an in-process operation-tag execution boundary over caller-supplied
 `CheckedProgram` and `TreeStore` references, read-only execution helpers over
 `ProjectSurfaceReadSession`, point/singleton create/update/delete and action
-execution helpers over `ProjectSurfaceSession`, and `surface.operation.v1` /
-`surface.operation.v2` request/response/error envelope DTOs over project surface
+execution helpers over `ProjectSurfaceSession`, and `surface.operation.v1`
+request/response/error envelope DTOs over project surface
 sessions; it does not own HTTP serving or process lifetime policy.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its run DTOs
@@ -70,14 +70,12 @@ admission. `SurfaceOperationCatalog` derives the operation tag, request kind,
 profile-aware path, surface labels, and alias from that already-curated
 descriptor export. `SurfaceRouteManifestJson` renders companion
 `surface_routes` objects from the same ABI, and `SurfaceRouteBindings` validates
-a manifest against the matching catalog/profile before serving consumes it. V1
-route rows are JSON `POST` paths under
+a manifest against the matching catalog before serving consumes it. Route rows
+are JSON `POST` paths under
 `/surface/v1/{read|create|update|delete|action}/` with the admitted operation
 tag in the path, the operation alias as a render label, and the request-body
-kind expected by `surface.operation.v1`. V2 currently adds ranged index page
-reads under `/surface/v2/read/` with `surface.operation.v2` envelopes; v1
-catalogs and manifests omit those range operations. Computed reads use the read
-route prefix for their profile. Duplicate stable operation tags are omitted from all read,
+kind expected by `surface.operation.v1`. Ranged index page reads, like computed
+reads, route under the read prefix. Duplicate stable operation tags are omitted from all read,
 computed-read, create, update, delete, or action descriptors that share the tag,
 and therefore from the route manifest.
 Source-only surfaces serialize blocker strings and no operation descriptors or
@@ -125,9 +123,9 @@ and member catalog IDs from the descriptor rather than source labels or
 checker-local IDs.
 `SurfaceOperationRequestJson`, `SurfaceOperationResponseJson`,
 `SurfaceOperationResultJson`, and `SurfaceOperationErrorJson` wrap those same
-typed request and result bodies in the active operation profile. V1 is the
-default profile used by current generated TypeScript clients; v2 admits only
-ranged index page reads.
+typed request and result bodies in the single `surface.operation.v1` profile
+that the generated TypeScript clients target. Ranged index page reads share that
+profile and reuse the page request/result envelope shape.
 JSON decode is structural and canonical only: runtime `SurfaceUpdate` owns
 declared update-set authorization, duplicate and non-empty patch validation,
 exact value shape checks, enum membership and selectability, identity store,

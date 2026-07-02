@@ -63,14 +63,14 @@ Usage:
 
 Run an HTTP surface endpoint. The default profile is loopback-only. The server
 accepts one JSON POST per connection and closes the response on descriptor-derived
-/surface/v1/{read|create|update|delete|action}/<operation-tag> routes, plus
-/surface/v2/read/<operation-tag> range page routes. It also answers an
+/surface/v1/{read|create|update|delete|action}/<operation-tag> routes, including
+range page reads under /surface/v1/read/<operation-tag>. It also answers an
 unauthenticated GET /health readiness probe and logs one line per request to
 stderr.
 
   --write  Expose create/update/delete/action routes and open a writable surface session.
-           Defaults to read-only mode, serving v1 read routes including computed reads
-           and v2 range page read routes.
+           Defaults to read-only mode, serving read routes including computed reads
+           and range page reads.
   --cors-origin
            Allow one exact browser Origin such as http://localhost:5173.
            No CORS headers are emitted unless this option is present.
@@ -778,30 +778,16 @@ impl SurfaceRoutes {
         mode: ServeMode,
         remote: bool,
     ) -> Result<Self, String> {
-        let abi_v1 = SurfaceAbiJson::from_program(program);
-        let manifest_v1 = SurfaceRouteManifestJson::from_abi(&abi_v1);
-        let catalog_v1 =
-            SurfaceOperationCatalog::from_abi(&abi_v1).map_err(|error| error.to_string())?;
-        let bindings_v1 = SurfaceRouteBindings::from_manifest(&manifest_v1, &catalog_v1)
+        let abi = SurfaceAbiJson::from_program(program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).map_err(|error| error.to_string())?;
+        let bindings = SurfaceRouteBindings::from_manifest(&manifest, &catalog)
             .map_err(|error| error.to_string())?;
-        let mut routes = bindings_v1
+        let routes = bindings
             .iter()
             .filter(|binding| remote || mode.allows(binding))
             .map(|binding| (binding.path.clone(), binding.clone()))
             .collect::<BTreeMap<_, _>>();
-
-        let abi_v2 = SurfaceAbiJson::from_program_v2(program);
-        let manifest_v2 = SurfaceRouteManifestJson::from_abi_v2(&abi_v2);
-        let catalog_v2 =
-            SurfaceOperationCatalog::from_abi_v2(&abi_v2).map_err(|error| error.to_string())?;
-        let bindings_v2 = SurfaceRouteBindings::from_manifest(&manifest_v2, &catalog_v2)
-            .map_err(|error| error.to_string())?;
-        for binding in bindings_v2
-            .iter()
-            .filter(|binding| remote || mode.allows(binding))
-        {
-            routes.insert(binding.path.clone(), binding.clone());
-        }
         Ok(Self {
             routes,
             mode,
@@ -862,7 +848,7 @@ surface Posts from ^posts
     }
 
     #[test]
-    fn serve_routes_mount_v1_existing_routes_and_v2_range_routes() {
+    fn serve_routes_mount_range_reads_under_the_single_read_profile() {
         let project = TempProject::new("marrow-serve-range-routes");
         fs::create_dir(project.path().join("src")).expect("create src");
         fs::write(project.path().join("src/test.mw"), RANGE_SURFACE).expect("write source");
@@ -888,22 +874,8 @@ surface Posts from ^posts
             SurfaceRoutes::from_program(&program, ServeMode::ReadOnly, false).expect("routes");
         let paths = routes.routes.keys().cloned().collect::<Vec<_>>();
         assert!(
-            paths
-                .iter()
-                .any(|path| path.starts_with("/surface/v1/read/")),
-            "v1 read route is mounted: {paths:?}"
-        );
-        assert!(
-            paths
-                .iter()
-                .any(|path| path.starts_with("/surface/v2/read/")),
-            "v2 range route is mounted: {paths:?}"
-        );
-        assert!(
-            !paths
-                .iter()
-                .any(|path| path.starts_with("/surface/v2/update/")),
-            "serve only adds v2 range read routes: {paths:?}"
+            paths.iter().all(|path| path.starts_with("/surface/v1/")),
+            "every route is mounted under the single profile: {paths:?}"
         );
         let range = routes
             .routes
@@ -911,9 +883,10 @@ surface Posts from ^posts
             .find(|binding| binding.alias == "byCategoryDateRange")
             .expect("range binding");
         assert_eq!(range.kind, SurfaceOperationKind::RangePage);
-        assert_eq!(
-            range.operation_profile,
-            marrow_json::surface::SurfaceOperationProfile::V2
+        assert!(
+            range.path.starts_with("/surface/v1/read/"),
+            "range read routes under the single read prefix: {}",
+            range.path
         );
         let exact = routes
             .routes
@@ -921,10 +894,7 @@ surface Posts from ^posts
             .find(|binding| binding.alias == "byCategoryDate")
             .expect("exact binding");
         assert_eq!(exact.kind, SurfaceOperationKind::Page);
-        assert_eq!(
-            exact.operation_profile,
-            marrow_json::surface::SurfaceOperationProfile::V1
-        );
+        assert!(exact.path.starts_with("/surface/v1/read/"));
     }
 
     fn commit_catalog(

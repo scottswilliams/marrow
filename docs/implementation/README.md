@@ -40,8 +40,8 @@ Nine crates stacked in dependency order, lowest first:
   accepted-catalog surface action and computed-read value rendering,
   read/computed-read/action alias descriptor rendering, and
   context-aware cursor-boundary rendering. It also renders descriptor-derived
-  route manifests, including `surface.route.v1` and range-only
-  `surface.route.v2`, and the thin TypeScript operation client over v1 ABI plus
+  `surface.route.v1` route manifests and the thin TypeScript operation client
+  over that ABI plus
   routes, including the explicit cursor-token client profile. It owns the opaque
   cursor-token codec over the existing typed cursor DTO; HTTP serving is owned
   by the CLI.
