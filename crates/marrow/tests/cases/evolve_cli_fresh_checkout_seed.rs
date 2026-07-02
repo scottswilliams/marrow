@@ -227,7 +227,11 @@ const ENUM_REORDERED_SOURCE: &str = "module books\n\
 fn a_fresh_checkout_seeding_a_pure_member_reorder_stays_at_the_committed_epoch() {
     let present = native_books_project("fresh-seed-present-reorder", ENUM_BASELINE_SOURCE);
     let _ = commit_catalog(&present);
-    assert_eq!(store_epoch(&present), Some(1), "baseline commits at epoch 1");
+    assert_eq!(
+        store_epoch(&present),
+        Some(1),
+        "baseline commits at epoch 1"
+    );
     write(&present, "src/books.mw", ENUM_REORDERED_SOURCE);
     let fresh = fresh_checkout_of("fresh-seed-fresh-reorder", &present);
 

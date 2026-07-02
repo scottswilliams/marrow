@@ -3030,7 +3030,10 @@ mod tests {
     fn cascade_covers_every_kind_with_an_identity_keyed_subtree() {
         use CatalogEntryKind::{Enum, EnumMember, Resource, ResourceMember, Store, StoreIndex};
         assert_eq!(cascade_descendant_kind(Resource), Some(ResourceMember));
-        assert_eq!(cascade_descendant_kind(ResourceMember), Some(ResourceMember));
+        assert_eq!(
+            cascade_descendant_kind(ResourceMember),
+            Some(ResourceMember)
+        );
         assert_eq!(cascade_descendant_kind(Enum), Some(EnumMember));
         assert_eq!(cascade_descendant_kind(EnumMember), Some(EnumMember));
         assert_eq!(cascade_descendant_kind(Store), None);

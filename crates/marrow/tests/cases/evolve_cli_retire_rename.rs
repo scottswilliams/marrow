@@ -1892,7 +1892,9 @@ fn evolve_apply_of_a_whole_enum_rename_keeps_stored_values_decodable() {
     let root = native_books_project("evolve-enum-rename-e2e", &enum_backed_pet_source("Cat", ""));
     let dir = root.to_str().expect("project path utf-8");
     assert_eq!(
-        marrow(&["run", "--entry", "books::seed", dir]).status.code(),
+        marrow(&["run", "--entry", "books::seed", dir])
+            .status
+            .code(),
         Some(0),
         "seed one populated record",
     );
@@ -1931,11 +1933,15 @@ fn evolve_apply_of_a_whole_enum_rename_keeps_stored_values_decodable() {
 /// the refused apply must commit nothing.
 #[test]
 fn evolve_apply_of_an_enum_rename_that_drops_a_populated_member_fails_closed() {
-    let root =
-        native_books_project("evolve-enum-rename-drop-member", &enum_backed_pet_source("Cat", ""));
+    let root = native_books_project(
+        "evolve-enum-rename-drop-member",
+        &enum_backed_pet_source("Cat", ""),
+    );
     let dir = root.to_str().expect("project path utf-8");
     assert_eq!(
-        marrow(&["run", "--entry", "books::seed", dir]).status.code(),
+        marrow(&["run", "--entry", "books::seed", dir])
+            .status
+            .code(),
         Some(0),
         "seed one record carrying the member that will be dropped",
     );

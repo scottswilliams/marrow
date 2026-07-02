@@ -166,7 +166,11 @@ fn first_run_with_present_lock_adopts_committed_identity_by_path() {
         "the SHAPED store adopts its committed lock id by path, not minting fresh"
     );
     assert_eq!(
-        entry_id(accepted, CatalogEntryKind::ResourceMember, "books::Book::title"),
+        entry_id(
+            accepted,
+            CatalogEntryKind::ResourceMember,
+            "books::Book::title"
+        ),
         derived_id("member-title"),
         "the SHAPED member adopts its committed lock id by path, not minting fresh"
     );
