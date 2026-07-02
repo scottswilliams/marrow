@@ -1328,34 +1328,30 @@ fn open_surface_session(
     // store traversable but not that its index holds exactly the entries its records derive, so a
     // truncated index fails closed here rather than streaming an under-returning range.
     tooling::verify_store_completeness(&store.store, &program)?;
-    // A write-capable open must not seize a store the binary is not admitted against. When the
-    // committed lock records an epoch high-water a teammate already advanced past, the local store
-    // is behind that committed activation, so a surface write would commit against an epoch the
-    // shared source tree has left behind. Fail closed here exactly as run and evolve apply do; a
-    // read cannot corrupt the store, so a behind read-only open is admitted at its own epoch.
-    if matches!(access, SurfaceStoreAccess::Write)
-        && let Some(behind) = store_behind_committed_lock(&root, &store.store)?
-    {
-        return Err(ProjectSessionError::Fence(behind));
-    }
-    // The fence owns the no-accepted-epoch decision for both open paths: a stamped store opened
-    // by a program with no accepted epoch fails closed with `run.durable_store_required`. Once it
-    // passes, the program carries an accepted epoch and digest to drift-check against.
-    fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
-    let accepted_digest =
-        program
-            .catalog
-            .accepted_digest
-            .as_deref()
-            .ok_or_else(|| ProjectSessionError::Catalog {
-                code: marrow_catalog::CATALOG_INVALID,
-                message: "accepted catalog digest is missing from the checked program".to_string(),
-            })?;
-    let found = store.store.catalog_snapshot_digest()?;
-    if found.as_deref() != Some(accepted_digest) {
-        return Err(ProjectSessionError::SchemaDrift {
-            message: "store catalog digest does not match the checked project catalog".to_string(),
-        });
+    match access {
+        // A write-capable open must not seize a store behind a committed activation, even a
+        // byte-clean one: when the committed lock records an epoch high-water a teammate already
+        // advanced past, a surface write would commit against an epoch the shared source tree has
+        // left behind. Fail closed here exactly as run and evolve apply do.
+        SurfaceStoreAccess::Write => {
+            if let Some(behind) = store_behind_committed_lock(&root, &store.store)? {
+                return Err(ProjectSessionError::Fence(behind));
+            }
+            admit_surface_open(&program, &store.store)?;
+        }
+        // A read cannot corrupt the store, so a behind store still readable at its own epoch is
+        // admitted. When the current source has drifted from that epoch's shape, though, the
+        // accurate diagnosis is that the local store is behind the committed activation and needs
+        // `evolve apply` — report the store-behind fence in place of the self-contradictory
+        // same-epoch schema drift the admission check would otherwise raise.
+        SurfaceStoreAccess::ReadOnly => {
+            if let Err(error) = admit_surface_open(&program, &store.store) {
+                if let Some(behind) = store_behind_committed_lock(&root, &store.store)? {
+                    return Err(ProjectSessionError::Fence(behind));
+                }
+                return Err(error);
+            }
+        }
     }
     Ok(OpenSurfaceSession {
         root,
@@ -2147,6 +2143,34 @@ fn fence_run(program: &CheckedProgram, store: &TreeStore) -> Result<(), FenceErr
         &program.source_digest(),
         store,
     )
+}
+
+/// Fence a surface open against the checked program's accepted identity: the same store-open fence
+/// run and evolve apply run — which owns the no-accepted-epoch decision, failing a stamped store
+/// opened by a program that binds none closed with `run.durable_store_required` — then the
+/// catalog-digest drift check. Shared by both access modes so a read admits exactly the stores a
+/// write would, apart from the behind-store refusal a read tolerates.
+fn admit_surface_open(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<(), ProjectSessionError> {
+    fence_run(program, store).map_err(ProjectSessionError::Fence)?;
+    let accepted_digest =
+        program
+            .catalog
+            .accepted_digest
+            .as_deref()
+            .ok_or_else(|| ProjectSessionError::Catalog {
+                code: marrow_catalog::CATALOG_INVALID,
+                message: "accepted catalog digest is missing from the checked program".to_string(),
+            })?;
+    let found = store.catalog_snapshot_digest()?;
+    if found.as_deref() != Some(accepted_digest) {
+        return Err(ProjectSessionError::SchemaDrift {
+            message: "store catalog digest does not match the checked project catalog".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Whether the local store lags the committed lock. The committed lock records the epoch a write

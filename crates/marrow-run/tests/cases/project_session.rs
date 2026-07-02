@@ -1487,6 +1487,37 @@ fn surface_read_session_fails_closed_on_an_epoch_behind_store_missing_a_root() {
     assert_eq!(error.code(), "store.corruption");
 }
 
+/// A store legitimately behind an ahead committed lock whose current source has ALSO drifted from
+/// the store's stamped shape is behind, not schema-drifted at the same epoch: the committed lock
+/// records an activation this local store has not caught up to. Read-only serve must diagnose it as
+/// `run.store_behind` (run `marrow evolve apply`), the same code run and `serve --write` report,
+/// never the self-contradictory `run.schema_drift` whose message claims a same-epoch digest
+/// mismatch while the epochs differ.
+#[test]
+fn surface_read_session_reports_store_behind_for_a_drifted_epoch_behind_store() {
+    let root = TempDir::new("marrow-run-surface-read-behind-drift").expect("create project");
+    seed_surface_counter_store(root.path());
+
+    // A teammate committed an additive activation and advanced the lock past this store, while this
+    // checkout's store stays at its own epoch. Drifting the source to the advanced shape without
+    // running leaves the store stamped at the earlier shape: behind, and schema-drifted against the
+    // current source.
+    advance_committed_lock_one_epoch_ahead_of_store(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        advanced_surface_counter_source(),
+    );
+
+    let error = ProjectSurfaceReadSession::open(root.path())
+        .expect_err("a drifted epoch-behind store is not readable and must fence");
+    assert_eq!(
+        error.code(),
+        "run.store_behind",
+        "a behind store must report store_behind, not a same-epoch schema drift: {error:?}",
+    );
+}
+
 #[test]
 fn project_session_invokes_protocol_arguments() {
     let root = TempDir::new("marrow-run-session-protocol-args").expect("create project");
