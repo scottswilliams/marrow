@@ -62,7 +62,10 @@ members keeps every identity and needs no repair. Renaming a member is
 identity-preserving when declared with `evolve rename`: the member's stable identity
 moves to the new spelling, so stored values stay valid. A bare source rename with no
 `evolve rename` intent is read as the old member removed plus a new one added, so a
-stored value naming the old member fails closed like any other removal. [Data
+stored value naming the old member fails closed like any other removal. Renaming
+the whole enum with `evolve rename` is identity-preserving the same way: the enum's
+identity moves to the new name and each member's identity cascades with it, so every
+stored value stays valid without a per-member rename. [Data
 Evolution](../data-evolution.md) covers the preview-and-apply flow.
 
 ## Hierarchies

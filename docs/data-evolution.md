@@ -29,6 +29,7 @@ schema does not fully describe until explicit data-evolution work runs.
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
 | Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. A bare source rename over populated data still fails closed, but when exactly one populated dropped field and one same-resource added field share a durable leaf shape, the repair guidance points at `evolve rename` before destructive retirement. |
 | Rename a resource | `evolve rename Book -> Volume`, applied with `marrow evolve apply`. A member's saved identity is keyed on its full ancestor path, so the rename cascades to every member of the resource, carrying each member's stable identity forward and keeping its stored cells attached — no per-member rename is needed. A bare source rename over populated members fails closed as `run.schema_drift`/`evolve.repair_required`, exactly like a bare field or enum-member rename. |
+| Rename an enum | `evolve rename SubscriptionStatus -> AccountStatus`, applied with `marrow evolve apply`. A stored value is keyed on the selected member's stable identity, so the rename cascades to every member of the enum, carrying each member's identity forward under the new enum name and keeping every stored value decodable — no per-member rename is needed. A rename that also drops a populated member fails closed through `evolve.repair_required` and commits nothing; migrate or retire that member explicitly. A bare source rename over populated data fails closed exactly like a bare field or enum-member rename. |
 | Change a leaf's type | A populated leaf-type change fails closed; `marrow evolve preview` reports it. Add a new field of the new type, populate it with an `evolve transform` from the old field, then retire the old field. An empty leaf changes freely. |
 | Remove or unselect an enum member | Fails closed while saved data still selects the member (removal, marking it `category`, and giving it children all unselect it); migrate affected records to a current member first. Reordering members preserves every identity, mutates nothing, and auto-applies. Rename a member with `evolve rename`; a bare source rename reads as remove-plus-add and fails closed. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
@@ -159,6 +160,23 @@ source rename of a resource with populated members fails closed exactly as a bar
 field rename does; a rename that also drops a populated member still fences the
 drop through `evolve.repair_required` and the retire gate.
 
+Renaming a whole enum is the same explicit decision at the enum level:
+
+```mw
+evolve
+    rename SubscriptionStatus -> AccountStatus
+```
+
+An enum value is stored as its selected member's stable identity, so renaming the
+enum cascades to every member, carrying each member's identity forward under the
+new enum name and keeping every stored value decodable. The enum's own identity is
+preserved just as a resource rename preserves the resource's, and one
+`rename SubscriptionStatus -> AccountStatus` keeps every stored value attached with
+no per-member rename. A bare source rename of a populated enum fails closed exactly
+as a bare field rename does; a rename that also drops a populated member still
+fences the drop through `evolve.repair_required` and the retire gate, committing
+nothing.
+
 ## Saved-Data Identity And `marrow.lock`
 
 The live store is the sole authority for accepted saved-data identity. The store
@@ -175,8 +193,9 @@ accepted identity, kept in the project root and tracked in source control like
 `Cargo.lock`. Each entry projects a stable ID, lifecycle, canonical path, the old
 spellings a rename carried forward as aliases, the consumed-transform mark a
 discharged `evolve transform` stamped, and a shape fingerprint; the lock also
-carries the append-only ledger of retired and reserved IDs, the epoch at which
-each saved root became active, and the producing source shape. A root's
+carries the append-only ledger of retired and reserved IDs, the epoch high-water
+the next activation advances past, the epoch at which each saved root became
+active, and the producing source shape. A root's
 activation epoch is stamped the first time a projection records the root and
 carried forward unchanged thereafter; the lock-root witness reads it to tell a
 store legitimately behind a newly-activated root from one that lost a root it
