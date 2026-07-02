@@ -318,6 +318,27 @@ fn malformed_json_carries_its_position() {
 }
 
 #[test]
+fn eof_truncated_json_clamps_the_line_boundary_column_to_one() {
+    // serde reports column 0 for a fault at a line boundary or EOF; carried
+    // positions are 1-based, so the column clamps to 1 while the line is kept.
+    let error =
+        parse_config("{\n  \"sourceRoots\": [\"src\"],\n").expect_err("should reject truncation");
+    let position = error
+        .position
+        .expect("an EOF fault carries its line and column");
+    assert_eq!((position.line, position.column), (3, 1));
+}
+
+#[test]
+fn empty_json_carries_line_one_column_one() {
+    let error = parse_config("").expect_err("should reject empty input");
+    let position = error
+        .position
+        .expect("an empty-input fault carries its line and column");
+    assert_eq!((position.line, position.column), (1, 1));
+}
+
+#[test]
 fn rejects_hostile_config_json_families() {
     for (label, json) in [
         (

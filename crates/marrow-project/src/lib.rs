@@ -150,6 +150,8 @@ impl ConfigError {
         }
         let suffix = format!(" at line {line} column {column}");
         let message = text.strip_suffix(&suffix).unwrap_or(&text).to_string();
+        // serde reports column 0 at a line boundary or EOF; normalized to 1-based.
+        let column = column.max(1);
         Self {
             code: CONFIG_INVALID,
             kind: ConfigErrorKind::InvalidJson,

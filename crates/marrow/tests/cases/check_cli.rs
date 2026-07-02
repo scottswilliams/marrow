@@ -226,6 +226,42 @@ fn check_anchors_a_config_fault_at_its_marrow_json_position() {
 }
 
 #[test]
+fn check_clamps_an_eof_config_fault_to_column_one() {
+    // serde reports column 0 for a fault at a line boundary or EOF; positions
+    // are 1-based, so the envelope carries the real line with column 1.
+    let project = support::temp_dir("config-eof-position");
+    support::write(
+        project.path(),
+        "src/app.mw",
+        "module app\npub fn main()\n    print(\"ok\")\n",
+    );
+    support::write(
+        project.path(),
+        "marrow.json",
+        "{\n  \"sourceRoots\": [\"src\"],\n",
+    );
+
+    let output = check_json(project.path());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("config fault json");
+    assert_eq!(
+        report["code"],
+        serde_json::json!("config.invalid"),
+        "{report}"
+    );
+    assert_eq!(
+        report["source_span"]["line"],
+        serde_json::json!(3),
+        "{report}"
+    );
+    assert_eq!(
+        report["source_span"]["column"],
+        serde_json::json!(1),
+        "{report}"
+    );
+}
+
+#[test]
 fn check_on_a_missing_directory_reports_a_missing_project() {
     let missing = support::unique_temp_path("check-missing-dir");
 
