@@ -31,7 +31,6 @@ crates/marrow/src/main.rs 1
 crates/marrow/tests/cases/backup_cli.rs 16
 crates/marrow/tests/cases/check_cli.rs 3
 crates/marrow/tests/cases/check_project_cli.rs 2
-crates/marrow/tests/cases/data_orphan_cli.rs 10
 crates/marrow/tests/cases/doctor_cli.rs 6
 crates/marrow/tests/cases/evolve_cli_preview.rs 2
 crates/marrow/tests/cases/evolve_cli_store_behind_lock.rs 3

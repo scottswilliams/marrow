@@ -231,29 +231,25 @@ fn integrity_codes(value: &serde_json::Value) -> Vec<&str> {
         .collect()
 }
 
-fn assert_repair_required_guidance(value: &serde_json::Value, context: &str) {
-    let message = value["message"].as_str().unwrap_or_default();
-    // The guidance frames the retire as an in-source evolve block, points at the scaffold to print
-    // it, and names `evolve apply` as the command — never `evolve retire` as if it were a CLI
-    // subcommand.
-    assert!(
-        value["code"] == serde_json::json!("evolve.repair_required")
-            && message.contains("in-source evolve block")
-            && message.contains("evolve preview --scaffold")
-            && message.contains("marrow evolve apply")
-            && !message.contains("evolve retire <"),
-        "{context} should report in-source evolve-block repair guidance: {value:#?}"
+// The repair fence's remediation prose — the in-source evolve block framing, the
+// scaffold pointer, the `marrow evolve apply` command, and the absence of a bogus
+// `evolve retire` subcommand — is one shared rendering, pinned once per subject
+// shape by the `evolve_repair_required_*` goldens. Every other site asserts the
+// typed `evolve.repair_required` code and, where the fence keys on a root, the
+// stable catalog id.
+fn assert_repair_required(value: &serde_json::Value, context: &str) {
+    assert_eq!(
+        value["code"],
+        serde_json::json!("evolve.repair_required"),
+        "{context} fails closed with the repair fence: {value:#?}"
     );
 }
 
-fn assert_run_repair_guidance(stderr: &[u8], context: &str) {
-    let stderr = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    assert!(
-        stderr.contains("run.schema_drift")
-            && stderr.contains("in-source evolve block")
-            && stderr.contains("evolve preview --scaffold")
-            && stderr.contains("marrow evolve apply"),
-        "{context} should report in-source evolve-block repair guidance: {stderr}"
+fn assert_run_fences_on_schema_drift(stderr: &[u8], context: &str) {
+    let fault = support::parse_result_line(&support::last_fault(stderr));
+    assert_eq!(
+        fault.code, "run.schema_drift",
+        "{context} fences the run on schema drift"
     );
 }
 
@@ -450,7 +446,7 @@ fn evolve_preview_fences_a_populated_bare_drop() {
     // data on a bare activation, so the source-attached preview fails closed and
     // names `evolve retire`. The fence is the guard; the developer must state the destructive
     // intent before the data can be dropped.
-    let (root, _place, _subtitle_id) = project_with_orphaned_subtitle("orphan-activation-surfaces");
+    let (root, _place, subtitle_id) = project_with_orphaned_subtitle("orphan-activation-surfaces");
 
     let preview = marrow(&[
         "evolve",
@@ -469,15 +465,18 @@ fn evolve_preview_fences_a_populated_bare_drop() {
     let blocking = preview_value["blocking"]
         .as_array()
         .expect("blocking array");
-    assert!(
-        blocking.iter().any(|report| {
-            report["code"] == serde_json::json!("evolve.repair_required")
-                && report["message"].as_str().is_some_and(|message| {
-                    message.contains("in-source evolve block")
-                        && message.contains("marrow evolve apply")
-                })
-        }),
-        "the fence frames an in-source evolve block: {preview_value:#?}"
+    let fence = blocking
+        .iter()
+        .find(|report| report["code"] == serde_json::json!("evolve.repair_required"))
+        .unwrap_or_else(|| panic!("a repair_required fence: {preview_value:#?}"));
+    assert_eq!(
+        fence["data"]["catalog_id"],
+        serde_json::json!(subtitle_id),
+        "the fence keys on the dropped member's stable catalog id: {preview_value:#?}"
+    );
+    support::assert_matches_golden(
+        fence["message"].as_str().expect("fence message"),
+        "evolve_repair_required_member_drop.txt",
     );
 }
 
@@ -569,7 +568,13 @@ fn a_populated_bare_member_drop_does_not_run_without_a_retire_intent() {
         Some(1),
         "a populated bare member drop must fence the default run: {run:?}"
     );
-    assert_run_repair_guidance(&run.stderr, "a populated bare member drop run");
+    assert_run_fences_on_schema_drift(&run.stderr, "a populated bare member drop");
+    // The run surface embeds the same repair guidance inside the schema-drift
+    // fault; this composition is a render contract, pinned once here.
+    support::assert_matches_golden(
+        &support::last_fault(&run.stderr),
+        "run_fault_schema_drift_member_drop.txt",
+    );
     assert_eq!(
         store_epoch(&root),
         Some(baseline_epoch),
@@ -642,11 +647,9 @@ fn evolve_preview_fences_a_populated_whole_resource_drop() {
         1,
         "exactly one fence repairs the dropped root by catalog id: {preview_value:#?}"
     );
-    assert!(
-        drop_fences[0]["message"].as_str().is_some_and(|message| {
-            message.contains("in-source evolve block") && message.contains("marrow evolve apply")
-        }),
-        "the fence's remediation frames an in-source evolve block: {preview_value:#?}"
+    support::assert_matches_golden(
+        drop_fences[0]["message"].as_str().expect("fence message"),
+        "evolve_repair_required_root_drop.txt",
     );
 }
 
@@ -670,12 +673,8 @@ fn assert_store_only_preview_fences(name: &str, source: &str, context: &str) {
         blocking.iter().any(|report| {
             report["code"] == serde_json::json!("evolve.repair_required")
                 && report["data"]["catalog_id"] == serde_json::json!(store_id.as_str())
-                && report["message"].as_str().is_some_and(|message| {
-                    message.contains("in-source evolve block")
-                        && message.contains("marrow evolve apply")
-                })
         }),
-        "{context} preview should fence the store root by catalog id with repair guidance: {value:#?}"
+        "{context} preview should fence the store root by catalog id: {value:#?}"
     );
 }
 
@@ -695,7 +694,7 @@ fn assert_populated_store_only_change_does_not_apply_or_run(
         root.to_str().expect("project path utf-8"),
     ]);
     assert_eq!(apply.status.code(), Some(1), "{apply:?}");
-    assert_repair_required_guidance(&support::json(apply.stdout), &format!("{context} apply"));
+    assert_repair_required(&support::json(apply.stdout), &format!("{context} apply"));
 
     let run = marrow(&["run", root.to_str().unwrap()]);
     assert_eq!(
@@ -703,7 +702,7 @@ fn assert_populated_store_only_change_does_not_apply_or_run(
         Some(1),
         "{context} must fence the default run: {run:?}"
     );
-    assert_run_repair_guidance(&run.stderr, &format!("{context} run"));
+    assert_run_fences_on_schema_drift(&run.stderr, context);
     assert_eq!(
         store_epoch(&root),
         Some(baseline_epoch),
@@ -884,7 +883,7 @@ fn a_populated_whole_resource_drop_does_not_apply_or_run_without_a_retire_intent
         Some(1),
         "a populated whole-resource drop must fence the run, not silently auto-apply: {run:?}"
     );
-    assert_run_repair_guidance(&run.stderr, "a populated whole-resource drop run");
+    assert_run_fences_on_schema_drift(&run.stderr, "a populated whole-resource drop");
 
     assert_eq!(
         store_epoch(&root),

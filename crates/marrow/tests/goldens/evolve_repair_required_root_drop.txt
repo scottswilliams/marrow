@@ -1,0 +1,1 @@
+dropped store `books::^bookstore` still holds records; add an in-source evolve block that retires `books::^bookstore` (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>` and approval, or repair the data first
