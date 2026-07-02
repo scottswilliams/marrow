@@ -48,6 +48,7 @@ surface Books from ^books\n\
 \x20\x20\x20\x20update title, author\n\
 \x20\x20\x20\x20delete\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
+\x20\x20\x20\x20collection ^books.byAuthor range as byAuthorRange\n\
 \x20\x20\x20\x20action retitle\n\
 \x20\x20\x20\x20read describe\n";
 
@@ -1512,6 +1513,26 @@ export async function pinTypes(client: ReturnType<typeof createClient>): Promise
     break;
   }
 
+  // The ranged read over the author index takes a typed MarrowRange bound and pages the same
+  // branded records and cursor as the exact collection.
+  const rangePage = await client.Books.byAuthorRange(
+    { lower: { value: "A", inclusive: true }, upper: { value: "Z", inclusive: true } },
+    10,
+  );
+  const rangeRows: BooksRecord[] = rangePage.rows;
+  const rangeCursor: BooksCursor | null = rangePage.next;
+  await client.Books.byAuthorRange({ lower: { value: "A", inclusive: false } }, 10, rangeCursor);
+  for await (const rangeIterPage of client.Books.byAuthorRangePages({
+    range: { upper: { value: "Z", inclusive: false } },
+    limit: 10,
+  })) {
+    const rangeIterRows: BooksRecord[] = rangeIterPage.rows;
+    const rangeIterCursor: BooksCursor | null = rangeIterPage.next;
+    void rangeIterRows;
+    void rangeIterCursor;
+    break;
+  }
+
   const created: BooksRecord = await client.Books.create(id, { title: "a", author: "b" });
   // Every update field is optional: a sparse one-field patch and a full patch both type-check.
   await client.Books.update(id, { author: "c" });
@@ -1526,6 +1547,7 @@ export async function pinTypes(client: ReturnType<typeof createClient>): Promise
   void title;
   void author;
   void rows;
+  void rangeRows;
   void created;
   void removed;
   void retitled.value;
@@ -1551,6 +1573,26 @@ const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
 const seeded: BooksRecord = await client.Books.get(booksId(1));
 assert.equal(seeded.title, "Dune");
 assert.equal(typeof seeded.title, "string");
+
+// A ranged read over the author index selects both seeded books, whose author "Frank Herbert" falls
+// inside the [A, G] bound, and pages them in index order. This drives the range method, encodeRange,
+// and the branded cursor against the live server, not just the type-checker.
+const authorRange = await client.Books.byAuthorRange(
+  { lower: { value: "A", inclusive: true }, upper: { value: "G", inclusive: true } },
+  10,
+);
+assert.deepEqual(
+  authorRange.rows.map((record) => record.title),
+  ["Dune", "Dune Messiah"],
+);
+assert.equal(authorRange.next, null);
+
+// A bound that excludes every author returns no rows.
+const emptyRange = await client.Books.byAuthorRange(
+  { lower: { value: "S", inclusive: true } },
+  10,
+);
+assert.deepEqual(emptyRange.rows, []);
 
 const staleAfterCreate = await client.Books.byAuthor("Frank Herbert", 1);
 assert.ok(staleAfterCreate.next);

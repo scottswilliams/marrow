@@ -184,5 +184,7 @@ mod source_type_completion_facts;
 mod source_type_hover_facts;
 #[path = "cases/surface_abi.rs"]
 mod surface_abi;
+#[path = "cases/surface_wire_profile_architecture.rs"]
+mod surface_wire_profile_architecture;
 #[path = "cases/v01_fixtures.rs"]
 mod v01_fixtures;
