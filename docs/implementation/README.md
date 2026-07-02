@@ -125,3 +125,4 @@ pointers into the code.
 - [schema.md](schema.md) — `compile_resource` (`crates/marrow-schema/src/lib.rs`)
 - [store.md](store.md) — `TreeStore` (`crates/marrow-store/src/tree.rs`)
 - [cli.md](cli.md) — `main` (`crates/marrow/src/main.rs`)
+- [testing.md](testing.md) — test layers, the conformance corpus, and the prose-assertion ratchet
