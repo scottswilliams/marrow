@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 use crate::support;
 use serde_json::Value;
 
+/// The checked-in fixture roster, matched against discovery exactly. Dynamic
+/// discovery alone would let a deleted fixture directory shrink coverage
+/// silently; adding or retiring a fixture updates this list in the same change.
+const EXPECTED_FIXTURES: &[&str] = &["enum_semantics", "runtime_values"];
+
 /// The conformance corpus root: every subdirectory is a complete fixture
 /// project whose `.mw` tests run through native `marrow test`.
 fn corpus_root() -> PathBuf {
@@ -20,7 +25,15 @@ fn corpus_fixtures() -> Vec<PathBuf> {
         .filter(|path| path.is_dir())
         .collect();
     fixtures.sort();
-    assert!(!fixtures.is_empty(), "the conformance corpus has fixtures");
+    let discovered: Vec<&str> = fixtures
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .collect();
+    assert_eq!(
+        discovered, EXPECTED_FIXTURES,
+        "corpus discovery must match EXPECTED_FIXTURES exactly; \
+         update the roster in the same change that adds or retires a fixture"
+    );
     fixtures
 }
 

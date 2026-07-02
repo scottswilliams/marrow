@@ -326,21 +326,19 @@ fn data_roots_warns_when_a_whole_store_rename_hides_orphan_cells() {
     let output = marrow(&["data", "roots", root.to_str().expect("project path utf-8")]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(
-        String::from_utf8(output.stdout)
-            .expect("stdout utf8")
-            .contains("(no saved data)"),
-        "the renamed-away store leaves no source-visible roots"
+    // The empty-roots view and the advisory line — its hidden-cell count and its
+    // `marrow data integrity` pointer — are render contracts, pinned here once.
+    support::assert_matches_golden(
+        &String::from_utf8(output.stdout).expect("stdout utf8"),
+        "data_roots_no_saved_data.txt",
     );
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(
-        stderr.contains("data.orphan"),
-        "roots surfaces the hidden orphan cells as an advisory: {stderr}"
+    let advisory = support::last_fault(&output.stderr);
+    assert_eq!(
+        support::parse_result_line(&advisory).code,
+        "data.orphan",
+        "roots surfaces the hidden orphan cells as an advisory"
     );
-    assert!(
-        stderr.contains("data integrity"),
-        "the advisory points at marrow data integrity: {stderr}"
-    );
+    support::assert_matches_golden(&advisory, "data_orphan_advisory_hidden_cells.txt");
 }
 
 #[test]
@@ -385,14 +383,10 @@ fn data_get_warns_when_a_whole_store_rename_hides_orphan_cells() {
     ]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(
-        stderr.contains("data.orphan"),
-        "get surfaces the hidden orphan cells as an advisory: {stderr}"
-    );
-    assert!(
-        stderr.contains("data integrity"),
-        "the advisory points at marrow data integrity: {stderr}"
+    assert_eq!(
+        support::parse_result_line(&support::last_fault(&output.stderr)).code,
+        "data.orphan",
+        "get surfaces the hidden orphan cells as an advisory: {output:?}"
     );
 }
 

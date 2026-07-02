@@ -25,7 +25,9 @@ untouched.
 
 The driver `crates/marrow/tests/cases/conformance_corpus.rs` discovers every
 corpus project, runs `marrow test --format jsonl` on it in place, and asserts
-the typed report: at least one test, zero failed, zero errored. Each fixture's
+the typed report: at least one test, zero failed, zero errored. Discovery must
+match the driver's checked-in `EXPECTED_FIXTURES` roster exactly, so a deleted
+fixture directory cannot shrink coverage silently. Each fixture's
 test module opens with a header comment naming its contract, which the driver
 enforces:
 
@@ -59,6 +61,12 @@ under `crates/` for `message.contains(` and compares per-file counts against
 a higher count is a new prose assertion (assert the typed code, payload, span,
 or a golden instead); a lower count means the baseline line must shrink in the
 same change. The baseline only shrinks and ends at zero.
+
+The gate catches only that literal spelling. Aliased bindings, `.find(`,
+`starts_with`, regexes over message text, and `stderr`/`stdout`
+`.contains(prose)` are equivalent prose assertions it does not see; reviewers
+block them the same way, and a ratchet-down that merely respells the prose
+match is not burn-down.
 
 ## Migration path
 

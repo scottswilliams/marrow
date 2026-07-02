@@ -7,6 +7,11 @@ use std::path::{Path, PathBuf};
 /// pinned by golden files. Matching on `message` text is therefore never the
 /// right oracle for new work. The checked-in baseline inventories the
 /// occurrences that predate this gate; it only shrinks, and it ends at zero.
+///
+/// Only the literal spelling below is scanned. Aliased bindings, `.find(`,
+/// `starts_with`, regexes over message text, and stderr/stdout prose matching
+/// are equivalent assertions this gate does not see; reviewers block them the
+/// same way, and respelling a prose match to dodge the scan is not burn-down.
 const BASELINE: &str = include_str!("../prose_assertion_baseline.txt");
 
 /// The scanned pattern, assembled at runtime so this file never matches itself.
