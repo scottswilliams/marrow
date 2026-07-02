@@ -1,0 +1,14 @@
+[package]
+name = "marrow-codes"
+description = "The Marrow diagnostic code registry: the single owner of every error code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -87,6 +87,7 @@ over data the checker has not proven safe.
 
 | Crate | Role | Page |
 |---|---|---|
+| `marrow-codes` | The diagnostic code registry: one `Code` per dotted error code; generates `docs/error-codes.md` | [codes.md](codes.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, typed diagnostics | [syntax.md](syntax.md) |
 | `marrow-schema` | Resource/store/enum compilation; stdlib + Error tables | [schema.md](schema.md) |
 | `marrow-check` | Resolution, types, facts, catalog identity, evolution, lowering | [check/](check/README.md) |
@@ -124,5 +125,6 @@ pointers into the code.
 - [syntax.md](syntax.md) — `parse_source` (`crates/marrow-syntax/src/lib.rs`)
 - [schema.md](schema.md) — `compile_resource` (`crates/marrow-schema/src/lib.rs`)
 - [store.md](store.md) — `TreeStore` (`crates/marrow-store/src/tree.rs`)
+- [codes.md](codes.md) — `Code` (`crates/marrow-codes/src/lib.rs`)
 - [cli.md](cli.md) — `main` (`crates/marrow/src/main.rs`)
 - [testing.md](testing.md) — test layers, the conformance corpus, and the prose-assertion ratchet
