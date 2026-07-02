@@ -240,6 +240,44 @@ fn types_doc_exists_narrowing_example_checks_clean() {
     );
 }
 
+/// The nested-loop `findWanted` example in `control-flow-and-effects.md` must
+/// check clean through the production pipeline. It iterates a saved store root and
+/// a keyed child layer and `return`s out of both loops, the idiom under
+/// identity-streaming semantics. The block also shows a `const id = findWanted()`
+/// call site, which a module const cannot hold, so only the function is wrapped in
+/// the smallest module that gives it the `^books` root and `tags` keyed layer.
+#[test]
+fn control_flow_doc_find_wanted_example_checks_clean() {
+    let block = mw_blocks("control-flow-and-effects.md")
+        .into_iter()
+        .find(|block| block.source.contains("fn findWanted"))
+        .expect("control-flow doc documents the findWanted nested-loop example");
+
+    let function = block
+        .source
+        .split("\n\nconst ")
+        .next()
+        .expect("findWanted function body");
+
+    let module = format!(
+        "module main\n\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\n\
+         store ^books(id: int): Book\n\n\
+         {function}\n"
+    );
+
+    let root = temp_project("docs-find-wanted", |root| {
+        write(root, "src/main.mw", &module);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report.diagnostics.is_empty(),
+        "control-flow doc findWanted example produced checker diagnostics: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// Recursively collect the repo-relative paths of files under `dir`, skipping build
 /// output, version-control state, and any hidden entry, so the scan sees the tracked
 /// source tree and never a stray artifact dir.

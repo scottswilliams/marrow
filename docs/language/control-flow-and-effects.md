@@ -132,6 +132,14 @@ for id in ^books.byShelf("fiction")
         print($"book {id}: {title}")
 ```
 
+A bare non-unique index root — the index named with no lookup key
+(`^books.byShelf`) — streams every stored identity across all its branches in
+index order, the same identities `keys(^books.byShelf)` yields, not the distinct
+leading key values; with two loop variables it pairs each identity with its
+record. There is no form that enumerates an index's distinct leading values;
+deriving them means streaming the identities and deduplicating the leading key in
+code.
+
 Use two loop variables when code needs each address and value together:
 
 ```mw
@@ -266,10 +274,11 @@ innermost loop. To exit nested loops, extract the loop into a function and
 
 ```mw
 fn findWanted(): Id(^books)
-    for shelf in ^books.byShelf
-        for id in ^books.byShelf(shelf)
-            if wanted(id)
-                return id
+    for id in ^books
+        for pos in ^books(id).tags
+            if const tag = ^books(id).tags(pos)
+                if tag == "wanted"
+                    return id
     throw Error(code: "book.not_found", message: "No matching book.")
 
 const id = findWanted()
