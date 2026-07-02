@@ -90,7 +90,10 @@ Commands that report diagnostics, saved data, or test results take `--format`:
 
 Plain `run` text output is the program's own `print` stream on stdout. With
 `run --format json`, stdout becomes a result envelope that carries the captured
-program output separately from the rendered return value. `run --dry-run`
+program output separately from the rendered return value. Unlike the reporting
+commands above, `run` has no `jsonl` form: its structured report is one result
+envelope rather than a stream of records, so `run` accepts only
+`--format text|json` and rejects `jsonl`. `run --dry-run`
 accepts `--format text|json` for its tooling report, written to stderr.
 `run --trace` is text-only and does not accept an explicit `--format` unless it
 is combined with `--dry-run`.

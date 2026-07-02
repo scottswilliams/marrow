@@ -29,6 +29,34 @@ fn runs_the_default_entry_and_prints_its_output() {
 }
 
 #[test]
+fn run_rejects_jsonl_because_its_report_is_one_envelope_not_a_stream() {
+    // `run`'s structured report is a single result envelope, so it is the one reporting command with
+    // no line-oriented form. The rejection names the accepted formats rather than silently degrading.
+    let root = temp_project("run-rejects-jsonl", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"hi\")\n",
+        );
+    });
+    let output = marrow_sub("run", &["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert_eq!(
+        stderr.trim(),
+        "unknown format: jsonl (expected text or json)",
+        "{stderr}"
+    );
+}
+
+#[test]
 fn failing_run_keeps_program_output_written_before_the_fault() {
     let root = temp_project("run-fault-output", |root| {
         write(
