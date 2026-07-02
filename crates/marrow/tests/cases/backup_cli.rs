@@ -1068,8 +1068,8 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
         "{message}"
     );
     // The current-project reference is the committed marrow.lock, whose epoch high-water the
-    // advance moved to N+1. The lock records identity-and-shape fingerprints rather than the
-    // store catalog's digest, so the project side reports its epoch and no catalog digest.
+    // advance moved to N+1. This scenario empties the store before restoring, so there is no
+    // store snapshot to read a project-side digest from and the report shows none.
     assert!(
         message.contains(&format!("project catalog epoch {}", advanced_catalog.epoch)),
         "{message}"
@@ -1083,6 +1083,55 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
     assert_eq!(
         committed_lock.epoch_high_water, advanced_catalog.epoch,
         "a refused restore must not rewrite the advanced committed lock"
+    );
+}
+
+#[test]
+fn a_refused_restore_reports_the_target_store_recorded_catalog_digest() {
+    // The committed marrow.lock carries no digest field, but the target store records the
+    // accepted catalog digest. A catalog-mismatch refusal against a populated target must show
+    // that real project-side digest, read from the store snapshot, rather than "none".
+    let (root, data_dir) = evolution_default_project("backup-mismatch-store-digest");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("epoch-n-digest.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_catalog = read_store_catalog(&data_dir).expect("backup catalog");
+
+    add_pages_default_evolution(&root);
+    let apply = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    let advanced_catalog = read_store_catalog(&data_dir).expect("advanced catalog");
+
+    // Reset the source to the epoch-N shape so restore binds against the backup catalog, but
+    // leave the epoch-N+1 store in place so the mismatch fires against a populated target that
+    // still records its accepted catalog digest.
+    write(&root, "src/shelf.mw", EVOLUTION_DEFAULT_BASELINE_SOURCE);
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+
+    assert_eq!(restore.status.code(), Some(1), "restore: {restore:?}");
+    assert_eq!(text_code(&restore), "restore.catalog_mismatch");
+    let message = text_message(&restore);
+    assert!(
+        message.contains(&format!("backup catalog digest {}", backup_catalog.digest)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("project catalog epoch {}", advanced_catalog.epoch)),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "project catalog digest {}",
+            advanced_catalog.digest
+        )),
+        "the mismatch report shows the store's recorded digest: {message}"
+    );
+    assert!(
+        !message.contains("project catalog digest none"),
+        "{message}"
     );
 }
 

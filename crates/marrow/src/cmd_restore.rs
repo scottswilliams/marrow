@@ -49,7 +49,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    if let Err(code) = reject_current_catalog_mismatch(&dir, &prologue, format) {
+    if let Err(code) = reject_current_catalog_mismatch(&dir, &config, &prologue, format) {
         return code;
     }
 
@@ -149,7 +149,7 @@ pub(crate) fn mount_backup_for_evolution_preview(
 ) -> Result<(marrow_check::CheckedProgram, TreeStore), ExitCode> {
     let (mut reader, prologue) = read_backup_artifact(input, format)?;
     let program = check_project_with_backup_catalog(dir, config, &prologue, format)?;
-    reject_current_catalog_mismatch(dir, &prologue, format)?;
+    reject_current_catalog_mismatch(dir, config, &prologue, format)?;
     let mut nondeterminism = SystemNondeterminism::new();
     let store = crate::backup::mount_backup_for_evolution_preview(
         &program,
@@ -325,6 +325,7 @@ fn report_backup_error(error: BackupError, format: CheckFormat) -> ExitCode {
 /// fingerprint projection so a shape change at the same epoch is caught, not just an epoch bump.
 fn reject_current_catalog_mismatch(
     dir: &str,
+    config: &marrow_project::ProjectConfig,
     prologue: &BackupPrologue,
     format: CheckFormat,
 ) -> Result<(), ExitCode> {
@@ -336,13 +337,34 @@ fn reject_current_catalog_mismatch(
     if project_lock == backup_lock {
         return Ok(());
     }
+    // The committed lock carries the accepted epoch but no digest, so the mismatch report
+    // reads the project-side digest from the target store's recorded catalog snapshot; the
+    // refusal itself stays lock-based, never consulting the store the restore overwrites.
+    let project_digest = current_store_catalog_digest(dir, config);
     Err(report_backup_error(
         BackupError::catalog_mismatch(
             CatalogFingerprintRef::from_catalog(prologue.catalog()),
-            CatalogFingerprintRef::from_parts(Some(lock.epoch_high_water), None),
+            CatalogFingerprintRef::from_parts(
+                Some(lock.epoch_high_water),
+                project_digest.as_deref(),
+            ),
         ),
         format,
     ))
+}
+
+/// The catalog digest the target store recorded, read solely to fill the project side of a
+/// catalog-mismatch report. A store that is in-memory, absent, unopenable, or carries no
+/// accepted snapshot has no project-side digest to show, so the report leaves it empty.
+fn current_store_catalog_digest(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Option<String> {
+    let path = marrow_check::native_store_path(std::path::Path::new(dir), config)
+        .ok()
+        .flatten()?;
+    let store = TreeStore::open_read_only(&path).ok()?;
+    store.catalog_snapshot_digest().ok().flatten()
 }
 
 /// The committed-lock reference a restore compares against: the accepted epoch high-water and the
