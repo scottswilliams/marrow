@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener};
@@ -382,7 +383,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         Ok(shutdown) => shutdown,
         Err(error) => {
             report_simple_error(
-                "io.signal",
+                Code::IoSignal.as_str(),
                 &format!("failed to install surface shutdown handler: {error}"),
                 CheckFormat::Text,
             );
@@ -447,7 +448,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         Ok(listener) => listener,
         Err(error) => {
             report_simple_error(
-                "io.listen",
+                Code::IoListen.as_str(),
                 &format!("failed to bind surface server at {addr}: {error}"),
                 CheckFormat::Text,
             );
@@ -458,7 +459,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         Ok(addr) => addr,
         Err(error) => {
             report_simple_error(
-                "io.listen",
+                Code::IoListen.as_str(),
                 &format!("failed to read surface server address: {error}"),
                 CheckFormat::Text,
             );
@@ -468,7 +469,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     println!("serve listening on http://{bound_addr}");
     if let Err(error) = std::io::stdout().flush() {
         report_simple_error(
-            "io.write",
+            Code::IoWrite.as_str(),
             &format!("failed to write surface server status: {error}"),
             CheckFormat::Text,
         );
@@ -549,7 +550,7 @@ fn run_server(
         eprintln!(
             "{}",
             server_code_message(
-                "io.listen",
+                Code::IoListen.as_str(),
                 format!("failed to set surface accept poll: {error}")
             )
         );
@@ -592,7 +593,7 @@ fn run_server(
                 eprintln!(
                     "{}",
                     server_code_message(
-                        "io.listen",
+                        Code::IoListen.as_str(),
                         format!("failed to accept surface connection: {error}")
                     )
                 );

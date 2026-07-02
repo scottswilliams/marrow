@@ -5,6 +5,7 @@
 //! They do not need type or effect facts, so they run directly on each
 //! declaration.
 
+use marrow_codes::Code;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -20,16 +21,16 @@ use crate::walk::for_each_child_expr;
 use crate::{CHECK_COMMIT_AMPLIFICATION, CheckDiagnostic};
 
 /// A `break`/`continue` is outside any loop, so it could never resolve at runtime.
-pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
+pub const CHECK_LOOP_CONTROL_FLOW: &str = Code::CheckLoopControlFlow.as_str();
 /// A `catch` annotation must be `Error`.
-pub const CHECK_CATCH_TYPE: &str = "check.catch_type";
+pub const CHECK_CATCH_TYPE: &str = Code::CheckCatchType.as_str();
 /// An assignment target is not a writable place.
-pub const CHECK_INVALID_ASSIGN_TARGET: &str = "check.invalid_assign_target";
+pub const CHECK_INVALID_ASSIGN_TARGET: &str = Code::CheckInvalidAssignTarget.as_str();
 /// A `const` value is not a constant expression.
-pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
+pub const CHECK_NON_CONSTANT_CONST: &str = Code::CheckNonConstantConst.as_str();
 /// A loop over a saved layer mutates that same layer. Collect the keys into a
 /// local sequence first when a rewrite must change the traversed layer.
-pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = "check.loop_mutates_traversed_layer";
+pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = Code::CheckLoopMutatesTraversedLayer.as_str();
 
 /// Apply every structural statement rule to one function body. `module_consts` names
 /// the module-level constants in scope, which are immutable like a local `const`

@@ -4,6 +4,7 @@ use marrow_check::{
     CheckedFacts, CheckedSavedMember, CheckedSavedPlace, ResourceMemberId, StoreLeafKind,
     is_single_int_sequence,
 };
+use marrow_codes::Code;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::ValueError;
@@ -83,19 +84,19 @@ pub struct WriteError {
     pub message: String,
 }
 
-pub const WRITE_REQUIRED_ABSENT: &str = "write.required_absent";
-pub const WRITE_TYPE_MISMATCH: &str = "write.type_mismatch";
-pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
-pub const WRITE_STORE: &str = "write.store";
-pub const WRITE_INVALID_DATA: &str = "write.invalid_data";
-pub const WRITE_UNKNOWN_FIELD: &str = "write.unknown_field";
-pub const WRITE_UNIQUE_CONFLICT: &str = "write.unique_conflict";
-pub const WRITE_UNKNOWN_LAYER: &str = "write.unknown_layer";
-pub const WRITE_NOT_A_LEAF_LAYER: &str = "write.not_a_leaf_layer";
-pub const WRITE_NOT_A_GROUP_LAYER: &str = "write.not_a_group_layer";
-pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
-pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
-pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
+pub const WRITE_REQUIRED_ABSENT: &str = Code::WriteRequiredAbsent.as_str();
+pub const WRITE_TYPE_MISMATCH: &str = Code::WriteTypeMismatch.as_str();
+pub const WRITE_IDENTITY_MISMATCH: &str = Code::WriteIdentityMismatch.as_str();
+pub const WRITE_STORE: &str = Code::WriteStore.as_str();
+pub const WRITE_INVALID_DATA: &str = Code::WriteInvalidData.as_str();
+pub const WRITE_UNKNOWN_FIELD: &str = Code::WriteUnknownField.as_str();
+pub const WRITE_UNIQUE_CONFLICT: &str = Code::WriteUniqueConflict.as_str();
+pub const WRITE_UNKNOWN_LAYER: &str = Code::WriteUnknownLayer.as_str();
+pub const WRITE_NOT_A_LEAF_LAYER: &str = Code::WriteNotALeafLayer.as_str();
+pub const WRITE_NOT_A_GROUP_LAYER: &str = Code::WriteNotAGroupLayer.as_str();
+pub const WRITE_LAYER_KEY_ARITY: &str = Code::WriteLayerKeyArity.as_str();
+pub const WRITE_ID_OVERFLOW: &str = Code::WriteIdOverflow.as_str();
+pub const WRITE_NEXT_ID_UNSUPPORTED: &str = Code::WriteNextIdUnsupported.as_str();
 
 /// Why a required field is still unset, which decides the actionable remedy.
 /// A bare single-field write outside a transaction is rejected for the

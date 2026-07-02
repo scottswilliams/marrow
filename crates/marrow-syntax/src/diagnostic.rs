@@ -223,22 +223,7 @@ pub trait Diagnose {
         None
     }
     fn kind(&self) -> &str {
-        kind_for_code(self.code())
-    }
-}
-
-/// The broad `kind` category for a dotted error code. The first segment is not
-/// always the kind name (`run.*` is `runtime`), so the mapping is explicit.
-pub fn kind_for_code(code: &str) -> &'static str {
-    match code.split('.').next().unwrap_or("") {
-        "parse" => "parse",
-        "check" | "schema" => "check",
-        "run" | "value" => "runtime",
-        "store" => "storage",
-        "surface" => "surface",
-        "io" => "io",
-        // Configuration and project-discovery failures are tooling errors.
-        _ => "tooling",
+        marrow_codes::kind_for_code(self.code())
     }
 }
 
@@ -248,24 +233,4 @@ pub struct SourceSpan {
     pub end_byte: usize,
     pub line: u32,
     pub column: u32,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::kind_for_code;
-
-    #[test]
-    fn value_codes_are_runtime_diagnostics() {
-        assert_eq!(kind_for_code("value.range"), "runtime");
-    }
-
-    #[test]
-    fn surface_codes_are_surface_diagnostics() {
-        assert_eq!(kind_for_code("surface.request"), "surface");
-    }
-
-    #[test]
-    fn unknown_code_families_are_tooling_diagnostics() {
-        assert_eq!(kind_for_code("unknown.family"), "tooling");
-    }
 }

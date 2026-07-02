@@ -31,7 +31,7 @@ pub use ast::{
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
     ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Severity, SourceSpan,
-    UnsupportedSyntax, kind_for_code,
+    UnsupportedSyntax,
 };
 pub use format::{
     durable_shape_rendering, format_declaration, format_expression, format_preserves_comments,
@@ -42,6 +42,8 @@ pub use literal::{
     BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
     decode_string_escapes, decode_string_literal, encode_string_literal, push_string_escapes,
 };
+use marrow_codes::Code;
+pub use marrow_codes::kind_for_code;
 pub use token::{
     Keyword, LexedSource, Token, TokenKind, duration_unit_seconds, is_expression_callable_keyword,
     is_expression_path_segment_keyword,
@@ -49,7 +51,7 @@ pub use token::{
 
 use parse_decl::DeclParser;
 
-pub const PARSE_SYNTAX: &str = "parse.syntax";
+pub const PARSE_SYNTAX: &str = Code::ParseSyntax.as_str();
 
 /// The maximum nesting depth the front end will structure before it stops and
 /// reports [`NESTING_LIMIT`]. The lexer enforces it for layout blocks (`if`,
@@ -65,7 +67,7 @@ pub const NESTING_DEPTH_LIMIT: usize = 256;
 /// Reported when source nests deeper than [`NESTING_DEPTH_LIMIT`]. It renders as
 /// a `check`-kind diagnostic so it surfaces alongside the type-check findings the
 /// operator already reads, even though the front end raises it.
-pub const NESTING_LIMIT: &str = "check.nesting_limit";
+pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 
 pub fn is_reserved_word(text: &str) -> bool {
     token::keyword(text).is_some()

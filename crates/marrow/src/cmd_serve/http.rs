@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
@@ -36,7 +37,7 @@ pub(super) fn serve_connection(
         eprintln!(
             "{}",
             server_code_message(
-                "io.read",
+                Code::IoRead.as_str(),
                 format!("failed to set surface connection blocking: {error}")
             )
         );
@@ -46,7 +47,7 @@ pub(super) fn serve_connection(
         eprintln!(
             "{}",
             server_code_message(
-                "io.read",
+                Code::IoRead.as_str(),
                 format!("failed to set surface read timeout: {error}")
             )
         );
@@ -59,7 +60,7 @@ pub(super) fn serve_connection(
         eprintln!(
             "{}",
             server_code_message(
-                "io.write",
+                Code::IoWrite.as_str(),
                 format!("failed to set surface write timeout: {error}")
             )
         );
@@ -85,7 +86,7 @@ pub(super) fn serve_connection(
             eprintln!(
                 "{}",
                 server_code_message(
-                    "io.write",
+                    Code::IoWrite.as_str(),
                     format!("failed to write surface response: {error}")
                 )
             );

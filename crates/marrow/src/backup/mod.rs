@@ -39,6 +39,7 @@ pub(crate) use restore::{
 };
 
 use marrow_check::CheckedProgram;
+use marrow_codes::Code;
 use marrow_run::Nondeterminism;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid, TreeStore};
@@ -480,19 +481,19 @@ impl BackupError {
     /// The stable dotted code a tool reports for this failure.
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            Self::Io(_) => "io.write",
+            Self::Io(_) => Code::IoWrite.as_str(),
             Self::Store(error) => error.code(),
-            Self::CatalogSerialization(_) => "backup.catalog_serialization",
-            Self::ManifestSerialization(_) => "backup.manifest_serialization",
-            Self::CellFrameTooLarge => "backup.cell_too_large",
-            Self::FormatVersion { .. } => "restore.format_version",
-            Self::CorruptChunk { .. } => "restore.corrupt_chunk",
-            Self::NotEmpty(_) => "restore.not_empty",
-            Self::StoreUidMissing => "backup.store_uid_missing",
-            Self::EngineRecompileRequired(_) => "restore.engine_recompile_required",
-            Self::SourceMismatch(_) => "restore.source_mismatch",
-            Self::CatalogMismatch(_) => "restore.catalog_mismatch",
-            Self::DataInvalid(_) => "restore.data_invalid",
+            Self::CatalogSerialization(_) => Code::BackupCatalogSerialization.as_str(),
+            Self::ManifestSerialization(_) => Code::BackupManifestSerialization.as_str(),
+            Self::CellFrameTooLarge => Code::BackupCellTooLarge.as_str(),
+            Self::FormatVersion { .. } => Code::RestoreFormatVersion.as_str(),
+            Self::CorruptChunk { .. } => Code::RestoreCorruptChunk.as_str(),
+            Self::NotEmpty(_) => Code::RestoreNotEmpty.as_str(),
+            Self::StoreUidMissing => Code::BackupStoreUidMissing.as_str(),
+            Self::EngineRecompileRequired(_) => Code::RestoreEngineRecompileRequired.as_str(),
+            Self::SourceMismatch(_) => Code::RestoreSourceMismatch.as_str(),
+            Self::CatalogMismatch(_) => Code::RestoreCatalogMismatch.as_str(),
+            Self::DataInvalid(_) => Code::RestoreDataInvalid.as_str(),
         }
     }
 }

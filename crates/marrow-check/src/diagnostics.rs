@@ -2,6 +2,7 @@
 //! payloads that travel beside a rendered message, and the [`CheckDiagnostic`] /
 //! [`CheckReport`] result types.
 
+use marrow_codes::Code;
 use std::path::{Path, PathBuf};
 
 use marrow_syntax::{Severity, SourceSpan};
@@ -11,133 +12,133 @@ use crate::program::MarrowType;
 use crate::{CatalogEntryKind, CatalogLifecycle};
 
 /// A library file declares a module name that does not match its path.
-pub const CHECK_MODULE_PATH: &str = "check.module_path";
+pub const CHECK_MODULE_PATH: &str = Code::CheckModulePath.as_str();
 /// The project's `run.defaultEntry` does not name a runnable zero-argument entry:
 /// it is missing, private, ambiguous, or declares parameters. A default entry runs
 /// with no arguments, so any of these can only fail at run time; the check rejects
 /// them up front.
-pub const CHECK_DEFAULT_ENTRY: &str = "check.default_entry";
+pub const CHECK_DEFAULT_ENTRY: &str = Code::CheckDefaultEntry.as_str();
 /// Two library files declare the same module name.
-pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
+pub const CHECK_DUPLICATE_MODULE: &str = Code::CheckDuplicateModule.as_str();
 /// A project holds more than one module-less file. A project may have at most one
 /// single-file script (its entrypoint); every other file must declare a `module`.
-pub const CHECK_MULTIPLE_SCRIPTS: &str = "check.multiple_scripts";
+pub const CHECK_MULTIPLE_SCRIPTS: &str = Code::CheckMultipleScripts.as_str();
 /// A name is declared or imported more than once within a single file.
-pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
+pub const CHECK_DUPLICATE_DECLARATION: &str = Code::CheckDuplicateDeclaration.as_str();
 /// A module-level declaration reuses a builtin name. Distinct from a
 /// redeclaration: a single declaration that shadows a builtin is rejected on
 /// its own, not because the name appears twice.
-pub const CHECK_BUILTIN_COLLISION: &str = "check.builtin_collision";
+pub const CHECK_BUILTIN_COLLISION: &str = Code::CheckBuiltinCollision.as_str();
 /// A surface declaration name collides with a module-level name, a collection
 /// alias collides with another alias or generated operation, or a payload list
 /// repeats a name.
-pub const CHECK_SURFACE_COLLISION: &str = "check.surface_collision";
+pub const CHECK_SURFACE_COLLISION: &str = Code::CheckSurfaceCollision.as_str();
 /// A surface's backing store or collection target does not resolve to the
 /// declared store/index shape the surface contract admits.
-pub const CHECK_SURFACE_TARGET: &str = "check.surface_target";
+pub const CHECK_SURFACE_TARGET: &str = Code::CheckSurfaceTarget.as_str();
 /// A surface payload name does not resolve to an admitted top-level field on the
 /// backing store resource.
-pub const CHECK_SURFACE_FIELD: &str = "check.surface_field";
+pub const CHECK_SURFACE_FIELD: &str = Code::CheckSurfaceField.as_str();
 /// A surface action does not resolve to a public declared function.
-pub const CHECK_SURFACE_ACTION: &str = "check.surface_action";
+pub const CHECK_SURFACE_ACTION: &str = Code::CheckSurfaceAction.as_str();
 /// A surface computed read does not resolve to an admitted public read function.
-pub const CHECK_SURFACE_COMPUTED_READ: &str = "check.surface_computed_read";
+pub const CHECK_SURFACE_COMPUTED_READ: &str = Code::CheckSurfaceComputedRead.as_str();
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.
-pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
+pub const CHECK_UNRESOLVED_IMPORT: &str = Code::CheckUnresolvedImport.as_str();
 /// A type annotation names a type the checker does not recognize.
-pub const CHECK_UNKNOWN_TYPE: &str = "check.unknown_type";
+pub const CHECK_UNKNOWN_TYPE: &str = Code::CheckUnknownType.as_str();
 /// A typed keyed-entry layer recursively names its own resource shape.
-pub const CHECK_RECURSIVE_KEYED_ENTRY: &str = "check.recursive_keyed_entry";
+pub const CHECK_RECURSIVE_KEYED_ENTRY: &str = Code::CheckRecursiveKeyedEntry.as_str();
 /// A `return` carries a value in a function with no return type, or omits one in a
 /// value-returning function.
-pub const CHECK_RETURN_VALUE: &str = "check.return_value";
+pub const CHECK_RETURN_VALUE: &str = Code::CheckReturnValue.as_str();
 /// A value-returning function can reach the end of its body without returning.
-pub const CHECK_MISSING_RETURN: &str = "check.missing_return";
+pub const CHECK_MISSING_RETURN: &str = Code::CheckMissingReturn.as_str();
 /// An operator is applied to operands whose types it does not accept.
-pub const CHECK_OPERATOR_TYPE: &str = "check.operator_type";
+pub const CHECK_OPERATOR_TYPE: &str = Code::CheckOperatorType.as_str();
 /// A condition (`if`/`while`) is not a `bool`.
-pub const CHECK_CONDITION_TYPE: &str = "check.condition_type";
+pub const CHECK_CONDITION_TYPE: &str = Code::CheckConditionType.as_str();
 /// A call passes the wrong number of arguments, or names a parameter that does
 /// not exist, for the function it resolves to.
-pub const CHECK_CALL_ARGUMENT: &str = "check.call_argument";
+pub const CHECK_CALL_ARGUMENT: &str = Code::CheckCallArgument.as_str();
 /// A `return` value's type does not match the function's declared return type.
-pub const CHECK_RETURN_TYPE: &str = "check.return_type";
+pub const CHECK_RETURN_TYPE: &str = Code::CheckReturnType.as_str();
 /// A value's type does not match the binding or place it is stored into (a typed
 /// `const`/`var` initializer, or an assignment target).
-pub const CHECK_ASSIGNMENT_TYPE: &str = "check.assignment_type";
+pub const CHECK_ASSIGNMENT_TYPE: &str = Code::CheckAssignmentType.as_str();
 /// A whole saved-record replacement can clear keyed child layers that a
 /// whole-resource or keyed-entry read does not materialize.
-pub const CHECK_LOSSY_ROUND_TRIP: &str = "check.lossy_round_trip";
+pub const CHECK_LOSSY_ROUND_TRIP: &str = Code::CheckLossyRoundTrip.as_str();
 /// A straight-line local resource value is missing a required field when written
 /// as a whole saved root.
-pub const CHECK_REQUIRED_ABSENT: &str = "check.required_absent";
+pub const CHECK_REQUIRED_ABSENT: &str = Code::CheckRequiredAbsent.as_str();
 /// A `var` of a type with no buildable initial form — an enum or a store identity —
 /// is declared without an initializer. A scalar var defaults, a resource var builds
 /// field by field, and a sequence or keyed-tree var starts empty, but an enum and an
 /// identity have no default member and no incremental construction, so they must be
 /// given an initial value at the declaration.
-pub const CHECK_UNINITIALIZED_VAR: &str = "check.uninitialized_var";
+pub const CHECK_UNINITIALIZED_VAR: &str = Code::CheckUninitializedVar.as_str();
 /// A loop condition or body contains a saved-data write outside an explicit transaction.
-pub const CHECK_COMMIT_AMPLIFICATION: &str = "check.commit_amplification";
+pub const CHECK_COMMIT_AMPLIFICATION: &str = Code::CheckCommitAmplification.as_str();
 /// A value whose type cannot be resolved is stored into a concrete typed place.
 /// Under strict typing, dynamic data must be converted before typed use.
-pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
+pub const CHECK_UNTYPED_VALUE: &str = Code::CheckUntypedValue.as_str();
 /// A saved key or identity argument's type does not match the key it addresses: a
 /// scalar of the wrong type in a keyed lookup, or an identity of a foreign
 /// resource spliced into a keyspace. Saved keys are nominally typed, so a
 /// key-compatible foreign identity is still rejected. The static counterpart of a
 /// key-type fault at lowering.
-pub const CHECK_KEY_TYPE: &str = "check.key_type";
+pub const CHECK_KEY_TYPE: &str = Code::CheckKeyType.as_str();
 /// A write to a sequence position the spec proves addresses no node: a
 /// statically-known zero or negative position in a 1-based single int-keyed layer.
 /// The static counterpart of the absent fault a dynamic non-positive position
 /// raises at lowering.
-pub const CHECK_SEQUENCE_POSITION: &str = "check.sequence_position";
+pub const CHECK_SEQUENCE_POSITION: &str = Code::CheckSequencePosition.as_str();
 /// A bare name used as a value does not resolve to any binding in scope (a
 /// parameter, local, loop or catch binding, or module constant). Under strict
 /// typing every value name must be defined.
-pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
+pub const CHECK_UNRESOLVED_NAME: &str = Code::CheckUnresolvedName.as_str();
 /// A dotted field read names no member on a resolved resource-shaped value.
-pub const CHECK_UNKNOWN_FIELD: &str = "check.unknown_field";
+pub const CHECK_UNKNOWN_FIELD: &str = Code::CheckUnknownField.as_str();
 /// A `^root` names no declared store. A saved root is the only way a saved address
 /// exists, so an undeclared or misspelled root is a static resolution error at its
 /// span, not a silently dropped function body the runtime later refuses.
-pub const CHECK_UNKNOWN_ROOT: &str = "check.unknown_root";
+pub const CHECK_UNKNOWN_ROOT: &str = Code::CheckUnknownRoot.as_str();
 /// A field read names a keyed child layer on a materialized record value. A whole
 /// read materializes scalars and unkeyed groups but not keyed child layers, which
 /// are reached only through their saved addresses (`^books(id).versions(v)`). The
 /// field is declared, so this is distinct from [`CHECK_UNKNOWN_FIELD`].
-pub const CHECK_LAYER_NOT_VALUE: &str = "check.layer_not_value";
+pub const CHECK_LAYER_NOT_VALUE: &str = Code::CheckLayerNotValue.as_str();
 /// A call names a function that is neither a builtin nor a declared function. Only
 /// reported for calls in files that are part of a fully parsed project — a library
 /// module or a module-less script — so a module excluded by a parse error never
 /// false-positives.
-pub const CHECK_UNRESOLVED_CALL: &str = "check.unresolved_call";
+pub const CHECK_UNRESOLVED_CALL: &str = Code::CheckUnresolvedCall.as_str();
 /// A qualified call (`module::fn`) names a function that exists but is not `pub`,
 /// so it is not callable from another module. Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: the name resolves, the visibility does not.
-pub const CHECK_PRIVATE_FUNCTION: &str = "check.private_function";
+pub const CHECK_PRIVATE_FUNCTION: &str = Code::CheckPrivateFunction.as_str();
 /// A cross-module enum reference names an enum that exists but is not `pub`.
 /// Distinct from [`CHECK_UNKNOWN_TYPE`] and [`CHECK_UNKNOWN_ENUM_MEMBER`]: the
 /// enum resolves, the visibility does not.
-pub const CHECK_PRIVATE_ENUM: &str = "check.private_enum";
+pub const CHECK_PRIVATE_ENUM: &str = Code::CheckPrivateEnum.as_str();
 /// A `pub fn` names a non-`pub` enum from its own module in a parameter or return
 /// type. The enum's values escape through a public signature even though other
 /// modules cannot name the type. A warning, not an error: the program is sound,
 /// but the API leaks an unnameable type. Distinct from [`CHECK_PRIVATE_ENUM`],
 /// which rejects a foreign reference to a private enum.
-pub const CHECK_EXPOSED_PRIVATE_ENUM: &str = "check.exposed_private_enum";
+pub const CHECK_EXPOSED_PRIVATE_ENUM: &str = Code::CheckExposedPrivateEnum.as_str();
 /// A bare call names a `pub` function reachable in two or more modules, so the
 /// bare name cannot pick one — it must be qualified (`module::fn`). Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: candidates exist, the bare spelling is ambiguous.
-pub const CHECK_AMBIGUOUS_CALL: &str = "check.ambiguous_call";
+pub const CHECK_AMBIGUOUS_CALL: &str = Code::CheckAmbiguousCall.as_str();
 /// `nextId(^root)` names a root with no default integer allocation policy: a
 /// composite identity, a single non-integer identity key, or a keyless singleton.
 /// The default per-root policy is only available for a store with one `int`
 /// identity key. The runtime backstops this with `write.next_id_unsupported`; the
 /// checker catches it before a run.
-pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
+pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = Code::CheckNextIdRequiresSingleInt.as_str();
 /// Two `nextId(^root)` results for the same store are both written as record keys
 /// with no intervening write to that store between the two allocations. `nextId`
 /// does not advance until a record is written, so both allocations return the same
@@ -145,27 +146,27 @@ pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_sing
 /// not an error: the program is well-typed, but the duplicate-key write is almost
 /// never intended. Interleaving the writes (`allocate, write, allocate, write`)
 /// makes each id distinct.
-pub const CHECK_NEXT_ID_COLLISION: &str = "check.next_id_collision";
+pub const CHECK_NEXT_ID_COLLISION: &str = Code::CheckNextIdCollision.as_str();
 /// `next`/`prev` is applied to a shape it cannot navigate: a composite
 /// multi-key identity record (its identity spans several key levels, not the one
 /// `next`/`prev` step over) or an index branch (it inspects identities, with no
 /// single key position to seek). The runtime would reject these with an
 /// uncatchable `run.unsupported` fault; the checker catches it before a run.
-pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
+pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = Code::CheckNeighborUnsupported.as_str();
 /// `key(id)` is applied to a composite multi-key identity, which has no single
 /// scalar key to project. A composite identity is reconstructed as a whole value,
 /// never exposed as a tuple of raw key components, so the misuse is rejected
 /// rather than leaking a partial key.
-pub const CHECK_KEY_REQUIRES_SINGLE_KEY: &str = "check.key_requires_single_key";
+pub const CHECK_KEY_REQUIRES_SINGLE_KEY: &str = Code::CheckKeyRequiresSingleKey.as_str();
 /// `values`/`entries` is applied to an address-only collection such as a
 /// non-unique index branch. These shapes are valid for key traversal, but they do
 /// not have materialized values distinct from their keys.
-pub const CHECK_COLLECTION_UNSUPPORTED: &str = "check.collection_unsupported";
+pub const CHECK_COLLECTION_UNSUPPORTED: &str = Code::CheckCollectionUnsupported.as_str();
 /// A parsed construct is outside the accepted v0.1 source surface.
-pub const CHECK_REJECTED_SURFACE: &str = "check.rejected_surface";
+pub const CHECK_REJECTED_SURFACE: &str = Code::CheckRejectedSurface.as_str();
 /// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
 /// identity binding for a source declaration.
-pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
+pub const CHECK_CATALOG_INTENT: &str = Code::CheckCatalogIntent.as_str();
 /// A committed `marrow.lock` cannot be adopted as first-run durable identity: a
 /// source declaration would adopt a stable id the lock's append-only ledger has
 /// tombstoned. Adoption fails closed — the binding records no adopting proposal — so
@@ -173,113 +174,115 @@ pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
 /// surface of the lock-corruption contract; the wire/codec constant
 /// [`marrow_catalog::LOCK_CORRUPT`] names the same condition at the projection
 /// boundary, coordinated by name across the two layers rather than shared.
-pub const CHECK_LOCK_CORRUPT: &str = "check.lock_corrupt";
+pub const CHECK_LOCK_CORRUPT: &str = Code::CheckLockCorrupt.as_str();
 /// The program declares a durable surface — a store, enum, or resource that needs committed
 /// catalog identity — but the configured store backend has no durable identity. The runtime would
 /// reject the program as `run.durable_store_required`; the checker rejects it earlier because the
 /// backend is statically known.
-pub const CHECK_DURABLE_STORE_REQUIRED: &str = "check.durable_store_required";
+pub const CHECK_DURABLE_STORE_REQUIRED: &str = Code::CheckDurableStoreRequired.as_str();
 /// An `evolve` step names a target that does not resolve to a catalog-addressable
 /// entity: a resource, a resource member, a saved root, a store index, an enum, or
 /// an enum member that the current source declares (or, for a rename's source side,
 /// an entry the accepted catalog records).
-pub const CHECK_EVOLVE_TARGET: &str = "check.evolve_target";
+pub const CHECK_EVOLVE_TARGET: &str = Code::CheckEvolveTarget.as_str();
 /// An `evolve default` value does not match its target member's type, or an
 /// `evolve transform` body does not type-check.
-pub const CHECK_EVOLVE_TYPE: &str = "check.evolve_type";
+pub const CHECK_EVOLVE_TYPE: &str = Code::CheckEvolveType.as_str();
 /// An `evolve transform` violates the transform contract: a non-top-level target, an
 /// impure body (a saved read or write, host effect, transaction, or user-function
 /// call), or a body that reads its own target or any member another `default` or
 /// `transform` rewrites in the same block. A transform must compute a top-level member
 /// as a pure function of `old`'s other, decodable members.
-pub const CHECK_EVOLVE_TRANSFORM: &str = "check.evolve_transform";
+pub const CHECK_EVOLVE_TRANSFORM: &str = Code::CheckEvolveTransform.as_str();
 /// A `T?` value is used where a `T` is required without one of the resolution
 /// forms (`?? default`, `if const`, `exists`, or `?.`). Optionality lives in the
 /// value's type, so this fires whenever an optional reaches a non-optional slot.
-pub const CHECK_UNRESOLVED_OPTIONAL: &str = "check.unresolved_optional";
+pub const CHECK_UNRESOLVED_OPTIONAL: &str = Code::CheckUnresolvedOptional.as_str();
 /// A `const`/`var` whose sole initializer is the bare `absent` (the empty optional)
 /// carries no element type to infer, so the binding must name its optional type
 /// (`var v: string? = absent`). `absent` is a concrete empty optional, not an
 /// `unknown` deferral, so this is rejected at the binding site rather than silently
 /// bound at a type with no element.
-pub const CHECK_UNANNOTATED_ABSENT: &str = "check.unannotated_absent";
+pub const CHECK_UNANNOTATED_ABSENT: &str = Code::CheckUnannotatedAbsent.as_str();
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
-pub const CHECK_LITERAL_RANGE: &str = "check.literal_range";
+pub const CHECK_LITERAL_RANGE: &str = Code::CheckLiteralRange.as_str();
 /// A string literal or interpolation text segment carries a backslash escape
 /// outside the recognized set (`\\`, `\"`, `\n`, `\r`, `\t`), or a trailing lone
 /// backslash. The escape text is static, so the checker rejects it before the
 /// runtime would.
-pub const CHECK_STRING_ESCAPE: &str = "check.string_escape";
+pub const CHECK_STRING_ESCAPE: &str = Code::CheckStringEscape.as_str();
 /// A bytes literal carries a backslash escape outside the recognized set (`\\`,
 /// `\"`, `\n`, `\r`, `\t`, `\xNN`), a trailing lone backslash, or a malformed or
 /// truncated `\xNN`. The escape text is static, so the checker rejects it before
 /// the runtime would.
-pub const CHECK_BYTES_ESCAPE: &str = "check.bytes_escape";
+pub const CHECK_BYTES_ESCAPE: &str = Code::CheckBytesEscape.as_str();
 /// A range-for header is malformed: its endpoints are not the same steppable type
 /// (int, date, instant), its `by` step does not match the endpoints (a number
 /// for int, a duration for date/instant), an instant range omits its required
 /// `by` step, the step is a zero or a literal wrong-direction step that would
 /// never run, or a step appears on a non-range iterable.
-pub const CHECK_RANGE: &str = "check.range";
+pub const CHECK_RANGE: &str = Code::CheckRange.as_str();
 /// A range expression is used as an ordinary value. Ranges only exist as `for`
 /// iterables.
-pub const CHECK_RANGE_VALUE: &str = "check.range_value";
+pub const CHECK_RANGE_VALUE: &str = Code::CheckRangeValue.as_str();
 /// A `throw` operand is known not to be an `Error` value.
-pub const CHECK_THROW_TYPE: &str = "check.throw_type";
+pub const CHECK_THROW_TYPE: &str = Code::CheckThrowType.as_str();
 /// A qualified name `Enum::member` names a known enum but not one of its members.
-pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
+pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = Code::CheckUnknownEnumMember.as_str();
 /// A bare `Enum::member` literal cannot pick a single enum member. Either the enum
 /// owner is exposed by several visible foreign modules, or the member exists under
 /// more than one parent in the enum tree (a blessed duplicate, e.g.
 /// `Cat::tiger::paw` and `Cat::lion::paw`). Qualifying the enum owner or member path
 /// disambiguates it.
-pub const CHECK_AMBIGUOUS_MEMBER: &str = "check.ambiguous_member";
+pub const CHECK_AMBIGUOUS_MEMBER: &str = Code::CheckAmbiguousMember.as_str();
 /// A `match` scrutinee is not an enum value. `match` dispatches on an enum's
 /// members, so it requires an enum-typed scrutinee.
-pub const CHECK_MATCH_REQUIRES_ENUM: &str = "check.match_requires_enum";
+pub const CHECK_MATCH_REQUIRES_ENUM: &str = Code::CheckMatchRequiresEnum.as_str();
 /// A `match` does not cover every member of its enum. A `match` over an enum is
 /// exhaustive over its selectable leaves: each needs an arm (a category arm covers
 /// its whole subtree), and there is no wildcard.
-pub const CHECK_NONEXHAUSTIVE_MATCH: &str = "check.nonexhaustive_match";
+pub const CHECK_NONEXHAUSTIVE_MATCH: &str = Code::CheckNonexhaustiveMatch.as_str();
 /// A `match` has two arms covering the same member — either a repeated arm or a
 /// leaf already covered by an enclosing category arm.
-pub const CHECK_DUPLICATE_MATCH_ARM: &str = "check.duplicate_match_arm";
+pub const CHECK_DUPLICATE_MATCH_ARM: &str = Code::CheckDuplicateMatchArm.as_str();
 /// A category enum member is named in value position. A category groups its
 /// descendants and is not selectable; only a concrete member under it can be a
 /// value.
-pub const CHECK_CATEGORY_NOT_SELECTABLE: &str = "check.category_not_selectable";
+pub const CHECK_CATEGORY_NOT_SELECTABLE: &str = Code::CheckCategoryNotSelectable.as_str();
 /// A `match` arm names a bare member that exists at more than one level of the
 /// enum tree. The arm must resolve to a single member.
-pub const CHECK_AMBIGUOUS_MATCH_ARM: &str = "check.ambiguous_match_arm";
+pub const CHECK_AMBIGUOUS_MATCH_ARM: &str = Code::CheckAmbiguousMatchArm.as_str();
 /// A `match` arm is qualified with the scrutinee enum's own name. Arms are member
 /// paths relative to the scrutinee enum, so the enum name is implicit and writing
 /// it as a prefix is redundant; the arm is the path with that prefix dropped.
-pub const CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM: &str = "check.scrutinee_qualified_match_arm";
+pub const CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM: &str =
+    Code::CheckScrutineeQualifiedMatchArm.as_str();
 /// The left operand of `is` is not an enum value. `is` tests enum-subtree
 /// membership, so it requires an enum-typed left operand.
-pub const CHECK_IS_REQUIRES_ENUM: &str = "check.is_requires_enum";
+pub const CHECK_IS_REQUIRES_ENUM: &str = Code::CheckIsRequiresEnum.as_str();
 /// The right operand of `is` is not a member of the left operand's enum. `is`
 /// tests membership within one enum, so both sides must name the same enum.
-pub const CHECK_IS_TYPE: &str = "check.is_type";
+pub const CHECK_IS_TYPE: &str = Code::CheckIsType.as_str();
 /// A discovered source file could not be read.
-pub const IO_READ: &str = "io.read";
+pub const IO_READ: &str = Code::IoRead.as_str();
 /// The checked read-only expression request was asked to evaluate in a module or
 /// program context that does not exist.
-pub const CHECK_READ_ONLY_EXPRESSION_CONTEXT: &str = "check.read_only_expression_context";
+pub const CHECK_READ_ONLY_EXPRESSION_CONTEXT: &str = Code::CheckReadOnlyExpressionContext.as_str();
 /// A checked read-only expression attempts to write or allocate saved data.
-pub const CHECK_READ_ONLY_EXPRESSION_WRITE: &str = "check.read_only_expression_write";
+pub const CHECK_READ_ONLY_EXPRESSION_WRITE: &str = Code::CheckReadOnlyExpressionWrite.as_str();
 /// A checked read-only expression calls a host-effecting operation.
-pub const CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT: &str = "check.read_only_expression_host_effect";
+pub const CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT: &str =
+    Code::CheckReadOnlyExpressionHostEffect.as_str();
 /// A checked read-only expression would traverse a saved collection without a
 /// declared index.
 pub const CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP: &str =
-    "check.read_only_expression_unindexed_lookup";
+    Code::CheckReadOnlyExpressionUnindexedLookup.as_str();
 /// Two stores in the project declare the same root. A saved root has one managed
 /// owner. This is a schema-model rule, but it is cross-declaration, so the
 /// project checker reports it rather than per-store schema compilation.
-pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = "schema.duplicate_root_owner";
+pub const SCHEMA_DUPLICATE_ROOT_OWNER: &str = Code::SchemaDuplicateRootOwner.as_str();
 
 /// The rejected v0.1 source surface named by a `check.rejected_surface`
 /// diagnostic.

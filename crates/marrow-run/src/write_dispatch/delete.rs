@@ -1,4 +1,5 @@
 use marrow_check::{CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedMember};
+use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 
 use crate::env::{Env, TraversedLayer};
@@ -18,11 +19,11 @@ use crate::write_plan::WritePlan;
 
 /// Deleting a required scalar field (or an unkeyed group that holds one) outside
 /// maintenance mode would leave the record incomplete, so the delete is refused.
-const WRITE_REQUIRED_FIELD: &str = "write.required_field";
+const WRITE_REQUIRED_FIELD: &str = Code::WriteRequiredField.as_str();
 
 /// Dropping a whole managed root is maintenance work; a run without the
 /// maintenance capability is refused.
-const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
+const WRITE_REQUIRES_MAINTENANCE: &str = Code::WriteRequiresMaintenance.as_str();
 
 /// A delete names a node to remove, so an address that resolves to no node is a
 /// no-op, not an error: deleting an absent position past the dense range, or a

@@ -282,9 +282,9 @@ Source-native data-evolution preview/apply faults.
 ### `test.*` — kind `tooling`
 
 | Code | Meaning |
-|---|---|
-| `test.none` | `marrow test` found no tests; check the `tests` paths in `marrow.json`. Exit code `1`. (Failing tests are reported per test with their own `run.assertion` or other `run.*` code, not a `test.*` code.)|
-
+|---|---|"#.to_string(),
+        rows(&[Code::TestNone]),
+        r#"
 ### `backup.*` — kind `tooling`
 
 | Code | Meaning |

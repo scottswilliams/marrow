@@ -1,5 +1,6 @@
 //! Runtime faults: `RuntimeError`, the `run.*` codes, and the fault constructors.
 
+use marrow_codes::Code;
 use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
@@ -232,82 +233,82 @@ impl marrow_syntax::Diagnose for RuntimeError {
 
 /// A value was used where another type was required (e.g. `+` on a non-integer,
 /// a non-boolean condition, or assigning to an immutable binding).
-pub const RUN_TYPE: &str = "run.type";
+pub const RUN_TYPE: &str = Code::RunType.as_str();
 
 /// A name was read or assigned that is not bound in scope.
-pub const RUN_UNBOUND_NAME: &str = "run.unbound_name";
+pub const RUN_UNBOUND_NAME: &str = Code::RunUnboundName.as_str();
 
 /// Integer arithmetic overflowed the 64-bit range.
-pub const RUN_OVERFLOW: &str = "run.overflow";
+pub const RUN_OVERFLOW: &str = Code::RunOverflow.as_str();
 
 /// Decimal arithmetic exceeded the 34-digit / 34-place decimal envelope.
-pub const RUN_DECIMAL_OVERFLOW: &str = "run.decimal_overflow";
+pub const RUN_DECIMAL_OVERFLOW: &str = Code::RunDecimalOverflow.as_str();
 
 /// Temporal arithmetic exceeded the saved date, instant, or duration envelope.
-pub const RUN_TEMPORAL_OVERFLOW: &str = "run.temporal_overflow";
+pub const RUN_TEMPORAL_OVERFLOW: &str = Code::RunTemporalOverflow.as_str();
 
 /// Division or remainder by zero.
-pub const RUN_DIVIDE_BY_ZERO: &str = "run.divide_by_zero";
+pub const RUN_DIVIDE_BY_ZERO: &str = Code::RunDivideByZero.as_str();
 
 /// A `break` or `continue` reached the top of a function with no loop to target.
-pub const RUN_NO_ENCLOSING_LOOP: &str = "run.no_enclosing_loop";
+pub const RUN_NO_ENCLOSING_LOOP: &str = Code::RunNoEnclosingLoop.as_str();
 
 /// A call named a function the program does not declare.
-pub const RUN_UNKNOWN_FUNCTION: &str = "run.unknown_function";
+pub const RUN_UNKNOWN_FUNCTION: &str = Code::RunUnknownFunction.as_str();
 
 /// An entry name matched more than one public function and must be qualified.
-pub const RUN_AMBIGUOUS_FUNCTION: &str = "run.ambiguous_function";
+pub const RUN_AMBIGUOUS_FUNCTION: &str = Code::RunAmbiguousFunction.as_str();
 
 /// A qualified call named a function that exists but is not `pub`, so it is not
 /// callable from the calling module. The checker (`check.private_function`)
 /// catches this before a run; this is the runtime backstop.
-pub const RUN_PRIVATE_FUNCTION: &str = "run.private_function";
+pub const RUN_PRIVATE_FUNCTION: &str = Code::RunPrivateFunction.as_str();
 
 /// A call to a function that returns no value was used where a value is needed.
-pub const RUN_NO_VALUE: &str = "run.no_value";
+pub const RUN_NO_VALUE: &str = Code::RunNoValue.as_str();
 
 /// A direct read of a saved element that is absent (unpopulated).
-pub const RUN_ABSENT: &str = "run.absent_element";
+pub const RUN_ABSENT: &str = Code::RunAbsentElement.as_str();
 
 /// The store reported an error (e.g. a corrupt stored path) during a read.
-pub const RUN_STORE: &str = "run.store";
+pub const RUN_STORE: &str = Code::RunStore.as_str();
 
 /// A construct the runtime does not evaluate.
-pub const RUN_UNSUPPORTED: &str = "run.unsupported";
+pub const RUN_UNSUPPORTED: &str = Code::RunUnsupported.as_str();
 
 /// An entry parameter supplied through the host/CLI argument surface failed decoding.
-pub const RUN_ENTRY_ARGUMENT: &str = "run.entry_argument";
+pub const RUN_ENTRY_ARGUMENT: &str = Code::RunEntryArgument.as_str();
 
 /// An entry parameter or return value is outside the v0.1 host/CLI surface.
-pub const RUN_ENTRY_SURFACE: &str = "run.entry_surface";
+pub const RUN_ENTRY_SURFACE: &str = Code::RunEntrySurface.as_str();
 
 /// A host capability a builtin needs (e.g. the clock for `std::clock::now`) was
 /// not provided to this run.
-pub const RUN_CAPABILITY: &str = "run.capability";
+pub const RUN_CAPABILITY: &str = Code::RunCapability.as_str();
 
 /// A rollback-sensitive host effect (`print`, `std::log::*`, `std::io::write*`)
 /// was attempted inside a transaction. Host effects cannot be rolled back, so the
 /// author must move the effect outside the transaction; this is a structural
 /// program error and stays uncatchable.
-pub const RUN_TRANSACTION_HOST_EFFECT: &str = "run.transaction_host_effect";
+pub const RUN_TRANSACTION_HOST_EFFECT: &str = Code::RunTransactionHostEffect.as_str();
 
 /// A `std::assert::*` testing assertion did not hold. `marrow test` reports these
 /// as located test failures.
-pub const RUN_ASSERT: &str = "run.assertion";
+pub const RUN_ASSERT: &str = Code::RunAssertion.as_str();
 
 /// An `Error` raised by `throw` reached the top of a function with no `catch` to
 /// handle it. The fault message carries the error's own code and message.
-pub const RUN_UNCAUGHT_THROW: &str = "run.uncaught_error";
+pub const RUN_UNCAUGHT_THROW: &str = Code::RunUncaughtError.as_str();
 
 /// A write, delete, or append changed the saved layer a loop was actively
 /// traversing. The static rule `check.loop_mutates_traversed_layer` catches the
 /// obvious cases; this is the dynamic guard for a path the checker cannot prove.
-pub const RUN_TRAVERSAL: &str = "run.traversal";
+pub const RUN_TRAVERSAL: &str = Code::RunTraversal.as_str();
 
 /// Function-call nesting exceeded [`CALL_DEPTH_BUDGET`]. Runaway or unbounded
 /// recursion stops here as a located fault rather than overflowing the native
 /// stack.
-pub const RUN_DEPTH: &str = "run.depth";
+pub const RUN_DEPTH: &str = Code::RunDepth.as_str();
 
 /// The deepest call nesting a run will descend before raising [`RUN_DEPTH`].
 /// The entry function runs at depth 1. Attempting depth 257 raises a typed fault
@@ -318,7 +319,7 @@ pub const CALL_DEPTH_BUDGET: usize = 256;
 /// A transaction buffers every staged write until it commits, so an unbounded
 /// write set would exhaust memory; this caps breadth the way [`RUN_DEPTH`] caps
 /// nesting, failing closed before the process is OOM-killed.
-pub const WRITE_TRANSACTION_TOO_LARGE: &str = "write.transaction_too_large";
+pub const WRITE_TRANSACTION_TOO_LARGE: &str = Code::WriteTransactionTooLarge.as_str();
 
 /// The most staged write payload one transaction may buffer before raising
 /// [`WRITE_TRANSACTION_TOO_LARGE`]. A transaction holds its whole write set in

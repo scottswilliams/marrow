@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -205,7 +206,7 @@ fn report_declared_refresh(path: &Path, existed: bool, verdict: ClientFreshness)
 
 fn render_failure(error: &impl std::fmt::Display) -> ExitCode {
     report_simple_error(
-        "surface.abi_mismatch",
+        Code::SurfaceAbiMismatch.as_str(),
         &format!("surface client render failed: {error}"),
         CheckFormat::Text,
     );
@@ -222,7 +223,7 @@ fn write_explicit_out(out: &str, client: &str) -> ExitCode {
         && let Err(error) = fs::create_dir_all(parent)
     {
         report_simple_error(
-            "io.write",
+            Code::IoWrite.as_str(),
             &format!("failed to create {}: {error}", parent.display()),
             CheckFormat::Text,
         );
@@ -238,7 +239,7 @@ fn write_explicit_out(out: &str, client: &str) -> ExitCode {
         }
         Err(error) => {
             report_simple_error(
-                "io.write",
+                Code::IoWrite.as_str(),
                 &format!("failed to write {}: {error}", path.display()),
                 CheckFormat::Text,
             );

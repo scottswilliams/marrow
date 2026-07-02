@@ -1,6 +1,7 @@
 //! Private ordered-byte backend contract.
 
 /// An error from the typed store or its private ordered-byte engines.
+use marrow_codes::Code;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     /// An I/O operation on a persistent backend failed.
@@ -66,16 +67,16 @@ impl StoreError {
     /// The stable dotted code a tool reports for this error.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::Io { .. } => "store.io",
-            Self::PermissionDenied { .. } => "store.permission_denied",
-            Self::Locked { .. } => "store.locked",
-            Self::FormatVersion { .. } => "store.format_version",
-            Self::Corruption { .. } => "store.corruption",
-            Self::RecoveryRequired => "store.recovery_required",
-            Self::LimitExceeded { .. } => "store.limit",
-            Self::InvalidCursor { .. } => "store.cursor",
-            Self::InvalidTransaction { .. } => "store.transaction",
-            Self::ReadOnly { .. } => "store.read_only",
+            Self::Io { .. } => Code::StoreIo.as_str(),
+            Self::PermissionDenied { .. } => Code::StorePermissionDenied.as_str(),
+            Self::Locked { .. } => Code::StoreLocked.as_str(),
+            Self::FormatVersion { .. } => Code::StoreFormatVersion.as_str(),
+            Self::Corruption { .. } => Code::StoreCorruption.as_str(),
+            Self::RecoveryRequired => Code::StoreRecoveryRequired.as_str(),
+            Self::LimitExceeded { .. } => Code::StoreLimit.as_str(),
+            Self::InvalidCursor { .. } => Code::StoreCursor.as_str(),
+            Self::InvalidTransaction { .. } => Code::StoreTransaction.as_str(),
+            Self::ReadOnly { .. } => Code::StoreReadOnly.as_str(),
         }
     }
 }

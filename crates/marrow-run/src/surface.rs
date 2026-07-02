@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
@@ -40,19 +41,19 @@ pub use create_delete::{
     SurfaceCreate, SurfaceCreateField, SurfaceCreateInput, SurfaceDelete, SurfaceDeleteInput,
 };
 
-pub const SURFACE_REQUEST: &str = "surface.request";
-pub const SURFACE_ABSENT: &str = "surface.absent";
-pub const SURFACE_CONFLICT: &str = "surface.conflict";
-pub const SURFACE_WRITE: &str = "surface.write";
-pub const SURFACE_INVALID_DATA: &str = "surface.invalid_data";
-pub const SURFACE_CURSOR: &str = "surface.cursor";
-pub const SURFACE_STALE_CURSOR: &str = "surface.stale_cursor";
-pub const SURFACE_LIMIT: &str = "surface.limit";
-pub const SURFACE_ABI_MISMATCH: &str = "surface.abi_mismatch";
-pub const SURFACE_AUTH: &str = "surface.auth";
-pub const SURFACE_ACTION: &str = "surface.action";
-pub const SURFACE_COMPUTED: &str = "surface.computed";
-pub const SURFACE_STORE: &str = "surface.store";
+pub const SURFACE_REQUEST: &str = Code::SurfaceRequest.as_str();
+pub const SURFACE_ABSENT: &str = Code::SurfaceAbsent.as_str();
+pub const SURFACE_CONFLICT: &str = Code::SurfaceConflict.as_str();
+pub const SURFACE_WRITE: &str = Code::SurfaceWrite.as_str();
+pub const SURFACE_INVALID_DATA: &str = Code::SurfaceInvalidData.as_str();
+pub const SURFACE_CURSOR: &str = Code::SurfaceCursor.as_str();
+pub const SURFACE_STALE_CURSOR: &str = Code::SurfaceStaleCursor.as_str();
+pub const SURFACE_LIMIT: &str = Code::SurfaceLimit.as_str();
+pub const SURFACE_ABI_MISMATCH: &str = Code::SurfaceAbiMismatch.as_str();
+pub const SURFACE_AUTH: &str = Code::SurfaceAuth.as_str();
+pub const SURFACE_ACTION: &str = Code::SurfaceAction.as_str();
+pub const SURFACE_COMPUTED: &str = Code::SurfaceComputed.as_str();
+pub const SURFACE_STORE: &str = Code::SurfaceStore.as_str();
 pub const SURFACE_MAX_PAGE_LIMIT: usize = 128;
 pub const SURFACE_MAX_VALUE_BYTES: usize = 1024 * 1024;
 pub const SURFACE_MAX_MATERIALIZED_BYTES: usize = 8 * 1024 * 1024;

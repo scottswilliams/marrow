@@ -1,5 +1,6 @@
 //! Project file, catalog artifact, and check-loading helpers.
 
+use marrow_codes::Code;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,13 +11,13 @@ use marrow_store::tree::TreeStore;
 use crate::{CheckReport, CheckedProgram};
 
 /// The native store `dataDir` directory could not be created.
-pub const CONFIG_DATA_DIR: &str = "config.data_dir";
+pub const CONFIG_DATA_DIR: &str = Code::ConfigDataDir.as_str();
 
 /// No `marrow.json` was found at the project directory: the path is not a Marrow project.
-pub const CONFIG_MISSING: &str = "config.missing";
+pub const CONFIG_MISSING: &str = Code::ConfigMissing.as_str();
 
 /// The project path is a bare file, not a directory containing `marrow.json`.
-pub const CONFIG_NOT_A_PROJECT: &str = "config.not_a_project";
+pub const CONFIG_NOT_A_PROJECT: &str = Code::ConfigNotAProject.as_str();
 
 #[derive(Debug)]
 pub enum ProjectIoError {
@@ -113,7 +114,7 @@ impl ProjectIoError {
             Self::DataDirCreate { .. } => CONFIG_DATA_DIR,
             Self::Config { code, .. } => code,
             Self::Catalog { code, .. } => code,
-            Self::Check { .. } => "check.failed",
+            Self::Check { .. } => Code::CheckFailed.as_str(),
             Self::CheckLoad { code, .. } => code,
             Self::Store(error) => error.code(),
         }

@@ -7,6 +7,7 @@
 //! could write to, repair, or override a store. The identity-aware structural-signature decode
 //! every catalog consumer reads shape through lives here too.
 
+use marrow_codes::Code;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
@@ -14,10 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Stable error code for an invalid accepted catalog metadata file.
-pub const CATALOG_INVALID: &str = "catalog.invalid";
+pub const CATALOG_INVALID: &str = Code::CatalogInvalid.as_str();
 /// Stable error code for a corrupt committed catalog lock projection. This is the wire and
 /// documentation constant every consumer matches the lock's fail-closed rejection against.
-pub const LOCK_CORRUPT: &str = "catalog.lock_corrupt";
+pub const LOCK_CORRUPT: &str = Code::CatalogLockCorrupt.as_str();
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// A committed accepted catalog snapshot. Source checks may read it and propose

@@ -1,5 +1,6 @@
 //! `marrow init`: create the v0.1 quickstart project scaffold.
 
+use marrow_codes::Code;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -46,7 +47,7 @@ be a valid Marrow module identifier.
     let path = PathBuf::from(&target);
     if let Some(separator) = nested_relative_separator(&path) {
         report_simple_error(
-            "config.invalid",
+            Code::ConfigInvalid.as_str(),
             &format!(
                 "project name `{}` contains a path separator `{separator}`; a project name must be \
                  a single Marrow module identifier. Pass a bare name like `my_app`, or an absolute \
@@ -63,7 +64,7 @@ be a valid Marrow module identifier.
     };
     if path.exists() {
         report_simple_error(
-            "config.invalid",
+            Code::ConfigInvalid.as_str(),
             "target directory already exists",
             CheckFormat::Text,
         );
@@ -74,7 +75,7 @@ be a valid Marrow module identifier.
         && !parent.exists()
     {
         report_simple_error(
-            "config.invalid",
+            Code::ConfigInvalid.as_str(),
             &format!(
                 "cannot create {} because its parent directory {} does not exist; \
                  create the parent first, or pass a target whose parent exists",
@@ -96,7 +97,7 @@ be a valid Marrow module identifier.
         }
         Err(error) => {
             report_simple_error(
-                "io.write",
+                Code::IoWrite.as_str(),
                 &format!("failed to create {}: {error}", path.display()),
                 CheckFormat::Text,
             );
@@ -155,7 +156,7 @@ fn report_invalid_target_name(path: &Path) {
         .and_then(|name| name.to_str())
         .unwrap_or("");
     report_simple_error(
-        "config.invalid",
+        Code::ConfigInvalid.as_str(),
         &format!(
             "project name `{name}` is not a valid Marrow module identifier: it must start with a \
              letter or underscore, then contain only letters, digits, and underscores, and may \

@@ -13,6 +13,7 @@ name = "marrow"
 path = "src/main.rs"
 
 [dependencies]
+marrow-codes = { path = "../marrow-codes" }
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-catalog = { path = "../marrow-catalog" }
 marrow-project = { path = "../marrow-project" }

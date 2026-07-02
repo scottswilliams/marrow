@@ -410,21 +410,6 @@ const KNOWN_FAMILIES: &[&str] = &[
     "config", "project", "data", "evolve", "test", "backup", "restore", "surface", "decode",
 ];
 
-/// Documented codes the current build intentionally does not emit yet: the reserved surface-checker
-/// diagnostics and the reserved `decode.*` decode/repair family. They appear in the reference so the
-/// contract is visible, so the gate holds them apart from the emitted set rather than demanding an
-/// emit site. Emitting one of these fails the gate until it moves to its active family docs.
-const RESERVED_CODES: &[&str] = &[
-    "check.surface_decl",
-    "check.surface_catalog_pending",
-    "check.surface_operation",
-    "surface.integrity",
-    "decode.shape",
-    "decode.unknown_member",
-    "decode.required_absent",
-    "decode.value",
-];
-
 /// Production strings that share an error code's dotted lowercase grammar but are not error codes:
 /// hashing domain-separation labels and a store-field validation label. The gate subtracts them from
 /// the emitted scan and holds them honest — each must still occur in source and must never become a
@@ -448,23 +433,6 @@ fn is_error_code(token: &str) -> bool {
         && segment
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-}
-
-/// The dotted error codes documented in the reference tables. Only `| \`code\` |` table rows count,
-/// so prose mentions and the summary `kind` table (whose cells are bare family names) are excluded.
-fn documented_error_codes() -> std::collections::BTreeSet<String> {
-    let text =
-        std::fs::read_to_string(docs_dir().join("error-codes.md")).expect("read error-codes");
-    let mut codes = std::collections::BTreeSet::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("| `")
-            && let Some(code) = rest.split('`').next()
-            && is_error_code(code)
-        {
-            codes.insert(code.to_string());
-        }
-    }
-    codes
 }
 
 /// The dotted error codes quoted as string literals in `text`. A code is always a standalone
@@ -606,33 +574,21 @@ fn production_source_files() -> Vec<std::path::PathBuf> {
     files
 }
 
-/// The dotted error codes production source actually emits, with `#[cfg(test)]` code excluded.
-fn emitted_error_codes() -> std::collections::BTreeSet<String> {
-    let mut codes = std::collections::BTreeSet::new();
-    for path in production_source_files() {
-        let source = std::fs::read_to_string(&path).expect("read source");
-        codes.extend(quoted_error_codes(&strip_test_modules(&source)));
-    }
-    codes
-}
-
-/// Code-truth guard: the documented error codes equal the codes production source emits, with the
-/// reserved-but-unimplemented codes held apart and the non-code look-alikes excluded. The expected
-/// set is derived from the emitting source, not a hand-maintained copy, so any drift fails here — a
-/// new emit left undocumented, a documented code no longer emitted, a phantom doc row, or a reserved
-/// code that went live.
+/// Absence gate: no dotted error code is spelled as an inline string literal in production source.
+/// Every code lives once in the `marrow-codes` registry and is rendered through `Code::as_str`, so a
+/// production `"family.segment"` literal is a code escaping the registry. The scan strips
+/// `#[cfg(test)]` modules and the registry crate itself (whose table and generated reference prose
+/// legitimately spell every code), then subtracts the non-code look-alikes.
+///
+/// Blind spots, stated honestly: only an exact standalone `"family.segment"` literal is detected. A
+/// code assembled at runtime (`format!("run.{segment}")`) or split across tokens is invisible to the
+/// scan, as is any code spelled inside a `#[cfg(test)]` module. The scan cannot be dodged by
+/// respelling a plain literal — a renamed segment is still a `family.segment` literal and still
+/// caught — but it is not a defense against deliberate string assembly.
 #[test]
-fn error_codes_doc_matches_emitted_codes() {
-    let reserved: std::collections::BTreeSet<String> =
-        RESERVED_CODES.iter().map(|code| code.to_string()).collect();
-    let non_code: std::collections::BTreeSet<String> = NON_CODE_TOKENS
-        .iter()
-        .map(|code| code.to_string())
-        .collect();
-
-    // Every family the reference gives a section or summary row must be known to the scan; the code
-    // comparison keys on `KNOWN_FAMILIES`, so a new family documented and emitted but missing from
-    // the list would slip past unseen.
+fn no_inline_string_literal_codes_outside_registry() {
+    // Every family the reference documents must be known to the scan, or its codes would escape the
+    // `is_error_code` grammar check unseen.
     let reference =
         std::fs::read_to_string(docs_dir().join("error-codes.md")).expect("read error-codes");
     for (family, _) in documented_kind_assignments(&reference) {
@@ -642,43 +598,44 @@ fn error_codes_doc_matches_emitted_codes() {
         );
     }
 
-    let documented = documented_error_codes();
-    let scanned = emitted_error_codes();
+    let non_code: std::collections::BTreeSet<String> =
+        NON_CODE_TOKENS.iter().map(|code| code.to_string()).collect();
 
-    // The non-code allowlist stays honest: every entry still occurs in source and none is a real
-    // documented code.
+    let mut scanned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for path in production_source_files() {
+        if path.components().any(|part| part.as_os_str() == "marrow-codes") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read source");
+        let codes = quoted_error_codes(&strip_test_modules(&source));
+        for code in codes {
+            scanned.insert(code.clone());
+            if !non_code.contains(&code) {
+                let relative = path.strip_prefix(repo_root()).unwrap_or(&path);
+                offenders.push(format!("{} in {}", code, relative.display()));
+            }
+        }
+    }
+
+    // The non-code allowlist stays honest: every entry still occurs in source and none is a real code.
     for token in &non_code {
         assert!(
             scanned.contains(token),
             "stale non-code allowlist entry `{token}`: no source string matches it anymore"
         );
         assert!(
-            !documented.contains(token),
-            "`{token}` is documented as an error code and must not be on the non-code allowlist"
+            marrow_codes::Code::from_code(token).is_none(),
+            "`{token}` is a registered error code and must not be on the non-code allowlist"
         );
     }
 
-    let emitted: std::collections::BTreeSet<String> =
-        scanned.difference(&non_code).cloned().collect();
-
-    let live_reserved: Vec<&String> = reserved.intersection(&emitted).collect();
+    offenders.sort();
     assert!(
-        live_reserved.is_empty(),
-        "reserved codes are now emitted and must move to their active family docs: {live_reserved:?}"
-    );
-
-    let reserved_undocumented: Vec<&String> = reserved.difference(&documented).collect();
-    assert!(
-        reserved_undocumented.is_empty(),
-        "reserved codes must stay documented: {reserved_undocumented:?}"
-    );
-
-    let expected: std::collections::BTreeSet<String> = emitted.union(&reserved).cloned().collect();
-    let undocumented: Vec<&String> = emitted.difference(&documented).collect();
-    let unexpected: Vec<&String> = documented.difference(&expected).collect();
-    assert!(
-        undocumented.is_empty() && unexpected.is_empty(),
-        "error-codes.md drifted from the codes production emits.\n  emitted but undocumented: {undocumented:?}\n  documented but neither emitted nor reserved: {unexpected:?}"
+        offenders.is_empty(),
+        "inline error-code string literals escaped the registry; name the `marrow_codes::Code` \
+         variant and render it with `.as_str()`:\n{}",
+        offenders.join("\n")
     );
 }
 

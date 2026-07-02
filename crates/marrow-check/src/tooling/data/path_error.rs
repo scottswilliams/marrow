@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::fmt;
 
 use crate::ScalarType;
@@ -88,7 +89,7 @@ impl MemberFlavor {
 /// scalar type or arity the schema does not declare. Such a path is well-formed input
 /// the schema cannot resolve, so it is reported as a typed `data` diagnostic rather
 /// than a command-line usage error.
-pub const UNKNOWN_PATH_CODE: &str = "data.unknown_path";
+pub const UNKNOWN_PATH_CODE: &str = Code::DataUnknownPath.as_str();
 
 impl DataPathError {
     /// The typed diagnostic code for a schema-resolution failure: a well-formed path

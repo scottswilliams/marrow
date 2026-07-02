@@ -1,5 +1,6 @@
 //! `marrow data`: inspection and recovery of tree-cell project data.
 
+use marrow_codes::Code;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -226,7 +227,7 @@ fn load_data_read_target(
 /// longer declares are not traversed. Surfacing this advisory keeps the reduced output from being
 /// silent without changing the exit status: the data is physically intact, and the count of hidden
 /// cells points the developer at `data integrity` for the full picture.
-const DATA_ORPHAN_CODE: &str = "data.orphan";
+const DATA_ORPHAN_CODE: &str = Code::DataOrphan.as_str();
 
 /// When a drifted source is bound over a store, warn on stderr that the source-driven inspection
 /// could not see the cells under undeclared members. Counting them silently would under-report
@@ -367,9 +368,9 @@ fn data_output_io_error_message_with_palette(
 ) -> String {
     let message = format!("failed to write data output: {error}");
     match format {
-        CheckFormat::Text => palette.code_message("io.write", message),
+        CheckFormat::Text => palette.code_message(Code::IoWrite.as_str(), message),
         CheckFormat::Json | CheckFormat::Jsonl => {
-            term_style::plain_code_message("io.write", message)
+            term_style::plain_code_message(Code::IoWrite.as_str(), message)
         }
     }
 }

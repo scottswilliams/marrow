@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -83,7 +84,7 @@ fn dispatch_os(command: &OsStr, rest: &[OsString]) -> ExitCode {
     };
     let Some(rest) = utf8_args(rest) else {
         report_simple_error(
-            "config.invalid",
+            Code::ConfigInvalid.as_str(),
             "command arguments must be valid UTF-8",
             CheckFormat::Text,
         );
@@ -160,7 +161,7 @@ fn run_worker_thread(worker: std::io::Result<std::thread::JoinHandle<ExitCode>>)
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
         Err(error) => {
             report_simple_error(
-                "io.thread",
+                Code::IoThread.as_str(),
                 &format!("failed to spawn Marrow worker thread: {error}"),
                 CheckFormat::Text,
             );
@@ -918,7 +919,7 @@ pub(crate) fn reproject_committed_lock(
 /// The diagnostic code and prose for a `client` path declared over a project with no surface to
 /// project. The declared-client write owner and the ad-hoc `client typescript` refresh both render
 /// it, so the message lives in one place.
-pub(crate) const CLIENT_WITHOUT_SURFACE_CODE: &str = "config.client_without_surface";
+pub(crate) const CLIENT_WITHOUT_SURFACE_CODE: &str = Code::ConfigClientWithoutSurface.as_str();
 pub(crate) const CLIENT_WITHOUT_SURFACE_MESSAGE: &str =
     "`client` is set in marrow.json but the project declares no surface; no client written";
 
@@ -993,7 +994,7 @@ pub(crate) fn write_declared_client_if_changed(
         Ok(rendered) => rendered,
         Err(error) => {
             report_simple_error(
-                "surface.abi_mismatch",
+                Code::SurfaceAbiMismatch.as_str(),
                 &format!("surface client render failed: {error}"),
                 format,
             );
@@ -1240,13 +1241,13 @@ pub(crate) fn report_io_error(file: &str, error: &std::io::Error, format: CheckF
             "{}",
             term_style::code_message(
                 Stream::Stderr,
-                "io.read",
+                Code::IoRead.as_str(),
                 format!("failed to read {file}: {error}")
             )
         ),
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
-                "code": "io.read",
+                "code": Code::IoRead.as_str(),
                 "kind": "io",
                 "message": format!("failed to read {file}: {error}"),
                 "source_span": null,

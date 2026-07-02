@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -369,18 +370,18 @@ impl ProjectSessionError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => marrow_check::IO_READ,
-            Self::Entropy(_) => "io.entropy",
+            Self::Entropy(_) => Code::IoEntropy.as_str(),
             Self::Config { code, .. } => code,
             Self::Catalog { code, .. } => code,
-            Self::Check { .. } => "check.failed",
+            Self::Check { .. } => Code::CheckFailed.as_str(),
             Self::CheckLoad { code, .. } => code,
             Self::Store(error) => error.code(),
             Self::Fence(error) => error.code(),
-            Self::NoEntry => "run.no_entry",
-            Self::DurableStoreRequired => "run.durable_store_required",
-            Self::UnstampedStore => "run.store_unstamped",
-            Self::SchemaDrift { .. } => "run.schema_drift",
-            Self::DryRunIsolationExhausted => "run.dry_run_isolation",
+            Self::NoEntry => Code::RunNoEntry.as_str(),
+            Self::DurableStoreRequired => Code::RunDurableStoreRequired.as_str(),
+            Self::UnstampedStore => Code::RunStoreUnstamped.as_str(),
+            Self::SchemaDrift { .. } => Code::RunSchemaDrift.as_str(),
+            Self::DryRunIsolationExhausted => Code::RunDryRunIsolation.as_str(),
             Self::DryRunIsolation { error, .. } => error.code(),
         }
     }

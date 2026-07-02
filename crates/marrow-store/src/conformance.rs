@@ -1,6 +1,7 @@
 //! Private conformance checks for ordered-byte backend implementors.
 
 use crate::backend::{Backend, StoreError, ValuePrefix};
+use marrow_codes::Code;
 
 pub(crate) fn run_all<B: Backend>(
     mut make: impl FnMut() -> Result<B, StoreError>,
@@ -387,14 +388,14 @@ fn a_snapshot_and_write_transaction_cannot_overlap(
     let begin = store
         .begin()
         .expect_err("begin must reject an already pinned snapshot");
-    assert_eq!(begin.code(), "store.transaction");
+    assert_eq!(begin.code(), Code::StoreTransaction.as_str());
     store.end_snapshot();
 
     store.begin()?;
     let snapshot = store
         .begin_snapshot()
         .expect_err("begin_snapshot must reject an open write transaction");
-    assert_eq!(snapshot.code(), "store.transaction");
+    assert_eq!(snapshot.code(), Code::StoreTransaction.as_str());
     store.rollback()?;
     Ok(())
 }
@@ -405,11 +406,11 @@ fn read_snapshots_are_not_reentrant(store: &mut dyn Backend) -> Result<(), Store
     let nested = store
         .begin_snapshot()
         .expect_err("a second pinned snapshot on the same handle must be rejected");
-    assert_eq!(nested.code(), "store.transaction");
+    assert_eq!(nested.code(), Code::StoreTransaction.as_str());
     let begin = store
         .begin()
         .expect_err("the original snapshot still blocks a write transaction");
-    assert_eq!(begin.code(), "store.transaction");
+    assert_eq!(begin.code(), Code::StoreTransaction.as_str());
     store.end_snapshot();
 
     store.begin()?;
@@ -427,11 +428,11 @@ fn writes_are_rejected_while_a_read_snapshot_is_pinned(
     let write = store
         .write(b"\x90\x01", b"after".to_vec())
         .expect_err("autocommit writes must reject a pinned read snapshot");
-    assert_eq!(write.code(), "store.transaction");
+    assert_eq!(write.code(), Code::StoreTransaction.as_str());
     let delete = store
         .delete(b"\x90")
         .expect_err("autocommit deletes must reject a pinned read snapshot");
-    assert_eq!(delete.code(), "store.transaction");
+    assert_eq!(delete.code(), Code::StoreTransaction.as_str());
     assert_eq!(store.read(b"\x90\x01")?, Some(b"before".to_vec()));
     store.end_snapshot();
 

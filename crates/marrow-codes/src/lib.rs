@@ -359,6 +359,7 @@ codes! {
     EvolveRequiresBackup => r#"evolve.requires_backup"#, Evolve, Error, NotApplicable, r#"A Retire-bearing apply did not name `--backup <path>` or explicit `--no-backup`. Apply refuses before approval checks or evolution work."#;
     EvolveBackupPathManaged => r#"evolve.backup_path_managed"#, Evolve, Error, NotApplicable, r#"`evolve apply --backup` named a managed project artifact or subtree: `marrow.json`, `marrow.lock`, source roots, test paths, or the native data directory/store file. Apply refuses before backup creation or evolution work."#;
     EvolveTransformFaulted => r#"evolve.transform_faulted"#, Evolve, Error, NotApplicable, r#"A checked transform body faulted while running against real data, so apply rolled back."#;
+    TestNone => r#"test.none"#, Test, Error, NotApplicable, r#"`marrow test` found no tests; check the `tests` paths in `marrow.json`. Exit code `1`. (Failing tests are reported per test with their own `run.assertion` or other `run.*` code, not a `test.*` code.)"#;
     BackupCatalogSerialization => r#"backup.catalog_serialization"#, Backup, Error, NotApplicable, r#"The accepted catalog section could not be serialized into the backup artifact."#;
     BackupCellTooLarge => r#"backup.cell_too_large"#, Backup, Error, NotApplicable, r#"A data cell frame exceeded the backup format's per-cell size bound."#;
     BackupManifestSerialization => r#"backup.manifest_serialization"#, Backup, Error, NotApplicable, r#"The backup manifest could not be serialized."#;

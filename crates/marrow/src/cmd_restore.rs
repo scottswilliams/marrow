@@ -1,6 +1,7 @@
 //! `marrow restore`: replay a typed backup into an empty native store by
 //! default, or into a counted replace target when requested.
 
+use marrow_codes::Code;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -62,7 +63,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         Ok(Some(path)) => path,
         Ok(None) => {
             report_simple_error(
-                "config.invalid",
+                Code::ConfigInvalid.as_str(),
                 "restore requires a native store backend with a dataDir",
                 format,
             );
@@ -179,7 +180,7 @@ fn guard_regular_backup_file(input: &str, format: CheckFormat) -> Result<(), Exi
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => {
             report_simple_error(
-                "io.read",
+                Code::IoRead.as_str(),
                 &format!("could not open {input}: {error}"),
                 format,
             );
@@ -197,7 +198,7 @@ fn read_backup_artifact(
         Ok(file) => file,
         Err(error) => {
             report_simple_error(
-                "io.read",
+                Code::IoRead.as_str(),
                 &format!("could not open {input}: {error}"),
                 format,
             );

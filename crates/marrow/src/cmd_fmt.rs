@@ -1,5 +1,6 @@
 //! `marrow fmt`: format a Marrow source file or every file under a project.
 
+use marrow_codes::Code;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Write};
 #[cfg(unix)]
@@ -190,7 +191,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
             // file through `fmt` never silently drops content.
             if !marrow_syntax::format_preserves_comments(source, &formatted) {
                 report_simple_error(
-                    "fmt.comment_loss",
+                    Code::FmtCommentLoss.as_str(),
                     &format!(
                         "refusing to format {file}: formatting would discard retained comments"
                     ),
@@ -206,7 +207,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                 Ok(FmtOutcome::Unchanged)
             } else if !marrow_syntax::format_preserves_comments(source, &formatted) {
                 report_simple_error(
-                    "fmt.comment_loss",
+                    Code::FmtCommentLoss.as_str(),
                     &format!(
                         "refusing to format {file}: formatting would discard retained comments"
                     ),
@@ -223,7 +224,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                 Ok(FmtOutcome::Unchanged)
             } else if !marrow_syntax::format_preserves_comments(source, &formatted) {
                 report_simple_error(
-                    "fmt.comment_loss",
+                    Code::FmtCommentLoss.as_str(),
                     &format!(
                         "refusing to write {file}: formatting would discard retained comments"
                     ),
@@ -232,7 +233,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                 Err(())
             } else if let Err(error) = write_formatted_source(file, &formatted) {
                 report_simple_error(
-                    "io.write",
+                    Code::IoWrite.as_str(),
                     &format!("failed to write {file}: {error}"),
                     CheckFormat::Text,
                 );

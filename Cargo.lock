@@ -170,6 +170,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-catalog",
  "marrow-check",
+ "marrow-codes",
  "marrow-json",
  "marrow-project",
  "marrow-run",
@@ -183,6 +184,7 @@ dependencies = [
 name = "marrow-catalog"
 version = "0.1.0"
 dependencies = [
+ "marrow-codes",
  "serde",
  "serde_json",
  "sha2",
@@ -194,6 +196,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-catalog",
  "marrow-check",
+ "marrow-codes",
  "marrow-project",
  "marrow-schema",
  "marrow-store",
@@ -211,6 +214,7 @@ dependencies = [
  "base64ct",
  "chacha20poly1305",
  "marrow-check",
+ "marrow-codes",
  "marrow-project",
  "marrow-run",
  "marrow-store",
@@ -222,6 +226,7 @@ dependencies = [
 name = "marrow-project"
 version = "0.1.0"
 dependencies = [
+ "marrow-codes",
  "serde",
  "serde_json",
  "sha2",
@@ -233,6 +238,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-catalog",
  "marrow-check",
+ "marrow-codes",
  "marrow-schema",
  "marrow-store",
  "marrow-syntax",
@@ -245,6 +251,7 @@ dependencies = [
 name = "marrow-schema"
 version = "0.1.0"
 dependencies = [
+ "marrow-codes",
  "marrow-store",
  "marrow-syntax",
 ]
@@ -254,12 +261,16 @@ name = "marrow-store"
 version = "0.1.0"
 dependencies = [
  "marrow-catalog",
+ "marrow-codes",
  "redb",
 ]
 
 [[package]]
 name = "marrow-syntax"
 version = "0.1.0"
+dependencies = [
+ "marrow-codes",
+]
 
 [[package]]
 name = "memchr"

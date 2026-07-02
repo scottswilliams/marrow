@@ -3,6 +3,7 @@
 //! and the message constructors. Prose is render-only; callers assert the kind
 //! and code.
 
+use marrow_codes::Code;
 use std::fmt;
 
 use marrow_syntax::SourceSpan;
@@ -208,12 +209,12 @@ pub enum SchemaKeyTarget {
 }
 
 /// A resource member name collides with another member at the same level.
-pub const SCHEMA_DUPLICATE_MEMBER: &str = "schema.duplicate_member";
+pub const SCHEMA_DUPLICATE_MEMBER: &str = Code::SchemaDuplicateMember.as_str();
 
 /// A `category` enum member has no nested members. A category groups its
 /// descendants, so one with nothing under it can never be selected as a value nor
 /// matched, leaving it dead.
-pub const SCHEMA_CATEGORY_LEAF: &str = "schema.category_leaf";
+pub const SCHEMA_CATEGORY_LEAF: &str = Code::SchemaCategoryLeaf.as_str();
 
 /// A non-`category` enum member has nested members. A member with children is a
 /// grouping node: a value selects one of its descendants, never the node itself,
@@ -222,29 +223,29 @@ pub const SCHEMA_CATEGORY_LEAF: &str = "schema.category_leaf";
 /// rejects exactly the categories, while `match` covers exactly the childless
 /// non-categories — so a parent left unmarked would be a legal value no arm could
 /// cover. The invariant category <=> has-children makes that fail-open impossible.
-pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
+pub const SCHEMA_PARENT_NOT_CATEGORY: &str = Code::SchemaParentNotCategory.as_str();
 
 /// A managed saved field or key is typed `unknown`. `unknown` is a dynamic
 /// boundary value; saved schemas use concrete field and key types. Local-only
 /// resources may use `unknown`.
-pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
+pub const SCHEMA_UNKNOWN_IN_SAVED: &str = Code::SchemaUnknownInSaved.as_str();
 
 /// A stored-shape position — a key, saved field, keyed leaf, or sequence element
 /// — is typed optional (`T?`), in a local or saved tree alike. `?` is the
 /// code-level type a sparse read yields, not a storage marker: a sparse slot
 /// already provides absence and a sequence element is always present, so the
 /// slot's type drops the `?`.
-pub const SCHEMA_OPTIONAL_IN_STORED_SHAPE: &str = "schema.optional_in_stored_shape";
+pub const SCHEMA_OPTIONAL_IN_STORED_SHAPE: &str = Code::SchemaOptionalInStoredShape.as_str();
 
 /// Two members of a store collide in its source namespace: a top-level field or
 /// layer shares a name with an identity key, or a declared field shares a name
 /// with an index. Identity keys, declared fields, keyed layers, and index names
 /// share one namespace, so a reused name leaves a member unaddressable.
-pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
+pub const SCHEMA_KEY_MEMBER_COLLISION: &str = Code::SchemaKeyMemberCollision.as_str();
 
 /// An index argument does not resolve to an identity key or a top-level field.
 /// Index arguments do not walk keyed child layers or unkeyed group descendants.
-pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
+pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = Code::SchemaUnknownIndexArg.as_str();
 
 /// A saved key (an identity key, a keyed-layer key parameter, or an index
 /// argument) has a type with no order-preserving key encoding — currently
@@ -252,28 +253,28 @@ pub const SCHEMA_UNKNOWN_INDEX_ARG: &str = "schema.unknown_index_arg";
 /// decimal as a key, so the write planner could never maintain such an entry.
 /// Reject it at compile time rather than commit data with an unmaintained index
 /// or key.
-pub const SCHEMA_UNORDERABLE_KEY: &str = "schema.unorderable_key";
+pub const SCHEMA_UNORDERABLE_KEY: &str = Code::SchemaUnorderableKey.as_str();
 
 /// A non-unique index does not end with all identity keys in declaration order.
 /// A non-unique entry is a presence marker, so two records sharing the indexed
 /// values would collapse onto one entry unless the identity keys make each entry
 /// distinct. A unique index is exempt: each populated entry already points to one
 /// identity.
-pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = "schema.index_missing_identity_keys";
+pub const SCHEMA_INDEX_MISSING_IDENTITY_KEYS: &str = Code::SchemaIndexMissingIdentityKeys.as_str();
 
 /// An index is declared on a store with no keyed saved root. Declared indexes
 /// need a store identity for entries to point to.
-pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = "schema.index_requires_keyed_root";
+pub const SCHEMA_INDEX_REQUIRES_KEYED_ROOT: &str = Code::SchemaIndexRequiresKeyedRoot.as_str();
 
 /// An index argument names a field nested through an unkeyed group. The write
 /// planner matches index arguments by flat top-level name, so it would silently
 /// never maintain such an entry. Until nested index resolution lands, reject it.
-pub const SCHEMA_NESTED_INDEX_ARG: &str = "schema.nested_index_arg";
+pub const SCHEMA_NESTED_INDEX_ARG: &str = Code::SchemaNestedIndexArg.as_str();
 
 /// A managed saved field's type is a bare name that is not a declared enum. A
 /// saved field stores a scalar or a checked enum value; an undefined name or a
 /// resource type has no saved leaf form, so it cannot be a saved field.
-pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = "schema.non_enum_named_field";
+pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = Code::SchemaNonEnumNamedField.as_str();
 
 /// A saved key (an identity key, a keyed-layer key parameter, or an index
 /// argument) is typed as a non-scalar. A key must be an orderable scalar, because
@@ -281,7 +282,7 @@ pub const SCHEMA_NON_ENUM_NAMED_FIELD: &str = "schema.non_enum_named_field";
 /// in identity-key and keyed-layer positions — a local enum, a cross-module enum,
 /// a resource, or a typo — every sequence, and every store identity is rejected
 /// structurally, since the rule asks only whether the type is an orderable scalar.
-pub const SCHEMA_NONSCALAR_KEY: &str = "schema.nonscalar_key";
+pub const SCHEMA_NONSCALAR_KEY: &str = Code::SchemaNonscalarKey.as_str();
 
 impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

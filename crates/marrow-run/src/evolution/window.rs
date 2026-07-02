@@ -12,6 +12,7 @@
 //! a no-accepted-epoch open over it fails closed rather than seizing a writable handle.
 
 use marrow_catalog::CatalogMetadata;
+use marrow_codes::Code;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
@@ -92,11 +93,11 @@ impl From<StoreError> for FenceError {
 impl FenceError {
     pub fn code(&self) -> &'static str {
         match self {
-            FenceError::StoreEvolved { .. } => "run.store_evolved",
-            FenceError::StoreBehind { .. } => "run.store_behind",
-            FenceError::SchemaDrift => "run.schema_drift",
-            FenceError::EngineProfileDrift => "run.engine_profile",
-            FenceError::DurableStoreRequired => "run.durable_store_required",
+            FenceError::StoreEvolved { .. } => Code::RunStoreEvolved.as_str(),
+            FenceError::StoreBehind { .. } => Code::RunStoreBehind.as_str(),
+            FenceError::SchemaDrift => Code::RunSchemaDrift.as_str(),
+            FenceError::EngineProfileDrift => Code::RunEngineProfile.as_str(),
+            FenceError::DurableStoreRequired => Code::RunDurableStoreRequired.as_str(),
             FenceError::Store(error) => error.code(),
         }
     }

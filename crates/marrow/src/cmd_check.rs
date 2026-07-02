@@ -1,6 +1,7 @@
 //! `marrow check`: type-check a project, and the shared
 //! located-fault renderer the runner reuses.
 
+use marrow_codes::Code;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -77,7 +78,7 @@ enum LockStrictness {
 /// surfaces staleness as a non-fatal advisory rather than failing. Editing source ahead of the
 /// next write path is the ordinary case, so a stale lock does not block a clean check; a later
 /// `run` or `evolve apply` re-projects the lock to converge it.
-pub(crate) const CHECK_STALE_LOCK: &str = "check.stale_lock";
+pub(crate) const CHECK_STALE_LOCK: &str = Code::CheckStaleLock.as_str();
 
 /// `--locked` over a project that has durable shape to lock — any present store file, whether it
 /// opens read-only or is recovery-required after a crash — but no committed `marrow.lock` at all.
@@ -86,7 +87,7 @@ pub(crate) const CHECK_STALE_LOCK: &str = "check.stale_lock";
 /// who forgot to commit or deleted the lock — most dangerously in the post-crash state where the
 /// store is present but unreadable. The advisory (non-`--locked`) mode stays silent on absence so a
 /// legitimate first run, which has no store and no durable shape to lock yet, checks cleanly.
-const CHECK_LOCK_MISSING: &str = "check.lock_missing";
+const CHECK_LOCK_MISSING: &str = Code::CheckLockMissing.as_str();
 
 const MISSING_LOCK_MESSAGE: &str = "marrow.lock is missing but saved data exists; run marrow run (or marrow evolve apply) \
      to regenerate marrow.lock, then commit it";
@@ -96,7 +97,7 @@ const MISSING_LOCK_MESSAGE: &str = "marrow.lock is missing but saved data exists
 /// TypeScript client profile and surface. Plain `check` is read-only and surfaces this as a
 /// non-fatal advisory; `--locked` makes it fatal so CI fails against a client the surface has
 /// outrun. Mirrors the stale-lock family.
-const CHECK_STALE_CLIENT: &str = "check.stale_client";
+const CHECK_STALE_CLIENT: &str = Code::CheckStaleClient.as_str();
 
 const STALE_CLIENT_MESSAGE: &str = "the declared client is absent or behind the current surface; a run or evolve apply rewrites it";
 

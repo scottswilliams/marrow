@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+marrow-codes = { path = "../marrow-codes" }
 marrow-syntax = { path = "../marrow-syntax" }
 # Default features only: this brings in the canonical scalar type and codec, not
 # the native (redb) backend behind the off-by-default `native` feature.

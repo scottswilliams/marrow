@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::collections::{HashMap, HashSet};
 
 use marrow_check::evolution::{
@@ -528,7 +529,7 @@ fn blocking_reports(
             Verdict::RepairRequired { .. } => {
                 let catalog_id = obligation.catalog_id.as_str();
                 reports.push(BlockingReport {
-                    code: "evolve.repair_required",
+                    code: Code::EvolveRepairRequired.as_str(),
                     message: messages.get(catalog_id).map_or_else(
                         || format!("catalog id {catalog_id} requires repair before activation"),
                         |m| m.to_string(),
@@ -540,7 +541,7 @@ fn blocking_reports(
             Verdict::DestructiveDecisionRequired { populated } => {
                 let catalog_id = obligation.catalog_id.as_str();
                 reports.push(BlockingReport {
-                    code: "evolve.approval_required",
+                    code: Code::EvolveApprovalRequired.as_str(),
                     message: approval_required_message(catalog_id, *populated, labels),
                     catalog_id: Some(catalog_id.to_string()),
                     populated: Some(*populated),
@@ -744,7 +745,7 @@ fn rename_scaffold(from: &str, to: &str, labels: &SourceLabels) -> String {
 
 fn generic_blocking_report() -> BlockingReport {
     BlockingReport {
-        code: "evolve.repair_required",
+        code: Code::EvolveRepairRequired.as_str(),
         message: "evolution witness is not activatable".to_string(),
         catalog_id: None,
         populated: None,
@@ -865,7 +866,7 @@ pub(super) fn approval_mismatch(
         return;
     }
     report_simple_error(
-        "evolve.approval_mismatch",
+        Code::EvolveApprovalMismatch.as_str(),
         &format!(
             "the --approve-retire counts did not match what this evolution retires; approve exactly: {}",
             expected.join(" ")
@@ -876,7 +877,7 @@ pub(super) fn approval_mismatch(
 
 pub(super) fn requires_backup(format: CheckFormat) {
     report_simple_error(
-        "evolve.requires_backup",
+        Code::EvolveRequiresBackup.as_str(),
         "destructive retire apply requires --backup <path> or explicit --no-backup",
         format,
     );
@@ -885,7 +886,7 @@ pub(super) fn requires_backup(format: CheckFormat) {
 pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: CheckFormat) {
     match error {
         ApplyError::NoAcceptedCatalog => report_simple_error(
-            "evolve.no_accepted_catalog",
+            Code::EvolveNoAcceptedCatalog.as_str(),
             "this program has no durable catalog to apply from; it declares no saved data, so there is no baseline epoch to advance",
             format,
         ),
@@ -908,14 +909,14 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             format,
         ),
         ApplyError::CatalogDrift { pinned, found } => report_simple_error(
-            "evolve.catalog_drift",
+            Code::EvolveCatalogDrift.as_str(),
             &format!(
                 "store accepted catalog changed after preview (pinned {pinned}, found {found:?}); rerun `marrow evolve preview`, then rerun `marrow evolve apply`"
             ),
             format,
         ),
         ApplyError::MaintenanceRequired => report_simple_error(
-            "evolve.maintenance_required",
+            Code::EvolveMaintenanceRequired.as_str(),
             "destructive evolution apply requires --maintenance",
             format,
         ),
@@ -923,7 +924,7 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             catalog_id,
             populated,
         } => report_simple_error(
-            "evolve.approval_required",
+            Code::EvolveApprovalRequired.as_str(),
             &approval_required_message(catalog_id.as_str(), populated, labels),
             format,
         ),
@@ -931,7 +932,7 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
         // exact approval the destructive set requires; reaching it here means the caller did not,
         // so fall back to a still-actionable message rather than the opaque "preview witness" one.
         ApplyError::ApprovalMismatch => report_simple_error(
-            "evolve.approval_mismatch",
+            Code::EvolveApprovalMismatch.as_str(),
             "the --approve-retire counts did not match what this evolution retires; run `marrow evolve preview <projectdir>` to see the exact path and count to approve",
             format,
         ),
@@ -952,7 +953,7 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             inner_code,
             reason,
         } => report_simple_error_with_data(
-            "evolve.transform_faulted",
+            Code::EvolveTransformFaulted.as_str(),
             &format!(
                 "transform for {} faulted on record {record} ({inner_code}): {reason}",
                 labels.catalog_id(target.as_str())
@@ -967,7 +968,7 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
         ApplyError::Fenced(error) => report_simple_error(error.code(), &error.message(), format),
         ApplyError::Store(error) => report_simple_error(error.code(), &error.to_string(), format),
         ApplyError::NotActivatable => report_simple_error(
-            "evolve.repair_required",
+            Code::EvolveRepairRequired.as_str(),
             "evolution witness is not activatable",
             format,
         ),
@@ -991,7 +992,7 @@ fn drift_kind_with_fields<const N: usize>(
 
 fn report_drift_error(drift_kind: serde_json::Value, message: &str, format: CheckFormat) {
     report_simple_error_with_data(
-        "evolve.drift",
+        Code::EvolveDrift.as_str(),
         message,
         serde_json::Map::from_iter([("drift_kind".to_string(), drift_kind)]),
         format,

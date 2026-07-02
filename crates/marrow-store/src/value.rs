@@ -7,6 +7,7 @@
 
 use crate::Decimal;
 use crate::key::SavedKey;
+use marrow_codes::Code;
 
 /// Version of the canonical value encoding, recorded in a backup so a restore can
 /// refuse data it cannot decode. Advances only on an incompatible byte-format change.
@@ -78,7 +79,9 @@ impl ValueError {
     /// The stable dotted code a tool reports for this error.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::DateOutOfRange { .. } | Self::InstantOutOfRange { .. } => "value.range",
+            Self::DateOutOfRange { .. } | Self::InstantOutOfRange { .. } => {
+                Code::ValueRange.as_str()
+            }
         }
     }
 }

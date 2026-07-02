@@ -1,5 +1,6 @@
 //! `marrow evolve`: preview and apply source-native data evolution.
 
+use marrow_codes::Code;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
@@ -230,7 +231,7 @@ fn resolve_approval(
     for spec in retires {
         let id = resolve_retire_target(&spec.target, program).ok_or_else(|| {
             report_simple_error(
-                "evolve.approval_target_unknown",
+                Code::EvolveApprovalTargetUnknown.as_str(),
                 &format!(
                     "--approve-retire target `{}` is not a field path or catalog id in this project; \
                      run `marrow evolve preview <projectdir>` to see the exact path to approve",
@@ -318,7 +319,7 @@ fn guard_recovery_backup_path(
         for managed_path in managed_paths {
             if backup_conflicts_with_managed_path(backup_path, &managed_path.path) {
                 report_simple_error(
-                    "evolve.backup_path_managed",
+                    Code::EvolveBackupPathManaged.as_str(),
                     &format!(
                         "evolve backup path must not target the {}: {}",
                         managed_path.label,

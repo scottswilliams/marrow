@@ -1,6 +1,7 @@
 //! Runtime handlers for host-backed stdlib capabilities.
 
 use marrow_check::CheckedArg as ExecArg;
+use marrow_codes::Code;
 use marrow_store::value::{NANOS_PER_DAY, supported_date_days, supported_instant_nanos};
 use marrow_syntax::SourceSpan;
 
@@ -210,9 +211,9 @@ pub(crate) fn eval_io(
     // transaction before touching the filesystem.
     let error_code = if matches!(io, IoOp::Write(_)) {
         env.guard_rollback_sensitive_host_effect(&format!("std::io::{op}"), span)?;
-        "io.write"
+        Code::IoWrite.as_str()
     } else {
-        "io.read"
+        Code::IoRead.as_str()
     };
     io.run(path)
         .map_err(|error| raise(io_error(error_code, op, path, &error), span, None))

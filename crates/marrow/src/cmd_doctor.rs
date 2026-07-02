@@ -1,5 +1,6 @@
 //! `marrow doctor`: read-only operator triage over existing project facts.
 
+use marrow_codes::Code;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -142,7 +143,7 @@ fn probe_config(
         Err(error) => {
             let (remedy, next_command) = config_load_remedy(&error, dir);
             findings.push(project_error_finding(
-                "doctor.config_invalid",
+                Code::DoctorConfigInvalid.as_str(),
                 "project configuration could not be loaded",
                 remedy,
                 next_command,
@@ -209,7 +210,7 @@ fn probe_lock(root: &Path, dir: &str, findings: &mut Vec<Finding>) -> LockProbe 
         Ok(None) => LockProbe::Absent,
         Err(error) => {
             findings.push(project_error_finding(
-                "doctor.lock_corrupt",
+                Code::DoctorLockCorrupt.as_str(),
                 "committed marrow.lock could not be read",
                 "delete the corrupt marrow.lock so the next run or evolve apply re-projects it from the authoritative store",
                 check_command(dir),
@@ -241,7 +242,7 @@ fn probe_check(
             data.insert("underlying_code".into(), json!(error.code));
             data.insert("path".into(), json!(error.path.display().to_string()));
             findings.push(Finding::new(
-                "doctor.check_failed",
+                Code::DoctorCheckFailed.as_str(),
                 "project sources could not be loaded for checking",
                 "fix unreadable source paths, then rerun the next command",
                 check_command(dir),
@@ -261,7 +262,7 @@ fn probe_check(
         data.insert("diagnostics".into(), json!(diagnostic_codes.len()));
         data.insert("underlying_codes".into(), json!(diagnostic_codes));
         findings.push(Finding::new(
-            "doctor.check_failed",
+            Code::DoctorCheckFailed.as_str(),
             "project check reports diagnostics",
             "fix check diagnostics, then rerun the next command",
             check_command(dir),
@@ -286,7 +287,7 @@ fn probe_store_open(
     // `ENOTDIR` as a `store.io` finding.
     if let Err(error) = marrow_check::guard_data_dir(root, config) {
         findings.push(project_error_finding(
-            "doctor.config_invalid",
+            Code::DoctorConfigInvalid.as_str(),
             "native store dataDir is not a directory",
             "point dataDir at a writable directory or remove the file occupying it, then recheck the project",
             check_command(dir),
@@ -299,7 +300,7 @@ fn probe_store_open(
         Ok(None) => return None,
         Err(error) => {
             findings.push(project_error_finding(
-                "doctor.config_invalid",
+                Code::DoctorConfigInvalid.as_str(),
                 "project configuration is invalid",
                 "fix the reported marrow.json field, then recheck the project",
                 check_command(dir),
@@ -320,7 +321,7 @@ fn probe_store_open(
         Ok(store) => Some(store),
         Err(error @ StoreError::Locked { .. }) => {
             findings.push(store_error_finding(
-                "doctor.store_locked",
+                Code::DoctorStoreLocked.as_str(),
                 "native store is locked",
                 "close the process holding the native store, then rerun the next command",
                 doctor_command(dir),
@@ -331,7 +332,7 @@ fn probe_store_open(
         }
         Err(error @ StoreError::RecoveryRequired) => {
             findings.push(store_error_finding(
-                "doctor.store_recovery_required",
+                Code::DoctorStoreRecoveryRequired.as_str(),
                 "native store needs recovery before read-only inspection",
                 "open the store through the recovery command",
                 format!("marrow data recover {dir}"),
@@ -342,7 +343,7 @@ fn probe_store_open(
         }
         Err(error) => {
             findings.push(store_error_finding(
-                "doctor.store_unavailable",
+                Code::DoctorStoreUnavailable.as_str(),
                 "native store could not be opened read-only",
                 "inspect the store problem, then rerun the next read-only command",
                 store_error_next_command(dir, &error),
@@ -449,7 +450,7 @@ fn probe_populated(store: &TreeStore, dir: &str, findings: &mut Vec<Finding>) ->
 /// program or remove the store — so doctor reports the same resolution the next write path enforces.
 fn populated_unstamped_finding(dir: &str) -> Finding {
     Finding::new(
-        "doctor.populated_unstamped",
+        Code::DoctorPopulatedUnstamped.as_str(),
         "the store holds saved data but carries no accepted commit stamp",
         "run the program that owns this store, or remove the store to start fresh",
         doctor_command(dir),
@@ -464,7 +465,7 @@ fn populated_unstamped_finding(dir: &str) -> Finding {
 /// accepted catalog, like an absent store, has nothing to lock and stays a healthy first run.
 fn missing_lock_finding(dir: &str) -> Finding {
     Finding::new(
-        "doctor.lock_missing",
+        Code::DoctorLockMissing.as_str(),
         "marrow.lock is missing but the live store carries saved shape",
         "regenerate marrow.lock with a run or evolve apply, then commit it",
         run_command(dir),
@@ -488,7 +489,7 @@ fn probe_lock_against_store(
         data.insert("lock_epoch".into(), json!(lock.epoch_high_water));
         data.insert("store_epoch".into(), json!(accepted.epoch));
         findings.push(Finding::new(
-            "doctor.store_lock_epoch_mismatch",
+            Code::DoctorStoreLockEpochMismatch.as_str(),
             "the committed lock and the live store record different accepted epochs",
             "the live store is authoritative; regenerate marrow.lock with a run or evolve apply",
             doctor_command(dir),
@@ -513,7 +514,7 @@ fn probe_lock_against_store(
         json!(lock_shape_digest(&store_fingerprints)),
     );
     findings.push(Finding::new(
-        "doctor.catalog_collision",
+        Code::DoctorCatalogCollision.as_str(),
         "the committed lock and the live store record the same accepted epoch with different shapes",
         "the live store is authoritative; regenerate marrow.lock with a run or evolve apply",
         doctor_command(dir),
@@ -540,7 +541,7 @@ fn probe_stale_lock(
     );
     data.insert("source_digest".into(), json!(source_digest));
     findings.push(Finding::new(
-        "doctor.stale_lock",
+        Code::DoctorStaleLock.as_str(),
         "the committed lock is behind the current source",
         "regenerate marrow.lock with a run or evolve apply, then commit it",
         run_command(dir),
@@ -606,7 +607,7 @@ fn probe_fence(
             data.insert("underlying_code".into(), json!(error.code()));
             data.insert("message".into(), json!(error.message()));
             findings.push(Finding::new(
-                "doctor.fence_mismatch",
+                Code::DoctorFenceMismatch.as_str(),
                 "the saved store is at an older schema than the current source",
                 "preview the pending change, then apply it",
                 fence_next_command(dir, &error),
@@ -635,7 +636,7 @@ fn probe_integrity_sample(
                 data.insert("limit".into(), json!(DOCTOR_INTEGRITY_SAMPLE_LIMIT));
                 data.insert("truncated".into(), json!(sample.truncated));
                 findings.push(Finding::new(
-                    "doctor.integrity_sample_failed",
+                    Code::DoctorIntegritySampleFailed.as_str(),
                     "bounded saved-data integrity sample found problems",
                     "run the full read-only integrity report",
                     format!("marrow data integrity {dir}"),
@@ -650,7 +651,7 @@ fn probe_integrity_sample(
             data.insert("message".into(), json!(error.to_string()));
             data.insert("limit".into(), json!(DOCTOR_INTEGRITY_SAMPLE_LIMIT));
             findings.push(Finding::new(
-                "doctor.integrity_sample_failed",
+                Code::DoctorIntegritySampleFailed.as_str(),
                 "bounded saved-data integrity sample could not complete",
                 "run the full read-only integrity report",
                 format!("marrow data integrity {dir}"),
@@ -717,7 +718,7 @@ fn store_fact_error(dir: &str, fact: &'static str, error: StoreError) -> Finding
     data.insert("message".into(), json!(error.to_string()));
     let next_command = store_error_next_command(dir, &error);
     Finding::new(
-        "doctor.store_unavailable",
+        Code::DoctorStoreUnavailable.as_str(),
         "native store metadata could not be read",
         "inspect the store problem, then rerun the next read-only command",
         next_command,

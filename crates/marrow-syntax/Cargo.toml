@@ -7,5 +7,8 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+marrow-codes = { path = "../marrow-codes" }
+
 [lints]
 workspace = true

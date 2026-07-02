@@ -1,5 +1,6 @@
 //! `marrow test`: check a project, then run its tests over fresh stores.
 
+use marrow_codes::Code;
 use std::cell::RefCell;
 use std::path::Path;
 use std::process::ExitCode;
@@ -99,7 +100,7 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
     let tests = session.test_cases();
     if tests.is_empty() {
         report_simple_error(
-            "test.none",
+            Code::TestNone.as_str(),
             "no tests found; check the `tests` paths in marrow.json",
             format,
         );
@@ -115,12 +116,12 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
     if selected_tests.is_empty() {
         match filter {
             Some(filter) => report_simple_error(
-                "test.none",
+                Code::TestNone.as_str(),
                 &format!("no tests matched filter `{filter}`"),
                 format,
             ),
             None => report_simple_error(
-                "test.none",
+                Code::TestNone.as_str(),
                 "no tests found; check the `tests` paths in marrow.json",
                 format,
             ),

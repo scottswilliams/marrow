@@ -1,3 +1,4 @@
+use marrow_codes::Code;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
@@ -373,7 +374,7 @@ fn check_record(
 ) -> Result<Option<IntegrityProblem>, StoreError> {
     if let Some(mismatch) = &record.key_mismatch {
         return Ok(Some(data_problem(
-            "data.key_type",
+            Code::DataKeyType.as_str(),
             record.path.clone(),
             format!(
                 "stored key is {} where the schema declares {}",
@@ -388,7 +389,7 @@ fn check_record(
             .is_none()
             .then(|| {
                 data_problem(
-                    "data.decode",
+                    Code::DataDecode.as_str(),
                     record.path.clone(),
                     format!("stored value is not a canonical {} form", ty.name()),
                     None,
@@ -411,7 +412,7 @@ fn check_identity_leaf(
 ) -> Result<Option<IntegrityProblem>, StoreError> {
     let Some(keys) = decode_identity_payload_arity(record.payload.as_bytes(), arity) else {
         return Ok(Some(data_problem(
-            "data.decode",
+            Code::DataDecode.as_str(),
             record.path.clone(),
             format!("stored value is not a canonical `Id(^{store_root})` encoding"),
             None,
@@ -419,7 +420,7 @@ fn check_identity_leaf(
     };
     if let Some((expected, found)) = identity_leaf_key_mismatch(program, store_root, &keys) {
         return Ok(Some(data_problem(
-            "data.key_type",
+            Code::DataKeyType.as_str(),
             record.path.clone(),
             format!(
                 "stored `Id(^{store_root})` reference has {} key where the schema declares {}",
@@ -450,7 +451,7 @@ fn dangling_ref_problem(
     referenced_identity: Vec<SavedKey>,
 ) -> IntegrityProblem {
     IntegrityProblem {
-        code: "data.dangling_ref",
+        code: Code::DataDanglingRef.as_str(),
         path: record.path.clone(),
         message: format!("stored `Id(^{referenced_root})` reference points to no saved record"),
         help: None,
@@ -487,7 +488,7 @@ fn check_enum_leaf(
 
 fn enum_decode_problem(record: &DataRecord, enum_name: &str) -> IntegrityProblem {
     data_problem(
-        "data.decode",
+        Code::DataDecode.as_str(),
         record.path.clone(),
         format!("stored value is not a catalog-backed `{enum_name}` member"),
         None,
@@ -740,7 +741,7 @@ fn incomplete_problem(
     let mut full_path = parent_path.clone();
     full_path.push(DataPathSegment::Member(missing_member_catalog_id.clone()));
     IntegrityProblem {
-        code: "data.incomplete",
+        code: Code::DataIncomplete.as_str(),
         path: render_problem_path(context.root, identity, &full_path, context.names),
         message: "required saved member is absent".to_string(),
         help: None,
@@ -896,7 +897,7 @@ impl DeclaredRoot {
 
 fn orphan_problem(path: String, reason: &'static str) -> IntegrityProblem {
     data_problem(
-        "data.orphan",
+        Code::DataOrphan.as_str(),
         path,
         format!("stored data is under {reason}"),
         Some(ORPHAN_INTEGRITY_HELP),

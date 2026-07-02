@@ -5,6 +5,7 @@
 //! enough for the CLI, language services, and editors to agree on it: it holds
 //! project choices only, never compiled schemas, index metadata, or secrets.
 
+use marrow_codes::Code;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -15,7 +16,7 @@ mod digest;
 pub use digest::{Sha256Digest, sha256_digest};
 
 /// Stable error code for an invalid `marrow.json`.
-pub const CONFIG_INVALID: &str = "config.invalid";
+pub const CONFIG_INVALID: &str = Code::ConfigInvalid.as_str();
 
 /// Fixed source-tree artifact name for the committed catalog lock: the generated,
 /// committed projection that seeds a fresh empty store and reports staleness. It is
@@ -590,14 +591,14 @@ fn collect_mw_files(
     out: &mut Vec<ModuleFile>,
 ) -> Result<(), DiscoverError> {
     let entries = std::fs::read_dir(dir).map_err(|error| DiscoverError {
-        code: "project.source_root",
+        code: Code::ProjectSourceRoot.as_str(),
         path: dir.to_path_buf(),
         message: error.to_string(),
     })?;
 
     for entry in entries {
         let entry = entry.map_err(|error| DiscoverError {
-            code: "project.source_root",
+            code: Code::ProjectSourceRoot.as_str(),
             path: dir.to_path_buf(),
             message: error.to_string(),
         })?;
@@ -623,7 +624,7 @@ fn module_file(source_root: &Path, path: PathBuf) -> Result<ModuleFile, Discover
     let relative_path = path
         .strip_prefix(source_root)
         .map_err(|_| DiscoverError {
-            code: "project.source_root",
+            code: Code::ProjectSourceRoot.as_str(),
             path: path.clone(),
             message: "discovered module file is outside its discovery root".to_string(),
         })?

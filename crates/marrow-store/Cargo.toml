@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+marrow-codes = { path = "../marrow-codes" }
 marrow-catalog = { path = "../marrow-catalog" }
 redb = { version = "4", optional = true }
 
