@@ -71,8 +71,18 @@ place. `marrow fmt` does not read from stdin.
         eprintln!("missing source file or project directory");
         return ExitCode::from(2);
     };
-    if Path::new(&target).is_dir() {
+    let target_path = Path::new(&target);
+    if target_path.is_dir() {
         return fmt_project_dir(&target, mode);
+    }
+    // A target that exists as neither a directory nor a file is not a Marrow project:
+    // classify it as config.missing through the shared loader, the same as check/run,
+    // rather than leaking a raw not-found errno from the single-file read below.
+    if !target_path.exists() {
+        return match crate::load_config(&target) {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(code) => code,
+        };
     }
     if let Err(error) = guard_regular_source_file(Path::new(&target)) {
         report_io_error(&target, &error, CheckFormat::Text);
@@ -94,8 +104,8 @@ place. `marrow fmt` does not read from stdin.
 /// Reject an explicit single-file argument that resolves to an existing non-regular
 /// file before the unbounded blocking read. A FIFO with no writer never returns, and
 /// a socket or device cannot be a source body, so a non-regular target fails closed
-/// promptly with an `io.read` error located at the path. A missing path is left to the
-/// read, which surfaces its own not-found error.
+/// promptly with an `io.read` error located at the path. A missing target never reaches
+/// here: the caller classifies it as `config.missing` first.
 fn guard_regular_source_file(path: &Path) -> io::Result<()> {
     match fs::metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => Err(io::Error::new(

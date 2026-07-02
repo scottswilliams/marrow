@@ -718,6 +718,33 @@ fn fmt_on_a_directory_with_no_config_reports_a_missing_project() {
 }
 
 #[test]
+fn fmt_on_a_missing_path_reports_a_missing_project() {
+    // A nonexistent target is not a Marrow project. Every fmt form must classify it as
+    // config.missing with the init remedy, the same as check/run, instead of leaking a
+    // raw not-found errno as io.read from the single-file read path.
+    let dir = support::temp_dir("fmt-missing");
+    let missing = dir.join("nosuchdir");
+    for args in [
+        vec!["--check", missing.to_str().unwrap()],
+        vec!["--write", missing.to_str().unwrap()],
+        vec![missing.to_str().unwrap()],
+    ] {
+        let output = run_fmt(&args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+        assert!(
+            fmt_reports_code(&output.stderr, "config.missing"),
+            "{args:?}: {:?}",
+            output.stderr
+        );
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("marrow init") && !stderr.contains("os error"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn fmt_on_a_directory_with_invalid_config_reports_a_config_error() {
     let project = temp_project("fmt-proj-badconfig", &[("src/app.mw", "module app\n")]);
     fs::write(project.join("marrow.json"), r#"{ "sourceRoots": [] }"#).expect("write config");
