@@ -1396,6 +1396,8 @@ mod tests {
         writer.join().expect("join request writer");
     }
 
+    // `Shutdown::test_pending` exists only in the Unix signal implementation.
+    #[cfg(unix)]
     #[test]
     fn a_stalled_response_write_aborts_promptly_when_shutdown_is_requested() {
         use std::sync::Arc;

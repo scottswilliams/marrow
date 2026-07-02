@@ -130,16 +130,19 @@ how much work a loop may do.
   `run.depth`, whose payload reports the callee name, `budget=256`, and the
   observed attempted depth.
 - **Transaction-breadth budget (64 MiB).** A `transaction` buffers its whole
-  pending write set in memory until it commits. The budget measures that real
-  buffered footprint, not the logical serialized payload: each staged record pins
-  a per-record base (about four kibibytes of shared subtree pages and allocator
-  slack, whatever its cell count), and each of its cells adds a small per-cell
+  pending write set in memory until it commits. The budget meters that real
+  buffered footprint, not the logical serialized payload: each staged record is
+  charged a per-record base (about four kibibytes for the subtree pages and
+  allocator slack its cells share), and each of its cells adds a small per-cell
   overhead plus its value, key, path, and index-key bytes. So a flood of tiny
   records and a few large-keyed writes are bounded as tightly as a few large
   values, and a multi-field record is charged near a per-record cost rather than a
-  multiple of it. In practice one transaction holds on the order of ten thousand
-  small records — a few kibibytes of real memory each — before the buffered
-  footprint passes 64 MiB and the next write stops at its span with
+  multiple of it. The meter is a deliberate approximation that tracks real memory
+  within a small constant factor (about 2x low for records with very many
+  fields), so the budget bounds real buffered memory at low hundreds of megabytes
+  in the worst case. In practice one transaction holds on the order of ten
+  thousand small records — a few kibibytes of real memory each — before the
+  buffered footprint passes 64 MiB and the next write stops at its span with
   `write.transaction_too_large`. The cap trips while the buffer is still bounded,
   so a large transaction fails closed instead of being OOM-killed. Like every
   fault, a surrounding `catch` can bind it, and the aborted transaction commits

@@ -332,11 +332,14 @@ pub const TRANSACTION_WRITE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 /// serialize: the record's presence and data-node allocations, the redb leaf/branch
 /// pages its subtree dirties, the pending-tree branch nodes above its cells, and
 /// allocator slack. A record's cells share this structure, so the real footprint is
-/// dominated by a per-record cost, not a flat per-cell one — measured peak RSS holds
-/// about four kibibytes per record whether the record is a single-int two-cell row or
-/// a several-field row. The breadth budget charges this base once per staged managed
-/// write, then adds each cell's own [`TRANSACTION_WRITE_STEP_OVERHEAD`] plus its
-/// variable value, key, path, and index-key bytes. Without the base a flood of tiny
+/// dominated by a per-record cost with a smaller per-cell increment. The breadth
+/// budget charges this base once per staged managed write, then adds each cell's own
+/// [`TRANSACTION_WRITE_STEP_OVERHEAD`] plus its variable value, key, path, and
+/// index-key bytes. The meter is deliberately an approximation that tracks measured
+/// peak RSS within a small constant factor: close for records of a few cells,
+/// undershooting by about 2x for very wide records whose real per-cell cost is
+/// roughly double the per-cell charge — so the budget bounds real buffered memory at
+/// low hundreds of megabytes in the worst case. Without the base a flood of tiny
 /// records would buffer gigabytes while staying nominally under the byte ceiling.
 pub(crate) const TRANSACTION_WRITE_RECORD_OVERHEAD: usize = 4096;
 

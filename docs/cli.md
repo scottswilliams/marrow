@@ -417,6 +417,10 @@ auto-apply saved data.
 - The server processes at most one request per connection, rejects trailing
   bytes already buffered after the declared body, returns `Connection: close`,
   and never reads a second request from the connection.
+- A response must be fully transmitted within the stream timeout (15 seconds);
+  a client that reads too slowly to drain a large response within it is
+  disconnected mid-body. Page large reads with cursor pagination rather than
+  fetching very large payloads in one response.
 - Responses are JSON. Success returns the operation response envelope. Failures
   return a sanitized `{ "code": "surface.*", "message": "..." }` envelope with
   no source path, store path, or raw backend detail.
