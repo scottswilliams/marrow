@@ -87,6 +87,8 @@ mod surface_client_cli;
 mod surface_serve_cli;
 #[path = "cases/test_cli.rs"]
 mod test_cli;
+#[path = "cases/tidy_prose_assertions.rs"]
+mod tidy_prose_assertions;
 #[path = "cases/trace_cli.rs"]
 mod trace_cli;
 #[path = "cases/usage_cli.rs"]
