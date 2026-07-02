@@ -92,7 +92,13 @@ fn evolve_apply_refreshes_declared_client() {
 
     // Refreshing is not enough: the written client must match the surface `check --locked`
     // recomputes from the freshly committed catalog, so CI is green immediately after apply.
-    let locked = marrow(&["check", "--locked", "--format", "json", root.to_str().unwrap()]);
+    let locked = marrow(&[
+        "check",
+        "--locked",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(
         locked.status.code(),
         Some(0),
@@ -154,10 +160,22 @@ fn evolve_apply_over_a_required_default_leaves_the_locked_check_green() {
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
 
     write(&root, "src/app.mw", REQUIRED_DEFAULT_SOURCE);
-    let apply = marrow(&["evolve", "apply", "--format", "json", root.to_str().unwrap()]);
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(apply.status.code(), Some(0), "apply: {apply:?}");
 
-    let locked = marrow(&["check", "--locked", "--format", "json", root.to_str().unwrap()]);
+    let locked = marrow(&[
+        "check",
+        "--locked",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
     assert_eq!(
         locked.status.code(),
         Some(0),
