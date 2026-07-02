@@ -375,6 +375,7 @@ impl<'a> DeclParser<'a> {
         let ty = type_tokens.and_then(|tokens| {
             if !tokens.is_empty() {
                 if let Err(error) = reject_structural_type_tokens(
+                    self.source,
                     tokens,
                     ExpectedSyntax::ConstType,
                     "expected const type annotation",

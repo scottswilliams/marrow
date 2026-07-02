@@ -101,6 +101,7 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
             ));
         }
         reject_structural_type_tokens(
+            source,
             ty_tokens,
             ExpectedSyntax::FunctionReturnType,
             "expected return type after `:`",
@@ -178,6 +179,7 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
                 ));
             }
             reject_structural_type_tokens(
+                source,
                 ty_before_default,
                 ExpectedSyntax::ParameterType,
                 "expected parameter type annotation",
@@ -188,6 +190,7 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
             ));
         }
         reject_structural_type_tokens(
+            source,
             ty_tokens,
             ExpectedSyntax::ParameterType,
             "expected parameter type annotation",

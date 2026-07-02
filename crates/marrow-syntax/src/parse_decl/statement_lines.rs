@@ -135,7 +135,7 @@ fn parse_const_or_var(
             "expected const type annotation"
         };
         if let Err(error) =
-            reject_structural_type_tokens(&line[type_start..type_end], expected, message)
+            reject_structural_type_tokens(source, &line[type_start..type_end], expected, message)
         {
             push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
             return None;
@@ -326,6 +326,7 @@ pub(super) fn parse_if_const_head(
             return None;
         }
         if let Err(error) = reject_structural_type_tokens(
+            source,
             &line[type_start..type_end],
             ExpectedSyntax::ConstType,
             "expected const type annotation",
@@ -402,6 +403,7 @@ pub(super) fn parse_catch_header(
     let ty = match header.get(1) {
         Some(colon) if colon.kind == TokenKind::Colon && header.len() > 2 => {
             reject_structural_type_tokens(
+                source,
                 &header[2..],
                 ExpectedSyntax::ParameterType,
                 "expected catch type annotation",

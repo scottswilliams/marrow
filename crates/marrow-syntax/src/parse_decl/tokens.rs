@@ -227,6 +227,7 @@ pub(super) fn expr_of_in_header(
     ExprParser::new(source, tokens).parse_complete_in_header(diagnostics)
 }
 pub(super) fn reject_structural_type_tokens(
+    source: &str,
     tokens: &[Token],
     expected: ExpectedSyntax,
     message: &'static str,
@@ -257,21 +258,42 @@ pub(super) fn reject_structural_type_tokens(
     // type position is the double-optional spelling, which optionality forbids.
     let end = type_token_len(tokens);
     if let Some(trailing) = tokens.get(end) {
-        let message = if matches!(
+        // A complete type production already precedes this token, so the type is
+        // present; naming the stray token is accurate, where reusing the caller's
+        // "expected <type>" prose would falsely report the type as missing. A
+        // doubled `??`/`?.` is the double-optional spelling, which optionality
+        // forbids, so it keeps its own guidance.
+        let detail: Cow<str> = if matches!(
             trailing.kind,
             TokenKind::QuestionQuestion | TokenKind::QuestionDot
         ) {
-            "an optional type is written `T?`"
+            Cow::Borrowed("an optional type is written `T?`")
         } else {
-            message
+            Cow::Owned(format!(
+                "unexpected `{}` after the {}",
+                trailing.text(source),
+                type_context_noun(expected)
+            ))
         };
         return Err(ParseError::at(
             trailing.span,
             ParseDiagnosticReason::Expected(expected),
-            message,
+            detail,
         ));
     }
     Ok(())
+}
+
+/// The noun for the type position a stray trailing token followed, so a
+/// rejection names the context ("field type", "parameter type", ...) it was
+/// parsing rather than a generic "type".
+fn type_context_noun(expected: ExpectedSyntax) -> &'static str {
+    match expected {
+        ExpectedSyntax::FieldType => "field type",
+        ExpectedSyntax::ParameterType => "parameter type",
+        ExpectedSyntax::FunctionReturnType => "return type",
+        _ => "type",
+    }
 }
 
 /// The number of leading tokens that make up one complete type production: the

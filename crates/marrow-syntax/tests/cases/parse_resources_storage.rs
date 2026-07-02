@@ -57,6 +57,89 @@ fn malformed_resource_header_reports_the_resource_rule() {
 }
 
 #[test]
+fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
+    // A store-body line beginning with a keyed-layer clause keyword such as
+    // `unique` is not a member; it gets the same member-shape rule a non-keyword
+    // junk word gets, not the bare "expected resource member name".
+    let parsed = parse_source(
+        "module app\n\
+         resource User\n\
+         \x20   required email: string\n\
+         store ^users(id: int): User\n\
+         \x20   unique index byEmail(email)\n",
+    );
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::ResourceMemberSyntax
+            ))
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("expected resource member name")),
+        "a leading clause keyword must not get the bare member-name message: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn trailing_keyed_layer_clause_after_a_type_names_the_stray_token() {
+    for clause in ["retain", "counted", "unique"] {
+        let source = format!(
+            "module app\n\
+             resource User\n\
+             \x20   tags(pos: int): string {clause}\n\
+             store ^users(id: int): User\n"
+        );
+        let parsed = parse_source(&source);
+
+        assert!(parsed.has_errors(), "{clause}: {:#?}", parsed.diagnostics);
+        let message = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            !message.contains("expected field type after `:`"),
+            "{clause}: the type is present, so the fault must not claim a missing type: {message}"
+        );
+        assert!(
+            message.contains(clause),
+            "{clause}: the fault names the stray clause token: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_genuinely_missing_field_type_still_reports_the_missing_type() {
+    let parsed = parse_source(
+        "module app\n\
+         resource User\n\
+         \x20   tags(pos: int):\n\
+         store ^users(id: int): User\n",
+    );
+
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("expected field type after `:`")),
+        "a genuinely missing type keeps the missing-type message: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn split_resource_body_rejects_index_members() {
     let parsed = parse_source(
         "module app\n\

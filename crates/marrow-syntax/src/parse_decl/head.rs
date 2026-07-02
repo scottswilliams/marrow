@@ -270,6 +270,7 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
             ));
         }
         reject_structural_type_tokens(
+            source,
             &part[2..],
             ExpectedSyntax::KeyType,
             "expected key type annotation",
@@ -389,6 +390,24 @@ pub(super) fn parse_field_or_group_tokens(
         Some(token) if token.kind == TokenKind::Identifier => {
             (token.text(source).to_string(), token.span)
         }
+        // A line that begins with a keyed-layer clause spelling such as `unique`
+        // — a keyword that does not go on to name a field (`:`) or keyed field
+        // (`(`) — is a malformed member, not a missing name. Report the
+        // member-shape rule naming what is allowed here, the same diagnostic a
+        // non-keyword junk word reaches. A keyword followed by `:`/`(` is instead
+        // a reserved word used as a member name, which keeps the member-name rule.
+        Some(token)
+            if matches!(token.kind, TokenKind::Keyword(_))
+                && !matches!(
+                    rest.get(1).map(|next| next.kind),
+                    Some(TokenKind::Colon | TokenKind::LeftParen)
+                ) =>
+        {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceMemberSyntax),
+                "expected resource field, keyed field, group, or index",
+            ));
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceMemberName),
@@ -421,6 +440,7 @@ pub(super) fn parse_field_or_group_tokens(
             ));
         }
         reject_structural_type_tokens(
+            source,
             ty_tokens,
             ExpectedSyntax::FieldType,
             "expected field type after `:`",
