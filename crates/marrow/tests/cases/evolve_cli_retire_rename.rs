@@ -1860,3 +1860,112 @@ fn a_fresh_checkout_seeds_a_kept_retire_block_from_the_lock()
 
     Ok(())
 }
+
+/// The source for a project whose enum `Cat` (spelled `enum_name`) backs a populated `Pet.kind`.
+/// `seed` writes one record carrying `<enum>::bengal`; `evolve` inserts the rename block. The file
+/// is `src/books.mw`, so the module must be `books`.
+fn enum_backed_pet_source(enum_name: &str, evolve: &str) -> String {
+    format!(
+        "module books\n\
+         pub enum {enum_name}\n\
+         \x20   bengal\n\
+         \x20   housecat\n\
+         resource Pet\n\
+         \x20   required kind: {enum_name}\n\
+         store ^pets(id: int): Pet\n\
+         {evolve}\
+         pub fn seed()\n\
+         \x20   var p: Pet\n\
+         \x20   p.kind = {enum_name}::bengal\n\
+         \x20   transaction\n\
+         \x20       ^pets(1) = p\n"
+    )
+}
+
+/// Renaming a whole enum over populated data carries every stored value forward: the members keep
+/// their accepted identity under the new enum path, so `evolve apply` mutates zero records and the
+/// stored `Cat::bengal` still decodes as `Animal::bengal`. Without the member cascade the members
+/// would mint fresh ids, orphaning every stored cell — preview/apply would bless it and `data get`
+/// would read `<undecodable enum>`.
+#[test]
+fn evolve_apply_of_a_whole_enum_rename_keeps_stored_values_decodable() {
+    let root = native_books_project("evolve-enum-rename-e2e", &enum_backed_pet_source("Cat", ""));
+    let dir = root.to_str().expect("project path utf-8");
+    assert_eq!(
+        marrow(&["run", "--entry", "books::seed", dir]).status.code(),
+        Some(0),
+        "seed one populated record",
+    );
+
+    write(
+        &root,
+        "src/books.mw",
+        &enum_backed_pet_source("Animal", "evolve\n\x20   rename Cat -> Animal\n"),
+    );
+
+    let apply = marrow(&["evolve", "apply", "--no-backup", dir]);
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "an identity-preserving whole-enum rename applies clean: {apply:?}",
+    );
+
+    let integrity = marrow(&["data", "integrity", dir]);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "every stored enum cell must still decode after the rename: {integrity:?}",
+    );
+    let get = marrow(&["data", "get", dir, "^pets(1).kind"]);
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    assert!(
+        String::from_utf8_lossy(&get.stdout).contains("books::Animal::bengal"),
+        "the stored value decodes under the renamed enum: {get:?}",
+    );
+}
+
+/// Renaming an enum while also DROPPING one of its members over stored data naming that member is
+/// data loss, not an identity-preserving rename. The member cascade carries the surviving members
+/// forward, but the dropped member's stored value would orphan, so discharge must fence it closed
+/// (an explicit retire or transform is required) rather than bless a zero-mutation activation, and
+/// the refused apply must commit nothing.
+#[test]
+fn evolve_apply_of_an_enum_rename_that_drops_a_populated_member_fails_closed() {
+    let root =
+        native_books_project("evolve-enum-rename-drop-member", &enum_backed_pet_source("Cat", ""));
+    let dir = root.to_str().expect("project path utf-8");
+    assert_eq!(
+        marrow(&["run", "--entry", "books::seed", dir]).status.code(),
+        Some(0),
+        "seed one record carrying the member that will be dropped",
+    );
+    let epoch_before = store_epoch(&root);
+
+    // Rename the enum AND drop `bengal`, which the stored record still names.
+    let dropped = "module books\n\
+         pub enum Animal\n\
+         \x20   housecat\n\
+         resource Pet\n\
+         \x20   required kind: Animal\n\
+         store ^pets(id: int): Pet\n\
+         evolve\n\
+         \x20   rename Cat -> Animal\n\
+         pub fn seed()\n\
+         \x20   var p: Pet\n\
+         \x20   p.kind = Animal::housecat\n\
+         \x20   transaction\n\
+         \x20       ^pets(1) = p\n";
+    write(&root, "src/books.mw", dropped);
+
+    let apply = marrow(&["evolve", "apply", "--no-backup", dir]);
+    assert_ne!(
+        apply.status.code(),
+        Some(0),
+        "dropping a populated enum member must fail closed, not bless an orphan: {apply:?}",
+    );
+    assert_eq!(
+        store_epoch(&root),
+        epoch_before,
+        "a refused apply must commit nothing: the store epoch is unchanged",
+    );
+}

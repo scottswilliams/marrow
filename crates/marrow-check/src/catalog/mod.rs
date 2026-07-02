@@ -1610,21 +1610,27 @@ fn resolve_renames(
 /// The descendant kind a rename of `kind` carries its whole accepted subtree forward for, or
 /// `None` when a rename relocates only the named entry. An entry's saved-data identity is keyed
 /// on its full ancestor path, so renaming an ancestor must relocate every descendant too or its
-/// stored values would orphan even though a rename is identity-preserving: renaming an enum
-/// category (`Pet::mammal`) carries its descendant enum members, and renaming a resource (`Book`)
-/// carries its resource members (`Book::note`).
+/// stored values would orphan even though a rename is identity-preserving. The match is exhaustive
+/// so a new catalog kind cannot silently omit its cascade: adding one forces a decision here.
 fn cascade_descendant_kind(kind: CatalogEntryKind) -> Option<CatalogEntryKind> {
     match kind {
-        CatalogEntryKind::EnumMember => Some(CatalogEntryKind::EnumMember),
+        // A resource carries its members (`Book::note`); an enum carries its members
+        // (`Cat::bengal`); an enum category (`Pet::mammal`) or a member group (`Book::name`)
+        // carries the members nested beneath it.
         CatalogEntryKind::Resource => Some(CatalogEntryKind::ResourceMember),
-        _ => None,
+        CatalogEntryKind::ResourceMember => Some(CatalogEntryKind::ResourceMember),
+        CatalogEntryKind::Enum => Some(CatalogEntryKind::EnumMember),
+        CatalogEntryKind::EnumMember => Some(CatalogEntryKind::EnumMember),
+        // A store's saved data is keyed on the store's own stable id, not its path, and a store
+        // index is a derived cell rebuilt on apply, so relocating either orphans no stored leaf.
+        CatalogEntryKind::Store | CatalogEntryKind::StoreIndex => None,
     }
 }
 
 /// Carry every descendant's identity forward when its ancestor is renamed. A saved leaf's
-/// identity is keyed on its full ancestor path, so renaming an enum category
-/// (`Pet::mammal` -> `Pet::beast`) or a resource (`Book` -> `Volume`) must relocate each
-/// descendant (`Pet::mammal::dog` -> `Pet::beast::dog`, `Book::note` -> `Volume::note`) too, or
+/// identity is keyed on its full ancestor path, so renaming an enum (`Cat` -> `Animal`), an enum
+/// category (`Pet::mammal` -> `Pet::beast`), or a resource (`Book` -> `Volume`) must relocate each
+/// descendant (`Cat::bengal` -> `Animal::bengal`, `Book::note` -> `Volume::note`) too, or
 /// its stored values would orphan even though a rename is identity-preserving. The explicit
 /// rename names the ancestor; the subtree below it travels automatically from the accepted
 /// catalog, so a developer never spells out a per-descendant rename for a structurally unchanged
@@ -2981,6 +2987,21 @@ mod tests {
             10,
             "max favors the larger accepted epoch"
         );
+    }
+
+    /// Every catalog kind that has an identity-keyed subtree must cascade a rename to it, or its
+    /// descendants' stored values orphan. `cascade_descendant_kind` is exhaustive, so a new kind
+    /// forces a compile-time decision here; this pins the current mapping so a wrong decision is
+    /// caught loudly rather than silently orphaning data.
+    #[test]
+    fn cascade_covers_every_kind_with_an_identity_keyed_subtree() {
+        use CatalogEntryKind::{Enum, EnumMember, Resource, ResourceMember, Store, StoreIndex};
+        assert_eq!(cascade_descendant_kind(Resource), Some(ResourceMember));
+        assert_eq!(cascade_descendant_kind(ResourceMember), Some(ResourceMember));
+        assert_eq!(cascade_descendant_kind(Enum), Some(EnumMember));
+        assert_eq!(cascade_descendant_kind(EnumMember), Some(EnumMember));
+        assert_eq!(cascade_descendant_kind(Store), None);
+        assert_eq!(cascade_descendant_kind(StoreIndex), None);
     }
 
     /// A committed lock entry carrying `stable_id` and a rename `alias` for `(kind, path)`, the

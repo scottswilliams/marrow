@@ -1075,6 +1075,87 @@ fn unresolved_evolve_target_anchors_at_the_target_token() {
     );
 }
 
+/// Renaming a whole enum carries its members forward on their accepted identity: a stored enum
+/// value is keyed on the member's stable id, so minting fresh member ids would orphan every saved
+/// cell even though a rename is identity-preserving. The proposal must keep each member's accepted
+/// id under the new enum path and record the old spelling as an alias.
+#[test]
+fn evolve_rename_of_a_whole_enum_carries_its_members_forward() {
+    let root = temp_project("evolve-rename-enum-cascade", |root| {
+        write(
+            root,
+            "src/pets.mw",
+            "module pets\n\
+             enum Animal\n\
+             \x20   bengal\n\
+             \x20   housecat\n\
+             resource Pet\n\
+             \x20   required kind: Animal\n\
+             store ^pets(id: int): Pet\n\
+             evolve\n\
+             \x20   rename Cat -> Animal\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Enum, "pets::Cat", "enum-cat", &[]),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "pets::Cat::bengal",
+                "member-bengal",
+                &[],
+            ),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "pets::Cat::housecat",
+                "member-housecat",
+                &[],
+            ),
+            entry(CatalogEntryKind::Resource, "pets::Pet", "res-pet", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "pets::Pet::kind",
+                "member-kind",
+                &[],
+            ),
+            entry(CatalogEntryKind::Store, "pets::^pets", "store-pets", &[]),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "a whole-enum rename must satisfy the catalog binding: {:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    for (member, id) in [("bengal", "member-bengal"), ("housecat", "member-housecat")] {
+        let new_path = format!("pets::Animal::{member}");
+        let old_path = format!("pets::Cat::{member}");
+        let carried = proposal
+            .entries
+            .iter()
+            .find(|entry| entry.kind == CatalogEntryKind::EnumMember && entry.path == new_path)
+            .unwrap_or_else(|| panic!("member `{new_path}` in proposal: {:#?}", proposal.entries));
+        assert_eq!(
+            carried.stable_id,
+            derived_id(id),
+            "member `{member}` must keep its accepted id, not mint a fresh one",
+        );
+        assert!(
+            carried.aliases.iter().any(|alias| alias == &old_path),
+            "member `{member}` must record its old spelling as an alias: {carried:#?}",
+        );
+        assert!(
+            !proposal.entries.iter().any(|entry| entry.path == old_path),
+            "the old member path must not linger as a separate entry: {:#?}",
+            proposal.entries
+        );
+    }
+}
+
 /// A rename whose source names an accepted entry but whose DESTINATION the current source does not
 /// declare fails on the destination, not the source: `Book.title` is a real accepted member, so the
 /// carry-forward message ("does not name an accepted catalog entry to carry forward") misattributes
