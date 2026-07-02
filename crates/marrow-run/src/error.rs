@@ -322,24 +322,31 @@ pub const WRITE_TRANSACTION_TOO_LARGE: &str = "write.transaction_too_large";
 
 /// The most staged write payload one transaction may buffer before raising
 /// [`WRITE_TRANSACTION_TOO_LARGE`]. A transaction holds its whole write set in
-/// memory until commit, so this ceiling bounds that buffer. It is generous — far
-/// above any ordinary atomic seed or migration — yet well below the point where
-/// the buffer would exhaust host memory. Fixed in v0.1, not configurable.
+/// memory until commit, so this ceiling bounds that buffer against the metered real
+/// footprint (a per-record base plus per-cell overhead and variable bytes): one
+/// transaction holds on the order of ten thousand small records, well below the point
+/// where the buffer would exhaust host memory. Fixed in v0.1, not configurable.
 pub const TRANSACTION_WRITE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// Fixed real memory a single staged cell pins regardless of how few bytes it
-/// serializes: the plan-step and pending-tree node allocations, the redb
-/// leaf/branch pages it dirties, and allocator slack. The breadth budget charges
-/// this on top of each cell's variable value bytes and its variable key, path,
-/// and index-key bytes, so the metered total tracks real buffered memory for both
-/// large-value and large-key writes. Without the fixed charge a flood of tiny
-/// single-int writes would buffer gigabytes while staying nominally under the
-/// byte ceiling. Calibrated against measured peak RSS: a transaction of
-/// single-int records (two staged cells apiece) holds about four kibibytes of
-/// real memory per record, so each staged cell is charged about two kibibytes,
-/// rounded up for a margin that trips before real memory reaches the budget
-/// without refusing ordinary moderate transactions.
-pub(crate) const TRANSACTION_WRITE_STEP_OVERHEAD: usize = 2560;
+/// Fixed real memory one staged record pins regardless of how few bytes its cells
+/// serialize: the record's presence and data-node allocations, the redb leaf/branch
+/// pages its subtree dirties, the pending-tree branch nodes above its cells, and
+/// allocator slack. A record's cells share this structure, so the real footprint is
+/// dominated by a per-record cost, not a flat per-cell one — measured peak RSS holds
+/// about four kibibytes per record whether the record is a single-int two-cell row or
+/// a several-field row. The breadth budget charges this base once per staged managed
+/// write, then adds each cell's own [`TRANSACTION_WRITE_STEP_OVERHEAD`] plus its
+/// variable value, key, path, and index-key bytes. Without the base a flood of tiny
+/// records would buffer gigabytes while staying nominally under the byte ceiling.
+pub(crate) const TRANSACTION_WRITE_RECORD_OVERHEAD: usize = 4096;
+
+/// The marginal real memory each additional staged cell pins beyond its record's
+/// shared [`TRANSACTION_WRITE_RECORD_OVERHEAD`]: its own pending-tree entry and
+/// allocator slack. Kept well below the per-record base because a record's cells share
+/// the record's pages rather than each pinning a fresh set, so a several-cell record is
+/// charged near a per-record cost rather than a multiple of it. Charged on top of each
+/// cell's variable value, key, path, and index-key bytes.
+pub(crate) const TRANSACTION_WRITE_STEP_OVERHEAD: usize = 512;
 
 fn reject_public_depth_code(code: &'static str) {
     assert_ne!(code, RUN_DEPTH, "use the runtime call-depth constructor");

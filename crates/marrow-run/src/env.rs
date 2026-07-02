@@ -12,8 +12,8 @@ use marrow_syntax::SourceSpan;
 
 use crate::error::{
     Located, RUN_TRANSACTION_HOST_EFFECT, RUN_TRAVERSAL, RuntimeError,
-    TRANSACTION_WRITE_BYTE_BUDGET, TRANSACTION_WRITE_STEP_OVERHEAD, raise_fault,
-    transaction_too_large, write_fault,
+    TRANSACTION_WRITE_BYTE_BUDGET, TRANSACTION_WRITE_RECORD_OVERHEAD,
+    TRANSACTION_WRITE_STEP_OVERHEAD, raise_fault, transaction_too_large, write_fault,
 };
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
@@ -885,16 +885,25 @@ fn build_commit_metadata_stamp(
     )))
 }
 
-/// Real buffered memory a plan's steps add to the open transaction. Each staged
-/// cell pins a fixed per-cell footprint (keyed value allocation, redb pending-tree
-/// pages, allocator slack) plus its payload bytes plus its variable-length key
-/// and path bytes, so a large value or a large composite key is dominated by its
-/// bytes while a flood of tiny single-int writes is dominated by the per-cell
-/// footprint. The key bytes ride every step that carries the identity, so a
-/// multi-kilobyte key scales the charge linearly rather than hiding under the
-/// flat per-cell constant. The metadata stamp is store-internal and excluded.
+/// Real buffered memory a plan's steps add to the open transaction. A managed write
+/// pins a per-record base ([`TRANSACTION_WRITE_RECORD_OVERHEAD`]) — its shared subtree
+/// pages, pending-tree branches, and allocator slack — charged once for the plan, then
+/// each staged cell adds its own small per-cell overhead plus its payload bytes and its
+/// variable-length key and path bytes. So a large value or a large composite key is
+/// dominated by its bytes, a flood of tiny records is dominated by the per-record base
+/// rather than a per-cell multiple, and a multi-kilobyte key scales the charge linearly
+/// through every step that carries the identity. A plan with only the store-internal
+/// metadata stamp pins no record, so it is charged nothing.
 fn plan_staged_bytes(plan: &WritePlan) -> usize {
-    plan.steps.iter().map(step_staged_bytes).sum()
+    let cell_bytes: usize = plan.steps.iter().map(step_staged_bytes).sum();
+    if plan
+        .steps
+        .iter()
+        .all(|step| matches!(step, PlanStep::StampMetadata { .. }))
+    {
+        return cell_bytes;
+    }
+    cell_bytes.saturating_add(TRANSACTION_WRITE_RECORD_OVERHEAD)
 }
 
 fn step_staged_bytes(step: &PlanStep) -> usize {

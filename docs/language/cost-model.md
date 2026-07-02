@@ -131,16 +131,19 @@ how much work a loop may do.
   observed attempted depth.
 - **Transaction-breadth budget (64 MiB).** A `transaction` buffers its whole
   pending write set in memory until it commits. The budget measures that real
-  buffered footprint — each staged cell's value bytes, its key, path, and
-  index-key bytes, plus the fixed per-cell memory it pins — not the logical
-  serialized payload, so a flood of tiny writes and a few large-keyed writes are
-  bounded as tightly as a few large values. Once the buffered footprint passes
-  64 MiB, the next write stops at its span with `write.transaction_too_large`.
-  This is generous — far above any ordinary atomic seed or migration — and the cap
-  trips while the buffer is still bounded, so a large transaction fails closed
-  instead of being OOM-killed. Like every fault, a surrounding `catch` can bind
-  it, and the aborted transaction commits nothing. Split an oversized atomic write
-  into smaller transactions.
+  buffered footprint, not the logical serialized payload: each staged record pins
+  a per-record base (about four kibibytes of shared subtree pages and allocator
+  slack, whatever its cell count), and each of its cells adds a small per-cell
+  overhead plus its value, key, path, and index-key bytes. So a flood of tiny
+  records and a few large-keyed writes are bounded as tightly as a few large
+  values, and a multi-field record is charged near a per-record cost rather than a
+  multiple of it. In practice one transaction holds on the order of ten thousand
+  small records — a few kibibytes of real memory each — before the buffered
+  footprint passes 64 MiB and the next write stops at its span with
+  `write.transaction_too_large`. The cap trips while the buffer is still bounded,
+  so a large transaction fails closed instead of being OOM-killed. Like every
+  fault, a surrounding `catch` can bind it, and the aborted transaction commits
+  nothing. Split an atomic write larger than the budget into smaller transactions.
 
 These ceilings are fixed in v0.1 and not configurable. The user-visible contract
 is the diagnostic: deeply nested source, unbounded recursion, or an unbounded

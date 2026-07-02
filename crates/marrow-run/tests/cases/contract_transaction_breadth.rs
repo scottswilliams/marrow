@@ -162,6 +162,60 @@ const TINY_RECORDS_OVER_BUDGET: i64 = 30_000;
 /// well under the budget, must all succeed.
 const TINY_BATCH_SIZE: i64 = 5_000;
 
+/// Records with several small cells apiece (two short string fields, no index). Their
+/// real buffered footprint is dominated by a per-record cost their cells share, not by a
+/// per-cell multiple, so an ordinary atomic seed of several thousand such records stays
+/// well under the budget. A flat per-cell charge overstated the footprint of a
+/// multi-cell record by its cell count and falsely rejected this seed.
+const MULTICELL_SEED: &str = "\
+resource Row
+    required a: string
+    required b: string
+store ^rows(id: int): Row
+
+pub fn seedRows(n: int)
+    transaction
+        for id in 1..=n
+            ^rows(id) = Row(a: \"x\", b: \"y\")
+
+pub fn rowCount(): int
+    var c = 0
+    for r in ^rows
+        c = c + 1
+    return c
+";
+
+/// An ordinary atomic seed: several thousand multi-cell records. A flat per-cell charge
+/// metered this near the 64 MiB cap and rejected it; a per-record charge meters its real
+/// footprint (a small fraction of the budget), so it commits.
+const MULTICELL_ORDINARY_SEED: i64 = 6_500;
+
+#[test]
+fn an_ordinary_multi_cell_record_seed_commits() {
+    // Several thousand records of two short string fields is an ordinary atomic seed whose
+    // real buffered footprint is a small fraction of the budget. Charging a per-record base
+    // rather than a flat per-cell constant meters that real footprint, so the seed commits
+    // instead of tripping the cap on a fabricated multiple of its cell count.
+    let program = checked_program(MULTICELL_SEED);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::seedRows",
+            Value::Int(MULTICELL_ORDINARY_SEED)
+        ),
+    )
+    .expect("an ordinary multi-cell-record seed commits");
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::rowCount"))
+            .expect("count records")
+            .value,
+        Some(Value::Int(MULTICELL_ORDINARY_SEED)),
+        "every record in the ordinary seed persists",
+    );
+}
+
 #[test]
 fn a_tiny_payload_flood_aborts_on_real_buffered_footprint() {
     // Single-int records carry only a few payload bytes each, yet their real
