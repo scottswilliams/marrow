@@ -365,8 +365,8 @@ regardless of the live project's lock. The activation rule cannot see a rollback
 that resets the whole store body to an old epoch: such a store is locally
 indistinguishable from a checkout that never advanced past that epoch, so a root
 activated later reads as legitimately absent even when the rollback destroyed
-its records. Store-side commit records are the mechanism that closes that hole;
-this witness does not claim to.
+its records. Store-side commit records are the planned mechanism that would
+close that hole; this witness does not claim to.
 
 Catalog state is not store corruption. A saved root or member whose durable
 identity is still pending is treated as absent until a run or evolution apply

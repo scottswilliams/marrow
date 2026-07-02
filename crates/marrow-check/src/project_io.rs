@@ -557,25 +557,49 @@ pub enum LockProjection {
 
 /// The activation epoch of each active saved root the projection records. A root the committed
 /// lock already stamps keeps its recorded epoch, so activation history is stable across
-/// re-projections; a root the lock has never seen is stamped at the snapshot's epoch — the epoch
-/// of the activation that introduced it, since the lock is re-projected in the same command that
-/// commits an activation. A lock deleted (or written before activations were recorded) between an
-/// activation and the next projection loses that root's true epoch and stamps the later projection
-/// epoch instead; the misclassification direction is store-behind, never a false corruption, and
-/// store-side commit records are the mechanism that closes it.
+/// re-projections. A root NEW to the lock — absent from the existing lock's active `Store`
+/// entries — is stamped at the snapshot's epoch: the epoch of the activation that introduced it,
+/// since the lock is re-projected in the same command that commits an activation.
+///
+/// A root the existing lock already records WITHOUT a stamp stays unstamped. Its true activation
+/// epoch is unknown (the lock predates activation recording), and stamping the current projection
+/// epoch would teach the witness to bless, as merely behind, an older store missing a root that
+/// store's own epoch covers — one innocuous refresh would permanently downgrade every
+/// pre-existing root's loss protection. Unstamped reads as activated at the beginning of time,
+/// preserving the strict pre-recording semantics. The same fail-closed policy covers a projection
+/// with no existing lock at all (the first projection, or a deleted lock re-derived from the
+/// store): every root stays unstamped, so a missing root always reads as a loss; the cost is that
+/// a teammate's store legitimately behind such a root is classified as corrupt until the root is
+/// stamped by a later activation. Store-side commit records are the planned mechanism that would
+/// recover true activation history; this projection does not guess it.
 fn root_activations(
     existing: Option<&marrow_catalog::CatalogLock>,
     snapshot: &marrow_catalog::CatalogMetadata,
     active: &[marrow_catalog::LockEntry],
 ) -> std::collections::BTreeMap<String, u64> {
+    let Some(existing) = existing else {
+        return std::collections::BTreeMap::new();
+    };
+    let known_roots: std::collections::HashSet<&str> = existing
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == marrow_catalog::CatalogEntryKind::Store
+                && entry.lifecycle == marrow_catalog::CatalogLifecycle::Active
+        })
+        .map(|entry| entry.path.as_str())
+        .collect();
     active
         .iter()
         .filter(|entry| entry.kind == marrow_catalog::CatalogEntryKind::Store)
-        .map(|entry| {
-            let recorded = existing
-                .and_then(|lock| lock.root_activations.get(&entry.path))
-                .copied();
-            (entry.path.clone(), recorded.unwrap_or(snapshot.epoch))
+        .filter_map(|entry| {
+            if let Some(recorded) = existing.root_activations.get(&entry.path) {
+                Some((entry.path.clone(), *recorded))
+            } else if !known_roots.contains(entry.path.as_str()) {
+                Some((entry.path.clone(), snapshot.epoch))
+            } else {
+                None
+            }
         })
         .collect()
 }

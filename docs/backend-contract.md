@@ -213,8 +213,8 @@ missing-lock case. The activation rule cannot see a rollback that resets the
 whole store body to an old epoch: such a store is locally indistinguishable from
 a checkout that never advanced past that epoch, so a root activated later reads
 as legitimately absent even when the rollback destroyed its records. Store-side
-commit records are the mechanism that closes that hole; this witness does not
-claim to.
+commit records are the planned mechanism that would close that hole; this
+witness does not claim to.
 
 A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
 The commit stamp is the single durable owner of the stamped catalog epoch,

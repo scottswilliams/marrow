@@ -978,8 +978,8 @@ fn is_active_store_root(kind: CatalogEntryKind, lifecycle: CatalogLifecycle) -> 
 /// The activation rule cannot see a rollback that resets the whole store body to an old epoch:
 /// such a store is locally indistinguishable from a checkout that never advanced past that epoch,
 /// so a root activated later reads as legitimately absent even when the rollback destroyed its
-/// records. Store-side commit records are the mechanism that closes that hole; this witness does
-/// not claim to.
+/// records. Store-side commit records are the planned mechanism that would close that hole; this
+/// witness does not claim to.
 pub fn verify_store_roots_against_lock(
     store: &TreeStore,
     lock: Option<&marrow_catalog::CatalogLock>,

@@ -1274,11 +1274,11 @@ fn notes_and_tags_source() -> String {
     )
 }
 
-/// The git-pull state after a teammate's activation added a NEW saved root: the committed lock
-/// records `^tags` activated at epoch 2, while this checkout's store sits at epoch 1 and never
-/// held it. The project's source and lock are the post-pull, two-root state; only the store body
-/// is the pre-activation one. Returns the project and its dir.
-fn behind_store_under_a_newly_activated_root(name: &str) -> (support::TempProject, String) {
+/// A project taken through a real root activation: `^notes` seeded at epoch 1, then `^tags` added
+/// and auto-applied to epoch 2. The committed lock records `^tags` activated at 2, while the
+/// baseline `^notes` — first projected with no prior lock — stays unstamped, the strict
+/// fail-closed default. Returns the project, its dir, and the saved epoch-1 store body.
+fn two_root_activation_project(name: &str) -> (support::TempProject, String, Vec<u8>) {
     let project = temp_project_uncommitted(name, |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", &mutable_count_source(1));
@@ -1311,15 +1311,117 @@ fn behind_store_under_a_newly_activated_root(name: &str) -> (support::TempProjec
     );
     assert_eq!(
         lock.root_activations.get("app::^notes").copied(),
-        Some(1),
-        "the baseline root keeps its recorded activation epoch: {:?}",
+        None,
+        "a root first projected with no prior lock stays unstamped, the strict fail-closed \
+         default: {:?}",
         lock.root_activations,
     );
+    (project, dir, epoch_one_body)
+}
 
+/// The git-pull state after a teammate's activation added a NEW saved root: the committed lock
+/// records `^tags` activated at epoch 2, while this checkout's store sits at epoch 1 and never
+/// held it. The project's source and lock are the post-pull, two-root state; only the store body
+/// is the pre-activation one. Returns the project and its dir.
+fn behind_store_under_a_newly_activated_root(name: &str) -> (support::TempProject, String) {
+    let (project, dir, epoch_one_body) = two_root_activation_project(name);
     // Roll only the store body back to the pre-activation epoch: the local checkout's store.
     std::fs::write(store_path(&project), epoch_one_body).expect("restore the epoch-1 store body");
     assert_eq!(support_evolve::store_epoch(&project), Some(1));
     (project, dir)
+}
+
+/// A lock written before activation recording (simulated by stripping `rootActivations`) must not
+/// gain stamps from an innocuous refresh: the roots' true activation epochs are unknown, and
+/// stamping the current projection epoch would teach the witness to bless, as merely behind, an
+/// older store missing a root that store's own epoch covers — one refresh would permanently
+/// downgrade every pre-existing root's loss protection. Legacy roots stay unstamped (strict), so
+/// the covered-root loss still condemns after the refresh.
+#[test]
+fn a_pre_field_lock_refresh_keeps_legacy_roots_strict() {
+    let (project, dir, epoch_one_body) = two_root_activation_project("cli-store-pre-field-refresh");
+    let deadline = std::time::Duration::from_secs(30);
+
+    // Strip the activation stamps: the committed lock now looks exactly like one written before
+    // activations were recorded.
+    let lock = committed_lock(&project);
+    let stripped = CatalogLock::new(
+        lock.entries,
+        lock.ledger,
+        lock.epoch_high_water,
+        lock.source_digest,
+    )
+    .expect("the stripped lock validates");
+    write_committed_lock(&project, &stripped);
+
+    // An innocuous refresh: a plain run re-projects the lock at the current snapshot epoch (2).
+    // Roots the lock already records must stay unstamped, never be stamped at 2.
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "an innocuous run over the healthy store succeeds",
+    );
+    assert!(
+        committed_lock(&project).root_activations.is_empty(),
+        "a refresh must not stamp legacy roots at the current epoch: {:?}",
+        committed_lock(&project).root_activations,
+    );
+
+    // The S1 protection survives the refresh: an epoch-1 body is missing `^tags`, a root the
+    // strict unstamped default says it must hold, so every driver condemns the loss.
+    std::fs::write(store_path(&project), epoch_one_body).expect("restore the epoch-1 store body");
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["run", "--entry", "app::seed", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` blessed a covered-root loss after a pre-field lock refresh: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must keep condemning the covered-root loss: {output:?}",
+            command.join(" "),
+        );
+    }
+}
+
+/// A deleted lock re-projected from the live store records every root unstamped: the true
+/// activation epochs were lost with the lock, and guessing the current epoch would downgrade the
+/// loss protection. The fail-closed cost is that a store legitimately behind a newly-activated
+/// root reads as corrupt until a later activation stamps the root; the gain is that a covered-root
+/// loss is never blessed.
+#[test]
+fn a_deleted_lock_reprojects_unstamped_and_condemns_a_missing_root() {
+    let (project, dir, epoch_one_body) =
+        two_root_activation_project("cli-store-deleted-lock-reproject");
+    let deadline = std::time::Duration::from_secs(30);
+
+    std::fs::remove_file(project.join("marrow.lock")).expect("delete the committed lock");
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "a run over the healthy store re-creates the lock",
+    );
+    let reprojected = committed_lock(&project);
+    assert!(
+        reprojected.root_activations.is_empty(),
+        "a lock re-derived with no prior lock records every root unstamped: {:?}",
+        reprojected.root_activations,
+    );
+
+    std::fs::write(store_path(&project), epoch_one_body).expect("restore the epoch-1 store body");
+    let integrity = marrow_bounded(&["data", "integrity", &dir], deadline);
+    assert_eq!(
+        integrity.status.code(),
+        Some(1),
+        "an unstamped root reads strictly, so the missing root condemns: {integrity:?}",
+    );
+    assert_eq!(stderr_code(&integrity), "store.corruption", "{integrity:?}");
 }
 
 /// A store legitimately behind a newly-activated saved root is BEHIND, not corrupt: the root's
