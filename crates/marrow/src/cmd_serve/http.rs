@@ -18,8 +18,8 @@ use super::auth::RemoteAuthToken;
 use super::cors::{CorsMatch, CorsPolicy};
 use super::cursor_token::RemoteCursorToken;
 use super::{
-    MAX_BODY_BYTES, MAX_HEADER_BYTES, READ_POLL_INTERVAL, STREAM_TIMEOUT, SURFACE_AUTH,
-    SurfaceRoutes, SurfaceServeExecutor, server_code_message, shutdown, surface_error,
+    MAX_BODY_BYTES, MAX_HEADER_BYTES, POLL_INTERVAL, STREAM_TIMEOUT, SURFACE_AUTH, SurfaceRoutes,
+    SurfaceServeExecutor, server_code_message, shutdown, surface_error,
 };
 
 pub(super) fn serve_connection(
@@ -42,7 +42,7 @@ pub(super) fn serve_connection(
         );
         return;
     }
-    if let Err(error) = stream.set_read_timeout(Some(READ_POLL_INTERVAL)) {
+    if let Err(error) = stream.set_read_timeout(Some(POLL_INTERVAL)) {
         eprintln!(
             "{}",
             server_code_message(
@@ -52,7 +52,10 @@ pub(super) fn serve_connection(
         );
         return;
     }
-    if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
+    // A short write timeout, not STREAM_TIMEOUT: a stalled write must wake every
+    // POLL_INTERVAL so the response write re-checks the shutdown signal and its total
+    // deadline rather than blocking on a slow reader for the full stream timeout.
+    if let Err(error) = stream.set_write_timeout(Some(POLL_INTERVAL)) {
         eprintln!(
             "{}",
             server_code_message(
@@ -72,7 +75,7 @@ pub(super) fn serve_connection(
         shutdown,
     );
     let status = outcome.response.status;
-    match write_response(&mut stream, &outcome.response) {
+    match write_response(&mut stream, &outcome.response, shutdown) {
         Ok(()) => {
             if let Some(remaining) = outcome.drain_body {
                 drain_request_body(&mut stream, remaining, shutdown);
@@ -1127,7 +1130,11 @@ impl HttpStatus {
     }
 }
 
-fn write_response(stream: &mut TcpStream, response: &SurfaceHttpResponse) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    response: &SurfaceHttpResponse,
+    shutdown: &shutdown::Shutdown,
+) -> std::io::Result<()> {
     let body = response
         .body
         .as_ref()
@@ -1138,32 +1145,78 @@ fn write_response(stream: &mut TcpStream, response: &SurfaceHttpResponse) -> std
             })
         })
         .unwrap_or_default();
+    let mut message = Vec::with_capacity(body.len() + 256);
     write!(
-        stream,
+        message,
         "HTTP/1.1 {} {}\r\n",
         response.status.code(),
         response.status.reason()
     )?;
     if response.body.is_some() {
-        stream.write_all(b"Content-Type: application/json\r\n")?;
+        message.extend_from_slice(b"Content-Type: application/json\r\n");
     }
     if let Some(origin) = &response.cors_origin {
         let allow_headers = response.cors_allow_headers.unwrap_or("Content-Type");
         write!(
-            stream,
+            message,
             "Access-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: {allow_headers}\r\n"
         )?;
     }
     if let Some(vary) = response.cors_vary {
-        write!(stream, "Vary: {vary}\r\n")?;
+        write!(message, "Vary: {vary}\r\n")?;
     }
     write!(
-        stream,
+        message,
         "Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
-    stream.write_all(&body)?;
+    message.extend_from_slice(&body);
+    write_all_with_shutdown_poll(stream, &message, shutdown)?;
     stream.flush()
+}
+
+/// Write the whole response, waking every `POLL_INTERVAL` (the socket write timeout) to
+/// re-check the shutdown signal and a total write deadline. Symmetric with
+/// [`read_with_shutdown_poll`]: a first SIGTERM/SIGINT aborts the write promptly rather
+/// than letting a slow-reading client hold a graceful shutdown for the full transfer, and
+/// the total deadline bounds a paced reader — which keeps making slow progress, so a
+/// progress-reset idle bound would never fire — from head-of-line-blocking other requests.
+fn write_all_with_shutdown_poll(
+    stream: &mut TcpStream,
+    message: &[u8],
+    shutdown: &shutdown::Shutdown,
+) -> std::io::Result<()> {
+    let deadline = Instant::now() + STREAM_TIMEOUT;
+    let mut written = 0;
+    while written < message.len() {
+        match stream.write(&message[written..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::WriteZero,
+                    "surface response write made no progress",
+                ));
+            }
+            Ok(count) => written += count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                if shutdown.requested().is_some() {
+                    return Err(std::io::Error::other("surface server is shutting down"));
+                }
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        ErrorKind::TimedOut,
+                        "surface response write exceeded the stream deadline",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn response_value(value: SurfaceOperationResponseJson) -> serde_json::Value {
@@ -1341,5 +1394,49 @@ mod tests {
         assert_eq!(partial.buffer.len(), partial.header_end + 4);
         assert_eq!(&partial.buffer[partial.header_end..], b"\r\n\r\n");
         writer.join().expect("join request writer");
+    }
+
+    #[test]
+    fn a_stalled_response_write_aborts_promptly_when_shutdown_is_requested() {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener address");
+        // The client connects but never reads, so the server's write fills the socket buffers
+        // and blocks — the absent/slow-reader case that starved a first-signal graceful shutdown.
+        let client = std::net::TcpStream::connect(addr).expect("connect test listener");
+        let (mut server, _) = listener.accept().expect("accept test connection");
+        server
+            .set_write_timeout(Some(POLL_INTERVAL))
+            .expect("set test write timeout");
+
+        let (shutdown, signal) = shutdown::Shutdown::test_pending();
+        // Request shutdown shortly after the write stalls, mimicking a first SIGTERM mid-response.
+        let trigger = {
+            let signal = Arc::clone(&signal);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                signal.store(15, Ordering::SeqCst);
+            })
+        };
+
+        // Far larger than any socket send/receive buffer, so the write cannot fully drain to the
+        // idle client and must block until shutdown aborts it rather than run to completion.
+        let message = vec![b'x'; 64 * 1024 * 1024];
+        let start = std::time::Instant::now();
+        let result = write_all_with_shutdown_poll(&mut server, &message, &shutdown);
+        let elapsed = start.elapsed();
+        trigger.join().expect("join shutdown trigger");
+        drop(client);
+
+        assert!(
+            result.is_err(),
+            "a shutdown mid-write must abort, not complete"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "graceful shutdown must abort a stalled write within a poll interval, took {elapsed:?}",
+        );
     }
 }

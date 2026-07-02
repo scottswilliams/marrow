@@ -47,6 +47,23 @@ mod unix {
             _force: force,
         })
     }
+
+    #[cfg(test)]
+    impl Shutdown {
+        /// A handle a test can trigger directly without delivering a real signal: storing a
+        /// nonzero value in the returned atomic makes `requested()` report that signal, so a
+        /// test can drive the shutdown-poll paths deterministically.
+        pub(in crate::cmd_serve) fn test_pending() -> (Self, Arc<AtomicUsize>) {
+            let signal = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    signal: Arc::clone(&signal),
+                    _force: Arc::new(AtomicBool::new(false)),
+                },
+                signal,
+            )
+        }
+    }
 }
 
 #[cfg(not(unix))]

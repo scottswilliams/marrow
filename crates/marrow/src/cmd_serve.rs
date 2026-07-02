@@ -33,8 +33,14 @@ use cursor_token::{CursorTokenKeySource, RemoteCursorToken};
 const DEFAULT_PORT: u16 = 8080;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// The most a single connection may spend reading one request body or writing one
+/// response. Read as a per-read idle bound (reset by progress) and, on the write path,
+/// as a total deadline on the whole response so a paced slow reader — which keeps making
+/// slow progress — cannot hold the connection or head-of-line-block others indefinitely.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
-const READ_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// How often a blocked read or write wakes to re-check the shutdown signal, so a first
+/// SIGTERM/SIGINT ends a stalled transfer within this bound regardless of transfer size.
+const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy)]
