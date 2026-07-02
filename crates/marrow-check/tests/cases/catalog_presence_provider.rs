@@ -3,7 +3,9 @@
 //! prove that identity binds against it: the accepted ids carry forward onto live facts, and
 //! a source-only check proposes a first epoch while writing nothing.
 use crate::support;
-use marrow_catalog::{CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry};
+use marrow_catalog::{
+    CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry,
+};
 use marrow_check::{CHECK_EVOLVE_TARGET, CHECK_LOCK_CORRUPT, ProjectSources, analyze_project};
 
 use support::catalog::{catalog, derived_id, entry_for_label as entry};
@@ -107,26 +109,27 @@ fn source_only_check_proposes_epoch_one_and_writes_nothing() {
 /// The committed id of the proposal entry at `(kind, path)`, or a panic naming the entry the
 /// proposal should carry.
 fn adopted_id(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) -> String {
-    proposal
-        .entries
+    entry_id(&proposal.entries, kind, path)
+}
+
+fn entry_id(entries: &[CatalogEntry], kind: CatalogEntryKind, path: &str) -> String {
+    entries
         .iter()
         .find(|entry| entry.kind == kind && entry.path == path)
-        .unwrap_or_else(|| panic!("proposal carries {kind:?} `{path}`"))
+        .unwrap_or_else(|| panic!("catalog carries {kind:?} `{path}`"))
         .stable_id
         .clone()
 }
 
 #[test]
-fn first_run_with_present_lock_adopts_committed_identity_across_the_advanced_proposal() {
+fn first_run_with_present_lock_adopts_committed_identity_by_path() {
     // A wiped store with no accepted catalog, but the source tree still carries the committed
     // lock. First-run binding adopts the committed id for every entity by its `(kind, path)` —
-    // including the SHAPED store and member, whose freshly built source pre-image records none of
-    // the accepted shapes the committed entries fingerprint under. Shape-fingerprint adoption
-    // silently mints fresh ids for these, diverging identity on an ordinary fresh checkout;
-    // path-keyed adoption carries them forward. The placeholder lock digest cannot confirm a clean
-    // adoption, so the binding is a drifted proposal, which advances one epoch past the lock's
-    // high-water exactly as a present store discharging the same change would. This proves the
-    // adoption reaches the production pipeline through `analyze_project`, not only the in-module
+    // including the SHAPED store and member — rather than minting fresh ids a shape-only match
+    // would risk. The source shape matches every committed entry's fingerprint, so the lock binds
+    // cleanly as accepted at its committed high-water, the same epoch a present store at that shape
+    // holds; the order-sensitive whole-source digest does not force a spurious advance. This proves
+    // the adoption reaches the production pipeline through `analyze_project`, not only the in-module
     // binding test.
     let root = temp_root("provider-lock-adoption");
     books_source(&root);
@@ -141,34 +144,29 @@ fn first_run_with_present_lock_adopts_committed_identity_across_the_advanced_pro
         "{:#?}",
         snapshot.report.diagnostics
     );
-    let proposal = snapshot
-        .program
-        .catalog
-        .proposal
-        .expect("first-run proposal");
-    assert_eq!(
-        proposal.epoch,
-        high_water + 1,
-        "a drifted first-run proposal advances one epoch past the lock high-water, not to epoch 1"
+    assert!(
+        snapshot.program.catalog.proposal.is_none(),
+        "a shape-matching lock binds cleanly as accepted, not a drifted proposal"
     );
-    assert_eq!(snapshot.program.catalog.accepted_epoch, None);
-
     assert_eq!(
-        adopted_id(&proposal, CatalogEntryKind::Resource, "books::Book"),
+        snapshot.program.catalog.accepted_epoch,
+        Some(high_water),
+        "a clean adoption binds at the committed high-water, never advancing"
+    );
+
+    let accepted = &snapshot.program.catalog.accepted_entries;
+    assert_eq!(
+        entry_id(accepted, CatalogEntryKind::Resource, "books::Book"),
         derived_id("res-book"),
         "the resource adopts the committed lock id"
     );
     assert_eq!(
-        adopted_id(&proposal, CatalogEntryKind::Store, "books::^books"),
+        entry_id(accepted, CatalogEntryKind::Store, "books::^books"),
         derived_id("store-books"),
         "the SHAPED store adopts its committed lock id by path, not minting fresh"
     );
     assert_eq!(
-        adopted_id(
-            &proposal,
-            CatalogEntryKind::ResourceMember,
-            "books::Book::title"
-        ),
+        entry_id(accepted, CatalogEntryKind::ResourceMember, "books::Book::title"),
         derived_id("member-title"),
         "the SHAPED member adopts its committed lock id by path, not minting fresh"
     );
@@ -237,18 +235,17 @@ fn first_run_lock_adoption_is_deterministic() {
         books_source(&root);
         let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
             .expect("analyze");
-        snapshot
-            .program
-            .catalog
-            .proposal
-            .expect("first-run proposal")
+        (
+            snapshot.program.catalog.accepted_epoch,
+            snapshot.program.catalog.accepted_entries.clone(),
+        )
     };
 
-    let first = bind_once();
-    let second = bind_once();
-    assert_eq!(first.epoch, second.epoch, "epoch is deterministic");
+    let (first_epoch, first_entries) = bind_once();
+    let (second_epoch, second_entries) = bind_once();
+    assert_eq!(first_epoch, second_epoch, "epoch is deterministic");
     assert_eq!(
-        first.entries, second.entries,
+        first_entries, second_entries,
         "adopted ids and entries are byte-identical across re-binds"
     );
 }

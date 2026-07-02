@@ -2061,14 +2061,14 @@ fn store_less_drifted_source_against_lock_stays_a_proposal() {
 }
 
 #[test]
-fn store_less_stale_lock_digest_stays_a_proposal() {
+fn store_less_shape_drifted_lock_stays_a_proposal() {
     let source = "module m\n\
         resource Book\n    \
         required title: string\n\
         store ^books(id: int): Book\n\
         surface Books from ^books\n    \
         fields title\n";
-    let root = temp_root("analysis-store-less-stale-lock");
+    let root = temp_root("analysis-store-less-shape-drift");
     write(&root, "src/m.mw", source);
 
     let (report, program) = check_project(&root, &config()).expect("baseline check");
@@ -2079,21 +2079,44 @@ fn store_less_stale_lock_digest_stays_a_proposal() {
         .clone()
         .expect("first check proposes catalog ids");
 
-    // A lock whose source digest does not match the current source shape is stale: even though
-    // every committed id still anchors a source entity, the lock was produced under a different
-    // shape, so adoption must stay a proposal until the lock is re-projected.
-    let stale_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-    let lock = clean_lock_for(&proposal, stale_digest);
+    // A lock whose committed SHAPE for an entity differs from the current source shape is stale,
+    // even when every `(kind, path)` still anchors a source entity: the lock was produced under a
+    // different shape. Adoption keys on per-entry shape, not the order-sensitive whole-source
+    // digest, so a shape edit the lock predates stays a proposal until the lock is re-projected.
+    let mut entries: Vec<marrow_catalog::CatalogEntry> = proposal
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
+        .cloned()
+        .collect();
+    for entry in &mut entries {
+        if entry.kind == marrow_catalog::CatalogEntryKind::ResourceMember
+            && entry.path == "m::Book::title"
+        {
+            entry.accepted_struct = Some("leaf:int".to_string());
+        }
+    }
+    let lock_entries = entries
+        .iter()
+        .map(marrow_catalog::LockEntry::from_catalog_entry)
+        .collect();
+    let lock = marrow_catalog::CatalogLock::new(
+        lock_entries,
+        Vec::new(),
+        proposal.epoch,
+        program.source_digest(),
+    )
+    .expect("shape-drifted lock builds");
 
     let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
-        .expect("stale lock analysis");
+        .expect("shape-drift lock analysis");
     assert!(
         snapshot.program.catalog.proposal.is_some(),
-        "a stale-digest lock stays a proposal, not accepted"
+        "a lock whose committed shape differs from source stays a proposal, not accepted"
     );
     assert_eq!(
         snapshot.program.catalog.accepted_epoch, None,
-        "a stale-digest lock binds no accepted epoch"
+        "a shape-drifted lock binds no accepted epoch"
     );
 }
 

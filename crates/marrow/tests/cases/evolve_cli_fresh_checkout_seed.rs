@@ -193,6 +193,71 @@ fn an_additive_fresh_checkout_still_discharges_to_the_advanced_epoch() {
     );
 }
 
+// A committed epoch-1 shape with an enum, and the same shape with its two enum members reordered in
+// source only. A pure member reorder preserves every catalog identity and mutates zero records, so
+// it is identity-preserving, not a pending evolution.
+const ENUM_BASELINE_SOURCE: &str = "module books\n\
+     pub enum Shelf\n\
+     \x20   fiction\n\
+     \x20   reference\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required shelf: Shelf\n\
+     store ^books(id: int): Book\n\
+     pub fn add(title: string): Id(^books)\n\
+     \x20   return nextId(^books)\n";
+
+const ENUM_REORDERED_SOURCE: &str = "module books\n\
+     pub enum Shelf\n\
+     \x20   reference\n\
+     \x20   fiction\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required shelf: Shelf\n\
+     store ^books(id: int): Book\n\
+     pub fn add(title: string): Id(^books)\n\
+     \x20   return nextId(^books)\n";
+
+/// A pure enum-member reorder is identity-preserving: every present-store driver keeps the committed
+/// epoch (nothing to discharge), so the fresh-checkout seed must reconcile it to the SAME epoch, not
+/// count the reordered source digest as an epoch-advancing evolution. One reconciliation rule: the
+/// seed adopts the lock cleanly when every entity's shape matches the lock, regardless of the
+/// order-sensitive whole-source digest.
+#[test]
+fn a_fresh_checkout_seeding_a_pure_member_reorder_stays_at_the_committed_epoch() {
+    let present = native_books_project("fresh-seed-present-reorder", ENUM_BASELINE_SOURCE);
+    let _ = commit_catalog(&present);
+    assert_eq!(store_epoch(&present), Some(1), "baseline commits at epoch 1");
+    write(&present, "src/books.mw", ENUM_REORDERED_SOURCE);
+    let fresh = fresh_checkout_of("fresh-seed-fresh-reorder", &present);
+
+    // The present store treats the reorder as identity-preserving and re-stamps at epoch 1.
+    assert_eq!(apply(&present).status.code(), Some(0));
+    assert_eq!(
+        store_epoch(&present),
+        Some(1),
+        "a pure reorder does not advance the present store past the committed epoch"
+    );
+
+    // The fresh-checkout seed must reach the SAME epoch, not over-advance to epoch 2.
+    let fresh_apply = apply(&fresh);
+    assert_eq!(
+        fresh_apply.status.code(),
+        Some(0),
+        "a fresh-checkout seed of a pure reorder succeeds: {fresh_apply:?}"
+    );
+    assert_eq!(
+        store_epoch(&fresh),
+        Some(1),
+        "the seed reconciles a pure reorder to the committed epoch, never advancing to epoch 2"
+    );
+    assert_eq!(
+        accepted_catalog(&fresh).digest,
+        accepted_catalog(&present).digest,
+        "the fresh checkout reaches the identical accepted-catalog identity"
+    );
+}
+
 /// A fresh checkout with NO pending evolution — source matching the committed lock exactly — stays
 /// at the committed epoch. The drift-seeding fix must not spuriously advance a clean adoption.
 #[test]

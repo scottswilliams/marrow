@@ -893,7 +893,7 @@ fn adopt_or_mint_first_run(
     // unresolved. Only an intent naming nothing the seed reconstructs is a `check.evolve_target`.
     let unresolved_intent =
         report_seeded_unresolved_intents(evolve, &proposal_entries, source, diagnostics);
-    if !unresolved_intent && lock_adopts_source_cleanly(program, source, lock) {
+    if !unresolved_intent && lock_adopts_source_cleanly(source, lock, &proposal_entries) {
         return Ok(FirstRunOutcome::Accepted(CatalogMetadata::new(
             lock.epoch_high_water,
             proposal_entries,
@@ -964,15 +964,22 @@ fn report_seeded_unresolved_intents(
 /// Whether the committed lock adopts the current source as its exact accepted reference. The
 /// load-bearing cleanliness gate: the source `(kind, path)` set must equal the lock's committed
 /// entries one-for-one — no source entity the lock never recorded, no committed entry the source
-/// no longer declares (a removal or rename) — and the source shape digest must match the digest
-/// the lock was produced under, so a shape edit the lock predates is read as drift. An ambiguous
-/// source path (a duplicate `(kind, path)`) is never clean: its identity is unresolved. When this
-/// holds, the lock carries a complete, current accepted ABI and binds as accepted; otherwise the
-/// source has drifted from the lock and stays a proposal.
+/// no longer declares (a removal or rename) — and every entity's shape must match the shape the
+/// lock committed for it, so a shape edit the lock predates is read as drift. An ambiguous source
+/// path (a duplicate `(kind, path)`) is never clean: its identity is unresolved. When this holds,
+/// the lock carries a complete, current accepted ABI and binds as accepted; otherwise the source
+/// has drifted from the lock and stays a proposal.
+///
+/// Shape is compared per entry, not through the whole-source shape digest. The digest folds the
+/// canonical rendering in source order, so a pure enum-member reorder drifts it even though no
+/// entity's shape changed. The present-store bind advances the epoch only when a per-entry
+/// signature actually changes, so keying the seed on the same per-entry shapes gives the two paths
+/// one reconciliation rule: a reorder is a clean adoption at the committed epoch, and a genuine
+/// shape edit stays a drifted proposal.
 fn lock_adopts_source_cleanly(
-    program: &CheckedProgram,
     source: &CatalogSource,
     lock: &CatalogLock,
+    proposal_entries: &[CatalogEntry],
 ) -> bool {
     if !source.duplicate_keys.is_empty() {
         return false;
@@ -987,7 +994,33 @@ fn lock_adopts_source_cleanly(
         .iter()
         .map(|entry| (entry.kind, entry.path.as_str()))
         .collect();
-    source_keys == lock_keys && analyzed_source_digest(program) == lock.source_digest
+    source_keys == lock_keys && source_shapes_match_lock(proposal_entries, lock)
+}
+
+/// Whether every entity the source declares carries the same shape the lock committed for it, by
+/// per-entry shape fingerprint over the seeded proposal (which records the current source shapes
+/// under the adopted committed identities). Order-insensitive by construction: a reorder that
+/// leaves each entity's shape unchanged matches, while a key-shape, index, or struct edit shifts a
+/// fingerprint and is drift.
+fn source_shapes_match_lock(proposal_entries: &[CatalogEntry], lock: &CatalogLock) -> bool {
+    let source_fingerprints: HashMap<(CatalogEntryKind, &str), String> = proposal_entries
+        .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+        .map(|entry| {
+            (
+                (entry.kind, entry.path.as_str()),
+                LockEntry::from_catalog_entry(entry).shape_fingerprint,
+            )
+        })
+        .collect();
+    lock.entries
+        .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+        .all(|lock_entry| {
+            source_fingerprints
+                .get(&(lock_entry.kind, lock_entry.path.as_str()))
+                .is_some_and(|fingerprint| *fingerprint == lock_entry.shape_fingerprint)
+        })
 }
 
 /// Mint a fresh first-run proposal at epoch 1: every source entity gets a newly allocated id,
