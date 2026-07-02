@@ -419,6 +419,19 @@ function actionResultValue<T>(
   return { value: decode(value as SurfaceWireValueJson), output };
 }
 
+/// An action whose returned value is optional (`T?`): an absent value decodes to null rather than an
+/// error, and a present value decodes through `decode`. Absence rides the wire as a null result value.
+function actionResultOptionalValue<T>(
+  envelope: SurfaceOperationResponseJson,
+  decode: (value: SurfaceWireValueJson) => T,
+): { value: T | null; output: string } {
+  const { output, value } = actionOutput(envelope);
+  if (value === null || value === undefined) {
+    return { value: null, output };
+  }
+  return { value: decode(value as SurfaceWireValueJson), output };
+}
+
 function computedReadResult(envelope: SurfaceOperationResponseJson): unknown {
   const result = (envelope.result as { result?: unknown }).result as
     | { value?: unknown }

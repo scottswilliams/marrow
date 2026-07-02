@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::client_ts::CreateFieldPlan;
 use super::{
     SurfaceAbiJson, SurfaceCallableParameterJson, SurfaceCallableParameterPresenceJson,
-    SurfaceComputedReadPresenceJson, SurfaceCreateOperationDescriptorJson, SurfaceDescriptorJson,
-    SurfaceOperationIdentityKeyJson, SurfaceOperationValueShapeJson,
-    SurfaceReadOperationDescriptorJson, SurfaceReadOperationKindJson,
-    SurfaceReadProjectionFieldJson, SurfaceRouteBinding, SurfaceRouteBindings,
+    SurfaceCreateOperationDescriptorJson, SurfaceDescriptorJson, SurfaceOperationIdentityKeyJson,
+    SurfaceOperationValueShapeJson, SurfaceReadOperationDescriptorJson,
+    SurfaceReadOperationKindJson, SurfaceReadProjectionFieldJson, SurfaceResultPresenceJson,
+    SurfaceRouteBinding, SurfaceRouteBindings,
 };
 
 /// The scalar leaf kinds a surface value can carry, parsed once from the descriptor's source
@@ -244,6 +244,9 @@ pub(super) enum SurfaceMethodResult {
     Deleted,
     Action {
         value: Option<SurfaceFieldType>,
+        /// Whether the returned value is `T?`, so the renderer types it nullable and decodes an
+        /// absent (`null`) value as `null` rather than throwing a missing-value error.
+        optional: bool,
     },
     ComputedRead {
         value: Option<SurfaceFieldType>,
@@ -494,6 +497,10 @@ impl ModelBuilder {
                 .return_value
                 .as_ref()
                 .map(|shape| self.callable_value_type(shape, &mut enums));
+            let optional = matches!(
+                action.return_presence,
+                SurfaceResultPresenceJson::MaybePresent
+            );
             let alias = method_alias(bindings, &action.operation_tag, &action.alias);
             methods.push(SurfaceMethod {
                 name: alias,
@@ -501,7 +508,7 @@ impl ModelBuilder {
                 result_kind: "action",
                 cursor_brand: format!("{surface_name}Cursor"),
                 input: SurfaceMethodInput::Callable { params },
-                result: SurfaceMethodResult::Action { value },
+                result: SurfaceMethodResult::Action { value, optional },
             });
         }
         for computed in &surface.computed_reads {
@@ -514,7 +521,7 @@ impl ModelBuilder {
                 .map(|shape| self.computed_value_type(shape, &mut enums));
             let optional = matches!(
                 computed.callable.result.presence,
-                SurfaceComputedReadPresenceJson::MaybePresent
+                SurfaceResultPresenceJson::MaybePresent
             );
             let alias = method_alias(bindings, &computed.operation_tag, &computed.alias);
             methods.push(SurfaceMethod {

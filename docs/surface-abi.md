@@ -41,10 +41,11 @@ The active surface foundation has these owners:
 - `crates/marrow-check/src/entry_abi.rs` owns public-function surface value
   shapes: `entry.invoke.v1` identity, the single `EntryParameterShape` parameter
   carrier (`Present`/`Optional`, presence read off the parameter type rather than
-  a parallel flag), the single `EntryResultShape` result carrier
-  (`Void`/`Present`/`Optional`, presence read off the return type),
-  scalar/enum/identity/sequence result shapes, and computed-read resource result
-  fields with accepted catalog ids. The operation-tag parameter-optionality
+  a parallel flag), the `EntryResultShape` computed-read result carrier and the
+  `EntryActionResultShape` action result carrier (both `Void`/`Present`/`Optional`,
+  presence read off the return type; the action carrier speaks the action-argument
+  codec its invoke path uses), scalar/enum/identity/sequence result shapes, and
+  computed-read resource result fields with accepted catalog ids. The operation-tag parameter-optionality
   component, the serialized parameter descriptor's presence marker, and the
   decoder's absent-binding on both the JSON protocol and text `--arg` paths all
   derive from that one parameter carrier.
@@ -52,7 +53,7 @@ The active surface foundation has these owners:
   digest framing and typed descriptors for `surface.read.v1`,
   `surface.computed_read.v1`, `surface.create.v1`, `surface.update.v1`, and
   `surface.delete.v1`, plus action descriptors that reuse `entry_abi` callable
-  identity, parameter shapes, and return shape.
+  identity, parameter shapes, and the presence-carrying action return shape.
 - `AnalysisSnapshot::surface_read_operations()` returns snapshot-bound
   `SurfaceReadOperationAnalysis` values. A stable surface can produce a
   `SurfaceReadOperationDescriptor`; a source-only surface cannot.

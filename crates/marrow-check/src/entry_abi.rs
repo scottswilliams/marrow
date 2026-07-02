@@ -68,6 +68,37 @@ impl EntryResultShape {
     }
 }
 
+/// The surface result of an action, carried in the action-argument codec its
+/// invoke path speaks. Presence lives in this one carrier — `Void` for a
+/// no-return action, `Present` for a definite `T`, `Optional` for a `T?` —
+/// mirroring [`EntryResultShape`], whose payload is the computed-read value
+/// codec instead, so no parallel presence flag can disagree with the value
+/// shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryActionResultShape {
+    Void,
+    Present(EntryArgumentShape),
+    Optional(EntryArgumentShape),
+}
+
+impl EntryActionResultShape {
+    /// Project the checker's presence-carrying surface result into the action-argument
+    /// codec an action's invoke path speaks, preserving `T?` presence. A value the codec
+    /// cannot express collapses to `Void`, which the action signature filter already
+    /// rejects upstream.
+    pub fn from_result(result: EntryResultShape) -> Self {
+        match result {
+            EntryResultShape::Void => Self::Void,
+            EntryResultShape::Present(shape) => {
+                surface_value_as_action_argument(shape).map_or(Self::Void, Self::Present)
+            }
+            EntryResultShape::Optional(shape) => {
+                surface_value_as_action_argument(shape).map_or(Self::Void, Self::Optional)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryParameter {
     pub name: String,

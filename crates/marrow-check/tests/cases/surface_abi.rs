@@ -3,11 +3,11 @@ use crate::support::{assert_clean, check_with_accepted, config, temp_project, wr
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_check::{
-    AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor,
-    EntryFunctionSurfaceDescriptor, EntryResultShape, EntrySurfaceProfile, EntrySurfaceValueShape,
-    ProjectSources, SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
-    SurfaceComputedReadOperationDescriptor, SurfaceCreateBodySemantics,
-    SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
+    AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryActionResultShape,
+    EntryArgumentShape, EntryDescriptor, EntryFunctionSurfaceDescriptor, EntryResultShape,
+    EntrySurfaceProfile, EntrySurfaceValueShape, ProjectSources, SurfaceActionOperationDescriptor,
+    SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceComputedReadOperationDescriptor,
+    SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
     SurfaceCreateOperationDescriptorKind, SurfaceDeleteOperationDescriptorKind,
     SurfaceDeleteSemantics, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
     SurfaceReadOperationDescriptorKind, SurfaceUpdateOperationDescriptor,
@@ -732,7 +732,42 @@ surface Books from ^books
     assert_eq!(descriptor.operation_tag, entry.identity.entry_tag);
     assert_eq!(descriptor.identity, entry.identity);
     assert_eq!(descriptor.parameters, entry.parameters);
-    assert_eq!(descriptor.return_value, entry.return_value);
+    assert!(entry.return_value.is_none());
+    assert_eq!(descriptor.return_value, EntryActionResultShape::Void);
+}
+
+#[test]
+fn stable_action_descriptor_carries_optional_return_presence() {
+    // A `T?`-returning action keeps its presence in the action result carrier so a
+    // generated client can type the value nullable rather than dropping the bit and
+    // throwing on a legitimately absent value.
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn peek(id: int): string?
+    return ^books(id).title
+surface Books from ^books
+    fields title
+    action peek
+";
+    let (_root, snapshot) = stable_snapshot("surface-action-optional-return", source);
+    let descriptors = snapshot
+        .surface_action_operations()
+        .map(|operation| {
+            operation
+                .stable_descriptor()
+                .expect("stable action descriptor")
+        })
+        .collect::<Vec<_>>();
+    let [descriptor] = descriptors.as_slice() else {
+        panic!("expected one action descriptor, got {descriptors:#?}");
+    };
+    assert_eq!(
+        descriptor.return_value,
+        EntryActionResultShape::Optional(EntryArgumentShape::Scalar(ScalarType::Str))
+    );
 }
 
 #[test]

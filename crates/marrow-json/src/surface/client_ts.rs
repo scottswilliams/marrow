@@ -782,10 +782,14 @@ fn method_decode_expr(method: &SurfaceMethod) -> String {
             format!("decode{}(recordOf(envelope))", record)
         }
         SurfaceMethodResult::Updated | SurfaceMethodResult::Deleted => "undefined".to_string(),
-        SurfaceMethodResult::Action { value } => match value {
+        SurfaceMethodResult::Action { value, optional } => match value {
             Some(ty) => {
                 let value_decode = decode_value_expr(ty, "value");
-                format!("actionResultValue(envelope, (value) => {value_decode})")
+                if *optional {
+                    format!("actionResultOptionalValue(envelope, (value) => {value_decode})")
+                } else {
+                    format!("actionResultValue(envelope, (value) => {value_decode})")
+                }
             }
             None => "actionResultVoid(envelope)".to_string(),
         },
@@ -814,11 +818,16 @@ fn method_result_type(method: &SurfaceMethod) -> String {
             format!("AsyncIterable<Page<{record}, {}>>", method.cursor_brand)
         }
         SurfaceMethodResult::Updated | SurfaceMethodResult::Deleted => "void".to_string(),
-        SurfaceMethodResult::Action { value } => {
+        SurfaceMethodResult::Action { value, optional } => {
             let value_type = value
                 .as_ref()
                 .map(value_ts_type)
                 .unwrap_or_else(|| "null".to_string());
+            let value_type = if *optional {
+                format!("{value_type} | null")
+            } else {
+                value_type
+            };
             format!("{{ value: {value_type}; output: string }}")
         }
         SurfaceMethodResult::ComputedRead { value, optional } => {

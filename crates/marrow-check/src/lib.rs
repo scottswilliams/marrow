@@ -87,10 +87,10 @@ pub use durable_path::{
     parse_path,
 };
 pub use entry_abi::{
-    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryDescriptor, EntryDescriptorError,
-    EntryEnumMember, EntryFunctionSurfaceDescriptor, EntryIdentity, EntryIdentityKey,
-    EntryParameter, EntryParameterShape, EntryResourceResultField, EntryResultShape,
-    EntrySurfaceProfile, EntrySurfaceValueShape,
+    ENTRY_PROTOCOL_TAG_VERSION, EntryActionResultShape, EntryArgumentShape, EntryDescriptor,
+    EntryDescriptorError, EntryEnumMember, EntryFunctionSurfaceDescriptor, EntryIdentity,
+    EntryIdentityKey, EntryParameter, EntryParameterShape, EntryResourceResultField,
+    EntryResultShape, EntrySurfaceProfile, EntrySurfaceValueShape,
 };
 pub use executable::{
     CheckedArg, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall, CheckedCallTarget,

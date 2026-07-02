@@ -1,9 +1,9 @@
 use marrow_store::cell::CatalogId;
 
 use crate::entry_abi::{
-    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryFunctionSurfaceDescriptor, EntryIdentity,
-    EntryParameter, EntryResourceResultField, EntryResultShape, EntrySurfaceProfile,
-    EntrySurfaceValueShape, surface_value_as_action_argument,
+    ENTRY_PROTOCOL_TAG_VERSION, EntryActionResultShape, EntryFunctionSurfaceDescriptor,
+    EntryIdentity, EntryParameter, EntryResourceResultField, EntryResultShape, EntrySurfaceProfile,
+    EntrySurfaceValueShape,
 };
 use crate::facts::{
     EntryCostShapeFact, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact,
@@ -26,7 +26,7 @@ pub struct SurfaceActionOperationDescriptor {
     pub alias: String,
     pub identity: EntryIdentity,
     pub parameters: Vec<EntryParameter>,
-    pub return_value: Option<EntryArgumentShape>,
+    pub return_value: EntryActionResultShape,
 }
 
 #[derive(Debug, Clone)]
@@ -369,11 +369,7 @@ impl SurfaceActionOperationDescriptor {
             alias: action.alias.clone(),
             identity: descriptor.identity,
             parameters: descriptor.parameters,
-            return_value: descriptor
-                .result
-                .value()
-                .cloned()
-                .and_then(surface_value_as_action_argument),
+            return_value: EntryActionResultShape::from_result(descriptor.result),
         })
     }
 }

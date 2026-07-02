@@ -172,25 +172,27 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             {
                 return code;
             }
-            // The pre-apply program still sees this evolution as pending, so it projects an
-            // unstable, empty surface. Re-check against the now-accepted store catalog before
-            // refreshing the declared client so the written client matches the stable surface
-            // `marrow check --locked` recomputes rather than an empty one.
-            let program = match crate::recheck_against_store_catalog(
-                &input.dir,
-                &config,
-                &store,
-                input.format,
-            ) {
-                Ok(program) => program,
-                Err(code) => return code,
-            };
-            // The activated catalog changes the surface ABI, so refresh the declared client in
-            // lockstep with the re-projected lock.
-            if let Err(code) =
-                crate::sync_declared_client(&input.dir, &config, &program, input.format)
-            {
-                return code;
+            // The declared client is the only consumer of a re-projected surface here, so the
+            // recheck and refresh are worth doing only when a client is configured. The pre-apply
+            // program still sees this evolution as pending and projects an unstable, empty surface,
+            // so re-check against the now-accepted store catalog before refreshing the client, so the
+            // written client matches the stable surface `marrow check --locked` recomputes rather
+            // than an empty one.
+            if config.client.is_some() {
+                let program = match crate::recheck_against_store_catalog(
+                    &input.dir,
+                    &config,
+                    &store,
+                    input.format,
+                ) {
+                    Ok(program) => program,
+                    Err(code) => return code,
+                };
+                if let Err(code) =
+                    crate::sync_declared_client(&input.dir, &config, &program, input.format)
+                {
+                    return code;
+                }
             }
             render::apply_success(&outcome, &recovery, input.format);
             ExitCode::SUCCESS

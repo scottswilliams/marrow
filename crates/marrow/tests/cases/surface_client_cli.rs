@@ -773,9 +773,9 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
 }
 
 // A surface exposing `T?` presence in every callable position: an optional computed-read result
-// (`maybeBorrower`), an optional computed-read parameter (`label`), and an optional action parameter
-// (`setLoan`). Book 1 has no borrower (absent), book 2 does, so the round-trip covers present and
-// absent on the wire.
+// (`maybeBorrower`), an optional computed-read parameter (`label`), an optional action parameter
+// (`setLoan`), and an optional action return (`peek`). Book 1 has no borrower (absent), book 2 does,
+// so the round-trip covers present and absent on the wire.
 const PRESENCE_SURFACE_SOURCE: &str = "module app\n\
 \n\
 resource Book\n\
@@ -796,6 +796,9 @@ pub fn seed()\n\
 pub fn maybeBorrower(id: int): string?\n\
 \x20\x20\x20\x20return ^books(id).borrower\n\
 \n\
+pub fn peek(id: int): string?\n\
+\x20\x20\x20\x20return ^books(id).borrower\n\
+\n\
 pub fn label(id: int, prefix: string?): string\n\
 \x20\x20\x20\x20return (prefix ?? \"book\") + \":\" + (^books(id).title ?? \"\")\n\
 \n\
@@ -807,7 +810,8 @@ surface Books from ^books\n\
 \x20\x20\x20\x20fields title\n\
 \x20\x20\x20\x20read maybeBorrower\n\
 \x20\x20\x20\x20read label\n\
-\x20\x20\x20\x20action setLoan\n";
+\x20\x20\x20\x20action setLoan\n\
+\x20\x20\x20\x20action peek\n";
 
 /// A Node-free consumer pinning the `T?` signatures. A required return would make the `=== null`
 /// comparison a no-overlap type error, and a required parameter would reject the `null` argument, so
@@ -821,11 +825,14 @@ export async function pinPresence(client: ReturnType<typeof createClient>): Prom
   const labeledValue: string = await client.Books.label(1, "shelf");
   const loan: { value: null; output: string } = await client.Books.setLoan(1, null);
   await client.Books.setLoan(1, "Bob");
+  const peeked: { value: string | null; output: string } = await client.Books.peek(1);
+  const peekedAbsent: boolean = peeked.value === null;
   void absent;
   void labeled;
   void labeledValue;
   void loan.value;
   void loan.output;
+  void peekedAbsent;
 }
 "#;
 
@@ -838,15 +845,19 @@ const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
 assert.equal(await client.Books.maybeBorrower(1), null);
 assert.equal(await client.Books.maybeBorrower(2), "Alice");
 
+// Optional action return: an absent value decodes to null rather than throwing, present to the value.
+assert.deepEqual(await client.Books.peek(1), { value: null, output: "" });
+assert.deepEqual(await client.Books.peek(2), { value: "Alice", output: "" });
+
 // Optional parameter: a value is passed through, null is the absent argument.
 assert.equal(await client.Books.label(1, "shelf"), "shelf:Small Gods");
 assert.equal(await client.Books.label(1, null), "book:Small Gods");
 
-// Optional parameter on a writing action: set then clear through null.
+// Optional parameter on a writing action: set then clear through null, observed through the action.
 await client.Books.setLoan(1, "Bob");
-assert.equal(await client.Books.maybeBorrower(1), "Bob");
+assert.deepEqual(await client.Books.peek(1), { value: "Bob", output: "" });
 await client.Books.setLoan(1, null);
-assert.equal(await client.Books.maybeBorrower(1), null);
+assert.deepEqual(await client.Books.peek(1), { value: null, output: "" });
 
 console.log("presence-e2e-ok");
 "#;

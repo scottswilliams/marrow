@@ -302,6 +302,7 @@ pub struct SurfaceActionOperationDescriptorJson {
     pub alias: String,
     pub identity: SurfaceCallableIdentityJson,
     pub parameters: Vec<SurfaceCallableParameterJson>,
+    pub return_presence: SurfaceResultPresenceJson,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_value: Option<SurfaceCallableArgumentShapeJson>,
 }
@@ -324,14 +325,17 @@ pub struct SurfaceComputedReadCallableJson {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SurfaceComputedReadResultJson {
-    pub presence: SurfaceComputedReadPresenceJson,
+    pub presence: SurfaceResultPresenceJson,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<SurfaceComputedReadValueShapeJson>,
 }
 
+/// Presence of the value a computed read or action returns: `Always` for a definite
+/// or void result, `MaybePresent` for a `T?` result the client types nullable and
+/// decodes an absent value as `null`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SurfaceComputedReadPresenceJson {
+pub enum SurfaceResultPresenceJson {
     Always,
     MaybePresent,
 }
@@ -1012,6 +1016,17 @@ impl From<marrow_check::SurfaceDeleteSemantics> for SurfaceDeleteSemanticsJson {
 
 impl From<marrow_check::SurfaceActionOperationDescriptor> for SurfaceActionOperationDescriptorJson {
     fn from(descriptor: marrow_check::SurfaceActionOperationDescriptor) -> Self {
+        let (return_presence, return_value) = match descriptor.return_value {
+            marrow_check::EntryActionResultShape::Void => (SurfaceResultPresenceJson::Always, None),
+            marrow_check::EntryActionResultShape::Present(shape) => (
+                SurfaceResultPresenceJson::Always,
+                Some(SurfaceCallableArgumentShapeJson::from(shape)),
+            ),
+            marrow_check::EntryActionResultShape::Optional(shape) => (
+                SurfaceResultPresenceJson::MaybePresent,
+                Some(SurfaceCallableArgumentShapeJson::from(shape)),
+            ),
+        };
         Self {
             profile_version: descriptor.profile_version.to_string(),
             operation_tag: descriptor.operation_tag,
@@ -1022,9 +1037,8 @@ impl From<marrow_check::SurfaceActionOperationDescriptor> for SurfaceActionOpera
                 .into_iter()
                 .map(SurfaceCallableParameterJson::from)
                 .collect(),
-            return_value: descriptor
-                .return_value
-                .map(SurfaceCallableArgumentShapeJson::from),
+            return_presence,
+            return_value,
         }
     }
 }
@@ -1060,9 +1074,9 @@ impl From<marrow_check::EntryFunctionSurfaceDescriptor> for SurfaceComputedReadC
 impl From<marrow_check::EntryResultShape> for SurfaceComputedReadResultJson {
     fn from(result: marrow_check::EntryResultShape) -> Self {
         let presence = if result.maybe_present() {
-            SurfaceComputedReadPresenceJson::MaybePresent
+            SurfaceResultPresenceJson::MaybePresent
         } else {
-            SurfaceComputedReadPresenceJson::Always
+            SurfaceResultPresenceJson::Always
         };
         let value = match result {
             marrow_check::EntryResultShape::Void => None,
@@ -1775,16 +1789,16 @@ mod tests {
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
         SurfaceCallableArgumentShapeJson, SurfaceCallableParameterPresenceJson,
         SurfaceCatalogStatusJson, SurfaceClientCursorProfile, SurfaceClientRenderErrorKind,
-        SurfaceComputedReadFieldValueJson, SurfaceComputedReadPresenceJson,
-        SurfaceComputedReadRequestJson, SurfaceComputedReadValueJson,
-        SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson, SurfaceCreateOperationKindJson,
-        SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
-        SurfaceEmptyRequestJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
-        SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
-        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
-        SurfacePageJson, SurfacePageRangeJson, SurfacePageRequestJson,
-        SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
-        SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
+        SurfaceComputedReadFieldValueJson, SurfaceComputedReadRequestJson,
+        SurfaceComputedReadValueJson, SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson,
+        SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
+        SurfaceDeleteOperationKindJson, SurfaceEmptyRequestJson, SurfaceIdentityJson,
+        SurfaceKeyJson, SurfaceOperationCatalog, SurfaceOperationCatalogErrorKind,
+        SurfaceOperationErrorJson, SurfaceOperationKind, SurfaceOperationRequestBodyJson,
+        SurfaceOperationRequestJson, SurfaceOperationResultJson, SurfacePageJson,
+        SurfacePageRangeJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
+        SurfacePointDeleteRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceResultPresenceJson,
         SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
         SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson,
         SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceValueJson,
@@ -1996,11 +2010,15 @@ pub fn setLoan(id: int, borrower: string?)
     transaction
         ^books(id).borrower = borrower
 
+pub fn peek(id: int): string?
+    return ^books(id).borrower
+
 surface Books from ^books
     fields title
     read maybeBorrower
     read label
     action setLoan
+    action peek
 ";
 
     const SURFACE_ACTION_UPDATE: &str = "\
@@ -3362,6 +3380,19 @@ pub fn seed()
             ),
             "an absent optional action argument must encode as JSON null: {client}"
         );
+        // Optional action return: nullable value in the action result and the absent-aware decoder.
+        assert!(
+            client.contains(
+                "peek: async (id: MarrowIntInput): Promise<{ value: string | null; output: string }> =>"
+            ),
+            "optional action return must be nullable: {client}"
+        );
+        assert!(
+            client.contains(
+                "actionResultOptionalValue(envelope, (value) => decodeStringValue(value))"
+            ),
+            "optional action return must decode an absent value as null: {client}"
+        );
     }
 
     #[test]
@@ -3611,7 +3642,7 @@ pub fn seed()
         assert_eq!(computed.callable.identity.canonical_name, "test::bookPage");
         assert_eq!(
             computed.callable.result.presence,
-            SurfaceComputedReadPresenceJson::MaybePresent
+            SurfaceResultPresenceJson::MaybePresent
         );
         let Some(SurfaceComputedReadValueShapeJson::Resource {
             resource_catalog_id,
