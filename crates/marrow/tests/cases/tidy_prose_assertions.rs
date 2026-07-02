@@ -58,7 +58,9 @@ fn baseline_counts() -> BTreeMap<String, usize> {
         .lines()
         .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
         .map(|line| {
-            let (path, count) = line.rsplit_once(' ').expect("baseline line: <path> <count>");
+            let (path, count) = line
+                .rsplit_once(' ')
+                .expect("baseline line: <path> <count>");
             (path.to_string(), count.parse().expect("baseline count"))
         })
         .collect()

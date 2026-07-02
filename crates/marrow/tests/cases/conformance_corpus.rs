@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::support;
 use serde_json::Value;
@@ -28,7 +28,7 @@ fn corpus_fixtures() -> Vec<PathBuf> {
 /// fixture exercises, how it asserts, and which Rust test it replaced. The
 /// header keeps the corpus navigable as suites migrate onto it; a fixture
 /// without one is unlanded work.
-fn assert_corpus_header(fixture: &PathBuf) {
+fn assert_corpus_header(fixture: &Path) {
     let tests_dir = fixture.join("tests");
     let mut test_files: Vec<PathBuf> = fs::read_dir(&tests_dir)
         .unwrap_or_else(|_| panic!("fixture {} has a tests directory", fixture.display()))
@@ -43,7 +43,10 @@ fn assert_corpus_header(fixture: &PathBuf) {
     );
     for file in test_files {
         let text = fs::read_to_string(&file).expect("read fixture test module");
-        let header: Vec<&str> = text.lines().take_while(|line| line.starts_with(';')).collect();
+        let header: Vec<&str> = text
+            .lines()
+            .take_while(|line| line.starts_with(';'))
+            .collect();
         for field in ["; Layer:", "; Oracle:", "; Replaces:"] {
             assert!(
                 header.iter().any(|line| line.starts_with(field)),
@@ -56,7 +59,7 @@ fn assert_corpus_header(fixture: &PathBuf) {
 
 /// Run one fixture through `marrow test --format jsonl` and assert the typed
 /// report: at least one test selected, every outcome `passed`.
-fn assert_fixture_passes(fixture: &PathBuf) {
+fn assert_fixture_passes(fixture: &Path) {
     let output = support::marrow(&[
         "test",
         "--format",
