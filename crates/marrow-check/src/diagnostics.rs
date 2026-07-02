@@ -180,9 +180,9 @@ pub const CHECK_LOCK_CORRUPT: &str = "check.lock_corrupt";
 /// backend is statically known.
 pub const CHECK_DURABLE_STORE_REQUIRED: &str = "check.durable_store_required";
 /// An `evolve` step names a target that does not resolve to a catalog-addressable
-/// entity: a resource member, saved root, store index, enum, or enum member that
-/// the current source declares (or, for a rename's source side, an entry the
-/// accepted catalog records).
+/// entity: a resource, a resource member, a saved root, a store index, an enum, or
+/// an enum member that the current source declares (or, for a rename's source side,
+/// an entry the accepted catalog records).
 pub const CHECK_EVOLVE_TARGET: &str = "check.evolve_target";
 /// An `evolve default` value does not match its target member's type, or an
 /// `evolve transform` body does not type-check.

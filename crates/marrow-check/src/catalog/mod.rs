@@ -1511,7 +1511,7 @@ fn resolve_renames(
                 // one current identity. That block only describes work already applied, so it stays
                 // inert exactly as deleting it would, rather than failing as an unresolved intent.
                 if !rename_consumed(accepted, rename) {
-                    report_unresolved_intent(&rename.file, rename.span, diagnostics);
+                    report_unresolved_rename_destination(rename, diagnostics);
                 }
                 continue;
             }
@@ -2033,6 +2033,24 @@ fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec
         file,
         span,
         "evolve target does not name an accepted catalog entry to carry forward",
+    ));
+}
+
+/// Report a rename whose source resolves but whose destination the current source does not declare.
+/// The carry-forward message describes only the source leg, so it misattributes this failure to the
+/// resolved from-path; the destination leg names the undeclared to-path and anchors at its token.
+fn report_unresolved_rename_destination(
+    rename: &RenameIntent,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_EVOLVE_TARGET,
+        &rename.file,
+        rename.to_span,
+        format!(
+            "evolve rename target `{}` is not declared by the current source",
+            rename.to_path
+        ),
     ));
 }
 
@@ -2987,6 +3005,7 @@ mod tests {
             to_path: to_path.to_string(),
             file: std::path::PathBuf::from("src/books.mw"),
             span: SourceSpan::default(),
+            to_span: SourceSpan::default(),
         }
     }
 
@@ -3267,6 +3286,7 @@ mod tests {
             to_path: to_path.to_string(),
             file: std::path::PathBuf::from("src/app.mw"),
             span: SourceSpan::default(),
+            to_span: SourceSpan::default(),
         }
     }
 

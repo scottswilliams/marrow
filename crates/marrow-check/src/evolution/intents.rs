@@ -30,14 +30,16 @@ use crate::{
 };
 
 /// One declared rename: the entity is now spelled `to_path` and was formerly
-/// `from_path` (both module-qualified catalog paths), reported at `span` (the `from`
-/// target token) if either side does not resolve.
+/// `from_path` (both module-qualified catalog paths). `span` anchors the `from` target
+/// token — where an unresolved source side is reported — and `to_span` the `to` target
+/// token, where an unresolved destination side is reported.
 #[derive(Debug, Clone)]
 pub(crate) struct RenameIntent {
     pub(crate) from_path: String,
     pub(crate) to_path: String,
     pub(crate) file: std::path::PathBuf,
     pub(crate) span: SourceSpan,
+    pub(crate) to_span: SourceSpan,
 }
 
 /// One declared retirement: the module-qualified catalog path of an entity to
@@ -120,6 +122,7 @@ where
                                     to_path,
                                     file: file.to_path_buf(),
                                     span: target_span(from, *span),
+                                    to_span: target_span(to, *span),
                                 });
                             }
                             _ => report_target(file, target_span(from, *span), diagnostics),
@@ -798,7 +801,7 @@ fn report_target(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagn
         file,
         span,
         "evolve target does not name a catalog-addressable entity \
-            (a resource member, saved root, store index, enum, or enum member)",
+            (a resource, a resource member, a saved root, a store index, an enum, or an enum member)",
     ));
 }
 

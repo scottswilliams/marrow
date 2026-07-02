@@ -1075,6 +1075,102 @@ fn unresolved_evolve_target_anchors_at_the_target_token() {
     );
 }
 
+/// A rename whose source names an accepted entry but whose DESTINATION the current source does not
+/// declare fails on the destination, not the source: `Book.title` is a real accepted member, so the
+/// carry-forward message ("does not name an accepted catalog entry to carry forward") misattributes
+/// the failure to the resolved source. The unresolved destination leg gets its own message naming
+/// the undeclared to-path, anchored at the destination token, not the accepted from-path token.
+#[test]
+fn unresolved_rename_destination_is_diagnosed_at_the_destination_token() {
+    let root = temp_project("evolve-rename-unresolved-destination", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   final: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.title -> Book.mid\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    let target: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == marrow_check::CHECK_EVOLVE_TARGET)
+        .collect();
+    assert_eq!(
+        target.len(),
+        1,
+        "the unresolved destination is one diagnostic: {:#?}",
+        report.diagnostics
+    );
+    let diagnostic = target[0];
+    assert!(
+        diagnostic.message.contains("books::Book::mid")
+            && diagnostic.message.contains("current source"),
+        "the destination leg names the undeclared to-path, not a carry-forward failure: {}",
+        diagnostic.message
+    );
+    assert!(
+        !diagnostic.message.contains("carry forward"),
+        "the destination leg must not reuse the source carry-forward message: {}",
+        diagnostic.message
+    );
+    // `\x20   rename Book.title -> ` is 4 + "rename "(7) + "Book.title"(10) + " -> "(4) columns, so
+    // the `Book.mid` destination token starts at column 26 — never the from-token column 12.
+    assert_eq!(
+        diagnostic.span.column, 26,
+        "the diagnostic anchors at the destination token: {diagnostic:#?}"
+    );
+}
+
+/// The check.evolve_target enumeration names every catalog-addressable kind the grammar lists,
+/// including a bare `resource`: renaming or retiring a resource carries its whole member subtree,
+/// so a resource is an addressable target and the message that lists the kinds must say so.
+#[test]
+fn evolve_target_kind_enumeration_names_a_resource() {
+    let root = temp_project("evolve-target-kind-enumeration", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   retire ^books(1)\n",
+        );
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == marrow_check::CHECK_EVOLVE_TARGET)
+        .expect("an unaddressable evolve target is diagnosed");
+    assert!(
+        diagnostic.message.contains("a resource, a resource member"),
+        "the addressable-kind enumeration must list a bare resource: {}",
+        diagnostic.message
+    );
+}
+
 #[test]
 fn evolve_binding_that_would_collide_identity_is_reported_at_check() {
     // A rename carries the accepted `member-a` onto `Book.c` while the source also
