@@ -6,11 +6,11 @@
 use crate::common;
 use common::{assert_kind, codes, compile_source_errors};
 use marrow_schema::{
-    SCHEMA_NONSCALAR_KEY, SCHEMA_OPTIONAL_IN_SAVED, SchemaErrorKind, SchemaSavedPosition,
+    SCHEMA_NONSCALAR_KEY, SCHEMA_OPTIONAL_IN_STORED_SHAPE, SchemaErrorKind, SchemaSavedPosition,
 };
 
 fn optional(target: SchemaSavedPosition, name: &str) -> SchemaErrorKind {
-    SchemaErrorKind::OptionalInSaved {
+    SchemaErrorKind::OptionalInStoredShape {
         target,
         name: name.to_string(),
     }
@@ -25,7 +25,7 @@ resource Book
 store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_SAVED]);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
     assert_kind(&errors[0], optional(SchemaSavedPosition::Field, "subtitle"));
 }
 
@@ -37,7 +37,7 @@ resource Counter
 store ^counters(id: int): Counter
 ";
     let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_SAVED]);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
     assert_kind(
         &errors[0],
         optional(SchemaSavedPosition::KeyedLeaf, "counts"),
@@ -54,7 +54,7 @@ resource Book
 store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_SAVED]);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
     assert_kind(
         &errors[0],
         optional(SchemaSavedPosition::SequenceElement, "tags"),
@@ -70,7 +70,7 @@ resource Book
 store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_SAVED]);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
     assert_kind(&errors[0], optional(SchemaSavedPosition::Field, "body"));
 }
 
@@ -85,7 +85,24 @@ resource Book
 store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_SAVED]);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
+    assert_kind(
+        &errors[0],
+        optional(SchemaSavedPosition::SequenceElement, "tags"),
+    );
+}
+
+#[test]
+fn saved_keyed_leaf_of_optional_sequence_element_names_the_element() {
+    // The keyed leaf's value type is a sequence, so the offending `?` sits on the
+    // sequence element inside it; the rejection names the element, not the leaf.
+    let source = "\
+resource Book
+    tags(day: string): sequence[string?]
+store ^books(id: int): Book
+";
+    let errors = compile_source_errors(source);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
     assert_kind(
         &errors[0],
         optional(SchemaSavedPosition::SequenceElement, "tags"),
@@ -102,7 +119,7 @@ resource Book
 store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_SAVED]);
+    assert_eq!(codes(&errors), [SCHEMA_OPTIONAL_IN_STORED_SHAPE]);
     assert_kind(&errors[0], optional(SchemaSavedPosition::Field, "cover"));
 }
 

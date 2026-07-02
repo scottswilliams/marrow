@@ -230,7 +230,7 @@ fn a_local_keyed_leaf_may_not_be_optional() {
     assert_code(
         "local-keyed-leaf",
         "module m\nfn f()\n    var counts(name: string): int?\n    print(1)\n",
-        "schema.optional_in_saved",
+        "schema.optional_in_stored_shape",
     );
 }
 
@@ -239,7 +239,7 @@ fn a_local_sequence_element_may_not_be_optional() {
     assert_code(
         "local-seq-element",
         "module m\nfn f()\n    var xs: sequence[string?]\n    print(1)\n",
-        "schema.optional_in_saved",
+        "schema.optional_in_stored_shape",
     );
 }
 
@@ -248,7 +248,7 @@ fn a_keyed_parameter_leaf_may_not_be_optional() {
     assert_code(
         "param-keyed-leaf",
         "module m\nfn f(counts(name: string): int?)\n    print(1)\n",
-        "schema.optional_in_saved",
+        "schema.optional_in_stored_shape",
     );
 }
 
@@ -257,7 +257,24 @@ fn an_optional_sequence_return_element_is_rejected() {
     assert_code(
         "return-seq-element",
         "module m\nfn f(): sequence[int?]\n    var xs: sequence[int]\n    return xs\n",
-        "schema.optional_in_saved",
+        "schema.optional_in_stored_shape",
+    );
+}
+
+#[test]
+fn a_local_keyed_leaf_of_optional_sequence_element_names_the_element() {
+    // The offending `?` sits on the sequence element inside the leaf's value type,
+    // so the rejection names the element, not the keyed leaf.
+    let found = check_module(
+        "local-keyed-seq-element",
+        "module m\nfn f()\n    var m(k: string): sequence[int?]\n    print(1)\n",
+        "schema.optional_in_stored_shape",
+    );
+    assert!(
+        found
+            .first()
+            .is_some_and(|diagnostic| diagnostic.message.starts_with("sequence element")),
+        "{found:#?}"
     );
 }
 

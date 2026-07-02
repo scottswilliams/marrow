@@ -153,9 +153,11 @@ fn check_member_value_type(member: &ResourceMember, errors: &mut Vec<SchemaError
 }
 
 /// The saved value position an `unknown`/optional rejection names. A `sequence[T]`
-/// field and a positional (single-`int`-keyed) layer both carry their value on a
-/// sequence element, so the rejection names the element; other keyed leaves and plain
-/// fields name the keyed leaf or field.
+/// value and a positional (single-`int`-keyed) layer both carry their value on a
+/// sequence element — including a keyed leaf whose value type is a sequence, where
+/// the offending element type sits inside the sequence, not on the leaf itself —
+/// so the rejection names the element; other keyed leaves and plain fields name
+/// the keyed leaf or field.
 fn saved_value_position(keys: &[KeyParam], ty: &Type) -> SchemaSavedPosition {
     if keys.is_empty() {
         return match ty {
@@ -163,7 +165,7 @@ fn saved_value_position(keys: &[KeyParam], ty: &Type) -> SchemaSavedPosition {
             _ => SchemaSavedPosition::Field,
         };
     }
-    if is_positional_layer(keys) {
+    if is_positional_layer(keys) || matches!(ty, Type::Sequence(_)) {
         SchemaSavedPosition::SequenceElement
     } else {
         SchemaSavedPosition::KeyedLeaf

@@ -17,7 +17,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 | Saved key must be an orderable scalar (every scalar but `decimal`) | `SCHEMA_UNORDERABLE_KEY` |
 | Identity/named/sequence/unknown/optional can't be a key | `SCHEMA_NONSCALAR_KEY` |
 | `unknown` forbidden anywhere inside a managed saved schema | (rejected; local resources exempt) |
-| Optional (`T?`) forbidden in a saved field/keyed-leaf value (a field is sparse by default; `?` is the code-level read type) | `SCHEMA_OPTIONAL_IN_SAVED` |
+| Optional (`T?`) forbidden in any stored-shape position — key, saved field, keyed leaf, sequence element — local or saved alike (a sparse slot already provides absence; `?` is the code-level read type) | `SCHEMA_OPTIONAL_IN_STORED_SHAPE` |
 | Plain saved-field named values must be locally enum-shaped; project-aware keyed named value/resource resolution belongs to `marrow-check::keyed_entries` | `SCHEMA_NON_ENUM_NAMED_FIELD` |
 | Enum category must have children | `SCHEMA_CATEGORY_LEAF` |
 | Non-category enum parent forbidden | `SCHEMA_PARENT_NOT_CATEGORY` |

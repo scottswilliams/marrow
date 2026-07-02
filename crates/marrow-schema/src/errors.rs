@@ -38,7 +38,7 @@ pub enum SchemaErrorKind {
         target: SchemaSavedPosition,
         name: String,
     },
-    OptionalInSaved {
+    OptionalInStoredShape {
         target: SchemaSavedPosition,
         name: String,
     },
@@ -97,7 +97,7 @@ impl SchemaErrorKind {
             Self::CategoryLeaf { .. }
             | Self::ParentNotCategory { .. }
             | Self::NonEnumNamedField { .. } => None,
-            Self::UnknownInSaved { target, .. } | Self::OptionalInSaved { target, .. } => {
+            Self::UnknownInSaved { target, .. } | Self::OptionalInStoredShape { target, .. } => {
                 match target {
                     SchemaSavedPosition::Field
                     | SchemaSavedPosition::Key
@@ -229,10 +229,12 @@ pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
 /// resources may use `unknown`.
 pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
 
-/// A managed saved field or keyed leaf is typed optional (`T?`). `?` is the
-/// code-level type a sparse read yields, not a storage marker: a field is sparse
-/// (absent-able) by default, so a saved value type drops the `?`.
-pub const SCHEMA_OPTIONAL_IN_SAVED: &str = "schema.optional_in_saved";
+/// A stored-shape position — a key, saved field, keyed leaf, or sequence element
+/// — is typed optional (`T?`), in a local or saved tree alike. `?` is the
+/// code-level type a sparse read yields, not a storage marker: a sparse slot
+/// already provides absence and a sequence element is always present, so the
+/// slot's type drops the `?`.
+pub const SCHEMA_OPTIONAL_IN_STORED_SHAPE: &str = "schema.optional_in_stored_shape";
 
 /// Two members of a store collide in its source namespace: a top-level field or
 /// layer shares a name with an identity key, or a declared field shares a name
@@ -393,11 +395,11 @@ pub(crate) fn optional_error(
         _ => "a saved field is sparse by default, so its type drops the `?`",
     };
     SchemaError {
-        kind: SchemaErrorKind::OptionalInSaved {
+        kind: SchemaErrorKind::OptionalInStoredShape {
             target,
             name: name.to_string(),
         },
-        code: SCHEMA_OPTIONAL_IN_SAVED,
+        code: SCHEMA_OPTIONAL_IN_STORED_SHAPE,
         message: format!(
             "{} `{name}` cannot be optional (`T?`); {reason}",
             target.message_name()

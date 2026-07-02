@@ -229,7 +229,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
 | `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
-| `schema.optional_in_saved` | A managed saved field, key, or explicit keyed leaf is declared optional (`T?`); saved fields are sparse by default, so a saved type drops the `?`. A sequence element, which is always present, is rejected the same way. |
+| `schema.optional_in_stored_shape` | A stored-shape position — a key, saved field, keyed leaf, or sequence element — is declared optional (`T?`), in a local or saved tree alike. Saved fields and keyed leaves are sparse by default, so their types drop the `?`; a sequence element, which is always present, is rejected the same way. |
 | `schema.key_member_collision` | Two store members collide in the store namespace: a top-level field or layer shares a name with an identity key, or a declared field shares a name with an index. |
 | `schema.unknown_index_arg` | An index argument names neither an identity key nor a top-level member. |
 | `schema.unorderable_key` | A key (saved or local keyed-collection) has a type with no order-preserving key encoding (currently `decimal`). |
