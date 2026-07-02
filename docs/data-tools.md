@@ -258,10 +258,11 @@ $ marrow data get ./project '^counter(3).value'
 
 Absence is a valid result, not an error: `get` exits `0` whether the path is
 present or absent. A path argument that does not parse fails before touching the
-store and exits `2`. A path that parses but names a saved root or member the
-schema does not declare is a typed resolution failure, not a usage error: it
-reports `data.unknown_path` with the offending path in `source_span.path` and
-exits `1`, the same recoverable-failure code as the storage faults.
+store and exits `2`. A path that parses but the schema cannot resolve — an
+undeclared saved root or member, or an identity or member key of the wrong scalar
+type or arity — is a typed resolution failure, not a usage error: it reports
+`data.unknown_path` with the offending path in `source_span.path` and exits `1`,
+the same recoverable-failure code as the storage faults.
 
 `--format json` reports the path, a presence state, the base64 value (or
 `null` when there is no direct value), and the store version read:

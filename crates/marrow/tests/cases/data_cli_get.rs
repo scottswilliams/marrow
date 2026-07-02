@@ -142,6 +142,31 @@ fn data_get_unknown_root_and_member_emit_a_typed_diagnostic() {
 }
 
 #[test]
+fn data_get_wrong_key_type_or_arity_is_a_typed_resolution_failure() {
+    // `^counter` declares an int identity key. A path that parses but supplies a key of
+    // the wrong scalar type or the wrong arity is a schema-resolution failure the checked
+    // schema rejects, not a command-line usage error: it must exit 1 with a typed
+    // data.unknown_path JSON envelope, never the exit-2 usage channel with no envelope.
+    let (_project, dir) = seeded_project("data-get-key-resolution");
+    for path in ["^counter(\"abc\").value", "^counter(1,2).value"] {
+        let output = marrow(&["data", "get", "--format", "json", &dir, path]);
+        assert_eq!(output.status.code(), Some(1), "{path}: {output:?}");
+        let envelope = json(output);
+        assert_eq!(
+            envelope["code"],
+            serde_json::json!("data.unknown_path"),
+            "{path}: {envelope:?}"
+        );
+        assert_eq!(envelope["kind"], serde_json::json!("tooling"), "{path}");
+        assert_eq!(
+            envelope["source_span"]["path"],
+            serde_json::json!(path),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn data_get_rejects_an_unrecognized_string_key_escape() {
     // The saved-path string-key decoder shares the language's five-escape vocabulary
     // (`\\ \" \n \r \t`). An unknown escape such as `\b` must fail closed with a

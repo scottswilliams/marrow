@@ -83,31 +83,39 @@ impl MemberFlavor {
     }
 }
 
-/// The stable code for a path that parses but names a saved root or member the
-/// checked schema does not declare. Such a path is well-formed input that the
-/// schema cannot resolve, so it is reported as a typed `data` diagnostic rather
+/// The stable code for a path that parses but the checked schema cannot resolve to a
+/// declared address: an undeclared root or member, or an identity or member key with a
+/// scalar type or arity the schema does not declare. Such a path is well-formed input
+/// the schema cannot resolve, so it is reported as a typed `data` diagnostic rather
 /// than a command-line usage error.
 pub const UNKNOWN_PATH_CODE: &str = "data.unknown_path";
 
 impl DataPathError {
-    /// The typed diagnostic code for a schema-resolution failure: a well-formed
-    /// path naming a saved root or member the schema does not declare. The
-    /// remaining variants describe a malformed or misused path, which the CLI
-    /// boundary reports as a usage error, so they carry no resolution code.
+    /// The typed diagnostic code for a schema-resolution failure: a well-formed path
+    /// the checked schema cannot resolve to a declared address, whether because it
+    /// names an undeclared root or member or because an identity or member key has the
+    /// wrong scalar type or arity for what the schema declares. Every such variant
+    /// consults the schema, so it is a typed resolution failure (exit `1`, JSON
+    /// envelope), not a command-line usage error. The remaining variants describe a
+    /// path that is malformed or misused independent of any schema — a missing root,
+    /// a stray key, a bad page cursor or limit — which the CLI boundary reports as a
+    /// usage error, so they carry no resolution code. The match is exhaustive with no
+    /// catch-all: a new schema-dependent variant cannot silently default to the usage
+    /// channel.
     pub fn resolution_code(&self) -> Option<&'static str> {
         match self {
             Self::UnknownRoot { .. }
             | Self::UnknownRootCatalogId { .. }
             | Self::UnknownMember { .. }
-            | Self::UnknownMemberCatalogId { .. } => Some(UNKNOWN_PATH_CODE),
-            Self::MissingRoot
+            | Self::UnknownMemberCatalogId { .. }
             | Self::TooManyIdentityKeys { .. }
             | Self::IdentityKeyType { .. }
             | Self::MissingIdentityKeys { .. }
-            | Self::UnexpectedKey
             | Self::TooManyMemberKeys { .. }
             | Self::MemberKeyType { .. }
-            | Self::IncompleteMemberKeys { .. }
+            | Self::IncompleteMemberKeys { .. } => Some(UNKNOWN_PATH_CODE),
+            Self::MissingRoot
+            | Self::UnexpectedKey
             | Self::ZeroLimit
             | Self::CursorOutsidePath
             | Self::CursorNotAPosition
@@ -186,6 +194,83 @@ impl fmt::Display for DataPathError {
             Self::NoChildScan => {
                 write!(f, "the path names a leaf with no scannable children")
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ScalarType;
+
+    /// Every schema-dependent resolution failure — including a wrong-typed or
+    /// wrong-arity identity or member key — reports a typed resolution code so the
+    /// boundary routes it to the exit-1 JSON envelope, never the exit-2 usage channel.
+    #[test]
+    fn schema_dependent_variants_carry_a_resolution_code() {
+        let schema_dependent = [
+            DataPathError::UnknownRoot {
+                root: "books".into(),
+            },
+            DataPathError::UnknownRootCatalogId {
+                store_catalog_id: "x".into(),
+            },
+            DataPathError::UnknownMember {
+                flavor: MemberFlavor::Field,
+                name: "f".into(),
+            },
+            DataPathError::UnknownMemberCatalogId {
+                flavor: MemberFlavor::Field,
+                member_catalog_id: "x".into(),
+            },
+            DataPathError::TooManyIdentityKeys {
+                root: "books".into(),
+            },
+            DataPathError::IdentityKeyType {
+                root: "books".into(),
+                expected: ScalarType::Int,
+                found: ScalarType::Str,
+            },
+            DataPathError::MissingIdentityKeys {
+                root: "books".into(),
+                expected: 1,
+            },
+            DataPathError::TooManyMemberKeys {
+                member: "scores".into(),
+            },
+            DataPathError::MemberKeyType {
+                member: "scores".into(),
+                expected: ScalarType::Int,
+                found: ScalarType::Str,
+            },
+            DataPathError::IncompleteMemberKeys {
+                member: "scores".into(),
+            },
+        ];
+        for error in schema_dependent {
+            assert_eq!(
+                error.resolution_code(),
+                Some(UNKNOWN_PATH_CODE),
+                "{error:?} consults the schema and must be a resolution failure",
+            );
+        }
+    }
+
+    /// A path malformed or misused independent of any schema stays a usage error.
+    #[test]
+    fn schema_independent_variants_carry_no_resolution_code() {
+        let usage = [
+            DataPathError::MissingRoot,
+            DataPathError::UnexpectedKey,
+            DataPathError::ZeroLimit,
+            DataPathError::CursorOutsidePath,
+            DataPathError::CursorNotAPosition,
+            DataPathError::CursorNotAnEntry,
+            DataPathError::MembersTakeNoCursor,
+            DataPathError::NoChildScan,
+        ];
+        for error in usage {
+            assert_eq!(error.resolution_code(), None, "{error:?} is a usage error");
         }
     }
 }
