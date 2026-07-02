@@ -1412,10 +1412,9 @@ fn surface_read_session_serves_empty_committed_identity_on_a_fresh_checkout() {
 }
 
 /// A present store that no longer presents a root its committed lock records, at the same epoch as
-/// the lock, has lost durable identity: the store-behind carve-out does not apply because the store
-/// is caught up to the lock high-water. Read-only `serve` must fail closed `store.corruption`,
-/// identically to `serve --write` and the inspection family, rather than misreport the loss as
-/// schema drift, and it must commit no write.
+/// the lock, has lost durable identity. Keying on the saved-root set, read-only `serve` fails it
+/// closed `store.corruption`, identically to `serve --write` and the inspection family, rather than
+/// misreport the loss as schema drift, and it must commit no write.
 #[test]
 fn surface_read_session_fails_closed_on_a_store_missing_a_committed_root() {
     let root = TempDir::new("marrow-run-surface-read-lost-root").expect("create project");
@@ -1453,13 +1452,16 @@ fn surface_read_session_fails_closed_on_a_store_missing_a_committed_root() {
     );
 }
 
-/// A store committed below the lock's epoch high-water that also presents fewer roots is a
-/// legitimately-behind local checkout whose missing root is a later activation's addition, not a
-/// loss. The lock-root witness honors that carve-out for read-only serve exactly as for the
-/// inspection family, so the open is admitted rather than falsely corrupted.
+/// A store committed below the lock's epoch high-water that also presents fewer ROOTS has lost
+/// durable identity whatever its epoch: a stale checkout whose store predates a teammate's root
+/// addition and a store rolled back below a root it once held present the same shape, so the safe
+/// verdict is loss on both. The lock-root witness keys on the saved-root SET, not the epoch, so
+/// read-only serve fails a behind store missing a committed root closed `store.corruption` exactly
+/// as `serve --write` and the inspection family do, remedied by re-seeding an absent store from the
+/// committed identity. Only a behind store keeping the SAME roots is admitted.
 #[test]
-fn surface_read_session_admits_an_epoch_behind_store_missing_an_added_root() {
-    let root = TempDir::new("marrow-run-surface-read-behind-added-root").expect("create project");
+fn surface_read_session_fails_closed_on_an_epoch_behind_store_missing_a_root() {
+    let root = TempDir::new("marrow-run-surface-read-behind-lost-root").expect("create project");
     seed_surface_counter_store(root.path());
 
     let lock = marrow_check::read_committed_lock(root.path())
@@ -1480,8 +1482,9 @@ fn surface_read_session_admits_an_epoch_behind_store_missing_an_added_root() {
     )
     .expect("publish the ahead committed lock");
 
-    ProjectSurfaceReadSession::open(root.path())
-        .expect("read-only serve must admit a legitimately epoch-behind store");
+    let error = ProjectSurfaceReadSession::open(root.path())
+        .expect_err("read-only serve must fail closed on an epoch-behind store missing a root");
+    assert_eq!(error.code(), "store.corruption");
 }
 
 #[test]

@@ -1001,8 +1001,8 @@ fn fresh_active_entry(
 /// which a teammate committed an evolution that added an optional member and advanced the epoch
 /// high-water, while this checkout's store stays at the earlier epoch with the same saved roots —
 /// must read, back up, and recover as the behind store it is, never as `store.corruption`. The
-/// lock-root witness keys on saved-root identity alone and honors the store-behind epoch carve-out,
-/// so the additive pending member the ahead lock lists does not condemn the store.
+/// lock-root witness keys on the saved-root SET alone, so the additive pending member the ahead
+/// lock lists — leaving the root set unchanged — does not condemn the store.
 #[test]
 fn an_epoch_behind_store_under_an_additive_ahead_lock_reads_clean() {
     let (project, dir) = seeded_mutable_store("cli-store-epoch-behind-additive", 3);
@@ -1080,8 +1080,8 @@ fn an_epoch_behind_store_under_an_additive_ahead_lock_reads_clean() {
 /// A present store that holds a different saved root than its committed `marrow.lock` records, at
 /// the same epoch as the lock, has lost durable identity — the lock recorded a root this store no
 /// longer presents and the store is not behind. The lock-root witness must still fail this closed as
-/// `store.corruption` on every driver: the epoch carve-out excuses a behind store, never a
-/// same-epoch root loss.
+/// `store.corruption` on every driver: the witness keys on the saved-root set, so a missing root
+/// is a loss whether the store is caught up or behind.
 #[test]
 fn a_same_epoch_store_missing_a_committed_root_fails_closed() {
     let (project, dir) = seeded_mutable_store("cli-store-same-epoch-root-loss", 3);
@@ -1104,8 +1104,8 @@ fn a_same_epoch_store_missing_a_committed_root_fails_closed() {
     );
 
     // Record a second committed saved root in the lock at the SAME epoch the store sits at. The
-    // store presents only `^notes`, so it has genuinely lost the recorded `^ghost` root; the
-    // store-behind carve-out does not apply because the store is caught up to the lock's high-water.
+    // store presents only `^notes`, so it has genuinely lost the recorded `^ghost` root; keying on
+    // the root set, the witness condemns the loss whether or not the store is caught up.
     let mut entries = real_lock.entries.clone();
     entries.push(fresh_active_entry(
         &real_lock,
@@ -1162,6 +1162,101 @@ fn a_same_epoch_store_missing_a_committed_root_fails_closed() {
     assert!(
         findings_carry_lock_root_corruption(&report),
         "doctor blessed a store missing a committed root instead of flagging its loss: {report}"
+    );
+}
+
+/// A present store BEHIND an ahead committed lock, whose ahead lock added a saved ROOT (not a
+/// member), has lost durable identity all the same: a root the lock recorded is missing from the
+/// store, and being epoch-behind never excuses a dropped root. This is the git-pull-then-rollback
+/// (or a partial root drop) shape — indistinguishable from a stale checkout whose store predates a
+/// teammate's root addition — so the safe verdict is `store.corruption` on every driver, remedied
+/// by re-seeding an absent store from the committed identity. The witness keys on the saved-root
+/// SET, so an epoch-behind store missing a committed root fails closed exactly as a same-epoch one
+/// does; only a behind store keeping the SAME roots (an added member) is tolerated.
+#[test]
+fn an_epoch_behind_store_missing_a_committed_root_fails_closed() {
+    let (project, dir) = seeded_mutable_store("cli-store-epoch-behind-root-loss", 3);
+    let backup_target = project.join("epoch-behind-root-loss.mw-backup");
+    let backup_target = backup_target
+        .to_str()
+        .expect("backup path utf8")
+        .to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    assert_eq!(
+        support_evolve::store_epoch(&project),
+        Some(1),
+        "the seeded store baselines at epoch 1",
+    );
+    let real_lock = committed_lock(&project);
+    assert_eq!(
+        real_lock.epoch_high_water, 1,
+        "the baseline lock is at epoch 1",
+    );
+
+    // A teammate's committed activation added a second saved root and advanced the lock AHEAD of
+    // this store (high-water 2 > store epoch 1). The store presents only `^notes`, so it is missing
+    // the committed `^ghost` root; being epoch-behind must not excuse the dropped root.
+    let mut entries = real_lock.entries.clone();
+    entries.push(fresh_active_entry(
+        &real_lock,
+        CatalogEntryKind::Store,
+        "app::^ghost",
+        0x6058,
+    ));
+    let ahead_lost_root_lock = CatalogLock::new(
+        entries,
+        real_lock.ledger.clone(),
+        real_lock.epoch_high_water + 1,
+        real_lock.source_digest,
+    )
+    .expect("the ahead lost-root lock validates");
+    write_committed_lock(&project, &ahead_lost_root_lock);
+
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["data", "stats", &dir].as_slice(),
+        ["data", "roots", &dir].as_slice(),
+        ["data", "dump", &dir].as_slice(),
+        ["data", "get", &dir, "^notes(1)"].as_slice(),
+        ["run", "--entry", "app::seed", &dir].as_slice(),
+        ["backup", &dir, &backup_target].as_slice(),
+        ["data", "recover", &dir].as_slice(),
+        ["evolve", "preview", &dir].as_slice(),
+        ["evolve", "apply", "--no-backup", &dir].as_slice(),
+        ["serve", "--addr", "127.0.0.1:0", &dir].as_slice(),
+        ["serve", "--addr", "127.0.0.1:0", "--write", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("serve listening"),
+            "`marrow {}` listened over an epoch-behind store missing a committed root: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` blessed an epoch-behind store missing a committed root: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must report the lost committed root as store.corruption even when the \
+             store is epoch-behind: {output:?}",
+            command.join(" "),
+        );
+    }
+
+    let doctor = marrow_bounded(&["doctor", &dir, "--format", "json"], deadline);
+    assert_no_panic_and_bounded(&doctor, &["doctor"], 0);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    assert!(
+        findings_carry_lock_root_corruption(&report),
+        "doctor blessed an epoch-behind store missing a committed root instead of flagging its \
+         loss: {report}"
     );
 }
 

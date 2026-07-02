@@ -3,8 +3,9 @@
 //! The committed `marrow.lock` is the independent witness to durable identity: a PRESENT store
 //! that presents fewer of the lock's active accepted roots than the lock recorded has lost data to
 //! a rollback or a torn baseline. [`verify_store_roots_against_lock`](super::integrity::verify_store_roots_against_lock)
-//! is the store-vs-lock saved-root comparison, which also honors the store-behind epoch carve-out
-//! so a legitimately-behind local checkout is never condemned. An ABSENT store body is the
+//! is the store-vs-lock saved-root comparison, keyed on the saved-root SET alone: a behind local
+//! checkout that keeps the same roots passes, but a behind store missing a committed root is a loss
+//! whatever its epoch. An ABSENT store body is the
 //! disposable-store case, not a loss: a fresh checkout or a deleted store seeds an empty store from
 //! the committed identity. The
 //! discriminator is present-and-damaged versus absent, so every driver that compares a store

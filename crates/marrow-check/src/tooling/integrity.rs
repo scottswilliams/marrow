@@ -963,16 +963,17 @@ fn is_active_store_root(kind: CatalogEntryKind, lifecycle: CatalogLifecycle) -> 
 /// catalog records no root either, and is condemned all the same: that is the rollback-to-empty
 /// this witness exists to catch.
 ///
-/// The comparison keys on saved-root identity alone — the `Store` entries — never the resource
-/// members or indexes the catalog also records. Those are additive shape the store and lock
-/// advance through evolution, so an ahead lock that added a member legitimately lists more than
-/// a behind store presents. The epoch carve-out makes that precise: a store committed below the
-/// lock's epoch high-water is a legitimately-behind local checkout that carries every root it
-/// recorded at its own epoch but not a root or member a later activation added; it is the
-/// store-behind fence's case, not a loss. A store with no committed catalog has no epoch and
-/// cannot be behind, so it falls through to the present-shortfall check. When no committed lock
-/// exists, or it records no saved root, there is no recorded baseline to contradict — the
-/// separate missing-lock and genuine first-run case.
+/// The comparison keys on the saved-root SET alone — the `Store` entries — never the resource
+/// members or indexes the catalog also records, and never the epoch number. Members and indexes
+/// are additive shape the store and lock advance through evolution, so an ahead lock that added a
+/// member legitimately lists more shape than a behind store presents while keeping the same root
+/// set. A behind store missing a committed ROOT, though, has lost durable identity whatever its
+/// epoch: a store rolled back below a root it once held and a stale checkout whose store predates a
+/// teammate's root addition present the same shape, so the safe verdict is loss on both, remedied
+/// by re-seeding an absent store from the committed identity. Keying on the epoch instead would
+/// bless the rollback as merely behind. When no committed lock exists, or it records no saved root,
+/// there is no recorded baseline to contradict — the separate missing-lock and genuine first-run
+/// case.
 pub fn verify_store_roots_against_lock(
     store: &TreeStore,
     lock: Option<&marrow_catalog::CatalogLock>,
@@ -1002,16 +1003,6 @@ pub fn verify_store_roots_against_lock(
         })
         .unwrap_or_default();
     if committed_roots.is_subset(&presented) {
-        return Ok(());
-    }
-    // The store presents fewer saved roots than the lock recorded. That is a loss only if the
-    // store is caught up: a store committed below the lock's epoch high-water is a legitimately
-    // behind local checkout whose missing roots are a later activation's pending additions, the
-    // store-behind fence's case. A store with no committed catalog has no epoch and cannot be
-    // behind, so it is a genuine loss.
-    if let Some(snapshot) = &snapshot
-        && snapshot.epoch < lock.epoch_high_water
-    {
         return Ok(());
     }
     Err(StoreError::Corruption {

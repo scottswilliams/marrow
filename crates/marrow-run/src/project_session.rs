@@ -2186,10 +2186,11 @@ fn store_behind_committed_lock(
 /// committed identity. A genuine first run records no active root in the lock, so the witness never
 /// fires either way.
 ///
-/// A store committed at an earlier epoch than the lock's high-water is a legitimately-behind local
-/// checkout, not a loss: the witness honors that store-behind carve-out itself, so the write path
-/// reaches the store-behind fence rather than a corruption verdict. A rolled-back or
-/// crash-mid-creation store carries no committed catalog, so it is not behind and the witness fires.
+/// A behind local checkout that keeps the same saved roots is not a loss: the witness keys on the
+/// saved-root SET, so a store missing only members or indexes a later activation added passes and
+/// the write path reaches the store-behind fence rather than a corruption verdict. A rolled-back,
+/// crash-mid-creation, or partial-root-drop store presents fewer roots than the lock recorded, so
+/// the witness fires whatever the store's epoch.
 fn guard_committed_lock_roots(
     root: &Path,
     config: &ProjectConfig,
