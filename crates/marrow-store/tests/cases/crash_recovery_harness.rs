@@ -8,7 +8,8 @@ use std::time::Duration;
 use crate::common;
 use common::{TempDir, catalog_id};
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::DataPathSegment;
+use marrow_store::{AccessMode, SealedStore};
 
 const CHILD_ENV: &str = "MARROW_STORE_CRASH_CHILD";
 const PATH_ENV: &str = "MARROW_STORE_CRASH_PATH";
@@ -24,7 +25,9 @@ fn title_path() -> [DataPathSegment; 1] {
 }
 
 fn write_generation(path: &Path, generation: u8) {
-    let store = TreeStore::open(path).expect("open store for generation write");
+    let store = SealedStore::open(path, AccessMode::Create)
+        .expect("open store for generation write")
+        .into_store();
     store.begin().expect("begin generation transaction");
     let books = catalog_id("1111111111111111");
     for id in 0..RECORDS {
@@ -42,7 +45,9 @@ fn write_generation(path: &Path, generation: u8) {
 }
 
 fn read_committed_generation(path: &Path) -> u8 {
-    let store = TreeStore::open(path).expect("open or recover crashed store");
+    let store = SealedStore::open(path, AccessMode::Create)
+        .expect("open or recover crashed store")
+        .into_store();
     let books = catalog_id("1111111111111111");
     let mut generation = None;
     for id in 0..RECORDS {
@@ -86,7 +91,9 @@ fn run_child() {
     let path = std::env::var_os(PATH_ENV).expect("child store path env");
     let mode = std::env::var(MODE_ENV).expect("child mode env");
     let path = Path::new(&path);
-    let store = TreeStore::open(path).expect("child open store");
+    let store = SealedStore::open(path, AccessMode::Create)
+        .expect("child open store")
+        .into_store();
     store.begin().expect("child begin transaction");
     let books = catalog_id("1111111111111111");
     for id in 0..RECORDS {

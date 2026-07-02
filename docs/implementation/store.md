@@ -11,7 +11,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - **Engine contract** — the private `Backend` trait (read/read_prefix/write/delete/scan/begin/commit/rollback/snapshot) plus `ScanPage`, `ValuePrefix`, and typed `StoreError`. Two engines implement it: `MemStore` (BTreeMap) and `RedbStore` (persistent). A shared `conformance` suite runs 22 laws against both.
 - **Key grammar** — `cell` defines the v0 physical key layout (placement prefix, profile, family, store id, identity, segments); `key` defines the order-preserving scalar codec used in every record-key and index-key position.
 - **Value forms** — `value` (canonical scalar codec, calendar years 0001–9999) and `decimal` (exact base-10, 34-digit/34-place envelope, half-to-even division and scale rounding).
-- **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use.
+- **Public facade** — `TreeStore` wraps a boxed `Backend` and exposes every typed write/read/navigation/transaction/snapshot/backup call other crates use. Its on-disk constructors are crate-private; a durable handle is minted only through `SealedStore::open(path, AccessMode)`, the single source of a native store handle. `AccessMode` names the intent (`Create`/`Write`/`Read`), each mapping to one engine open whose store-integrity ladder runs before the handle escapes. Live-cell structural verification stays an explicit post-open step (`verify_readable`) the caller runs.
 - **Durable stamp metadata** — `metadata` (`CommitMetadata`, `EngineProfile`, `StoreUid`, and the source digest the activation fence binds).
 - **Catalog table** — `catalog` persists the accepted
   `marrow_catalog::CatalogMetadata` as a header row plus one row per entry in
@@ -33,7 +33,8 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/cell.rs` | The v0 physical key grammar: `CatalogId` validation, `CellKey` constructors per family, `DataPathSegment`, `MetaCell` tags, the per-root structural-digest anchor key, key decoders, `CellRange`. |
 | `crates/marrow-store/src/digest.rs` | `RootDigest`: the per-root structural digest (wrapping sum of one 128-bit per-cell hash over key plus value), folded incrementally on write/delete and re-derived for the integrity cross-check. |
 | `crates/marrow-store/src/codec.rs` | Shared bounds-checked reader for private length-prefixed store codecs. |
-| `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads including `DataValuePrefix`, node-backed record navigation, child/index navigation, paged index scans, backup streaming, snapshots. |
+| `crates/marrow-store/src/tree.rs` | `TreeStore` facade over a boxed `Backend`: metadata, the catalog-table read/replace surface, typed writes/reads including `DataValuePrefix`, node-backed record navigation, child/index navigation, paged index scans, backup streaming, snapshots. Path constructors are crate-private, reachable only through `SealedStore`. |
+| `crates/marrow-store/src/sealed.rs` | `SealedStore` and `AccessMode`: the sole public source of a durable `TreeStore` handle. Each access mode maps to one crate-private engine open, so no caller can mint a handle around the store-integrity ladder. |
 | `crates/marrow-store/src/metadata.rs` | `EngineProfile`, `CommitMetadata`, `StoreUid`, the per-root structural-digest value codec, and their length-prefixed binary codecs with bounded-count guards. |
 | `crates/marrow-store/src/catalog.rs` | Accepted-catalog table codec: header/entry rows, bounded paged scan, ordinal checks, canonical digest verification, and read/replace through `TreeStore`. |
 | `crates/marrow-store/src/mem.rs` | `MemStore`: in-memory `Backend` with one full-map clone for the open flat transaction and a frozen pinned-read snapshot. |
@@ -61,7 +62,8 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 ## Read next
 
-- `crates/marrow-store/src/tree.rs` — `TreeStore::memory` / `open` / `open_read_only` to construct; `write_record_presence` / `write_data_node` / `write_data_value` / `read_data_value` / `read_data_value_prefix` / `delete_data_subtree` for the write/read primitives. Record presence is the root cell for a saved identity; a data path node is a hidden group-entry presence cell at the path prefix. Payload reads only use the value-suffixed key; prefix reads copy at most the requested value bytes into `DataValuePrefix` and report whether more stored bytes remain.
+- `crates/marrow-store/src/sealed.rs` — `SealedStore::open(path, AccessMode)` to construct a durable handle; `TreeStore::memory` for an in-memory one.
+- `crates/marrow-store/src/tree.rs` — `write_record_presence` / `write_data_node` / `write_data_value` / `read_data_value` / `read_data_value_prefix` / `delete_data_subtree` for the write/read primitives. Record presence is the root cell for a saved identity; a data path node is a hidden group-entry presence cell at the path prefix. Payload reads only use the value-suffixed key; prefix reads copy at most the requested value bytes into `DataValuePrefix` and report whether more stored bytes remain.
 - `crates/marrow-store/src/tree.rs` — `scan_children_until` / `next_child_after_cursor` / `for_each_page_entry`: the one paged-scan-plus-decode engine all navigation routes through.
 - `crates/marrow-store/src/cell.rs` — `decode_data_cell_key` / `CellKey::data_path_prefix` / `CellKey::data_path_value` / `family`: the authoritative v0 key grammar.
 - `crates/marrow-store/src/key.rs` — `encode_key_into` / `encode_escaped_bytes`: why stored byte order equals typed key order.

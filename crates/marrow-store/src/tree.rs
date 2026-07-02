@@ -196,21 +196,21 @@ impl TreeStore {
     }
 
     #[cfg(feature = "native")]
-    pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
+    pub(crate) fn open(path: &std::path::Path) -> Result<Self, StoreError> {
         Ok(Self::from_backend(Box::new(crate::redb::RedbStore::open(
             path,
         )?)))
     }
 
     #[cfg(feature = "native")]
-    pub fn open_existing(path: &std::path::Path) -> Result<Self, StoreError> {
+    pub(crate) fn open_existing(path: &std::path::Path) -> Result<Self, StoreError> {
         Ok(Self::from_backend(Box::new(
             crate::redb::RedbStore::open_existing(path)?,
         )))
     }
 
     #[cfg(feature = "native")]
-    pub fn open_read_only(path: &std::path::Path) -> Result<Self, StoreError> {
+    pub(crate) fn open_read_only(path: &std::path::Path) -> Result<Self, StoreError> {
         Ok(Self::from_backend(Box::new(
             crate::redb::RedbStore::open_read_only(path)?,
         )))

@@ -9,6 +9,7 @@ use common::catalog_id;
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
+use marrow_store::{AccessMode, SealedStore};
 
 fn stable_id(suffix: u8) -> String {
     format!("cat_{suffix:032x}")
@@ -257,13 +258,17 @@ fn redb_persists_catalog_rows_across_close_and_reopen() {
     let path = dir.path().join("catalog.redb");
     let snapshot = sample_snapshot();
     {
-        let store = TreeStore::open(&path).expect("open");
+        let store = SealedStore::open(&path, AccessMode::Create)
+            .expect("open")
+            .into_store();
         store
             .replace_catalog_snapshot(&snapshot)
             .expect("publish catalog");
     }
 
-    let store = TreeStore::open(&path).expect("reopen");
+    let store = SealedStore::open(&path, AccessMode::Create)
+        .expect("reopen")
+        .into_store();
     let read = store
         .read_catalog_snapshot()
         .expect("read catalog")
@@ -429,12 +434,16 @@ fn redb_persists_a_shape_discriminating_catalog_digest() {
     .expect("catalog builds");
     let digest = snapshot.digest.clone();
     {
-        let store = TreeStore::open(&path).expect("open");
+        let store = SealedStore::open(&path, AccessMode::Create)
+            .expect("open")
+            .into_store();
         store
             .replace_catalog_snapshot(&snapshot)
             .expect("publish catalog");
     }
-    let store = TreeStore::open(&path).expect("reopen");
+    let store = SealedStore::open(&path, AccessMode::Create)
+        .expect("reopen")
+        .into_store();
     assert_eq!(
         store.catalog_snapshot_digest().expect("digest"),
         Some(digest.clone())
@@ -461,7 +470,9 @@ fn redb_persists_a_shape_discriminating_catalog_digest() {
         .replace_catalog_snapshot(&rekeyed)
         .expect("publish rekeyed");
     drop(store);
-    let store = TreeStore::open(&path).expect("reopen rekeyed");
+    let store = SealedStore::open(&path, AccessMode::Create)
+        .expect("reopen rekeyed")
+        .into_store();
     let rekeyed_digest = store
         .catalog_snapshot_digest()
         .expect("rekeyed digest")

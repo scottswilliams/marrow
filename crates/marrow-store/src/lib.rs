@@ -18,6 +18,7 @@ mod mem;
 mod metadata;
 #[cfg(feature = "native")]
 mod redb;
+mod sealed;
 mod traversal;
 pub mod tree;
 pub mod value;
@@ -29,6 +30,9 @@ mod conformance;
 
 /// The shared store error for typed tree-cell operations.
 pub use backend::StoreError;
+
+/// The sole source of a durable store handle and the access mode it opens under.
+pub use sealed::{AccessMode, SealedStore};
 
 /// Exact base-10 decimal arithmetic, re-exported at the crate root.
 pub use decimal::{Decimal, DecimalParseError};

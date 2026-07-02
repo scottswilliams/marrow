@@ -6,6 +6,7 @@ use marrow_store::tree::{
     CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TREE_BACKUP_MAX_CELL_BYTES,
     TreeBackupCellBuf, TreeEnumMember, TreeStore, decode_tree_enum_member, encode_tree_enum_member,
 };
+use marrow_store::{AccessMode, SealedStore};
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
@@ -1058,7 +1059,9 @@ fn metadata_survives_native_redb_reopen() {
     let root = catalog_id("aaaaaaaaaaaaaaaa");
     let index = catalog_id("bbbbbbbbbbbbbbbb");
     {
-        let store = TreeStore::open(&path).expect("open native store");
+        let store = SealedStore::open(&path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         store
             .write_commit_metadata(&sample_commit_metadata(
                 9,
@@ -1072,7 +1075,9 @@ fn metadata_survives_native_redb_reopen() {
             .expect("write commit metadata");
     }
 
-    let store = TreeStore::open_read_only(&path).expect("reopen native store");
+    let store = SealedStore::open(&path, AccessMode::Read)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         store.read_commit_metadata().expect("read commit metadata"),
         Some(sample_commit_metadata(

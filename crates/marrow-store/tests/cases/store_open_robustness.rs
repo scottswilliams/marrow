@@ -14,7 +14,8 @@ use common::catalog_id;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::DataPathSegment;
+use marrow_store::{AccessMode, SealedStore};
 use redb::{Database, ReadableDatabase, TableDefinition};
 
 /// Seed a native store with enough records to fill several redb pages, so a
@@ -22,7 +23,9 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 fn seed_store(path: &std::path::Path) {
     let books = catalog_id("1111111111111111");
     let title = catalog_id("2222222222222222");
-    let store = TreeStore::open(path).expect("open fresh store");
+    let store = SealedStore::open(path, AccessMode::Create)
+        .expect("open fresh store")
+        .into_store();
     for id in 0..200i64 {
         store
             .write_data_value(
@@ -59,12 +62,12 @@ fn truncated_store_body_opens_as_corruption_not_a_panic() {
     file.set_len(4096).expect("truncate body");
     drop(file);
 
-    match TreeStore::open(&path) {
+    match SealedStore::open(&path, AccessMode::Create).map(SealedStore::into_store) {
         Err(StoreError::Corruption { .. }) => {}
         Err(other) => panic!("write open of a truncated store: expected corruption, got {other:?}"),
         Ok(_) => panic!("a truncated store body must not open cleanly"),
     }
-    match TreeStore::open_read_only(&path) {
+    match SealedStore::open(&path, AccessMode::Read).map(SealedStore::into_store) {
         Err(StoreError::Corruption { .. }) => {}
         Err(other) => {
             panic!("read-only open of a truncated store: expected corruption, got {other:?}")
@@ -91,9 +94,11 @@ fn clobbered_store_body_opens_as_corruption_not_a_panic() {
     file.write_all(&[0x5A; 8192]).expect("clobber body");
     drop(file);
 
-    let error = TreeStore::open(&path).err().unwrap_or_else(|| {
-        panic!("a clobbered store body must not open cleanly");
-    });
+    let error = SealedStore::open(&path, AccessMode::Create)
+        .err()
+        .unwrap_or_else(|| {
+            panic!("a clobbered store body must not open cleanly");
+        });
     assert_eq!(error.code(), "store.corruption", "{error:?}");
 }
 
@@ -110,14 +115,16 @@ fn store_needing_repair_reports_recovery_required_read_only() {
     // reproduces the state an unclean shutdown leaves without touching tree data.
     flip_recovery_flag(&path);
 
-    let error = TreeStore::open_read_only(&path)
+    let error = SealedStore::open(&path, AccessMode::Read)
         .err()
         .unwrap_or_else(|| panic!("a store needing repair must not open read-only cleanly"));
     assert_eq!(error, StoreError::RecoveryRequired);
     assert_eq!(error.code(), "store.recovery_required", "{error:?}");
 
     // A write-capable open repairs the store, and every seeded record survives.
-    let recovered = TreeStore::open(&path).expect("write open repairs the store");
+    let recovered = SealedStore::open(&path, AccessMode::Create)
+        .expect("write open repairs the store")
+        .into_store();
     let title = catalog_id("2222222222222222");
     assert_eq!(
         recovered
@@ -150,14 +157,14 @@ fn damaged_store_flagged_for_recovery_reports_corruption_after_read_only_refusal
     }
     flip_recovery_flag(&path);
 
-    let read_only = TreeStore::open_read_only(&path)
+    let read_only = SealedStore::open(&path, AccessMode::Read)
         .err()
         .expect("a damaged, repair-flagged store does not open read-only");
     assert_eq!(read_only, StoreError::RecoveryRequired);
     assert_eq!(read_only.code(), "store.recovery_required", "{read_only:?}");
 
     // Write-capable recovery reports corruption instead of silently opening the store.
-    let write = TreeStore::open(&path)
+    let write = SealedStore::open(&path, AccessMode::Create)
         .err()
         .expect("a damaged store does not survive the recovery replay");
     assert_eq!(write.code(), "store.corruption", "{write:?}");
@@ -171,8 +178,8 @@ fn clean_store_still_opens_on_both_paths() {
     let path = dir.path().join("clean.redb");
     seed_store(&path);
 
-    TreeStore::open(&path).expect("write open of a clean store");
-    TreeStore::open_read_only(&path).expect("read-only open of a clean store");
+    SealedStore::open(&path, AccessMode::Create).expect("write open of a clean store");
+    SealedStore::open(&path, AccessMode::Read).expect("read-only open of a clean store");
 }
 
 /// A missing store file is absent, not corrupt: read-only open fails (it never
@@ -182,7 +189,7 @@ fn missing_store_file_is_absent_not_corrupt() {
     let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("missing.redb");
 
-    let read_only = TreeStore::open_read_only(&path)
+    let read_only = SealedStore::open(&path, AccessMode::Read)
         .err()
         .expect("absent file errors");
     assert_ne!(
@@ -191,7 +198,7 @@ fn missing_store_file_is_absent_not_corrupt() {
         "an absent file is not corruption: {read_only:?}"
     );
 
-    TreeStore::open(&path).expect("write open creates a missing store");
+    SealedStore::open(&path, AccessMode::Create).expect("write open creates a missing store");
 }
 
 /// A write-capable open-existing path is for repair, not first-run creation: an
@@ -203,7 +210,7 @@ fn open_existing_rejects_an_empty_file_as_corruption() {
     std::fs::File::create(&path).expect("create empty file");
     assert_eq!(std::fs::metadata(&path).expect("metadata").len(), 0);
 
-    let error = TreeStore::open_existing(&path)
+    let error = SealedStore::open(&path, AccessMode::Write)
         .err()
         .expect("an empty file must not open as an existing Marrow store");
     assert_eq!(error.code(), "store.corruption", "{error:?}");
@@ -234,7 +241,7 @@ fn open_existing_rejects_a_meta_only_file_as_corruption() {
         write.commit().expect("commit meta-only file");
     }
 
-    let error = TreeStore::open_existing(&path)
+    let error = SealedStore::open(&path, AccessMode::Write)
         .err()
         .expect("a meta-only redb file must not open as a complete Marrow store");
     assert_eq!(error.code(), "store.corruption", "{error:?}");
@@ -251,7 +258,9 @@ fn corrupt_index_cell_fails_closed_while_data_records_stay_readable() {
     seed_store(&path);
     let by_shelf = catalog_id("3333333333333333");
     {
-        let store = TreeStore::open(&path).expect("reopen to seed index");
+        let store = SealedStore::open(&path, AccessMode::Create)
+            .expect("reopen to seed index")
+            .into_store();
         store.begin().expect("begin");
         for id in 0..200i64 {
             store
@@ -268,7 +277,9 @@ fn corrupt_index_cell_fails_closed_while_data_records_stay_readable() {
 
     clobber_one_index_cell(&path);
 
-    let store = TreeStore::open(&path).expect("reopen clobbered store");
+    let store = SealedStore::open(&path, AccessMode::Create)
+        .expect("reopen clobbered store")
+        .into_store();
     let title = catalog_id("2222222222222222");
     assert_eq!(
         store
