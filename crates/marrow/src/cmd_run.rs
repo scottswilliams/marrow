@@ -1,5 +1,6 @@
 //! `marrow run`: check a project, then run an entry function over its store.
 
+use marrow_codes::Code;
 use std::cell::RefCell;
 use std::io::Write;
 use std::process::ExitCode;
@@ -396,9 +397,9 @@ fn program_stdout_error_message_with_palette(
 ) -> String {
     let message = format!("failed to write program stdout: {error}");
     match format {
-        CheckFormat::Text => palette.code_message("io.write", message),
+        CheckFormat::Text => palette.code_message(Code::IoWrite.as_str(), message),
         CheckFormat::Json | CheckFormat::Jsonl => {
-            term_style::plain_code_message("io.write", message)
+            term_style::plain_code_message(Code::IoWrite.as_str(), message)
         }
     }
 }

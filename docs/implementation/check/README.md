@@ -43,7 +43,7 @@ Evolution discharge and the analysis/tooling surface sit beside this spine, cons
 
 - `crates/marrow-check/src/lib.rs` — the crate root: module declarations and the public re-export surface, nothing else.
 - `crates/marrow-check/src/driver.rs` — `check_project` and `check_tests*`, per-file structural checks for source and surface namespaces, and the name/path/builtin resolution helpers shared with the type passes.
-- `crates/marrow-check/src/diagnostics.rs` — the diagnostic vocabulary: the `check.*` codes, the typed `DiagnosticPayload`, and `CheckDiagnostic` / `CheckReport`.
+- `crates/marrow-check/src/diagnostics.rs` — the typed `DiagnosticPayload`, `CheckDiagnostic` / `CheckReport`, and the `check.*` code handles (aliases of `marrow_codes::Code`; identity and meaning live in `marrow-codes`).
 - `crates/marrow-check/src/backing_validity.rs` — source-time backing invalidations resolved once into typed fact-id sets before surface fact emission.
 - `crates/marrow-check/src/surface.rs` — checked application-surface resolution over existing store/member/index facts.
 - `crates/marrow-check/src/analysis.rs` — `analyze_source_project`, the pipeline orchestrator.
