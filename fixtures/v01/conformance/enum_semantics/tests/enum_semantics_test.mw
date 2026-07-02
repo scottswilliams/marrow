@@ -1,0 +1,43 @@
+; Layer: runtime (enum identity: saved enum fields, qualified members, module aliasing)
+; Oracle: std::assert over entry return values
+; Replaces: crates/marrow/tests/cases/run_cli_enum.rs behavior tests
+use two
+use orders
+use grade
+use a::b
+use a::b::c
+
+pub fn aSameNamedEnumInAnotherModuleDoesNotAlias()
+    std::assert::equal(two::storedStatusName(), "active")
+
+pub fn aMatchOverASavedEnumFieldDispatches()
+    std::assert::equal(orders::matchLabel(), "R")
+
+pub fn equalityOnASavedEnumFieldDispatches()
+    std::assert::equal(orders::equalsSeededMember(), "yes")
+
+pub fn aQualifiedEnumMemberLiteralResolvesToTheOwningEnum()
+    std::assert::equal(grade::rank(grade::Status::open), 0)
+    std::assert::equal(grade::rank(grade::Status::closed), 1)
+
+pub fn aNestedModuleQualifiedEnumProgramRuns()
+    std::assert::equal(a::b::take(a::b::Status::active), 1)
+
+; `use a::b::c` aliases the module to `c`, so both the annotation and the
+; literal must expand `c` to `a::b::c` before enum resolution.
+fn classify(s: c::Status): int
+    match s
+        active
+            return 1
+        archived
+            return 2
+
+pub fn anAliasedEnumLiteralChecksAndRuns()
+    var v: c::Status = c::Status::active
+    std::assert::equal(classify(v), 1)
+
+; A top-level `module c` also declares `Status` with the opposite member
+; meaning; the aliased spelling must bind to imported `a::b::c` (marker 0),
+; never the homonymous top-level module (marker 1).
+pub fn anAliasedEnumLiteralBindsToTheImportedModuleNotATopLevelHomonym()
+    std::assert::equal(c::marker(c::Status::active), 0)

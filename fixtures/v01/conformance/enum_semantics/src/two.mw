@@ -1,0 +1,26 @@
+module two
+
+pub enum Status
+    archived
+    active
+
+resource Order
+    required state: Status
+store ^statusOrders(id: int): Order
+
+; Module `one` declares the same-named enum with its members in the opposite
+; order, so a positional aliasing bug would read this stored `active` back as
+; the other module's member. Identity is module-qualified: the round trip must
+; match this module's own `active`.
+pub fn storedStatusName(): string
+    var o: Order
+    o.state = Status::active
+    transaction
+        ^statusOrders(1) = o
+    if const state = ^statusOrders(1).state
+        match state
+            active
+                return "active"
+            archived
+                return "archived"
+    return "missing"

@@ -1,0 +1,12 @@
+module grade
+
+pub enum Status
+    open
+    closed
+
+pub fn rank(s: grade::Status): int
+    match s
+        open
+            return 0
+        closed
+            return 1

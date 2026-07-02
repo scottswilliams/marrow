@@ -38,6 +38,22 @@ pub(crate) fn codes(records: &[serde_json::Value]) -> Vec<&str> {
         .collect()
 }
 
+/// Pin a render contract to a golden file under `tests/goldens/`. Semantic
+/// assertions stay on typed codes and payload fields; the golden owns the
+/// rendered prose, so editing it is editing the render contract and is
+/// reviewed as one. Trailing newlines are insignificant.
+pub(crate) fn assert_matches_golden(actual: &str, golden_name: &str) {
+    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/goldens")).join(golden_name);
+    let expected = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read golden {}: {error}", path.display()));
+    assert_eq!(
+        actual.trim_end_matches('\n'),
+        expected.trim_end_matches('\n'),
+        "rendered output diverges from the golden render contract {}",
+        path.display()
+    );
+}
+
 /// A process-unique temporary path under the system temp dir. The directory is
 /// not created; callers that need an existing directory go through
 /// [`temp_dir`]. The timestamp, pid, and process-local serial keep names from
