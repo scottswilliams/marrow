@@ -9,6 +9,7 @@ use common::catalog_id;
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{CommitMetadata, DataPathSegment, TreeStore};
+#[cfg(feature = "native")]
 use marrow_store::{AccessMode, SealedStore};
 
 fn stable_id(suffix: u8) -> String {

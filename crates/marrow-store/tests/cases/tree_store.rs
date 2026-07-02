@@ -6,6 +6,7 @@ use marrow_store::tree::{
     CommitMetadata, DataPathSegment, EngineProfile, IndexPage, TREE_BACKUP_MAX_CELL_BYTES,
     TreeBackupCellBuf, TreeEnumMember, TreeStore, decode_tree_enum_member, encode_tree_enum_member,
 };
+#[cfg(feature = "native")]
 use marrow_store::{AccessMode, SealedStore};
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
