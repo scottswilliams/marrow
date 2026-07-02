@@ -17,6 +17,8 @@ mod check_footprints_cli;
 mod check_project_cli;
 #[path = "cases/check_read_only_cli.rs"]
 mod check_read_only_cli;
+#[path = "cases/conformance_corpus.rs"]
+mod conformance_corpus;
 #[path = "cases/data_cli_composite.rs"]
 mod data_cli_composite;
 #[path = "cases/data_cli_flags.rs"]

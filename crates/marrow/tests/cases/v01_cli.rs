@@ -45,14 +45,3 @@ fn v01_library_fixture_checks_and_runs_through_cli() {
     assert_eq!(print_stdout, "Ursula K. Le Guin\n");
     assert_eq!(books_stdout, "A Wizard of Earthsea\n");
 }
-
-#[test]
-fn v01_runtime_value_conformance_fixture_tests_through_cli() {
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/v01/conformance/runtime_values"
-    );
-    let output = marrow(&["test", fixture]);
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-}

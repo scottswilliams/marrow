@@ -1,3 +1,6 @@
+; Layer: runtime (module constants, identity-oriented collection loops)
+; Oracle: std::assert over entry return values
+; Replaces: none
 use v01::runtime_values
 
 pub fn moduleConstantsAreBound()
