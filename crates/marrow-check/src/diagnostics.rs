@@ -505,7 +505,8 @@ pub enum EnumDiagnostic {
         label: String,
     },
     CategoryNotSelectable {
-        label: String,
+        /// The full `Enum::category` path the source named, as written.
+        path: String,
     },
     /// A `match` scrutinee is not a usable enum value.
     MatchRequiresEnum(MatchScrutinee),
@@ -547,6 +548,23 @@ pub enum IsTypeFault {
         left_name: String,
         right_name: String,
     },
+}
+
+/// Why a `.field`/child-layer access or a bare value read names a keyed sub-layer
+/// rather than a value. The three cases render distinct prose, so the reason is a
+/// stored fact rather than one recovered from the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerNotValueReason {
+    /// The base is a materialized record value; keyed child layers are not pulled
+    /// into it and are reached only through their saved address.
+    MaterializedValue,
+    /// The base is a saved address whose innermost composite layer is only partially
+    /// keyed, so it names an iterable inner sub-layer with key columns still to fill.
+    PartialKeyLayer,
+    /// A value-read position reads a partially keyed composite layer directly. The
+    /// address names an iterable inner sub-layer, so reading it as a scalar would
+    /// check clean and fault `run.absent_element`.
+    PartialKeyValue,
 }
 
 /// The source of a name that participates in a `check.surface_collision`
@@ -853,10 +871,16 @@ pub enum DiagnosticPayload {
     /// `check.unresolved_name`: the bare name that resolved to no binding. Carries the
     /// name so repeated uses of one undeclared name collapse to a single root cause.
     UnresolvedName { name: String },
+    /// `check.unknown_field`: a dotted or optional field read names no field on the
+    /// resolved value's type.
+    UnknownField { field: String },
     /// `check.layer_not_value`: a `.field`/child-layer descends off a base that
     /// names a keyed sub-layer rather than a record value — a keyed child layer read
     /// off a materialized value, or a descent off a partially keyed composite layer.
-    LayerNotValue { field: String },
+    LayerNotValue {
+        field: String,
+        reason: LayerNotValueReason,
+    },
     /// `check.required_absent`: a sparse local resource is written to a saved root.
     RequiredAbsent {
         local: String,

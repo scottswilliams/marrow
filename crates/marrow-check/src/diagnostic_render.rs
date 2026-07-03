@@ -8,8 +8,8 @@ use marrow_codes::Code;
 
 use crate::diagnostics::{
     AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
-    MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
-    SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
+    SurfaceFieldDiagnostic, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
 };
 use crate::typerules::{marrow_type_name, mismatch_display};
 
@@ -36,6 +36,11 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckMatchRequiresEnum,
     Code::CheckIsRequiresEnum,
     Code::CheckIsType,
+    Code::CheckCategoryNotSelectable,
+    Code::CheckUnresolvedName,
+    Code::CheckUnresolvedImport,
+    Code::CheckUnknownField,
+    Code::CheckLayerNotValue,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -86,9 +91,22 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
             | Code::CheckDuplicateMatchArm
             | Code::CheckMatchRequiresEnum
             | Code::CheckIsRequiresEnum
-            | Code::CheckIsType,
+            | Code::CheckIsType
+            | Code::CheckCategoryNotSelectable,
             DiagnosticPayload::Enum(diagnostic),
         ) => enum_message(diagnostic),
+        (Code::CheckUnresolvedName, DiagnosticPayload::UnresolvedName { name }) => {
+            format!("`{name}` is not defined")
+        }
+        (Code::CheckUnresolvedImport, DiagnosticPayload::UnresolvedImport(name)) => {
+            format!("cannot resolve import `{name}`")
+        }
+        (Code::CheckUnknownField, DiagnosticPayload::UnknownField { field }) => {
+            format!("field `{field}` is not declared on this value's type")
+        }
+        (Code::CheckLayerNotValue, DiagnosticPayload::LayerNotValue { field, reason }) => {
+            layer_not_value_message(field, *reason)
+        }
         (code, payload) => {
             unreachable!("no message template for {code:?} with payload {payload:?}")
         }
@@ -178,9 +196,23 @@ fn enum_message(diagnostic: &EnumDiagnostic) -> String {
                 "operator `is` compares within one enum, but the left is `{left_name}` and the right names `{right_name}`"
             ),
         },
-        EnumDiagnostic::CategoryNotSelectable { .. } => {
-            unreachable!("CategoryNotSelectable is not built through CheckDiagnostic::new")
+        EnumDiagnostic::CategoryNotSelectable { path } => {
+            format!("`{path}` is a category and cannot be selected; pick a concrete member under it")
         }
+    }
+}
+
+fn layer_not_value_message(field: &str, reason: LayerNotValueReason) -> String {
+    match reason {
+        LayerNotValueReason::MaterializedValue => format!(
+            "`{field}` is a keyed child layer; read it through its saved address, not through a materialized value"
+        ),
+        LayerNotValueReason::PartialKeyLayer => format!(
+            "`{field}` descends off a partially keyed layer; supply every key column to reach a record before descending into it"
+        ),
+        LayerNotValueReason::PartialKeyValue => format!(
+            "`{field}` is a partially keyed layer, not a value; supply every key column to read one entry"
+        ),
     }
 }
 
@@ -388,7 +420,7 @@ mod tests {
     use super::{MIGRATED_CODES, render_message};
     use crate::diagnostics::{
         AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
-        MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
+        LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
         SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin,
         SurfaceTargetDiagnostic,
     };
@@ -908,6 +940,72 @@ mod tests {
         );
     }
 
+    /// The resolution/name diagnostic family renders exactly the message its old
+    /// construction sites built, across every migrated variant: the two single-fact
+    /// resolution codes, the unknown-field fact, the three `layer_not_value` reasons,
+    /// and the category-not-selectable enum holdout now built through
+    /// `CheckDiagnostic::new`. Pins the prose the renderer now owns for these codes.
+    #[test]
+    fn renders_resolution_prose_byte_identical() {
+        assert_eq!(
+            render_message(
+                Code::CheckUnresolvedName,
+                &DiagnosticPayload::UnresolvedName {
+                    name: "total".into(),
+                },
+            ),
+            "`total` is not defined",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckUnresolvedImport,
+                &DiagnosticPayload::UnresolvedImport("app::missing".into()),
+            ),
+            "cannot resolve import `app::missing`",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckUnknownField,
+                &DiagnosticPayload::UnknownField {
+                    field: "title".into(),
+                },
+            ),
+            "field `title` is not declared on this value's type",
+        );
+
+        let layer = |reason| {
+            render_message(
+                Code::CheckLayerNotValue,
+                &DiagnosticPayload::LayerNotValue {
+                    field: "cells".into(),
+                    reason,
+                },
+            )
+        };
+        assert_eq!(
+            layer(LayerNotValueReason::MaterializedValue),
+            "`cells` is a keyed child layer; read it through its saved address, not through a materialized value",
+        );
+        assert_eq!(
+            layer(LayerNotValueReason::PartialKeyLayer),
+            "`cells` descends off a partially keyed layer; supply every key column to reach a record before descending into it",
+        );
+        assert_eq!(
+            layer(LayerNotValueReason::PartialKeyValue),
+            "`cells` is a partially keyed layer, not a value; supply every key column to read one entry",
+        );
+
+        assert_eq!(
+            render_message(
+                Code::CheckCategoryNotSelectable,
+                &DiagnosticPayload::Enum(EnumDiagnostic::CategoryNotSelectable {
+                    path: "Animal::mammal".into(),
+                }),
+            ),
+            "`Animal::mammal` is a category and cannot be selected; pick a concrete member under it",
+        );
+    }
+
     /// The identifiers a migrated code would appear as in a first argument to a
     /// message-bearing `CheckDiagnostic::error`/`warning` call: its `Code` variant
     /// and its `CHECK_*` wire-string constant. Mirrors [`MIGRATED_CODES`]; kept in
@@ -947,6 +1045,16 @@ mod tests {
         "CHECK_IS_REQUIRES_ENUM",
         "Code::CheckIsType",
         "CHECK_IS_TYPE",
+        "Code::CheckCategoryNotSelectable",
+        "CHECK_CATEGORY_NOT_SELECTABLE",
+        "Code::CheckUnresolvedName",
+        "CHECK_UNRESOLVED_NAME",
+        "Code::CheckUnresolvedImport",
+        "CHECK_UNRESOLVED_IMPORT",
+        "Code::CheckUnknownField",
+        "CHECK_UNKNOWN_FIELD",
+        "Code::CheckLayerNotValue",
+        "CHECK_LAYER_NOT_VALUE",
     ];
 
     fn src_root() -> PathBuf {

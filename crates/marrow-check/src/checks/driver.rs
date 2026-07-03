@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use marrow_codes::Code;
 use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
@@ -16,8 +17,8 @@ use crate::enums::{
 use crate::infer::infer_type;
 use crate::{
     CHECK_EXPOSED_PRIVATE_ENUM, CHECK_MISSING_RETURN, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE,
-    CHECK_UNRESOLVED_IMPORT, CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload,
-    MarrowType, build_alias_map, check_rejected_surface, has_duplicate_error, is_resolved_import,
+    CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticAnchor, DiagnosticPayload, MarrowType,
+    build_alias_map, check_rejected_surface, has_duplicate_error, is_resolved_import,
     push_schema_error,
 };
 
@@ -55,15 +56,11 @@ pub(crate) fn check_resolved_files(
     for (file, parsed) in parsed_files {
         for use_decl in &parsed.file.uses {
             if !is_resolved_import(&use_decl.name, resolvable) {
-                report.diagnostics.push(
-                    CheckDiagnostic::error(
-                        CHECK_UNRESOLVED_IMPORT,
-                        &file.path,
-                        use_decl.span,
-                        format!("cannot resolve import `{}`", use_decl.name),
-                    )
-                    .with_payload(DiagnosticPayload::UnresolvedImport(use_decl.name.clone())),
-                );
+                report.diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckUnresolvedImport,
+                    DiagnosticAnchor::at(&file.path, use_decl.span),
+                    DiagnosticPayload::UnresolvedImport(use_decl.name.clone()),
+                ));
             }
         }
     }
@@ -142,6 +139,7 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::CatalogIntent(_)
                 | DiagnosticPayload::SuggestedIndex { .. }
                 | DiagnosticPayload::UnresolvedName { .. }
+                | DiagnosticPayload::UnknownField { .. }
                 | DiagnosticPayload::RequiredAbsent { .. }
                 | DiagnosticPayload::TypeMismatch { .. }
                 | DiagnosticPayload::SavedCollectionByValue { .. }

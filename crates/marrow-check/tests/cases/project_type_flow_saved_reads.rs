@@ -265,14 +265,10 @@ fn partial_key_value_rejected(name: &str, src: &str, access: &str, layer: &str) 
         "{name}: span should underline `{access}`: {:#?}",
         found[0]
     );
-    assert_eq!(
-        found[0].payload,
-        DiagnosticPayload::LayerNotValue {
-            field: layer.to_string()
-        },
-        "{name}: {:#?}",
-        found[0].payload
-    );
+    let DiagnosticPayload::LayerNotValue { field, .. } = &found[0].payload else {
+        panic!("{name}: expected LayerNotValue payload: {:#?}", found[0].payload);
+    };
+    assert_eq!(field, layer, "{name}: {:#?}", found[0].payload);
 }
 
 #[test]
@@ -1551,14 +1547,10 @@ fn descent_layer_not_value(report: &marrow_check::CheckReport, src: &str, field:
         "span should end at `{field}`: {:#?}",
         found[0]
     );
-    assert_eq!(
-        found[0].payload,
-        DiagnosticPayload::LayerNotValue {
-            field: field.to_string()
-        },
-        "{:#?}",
-        found[0].payload
-    );
+    let DiagnosticPayload::LayerNotValue { field: found_field, .. } = &found[0].payload else {
+        panic!("expected LayerNotValue payload: {:#?}", found[0].payload);
+    };
+    assert_eq!(found_field, field, "{:#?}", found[0].payload);
 }
 
 #[test]

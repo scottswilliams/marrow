@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_codes::Code;
 use marrow_schema::{MemberPathResolution, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::{BytesLiteralError, SourceSpan, StringLiteralError};
@@ -25,10 +26,9 @@ use crate::typerules::{
     type_compatible, type_renderable_at_runtime, unresolved_optional_diagnostic,
 };
 use crate::{
-    CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED, CHECK_LAYER_NOT_VALUE,
-    CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_FIELD, CHECK_UNRESOLVED_NAME,
-    CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic, MarrowType,
-    resolve_resource_type,
+    CHECK_COLLECTION_UNSUPPORTED, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CheckDiagnostic,
+    CheckedProgram, DiagnosticAnchor, DiagnosticPayload, EnumDiagnostic, LayerNotValueReason,
+    MarrowType, resolve_resource_type,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -400,15 +400,11 @@ fn infer_value(
         Expression::Name { segments, span, .. } if segments.len() == 1 => {
             let name = &segments[0];
             lookup_opt(scope, name).unwrap_or_else(|| {
-                diagnostics.push(
-                    CheckDiagnostic::error(
-                        CHECK_UNRESOLVED_NAME,
-                        file,
-                        *span,
-                        format!("`{name}` is not defined"),
-                    )
-                    .with_payload(DiagnosticPayload::UnresolvedName { name: name.clone() }),
-                );
+                diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckUnresolvedName,
+                    DiagnosticAnchor::at(file, *span),
+                    DiagnosticPayload::UnresolvedName { name: name.clone() },
+                ));
                 MarrowType::Unknown
             })
         }
@@ -1509,22 +1505,13 @@ fn enum_member_value_type(
     let enum_name = &resolved.enum_name;
     match resolved.member {
         MemberPathResolution::Found(ordinal) if resolved.schema.is_category(ordinal) => {
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_CATEGORY_NOT_SELECTABLE,
-                    file,
-                    span,
-                    format!(
-                        "`{}` is a category and cannot be selected; pick a concrete member under it",
-                        segments.join("::")
-                    ),
-                )
-                .with_payload(DiagnosticPayload::Enum(
-                    EnumDiagnostic::CategoryNotSelectable {
-                        label: resolved.member_label.clone(),
-                    },
-                )),
-            );
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckCategoryNotSelectable,
+                DiagnosticAnchor::at(file, span),
+                DiagnosticPayload::Enum(EnumDiagnostic::CategoryNotSelectable {
+                    path: segments.join("::"),
+                }),
+            ));
             MarrowType::Invalid
         }
         MemberPathResolution::Found(_) => MarrowType::Enum {
@@ -1917,28 +1904,13 @@ fn resource_member_sparse(resource: &marrow_schema::ResourceSchema, chain: &[&st
 }
 
 fn unknown_field_diagnostic(file: &Path, span: SourceSpan, field: &str) -> CheckDiagnostic {
-    CheckDiagnostic::error(
-        CHECK_UNKNOWN_FIELD,
-        file,
-        span,
-        format!("field `{field}` is not declared on this value's type"),
+    CheckDiagnostic::new(
+        Code::CheckUnknownField,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::UnknownField {
+            field: field.to_string(),
+        },
     )
-}
-
-/// Why a `.field`/child-layer access or a bare value read names a sub-layer rather
-/// than a value.
-#[derive(Clone, Copy)]
-enum LayerNotValueReason {
-    /// The base is a materialized record value; keyed child layers are not pulled
-    /// into it and are reached only through their saved address.
-    MaterializedValue,
-    /// The base is a saved address whose innermost composite layer is only partially
-    /// keyed, so it names an iterable inner sub-layer with key columns still to fill.
-    PartialKeyLayer,
-    /// A value-read position reads a partially keyed composite layer directly. The
-    /// address names an iterable inner sub-layer, so reading it as a scalar would
-    /// check clean and fault `run.absent_element`.
-    PartialKeyValue,
 }
 
 fn layer_not_value_diagnostic(
@@ -1947,20 +1919,12 @@ fn layer_not_value_diagnostic(
     field: &str,
     reason: LayerNotValueReason,
 ) -> CheckDiagnostic {
-    let message = match reason {
-        LayerNotValueReason::MaterializedValue => format!(
-            "`{field}` is a keyed child layer; read it through its saved address, not through a materialized value"
-        ),
-        LayerNotValueReason::PartialKeyLayer => format!(
-            "`{field}` descends off a partially keyed layer; supply every key column to reach a record before descending into it"
-        ),
-        LayerNotValueReason::PartialKeyValue => format!(
-            "`{field}` is a partially keyed layer, not a value; supply every key column to read one entry"
-        ),
-    };
-    CheckDiagnostic::error(CHECK_LAYER_NOT_VALUE, file, span, message).with_payload(
+    CheckDiagnostic::new(
+        Code::CheckLayerNotValue,
+        DiagnosticAnchor::at(file, span),
         DiagnosticPayload::LayerNotValue {
             field: field.to_string(),
+            reason,
         },
     )
 }

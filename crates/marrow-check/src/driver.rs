@@ -435,6 +435,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::CatalogIntent(_)
             | DiagnosticPayload::SuggestedIndex { .. }
             | DiagnosticPayload::UnresolvedName { .. }
+            | DiagnosticPayload::UnknownField { .. }
             | DiagnosticPayload::RequiredAbsent { .. }
             | DiagnosticPayload::TypeMismatch { .. }
             | DiagnosticPayload::SavedCollectionByValue { .. }
