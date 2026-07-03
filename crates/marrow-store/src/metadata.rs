@@ -226,9 +226,10 @@ pub(crate) fn decode_commit_record(bytes: &[u8]) -> Result<CommitRecord, StoreEr
 }
 
 /// A 128-bit content seal over the record body: two FNV-1a streams over distinct bases, so a
-/// single flipped body byte diverges the result. The store's threat model is backend corruption,
-/// not a keyed adversary, so a content hash — not a MAC — is the right primitive, as for every
-/// other durable digest here.
+/// single flipped body byte diverges the result. The two streams share the recurrence and differ
+/// only in the basis, so the halves are correlated rather than an independent 128 bits — immaterial
+/// for the store's threat model, which is accidental backend corruption, not a keyed adversary, so
+/// a content hash — not a MAC — is the right primitive, as for every other durable digest here.
 fn seal_bytes(body: &[u8]) -> [u8; COMMIT_RECORD_SEAL_BYTES] {
     const BASIS_HI: u64 = 0xcbf2_9ce4_8422_2325;
     const BASIS_LO: u64 = 0x9e37_79b9_7f4a_7c15;

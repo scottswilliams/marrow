@@ -1,7 +1,7 @@
 //! Typed tree-cell store facade over the private ordered-byte engine.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
@@ -136,7 +136,7 @@ pub struct TreeStore {
     /// record. A run or serve enumerates a root by walking it, so the first walk verifies the
     /// root's digest — the subtree-granularity "verify what you touch" check — and later walks in
     /// the same session skip it, since backend damage cannot appear mid-session on an open handle.
-    verified_roots: RefCell<std::collections::HashSet<CatalogId>>,
+    verified_roots: RefCell<HashSet<CatalogId>>,
 }
 
 #[derive(Clone, Copy)]
@@ -224,7 +224,7 @@ impl TreeStore {
         Self {
             backend: RefCell::new(backend),
             digest_deltas: RefCell::new(HashMap::new()),
-            verified_roots: RefCell::new(std::collections::HashSet::new()),
+            verified_roots: RefCell::new(HashSet::new()),
         }
     }
 
@@ -580,12 +580,17 @@ impl TreeStore {
     /// The store-open integrity check: validate the single sealed commit record instead of
     /// scanning every cell. Decoding the record recomputes its content seal, so a flip of any bound
     /// field — uid, epoch, catalog digest, active roots, or a per-root digest — fails closed. The
-    /// auxiliary uid, commit-stamp, and catalog cells are re-decoded so a flip there fails closed
-    /// too, and the commit epoch is held to the accepted snapshot's. The seal detects backend
-    /// damage, not a hostile re-forge, so the record is not held against the mutable auxiliary
-    /// cells value-for-value: a fresh uid the next commit has not yet re-sealed is lag, not
-    /// corruption. The deep O(N) re-derivation of live cells against the record's digests is
-    /// `verify_structural_digests`, which `data integrity`, `recover`, and `backup` run.
+    /// record then binds the mutable data-identity cells it seals: a commit epoch, catalog digest,
+    /// or active-root set that both the record and the cell carry and that disagree is backend
+    /// damage the seal alone could not see (a self-consistent swap of one cell), failed closed
+    /// here — an active-root swap would otherwise let a run enumerate a phantom root, an epoch or
+    /// digest swap misjudge evolution state. A field the record has not sealed yet — an unstamped
+    /// store's absent epoch — is lag, not corruption, so a `None` on either side skips. The store
+    /// uid is sealed but not held against its cell: the uid names no data (records key on catalog
+    /// ids), so a torn uid cell is a cosmetic-identity fault, not a data-soundness one, and a
+    /// process killed mid-write can legitimately leave it torn. The deep O(N) re-derivation of live
+    /// cells against the record's digests is `verify_structural_digests`, which `data integrity`,
+    /// `recover`, and `backup` run.
     pub fn validate_commit_record(&self) -> Result<(), StoreError> {
         self.read_store_uid()?;
         let commit = self.read_commit_metadata()?;
@@ -605,10 +610,31 @@ impl TreeStore {
         if self.transaction_depth() > 0 {
             return Ok(());
         }
-        if self.read_commit_record()?.is_none() && commit.is_some() {
-            return Err(StoreError::Corruption {
-                message: "the sealed commit record is missing from a stamped store".into(),
-            });
+        let Some(record) = self.read_commit_record()? else {
+            if commit.is_some() {
+                return Err(StoreError::Corruption {
+                    message: "the sealed commit record is missing from a stamped store".into(),
+                });
+            }
+            return Ok(());
+        };
+        let disagree = |field: &'static str| StoreError::Corruption {
+            message: format!("the store {field} disagrees with the sealed commit record"),
+        };
+        if let (Some(sealed), Some(commit)) = (record.catalog_epoch, &commit)
+            && sealed != commit.catalog_epoch
+        {
+            return Err(disagree("commit epoch"));
+        }
+        if let (Some(sealed), Some(snapshot)) = (&record.catalog_digest, &snapshot)
+            && *sealed != snapshot.digest
+        {
+            return Err(disagree("catalog digest"));
+        }
+        if let Some(snapshot) = &snapshot
+            && record.active_roots != active_store_roots(Some(snapshot))?
+        {
+            return Err(disagree("active saved roots"));
         }
         Ok(())
     }
@@ -4695,9 +4721,10 @@ mod tests {
     /// per-cell structural digest, so the data cells and their digests stay intact under the tamper;
     /// only a witness that re-decodes each cell catches it. The commit record binds the uid, epoch,
     /// catalog digest, active roots, and per-root digests under one content seal, so a flip of any
-    /// bound byte breaks the seal and fails closed. A catalog row is caught at every byte offset
-    /// because the read recomputes the snapshot digest from the stored rows. A healthy family still
-    /// passes every witness.
+    /// bound byte breaks the seal, and a validly re-sealed record whose fields disagree with the
+    /// auxiliary cells it binds fails the record-vs-cell check. A catalog row is caught at every
+    /// byte offset because the read recomputes the snapshot digest from the stored rows. A healthy
+    /// family still passes every witness.
     #[test]
     fn a_corrupt_catalog_or_meta_family_cell_fails_the_store_open_witness() {
         let backend = SharedMem::default();
@@ -4799,6 +4826,23 @@ mod tests {
             let mut flipped = healthy_record.clone();
             flipped[offset] ^= 0xff;
             fail_closed(record_key.clone(), flipped);
+        }
+
+        // A validly re-sealed record whose sealed epoch, catalog digest, or active-root set
+        // disagrees with the data-identity cell it binds is a self-consistent swap the content seal
+        // alone cannot see, so the record-vs-cell bind fails it closed. Each mismatched field
+        // differs from the healthy store's (epoch 1, snapshot digest, root cat_...09).
+        let decoded =
+            crate::metadata::decode_commit_record(&healthy_record).expect("record decodes");
+        let mut wrong_epoch = decoded.clone();
+        wrong_epoch.catalog_epoch = Some(99);
+        let mut wrong_digest = decoded.clone();
+        wrong_digest.catalog_digest = Some("sha256:0".into());
+        let mut wrong_roots = decoded.clone();
+        wrong_roots.active_roots = Vec::new();
+        for mismatched in [wrong_epoch, wrong_digest, wrong_roots] {
+            let bytes = crate::metadata::encode_commit_record(&mismatched).expect("record encodes");
+            fail_closed(record_key.clone(), bytes);
         }
 
         // The catalog snapshot: flip every byte of every catalog-family row in turn. Each flip

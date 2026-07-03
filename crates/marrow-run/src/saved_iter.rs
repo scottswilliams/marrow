@@ -302,11 +302,6 @@ impl SavedLoopPlan {
         }
         match iterable_layer(spec.layer, env)? {
             IterableLayer::Root(place, address) => {
-                crate::store::verify_root_touched(
-                    env.store,
-                    &place.store_catalog_id,
-                    spec.layer.span(),
-                )?;
                 Ok(Self::Root(RootScan::new(place, address, spec)?))
             }
             IterableLayer::Index(place, branch) => {

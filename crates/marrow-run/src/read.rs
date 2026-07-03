@@ -104,6 +104,13 @@ pub(crate) fn iterable_layer<'a>(
     path: &'a ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<IterableLayer<'a>, RuntimeError> {
+    // Every enumeration — a root sweep, an index branch, or a child layer — walks the touched
+    // root, so reconcile it against the sealed record here, the one resolver both `count` and the
+    // loop head route through. A point read of a single record does not reach this path and stays
+    // O(1).
+    if let Some(place) = path.saved_place() {
+        crate::store::verify_root_touched(env.store, &place.store_catalog_id, path.span())?;
+    }
     if let Some(place) = direct_root_place(path) {
         return Ok(IterableLayer::Root(
             place,
@@ -431,7 +438,6 @@ pub(crate) fn count_iterable_layer(
                     path.span(),
                 ));
             }
-            crate::store::verify_root_touched(env.store, &place.store_catalog_id, path.span())?;
             let store = crate::store::catalog_id(&place.store_catalog_id, "store", path.span())?;
             if address.range.is_some() {
                 let cursor = RecordCursor::new_bounded(
@@ -476,6 +482,7 @@ pub(crate) fn count_iterable_index_branch(
     let Some(branch) = iterable_index_branch(place, path.span(), env)? else {
         return Ok(None);
     };
+    crate::store::verify_root_touched(env.store, &place.store_catalog_id, path.span())?;
     count_index_branch(place, &branch, path.span(), env).map(Some)
 }
 
@@ -489,6 +496,7 @@ pub(crate) fn iterable_index_branch_present(
     let Some(branch) = iterable_index_branch(place, path.span(), env)? else {
         return Ok(None);
     };
+    crate::store::verify_root_touched(env.store, &place.store_catalog_id, path.span())?;
     count_index_branch(place, &branch, path.span(), env).map(|count| Some(count > 0))
 }
 
