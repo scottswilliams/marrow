@@ -1,6 +1,7 @@
 use marrow_check::{
     CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, DiagnosticPayload, SurfaceFieldDiagnostic,
-    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic, check_project,
+    SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    check_project,
 };
 
 use crate::support::{config, temp_project, with_code, write};
@@ -123,6 +124,7 @@ surface Books from ^books
             required_code: "check.duplicate_declaration",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::AmbiguousStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -205,9 +207,13 @@ surface Shelves from ^shelves
             .collect::<Vec<_>>(),
         vec![
             &DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::AmbiguousStore {
+                origin: SurfaceRootOrigin::Surface {
+                    name: "Books".into(),
+                },
                 root: "books".into(),
             }),
             &DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::AmbiguousStore {
+                origin: SurfaceRootOrigin::Collection,
                 root: "books".into(),
             }),
         ]
@@ -259,6 +265,7 @@ surface Books from ^books
             required_code: "schema.unorderable_key",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -278,6 +285,7 @@ surface Books from ^books
             required_code: "check.unknown_type",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -297,6 +305,7 @@ surface Books from ^books
             required_code: "check.unknown_type",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -315,6 +324,7 @@ surface Books from ^books
             name: "surface-schema-invalid-store",
             required_code: "schema.unorderable_key",
             expected: ExpectedSurfaceDiagnostic::Target(SurfaceTargetDiagnostic::InvalidStore {
+                surface: "Books".into(),
                 root: "books".into(),
             }),
             source: "\
@@ -382,6 +392,7 @@ surface Books from ^books
             required_code: "schema.category_leaf",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -503,6 +514,7 @@ surface Books from ^books
             required_code: "schema.unorderable_key",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -605,6 +617,7 @@ surface Books from ^books
             required_code: "schema.duplicate_member",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Books".into(),
                     root: "books".into(),
                     resource: "Book".into(),
                 },
@@ -876,6 +889,7 @@ fn builtin_colliding_backing_owners_do_not_produce_surface_facts() {
             required_code: "check.builtin_collision",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
+                    surface: "Items".into(),
                     root: "items".into(),
                     resource: "exists".into(),
                 },

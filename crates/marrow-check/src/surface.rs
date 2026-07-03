@@ -1,15 +1,15 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use marrow_codes::Code;
 use marrow_syntax::{
     Declaration, ParsedSource, SourceSpan, SurfaceDecl, SurfaceItem, SurfaceTarget,
 };
 
 use crate::backing_validity::BackingValidity;
 use crate::diagnostics::{
-    CHECK_SURFACE_ACTION, CHECK_SURFACE_COMPUTED_READ, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET,
     SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
-    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
+    SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
 };
 use crate::entry_abi::{
     ComputedReadSignatureUnsupported, EntrySignatureUnsupported,
@@ -29,8 +29,8 @@ use crate::facts::{
 use crate::presence::transitive_unindexed_lookup_span;
 use crate::surface_abi::surface_read_operation_tag;
 use crate::{
-    CheckDiagnostic, CheckedProgram, Def, DefItem, DiagnosticPayload, Resolution, ResolvableKind,
-    build_alias_map, expand_alias, resolve,
+    CheckDiagnostic, CheckedProgram, Def, DefItem, DiagnosticAnchor, DiagnosticPayload, Resolution,
+    ResolvableKind, build_alias_map, expand_alias, resolve,
 };
 
 /// Surface declarations suppressed before surface checking because an earlier
@@ -113,15 +113,8 @@ pub(crate) fn check_computed_read_effects(
             {
                 rejected = true;
                 if let Some(file) = file.as_deref() {
-                    let message = computed_read_effect_message(&payload);
                     let span = computed_read_effect_span(program, read, &payload);
-                    push_surface_computed_read_diagnostic(
-                        file,
-                        span,
-                        payload,
-                        message,
-                        diagnostics,
-                    );
+                    push_surface_computed_read_diagnostic(file, span, payload, diagnostics);
                 }
             }
         }
@@ -427,28 +420,18 @@ fn resolve_action(
 
     if let Err(issue) = function_ref_has_supported_entry_signature(context.program, target.function)
     {
-        let (payload, message) = match issue {
-            EntrySignatureUnsupported::Parameter { name } => (
+        let payload = match issue {
+            EntrySignatureUnsupported::Parameter { name } => {
                 SurfaceActionDiagnostic::UnsupportedParameter {
                     path: target.path.clone(),
                     parameter: name.clone(),
-                },
-                format!(
-                    "surface action `{}` parameter `{name}` has a type outside the action JSON surface",
-                    target.path
-                ),
-            ),
-            EntrySignatureUnsupported::ReturnValue => (
-                SurfaceActionDiagnostic::UnsupportedReturn {
-                    path: target.path.clone(),
-                },
-                format!(
-                    "surface action `{}` return type is outside the action JSON surface",
-                    target.path
-                ),
-            ),
+                }
+            }
+            EntrySignatureUnsupported::ReturnValue => SurfaceActionDiagnostic::UnsupportedReturn {
+                path: target.path.clone(),
+            },
         };
-        push_surface_action_diagnostic(context.file, target_span, payload, message, diagnostics);
+        push_surface_action_diagnostic(context.file, target_span, payload, diagnostics);
         return None;
     }
 
@@ -480,34 +463,20 @@ fn resolve_computed_read(
     if let Err(issue) =
         function_ref_has_supported_computed_read_signature(context.program, target.function)
     {
-        let (payload, message) = match issue {
-            ComputedReadSignatureUnsupported::Parameter { name } => (
+        let payload = match issue {
+            ComputedReadSignatureUnsupported::Parameter { name } => {
                 SurfaceComputedReadDiagnostic::UnsupportedParameter {
                     path: target.path.clone(),
                     parameter: name.clone(),
-                },
-                format!(
-                    "surface computed read `{}` parameter `{name}` has a type outside the computed-read JSON surface",
-                    target.path
-                ),
-            ),
-            ComputedReadSignatureUnsupported::ReturnValue => (
+                }
+            }
+            ComputedReadSignatureUnsupported::ReturnValue => {
                 SurfaceComputedReadDiagnostic::UnsupportedReturn {
                     path: target.path.clone(),
-                },
-                format!(
-                    "surface computed read `{}` return type is outside the computed-read JSON surface",
-                    target.path
-                ),
-            ),
+                }
+            }
         };
-        push_surface_computed_read_diagnostic(
-            context.file,
-            target_span,
-            payload,
-            message,
-            diagnostics,
-        );
+        push_surface_computed_read_diagnostic(context.file, target_span, payload, diagnostics);
         return None;
     }
 
@@ -611,38 +580,32 @@ fn push_surface_function_diagnostic(
 ) {
     match profile {
         SurfaceFunctionProfile::Action => {
-            let (payload, message) = match issue {
-                SurfaceFunctionTargetDiagnostic::Private { path } => (
-                    SurfaceActionDiagnostic::PrivateFunction { path: path.clone() },
-                    format!("surface action targets private function `{path}`"),
-                ),
-                SurfaceFunctionTargetDiagnostic::Ambiguous { path } => (
-                    SurfaceActionDiagnostic::AmbiguousFunction { path: path.clone() },
-                    format!("surface action targets ambiguous function `{path}`"),
-                ),
-                SurfaceFunctionTargetDiagnostic::Unknown { path } => (
-                    SurfaceActionDiagnostic::UnknownFunction { path: path.clone() },
-                    format!("surface action targets unknown function `{path}`"),
-                ),
+            let payload = match issue {
+                SurfaceFunctionTargetDiagnostic::Private { path } => {
+                    SurfaceActionDiagnostic::PrivateFunction { path }
+                }
+                SurfaceFunctionTargetDiagnostic::Ambiguous { path } => {
+                    SurfaceActionDiagnostic::AmbiguousFunction { path }
+                }
+                SurfaceFunctionTargetDiagnostic::Unknown { path } => {
+                    SurfaceActionDiagnostic::UnknownFunction { path }
+                }
             };
-            push_surface_action_diagnostic(file, span, payload, message, diagnostics);
+            push_surface_action_diagnostic(file, span, payload, diagnostics);
         }
         SurfaceFunctionProfile::ComputedRead => {
-            let (payload, message) = match issue {
-                SurfaceFunctionTargetDiagnostic::Private { path } => (
-                    SurfaceComputedReadDiagnostic::PrivateFunction { path: path.clone() },
-                    format!("surface computed read targets private function `{path}`"),
-                ),
-                SurfaceFunctionTargetDiagnostic::Ambiguous { path } => (
-                    SurfaceComputedReadDiagnostic::AmbiguousFunction { path: path.clone() },
-                    format!("surface computed read targets ambiguous function `{path}`"),
-                ),
-                SurfaceFunctionTargetDiagnostic::Unknown { path } => (
-                    SurfaceComputedReadDiagnostic::UnknownFunction { path: path.clone() },
-                    format!("surface computed read targets unknown function `{path}`"),
-                ),
+            let payload = match issue {
+                SurfaceFunctionTargetDiagnostic::Private { path } => {
+                    SurfaceComputedReadDiagnostic::PrivateFunction { path }
+                }
+                SurfaceFunctionTargetDiagnostic::Ambiguous { path } => {
+                    SurfaceComputedReadDiagnostic::AmbiguousFunction { path }
+                }
+                SurfaceFunctionTargetDiagnostic::Unknown { path } => {
+                    SurfaceComputedReadDiagnostic::UnknownFunction { path }
+                }
             };
-            push_surface_computed_read_diagnostic(file, span, payload, message, diagnostics);
+            push_surface_computed_read_diagnostic(file, span, payload, diagnostics);
         }
     }
 }
@@ -699,33 +662,6 @@ fn computed_read_effect_diagnostic(
     None
 }
 
-fn computed_read_effect_message(payload: &SurfaceComputedReadDiagnostic) -> String {
-    match payload {
-        SurfaceComputedReadDiagnostic::Writes { path } => {
-            format!("surface computed read `{path}` may write saved data")
-        }
-        SurfaceComputedReadDiagnostic::Transactions { path } => {
-            format!("surface computed read `{path}` may open a transaction")
-        }
-        SurfaceComputedReadDiagnostic::HostEffects { path } => {
-            format!("surface computed read `{path}` may call host effects")
-        }
-        SurfaceComputedReadDiagnostic::Throws { path } => {
-            format!("surface computed read `{path}` may throw")
-        }
-        SurfaceComputedReadDiagnostic::UnindexedCollectionRead { path } => {
-            format!("surface computed read `{path}` may read an unindexed collection")
-        }
-        SurfaceComputedReadDiagnostic::UnknownFunction { .. }
-        | SurfaceComputedReadDiagnostic::PrivateFunction { .. }
-        | SurfaceComputedReadDiagnostic::AmbiguousFunction { .. }
-        | SurfaceComputedReadDiagnostic::UnsupportedParameter { .. }
-        | SurfaceComputedReadDiagnostic::UnsupportedReturn { .. } => {
-            "surface computed read target is invalid".to_string()
-        }
-    }
-}
-
 fn expand_surface_function_path(imports: &[String], function_path: &[String]) -> Vec<String> {
     let aliases = build_alias_map(imports);
     expand_alias(function_path, &aliases)
@@ -749,26 +685,26 @@ fn push_surface_action_diagnostic(
     file: &Path,
     span: SourceSpan,
     payload: SurfaceActionDiagnostic,
-    message: String,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(CHECK_SURFACE_ACTION, file, span, message)
-            .with_payload(DiagnosticPayload::SurfaceAction(payload)),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceAction,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceAction(payload),
+    ));
 }
 
 fn push_surface_computed_read_diagnostic(
     file: &Path,
     span: SourceSpan,
     payload: SurfaceComputedReadDiagnostic,
-    message: String,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(CHECK_SURFACE_COMPUTED_READ, file, span, message)
-            .with_payload(DiagnosticPayload::SurfaceComputedRead(payload)),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceComputedRead,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceComputedRead(payload),
+    ));
 }
 
 fn read_operations(
@@ -942,31 +878,6 @@ enum StoreRootResolution<'p> {
     Ambiguous,
 }
 
-enum RootDiagnosticContext<'a> {
-    Surface { name: &'a str },
-    Collection,
-}
-
-impl RootDiagnosticContext<'_> {
-    fn unknown_message(&self, root: &str) -> String {
-        match self {
-            Self::Surface { name } => format!("surface `{name}` targets unknown store `^{root}`"),
-            Self::Collection => format!("surface collection targets unknown store `^{root}`"),
-        }
-    }
-
-    fn ambiguous_message(&self, root: &str) -> String {
-        match self {
-            Self::Surface { name } => {
-                format!("surface `{name}` targets ambiguous store root `^{root}`")
-            }
-            Self::Collection => {
-                format!("surface collection targets ambiguous store root `^{root}`")
-            }
-        }
-    }
-}
-
 fn resolve_unique_store_root<'p>(
     program: &'p CheckedProgram,
     root: &str,
@@ -991,42 +902,24 @@ fn resolve_surface_store_root<'p>(
     span: SourceSpan,
     root: &str,
     backing_validity: &BackingValidity,
-    context: RootDiagnosticContext<'_>,
+    origin: SurfaceRootOrigin,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<&'p StoreFact> {
     match resolve_unique_store_root(program, root) {
         StoreRootResolution::Unique(store) => {
             if backing_validity.store_has_duplicate_root(store) {
-                push_ambiguous_store_root_diagnostic(
-                    file,
-                    span,
-                    root,
-                    context.ambiguous_message(root),
-                    diagnostics,
-                );
+                push_ambiguous_store_root_diagnostic(file, span, origin, root, diagnostics);
                 None
             } else {
                 Some(store)
             }
         }
         StoreRootResolution::Missing => {
-            push_unknown_store_root_diagnostic(
-                file,
-                span,
-                root,
-                context.unknown_message(root),
-                diagnostics,
-            );
+            push_unknown_store_root_diagnostic(file, span, origin, root, diagnostics);
             None
         }
         StoreRootResolution::Ambiguous => {
-            push_ambiguous_store_root_diagnostic(
-                file,
-                span,
-                root,
-                context.ambiguous_message(root),
-                diagnostics,
-            );
+            push_ambiguous_store_root_diagnostic(file, span, origin, root, diagnostics);
             None
         }
     }
@@ -1035,33 +928,35 @@ fn resolve_surface_store_root<'p>(
 fn push_unknown_store_root_diagnostic(
     file: &Path,
     span: SourceSpan,
+    origin: SurfaceRootOrigin,
     root: &str,
-    message: String,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(CHECK_SURFACE_TARGET, file, span, message).with_payload(
-            DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::UnknownStore {
-                root: root.to_string(),
-            }),
-        ),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::UnknownStore {
+            origin,
+            root: root.to_string(),
+        }),
+    ));
 }
 
 fn push_ambiguous_store_root_diagnostic(
     file: &Path,
     span: SourceSpan,
+    origin: SurfaceRootOrigin,
     root: &str,
-    message: String,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(CHECK_SURFACE_TARGET, file, span, message).with_payload(
-            DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::AmbiguousStore {
-                root: root.to_string(),
-            }),
-        ),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::AmbiguousStore {
+            origin,
+            root: root.to_string(),
+        }),
+    ));
 }
 
 fn resolve_backing_store<'p>(
@@ -1077,8 +972,8 @@ fn resolve_backing_store<'p>(
         surface.store.span,
         &surface.store.root,
         backing_validity,
-        RootDiagnosticContext::Surface {
-            name: &surface.name,
+        SurfaceRootOrigin::Surface {
+            name: surface.name.clone(),
         },
         diagnostics,
     )?;
@@ -1096,23 +991,15 @@ fn resolve_backing_store<'p>(
 
     if store_resource_is_ambiguous(program, store) {
         let resource = program.facts.resource(store.resource);
-        diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_SURFACE_TARGET,
-                file,
-                surface.store.span,
-                format!(
-                    "surface `{}` targets store `^{}` with ambiguous resource `{}`",
-                    surface.name, surface.store.root, resource.name
-                ),
-            )
-            .with_payload(DiagnosticPayload::SurfaceTarget(
-                SurfaceTargetDiagnostic::AmbiguousStoreResource {
-                    root: surface.store.root.clone(),
-                    resource: resource.name.clone(),
-                },
-            )),
-        );
+        diagnostics.push(CheckDiagnostic::new(
+            Code::CheckSurfaceTarget,
+            DiagnosticAnchor::at(file, surface.store.span),
+            DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::AmbiguousStoreResource {
+                surface: surface.name.clone(),
+                root: surface.store.root.clone(),
+                resource: resource.name.clone(),
+            }),
+        ));
         None
     } else {
         Some(store)
@@ -1137,19 +1024,14 @@ fn push_invalid_store_diagnostic(
     root: &str,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_SURFACE_TARGET,
-            file,
-            span,
-            format!("surface `{surface_name}` targets invalid backing store `^{root}`"),
-        )
-        .with_payload(DiagnosticPayload::SurfaceTarget(
-            SurfaceTargetDiagnostic::InvalidStore {
-                root: root.to_string(),
-            },
-        )),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::InvalidStore {
+            surface: surface_name.to_string(),
+            root: root.to_string(),
+        }),
+    ));
 }
 
 fn push_invalid_store_resource_diagnostic(
@@ -1161,23 +1043,15 @@ fn push_invalid_store_resource_diagnostic(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let resource = program.facts.resource(store.resource);
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_SURFACE_TARGET,
-            file,
-            span,
-            format!(
-                "surface `{surface_name}` targets store `^{}` with invalid resource `{}`",
-                store.root, resource.name
-            ),
-        )
-        .with_payload(DiagnosticPayload::SurfaceTarget(
-            SurfaceTargetDiagnostic::InvalidStoreResource {
-                root: store.root.clone(),
-                resource: resource.name.clone(),
-            },
-        )),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::InvalidStoreResource {
+            surface: surface_name.to_string(),
+            root: store.root.clone(),
+            resource: resource.name.clone(),
+        }),
+    ));
 }
 
 #[derive(Clone, Copy)]
@@ -1709,20 +1583,14 @@ fn push_unknown_collection_index_diagnostic(
     index: &str,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_SURFACE_TARGET,
-            file,
-            span,
-            format!("surface collection names no index `{index}` on `^{root}`"),
-        )
-        .with_payload(DiagnosticPayload::SurfaceTarget(
-            SurfaceTargetDiagnostic::UnknownCollectionIndex {
-                root: root.to_string(),
-                index: index.to_string(),
-            },
-        )),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::UnknownCollectionIndex {
+            root: root.to_string(),
+            index: index.to_string(),
+        }),
+    ));
 }
 
 fn push_ambiguous_collection_index_diagnostic(
@@ -1732,20 +1600,14 @@ fn push_ambiguous_collection_index_diagnostic(
     index: &str,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_SURFACE_TARGET,
-            file,
-            span,
-            format!("surface collection names ambiguous index `{index}` on `^{root}`"),
-        )
-        .with_payload(DiagnosticPayload::SurfaceTarget(
-            SurfaceTargetDiagnostic::AmbiguousCollectionIndex {
-                root: root.to_string(),
-                index: index.to_string(),
-            },
-        )),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::AmbiguousCollectionIndex {
+            root: root.to_string(),
+            index: index.to_string(),
+        }),
+    ));
 }
 
 fn push_invalid_collection_index_diagnostic(
@@ -1755,20 +1617,14 @@ fn push_invalid_collection_index_diagnostic(
     index: &str,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_SURFACE_TARGET,
-            file,
-            span,
-            format!("surface collection names schema-invalid index `{index}` on `^{root}`"),
-        )
-        .with_payload(DiagnosticPayload::SurfaceTarget(
-            SurfaceTargetDiagnostic::InvalidCollectionIndex {
-                root: root.to_string(),
-                index: index.to_string(),
-            },
-        )),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::InvalidCollectionIndex {
+            root: root.to_string(),
+            index: index.to_string(),
+        }),
+    ));
 }
 
 fn push_invalid_range_collection_index_diagnostic(
@@ -1807,25 +1663,11 @@ fn push_invalid_range_collection_index_diagnostic(
             }
         }
     };
-    let message = match problem {
-        RangeCollectionIndexProblem::Unique => {
-            format!("surface range collection targets unique index `{index}` on `^{root}`")
-        }
-        RangeCollectionIndexProblem::MissingIdentitySuffix => format!(
-            "surface range collection index `{index}` on `^{root}` does not end with the store identity"
-        ),
-        RangeCollectionIndexProblem::MissingRangeKey => format!(
-            "surface range collection index `{index}` on `^{root}` has no non-identity range key"
-        ),
-        RangeCollectionIndexProblem::UnsupportedRangeKey { .. } => format!(
-            "surface range collection index `{index}` on `^{root}` ranges over non-scalar key `{}`",
-            key.unwrap_or("<unknown>")
-        ),
-    };
-    diagnostics.push(
-        CheckDiagnostic::error(CHECK_SURFACE_TARGET, file, span, message)
-            .with_payload(DiagnosticPayload::SurfaceTarget(payload)),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(payload),
+    ));
 }
 
 fn push_keyless_collection_root_diagnostic(
@@ -1834,19 +1676,13 @@ fn push_keyless_collection_root_diagnostic(
     root: &str,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_SURFACE_TARGET,
-            file,
-            span,
-            format!("surface collection targets keyless singleton root `^{root}`"),
-        )
-        .with_payload(DiagnosticPayload::SurfaceTarget(
-            SurfaceTargetDiagnostic::KeylessCollectionRoot {
-                root: root.to_string(),
-            },
-        )),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::KeylessCollectionRoot {
+            root: root.to_string(),
+        }),
+    ));
 }
 
 fn push_foreign_unknown_or_ambiguous_root(
@@ -1864,27 +1700,19 @@ fn push_foreign_unknown_or_ambiguous_root(
         span,
         target_root,
         backing_validity,
-        RootDiagnosticContext::Collection,
+        SurfaceRootOrigin::Collection,
         diagnostics,
     )
     .is_some()
     {
-        diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_SURFACE_TARGET,
-                file,
-                span,
-                format!(
-                    "surface collection target `^{target_root}` is not backing store `^{surface_root}`"
-                ),
-            )
-            .with_payload(DiagnosticPayload::SurfaceTarget(
-                SurfaceTargetDiagnostic::ForeignCollectionRoot {
-                    surface_root: surface_root.to_string(),
-                    target_root: target_root.to_string(),
-                },
-            )),
-        );
+        diagnostics.push(CheckDiagnostic::new(
+            Code::CheckSurfaceTarget,
+            DiagnosticAnchor::at(file, span),
+            DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::ForeignCollectionRoot {
+                surface_root: surface_root.to_string(),
+                target_root: target_root.to_string(),
+            }),
+        ));
     }
 }
 
@@ -1896,58 +1724,15 @@ fn push_field_diagnostic(
     problem: SurfaceFieldProblem,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let message = match problem {
-        SurfaceFieldProblem::Unknown => {
-            format!(
-                "surface {} item `{name}` is not a top-level backing field",
-                list.label()
-            )
-        }
-        SurfaceFieldProblem::Unsupported => {
-            format!(
-                "surface {} item `{name}` is not a plain top-level field",
-                list.label()
-            )
-        }
-        SurfaceFieldProblem::Invalid => {
-            format!(
-                "surface {} item `{name}` names a schema-invalid backing field",
-                list.label()
-            )
-        }
-        SurfaceFieldProblem::Ambiguous => {
-            format!(
-                "surface {} item `{name}` names an ambiguous backing field",
-                list.label()
-            )
-        }
-        SurfaceFieldProblem::NotProjected => {
-            format!(
-                "surface {} item `{name}` must also appear in `fields`",
-                list.label()
-            )
-        }
-        SurfaceFieldProblem::RequiredNotCreateAddressable => {
-            format!("surface create item must include required backing field `{name}`")
-        }
-        SurfaceFieldProblem::IdentityKey => {
-            format!(
-                "surface {} item `{name}` names an identity key; identity keys are returned \
-                 automatically under `identity` in every read and page response, so they cannot \
-                 be listed in `fields`",
-                list.label()
-            )
-        }
-    };
-    diagnostics.push(
-        CheckDiagnostic::error(CHECK_SURFACE_FIELD, file, span, message).with_payload(
-            DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
-                list,
-                name: name.to_string(),
-                problem,
-            }),
-        ),
-    );
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckSurfaceField,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+            list,
+            name: name.to_string(),
+            problem,
+        }),
+    ));
 }
 
 #[derive(Clone, Copy)]

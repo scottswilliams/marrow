@@ -573,23 +573,37 @@ pub enum SurfaceComputedReadDiagnostic {
     UnindexedCollectionRead { path: String },
 }
 
+/// Which surface construct names the rejected store root in a
+/// `check.surface_target` diagnostic. A surface's own backing store names the
+/// surface in its message; a collection target describes itself generically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceRootOrigin {
+    Surface { name: String },
+    Collection,
+}
+
 /// Structured facts for a `check.surface_target` diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceTargetDiagnostic {
     UnknownStore {
+        origin: SurfaceRootOrigin,
         root: String,
     },
     AmbiguousStore {
+        origin: SurfaceRootOrigin,
         root: String,
     },
     InvalidStore {
+        surface: String,
         root: String,
     },
     InvalidStoreResource {
+        surface: String,
         root: String,
         resource: String,
     },
     AmbiguousStoreResource {
+        surface: String,
         root: String,
         resource: String,
     },

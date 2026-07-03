@@ -6,7 +6,10 @@
 
 use marrow_codes::Code;
 
-use crate::diagnostics::{DefaultEntryProblem, DiagnosticPayload};
+use crate::diagnostics::{
+    DefaultEntryProblem, DiagnosticPayload, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
+    SurfaceFieldDiagnostic, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+};
 use crate::typerules::mismatch_display;
 
 /// The codes whose prose is owned by [`render_message`]. Their construction sites
@@ -19,6 +22,10 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckAssignmentType,
     Code::CheckDefaultEntry,
     Code::CheckMultipleScripts,
+    Code::CheckSurfaceTarget,
+    Code::CheckSurfaceField,
+    Code::CheckSurfaceAction,
+    Code::CheckSurfaceComputedRead,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -48,8 +55,197 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
              one file without a `module` declaration (its single-file script); declare a \
              `module` for this file"
             .to_string(),
+        (Code::CheckSurfaceTarget, DiagnosticPayload::SurfaceTarget(target)) => {
+            surface_target_message(target)
+        }
+        (Code::CheckSurfaceField, DiagnosticPayload::SurfaceField(field)) => {
+            surface_field_message(field)
+        }
+        (Code::CheckSurfaceAction, DiagnosticPayload::SurfaceAction(action)) => {
+            surface_action_message(action)
+        }
+        (Code::CheckSurfaceComputedRead, DiagnosticPayload::SurfaceComputedRead(read)) => {
+            surface_computed_read_message(read)
+        }
         (code, payload) => {
             unreachable!("no message template for {code:?} with payload {payload:?}")
+        }
+    }
+}
+
+fn surface_target_message(target: &SurfaceTargetDiagnostic) -> String {
+    match target {
+        SurfaceTargetDiagnostic::UnknownStore { origin, root } => match origin {
+            SurfaceRootOrigin::Surface { name } => {
+                format!("surface `{name}` targets unknown store `^{root}`")
+            }
+            SurfaceRootOrigin::Collection => {
+                format!("surface collection targets unknown store `^{root}`")
+            }
+        },
+        SurfaceTargetDiagnostic::AmbiguousStore { origin, root } => match origin {
+            SurfaceRootOrigin::Surface { name } => {
+                format!("surface `{name}` targets ambiguous store root `^{root}`")
+            }
+            SurfaceRootOrigin::Collection => {
+                format!("surface collection targets ambiguous store root `^{root}`")
+            }
+        },
+        SurfaceTargetDiagnostic::InvalidStore { surface, root } => {
+            format!("surface `{surface}` targets invalid backing store `^{root}`")
+        }
+        SurfaceTargetDiagnostic::InvalidStoreResource {
+            surface,
+            root,
+            resource,
+        } => {
+            format!(
+                "surface `{surface}` targets store `^{root}` with invalid resource `{resource}`"
+            )
+        }
+        SurfaceTargetDiagnostic::AmbiguousStoreResource {
+            surface,
+            root,
+            resource,
+        } => {
+            format!(
+                "surface `{surface}` targets store `^{root}` with ambiguous resource `{resource}`"
+            )
+        }
+        SurfaceTargetDiagnostic::ForeignCollectionRoot {
+            surface_root,
+            target_root,
+        } => {
+            format!(
+                "surface collection target `^{target_root}` is not backing store `^{surface_root}`"
+            )
+        }
+        SurfaceTargetDiagnostic::KeylessCollectionRoot { root } => {
+            format!("surface collection targets keyless singleton root `^{root}`")
+        }
+        SurfaceTargetDiagnostic::UnknownCollectionIndex { root, index } => {
+            format!("surface collection names no index `{index}` on `^{root}`")
+        }
+        SurfaceTargetDiagnostic::AmbiguousCollectionIndex { root, index } => {
+            format!("surface collection names ambiguous index `{index}` on `^{root}`")
+        }
+        SurfaceTargetDiagnostic::InvalidCollectionIndex { root, index } => {
+            format!("surface collection names schema-invalid index `{index}` on `^{root}`")
+        }
+        SurfaceTargetDiagnostic::RangeCollectionUniqueIndex { root, index } => {
+            format!("surface range collection targets unique index `{index}` on `^{root}`")
+        }
+        SurfaceTargetDiagnostic::RangeCollectionMissingIdentitySuffix { root, index } => {
+            format!(
+                "surface range collection index `{index}` on `^{root}` does not end with the store identity"
+            )
+        }
+        SurfaceTargetDiagnostic::RangeCollectionMissingRangeKey { root, index } => {
+            format!(
+                "surface range collection index `{index}` on `^{root}` has no non-identity range key"
+            )
+        }
+        SurfaceTargetDiagnostic::RangeCollectionUnsupportedRangeKey { root, index, key } => {
+            format!(
+                "surface range collection index `{index}` on `^{root}` ranges over non-scalar key `{key}`"
+            )
+        }
+    }
+}
+
+fn surface_field_message(field: &SurfaceFieldDiagnostic) -> String {
+    let SurfaceFieldDiagnostic {
+        list,
+        name,
+        problem,
+    } = field;
+    let list = list.label();
+    match problem {
+        SurfaceFieldProblem::Unknown => {
+            format!("surface {list} item `{name}` is not a top-level backing field")
+        }
+        SurfaceFieldProblem::Unsupported => {
+            format!("surface {list} item `{name}` is not a plain top-level field")
+        }
+        SurfaceFieldProblem::Invalid => {
+            format!("surface {list} item `{name}` names a schema-invalid backing field")
+        }
+        SurfaceFieldProblem::Ambiguous => {
+            format!("surface {list} item `{name}` names an ambiguous backing field")
+        }
+        SurfaceFieldProblem::NotProjected => {
+            format!("surface {list} item `{name}` must also appear in `fields`")
+        }
+        SurfaceFieldProblem::RequiredNotCreateAddressable => {
+            format!("surface create item must include required backing field `{name}`")
+        }
+        SurfaceFieldProblem::IdentityKey => {
+            format!(
+                "surface {list} item `{name}` names an identity key; identity keys are returned \
+                 automatically under `identity` in every read and page response, so they cannot \
+                 be listed in `fields`"
+            )
+        }
+    }
+}
+
+fn surface_action_message(action: &SurfaceActionDiagnostic) -> String {
+    match action {
+        SurfaceActionDiagnostic::UnknownFunction { path } => {
+            format!("surface action targets unknown function `{path}`")
+        }
+        SurfaceActionDiagnostic::PrivateFunction { path } => {
+            format!("surface action targets private function `{path}`")
+        }
+        SurfaceActionDiagnostic::AmbiguousFunction { path } => {
+            format!("surface action targets ambiguous function `{path}`")
+        }
+        SurfaceActionDiagnostic::UnsupportedParameter { path, parameter } => {
+            format!(
+                "surface action `{path}` parameter `{parameter}` has a type outside the action JSON surface"
+            )
+        }
+        SurfaceActionDiagnostic::UnsupportedReturn { path } => {
+            format!("surface action `{path}` return type is outside the action JSON surface")
+        }
+    }
+}
+
+fn surface_computed_read_message(read: &SurfaceComputedReadDiagnostic) -> String {
+    match read {
+        SurfaceComputedReadDiagnostic::UnknownFunction { path } => {
+            format!("surface computed read targets unknown function `{path}`")
+        }
+        SurfaceComputedReadDiagnostic::PrivateFunction { path } => {
+            format!("surface computed read targets private function `{path}`")
+        }
+        SurfaceComputedReadDiagnostic::AmbiguousFunction { path } => {
+            format!("surface computed read targets ambiguous function `{path}`")
+        }
+        SurfaceComputedReadDiagnostic::UnsupportedParameter { path, parameter } => {
+            format!(
+                "surface computed read `{path}` parameter `{parameter}` has a type outside the computed-read JSON surface"
+            )
+        }
+        SurfaceComputedReadDiagnostic::UnsupportedReturn { path } => {
+            format!(
+                "surface computed read `{path}` return type is outside the computed-read JSON surface"
+            )
+        }
+        SurfaceComputedReadDiagnostic::Writes { path } => {
+            format!("surface computed read `{path}` may write saved data")
+        }
+        SurfaceComputedReadDiagnostic::Transactions { path } => {
+            format!("surface computed read `{path}` may open a transaction")
+        }
+        SurfaceComputedReadDiagnostic::HostEffects { path } => {
+            format!("surface computed read `{path}` may call host effects")
+        }
+        SurfaceComputedReadDiagnostic::Throws { path } => {
+            format!("surface computed read `{path}` may throw")
+        }
+        SurfaceComputedReadDiagnostic::UnindexedCollectionRead { path } => {
+            format!("surface computed read `{path}` may read an unindexed collection")
         }
     }
 }
@@ -68,7 +264,11 @@ fn default_entry_reason(problem: DefaultEntryProblem) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{MIGRATED_CODES, render_message};
-    use crate::diagnostics::{DefaultEntryProblem, DiagnosticPayload};
+    use crate::diagnostics::{
+        DefaultEntryProblem, DiagnosticPayload, SurfaceActionDiagnostic,
+        SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList,
+        SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    };
     use crate::program::MarrowType;
     use marrow_codes::Code;
     use marrow_store::value::ScalarType;
@@ -136,6 +336,291 @@ mod tests {
         );
     }
 
+    /// The surface diagnostic families render exactly the message their old
+    /// construction sites built, across every payload variant they emit. Pins the
+    /// prose the renderer now owns for the surface codes.
+    #[test]
+    fn renders_surface_prose_byte_identical() {
+        let target = |t| {
+            render_message(
+                Code::CheckSurfaceTarget,
+                &DiagnosticPayload::SurfaceTarget(t),
+            )
+        };
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::UnknownStore {
+                origin: SurfaceRootOrigin::Surface {
+                    name: "Books".into()
+                },
+                root: "books".into(),
+            }),
+            "surface `Books` targets unknown store `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::UnknownStore {
+                origin: SurfaceRootOrigin::Collection,
+                root: "books".into(),
+            }),
+            "surface collection targets unknown store `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::AmbiguousStore {
+                origin: SurfaceRootOrigin::Surface {
+                    name: "Books".into()
+                },
+                root: "books".into(),
+            }),
+            "surface `Books` targets ambiguous store root `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::AmbiguousStore {
+                origin: SurfaceRootOrigin::Collection,
+                root: "books".into(),
+            }),
+            "surface collection targets ambiguous store root `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::InvalidStore {
+                surface: "Books".into(),
+                root: "books".into(),
+            }),
+            "surface `Books` targets invalid backing store `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::InvalidStoreResource {
+                surface: "Books".into(),
+                root: "books".into(),
+                resource: "Book".into(),
+            }),
+            "surface `Books` targets store `^books` with invalid resource `Book`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::AmbiguousStoreResource {
+                surface: "Books".into(),
+                root: "books".into(),
+                resource: "Book".into(),
+            }),
+            "surface `Books` targets store `^books` with ambiguous resource `Book`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::ForeignCollectionRoot {
+                surface_root: "books".into(),
+                target_root: "authors".into(),
+            }),
+            "surface collection target `^authors` is not backing store `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::KeylessCollectionRoot {
+                root: "config".into()
+            }),
+            "surface collection targets keyless singleton root `^config`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::UnknownCollectionIndex {
+                root: "books".into(),
+                index: "byMissing".into(),
+            }),
+            "surface collection names no index `byMissing` on `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::AmbiguousCollectionIndex {
+                root: "books".into(),
+                index: "byTitle".into(),
+            }),
+            "surface collection names ambiguous index `byTitle` on `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::InvalidCollectionIndex {
+                root: "books".into(),
+                index: "byTitle".into(),
+            }),
+            "surface collection names schema-invalid index `byTitle` on `^books`",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::RangeCollectionUniqueIndex {
+                root: "books".into(),
+                index: "byTitle".into(),
+            }),
+            "surface range collection targets unique index `byTitle` on `^books`",
+        );
+        assert_eq!(
+            target(
+                SurfaceTargetDiagnostic::RangeCollectionMissingIdentitySuffix {
+                    root: "books".into(),
+                    index: "byTitle".into(),
+                }
+            ),
+            "surface range collection index `byTitle` on `^books` does not end with the store identity",
+        );
+        assert_eq!(
+            target(SurfaceTargetDiagnostic::RangeCollectionMissingRangeKey {
+                root: "books".into(),
+                index: "byTitle".into(),
+            }),
+            "surface range collection index `byTitle` on `^books` has no non-identity range key",
+        );
+        assert_eq!(
+            target(
+                SurfaceTargetDiagnostic::RangeCollectionUnsupportedRangeKey {
+                    root: "books".into(),
+                    index: "byTitle".into(),
+                    key: "title".into(),
+                }
+            ),
+            "surface range collection index `byTitle` on `^books` ranges over non-scalar key `title`",
+        );
+
+        let field = |problem, list| {
+            render_message(
+                Code::CheckSurfaceField,
+                &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                    list,
+                    name: "meta".into(),
+                    problem,
+                }),
+            )
+        };
+        assert_eq!(
+            field(SurfaceFieldProblem::Unknown, SurfaceFieldList::Fields),
+            "surface fields item `meta` is not a top-level backing field",
+        );
+        assert_eq!(
+            field(SurfaceFieldProblem::Unsupported, SurfaceFieldList::Fields),
+            "surface fields item `meta` is not a plain top-level field",
+        );
+        assert_eq!(
+            field(SurfaceFieldProblem::Invalid, SurfaceFieldList::Update),
+            "surface update item `meta` names a schema-invalid backing field",
+        );
+        assert_eq!(
+            field(SurfaceFieldProblem::Ambiguous, SurfaceFieldList::Fields),
+            "surface fields item `meta` names an ambiguous backing field",
+        );
+        assert_eq!(
+            field(SurfaceFieldProblem::NotProjected, SurfaceFieldList::Create),
+            "surface create item `meta` must also appear in `fields`",
+        );
+        assert_eq!(
+            field(
+                SurfaceFieldProblem::RequiredNotCreateAddressable,
+                SurfaceFieldList::Create
+            ),
+            "surface create item must include required backing field `meta`",
+        );
+        assert_eq!(
+            field(SurfaceFieldProblem::IdentityKey, SurfaceFieldList::Fields),
+            "surface fields item `meta` names an identity key; identity keys are returned \
+             automatically under `identity` in every read and page response, so they cannot \
+             be listed in `fields`",
+        );
+
+        let action = |a| {
+            render_message(
+                Code::CheckSurfaceAction,
+                &DiagnosticPayload::SurfaceAction(a),
+            )
+        };
+        assert_eq!(
+            action(SurfaceActionDiagnostic::UnknownFunction {
+                path: "app::save".into()
+            }),
+            "surface action targets unknown function `app::save`",
+        );
+        assert_eq!(
+            action(SurfaceActionDiagnostic::PrivateFunction {
+                path: "app::save".into()
+            }),
+            "surface action targets private function `app::save`",
+        );
+        assert_eq!(
+            action(SurfaceActionDiagnostic::AmbiguousFunction {
+                path: "save".into()
+            }),
+            "surface action targets ambiguous function `save`",
+        );
+        assert_eq!(
+            action(SurfaceActionDiagnostic::UnsupportedParameter {
+                path: "app::save".into(),
+                parameter: "raw".into(),
+            }),
+            "surface action `app::save` parameter `raw` has a type outside the action JSON surface",
+        );
+        assert_eq!(
+            action(SurfaceActionDiagnostic::UnsupportedReturn {
+                path: "app::save".into()
+            }),
+            "surface action `app::save` return type is outside the action JSON surface",
+        );
+
+        let read = |r| {
+            render_message(
+                Code::CheckSurfaceComputedRead,
+                &DiagnosticPayload::SurfaceComputedRead(r),
+            )
+        };
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::UnknownFunction {
+                path: "app::view".into()
+            }),
+            "surface computed read targets unknown function `app::view`",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::PrivateFunction {
+                path: "app::view".into()
+            }),
+            "surface computed read targets private function `app::view`",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::AmbiguousFunction {
+                path: "view".into()
+            }),
+            "surface computed read targets ambiguous function `view`",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::UnsupportedParameter {
+                path: "app::view".into(),
+                parameter: "raw".into(),
+            }),
+            "surface computed read `app::view` parameter `raw` has a type outside the computed-read JSON surface",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::UnsupportedReturn {
+                path: "app::view".into()
+            }),
+            "surface computed read `app::view` return type is outside the computed-read JSON surface",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::Writes {
+                path: "app::view".into()
+            }),
+            "surface computed read `app::view` may write saved data",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::Transactions {
+                path: "app::view".into()
+            }),
+            "surface computed read `app::view` may open a transaction",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::HostEffects {
+                path: "app::view".into()
+            }),
+            "surface computed read `app::view` may call host effects",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::Throws {
+                path: "app::view".into()
+            }),
+            "surface computed read `app::view` may throw",
+        );
+        assert_eq!(
+            read(SurfaceComputedReadDiagnostic::UnindexedCollectionRead {
+                path: "app::view".into()
+            }),
+            "surface computed read `app::view` may read an unindexed collection",
+        );
+    }
+
     /// The identifiers a migrated code would appear as in a first argument to a
     /// message-bearing `CheckDiagnostic::error`/`warning` call: its `Code` variant
     /// and its `CHECK_*` wire-string constant. Mirrors [`MIGRATED_CODES`]; kept in
@@ -149,6 +634,14 @@ mod tests {
         "CHECK_DEFAULT_ENTRY",
         "Code::CheckMultipleScripts",
         "CHECK_MULTIPLE_SCRIPTS",
+        "Code::CheckSurfaceTarget",
+        "CHECK_SURFACE_TARGET",
+        "Code::CheckSurfaceField",
+        "CHECK_SURFACE_FIELD",
+        "Code::CheckSurfaceAction",
+        "CHECK_SURFACE_ACTION",
+        "Code::CheckSurfaceComputedRead",
+        "CHECK_SURFACE_COMPUTED_READ",
     ];
 
     fn src_root() -> PathBuf {

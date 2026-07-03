@@ -12,7 +12,6 @@ crates/marrow-check/tests/cases/project_enum_hierarchy.rs 4
 crates/marrow-check/tests/cases/project_enum_member_and_match.rs 4
 crates/marrow-check/tests/cases/project_enum_nominal_identity.rs 2
 crates/marrow-check/tests/cases/project_statements.rs 1
-crates/marrow-check/tests/cases/project_surfaces.rs 2
 crates/marrow-check/tests/cases/ranges.rs 1
 crates/marrow-project/tests/cases/config.rs 3
 crates/marrow-run/tests/cases/entry_args.rs 2

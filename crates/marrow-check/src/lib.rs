@@ -79,7 +79,7 @@ pub use diagnostics::{
     DiagnosticPayload, EnumDiagnostic, IO_READ, PendingRecord, RejectedSurface,
     SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic, SurfaceCollisionNameKind,
     SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
-    SurfaceTargetDiagnostic,
+    SurfaceRootOrigin, SurfaceTargetDiagnostic,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,

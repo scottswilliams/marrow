@@ -3,7 +3,8 @@ use marrow_check::{
     DiagnosticPayload, SurfaceActionDiagnostic, SurfaceCatalogBlocker, SurfaceCatalogStatus,
     SurfaceCollectionTarget, SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic,
     SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceReadFootprint,
-    SurfaceReadOperationKind, SurfaceTargetDiagnostic, check_project, check_tests_program,
+    SurfaceReadOperationKind, SurfaceRootOrigin, SurfaceTargetDiagnostic, check_project,
+    check_tests_program,
 };
 use marrow_syntax::SourceSpan;
 
@@ -1907,6 +1908,9 @@ surface MissingIndex from ^books
     assert_eq!(
         diagnostics[0].payload,
         DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::UnknownStore {
+            origin: SurfaceRootOrigin::Surface {
+                name: "Missing".into(),
+            },
             root: "missing".into(),
         })
     );
@@ -2053,19 +2057,5 @@ surface Books from ^books
                 problem: SurfaceFieldProblem::NotProjected,
             }),
         ]
-    );
-    let identity_message = &diagnostics
-        .iter()
-        .find(|diagnostic| match &diagnostic.payload {
-            DiagnosticPayload::SurfaceField(field) => {
-                field.problem == SurfaceFieldProblem::IdentityKey
-            }
-            _ => false,
-        })
-        .expect("an identity-key surface field diagnostic")
-        .message;
-    assert!(
-        identity_message.contains("identity") && identity_message.contains("automatic"),
-        "the identity-key message must explain that identity is returned automatically: {identity_message}"
     );
 }
