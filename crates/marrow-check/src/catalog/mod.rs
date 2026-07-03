@@ -23,8 +23,7 @@ mod source_digest;
 mod stable_id;
 
 pub(crate) use source_digest::{
-    DurableRendering, analyzed_source_digest, durable_renderings_for_source, evolution_digest,
-    source_and_evolution_digests, transform_identity,
+    analyzed_source_digest, evolution_digest, source_and_evolution_digests, transform_identity,
 };
 use stable_id::{CatalogIdEntropy, StableIdAllocator};
 
@@ -1452,6 +1451,7 @@ fn bound_defaults(
         .filter_map(|default| {
             member_target_id(&default.path, ids).map(|catalog_id| EvolveDefault {
                 catalog_id,
+                target_path: default.path.clone(),
                 value: default.value.clone(),
             })
         })
@@ -2959,9 +2959,9 @@ mod tests {
 
         // Oracle 1 + 2: the first-run binding adopts the committed id and advances the drifted
         // proposal one epoch past the lock's high-water rather than minting fresh at epoch 1. The
-        // fixture program captures no source renderings, so its shape digest cannot match the lock's
-        // recorded digest: the lock does not adopt cleanly here, so the binding is a pending proposal
-        // carrying the adopted identity at the epoch a present store would discharge to.
+        // source shape here differs from the shape the lock committed, so the lock does not adopt
+        // cleanly and the binding is a pending proposal carrying the adopted identity at the epoch a
+        // present store would discharge to.
         let mut diagnostics = Vec::new();
         let Ok(FirstRunOutcome::Proposal(proposal)) = adopt_or_mint_first_run(
             &program,

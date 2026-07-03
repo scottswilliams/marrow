@@ -260,6 +260,32 @@ fn source_digest_binds_the_durable_shape() {
     );
 }
 
+/// Resource-member order is durable shape: the store restamps under a fresh digest when members
+/// are reordered, so the structural digest records each member's ordinal within its siblings and a
+/// pure field reorder drifts it — exactly as the store's restamp-on-reorder contract requires, and
+/// exactly as retyping or renaming a member does. The digest depends on structure, not formatter
+/// text, so the reorder is detected without hashing rendered source.
+#[test]
+fn resource_member_reorder_drifts_shape_digest() {
+    let base = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   pages: int\n\
+         \x20   author: string\n\
+         store ^books(id: int): Book\n";
+    let reordered = "module books\n\
+         resource Book\n\
+         \x20   author: string\n\
+         \x20   pages: int\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n";
+    assert_ne!(
+        source_digest("member-reorder-base", base),
+        source_digest("member-reorder-shuffled", reordered),
+        "reordering resource members must drift the shape digest"
+    );
+}
+
 #[test]
 fn source_digest_excludes_surface_declarations() {
     let base = "module books\n\
@@ -323,14 +349,14 @@ fn formatter_internal_layout_change_does_not_move_shape_digest() {
     );
 }
 
-/// An enum's members are durable shape: each is a catalog entry a stored snapshot binds.
-/// Adding, removing, or reordering a member drifts the shape digest, because the stored
-/// shape no longer matches. A pure layout reformat of the same members — blank lines
-/// between them and wider indentation, all of which the normalized formatter collapses —
-/// must leave the digest exactly where it was. This proves the frozen-anchor claim for
-/// enum members directly, not just for resource declarations.
+/// An enum's members are durable shape. Adding, removing, or reordering a member drifts the shape
+/// digest: a reorder mutates no stored data (a stored value is keyed by member identity, not
+/// position) but is a tracked shape change the store restamps under a fresh digest, so the digest
+/// must move for the restamp to happen. A pure layout reformat is not shape, so it must not move
+/// the digest — proving the structural digest ignores formatter text while still tracking member
+/// order.
 #[test]
-fn enum_member_shape_drifts_digest_but_layout_does_not() {
+fn enum_member_shape_drifts_on_membership_and_reorder_but_not_layout() {
     let base = "module books\n\
          enum Status\n\
          \x20   active\n\
@@ -352,6 +378,17 @@ fn enum_member_shape_drifts_digest_but_layout_does_not() {
         "adding an enum member must drift the shape digest"
     );
 
+    let removed_member = "module books\n\
+         enum Status\n\
+         \x20   active\n\
+         fn s(): bool\n\
+         \x20   return true\n";
+    assert_ne!(
+        base_digest,
+        source_digest("enum-removed", removed_member),
+        "removing an enum member must drift the shape digest"
+    );
+
     let reordered = "module books\n\
          enum Status\n\
          \x20   archived\n\
@@ -361,7 +398,8 @@ fn enum_member_shape_drifts_digest_but_layout_does_not() {
     assert_ne!(
         base_digest,
         source_digest("enum-reordered", reordered),
-        "reordering enum members must drift the shape digest"
+        "reordering enum members is a tracked shape change the store restamps, so it must drift \
+         the shape digest"
     );
 
     // Extra blank lines and eight-space indentation around the same members, none of
@@ -383,14 +421,13 @@ fn enum_member_shape_drifts_digest_but_layout_does_not() {
     );
 }
 
-/// A frozen golden over a fixed canonical shape. The shape digest is stamped into every
-/// store and enforced by the activation fence, so the canonical rendering it hashes must
-/// not move silently: a formatter change that altered the normalized text of an unchanged
-/// shape — different indentation, blank-line policy, or token spacing — would move every
-/// committed snapshot's digest and read live stores as schema drift. The other digest
-/// tests only compare digests within one run, so both sides would shift together and hide
-/// such a change. This pins the exact value, so update the golden only alongside
-/// an intentional change to the durable rendering.
+/// A frozen golden over a fixed canonical shape. The shape digest is stamped into every store
+/// and enforced by the activation fence, so the structural encoding it hashes must not move
+/// silently: a change to how a member signature, key shape, index shape, or const value is
+/// serialized into the digest would move every committed snapshot's digest and read live stores
+/// as schema drift. The other digest tests only compare digests within one run, so both sides
+/// would shift together and hide such a change. This pins the exact value, so update the golden
+/// only alongside an intentional change to the structural digest encoding.
 #[test]
 fn shape_digest_is_a_frozen_golden() {
     let source = "module books\n\
@@ -405,9 +442,9 @@ fn shape_digest_is_a_frozen_golden() {
          \x20   return true\n";
     assert_eq!(
         source_digest("golden-shape", source),
-        "sha256:531be928b3fe8d46135633888c6ec346e4cb219928a57777cb60bc16d9d88eb9",
-        "the canonical shape rendering moved; update the golden only with an intentional \
-         durable-rendering change"
+        "sha256:b3f99a221d17dd2256a9e1b7ce054a62a524c92e44d90de58e1f1030569e880b",
+        "the structural digest encoding moved; update the golden only with an intentional \
+         encoding change"
     );
 }
 
@@ -500,4 +537,99 @@ fn doc_comment_edit_does_not_drift_shape_digest() {
         source_digest("doc-reformatted", &reformatted),
         "a pure reformat must not drift the shape digest"
     );
+}
+
+/// Declaration and member identity is durable shape. Adding a member, and renaming any durable
+/// entity — a resource, a store root, an enum, or a member — changes the set of stored identities,
+/// so each drifts the shape digest: pre-1.0, stored data is addressed by declared path, so a rename
+/// re-stamps rather than silently reads old data under the new name. A key-parameter rename is the
+/// one rename that does not: a key parameter is named for readability but stored data is keyed by
+/// the key's type, not its parameter name, so renaming it mutates no data and leaves the digest
+/// fixed. Each case edits one declaration against a shared baseline, so a digest that still matched
+/// the baseline would prove that identity is unbound.
+#[test]
+fn source_digest_binds_declaration_identity() {
+    let base = "module books\n\
+         enum Status\n\
+         \x20   active\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   note: string\n\
+         \x20   shelf(pos: int): string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title, id)\n";
+    let base_digest = source_digest("identity-base", base);
+
+    // Each edit keeps the program valid (references renamed alongside their targets), so any
+    // digest drift is the identity change alone, not an introduced error.
+    let moves: [(&str, String); 6] = [
+        (
+            "field-added",
+            base.replace("note: string\n", "note: string\n    pages: int\n"),
+        ),
+        (
+            "resource-renamed",
+            base.replace("resource Book", "resource Tome")
+                .replace(": Book", ": Tome"),
+        ),
+        ("store-root-renamed", base.replace("^books", "^library")),
+        ("enum-renamed", base.replace("enum Status", "enum State")),
+        (
+            "member-renamed",
+            base.replace("note: string", "memo: string"),
+        ),
+        ("index-renamed", base.replace("byTitle(", "byName(")),
+    ];
+    for (name, edited) in &moves {
+        assert_ne!(edited, base, "case `{name}` must actually edit the source");
+        assert_ne!(
+            base_digest,
+            source_digest(&format!("identity-{name}"), edited),
+            "`{name}` changes a durable identity and must drift the shape digest"
+        );
+    }
+
+    // Renaming a key parameter keeps its type, so no stored key changes.
+    let key_param_renamed = base.replace("shelf(pos: int)", "shelf(slot: int)");
+    assert_ne!(key_param_renamed, base);
+    assert_eq!(
+        base_digest,
+        source_digest("identity-key-param-renamed", &key_param_renamed),
+        "renaming a key parameter keeps its type, so it must not drift the shape digest"
+    );
+}
+
+/// The shape digest hashes the canonical schema structure, never rendered schema text: the
+/// formatter's `durable_shape_rendering` is gone, and the digest computation names no
+/// declaration-text renderer. This keeps formatter text out of the saved-data trust chain, so a
+/// formatter or layout change can never move a committed store's digest and read live data as
+/// schema drift. If a later edit reintroduces text hashing into the digest, this fails loudly.
+#[test]
+fn source_digest_hashes_structure_not_formatter_text() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+    let format_rs = fs::read_to_string(crate_dir.join("../marrow-syntax/src/format.rs"))
+        .expect("read marrow-syntax format.rs");
+    assert!(
+        !format_rs.contains("fn durable_shape_rendering"),
+        "durable_shape_rendering must stay deleted: the durable digest hashes structure, not \
+         rendered schema text"
+    );
+
+    let digest_rs = fs::read_to_string(crate_dir.join("src/catalog/source_digest.rs"))
+        .expect("read source_digest.rs");
+    for renderer in [
+        "durable_shape_rendering",
+        "format_declaration",
+        "format_source",
+    ] {
+        assert!(
+            !digest_rs.contains(renderer),
+            "the durable digest path must not call `{renderer}`: it hashes schema structure, not \
+             rendered declaration text"
+        );
+    }
 }

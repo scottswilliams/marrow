@@ -227,11 +227,11 @@ fn modules_for_name(index: &HashMap<String, Vec<u32>>, name: &str) -> Vec<usize>
 }
 
 impl CheckedProgram {
-    /// Assemble a program directly from modules, rebuilding its facts but capturing
-    /// no durable source renderings. Gated behind `test-support` so it never enters a
-    /// normal or release build: it exists only to construct the deliberately
-    /// uncaptured state the source-digest panic tests assert against, which the
-    /// production checker never produces.
+    /// Assemble a program directly from modules, rebuilding its facts. Gated behind
+    /// `test-support` so it never enters a normal or release build: it exists only to
+    /// construct a program from modules alone in tests. Because the shape digest reads the
+    /// schema the modules carry, such a program reproduces the same digest the full checker
+    /// would stamp.
     #[cfg(feature = "test-support")]
     pub fn from_modules(modules: Vec<CheckedModule>) -> Self {
         let mut program = Self {
@@ -341,53 +341,6 @@ impl CheckedProgram {
         let prefix = std::mem::take(&mut self.facts);
         self.rebuild_facts_with_sources(sources);
         self.facts.overwrite_prefix_from(&prefix);
-    }
-
-    pub(crate) fn rebuild_durable_digest_renderings<'a, I>(&mut self, sources: I)
-    where
-        I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
-    {
-        let (captured_modules, renderings) = self.durable_digest_renderings_from_sources(sources);
-        self.facts
-            .set_durable_digest_renderings(captured_modules, renderings);
-    }
-
-    pub(crate) fn extend_durable_digest_renderings<'a, I>(&mut self, sources: I)
-    where
-        I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
-    {
-        let (captured_modules, renderings) = self.durable_digest_renderings_from_sources(sources);
-        self.facts
-            .extend_durable_digest_renderings(captured_modules, renderings);
-    }
-
-    fn durable_digest_renderings_from_sources<'a, I>(
-        &self,
-        sources: I,
-    ) -> (Vec<u32>, Vec<crate::catalog::DurableRendering>)
-    where
-        I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
-    {
-        let sources: HashMap<PathBuf, (&str, &ParsedSource)> = sources
-            .into_iter()
-            .map(|(path, source, parsed)| (path.to_path_buf(), (source, parsed)))
-            .collect();
-        let mut captured_modules = Vec::new();
-        let mut renderings = Vec::new();
-        for (module_index, module) in self.modules.iter().enumerate() {
-            let Some(&(source, parsed)) = sources.get(&module.source_file) else {
-                continue;
-            };
-            let module_index = module_index as u32;
-            captured_modules.push(module_index);
-            renderings.extend(crate::catalog::durable_renderings_for_source(
-                module_index,
-                &module.name,
-                source,
-                parsed,
-            ));
-        }
-        (captured_modules, renderings)
     }
 
     /// The source file the given file id names, or `None` if the id is out of
@@ -633,9 +586,8 @@ impl CheckedProgram {
     /// structurally different schema produces a different digest even at the same
     /// catalog epoch. It excludes the transient evolve block, so a consumed transition
     /// is deletable without reading as schema drift. The activation fence compares it
-    /// against the digest the store recorded. Non-empty programs must be produced by
-    /// the checker so their durable source renderings are captured from the in-memory
-    /// parse before this digest is requested.
+    /// against the digest the store recorded. It is a pure function of the schema the
+    /// checked modules carry, so it needs no captured source text.
     pub fn source_digest(&self) -> String {
         crate::catalog::analyzed_source_digest(self)
     }
@@ -643,9 +595,7 @@ impl CheckedProgram {
     /// The digest of this program's durable shape *and* its evolve decision surface, in
     /// the same `sha256:<hex>` form. The evolution witness records it so apply aborts
     /// when the source it activates no longer matches what was discharged, including a
-    /// transform-body or evolve-default edit the shape digest cannot see. Non-empty
-    /// programs must carry the checker-captured source renderings used by
-    /// [`CheckedProgram::source_digest`].
+    /// transform-body or evolve-default edit the shape digest cannot see.
     pub fn evolution_digest(&self) -> String {
         crate::catalog::evolution_digest(self)
     }
@@ -1263,11 +1213,14 @@ pub struct ProgramCatalog {
     pub proposal: Option<marrow_catalog::CatalogMetadata>,
 }
 
-/// A bound `evolve default`: the member's stable catalog id and the constant value
-/// expression to backfill old records with.
+/// A bound `evolve default`: the member's stable catalog id, its module-qualified target path,
+/// and the constant value expression to backfill old records with. The discharge keys on the
+/// catalog id; the evolution digest keys on the source path, which reproduces across checks where a
+/// freshly-minted id for a not-yet-accepted member would not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveDefault {
     pub catalog_id: String,
+    pub target_path: String,
     pub value: marrow_syntax::Expression,
 }
 

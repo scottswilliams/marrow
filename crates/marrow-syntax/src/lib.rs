@@ -34,8 +34,8 @@ pub use diagnostic::{
     UnsupportedSyntax,
 };
 pub use format::{
-    durable_shape_rendering, format_declaration, format_expression, format_preserves_comments,
-    format_source, format_transform_body, strip_layout_blanks,
+    format_declaration, format_expression, format_preserves_comments, format_source,
+    format_transform_body, strip_layout_blanks,
 };
 pub use lexer::lex_source;
 pub use literal::{

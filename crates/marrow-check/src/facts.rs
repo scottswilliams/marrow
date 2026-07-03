@@ -11,8 +11,8 @@ use marrow_store::value::{decode_value, scalar_key_matches_type};
 use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeExpr};
 
 use crate::catalog::{
-    CatalogKey, DurableRendering, enum_path, proposal_id, resource_member_path, resource_path,
-    store_index_path, store_path,
+    CatalogKey, enum_path, proposal_id, resource_member_path, resource_path, store_index_path,
+    store_path,
 };
 use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation_type_for_module};
 use crate::executable::CheckedFunctionRef;
@@ -99,8 +99,6 @@ pub struct CheckedFacts {
     /// its owning store through here before narrowing to the declaring module, so the
     /// former whole-program scan no longer made store-heavy checking quadratic.
     store_id_by_root: HashMap<String, StoreId>,
-    durable_digest_captured_modules: Vec<u32>,
-    durable_digest_renderings: Vec<DurableRendering>,
 }
 
 impl CheckedFacts {
@@ -209,41 +207,6 @@ impl CheckedFacts {
 
     pub fn modules(&self) -> &[ModuleFact] {
         &self.modules
-    }
-
-    pub(crate) fn set_durable_digest_renderings(
-        &mut self,
-        captured_modules: Vec<u32>,
-        renderings: Vec<DurableRendering>,
-    ) {
-        self.durable_digest_captured_modules = captured_modules;
-        self.durable_digest_renderings = renderings;
-    }
-
-    pub(crate) fn extend_durable_digest_renderings(
-        &mut self,
-        captured_modules: Vec<u32>,
-        renderings: Vec<DurableRendering>,
-    ) {
-        self.durable_digest_captured_modules
-            .extend(captured_modules);
-        self.durable_digest_renderings.extend(renderings);
-    }
-
-    pub(crate) fn has_captured_durable_digest_renderings_for_module_index(
-        &self,
-        module_index: u32,
-    ) -> bool {
-        self.durable_digest_captured_modules.contains(&module_index)
-    }
-
-    pub(crate) fn durable_digest_renderings_for_module_index(
-        &self,
-        module_index: u32,
-    ) -> impl Iterator<Item = &DurableRendering> {
-        self.durable_digest_renderings
-            .iter()
-            .filter(move |rendering| rendering.module_index() == module_index)
     }
 
     pub fn functions(&self) -> &[FunctionFact] {
@@ -567,8 +530,6 @@ impl CheckedFacts {
         overwrite_prefix(&mut self.resource_members, &prefix.resource_members);
         overwrite_prefix(&mut self.enums, &prefix.enums);
         overwrite_prefix(&mut self.enum_members, &prefix.enum_members);
-        self.durable_digest_captured_modules = prefix.durable_digest_captured_modules.clone();
-        self.durable_digest_renderings = prefix.durable_digest_renderings.clone();
     }
 
     pub fn module_id(&self, name: &str) -> Option<ModuleId> {

@@ -310,10 +310,26 @@ and module constant — and not the `evolve` block. The fence governs the shape 
 stored snapshot must match, not the transition that produced it, so an evolve
 block can be deleted once consumed without reading as schema drift.
 
-The source digest also uses `sha256:<64 lowercase hex>`. Its payload is the
-canonical formatter's rendering of every `resource`, `store`, `enum`, and
-module `const` declaration, in deterministic order, so a shape change drifts
-the digest while a whitespace reformat does not.
+The source digest also uses `sha256:<64 lowercase hex>`. It is computed from the
+canonical schema structure, never from rendered source text: each resource
+member, store, store index, enum member, and module `const` contributes a record
+of its module-qualified path and its shape by source identity — a member's value
+type and key shape by type name, a store's identity-key types and target
+resource, an index's uniqueness and key columns, an enum member by its name
+chain and ordinal, a const by its canonical value expression. Type identity is
+the source spelling, never a minted catalog id, so the digest is a pure function
+of the declared shape and reproduces for the same source on any machine.
+
+Records are hashed as a set, so reordering whole declarations does not move the
+digest, but a member's ordinal is part of its record, so reordering the members
+of a resource or enum does — a member reorder mutates no stored data yet is a
+tracked shape change the store restamps under a fresh digest. Because the digest
+reads structure, not formatter output, a whitespace reformat, a blank-line
+change, a `;` line comment, or a `;;` doc comment never moves it, while every
+structural edit — a retype, a re-key, an index reshape, an added, removed, or
+renamed member, a required-flag toggle — does. A pre-1.0 store keys its data by
+declared path, so a rename re-stamps the digest rather than silently reading old
+data under a new name.
 
 An evolution apply writes the data/index effects and a slim commit stamp in the
 same store transaction. The durable stamp records only the commit id, catalog

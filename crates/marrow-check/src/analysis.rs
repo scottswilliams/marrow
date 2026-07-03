@@ -852,16 +852,6 @@ pub(crate) fn analyze_source_project(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
 
-    // Capture the durable shape renderings before binding, so the binding can compare the source
-    // shape digest against a committed lock's recorded digest. The renderings are a pure function
-    // of the parsed sources, so capturing them here (after the facts rebuild that would otherwise
-    // clear them) is independent of any later check pass.
-    program.rebuild_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
-        parsed_sources
-            .get(&file.path)
-            .map(|source| (file.path.as_path(), source.as_str(), parsed))
-    }));
-
     let evolve_intents = crate::evolution::collect_evolve_intents(
         parsed_files.iter().filter_map(|(file, parsed)| {
             parsed_sources

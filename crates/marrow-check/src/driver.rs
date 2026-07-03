@@ -633,11 +633,6 @@ pub(crate) fn check_tests_with_sources_analysis(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
     project.catalog.evolve_transforms = source_evolve_transforms;
-    project.extend_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
-        parsed_sources
-            .get(&file.path)
-            .map(|source| (file.path.as_path(), source.as_str(), parsed))
-    }));
     let analyzed = parsed_files
         .into_iter()
         .map(|(file, parsed)| analysis::AnalyzedFile {
