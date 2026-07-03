@@ -16,7 +16,11 @@ use crate::{CheckedConst, CheckedProgram};
 /// change what a stored snapshot must satisfy — a member retype, a re-key, an index reshape, an
 /// added, removed, renamed, or reordered member, a required-flag toggle — and stays put for what is
 /// not durable shape: a whitespace reformat, a doc or line comment, or a whole-declaration reorder.
-/// No structural change is invisible to the fence, and no incidental edit reads as schema drift.
+/// No change to the durable *type* is invisible to the fence, and no incidental edit reads as schema
+/// drift. The one deliberate exclusion is a write-time value refinement that shares its storage type
+/// and is not read-enforced — `ErrorCode`, which stores as `string` — so `string`<->`ErrorCode` does
+/// not drift the digest, matching the evolution retype fence, which treats them as one type (see
+/// [`member_shape_token`]).
 ///
 /// The `evolve` block is excluded: a consumed block describes work already recorded in the
 /// accepted catalog, so binding it would read its deletion as schema drift; the fence tracks the
@@ -155,6 +159,15 @@ fn collect_member_records(
 /// becoming a keyed leaf, a group becoming a keyed group, or a required-flag toggle each yields a
 /// different token; a pure rename of the member (which changes its path) or of a key parameter
 /// (which is not a type) does not.
+///
+/// The value type is the resolved `Type`, so an `ErrorCode` field is a `string` here, and
+/// `string`<->`ErrorCode` does not drift the digest. This is deliberate: `ErrorCode` is a
+/// write-time value refinement, not a stored-shape difference — it shares `string`'s storage, reads
+/// decode it as a plain `string`, and the evolution retype fence keys on the same resolved type, so
+/// it too treats the two as one type. Encoding the refinement here would make the digest stricter
+/// than the fence and force a spurious restamp for a change the fence ignores. It is the sole such
+/// refinement: every other scalar spelling resolves to a distinct storage type the digest already
+/// separates.
 fn member_shape_token(node: &Node) -> String {
     match node.leaf_value_type() {
         Some(value) if node.key_params.is_empty() => {
@@ -213,7 +226,10 @@ fn evolution_records(program: &CheckedProgram, mut records: Vec<String>) -> Vec<
 
 /// The canonical rendering of a `const`'s value expression, or the empty marker for a value-less
 /// constant. Rendering the expression alone keeps the digest independent of the declaration's
-/// layout and documentation while still moving it when the value changes.
+/// layout and documentation while still moving it when the value changes. A const's durable effect
+/// is the value it folds into stored defaults and `const if` shape, so only the value is recorded:
+/// a change to its type annotation that leaves the value unchanged is not a stored-shape change and
+/// does not drift the digest.
 fn const_value(constant: &CheckedConst) -> String {
     match &constant.value {
         Some(value) => marrow_syntax::format_expression(value),
@@ -221,10 +237,9 @@ fn const_value(constant: &CheckedConst) -> String {
     }
 }
 
-/// Hash a record set into the canonical `sha256:<hex>` digest. Sorting makes the digest depend on
-/// the set of records, not their discovery order, so reordering whole declarations — whose records
-/// carry no ordinal — leaves the digest fixed, while a member reorder, which shifts member
-/// ordinals, changes the set and moves it.
+/// Hash a record set into the canonical `sha256:<hex>` digest. Sorting makes the digest a function
+/// of the set of records, not their discovery order; each record carries whatever order matters
+/// (see [`shape_records`]).
 fn hash_records(mut records: Vec<String>) -> String {
     records.sort();
     marrow_project::sha256_digest(records.join("\n\0\n").as_bytes())

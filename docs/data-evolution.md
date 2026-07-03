@@ -331,6 +331,16 @@ renamed member, a required-flag toggle — does. A pre-1.0 store keys its data b
 declared path, so a rename re-stamps the digest rather than silently reading old
 data under a new name.
 
+The digest records a member's *storage* type, not its source spelling, so a
+write-time value refinement that shares a storage type does not drift it. The
+only such refinement is `ErrorCode`, which stores as `string`: a value written to
+an `ErrorCode` field must match the dotted-lowercase code grammar, but the check
+is enforced at write time and reads decode a plain `string`, so `string` and
+`ErrorCode` are one stored type. Switching a field between them therefore leaves
+the digest — and the evolution retype fence, which keys on the same storage type
+— unchanged. A const records only its value, not its type annotation, for the
+same reason: a const's durable effect is the value it folds into stored data.
+
 An evolution apply writes the data/index effects and a slim commit stamp in the
 same store transaction. The durable stamp records only the commit id, catalog
 epoch, layout epoch, source digest, engine-profile digest, and the root/index

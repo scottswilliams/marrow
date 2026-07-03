@@ -96,8 +96,7 @@ fn durable_fixture(f: DurableFixture) -> String {
     )
 }
 
-/// The shape digest binds the whole durable shape, with no enumeration gap. It is
-/// computed from the canonical normalized rendering of every shape declaration, so any
+/// The shape digest binds the whole durable shape, with no enumeration gap, so any
 /// change to a member type, a required flag, an identity key, an index, a keyed-layer
 /// key at any nesting depth, or a top-level keyed-leaf key must drift it, while a pure
 /// whitespace reformat of the same declarations must leave it unchanged.
@@ -250,7 +249,7 @@ fn source_digest_binds_the_durable_shape() {
     );
 
     // A pure whitespace and indentation reformat of the same declarations parses to
-    // the same syntax tree, so the normalized rendering — and the digest — is stable.
+    // the same schema structure, so the digest is stable.
     let reformatted = marrow_syntax::format_source(&base);
     assert_ne!(reformatted, base, "the reformat must change layout");
     assert_eq!(
@@ -306,19 +305,16 @@ fn source_digest_excludes_surface_declarations() {
     );
 }
 
-/// The shape digest is derived by re-formatting each declaration through the frozen
-/// normalized formatter, so it must depend on the declared shape alone, not on the
-/// author's source layout. A formatter-internal layout change — blank lines between and
-/// inside declarations, and wider indentation, all of which the normalized formatter
-/// collapses — must leave the digest exactly where it was. This pins the activation
-/// fence to the declared shape rather than to incidental whitespace, so reformatting a
-/// committed source never reads as schema drift.
+/// The shape digest depends on the declared schema structure alone, not on the author's
+/// source layout. A layout change — blank lines between and inside declarations, and wider
+/// indentation — must leave the digest exactly where it was. This pins the activation fence
+/// to the declared shape rather than to incidental whitespace, so reformatting a committed
+/// source never reads as schema drift.
 ///
-/// The messy source is hand-written rather than produced by the formatter so the input
-/// is genuinely non-canonical: the formatter could not emit it, and only the normalized
-/// rendering brings it back to the canonical baseline.
+/// The messy source is hand-written so the input is genuinely non-canonical, exercising a
+/// layout the formatter could not emit, yet it parses to the same structure as the baseline.
 #[test]
-fn formatter_internal_layout_change_does_not_move_shape_digest() {
+fn source_layout_change_does_not_move_shape_digest() {
     let canonical = "module books\n\
          resource Book\n\
          \x20   required title: string\n\
@@ -327,7 +323,7 @@ fn formatter_internal_layout_change_does_not_move_shape_digest() {
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n";
     // Extra blank lines between and inside declarations, plus eight-space indentation,
-    // none of which the normalized formatter preserves.
+    // none of which is durable shape.
     let messy = "module books\n\
          \n\
          \n\
@@ -403,7 +399,7 @@ fn enum_member_shape_drifts_on_membership_and_reorder_but_not_layout() {
     );
 
     // Extra blank lines and eight-space indentation around the same members, none of
-    // which the normalized formatter preserves.
+    // which is durable shape.
     let messy = "module books\n\
          \n\
          enum Status\n\
@@ -431,6 +427,7 @@ fn enum_member_shape_drifts_on_membership_and_reorder_but_not_layout() {
 #[test]
 fn shape_digest_is_a_frozen_golden() {
     let source = "module books\n\
+         const Limit: int = 10\n\
          enum Status\n\
          \x20   active\n\
          \x20   archived\n\
@@ -442,9 +439,53 @@ fn shape_digest_is_a_frozen_golden() {
          \x20   return true\n";
     assert_eq!(
         source_digest("golden-shape", source),
-        "sha256:b3f99a221d17dd2256a9e1b7ce054a62a524c92e44d90de58e1f1030569e880b",
+        "sha256:39611069b28dcdac4f6306c0971844247adbff2db1103d803da89108b5fcb965",
         "the structural digest encoding moved; update the golden only with an intentional \
          encoding change"
+    );
+}
+
+/// `ErrorCode` is a write-time value refinement, not a stored-shape difference: it shares
+/// `string`'s storage, reads decode it as a plain `string`, and the evolution retype fence treats
+/// the two as one type. Switching a field between `string` and `ErrorCode` — as a plain field or a
+/// sequence element — must therefore leave the shape digest fixed, while a genuine storage-type
+/// change still drifts it. This pins the deliberate exclusion (`ErrorCode` is the only scalar
+/// spelling that resolves to a storage type another spelling already names), so an accidental
+/// future change that encoded the refinement would be caught.
+#[test]
+fn error_code_refinement_does_not_drift_shape_digest() {
+    let string_field = "module books\n\
+         resource Entry\n\
+         \x20   required code: string\n\
+         \x20   note: string\n\
+         store ^entries(id: int): Entry\n";
+    let error_code_field =
+        string_field.replace("required code: string", "required code: ErrorCode");
+    assert_ne!(error_code_field, string_field);
+    assert_eq!(
+        source_digest("errorcode-string", string_field),
+        source_digest("errorcode-refined", &error_code_field),
+        "string<->ErrorCode shares one storage type and must not drift the shape digest"
+    );
+
+    let seq_string = "module books\n\
+         resource Entry\n\
+         \x20   required codes: sequence[string]\n\
+         store ^entries(id: int): Entry\n";
+    let seq_error_code = seq_string.replace("sequence[string]", "sequence[ErrorCode]");
+    assert_ne!(seq_error_code, seq_string);
+    assert_eq!(
+        source_digest("errorcode-seq-string", seq_string),
+        source_digest("errorcode-seq-refined", &seq_error_code),
+        "sequence[string]<->sequence[ErrorCode] must not drift the shape digest"
+    );
+
+    // The exclusion is narrow: a real storage-type change still drifts.
+    let retyped = string_field.replace("required code: string", "required code: int");
+    assert_ne!(
+        source_digest("errorcode-string", string_field),
+        source_digest("errorcode-retyped", &retyped),
+        "a real storage-type change must still drift the shape digest"
     );
 }
 
