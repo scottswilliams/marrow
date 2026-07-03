@@ -393,7 +393,7 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
             CHECK_CATCH_TYPE,
             file,
             ty.span(),
-            format!("catch type must be `Error`, found `{}`", ty.to_string()),
+            format!("catch type must be `Error`, found `{}`", ty),
         ));
     }
 }

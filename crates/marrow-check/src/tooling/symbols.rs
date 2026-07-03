@@ -371,11 +371,11 @@ fn function_signature(function: &FunctionDecl) -> String {
     let params = function
         .params
         .iter()
-        .map(|param| format!("{}: {}", param.name, param.ty.to_string()))
+        .map(|param| format!("{}: {}", param.name, param.ty))
         .collect::<Vec<_>>()
         .join(", ");
     match &function.return_type {
-        Some(ty) => format!("({params}): {}", ty.to_string()),
+        Some(ty) => format!("({params}): {}", ty),
         None => format!("({params})"),
     }
 }

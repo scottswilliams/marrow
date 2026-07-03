@@ -796,7 +796,7 @@ impl StatementCheck<'_> {
             *span,
             format!(
                 "a `var` of {kind} type (`{}`) must be given an initial value; it has no default to start from",
-                annotation.to_string()
+                annotation
             ),
         ));
     }

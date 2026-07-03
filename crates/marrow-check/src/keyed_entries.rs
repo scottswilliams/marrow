@@ -352,7 +352,7 @@ impl Normalizer<'_, '_> {
                 CHECK_UNKNOWN_TYPE,
                 file,
                 field.ty.span(),
-                format!("unknown type `{}`", field.ty.to_string()),
+                format!("unknown type `{}`", field.ty),
             )
             .with_payload(DiagnosticPayload::UnknownType(ty)),
         );
