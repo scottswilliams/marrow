@@ -63,6 +63,46 @@ fn scan(crates_dir: &Path, pattern: &str, allowed: &[PathBuf]) -> Vec<String> {
     offenders
 }
 
+/// The store-open path validates the O(1) sealed commit record; the O(N) deep re-walk moved to
+/// `data integrity`, `recover`, and `backup`. This pins that the admission ladder — the one open
+/// witness `run` and `serve` share — runs the record validation and never a store-wide scan, and
+/// that the run/serve open helpers dropped the completeness scan. The deep verifiers stay reachable
+/// (recover's convergence replay in project_session is the sole survivor, gated on redb recovery).
+#[test]
+fn the_open_path_validates_the_record_not_the_deep_scan() {
+    let crates_dir = workspace_crates_dir();
+    let deep_scans = [
+        "verify_store_completeness",
+        "verify_structural_digests",
+        "verify_data_cells_seek_reachable",
+        "verify_index_readable",
+    ];
+
+    let admission = fs::read_to_string(crates_dir.join("marrow-run/src/admission.rs"))
+        .expect("read admission module");
+    assert!(
+        admission.contains("validate_commit_record"),
+        "the admission ladder must validate the sealed commit record at open",
+    );
+    for scan in deep_scans.iter().chain(std::iter::once(&"verify_readable")) {
+        assert!(
+            !admission.contains(scan),
+            "the admission ladder must not run the O(N) `{scan}` scan at open; \
+             it moved to data integrity, recover, and backup",
+        );
+    }
+
+    let session = fs::read_to_string(crates_dir.join("marrow-run/src/project_session.rs"))
+        .expect("read project session");
+    for scan in deep_scans {
+        assert!(
+            !session.contains(scan),
+            "the run/serve open helpers must not run the O(N) `{scan}` scan; \
+             the sealed record is the open witness",
+        );
+    }
+}
+
 #[test]
 fn sealed_open_is_called_only_by_the_admission_module() {
     let crates_dir = workspace_crates_dir();

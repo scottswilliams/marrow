@@ -4698,15 +4698,17 @@ mod tests {
             .expect("the store is readable once every cell is reachable again");
     }
 
-    /// A present-but-undecodable cell in the catalog/meta family — the store uid, the accepted
-    /// commit stamp, or a catalog snapshot row — is backend damage the runtime store-open refuses,
-    /// so the store-open witness `data integrity`, `data stats`, `data dump`, `backup`, and
-    /// `data recover` share must refuse it too, regardless of who runs it or in what output format.
-    /// This family sorts ahead of the data and carries no per-cell structural digest, so the data
-    /// cells and their digests stay intact under the tamper; only a witness that re-decodes each
-    /// cell catches it. A catalog row is caught at every byte offset because the read recomputes the
-    /// snapshot digest from the stored rows, so any change to an entry or the header contradicts it.
-    /// A healthy family still passes both witnesses.
+    /// A present-but-undecodable cell in the catalog/meta family — the sealed commit record, the
+    /// store uid, the accepted commit stamp, or a catalog snapshot row — is backend damage the
+    /// runtime store-open refuses, so the store-open witness the admission ladder, `data integrity`,
+    /// `data stats`, `data dump`, `backup`, and `data recover` share must refuse it too, regardless
+    /// of who runs it or in what output format. This family sorts ahead of the data and carries no
+    /// per-cell structural digest, so the data cells and their digests stay intact under the tamper;
+    /// only a witness that re-decodes each cell catches it. The commit record binds the uid, epoch,
+    /// catalog digest, and active roots under one seal, so a flip of any bound byte or a re-sealed
+    /// record disagreeing with an auxiliary cell fails closed. A catalog row is caught at every byte
+    /// offset because the read recomputes the snapshot digest from the stored rows. A healthy family
+    /// still passes every witness.
     #[test]
     fn a_corrupt_catalog_or_meta_family_cell_fails_the_store_open_witness() {
         let backend = SharedMem::default();
@@ -4753,6 +4755,9 @@ mod tests {
             backend.tamper(|entries| {
                 entries.insert(key, value);
             });
+            // The O(1) open witness the admission ladder runs and the deep re-walk the inspection
+            // family runs must both refuse the damage.
+            assert_corruption(store.validate_commit_record());
             assert_corruption(store.verify_structural_digests());
             assert_corruption(store.verify_readable());
             backend.tamper(|entries| *entries = healthy.clone());
@@ -4788,6 +4793,40 @@ mod tests {
             let mismatched = encode_commit_metadata(&empty_commit_metadata(epoch))
                 .expect("commit metadata encodes");
             fail_closed(commit_key.clone(), mismatched);
+        }
+
+        // The sealed commit record: an undecodable value fails to decode, and flipping any byte of
+        // the healthy record breaks its content seal, so every byte of every bound field fails the
+        // store closed.
+        let record_key = CellKey::meta(MetaCell::CommitRecord).into_bytes();
+        let healthy_record = healthy
+            .get(&record_key)
+            .expect("the committed store holds a sealed commit record")
+            .clone();
+        for value in [Vec::new(), vec![0xff], healthy_record[..8].to_vec()] {
+            fail_closed(record_key.clone(), value);
+        }
+        for offset in 0..healthy_record.len() {
+            let mut flipped = healthy_record.clone();
+            flipped[offset] ^= 0xff;
+            fail_closed(record_key.clone(), flipped);
+        }
+
+        // A validly re-sealed record whose bound fields disagree with the auxiliary uid, commit,
+        // and catalog cells must fail the pairwise cross-check the record replaced: the seal alone
+        // cannot catch a flip in one of those separate cells, so the record binds them.
+        let decoded = crate::metadata::decode_commit_record(&healthy_record).expect("record decodes");
+        let mut wrong_uid = decoded.clone();
+        wrong_uid.store_uid = Some(StoreUid::from_entropy_bytes([9; 16]));
+        let mut wrong_epoch = decoded.clone();
+        wrong_epoch.catalog_epoch = Some(99);
+        let mut wrong_digest = decoded.clone();
+        wrong_digest.catalog_digest = Some("sha256:0".into());
+        let mut wrong_roots = decoded.clone();
+        wrong_roots.active_roots = Vec::new();
+        for mismatched in [wrong_uid, wrong_epoch, wrong_digest, wrong_roots] {
+            let bytes = crate::metadata::encode_commit_record(&mismatched).expect("record encodes");
+            fail_closed(record_key.clone(), bytes);
         }
 
         // The catalog snapshot: flip every byte of every catalog-family row in turn. Each flip
