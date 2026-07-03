@@ -380,14 +380,7 @@ impl CatalogLock {
     /// fails closed at decode. The key is the root's stable id, so a rename that moves the root's
     /// path leaves its activation floor attached to the same identity.
     fn validate_root_activations(&self) -> Result<(), CatalogError> {
-        let active_roots: HashSet<&str> = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.kind == CatalogEntryKind::Store && entry.lifecycle == CatalogLifecycle::Active
-            })
-            .map(|entry| entry.stable_id.as_str())
-            .collect();
+        let active_roots: HashSet<&str> = active_store_root_ids(&self.entries).collect();
         for (id, epoch) in &self.root_activations {
             if !active_roots.contains(id.as_str()) {
                 return Err(CatalogError::lock_corrupt(format!(
@@ -638,6 +631,45 @@ impl LockLedgerTombstone {
             applied_transform: None,
         }
     }
+}
+
+/// The identity of an active saved store root, as read by the root-activation machinery. Both the
+/// full [`CatalogEntry`] and its committed lock projection [`LockEntry`] implement it, so
+/// activation-floor validation, projection, and the lock-root witness derive the same key set by
+/// construction rather than by three hand-kept filters that could drift.
+pub trait StoreRootEntry {
+    fn is_active_store_root(&self) -> bool;
+    fn root_stable_id(&self) -> &str;
+}
+
+impl StoreRootEntry for CatalogEntry {
+    fn is_active_store_root(&self) -> bool {
+        self.kind == CatalogEntryKind::Store && self.lifecycle == CatalogLifecycle::Active
+    }
+
+    fn root_stable_id(&self) -> &str {
+        &self.stable_id
+    }
+}
+
+impl StoreRootEntry for LockEntry {
+    fn is_active_store_root(&self) -> bool {
+        self.kind == CatalogEntryKind::Store && self.lifecycle == CatalogLifecycle::Active
+    }
+
+    fn root_stable_id(&self) -> &str {
+        &self.stable_id
+    }
+}
+
+/// The stable ids of every active saved store root in `entries` — the one key set a root's
+/// activation floor is keyed on. Activation-floor validation, the lock projection, and the
+/// lock-root witness all derive their key set here, so they agree on which roots carry a floor.
+pub fn active_store_root_ids<E: StoreRootEntry>(entries: &[E]) -> impl Iterator<Item = &str> {
+    entries
+        .iter()
+        .filter(|entry| entry.is_active_store_root())
+        .map(StoreRootEntry::root_stable_id)
 }
 
 /// The pre-image a [`shape fingerprint`](LockEntry::shape_fingerprint) folds: the entry kind tag

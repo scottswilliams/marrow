@@ -1,5 +1,6 @@
 //! Project file, catalog artifact, and check-loading helpers.
 
+use marrow_catalog::StoreRootEntry;
 use marrow_codes::Code;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -581,18 +582,11 @@ fn root_activations(
     let Some(existing) = existing else {
         return std::collections::BTreeMap::new();
     };
-    let known_roots: std::collections::HashSet<&str> = existing
-        .entries
-        .iter()
-        .filter(|entry| {
-            entry.kind == marrow_catalog::CatalogEntryKind::Store
-                && entry.lifecycle == marrow_catalog::CatalogLifecycle::Active
-        })
-        .map(|entry| entry.stable_id.as_str())
-        .collect();
+    let known_roots: std::collections::HashSet<&str> =
+        marrow_catalog::active_store_root_ids(&existing.entries).collect();
     active
         .iter()
-        .filter(|entry| entry.kind == marrow_catalog::CatalogEntryKind::Store)
+        .filter(|entry| entry.is_active_store_root())
         .filter_map(|entry| {
             if let Some(recorded) = existing.root_activations.get(&entry.stable_id) {
                 Some((entry.stable_id.clone(), *recorded))

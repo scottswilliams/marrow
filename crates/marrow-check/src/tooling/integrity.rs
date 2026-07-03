@@ -2,7 +2,7 @@ use marrow_codes::Code;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
-use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
+use marrow_catalog::{CatalogEntryKind, CatalogLifecycle, StoreRootEntry};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::cell::{DataCellKey, DataCellKind};
@@ -958,13 +958,6 @@ pub fn verify_index_integrity(
     verify_index_completeness(store, &checked_places(program))
 }
 
-/// Whether a catalog entry is an active saved root — a live `Store` whose identity the witness
-/// guards. Resource members, indexes, and other shape entries the catalog also records are not
-/// saved roots: the store and lock advance them through evolution, so the cross-check ignores them.
-fn is_active_store_root(kind: CatalogEntryKind, lifecycle: CatalogLifecycle) -> bool {
-    kind == CatalogEntryKind::Store && lifecycle == CatalogLifecycle::Active
-}
-
 /// Cross-check the catalog a PRESENT store presents against the committed `marrow.lock`.
 ///
 /// The per-root structural digest cannot witness a corruption that drops the anchor
@@ -1006,20 +999,13 @@ pub fn verify_store_roots_against_lock(
     let snapshot = store.read_catalog_snapshot()?;
     let presented: HashSet<&str> = snapshot
         .as_ref()
-        .map(|snapshot| {
-            snapshot
-                .entries
-                .iter()
-                .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
-                .map(|entry| entry.stable_id.as_str())
-                .collect()
-        })
+        .map(|snapshot| marrow_catalog::active_store_root_ids(&snapshot.entries).collect())
         .unwrap_or_default();
     let store_epoch = snapshot.as_ref().map(|snapshot| snapshot.epoch);
     let lost = lock
         .entries
         .iter()
-        .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
+        .filter(|entry| entry.is_active_store_root())
         .filter(|entry| !presented.contains(entry.stable_id.as_str()))
         .any(|entry| {
             let activated = lock
