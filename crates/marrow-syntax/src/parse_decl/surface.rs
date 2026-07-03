@@ -1,11 +1,10 @@
 //! The `surface` declaration body: contextual surface item lines and
 //! source-native collection targets.
 
-use super::tokens::{comment_from_token, split_top_level_commas};
+use super::body::{BodyLine, DocComments, StrayBlock};
+use super::tokens::split_top_level_commas;
 use super::{DeclParser, ParseError, ParseResult};
-use crate::ast::{
-    Comment, CommentMarker, CommentPlacement, SavedRoot, SurfaceDecl, SurfaceItem, SurfaceTarget,
-};
+use crate::ast::{Comment, SavedRoot, SurfaceDecl, SurfaceItem, SurfaceTarget};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::token::{Keyword, Token, TokenKind};
 
@@ -60,45 +59,21 @@ impl<'a> DeclParser<'a> {
         let mut comments = Vec::new();
         let mut attempted_item = false;
         self.advance(); // INDENT
-        while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Dedent => {
-                    self.advance();
-                    break;
-                }
-                TokenKind::Newline => {
-                    self.advance();
-                }
-                TokenKind::Comment | TokenKind::DocComment => {
-                    let token = self.advance();
-                    comments.push(comment_from_token(
-                        self.source,
-                        token,
-                        CommentPlacement::OwnLine,
-                        comment_marker(token.kind),
-                    ));
-                    if matches!(self.peek(), Some(TokenKind::Newline)) {
-                        self.advance();
-                    }
-                }
-                TokenKind::Indent => {
-                    self.advance();
-                    if self.peek().is_some_and(|kind| {
-                        !matches!(
-                            kind,
-                            TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
-                        )
-                    }) {
-                        let err = self.content_span();
-                        self.error_span(
-                            err,
-                            ParseDiagnosticReason::UnexpectedIndentation,
-                            "unexpected indented block in surface body",
-                        );
-                    }
-                    self.skip_to_block_end();
-                }
-                _ => {
+        let stray = StrayBlock::AtContent(ParseError::new(
+            ParseDiagnosticReason::UnexpectedIndentation,
+            "unexpected indented block in surface body",
+        ));
+        while self.peek().is_some() {
+            // Surface items carry no docs, so a `;;` line is retained as trivia
+            // with its own marker.
+            match self.next_body_line(
+                DocComments::Retain { keep_marker: true },
+                &mut comments,
+                &stray,
+            ) {
+                BodyLine::End => break,
+                BodyLine::Trivia => continue,
+                BodyLine::Item => {
                     attempted_item = true;
                     if let Some(item) = self.parse_surface_item(&mut comments) {
                         items.push(item);
@@ -522,11 +497,4 @@ fn surface_read_error() -> ParseError {
         ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceRead),
         "expected `read <function>` or `read <function> as <alias>`",
     )
-}
-
-fn comment_marker(kind: TokenKind) -> CommentMarker {
-    match kind {
-        TokenKind::DocComment => CommentMarker::Doc,
-        _ => CommentMarker::Line,
-    }
 }

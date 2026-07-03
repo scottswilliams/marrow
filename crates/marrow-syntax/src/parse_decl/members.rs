@@ -2,13 +2,10 @@
 //! framing and the per-member parsing for fields, groups, indexes, and enum
 //! members.
 
+use super::body::{BodyLine, DocComments, StrayBlock};
 use super::head::{enum_member_name, parse_field_or_group_tokens, parse_index_tokens};
-use super::tokens::comment_from_token;
-use super::{DeclParser, MemberBlockFrame, MemberHead, ParseError};
-use crate::ast::{
-    Comment, CommentMarker, CommentPlacement, EnumMember, FieldDecl, GroupDecl, IndexDecl,
-    ResourceMember,
-};
+use super::{DeclParser, MemberHead, ParseError};
+use crate::ast::{Comment, EnumMember, FieldDecl, GroupDecl, IndexDecl, ResourceMember};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::token::{Keyword, Token, TokenKind};
 
@@ -25,63 +22,6 @@ impl<'a> DeclParser<'a> {
         (indexes, comments)
     }
 
-    /// Advance over the trivia at the head of an indented member block — a
-    /// closing `DEDENT`, blank `NEWLINE`s, own-line comments, accumulated doc
-    /// comments, and a stray deeper indent (reported as `stray_indent` and
-    /// skipped) — and report what the next token is. A `Member` frame leaves the
-    /// member header in place for the caller to parse; this owns only the layout
-    /// shared by the resource and enum member loops.
-    pub(super) fn next_member_block_frame(
-        &mut self,
-        docs: &mut Vec<Token>,
-        comments: &mut Vec<Comment>,
-        stray_indent: &ParseError,
-    ) -> MemberBlockFrame {
-        match self.peek() {
-            Some(TokenKind::Dedent) => {
-                self.advance();
-                MemberBlockFrame::Done
-            }
-            Some(TokenKind::Newline) => {
-                self.advance();
-                MemberBlockFrame::Trivia
-            }
-            Some(TokenKind::Comment) => {
-                let token = self.advance();
-                comments.push(comment_from_token(
-                    self.source,
-                    token,
-                    CommentPlacement::OwnLine,
-                    CommentMarker::Line,
-                ));
-                MemberBlockFrame::Trivia
-            }
-            Some(TokenKind::DocComment) => {
-                self.push_pending_doc(docs, comments);
-                MemberBlockFrame::Trivia
-            }
-            Some(TokenKind::Indent) => {
-                self.advance(); // INDENT
-                if self.peek().is_some_and(|kind| {
-                    !matches!(
-                        kind,
-                        TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
-                    )
-                }) {
-                    let err = self.content_span();
-                    self.error_span(
-                        err,
-                        stray_indent.reason.clone(),
-                        stray_indent.message.clone(),
-                    );
-                }
-                self.skip_to_block_end();
-                MemberBlockFrame::Trivia
-            }
-            _ => MemberBlockFrame::Member,
-        }
-    }
-
     /// Parse an `INDENT … DEDENT` block of resource members. Nested groups recurse
     /// on their own child block. Each member's span is its whole header line.
     pub(super) fn parse_resource_members(
@@ -94,23 +34,24 @@ impl<'a> DeclParser<'a> {
         let mut docs: Vec<Token> = Vec::new();
         self.advance(); // INDENT
 
-        let stray_indent = ParseError::new(
+        let stray = StrayBlock::AtContent(ParseError::new(
             ParseDiagnosticReason::UnexpectedIndentation,
             "unexpected indentation in resource body; only groups introduce nested resource members",
-        );
-        while let Some(kind) = self.peek() {
-            match self.next_member_block_frame(&mut docs, &mut comments, &stray_indent) {
-                MemberBlockFrame::Done => break,
-                MemberBlockFrame::Trivia => continue,
-                MemberBlockFrame::Member => {
+        ));
+        while self.peek().is_some() {
+            match self.next_body_line(DocComments::AttachToItem(&mut docs), &mut comments, &stray) {
+                BodyLine::End => break,
+                BodyLine::Trivia => continue,
+                BodyLine::Item => {
                     // The node carries the whole-line span (column 1); a member
                     // error points at the content after the indentation.
+                    let is_index = matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Index)));
                     let span = self.header_span();
                     let err = self.content_span();
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);
                     let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
                     comments.extend(trailing_comment);
-                    if matches!(kind, TokenKind::Keyword(Keyword::Index)) {
+                    if is_index {
                         if let Some(index) =
                             self.parse_index_member(allow_indexes, span, err, member_docs, header)
                         {
@@ -230,15 +171,15 @@ impl<'a> DeclParser<'a> {
 
         // A stray indent here opens before any member header to nest under; a
         // member's own nested block is consumed right after its header, below.
-        let stray_indent = ParseError::new(
+        let stray = StrayBlock::AtContent(ParseError::new(
             ParseDiagnosticReason::EnumMemberMustBeBareName,
             "an enum member has no nested body",
-        );
+        ));
         while self.peek().is_some() {
-            match self.next_member_block_frame(&mut docs, &mut comments, &stray_indent) {
-                MemberBlockFrame::Done => break,
-                MemberBlockFrame::Trivia => continue,
-                MemberBlockFrame::Member => {
+            match self.next_body_line(DocComments::AttachToItem(&mut docs), &mut comments, &stray) {
+                BodyLine::End => break,
+                BodyLine::Trivia => continue,
+                BodyLine::Item => {
                     let span = self.header_span();
                     let err = self.content_span();
                     let member_docs = self.take_docs_for_current_item(&mut docs, &mut comments);

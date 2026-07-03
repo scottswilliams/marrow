@@ -2,11 +2,10 @@
 //! (`rename`, `default`, `retire`, `transform`) and their target-path and value
 //! expressions.
 
-use super::DeclParser;
-use super::tokens::{comment_from_token, find_arrow, find_top_level_equal};
-use crate::ast::{
-    Block, Comment, CommentMarker, CommentPlacement, EvolveDecl, EvolveStep, Expression,
-};
+use super::body::{BodyLine, DocComments, StrayBlock};
+use super::tokens::{find_arrow, find_top_level_equal};
+use super::{DeclParser, ParseError};
+use crate::ast::{Block, Comment, EvolveDecl, EvolveStep, Expression};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::{ExprParser, ParseComplete};
 use crate::token::{Token, TokenKind};
@@ -43,32 +42,23 @@ impl<'a> DeclParser<'a> {
         let mut steps = Vec::new();
         let mut comments = Vec::new();
         self.advance(); // INDENT
-        while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Dedent => {
-                    self.advance();
-                    break;
-                }
-                TokenKind::Newline => {
-                    self.advance();
-                }
-                TokenKind::Comment | TokenKind::DocComment => {
-                    self.take_evolve_comment(&mut comments)
-                }
-                // Only a transform owns an indented body, which it consumes right
-                // after parsing its header. An indented block reaching here sits
-                // under a rename, default, or retire step, where it is a mistake.
-                TokenKind::Indent => {
-                    let span = self.content_span();
-                    self.error_span(
-                        span,
-                        ParseDiagnosticReason::UnexpectedIndentation,
-                        "unexpected indented block under an evolve step; only `transform` has a body",
-                    );
-                    self.advance();
-                    self.skip_to_block_end();
-                }
-                _ => {
+        // Only a transform owns an indented body, which it consumes right after
+        // parsing its header; any other indented block sits under a rename,
+        // default, or retire step, where the step keyword owns the diagnostic.
+        // Evolve steps carry no docs, so a `;;` line is retained as a comment.
+        let stray = StrayBlock::AtBlock(ParseError::new(
+            ParseDiagnosticReason::UnexpectedIndentation,
+            "unexpected indented block under an evolve step; only `transform` has a body",
+        ));
+        while self.peek().is_some() {
+            match self.next_body_line(
+                DocComments::Retain { keep_marker: false },
+                &mut comments,
+                &stray,
+            ) {
+                BodyLine::End => break,
+                BodyLine::Trivia => continue,
+                BodyLine::Item => {
                     if let Some(step) = self.parse_evolve_step(&mut comments) {
                         steps.push(step);
                     }
@@ -76,19 +66,6 @@ impl<'a> DeclParser<'a> {
             }
         }
         (steps, comments)
-    }
-
-    fn take_evolve_comment(&mut self, comments: &mut Vec<Comment>) {
-        let token = self.advance();
-        comments.push(comment_from_token(
-            self.source,
-            token,
-            CommentPlacement::OwnLine,
-            CommentMarker::Line,
-        ));
-        if matches!(self.peek(), Some(TokenKind::Newline)) {
-            self.advance();
-        }
     }
 
     /// Parse one evolution step from its header line. The lead word selects the

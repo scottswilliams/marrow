@@ -10,6 +10,7 @@
 //! statement parser, `statement_lines` parses single statement lines, and
 //! `tokens` holds the low-level token-slice helpers shared across all of them.
 
+mod body;
 mod cursor;
 mod decl;
 mod evolve;
@@ -46,17 +47,6 @@ pub(super) enum MemberHead {
         name_span: SourceSpan,
         keys: Vec<KeyParam>,
     },
-}
-
-/// Classification of the next line in an indented member block, after the shared
-/// trivia (dedent, blank lines, comments, stray indents) has been handled.
-pub(super) enum MemberBlockFrame {
-    /// The block closed on its `DEDENT`; stop the loop.
-    Done,
-    /// A trivia line was consumed; continue without parsing a member.
-    Trivia,
-    /// A member header is in place for the caller to parse.
-    Member,
 }
 
 #[derive(Debug, Clone)]
