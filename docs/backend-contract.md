@@ -158,43 +158,39 @@ Store-level metadata is written through typed meta cells:
 | Store UID | `05` | `store_<32 lowercase hex>` physical store identity |
 | Structural digest | `06` + store ID | 128-bit big-endian digest over every committed cell under that store root |
 
-Each commit restamps the structural-digest cell of every root whose cells it
-wrote or removed. The digest is the wrapping sum of one 128-bit hash per cell,
-each hash taken over the cell's full physical key — its root, record identity,
-and field path — together with its stored value bytes. The combiner is
-commutative and associative, so the digest is order-independent and a write
-maintains it in constant time: a write adds the new cell's hash and, on overwrite
-or delete, subtracts the prior one, never rescanning the root. The digest is the
-independent completeness anchor for the data family: because the data cells are
-their own derivation, a backend page that silently drops a cell, truncates a
-record range, or rewrites a stored value with bytes that still decode shifts every
-enumeration with no structural fault. A store read re-derives each root's digest
-from a full data-family scan and cross-checks it against the stamp, failing closed
-as `store.corruption` on a mismatch — a dropped cell, a torn value, and a moved
-field each change the per-cell hash. The digest is recomputed from the replayed
-cells, not carried, on restore, so a restored store re-verifies.
+Each commit re-seals one **commit record** binding `{uid, epoch, catalog digest,
+active roots, per-root digests}` under a single content seal. Each per-root digest
+is the wrapping sum of one 128-bit hash per cell, each hash taken over the cell's
+full physical key — its root, record identity, and field path — together with its
+stored value bytes. The combiner is commutative and associative, so the digest is
+order-independent and a write maintains it in constant time: a write adds the new
+cell's hash and, on overwrite or delete, subtracts the prior one, never rescanning
+the root. The digests are the independent completeness anchor for the data family:
+because the data cells are their own derivation, a backend page that silently drops
+a cell, truncates a record range, or rewrites a stored value with bytes that still
+decode shifts every enumeration with no structural fault. The record is recomputed
+from the replayed cells, not carried, on restore, so a restored store re-verifies.
 
-Because a range scan iterates leaf pages while a point lookup navigates interior
-branch separators, the same store-open witness also re-reads every scanned cell
-through the point-lookup descent typed reads use, failing closed when an
-interior-separator flip misroutes a lookup past a committed cell the scan — and
-therefore the digest — still covers, and decodes the commit-metadata cell so a
-present-but-undecodable stamp fails closed independent of the reading command or
-output format. The derived index family is reconciled the same way: every
-committed index entry the linear scan yields must be reachable by the
-point-lookup descent an index read navigates, so an interior-separator flip that
-misroutes a bounded index seek past a contiguous subtree fails closed rather than
-letting an index range read silently under-return. It also reconciles each
-entry's stored identity against its redundant copy — the trailing keys of a
-non-unique tuple or a unique entry's value — so a flip diverging the two fails
-closed at store open rather than surfacing later as a typed program fault. `data
-integrity`, `data stats`, `data dump`, `backup`, `data recover`, and the runtime
-store-open share this one witness.
+The **store-open** path validates the commit record in O(1): decoding recomputes
+its content seal, so a flip of any bound field fails closed, and the record is
+cross-checked against the store's own uid, commit stamp, and catalog snapshot, so a
+flip in one of those auxiliary cells fails closed too. The `run` and `serve`
+admission opens and the point-read inspection share this O(1) witness; an
+enumerating read additionally reconciles the root it walks against that root's
+sealed digest (`verify_root_digest_once`), so a btree-corrupt root fails closed as
+`store.corruption` while untouched roots stay unscanned. The full O(N)
+re-derivation — re-deriving every root's digest from a data-family scan, reconciling
+the scan against the point-lookup descent typed reads use (so an interior-separator
+flip that misroutes a lookup past a committed cell the scan still covers fails
+closed), and the same reconciliation over the derived index family (each committed
+index entry reachable by an index seek, and each entry's stored identity matching
+its redundant copy) — is the deep pass `data integrity`, `backup`, and `data
+recover` run, never the admission open. `data stats` and `data dump` traverse the
+whole store and share that deep pass through the inspection open.
 
-The anchor cannot witness a corruption that drops the anchor itself: a flip in
-the commit-metadata region that rolls the store back to its empty initial commit
-presents zero records and zero digests, so the per-anchor cross-check visits
-nothing and passes vacuously. The independent witness is the committed
+The record cannot witness a corruption that drops the record itself: a flip that
+rolls the store back to its empty initial commit presents zero records and zero
+digests, so the per-root cross-check visits nothing and passes vacuously. The independent witness is the committed
 `marrow.lock`, a separate durable file recording the epoch high-water, the
 accepted catalog roots, and the epoch each root became active at. `backup`, `data
 integrity`, `data stats`, and `data recover` cross-check the roots a **present**
@@ -209,12 +205,19 @@ default. An **absent** store body is the disposable-store case, not a loss: the
 write paths (`run`, `evolve apply`, `serve --write`) seed an empty store from the
 committed identity, so an absent store is never `store.corruption`. With no
 committed lock the store has no recorded baseline to contradict, the separate
-missing-lock case. The activation rule cannot see a rollback that resets the
-whole store body to an old epoch: such a store is locally indistinguishable from
-a checkout that never advanced past that epoch, so a root activated later reads
-as legitimately absent even when the rollback destroyed its records. Store-side
-commit records are the planned mechanism that would close that hole; this
-witness does not claim to.
+missing-lock case. Neither witness can see a rollback that resets the whole
+store body to an old epoch: the sealed commit record reverts along with the data,
+so such a store is locally indistinguishable from a checkout that never advanced
+past that epoch, and a root activated later reads as legitimately absent even when
+the rollback destroyed its records. This residual is inherently undecidable from
+local state — no store-internal record can witness its own wholesale reversion — so
+it stays documented behavior, not corruption: the store reads `store_behind`, the
+advance paths resolve it, and `doctor`'s epoch-mismatch advisory names a behind
+store honestly (advance or restore; never regenerate the lock from it). The
+mitigation is backup/restore plus that advisory. The commit record instead closes
+every store-**internal** corruption — a partial rollback, torn value, dropped cell,
+re-sealed field disagreeing with an auxiliary cell, or a covered-root drop the
+store's own epoch covers all fail closed.
 
 A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
 The commit stamp is the single durable owner of the stamped catalog epoch,
