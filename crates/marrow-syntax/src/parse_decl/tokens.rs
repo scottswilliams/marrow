@@ -6,7 +6,9 @@ use std::borrow::Cow;
 
 use super::{ParseError, ParseResult};
 use crate::NESTING_DEPTH_LIMIT;
-use crate::ast::{Comment, CommentMarker, CommentPlacement, Expression, TypeRef};
+use crate::ast::{
+    Comment, CommentMarker, CommentPlacement, Expression, IdentityTypeExpr, TypeExpr,
+};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
 };
@@ -226,16 +228,21 @@ pub(super) fn expr_of_in_header(
 ) -> Option<Expression> {
     ExprParser::new(source, tokens).parse_complete_in_header(diagnostics)
 }
-pub(super) fn reject_structural_type_tokens(
+/// Parse a type annotation from its token slice into the structural [`TypeExpr`],
+/// the one owner of type-spelling grammar. The slice must be exactly one type
+/// production; a malformed or over-long spelling reports the same diagnostic the
+/// caller's `expected`/`message` name. `sequence[T]`, `Id(^root)`, and the `?`
+/// suffix are classified here so no downstream crate re-reads the spelling.
+pub(super) fn parse_type(
     source: &str,
     tokens: &[Token],
     expected: ExpectedSyntax,
     message: &'static str,
-) -> ParseResult<()> {
-    // A type spelling is stored as flat text and walked recursively downstream
-    // (sequence-element resolution and every later type walk), so its bracket
-    // nesting must fail closed here against the same limit expression and layout
-    // nesting do, rather than overflowing the native stack at resolution time.
+) -> ParseResult<TypeExpr> {
+    // A type production nests recursively downstream (sequence-element resolution
+    // and every later type walk), so its bracket nesting must fail closed here
+    // against the same limit expression and layout nesting do, rather than
+    // overflowing the native stack at resolution time.
     if let Some(span) = type_nesting_overflow(tokens) {
         return Err(ParseError::at(
             span,
@@ -281,7 +288,7 @@ pub(super) fn reject_structural_type_tokens(
             detail,
         ));
     }
-    Ok(())
+    Ok(build_type_expr(source, tokens))
 }
 
 /// The noun for the type position a stray trailing token followed, so a
@@ -360,17 +367,100 @@ fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
     }
     None
 }
-pub(super) fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
+/// Classify one validated type production into its structure, mirroring the
+/// language's spelling grammar: a trailing `?` is the optional suffix,
+/// `sequence[T]` recurses on its element, `Id(^root)` is a saved-store identity,
+/// and everything else is a name resolved downstream. The token slice is one
+/// complete production, so the classification is total.
+fn build_type_expr(source: &str, tokens: &[Token]) -> TypeExpr {
+    let span = join_spans(tokens[0].span, tokens[tokens.len() - 1].span);
+    // Strip exactly one trailing `?` and wrap the base as an optional. A lone `?`
+    // has no base to wrap, so it stays an unresolvable name.
+    if let Some((last, base)) = tokens.split_last()
+        && last.kind == TokenKind::Question
+        && !base.is_empty()
+    {
+        return TypeExpr::Optional {
+            inner: Box::new(build_type_expr(source, base)),
+            span,
+        };
+    }
+    if let Some(identity) = build_identity(source, tokens) {
+        return identity;
+    }
+    if let Some(sequence) = build_sequence(source, tokens, span) {
+        return sequence;
+    }
+    TypeExpr::Name {
+        text: type_text(source, tokens),
+        span,
+    }
+}
+
+/// The canonical `Id ( ^ root )` saved-store identity, or `None` for any other
+/// spelling. A non-canonical `Id(...)` spelling names no saved store, so it stays
+/// an unresolvable name the checker reports.
+fn build_identity(source: &str, tokens: &[Token]) -> Option<TypeExpr> {
+    let [id, open, caret, root, close] = tokens else {
+        return None;
+    };
+    if id.kind != TokenKind::Keyword(Keyword::Id)
+        || open.kind != TokenKind::LeftParen
+        || caret.kind != TokenKind::Caret
+        || root.kind != TokenKind::Identifier
+        || close.kind != TokenKind::RightParen
+    {
+        return None;
+    }
+    Some(TypeExpr::Identity(IdentityTypeExpr {
+        root: root.text(source).to_string(),
+        keyword_span: id.span,
+        caret_span: caret.span,
+        root_span: root.span,
+        span: join_spans(id.span, close.span),
+    }))
+}
+
+/// A `sequence[T]` whose bracket group spans the whole tail, recursing on the
+/// element spelling. `None` for any other spelling, including a name that merely
+/// carries a bracket group (`Foo[bar]`), which stays a name.
+fn build_sequence(source: &str, tokens: &[Token], span: SourceSpan) -> Option<TypeExpr> {
+    let open = 1;
+    let last = tokens.len().checked_sub(1)?;
+    if tokens.first()?.kind != TokenKind::Keyword(Keyword::Sequence)
+        || tokens.get(open)?.kind != TokenKind::LeftBracket
+        || tokens[last].kind != TokenKind::RightBracket
+        || balanced_group_end(tokens, open)? != last
+    {
+        return None;
+    }
+    let inner = &tokens[open + 1..last];
+    let element = if inner.is_empty() {
+        // `sequence[]` names no element; an empty name resolves as an unresolvable
+        // named type, matching the whole-spelling classification.
+        TypeExpr::Name {
+            text: String::new(),
+            span: join_spans(tokens[open].span, tokens[last].span),
+        }
+    } else {
+        build_type_expr(source, inner)
+    };
+    Some(TypeExpr::Sequence {
+        element: Box::new(element),
+        span,
+    })
+}
+
+/// The whitespace-free source spelling of a type-token slice. The stored spelling
+/// drops whitespace so a wrapped annotation formats as one line and its digest is
+/// stable across reformatting.
+fn type_text(source: &str, tokens: &[Token]) -> String {
     let start = tokens[0].span.start_byte;
     let end = tokens[tokens.len() - 1].span.end_byte;
-    let span = join_spans(tokens[0].span, tokens[tokens.len() - 1].span);
-    // Type spelling is resolved downstream; syntax stores the annotation text in
-    // a whitespace-free form so wrapped annotations format as one line.
-    let text = source[start..end]
+    source[start..end]
         .chars()
         .filter(|ch| !ch.is_whitespace())
-        .collect();
-    TypeRef { text, span }
+        .collect()
 }
 /// The span of a token slice, falling back to `empty` when the slice holds no
 /// tokens. An empty slice has no source bytes to point at, so every caller must

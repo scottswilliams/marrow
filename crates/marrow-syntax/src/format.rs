@@ -11,7 +11,7 @@ use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
     FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ResourceDecl, ResourceMember,
-    Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget, TokenKind, TypeRef, UnaryOp,
+    Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget, TokenKind, TypeExpr, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -1351,7 +1351,7 @@ fn format_if(
 fn format_if_const(
     ctx: StatementFormatContext<'_, '_>,
     name: &str,
-    ty: &Option<TypeRef>,
+    ty: &Option<TypeExpr>,
     value: &Expression,
     then_block: &Block,
     else_ifs: &[ElseIf],
@@ -1549,7 +1549,7 @@ fn format_match(
     out
 }
 
-fn format_type_annotation(ty: &Option<TypeRef>) -> String {
+fn format_type_annotation(ty: &Option<TypeExpr>) -> String {
     match ty {
         Some(ty) => format!(": {ty}"),
         None => String::new(),

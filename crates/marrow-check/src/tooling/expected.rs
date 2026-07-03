@@ -4,7 +4,7 @@ use std::path::Path;
 use marrow_schema::EnumSchema;
 use marrow_syntax::{
     Block, Declaration, ElseIf, Expression, Keyword, LexedSource, MatchArm, ParsedSource,
-    SourceFile, SourceSpan, Statement, Token, TokenKind, TypeRef, active_callable_context,
+    SourceFile, SourceSpan, Statement, Token, TokenKind, TypeExpr, active_callable_context,
 };
 
 use crate::analysis::{scope_at, span_covers};
@@ -27,7 +27,7 @@ pub(super) enum ExpectedEnumContext {
 }
 
 enum ExpectedSourceContext<'a> {
-    TypeRef(&'a TypeRef),
+    TypeExpr(&'a TypeExpr),
     AssignmentTarget(&'a Expression),
     MatchArmScrutinee(&'a Expression),
 }
@@ -65,14 +65,14 @@ pub(super) fn expected_enum_at<'a>(
         })
     {
         return match context {
-            ExpectedSourceContext::TypeRef(ty) => {
+            ExpectedSourceContext::TypeExpr(ty) => {
                 let resolved = resolve_type(ty, program, &prelude.aliases, file);
                 expected_enum_from_type(
                     program,
                     file,
                     &resolved,
                     ExpectedEnumContext::Value {
-                        prefix: ty.text.clone(),
+                        prefix: ty.to_string(),
                     },
                 )
             }
@@ -149,7 +149,9 @@ fn recovered_expected_enum_at<'a>(
             program,
             file,
             &resolved,
-            ExpectedEnumContext::Value { prefix: ty.text },
+            ExpectedEnumContext::Value {
+                prefix: ty.to_string(),
+            },
         );
     }
 
@@ -163,7 +165,7 @@ fn recovered_expected_enum_at<'a>(
             file,
             &resolved,
             ExpectedEnumContext::Value {
-                prefix: ty.text.clone(),
+                prefix: ty.to_string(),
             },
         );
     }
@@ -221,7 +223,11 @@ fn significant_line_tokens(lexed: &LexedSource, line_start: usize, line_end: usi
         .collect()
 }
 
-fn recovered_empty_binding_type(source: &str, tokens: &[&Token], offset: usize) -> Option<TypeRef> {
+fn recovered_empty_binding_type(
+    source: &str,
+    tokens: &[&Token],
+    offset: usize,
+) -> Option<TypeExpr> {
     let first = tokens.first()?;
     if !matches!(
         first.kind,
@@ -237,7 +243,9 @@ fn recovered_empty_binding_type(source: &str, tokens: &[&Token], offset: usize) 
     let start = tokens[colon].span.end_byte;
     let end = tokens[equal].span.start_byte;
     let (text, span) = trimmed_slice(source, start, end)?;
-    Some(TypeRef { text, span })
+    // A recovered, possibly-incomplete annotation is a bare spelling used only as
+    // a completion prefix, so it is a name rather than a fully classified type.
+    Some(TypeExpr::Name { text, span })
 }
 
 fn recovered_assignment_target(
@@ -321,7 +329,7 @@ fn parse_recovered_expression(text: &str) -> Option<Expression> {
         })
 }
 
-fn enclosing_function_return_type(parsed: &ParsedSource, offset: usize) -> Option<&TypeRef> {
+fn enclosing_function_return_type(parsed: &ParsedSource, offset: usize) -> Option<&TypeExpr> {
     parsed
         .file
         .declarations
@@ -553,7 +561,7 @@ fn current_module<'a>(program: &'a CheckedProgram, file: &Path) -> Option<&'a Ch
 
 fn expected_source_context_in_block<'a>(
     block: &'a Block,
-    function_return_type: Option<&'a TypeRef>,
+    function_return_type: Option<&'a TypeExpr>,
     offset: usize,
 ) -> Option<ExpectedSourceContext<'a>> {
     for statement in &block.statements {
@@ -572,7 +580,7 @@ fn expected_source_context_in_block<'a>(
 
 fn expected_source_context_for_statement<'a>(
     statement: &'a Statement,
-    function_return_type: Option<&'a TypeRef>,
+    function_return_type: Option<&'a TypeExpr>,
     offset: usize,
 ) -> Option<ExpectedSourceContext<'a>> {
     match statement {
@@ -585,14 +593,14 @@ fn expected_source_context_for_statement<'a>(
             ty: Some(ty),
             value: Some(value),
             ..
-        } if cursor_on_value_expression(value, offset) => Some(ExpectedSourceContext::TypeRef(ty)),
+        } if cursor_on_value_expression(value, offset) => Some(ExpectedSourceContext::TypeExpr(ty)),
         Statement::Assign { target, value, .. } if cursor_on_value_expression(value, offset) => {
             Some(ExpectedSourceContext::AssignmentTarget(target))
         }
         Statement::Return {
             value: Some(value), ..
         } if cursor_on_value_expression(value, offset) => {
-            function_return_type.map(ExpectedSourceContext::TypeRef)
+            function_return_type.map(ExpectedSourceContext::TypeExpr)
         }
         Statement::Match {
             scrutinee: Some(scrutinee),
@@ -607,7 +615,7 @@ fn expected_source_context_for_statement<'a>(
 
 fn expected_source_context_in_nested_block<'a>(
     statement: &'a Statement,
-    function_return_type: Option<&'a TypeRef>,
+    function_return_type: Option<&'a TypeExpr>,
     offset: usize,
 ) -> Option<ExpectedSourceContext<'a>> {
     match statement {
@@ -653,7 +661,7 @@ fn expected_source_context_in_nested_block<'a>(
 
 fn expected_source_context_in_body<'a>(
     body: &'a Block,
-    function_return_type: Option<&'a TypeRef>,
+    function_return_type: Option<&'a TypeExpr>,
     offset: usize,
 ) -> Option<ExpectedSourceContext<'a>> {
     if span_covers(body.span, offset) {
@@ -672,7 +680,7 @@ fn expected_source_context_in_conditional_blocks<'a>(
     then_block: &'a Block,
     else_ifs: &'a [ElseIf],
     else_block: Option<&'a Block>,
-    function_return_type: Option<&'a TypeRef>,
+    function_return_type: Option<&'a TypeExpr>,
     offset: usize,
 ) -> Option<ExpectedSourceContext<'a>> {
     if span_covers(then_block.span, offset) {

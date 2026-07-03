@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use marrow_schema::Type as SchemaType;
 use marrow_syntax::{
     Block, Declaration, EnumMember, Expression, MatchArm, ParamDecl, ParsedSource, ResourceDecl,
-    ResourceMember, SourceSpan, Statement, StoreDecl, TokenKind, TypeRef,
+    ResourceMember, SourceSpan, Statement, StoreDecl, TokenKind, TypeExpr,
 };
 
 use crate::MarrowType;
@@ -909,7 +909,7 @@ impl<'p> IndexBuilder<'p> {
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
         module: &str,
-        ty: &TypeRef,
+        ty: &TypeExpr,
     ) {
         let schema_type = SchemaType::resolve(ty);
         self.collect_type_module_alias_use(file, source, ty, &schema_type);
@@ -936,7 +936,7 @@ impl<'p> IndexBuilder<'p> {
         &mut self,
         file: &Path,
         source: &str,
-        ty: &TypeRef,
+        ty: &TypeExpr,
         schema_type: &SchemaType,
     ) {
         match schema_type {
@@ -945,7 +945,7 @@ impl<'p> IndexBuilder<'p> {
             }
             SchemaType::Named(name) => {
                 let segments = split_type_path(name);
-                self.collect_module_alias_use(file, source, ty.span, &segments);
+                self.collect_module_alias_use(file, source, ty.span(), &segments);
             }
             SchemaType::Identity(_) | SchemaType::Scalar(_) | SchemaType::Unknown => {}
         }
@@ -982,7 +982,7 @@ impl<'p> IndexBuilder<'p> {
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
         module: &str,
-        ty: &TypeRef,
+        ty: &TypeExpr,
     ) {
         self.collect_resource_schema_type_ref(
             file,
@@ -1000,7 +1000,7 @@ impl<'p> IndexBuilder<'p> {
         source: &str,
         aliases: &HashMap<String, Vec<String>>,
         module: &str,
-        ty: &TypeRef,
+        ty: &TypeExpr,
         schema_type: &SchemaType,
     ) {
         match schema_type {
@@ -1370,7 +1370,7 @@ impl UseWalker<'_, '_> {
         )
     }
 
-    fn resolve_type_ref(&mut self, ty: &TypeRef) {
+    fn resolve_type_ref(&mut self, ty: &TypeExpr) {
         self.builder
             .collect_type_ref(self.file, self.source, self.aliases, self.module, ty);
     }
@@ -1757,11 +1757,11 @@ fn bind<V>(scope: &mut [HashMap<String, V>], name: &str, value: V) {
 
 fn type_ref_path_tail_span(
     source: &str,
-    ty: &TypeRef,
+    ty: &TypeExpr,
     segments: &[String],
     tail_segments: usize,
 ) -> Option<SourceSpan> {
-    path_tail_span(source, ty.span, segments, tail_segments)
+    path_tail_span(source, ty.span(), segments, tail_segments)
 }
 
 fn path_tail_span(
@@ -1808,7 +1808,7 @@ fn param_name_span(
     let mut found = None;
     for token in tokens {
         if token.span.start_byte < function_span.start_byte
-            || token.span.end_byte > param.ty.span.start_byte
+            || token.span.end_byte > param.ty.span().start_byte
         {
             continue;
         }

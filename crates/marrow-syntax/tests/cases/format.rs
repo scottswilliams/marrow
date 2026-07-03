@@ -1086,13 +1086,7 @@ fn documented_parameter_signature_round_trips() {
             .expect("formatted source defines fn f")
             .params
             .iter()
-            .map(|param| {
-                (
-                    param.name.clone(),
-                    param.ty.text.clone(),
-                    param.docs.clone(),
-                )
-            })
+            .map(|param| (param.name.clone(), param.ty.to_string(), param.docs.clone()))
             .collect::<Vec<_>>()
     };
     let expected = vec![

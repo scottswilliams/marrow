@@ -8,13 +8,12 @@ use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
     PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, import_name,
-    line_span_or, line_text_end_before, module_name, reject_structural_type_tokens,
-    type_ref_from_tokens,
+    line_span_or, line_text_end_before, module_name, parse_type,
 };
 use crate::ast::{
     Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl, Expression,
     FunctionDecl, ModuleDecl, ParsedSource, ResourceDecl, SavedRoot, SourceFile, StoreDecl,
-    TypeRef, UseDecl,
+    TypeExpr, UseDecl,
 };
 use crate::diagnostic::{
     Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax,
@@ -341,7 +340,7 @@ impl<'a> DeclParser<'a> {
 
     /// Split a const head (`Name` or `Name: type`) into the name and optional
     /// type, reporting a non-identifier name or malformed type annotation.
-    fn const_name_type(&mut self, span: SourceSpan, head: &[Token]) -> (String, Option<TypeRef>) {
+    fn const_name_type(&mut self, span: SourceSpan, head: &[Token]) -> (String, Option<TypeExpr>) {
         let colon = head.iter().position(|token| token.kind == TokenKind::Colon);
         let (name_tokens, type_tokens) = match colon {
             Some(index) => (&head[..index], Some(&head[index + 1..])),
@@ -374,16 +373,18 @@ impl<'a> DeclParser<'a> {
         // and yields no type. Semantic type resolution belongs downstream.
         let ty = type_tokens.and_then(|tokens| {
             if !tokens.is_empty() {
-                if let Err(error) = reject_structural_type_tokens(
+                match parse_type(
                     self.source,
                     tokens,
                     ExpectedSyntax::ConstType,
                     "expected const type annotation",
                 ) {
-                    self.report(span, error);
-                    return None;
+                    Ok(parsed) => return Some(parsed),
+                    Err(error) => {
+                        self.report(span, error);
+                        return None;
+                    }
                 }
-                return Some(type_ref_from_tokens(self.source, tokens));
             }
             self.error_span(
                 span,

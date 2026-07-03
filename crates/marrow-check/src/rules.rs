@@ -387,13 +387,13 @@ fn is_local_collection_lookup(target: &Expression, local_collections: &HashSet<S
 /// A `catch` annotation, if present, must name `Error`. A bare catch is fine.
 fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>) {
     if let Some(ty) = &catch.ty
-        && ty.text != "Error"
+        && ty.to_string() != "Error"
     {
         out.push(CheckDiagnostic::error(
             CHECK_CATCH_TYPE,
             file,
-            ty.span,
-            format!("catch type must be `Error`, found `{}`", ty.text),
+            ty.span(),
+            format!("catch type must be `Error`, found `{}`", ty.to_string()),
         ));
     }
 }

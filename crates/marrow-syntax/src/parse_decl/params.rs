@@ -3,9 +3,7 @@
 //! the way a comma does.
 
 use super::head::parse_key_params_tokens;
-use super::tokens::{
-    doc_comment_text, find_top_level_equal, reject_structural_type_tokens, type_ref_from_tokens,
-};
+use super::tokens::{doc_comment_text, find_top_level_equal, parse_type};
 use super::{FunctionHead, ParseError, ParseResult};
 use crate::ast::{KeyParam, ParamDecl};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax};
@@ -100,13 +98,12 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
                 "expected return type after `:`",
             ));
         }
-        reject_structural_type_tokens(
+        Some(parse_type(
             source,
             ty_tokens,
             ExpectedSyntax::FunctionReturnType,
             "expected return type after `:`",
-        )?;
-        Some(type_ref_from_tokens(source, ty_tokens))
+        )?)
     };
     Ok(FunctionHead {
         public,
@@ -178,7 +175,7 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
                     "expected parameter type annotation",
                 ));
             }
-            reject_structural_type_tokens(
+            parse_type(
                 source,
                 ty_before_default,
                 ExpectedSyntax::ParameterType,
@@ -189,13 +186,12 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
                 "parameter defaults are not used in Marrow",
             ));
         }
-        reject_structural_type_tokens(
+        let ty = parse_type(
             source,
             ty_tokens,
             ExpectedSyntax::ParameterType,
             "expected parameter type annotation",
         )?;
-        let ty = type_ref_from_tokens(source, ty_tokens);
         params.push(ParamDecl {
             docs,
             name,

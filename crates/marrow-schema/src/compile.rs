@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use marrow_syntax::{
     EnumDecl, EnumMember, FieldDecl, GroupDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan,
-    StoreDecl,
+    StoreDecl, TypeExpr,
 };
 
 use crate::enums::{EnumMemberSchema, EnumSchema};
@@ -19,7 +19,7 @@ use crate::validate::{
 };
 use crate::{
     IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ScalarType, StoreSchema, Type,
-    is_error_code_spelling,
+    is_error_code_annotation,
 };
 
 /// Compile a parsed resource declaration into a [`ResourceSchema`].
@@ -173,16 +173,6 @@ fn flatten_enum_members(
     }
 }
 
-/// The element type spelling of a `sequence[T]`, or `None` for a non-sequence
-/// type. The one place the `sequence[...]` spelling is parsed; [`Type::resolve`]
-/// drives off it. `sequence[T]` is sugar for the 1-based `pos: int` keyed tree.
-pub(crate) fn sequence_element(text: &str) -> Option<&str> {
-    text.trim()
-        .strip_prefix("sequence[")
-        .and_then(|rest| rest.strip_suffix(']'))
-        .map(str::trim)
-}
-
 /// Compile the members nested inside a group into nodes.
 fn group_members(group: &GroupDecl, errors: &mut Vec<SchemaError>) -> Vec<Node> {
     let mut members = Vec::new();
@@ -277,7 +267,7 @@ fn slot_node(
 /// Whether a field's declared spelling is `ErrorCode`, which stores as a `Str` but
 /// constrains its values to the dotted-lowercase grammar.
 fn error_code(field: &FieldDecl) -> bool {
-    is_error_code_spelling(&field.ty.text)
+    is_error_code_annotation(&field.ty)
 }
 
 /// Desugar `name: sequence[T]` into the keyed leaf `name(pos: int): T`. The
@@ -285,8 +275,10 @@ fn error_code(field: &FieldDecl) -> bool {
 /// resulting node is identical to the one `name(pos: int): T` produces and
 /// append/read/traverse work unchanged.
 fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
-    let element_is_error_code =
-        sequence_element(&field.ty.text).is_some_and(is_error_code_spelling);
+    let element_is_error_code = matches!(
+        &field.ty,
+        TypeExpr::Sequence { element, .. } if is_error_code_annotation(element)
+    );
     slot_node(
         field,
         element,

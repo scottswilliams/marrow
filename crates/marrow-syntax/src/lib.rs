@@ -23,10 +23,10 @@ pub use active_call::{
 pub use ast::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement,
     CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep,
-    Expression, FieldDecl, ForBinding, FunctionDecl, GroupDecl, IndexDecl, InterpolationPart,
-    KeyParam, LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl,
-    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, SurfaceDecl, SurfaceItem,
-    SurfaceTarget, TypeRef, UnaryOp, UseDecl, range_expr,
+    Expression, FieldDecl, ForBinding, FunctionDecl, GroupDecl, IdentityTypeExpr, IndexDecl,
+    InterpolationPart, KeyParam, LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParsedSource,
+    RangeExpr, ResourceDecl, ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl,
+    SurfaceDecl, SurfaceItem, SurfaceTarget, TypeExpr, UnaryOp, UseDecl, range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
@@ -253,7 +253,10 @@ mod decl_parser_corpus {
             panic!("expected a const declaration: {file:#?}");
         };
         assert_eq!(decl.name, "Total");
-        assert_eq!(decl.ty.as_ref().map(|ty| ty.text.as_str()), Some("int"));
+        assert_eq!(
+            decl.ty.as_ref().map(ToString::to_string).as_deref(),
+            Some("int")
+        );
         assert!(
             matches!(
                 decl.value,

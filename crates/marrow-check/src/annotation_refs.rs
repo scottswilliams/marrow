@@ -1,6 +1,6 @@
 use marrow_syntax::{
     Block, Declaration, ElseIf, EvolveStep, KeyParam, ResourceMember, SourceSpan, Statement,
-    TypeRef,
+    TypeExpr,
 };
 
 use crate::source_spans::source_span_at;
@@ -14,7 +14,7 @@ pub(crate) enum TypeAnnotationBodies {
 pub(crate) fn walk_declaration_type_refs(
     declaration: &Declaration,
     bodies: TypeAnnotationBodies,
-    visit: &mut impl FnMut(&TypeRef),
+    visit: &mut impl FnMut(&TypeExpr),
 ) {
     match declaration {
         Declaration::Const(constant) => {
@@ -56,7 +56,7 @@ pub(crate) fn walk_declaration_type_refs(
     }
 }
 
-fn walk_resource_member_type_refs(members: &[ResourceMember], visit: &mut impl FnMut(&TypeRef)) {
+fn walk_resource_member_type_refs(members: &[ResourceMember], visit: &mut impl FnMut(&TypeExpr)) {
     for member in members {
         match member {
             ResourceMember::Field(field) => {
@@ -71,13 +71,13 @@ fn walk_resource_member_type_refs(members: &[ResourceMember], visit: &mut impl F
     }
 }
 
-fn walk_key_type_refs(keys: &[KeyParam], visit: &mut impl FnMut(&TypeRef)) {
+fn walk_key_type_refs(keys: &[KeyParam], visit: &mut impl FnMut(&TypeExpr)) {
     for key in keys {
         visit(&key.ty);
     }
 }
 
-pub(crate) fn walk_block_type_refs(block: &Block, visit: &mut impl FnMut(&TypeRef)) {
+pub(crate) fn walk_block_type_refs(block: &Block, visit: &mut impl FnMut(&TypeExpr)) {
     for statement in &block.statements {
         walk_statement_type_refs(statement, visit);
     }
@@ -87,7 +87,7 @@ fn walk_branch_type_refs(
     then_block: &Block,
     else_ifs: &[ElseIf],
     else_block: Option<&Block>,
-    visit: &mut impl FnMut(&TypeRef),
+    visit: &mut impl FnMut(&TypeExpr),
 ) {
     walk_block_type_refs(then_block, visit);
     for else_if in else_ifs {
@@ -98,7 +98,7 @@ fn walk_branch_type_refs(
     }
 }
 
-fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeRef)) {
+fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeExpr)) {
     match statement {
         Statement::Const { ty, .. } => {
             if let Some(ty) = ty {
@@ -163,12 +163,12 @@ fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeR
 
 pub(crate) fn type_ref_path_leaf_span(
     source: &str,
-    ty: &TypeRef,
+    ty: &TypeExpr,
     leaf: &str,
 ) -> Option<SourceSpan> {
-    let end_byte = ty.span.end_byte.min(source.len());
-    let text = source.get(ty.span.start_byte..end_byte)?;
+    let end_byte = ty.span().end_byte.min(source.len());
+    let text = source.get(ty.span().start_byte..end_byte)?;
     let offset = text.rfind(leaf)?;
-    let start_byte = ty.span.start_byte + offset;
+    let start_byte = ty.span().start_byte + offset;
     Some(source_span_at(source, start_byte, start_byte + leaf.len()))
 }

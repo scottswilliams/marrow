@@ -23,14 +23,14 @@ mod tokens;
 
 pub(crate) use decl::DeclParser;
 
-use crate::ast::{KeyParam, ParamDecl, TypeRef};
+use crate::ast::{KeyParam, ParamDecl, TypeExpr};
 use crate::diagnostic::{ParseDiagnosticReason, SourceSpan};
 
 pub(super) struct FunctionHead {
     public: bool,
     name: String,
     params: Vec<ParamDecl>,
-    return_type: Option<TypeRef>,
+    return_type: Option<TypeExpr>,
 }
 
 pub(super) enum MemberHead {
@@ -39,7 +39,7 @@ pub(super) enum MemberHead {
         name: String,
         name_span: SourceSpan,
         keys: Vec<KeyParam>,
-        ty: TypeRef,
+        ty: TypeExpr,
     },
     Group {
         name: String,

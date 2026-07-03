@@ -239,7 +239,7 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
             parsed.file.function("f").is_none_or(|function| function
                 .params
                 .iter()
-                .all(|param| !param.ty.text.contains(offender))),
+                .all(|param| !param.ty.to_string().contains(offender))),
             "fabricated glued param type for {source}"
         );
     }
@@ -320,8 +320,8 @@ fn valid_signature_with_types_and_return_parses() {
     assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let function = parsed.file.function("f").expect("function f");
     assert_eq!(function.params.len(), 2);
-    assert_eq!(function.params[0].ty.text, "int");
-    assert_eq!(function.params[1].ty.text, "string");
+    assert_eq!(function.params[0].ty.to_string(), "int");
+    assert_eq!(function.params[1].ty.to_string(), "string");
 }
 
 #[test]
@@ -374,9 +374,13 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
     assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
 
     let function = parsed.file.function("f").expect("function f");
-    assert_eq!(function.params[0].ty.text, "FutureBox[string,int]");
+    assert_eq!(function.params[0].ty.to_string(), "FutureBox[string,int]");
     assert_eq!(
-        function.return_type.as_ref().map(|ty| ty.text.as_str()),
+        function
+            .return_type
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
         Some("FutureBox[string,int]")
     );
 
@@ -384,8 +388,8 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
     let ResourceMember::Field(scores) = &book.members[0] else {
         panic!("expected scores field, got {:#?}", book.members[0]);
     };
-    assert_eq!(scores.keys[0].ty.text, "FutureBox[string,int]");
-    assert_eq!(scores.ty.text, "sequence[]");
+    assert_eq!(scores.keys[0].ty.to_string(), "FutureBox[string,int]");
+    assert_eq!(scores.ty.to_string(), "sequence[]");
 }
 
 #[test]
@@ -400,10 +404,10 @@ fn keyed_collection_parameter_carries_key_and_value_types() {
     let function = parsed.file.function("total").expect("function total");
     let param = &function.params[0];
     assert_eq!(param.name, "scores");
-    assert_eq!(param.ty.text, "int");
+    assert_eq!(param.ty.to_string(), "int");
     assert_eq!(param.keys.len(), 1);
     assert_eq!(param.keys[0].name, "player");
-    assert_eq!(param.keys[0].ty.text, "string");
+    assert_eq!(param.keys[0].ty.to_string(), "string");
 }
 
 #[test]
@@ -419,12 +423,12 @@ fn composite_keyed_collection_parameter_carries_each_key() {
     let keys = &function.params[0].keys;
     assert_eq!(keys.len(), 2);
     assert_eq!(
-        (keys[0].name.as_str(), keys[0].ty.text.as_str()),
-        ("row", "int")
+        (keys[0].name.as_str(), keys[0].ty.to_string()),
+        ("row", "int".to_string())
     );
     assert_eq!(
-        (keys[1].name.as_str(), keys[1].ty.text.as_str()),
-        ("col", "int")
+        (keys[1].name.as_str(), keys[1].ty.to_string()),
+        ("col", "int".to_string())
     );
 }
 
@@ -468,13 +472,7 @@ fn param_shape(source: &str) -> Vec<(String, String, Vec<String>)> {
         .expect("function f")
         .params
         .iter()
-        .map(|param| {
-            (
-                param.name.clone(),
-                param.ty.text.clone(),
-                param.docs.clone(),
-            )
-        })
+        .map(|param| (param.name.clone(), param.ty.to_string(), param.docs.clone()))
         .collect()
 }
 

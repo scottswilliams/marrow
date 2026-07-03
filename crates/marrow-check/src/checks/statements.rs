@@ -696,7 +696,7 @@ impl StatementCheck<'_> {
     fn check_binding_statement(
         &mut self,
         statement: &marrow_syntax::Statement,
-        annotation: Option<&marrow_syntax::TypeRef>,
+        annotation: Option<&marrow_syntax::TypeExpr>,
         value: Option<&marrow_syntax::Expression>,
     ) {
         let value_type = match value {
@@ -734,7 +734,7 @@ impl StatementCheck<'_> {
                 &value_type,
                 self.diagnostics,
             );
-            if marrow_schema::is_error_code_spelling(&annotation.text) {
+            if marrow_schema::is_error_code_annotation(annotation) {
                 super::calls::check_error_code_literal(
                     value,
                     "an `ErrorCode` binding",
@@ -772,7 +772,7 @@ impl StatementCheck<'_> {
     fn check_uninitialized_binding(
         &mut self,
         statement: &marrow_syntax::Statement,
-        annotation: Option<&marrow_syntax::TypeRef>,
+        annotation: Option<&marrow_syntax::TypeExpr>,
     ) {
         let marrow_syntax::Statement::Var { keys, span, .. } = statement else {
             return;
@@ -796,7 +796,7 @@ impl StatementCheck<'_> {
             *span,
             format!(
                 "a `var` of {kind} type (`{}`) must be given an initial value; it has no default to start from",
-                annotation.text
+                annotation.to_string()
             ),
         ));
     }

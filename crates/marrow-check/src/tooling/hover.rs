@@ -981,7 +981,7 @@ fn type_annotation_at(snapshot: &AnalysisSnapshot, file: &Path, offset: usize) -
             declaration,
             crate::annotation_refs::TypeAnnotationBodies::Include,
             &mut |ty| {
-                if span_covers_half_open(ty.span, offset) {
+                if span_covers_half_open(ty.span(), offset) {
                     found = true;
                 }
             },
@@ -1392,7 +1392,7 @@ fn member_hover_fact(
         ResourceMember::Field(field) => Some(SavedPlaceHoverFact::Field {
             name: field.name.clone(),
             key_params: hover_key_params(&field.keys),
-            ty: field.ty.text.clone(),
+            ty: field.ty.to_string(),
             required: field.required,
             docs: field.docs.clone(),
         }),
@@ -1441,7 +1441,7 @@ fn hover_key_params(keys: &[KeyParam]) -> Vec<SavedPlaceHoverKeyParam> {
     keys.iter()
         .map(|key| SavedPlaceHoverKeyParam {
             name: key.name.clone(),
-            ty: key.ty.text.clone(),
+            ty: key.ty.to_string(),
         })
         .collect()
 }

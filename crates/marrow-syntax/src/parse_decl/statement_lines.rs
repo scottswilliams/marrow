@@ -7,12 +7,11 @@ use super::head::parse_key_params_tokens;
 use super::params::match_paren;
 use super::tokens::{
     expr_of, expr_of_after, expr_of_before, expr_of_in_header, find_top_level,
-    find_top_level_equal, line_span_or, push_parse_error, reject_structural_type_tokens,
-    type_ref_from_tokens,
+    find_top_level_equal, line_span_or, parse_type, push_parse_error,
 };
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
-use crate::ast::{CompoundAssignOp, Expression, ForBinding, KeyParam, Statement, TypeRef};
+use crate::ast::{CompoundAssignOp, Expression, ForBinding, KeyParam, Statement, TypeExpr};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
     UnsupportedSyntax,
@@ -134,13 +133,13 @@ fn parse_const_or_var(
         } else {
             "expected const type annotation"
         };
-        if let Err(error) =
-            reject_structural_type_tokens(source, &line[type_start..type_end], expected, message)
-        {
-            push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
-            return None;
+        match parse_type(source, &line[type_start..type_end], expected, message) {
+            Ok(parsed) => ty = Some(parsed),
+            Err(error) => {
+                push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
+                return None;
+            }
         }
-        ty = Some(type_ref_from_tokens(source, &line[type_start..type_end]));
         index = type_end;
     }
 
@@ -292,7 +291,7 @@ pub(super) fn parse_if_const_head(
     source: &str,
     line: &[Token],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<(String, Option<TypeRef>, Expression)> {
+) -> Option<(String, Option<TypeExpr>, Expression)> {
     let name_token = line.get(1)?;
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
@@ -325,16 +324,18 @@ pub(super) fn parse_if_const_head(
         if type_end == type_start {
             return None;
         }
-        if let Err(error) = reject_structural_type_tokens(
+        match parse_type(
             source,
             &line[type_start..type_end],
             ExpectedSyntax::ConstType,
             "expected const type annotation",
         ) {
-            push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
-            return None;
+            Ok(parsed) => ty = Some(parsed),
+            Err(error) => {
+                push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
+                return None;
+            }
         }
-        ty = Some(type_ref_from_tokens(source, &line[type_start..type_end]));
         index = type_end;
     }
 
@@ -392,7 +393,7 @@ fn find_top_level_by(source: &str, tokens: &[Token]) -> Option<usize> {
 pub(super) fn parse_catch_header(
     source: &str,
     header: &[Token],
-) -> ParseResult<(String, Option<TypeRef>)> {
+) -> ParseResult<(String, Option<TypeExpr>)> {
     let Some(name_token) = header.first() else {
         return Ok((String::new(), None));
     };
@@ -401,15 +402,12 @@ pub(super) fn parse_catch_header(
     }
     let name = name_token.text(source).to_string();
     let ty = match header.get(1) {
-        Some(colon) if colon.kind == TokenKind::Colon && header.len() > 2 => {
-            reject_structural_type_tokens(
-                source,
-                &header[2..],
-                ExpectedSyntax::ParameterType,
-                "expected catch type annotation",
-            )?;
-            Some(type_ref_from_tokens(source, &header[2..]))
-        }
+        Some(colon) if colon.kind == TokenKind::Colon && header.len() > 2 => Some(parse_type(
+            source,
+            &header[2..],
+            ExpectedSyntax::ParameterType,
+            "expected catch type annotation",
+        )?),
         _ => None,
     };
     Ok((name, ty))

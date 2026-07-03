@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use marrow_schema::{ScalarType, Type};
 use marrow_store::cell::CatalogId;
-use marrow_syntax::{Declaration, Diagnostic, Expression, ParsedSource, SourceSpan, TypeRef};
+use marrow_syntax::{Declaration, Diagnostic, Expression, ParsedSource, SourceSpan, TypeExpr};
 
 use crate::diagnostics::{
     CHECK_READ_ONLY_EXPRESSION_CONTEXT, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
@@ -1867,10 +1867,10 @@ pub(crate) struct TypeNames<'a> {
 }
 
 impl MarrowType {
-    /// Resolve a [`TypeRef`] against the named types declared in the same module.
+    /// Resolve a [`TypeExpr`] against the named types declared in the same module.
     /// Best-effort and total: it never errors, falling back to
     /// [`MarrowType::Unknown`] for anything it cannot place.
-    pub(crate) fn resolve(ty: &TypeRef, names: TypeNames<'_>) -> Self {
+    pub(crate) fn resolve(ty: &TypeExpr, names: TypeNames<'_>) -> Self {
         Self::from_resolved(Type::resolve(ty), names)
     }
 

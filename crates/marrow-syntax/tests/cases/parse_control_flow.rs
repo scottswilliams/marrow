@@ -285,7 +285,10 @@ fn parses_try_catch() {
     assert_eq!(body.statements.len(), 1);
     let catch = catch.as_ref().expect("catch clause");
     assert_eq!(catch.name, "err");
-    assert_eq!(catch.ty.as_ref().map(|ty| ty.text.as_str()), Some("Error"));
+    assert_eq!(
+        catch.ty.as_ref().map(ToString::to_string).as_deref(),
+        Some("Error")
+    );
     assert_eq!(catch.block.statements.len(), 1);
     assert!(
         matches!(&statements[1], Statement::Return { value: None, .. }),

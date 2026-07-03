@@ -52,7 +52,7 @@ const NO_CONST_INTS: &[HashMap<String, Option<i64>>] = &[];
 /// The declared type of a binding: its annotation when written, otherwise the
 /// inferred type of its initializer.
 fn binding_type(
-    annotation: Option<&marrow_syntax::TypeRef>,
+    annotation: Option<&marrow_syntax::TypeExpr>,
     value_type: MarrowType,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,

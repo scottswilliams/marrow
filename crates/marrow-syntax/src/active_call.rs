@@ -1,7 +1,7 @@
 use crate::{
     Block, ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax,
     KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember,
-    SourceSpan, Statement, SurfaceItem, Token, TokenKind, TypeRef, is_expression_callable_keyword,
+    SourceSpan, Statement, SurfaceItem, Token, TokenKind, TypeExpr, is_expression_callable_keyword,
     is_expression_path_segment_keyword, token::is_trivia,
 };
 
@@ -451,7 +451,7 @@ fn collect_declaration_suppression(
         Declaration::Function(function) => {
             declarations.push(function.span);
             for param in &function.params {
-                type_refs.push(param.ty.span);
+                type_refs.push(param.ty.span());
             }
             collect_optional_type_ref(function.return_type.as_ref(), type_refs);
             collect_block_type_refs(&function.body, type_refs);
@@ -480,7 +480,7 @@ fn collect_resource_member_suppression(
     match member {
         ResourceMember::Field(field) => {
             collect_key_param_type_refs(&field.keys, type_refs);
-            type_refs.push(field.ty.span);
+            type_refs.push(field.ty.span());
         }
         ResourceMember::Group(group) => {
             collect_key_param_type_refs(&group.keys, type_refs);
@@ -588,13 +588,13 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
 
 fn collect_key_param_type_refs(keys: &[KeyParam], type_refs: &mut ByteRanges) {
     for key in keys {
-        type_refs.push(key.ty.span);
+        type_refs.push(key.ty.span());
     }
 }
 
-fn collect_optional_type_ref(ty: Option<&TypeRef>, type_refs: &mut ByteRanges) {
+fn collect_optional_type_ref(ty: Option<&TypeExpr>, type_refs: &mut ByteRanges) {
     if let Some(ty) = ty {
-        type_refs.push(ty.span);
+        type_refs.push(ty.span());
     }
 }
 

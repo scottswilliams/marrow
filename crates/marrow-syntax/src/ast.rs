@@ -146,7 +146,7 @@ impl EvolveStep {
 pub struct ConstDecl {
     pub docs: Vec<String>,
     pub name: String,
-    pub ty: Option<TypeRef>,
+    pub ty: Option<TypeExpr>,
     /// `None` when the value text did not parse; the parser reports the error.
     pub value: Option<Expression>,
     pub span: SourceSpan,
@@ -534,7 +534,7 @@ pub struct FieldDecl {
     pub name: String,
     pub name_span: SourceSpan,
     pub keys: Vec<KeyParam>,
-    pub ty: TypeRef,
+    pub ty: TypeExpr,
     pub span: SourceSpan,
 }
 
@@ -568,7 +568,7 @@ pub struct FunctionDecl {
     pub public: bool,
     pub name: String,
     pub params: Vec<ParamDecl>,
-    pub return_type: Option<TypeRef>,
+    pub return_type: Option<TypeExpr>,
     pub body: Block,
     pub span: SourceSpan,
 }
@@ -640,14 +640,14 @@ pub enum CommentPlacement {
 pub enum Statement {
     Const {
         name: String,
-        ty: Option<TypeRef>,
+        ty: Option<TypeExpr>,
         value: Expression,
         span: SourceSpan,
     },
     Var {
         name: String,
         keys: Vec<KeyParam>,
-        ty: Option<TypeRef>,
+        ty: Option<TypeExpr>,
         value: Option<Expression>,
         span: SourceSpan,
     },
@@ -698,7 +698,7 @@ pub enum Statement {
     /// `const`/`var`, names that type when written.
     IfConst {
         name: String,
-        ty: Option<TypeRef>,
+        ty: Option<TypeExpr>,
         value: Expression,
         then_block: Block,
         else_ifs: Vec<ElseIf>,
@@ -766,7 +766,7 @@ pub struct ElseIf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatchClause {
     pub name: String,
-    pub ty: Option<TypeRef>,
+    pub ty: Option<TypeExpr>,
     pub block: Block,
 }
 
@@ -813,25 +813,80 @@ pub struct ParamDecl {
     /// Empty for an ordinary scalar, resource, sequence, or identity parameter,
     /// where `ty` alone is the parameter type.
     pub keys: Vec<KeyParam>,
-    pub ty: TypeRef,
+    pub ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyParam {
     pub name: String,
-    pub ty: TypeRef,
+    pub ty: TypeExpr,
 }
 
+/// A type annotation, parsed once into its structure. The parser classifies the
+/// `sequence[T]`, `Id(^root)`, and trailing-`?` forms here, so `marrow-schema` and
+/// the checker match on this node instead of re-reading the source spelling. The
+/// grammar of type spellings has exactly one owner: the type parser that builds
+/// this node.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeRef {
-    pub text: String,
+pub enum TypeExpr {
+    /// A name that is not a recognized special form: a scalar spelling, `unknown`,
+    /// an enum or resource name, a qualified name, or an unresolvable spelling.
+    /// `text` is the whitespace-free source spelling; classifying it as a scalar,
+    /// `unknown`, or a named type is a resolution concern that needs project
+    /// knowledge, so it stays in `marrow-schema` and the checker.
+    Name { text: String, span: SourceSpan },
+    /// `sequence[T]` element-type sugar.
+    Sequence {
+        element: Box<TypeExpr>,
+        span: SourceSpan,
+    },
+    /// `Id(^root)`, a saved-store identity type.
+    Identity(IdentityTypeExpr),
+    /// `T?`, an optional value type.
+    Optional {
+        inner: Box<TypeExpr>,
+        span: SourceSpan,
+    },
+}
+
+/// The parts of an `Id(^root)` identity annotation, spans included so tooling can
+/// address the constructor and the saved root without re-lexing the spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityTypeExpr {
+    /// The saved-store root the identity references.
+    pub root: String,
+    /// The `Id` constructor keyword.
+    pub keyword_span: SourceSpan,
+    /// The `^` of the saved-root reference.
+    pub caret_span: SourceSpan,
+    /// The root name identifier.
+    pub root_span: SourceSpan,
+    /// The whole `Id(^root)` annotation.
     pub span: SourceSpan,
 }
 
-impl fmt::Display for TypeRef {
-    // Verbatim source spelling, so the formatter re-emits it exactly; structured
-    // resolution happens in marrow-schema.
+impl TypeExpr {
+    /// The source span of the whole annotation.
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            TypeExpr::Name { span, .. }
+            | TypeExpr::Sequence { span, .. }
+            | TypeExpr::Optional { span, .. } => *span,
+            TypeExpr::Identity(identity) => identity.span,
+        }
+    }
+}
+
+impl fmt::Display for TypeExpr {
+    // The canonical, whitespace-free source spelling. The formatter re-emits it
+    // exactly and the durable digest hashes it, so this is the inverse of the type
+    // parser: a spelling parsed and re-rendered is byte-identical.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.text)
+        match self {
+            TypeExpr::Name { text, .. } => f.write_str(text),
+            TypeExpr::Sequence { element, .. } => write!(f, "sequence[{element}]"),
+            TypeExpr::Identity(identity) => write!(f, "Id(^{})", identity.root),
+            TypeExpr::Optional { inner, .. } => write!(f, "{inner}?"),
+        }
     }
 }

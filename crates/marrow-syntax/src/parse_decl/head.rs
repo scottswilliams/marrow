@@ -3,10 +3,7 @@
 //! resource field-or-group member head.
 
 use super::params::match_paren;
-use super::tokens::{
-    line_span_or, reject_structural_type_tokens, split_top_level_commas, strip_comment_tokens,
-    type_ref_from_tokens,
-};
+use super::tokens::{line_span_or, parse_type, split_top_level_commas, strip_comment_tokens};
 use super::{MemberHead, ParseError, ParseResult};
 use crate::ast::{IndexDecl, KeyParam, SavedRoot};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
@@ -269,13 +266,12 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
                 "expected key type annotation",
             ));
         }
-        reject_structural_type_tokens(
+        let ty = parse_type(
             source,
             &part[2..],
             ExpectedSyntax::KeyType,
             "expected key type annotation",
         )?;
-        let ty = type_ref_from_tokens(source, &part[2..]);
         params.push(KeyParam { name, ty });
     }
     Ok(params)
@@ -439,13 +435,12 @@ pub(super) fn parse_field_or_group_tokens(
                 "expected field type after `:`",
             ));
         }
-        reject_structural_type_tokens(
+        let ty = parse_type(
             source,
             ty_tokens,
             ExpectedSyntax::FieldType,
             "expected field type after `:`",
         )?;
-        let ty = type_ref_from_tokens(source, ty_tokens);
         return Ok(MemberHead::Field {
             required,
             name,

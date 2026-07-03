@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use marrow_syntax::{
-    Block, Declaration, ElseIf, EvolveStep, Expression, SourceSpan, Statement, SurfaceItem,
-    SurfaceTarget, Token, TokenKind, TypeRef, lex_source,
+    Block, Declaration, ElseIf, EvolveStep, Expression, IdentityTypeExpr, SourceSpan, Statement,
+    SurfaceItem, SurfaceTarget, TypeExpr,
 };
 
 use crate::analysis::AnalysisSnapshot;
@@ -34,11 +34,10 @@ pub fn source_saved_root_cursor_fact_at(
         .files
         .iter()
         .find(|analyzed| analyzed.path == file)?;
-    let lexed = lex_source(&analyzed.source);
     let mut facts = Vec::new();
 
     for declaration in &analyzed.parsed.file.declarations {
-        collect_declaration_roots(&analyzed.source, &lexed.tokens, declaration, &mut facts);
+        collect_declaration_roots(&analyzed.source, declaration, &mut facts);
     }
 
     facts
@@ -49,12 +48,11 @@ pub fn source_saved_root_cursor_fact_at(
 
 fn collect_declaration_roots(
     source: &str,
-    tokens: &[Token],
     declaration: &Declaration,
     facts: &mut Vec<SourceSavedRootCursorFact>,
 ) {
     walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
-        collect_type_ref_roots(source, tokens, ty, facts);
+        collect_type_ref_roots(source, ty, facts);
     });
 
     match declaration {
@@ -98,40 +96,23 @@ fn collect_declaration_roots(
     }
 }
 
-fn collect_type_ref_roots(
-    source: &str,
-    tokens: &[Token],
-    ty: &TypeRef,
-    facts: &mut Vec<SourceSavedRootCursorFact>,
-) {
-    let tokens: Vec<&Token> = tokens
-        .iter()
-        .filter(|token| {
-            ty.span.start_byte <= token.span.start_byte
-                && token.span.end_byte <= ty.span.end_byte
-                && !matches!(
-                    token.kind,
-                    TokenKind::Comment
-                        | TokenKind::DocComment
-                        | TokenKind::Indent
-                        | TokenKind::Dedent
-                        | TokenKind::Newline
-                        | TokenKind::Eof
-                )
-        })
-        .collect();
-
-    for pair in tokens.windows(2) {
-        let [caret, root] = pair else {
-            continue;
-        };
-        if caret.kind == TokenKind::Caret && root.kind == TokenKind::Identifier {
+fn collect_type_ref_roots(source: &str, ty: &TypeExpr, facts: &mut Vec<SourceSavedRootCursorFact>) {
+    match ty {
+        TypeExpr::Identity(IdentityTypeExpr {
+            root,
+            caret_span,
+            root_span,
+            ..
+        }) => {
             facts.push(SourceSavedRootCursorFact {
-                root: root.text(source).to_string(),
-                span: source_span_at(source, caret.span.start_byte, root.span.end_byte),
+                root: root.clone(),
+                span: source_span_at(source, caret_span.start_byte, root_span.end_byte),
                 kind: SourceSavedRootCursorKind::TypeAnnotation,
             });
         }
+        TypeExpr::Sequence { element, .. } => collect_type_ref_roots(source, element, facts),
+        TypeExpr::Optional { inner, .. } => collect_type_ref_roots(source, inner, facts),
+        TypeExpr::Name { .. } => {}
     }
 }
 

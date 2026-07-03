@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use marrow_syntax::TypeRef;
+use marrow_syntax::TypeExpr;
 
 use crate::ScalarType;
 
@@ -36,23 +36,30 @@ pub enum Type {
 }
 
 impl Type {
-    /// Resolve a [`TypeRef`]'s source spelling to its structure. Total and
-    /// module-blind: every spelling maps to exactly one [`Type`], with anything
-    /// not decidable from the text alone landing in [`Type::Named`].
-    pub fn resolve(ty: &TypeRef) -> Self {
-        Self::resolve_text(ty.text.trim())
+    /// Resolve a parsed [`TypeExpr`] to its structure. Total and module-blind: the
+    /// syntactic structure (`sequence[T]`, `Id(^root)`, the `?` suffix) is already
+    /// classified by the parser, so this only maps it and decides each leaf name —
+    /// a scalar, `unknown`, or a bare/qualified [`Type::Named`] the checker
+    /// resolves against the project.
+    pub fn resolve(ty: &TypeExpr) -> Self {
+        match ty {
+            TypeExpr::Optional { inner, .. } => Self::optional(Self::resolve(inner)),
+            TypeExpr::Sequence { element, .. } => Self::Sequence(Box::new(Self::resolve(element))),
+            TypeExpr::Identity(identity) => Self::Identity(identity.root.clone()),
+            TypeExpr::Name { text, .. } => Self::resolve_name(text),
+        }
     }
 
-    pub(crate) fn resolve_text(text: &str) -> Self {
-        // `?` is the optional suffix: strip exactly one trailing `?` and wrap the
-        // base through the flattening constructor. A declared `T??` has no second
-        // optional layer to denote — the parser rejects that spelling, and any
-        // leftover `?` stays in the base text, resolving to an unresolvable
-        // `Named` rather than a nested optional.
-        if let Some(base) = text.strip_suffix('?') {
-            return Self::optional(Self::resolve_base(base));
+    /// Decide a leaf name: the scalar it spells, the explicit `unknown` boundary,
+    /// or a bare/qualified name the checker later places as a resource or enum.
+    fn resolve_name(text: &str) -> Self {
+        if let Some(scalar) = scalar_type_from_name(text) {
+            return Self::Scalar(scalar);
         }
-        Self::resolve_base(text)
+        if text == "unknown" {
+            return Self::Unknown;
+        }
+        Self::Named(text.to_string())
     }
 
     /// The one optional constructor: wrap `inner` as `T?`, flattening so an
@@ -64,28 +71,6 @@ impl Type {
             Type::Optional(_) => inner,
             other => Type::Optional(Box::new(other)),
         }
-    }
-
-    /// Resolve a type spelling that carries no trailing optional suffix: the
-    /// scalar, `sequence[...]`, `Id(^store)`, `unknown`, or bare/qualified name.
-    fn resolve_base(text: &str) -> Self {
-        // `sequence[T]` is built-in element-type sugar; recurse on the element.
-        if let Some(element) = crate::compile::sequence_element(text) {
-            return Self::Sequence(Box::new(Self::resolve_text(element)));
-        }
-        if let Some(scalar) = scalar_type_from_name(text) {
-            return Self::Scalar(scalar);
-        }
-        if text == "unknown" {
-            return Self::Unknown;
-        }
-        if let Some(store) = text
-            .strip_prefix("Id(^")
-            .and_then(|rest| rest.strip_suffix(')'))
-        {
-            return Self::Identity(store.to_string());
-        }
-        Self::Named(text.to_string())
     }
 
     /// This type with every optional layer removed — the present-arm type a
@@ -173,12 +158,12 @@ pub fn scalar_type_from_name(name: &str) -> Option<ScalarType> {
     })
 }
 
-/// Whether a source type spelling names `ErrorCode`. `ErrorCode` resolves to a
+/// Whether a type annotation names `ErrorCode`. `ErrorCode` resolves to a
 /// [`ScalarType::Str`] like `string`, so the spelling is otherwise lost; a field
 /// or binding declared with it enforces the dotted-lowercase grammar on the
 /// values it accepts. The one place that recognizes the spelling.
-pub fn is_error_code_spelling(text: &str) -> bool {
-    text.trim() == "ErrorCode"
+pub fn is_error_code_annotation(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Name { text, .. } if text == "ErrorCode")
 }
 
 /// The compiled tree shape of a resource declaration.
@@ -415,7 +400,16 @@ pub struct IndexSchema {
 
 #[cfg(test)]
 mod tests {
+    use marrow_syntax::{SourceSpan, TypeExpr};
+
     use super::{NodeKind, ScalarType, Type};
+
+    fn name(text: &str) -> TypeExpr {
+        TypeExpr::Name {
+            text: text.to_string(),
+            span: SourceSpan::default(),
+        }
+    }
 
     #[test]
     fn optional_constructor_flattens_so_an_optional_never_nests() {
@@ -429,20 +423,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_text_strips_one_optional_suffix_and_rejects_a_second() {
+    fn resolve_maps_a_structural_optional_and_flattens_it() {
+        // The parser owns the `?` grammar; resolve maps the structural optional
+        // through the flattening constructor so it never nests.
+        let optional = TypeExpr::Optional {
+            inner: Box::new(name("string")),
+            span: SourceSpan::default(),
+        };
         assert_eq!(
-            Type::resolve_text("string?"),
-            Type::Optional(Box::new(Type::Scalar(ScalarType::Str)))
-        );
-        // A declared `T??` has no nested-optional type to denote: the second `?`
-        // is not folded into a single optional but left in an unresolvable base.
-        let double = Type::resolve_text("string??");
-        assert_eq!(
-            double,
-            Type::Optional(Box::new(Type::Named("string?".to_string())))
-        );
-        assert_ne!(
-            double,
+            Type::resolve(&optional),
             Type::Optional(Box::new(Type::Scalar(ScalarType::Str)))
         );
     }
@@ -450,6 +439,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "a durable leaf is never optional")]
     fn slot_construction_rejects_an_optional_leaf_type() {
-        NodeKind::slot(Type::resolve_text("string?"), false, false);
+        NodeKind::slot(
+            Type::Optional(Box::new(Type::Scalar(ScalarType::Str))),
+            false,
+            false,
+        );
     }
 }

@@ -533,6 +533,6 @@ fn resolves_resource_type(program: &CheckedProgram, from_module: &str, name: &st
 
 /// Whether a binding annotation declares `ErrorCode`, so the runtime validates a
 /// dynamic value the binding stores. A string literal is already rejected at check.
-fn annotation_is_error_code(ty: Option<&syntax::TypeRef>) -> bool {
-    ty.is_some_and(|ty| marrow_schema::is_error_code_spelling(&ty.text))
+fn annotation_is_error_code(ty: Option<&syntax::TypeExpr>) -> bool {
+    ty.is_some_and(|ty| marrow_schema::is_error_code_annotation(ty))
 }

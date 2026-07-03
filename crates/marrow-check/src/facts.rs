@@ -8,7 +8,7 @@ use marrow_schema::{NodeKind, ScalarType, Type};
 use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
 use marrow_store::tree::decode_tree_enum_member;
 use marrow_store::value::{decode_value, scalar_key_matches_type};
-use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
+use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeExpr};
 
 use crate::catalog::{
     CatalogKey, DurableRendering, enum_path, proposal_id, resource_member_path, resource_path,
@@ -1057,7 +1057,7 @@ impl CheckedFacts {
         &self,
         module_id: ModuleId,
         ty: &MarrowType,
-        annotation: Option<&TypeRef>,
+        annotation: Option<&TypeExpr>,
         aliases: &HashMap<String, Vec<String>>,
     ) -> Option<CheckedType> {
         annotation
@@ -1068,7 +1068,7 @@ impl CheckedFacts {
     fn checked_type_from_type_ref(
         &self,
         module_id: ModuleId,
-        ty: &TypeRef,
+        ty: &TypeExpr,
         aliases: &HashMap<String, Vec<String>>,
     ) -> Option<CheckedType> {
         self.checked_type_from_resolved_type(module_id, &Type::resolve(ty), aliases)

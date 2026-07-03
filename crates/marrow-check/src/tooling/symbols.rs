@@ -169,7 +169,7 @@ fn document_symbol(declaration: &Declaration, source: &str) -> DocumentSymbol {
     match declaration {
         Declaration::Const(constant) => outline_symbol(
             &constant.name,
-            constant.ty.as_ref().map(|ty| ty.text.clone()),
+            constant.ty.as_ref().map(|ty| ty.to_string()),
             DocumentSymbolKind::Constant,
             constant.span,
             source,
@@ -300,7 +300,7 @@ fn surface_symbol(surface: &SurfaceDecl, source: &str) -> DocumentSymbol {
 fn field_symbol(field: &FieldDecl, source: &str) -> DocumentSymbol {
     outline_symbol(
         &field.name,
-        Some(field.ty.text.clone()),
+        Some(field.ty.to_string()),
         DocumentSymbolKind::ResourceField,
         field.span,
         source,
@@ -371,11 +371,11 @@ fn function_signature(function: &FunctionDecl) -> String {
     let params = function
         .params
         .iter()
-        .map(|param| format!("{}: {}", param.name, param.ty.text))
+        .map(|param| format!("{}: {}", param.name, param.ty.to_string()))
         .collect::<Vec<_>>()
         .join(", ");
     match &function.return_type {
-        Some(ty) => format!("({params}): {}", ty.text),
+        Some(ty) => format!("({params}): {}", ty.to_string()),
         None => format!("({params})"),
     }
 }

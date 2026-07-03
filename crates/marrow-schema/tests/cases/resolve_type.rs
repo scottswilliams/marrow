@@ -7,13 +7,29 @@
 //! names that stay `Named` for the checker to resolve against the project.
 
 use marrow_schema::{ScalarType, Type};
-use marrow_syntax::{SourceSpan, TypeRef};
+use marrow_syntax::{Declaration, TypeExpr, parse_source};
+
+/// Parse a spelling into its structural node through the production parser, so
+/// resolution is exercised over exactly the node the parser builds rather than a
+/// hand-made one.
+fn parse_type_expr(text: &str) -> TypeExpr {
+    let source = format!("const value: {text} = 0\n");
+    let parsed = parse_source(&source);
+    assert!(
+        !parsed.has_errors(),
+        "unexpected parse errors for `{text}`: {:#?}",
+        parsed.diagnostics
+    );
+    let Some(Declaration::Const(decl)) = parsed.file.declarations.first() else {
+        panic!("expected a const declaration for `{text}`");
+    };
+    decl.ty
+        .clone()
+        .unwrap_or_else(|| panic!("expected a type annotation for `{text}`"))
+}
 
 fn resolve(text: &str) -> Type {
-    Type::resolve(&TypeRef {
-        text: text.to_string(),
-        span: SourceSpan::default(),
-    })
+    Type::resolve(&parse_type_expr(text))
 }
 
 #[test]

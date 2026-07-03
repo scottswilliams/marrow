@@ -29,7 +29,7 @@ fn parses_simple_statements_in_function_bodies() {
         matches!(
             &statements[0],
             Statement::Const { name, ty: Some(ty), value: Expression::Literal { .. }, .. }
-                if name == "title" && ty.text == "string"
+                if name == "title" && ty.to_string() == "string"
         ),
         "stmt 0: {:?}",
         statements[0]
@@ -38,7 +38,7 @@ fn parses_simple_statements_in_function_bodies() {
         matches!(
             &statements[1],
             Statement::Var { name, ty: Some(ty), value: Some(_), .. }
-                if name == "count" && ty.text == "int"
+                if name == "count" && ty.to_string() == "int"
         ),
         "stmt 1: {:?}",
         statements[1]
@@ -121,7 +121,7 @@ fn if_const_accepts_a_type_annotation() {
     };
     assert_eq!(name, "pages");
     assert!(
-        matches!(ty, Some(ty) if ty.text == "int"),
+        matches!(ty, Some(ty) if ty.to_string() == "int"),
         "expected the `: int` annotation to be bound, got {ty:?}"
     );
     assert!(
@@ -219,8 +219,8 @@ fn parses_keyed_var_declaration() {
     assert_eq!(name, "counts");
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].name, "name");
-    assert_eq!(keys[0].ty.text, "string");
-    assert_eq!(ty.as_ref().map(|t| t.text.as_str()), Some("int"));
+    assert_eq!(keys[0].ty.to_string(), "string");
+    assert_eq!(ty.as_ref().map(|t| t.to_string()).as_deref(), Some("int"));
     assert_eq!(*value, None);
 }
 
@@ -238,8 +238,8 @@ fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
     };
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].name, "name");
-    assert_eq!(keys[0].ty.text, "1");
-    assert_eq!(ty.as_ref().map(|ty| ty.text.as_str()), Some("int"));
+    assert_eq!(keys[0].ty.to_string(), "1");
+    assert_eq!(ty.as_ref().map(ToString::to_string).as_deref(), Some("int"));
 }
 
 #[test]
@@ -261,14 +261,14 @@ fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
     assert_eq!(name, "scores");
     assert_eq!(
         keys.iter()
-            .map(|key| (key.name.clone(), key.ty.text.clone()))
+            .map(|key| (key.name.clone(), key.ty.to_string()))
             .collect::<Vec<_>>(),
         vec![
             ("player".to_string(), "string".to_string()),
             ("round".to_string(), "int".to_string()),
         ]
     );
-    assert_eq!(ty.as_ref().map(|ty| ty.text.as_str()), Some("int"));
+    assert_eq!(ty.as_ref().map(ToString::to_string).as_deref(), Some("int"));
 }
 
 #[test]
@@ -406,7 +406,7 @@ fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
     assert_eq!(keys.len(), 2, "{keys:#?}");
     assert_eq!(keys[0].name, "x");
     assert_eq!(keys[1].name, "y");
-    assert_eq!(ty.as_ref().map(|t| t.text.as_str()), Some("bool"));
+    assert_eq!(ty.as_ref().map(|t| t.to_string()).as_deref(), Some("bool"));
 }
 
 #[test]

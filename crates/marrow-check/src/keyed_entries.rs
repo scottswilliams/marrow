@@ -168,7 +168,7 @@ impl Normalizer<'_, '_> {
             }
             KeyedFieldType::PrivateEnum(name) => {
                 self.record_owner_resource_invalid(scope);
-                self.push_private_enum(scope.file, field.ty.span, name);
+                self.push_private_enum(scope.file, field.ty.span(), name);
             }
             KeyedFieldType::Unknown(ty) => {
                 self.record_owner_resource_invalid(scope);
@@ -287,7 +287,7 @@ impl Normalizer<'_, '_> {
             EnumAnnotationResolution::Visible(_) => {}
             EnumAnnotationResolution::Private(private) => {
                 self.record_owner_resource_invalid(scope);
-                self.push_private_enum(file, field.ty.span, private);
+                self.push_private_enum(file, field.ty.span(), private);
             }
             EnumAnnotationResolution::AmbiguousBareForeign(name) => {
                 self.record_owner_resource_invalid(scope);
@@ -351,8 +351,8 @@ impl Normalizer<'_, '_> {
             CheckDiagnostic::error(
                 CHECK_UNKNOWN_TYPE,
                 file,
-                field.ty.span,
-                format!("unknown type `{}`", field.ty.text.trim()),
+                field.ty.span(),
+                format!("unknown type `{}`", field.ty.to_string()),
             )
             .with_payload(DiagnosticPayload::UnknownType(ty)),
         );
@@ -367,7 +367,7 @@ impl Normalizer<'_, '_> {
     ) {
         self.push_diagnostic(ambiguous_enum_annotation_diagnostic(
             file,
-            field.ty.span,
+            field.ty.span(),
             name,
             ty,
         ));

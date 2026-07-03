@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_catalog::CatalogEntryKind;
-use marrow_syntax::{Declaration, SourceSpan, StoreDecl, TypeRef};
+use marrow_syntax::{Declaration, SourceSpan, StoreDecl, TypeExpr};
 
 use super::AnalyzedFile;
 use crate::annotation_refs::{
@@ -163,7 +163,7 @@ fn collect_type_ref_use_site(
     file: &Path,
     source: &str,
     aliases: &HashMap<String, Vec<String>>,
-    ty: &TypeRef,
+    ty: &TypeExpr,
     sites: &mut Vec<UseSite>,
 ) {
     if let Some(resolved) = resolve_resource_annotation(ty, program, aliases, file) {

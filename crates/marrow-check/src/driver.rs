@@ -1056,12 +1056,12 @@ fn check_local_value_type(
     file_path: &Path,
     name: &str,
     keys: &[marrow_syntax::KeyParam],
-    ty: Option<&marrow_syntax::TypeRef>,
+    ty: Option<&marrow_syntax::TypeExpr>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let Some(ty) = ty else { return };
     let resolved = marrow_schema::Type::resolve(ty);
-    if let Some(error) = marrow_schema::local_value_type_error(name, keys, &resolved, ty.span) {
+    if let Some(error) = marrow_schema::local_value_type_error(name, keys, &resolved, ty.span()) {
         push_schema_error(file_path, diagnostics, error);
     }
 }
@@ -1136,7 +1136,7 @@ fn check_key_param_types(
 ) {
     for key in keys {
         let ty = marrow_schema::Type::resolve(&key.ty);
-        if let Some(error) = marrow_schema::local_key_type_error(&key.name, &ty, key.ty.span) {
+        if let Some(error) = marrow_schema::local_key_type_error(&key.name, &ty, key.ty.span()) {
             push_schema_error(file_path, diagnostics, error);
         }
     }

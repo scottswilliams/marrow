@@ -58,13 +58,13 @@ fn parses_reference_sample_structure() {
     let store = parsed.file.store("books").expect("books store");
     assert_eq!(store.root.root, "books");
     assert_eq!(store.root.keys[0].name, "id");
-    assert_eq!(store.root.keys[0].ty.text, "int");
+    assert_eq!(store.root.keys[0].ty.to_string(), "int");
     assert_eq!(store.resource, "Book");
 
     assert!(book.members.iter().any(|member| matches!(
         member,
         ResourceMember::Field(field)
-            if field.required && field.name == "title" && field.ty.text == "string"
+            if field.required && field.name == "title" && field.ty.to_string() == "string"
     )));
     assert!(book.members.iter().any(|member| matches!(
         member,
@@ -72,7 +72,7 @@ fn parses_reference_sample_structure() {
             if !field.required
                 && field.name == "tags"
                 && field.keys.len() == 1
-                && field.ty.text == "string"
+                && field.ty.to_string() == "string"
     )));
     assert!(book.members.iter().any(|member| matches!(
         member,
@@ -84,7 +84,7 @@ fn parses_reference_sample_structure() {
                     ResourceMember::Field(field)
                         if field.required
                             && field.name == "changedAt"
-                            && field.ty.text == "instant"
+                            && field.ty.to_string() == "instant"
                 ))
     )));
     assert!(
@@ -104,7 +104,7 @@ fn parses_reference_sample_structure() {
         ["title", "author", "shelf", "changedAt"]
     );
     assert_eq!(
-        add.return_type.as_ref().map(|ty| ty.text.as_str()),
+        add.return_type.as_ref().map(ToString::to_string).as_deref(),
         Some("Id(^books)")
     );
 }
@@ -120,7 +120,7 @@ fn parses_optional_function_return_type() {
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
     assert_eq!(
-        f.return_type.as_ref().map(|ty| ty.text.as_str()),
+        f.return_type.as_ref().map(ToString::to_string).as_deref(),
         Some("int?")
     );
 }
@@ -137,7 +137,7 @@ fn parses_optional_parameter_type() {
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
-    assert_eq!(f.params[0].ty.text.as_str(), "int?");
+    assert_eq!(f.params[0].ty.to_string(), "int?");
 }
 
 #[test]

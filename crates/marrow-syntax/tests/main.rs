@@ -28,5 +28,9 @@ mod parse_resources_storage;
 mod parse_statements;
 #[path = "cases/parse_surface.rs"]
 mod parse_surface;
+#[path = "cases/parse_type_expr.rs"]
+mod parse_type_expr;
 #[path = "cases/parse_types_params.rs"]
 mod parse_types_params;
+#[path = "cases/type_expr_architecture.rs"]
+mod type_expr_architecture;

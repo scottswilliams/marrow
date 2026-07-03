@@ -1,12 +1,10 @@
 use std::path::Path;
 
-use marrow_syntax::{Keyword, SourceSpan, Token, TokenKind, TypeRef};
+use marrow_syntax::{IdentityTypeExpr, SourceSpan, TypeExpr};
 
 use crate::analysis::AnalysisSnapshot;
 use crate::annotation_refs::{TypeAnnotationBodies, walk_declaration_type_refs};
-use crate::checks::file_prelude;
-use crate::enums::resolve_type;
-use crate::program::{CheckedProgram, MarrowType};
+use crate::program::CheckedProgram;
 use crate::resolve::resolve_store_by_root;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,24 +35,12 @@ pub fn identity_type_annotations(
     {
         return Vec::new();
     }
-    let prelude = file_prelude(&snapshot.program, file, &analyzed.parsed);
-    let lexed = marrow_syntax::lex_source(&analyzed.source);
     let mut facts = Vec::new();
-
     for declaration in &analyzed.parsed.file.declarations {
         walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
-            let resolved = resolve_type(ty, &snapshot.program, &prelude.aliases, file);
-            let tokens = tokens_in_span(&lexed.tokens, ty.span);
-            collect_identity_annotations(
-                &mut facts,
-                &snapshot.program,
-                &analyzed.source,
-                &tokens,
-                &resolved,
-            );
+            collect_identity_annotations(&snapshot.program, ty, &mut facts);
         });
     }
-
     facts
 }
 
@@ -71,7 +57,7 @@ pub fn source_type_annotation_cursor_fact_at(
 
     for declaration in &analyzed.parsed.file.declarations {
         walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
-            if !span_covers(ty.span, offset) {
+            if !span_covers(ty.span(), offset) {
                 return;
             }
             let Some(fact) = type_annotation_cursor_fact(&analyzed.source, ty) else {
@@ -91,65 +77,46 @@ pub fn source_type_annotation_cursor_fact_at(
     best
 }
 
-fn tokens_in_span(tokens: &[Token], span: SourceSpan) -> Vec<&Token> {
-    tokens
-        .iter()
-        .filter(|token| {
-            span.start_byte <= token.span.start_byte
-                && token.span.end_byte <= span.end_byte
-                && !matches!(
-                    token.kind,
-                    TokenKind::Comment
-                        | TokenKind::DocComment
-                        | TokenKind::Indent
-                        | TokenKind::Dedent
-                        | TokenKind::Newline
-                        | TokenKind::Eof
-                )
-        })
-        .collect()
-}
-
+/// Collect the saved-store identity references a type annotation names, addressing
+/// each `Id(^root)` node by the spans the parser recorded. Only an identity whose
+/// root names a declared store yields a fact. An optional-wrapped identity carries
+/// no addressable saved-root reference here, matching the identity-annotation
+/// contract.
 fn collect_identity_annotations(
-    facts: &mut Vec<IdentityTypeAnnotation>,
     program: &CheckedProgram,
-    source: &str,
-    tokens: &[&Token],
-    ty: &MarrowType,
+    ty: &TypeExpr,
+    facts: &mut Vec<IdentityTypeAnnotation>,
 ) {
     match ty {
-        MarrowType::Identity(store_root) => {
-            if resolve_store_by_root(program, store_root).is_some()
-                && let Some((constructor_span, root_span)) =
-                    identity_type_spans(source, tokens, store_root)
-            {
+        TypeExpr::Identity(IdentityTypeExpr {
+            root,
+            keyword_span,
+            root_span,
+            ..
+        }) => {
+            if resolve_store_by_root(program, root).is_some() {
                 facts.push(IdentityTypeAnnotation {
-                    constructor_span,
-                    root_span,
-                    store_root: store_root.clone(),
+                    constructor_span: *keyword_span,
+                    root_span: *root_span,
+                    store_root: root.clone(),
                 });
             }
         }
-        MarrowType::Sequence(element) => {
-            collect_identity_annotations(
-                facts,
-                program,
-                source,
-                sequence_element_tokens(tokens),
-                element,
-            );
+        TypeExpr::Sequence { element, .. } => {
+            collect_identity_annotations(program, element, facts);
         }
-        _ => {}
+        TypeExpr::Optional { .. } | TypeExpr::Name { .. } => {}
     }
 }
 
 fn type_annotation_cursor_fact(
     source: &str,
-    ty: &TypeRef,
+    ty: &TypeExpr,
 ) -> Option<SourceTypeAnnotationCursorFact> {
-    let text = source.get(ty.span.start_byte..ty.span.end_byte)?;
+    let span = ty.span();
+    let text = source.get(span.start_byte..span.end_byte)?;
     Some(SourceTypeAnnotationCursorFact {
-        span: ty.span,
+        span,
         text: text.to_string(),
     })
 }
@@ -160,43 +127,4 @@ fn span_covers(span: SourceSpan, offset: usize) -> bool {
 
 fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
-}
-
-fn identity_type_spans(
-    source: &str,
-    tokens: &[&Token],
-    store_root: &str,
-) -> Option<(SourceSpan, SourceSpan)> {
-    let [constructor, open, caret, root, close] = tokens else {
-        return None;
-    };
-    if constructor.kind != TokenKind::Keyword(Keyword::Id)
-        || open.kind != TokenKind::LeftParen
-        || caret.kind != TokenKind::Caret
-        || root.kind != TokenKind::Identifier
-        || root.text(source) != store_root
-        || close.kind != TokenKind::RightParen
-    {
-        return None;
-    }
-
-    Some((constructor.span, root.span))
-}
-
-fn sequence_element_tokens<'a>(tokens: &'a [&'a Token]) -> &'a [&'a Token] {
-    if tokens.len() >= 3
-        && tokens
-            .first()
-            .is_some_and(|token| token.kind == TokenKind::Keyword(Keyword::Sequence))
-        && tokens
-            .get(1)
-            .is_some_and(|token| token.kind == TokenKind::LeftBracket)
-        && tokens
-            .last()
-            .is_some_and(|token| token.kind == TokenKind::RightBracket)
-    {
-        &tokens[2..tokens.len() - 1]
-    } else {
-        &[]
-    }
 }

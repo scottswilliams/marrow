@@ -357,14 +357,14 @@ pub(crate) fn check_file_types(
                     for key in &param.keys {
                         check_type_annotation(
                             &key.ty,
-                            key.ty.span,
+                            key.ty.span(),
                             &annotation_context,
                             diagnostics,
                         );
                     }
                     check_type_annotation(
                         &param.ty,
-                        param.ty.span,
+                        param.ty.span(),
                         &annotation_context,
                         diagnostics,
                     );
@@ -372,7 +372,7 @@ pub(crate) fn check_file_types(
                 if let Some(return_type) = &function.return_type {
                     check_type_annotation(
                         return_type,
-                        return_type.span,
+                        return_type.span(),
                         &annotation_context,
                         diagnostics,
                     );
@@ -410,7 +410,7 @@ pub(crate) fn check_file_types(
             }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(ty) = &constant.ty {
-                    check_type_annotation(ty, ty.span, &annotation_context, diagnostics);
+                    check_type_annotation(ty, ty.span(), &annotation_context, diagnostics);
                 }
             }
             marrow_syntax::Declaration::Resource(resource) => {
@@ -484,7 +484,7 @@ fn check_saved_named_field_annotation(
                 CheckDiagnostic::error(
                     CHECK_PRIVATE_ENUM,
                     context.file,
-                    field.ty.span,
+                    field.ty.span(),
                     format!(
                         "enum `{private}` is private to its module; mark it `pub` to use it from another module"
                     ),
@@ -498,7 +498,7 @@ fn check_saved_named_field_annotation(
             }
             diagnostics.push(ambiguous_enum_annotation_diagnostic(
                 context.file,
-                field.ty.span,
+                field.ty.span(),
                 name,
                 schema_type,
             ));
@@ -523,7 +523,7 @@ struct TypeAnnotationContext<'a> {
 }
 
 fn check_type_annotation(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     span: SourceSpan,
     context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -557,7 +557,7 @@ fn check_type_annotation(
     let resolved_type = resolve_type(ty, context.program, context.aliases, context.file);
     let unknown_identity = annotation_unknown_identity_name(&schema_type, context.program);
     if unknown_identity.is_some() || !annotation_type_known(&schema_type, &resolved_type) {
-        let name = unknown_identity.unwrap_or_else(|| ty.text.trim().to_string());
+        let name = unknown_identity.unwrap_or_else(|| ty.to_string());
         diagnostics.push(
             CheckDiagnostic::error(
                 CHECK_UNKNOWN_TYPE,
@@ -630,13 +630,13 @@ fn check_resource_type_annotations(
         match member {
             marrow_syntax::ResourceMember::Field(field) => {
                 for key in &field.keys {
-                    check_type_annotation(&key.ty, key.ty.span, context, diagnostics);
+                    check_type_annotation(&key.ty, key.ty.span(), context, diagnostics);
                 }
-                check_type_annotation(&field.ty, field.ty.span, context, diagnostics);
+                check_type_annotation(&field.ty, field.ty.span(), context, diagnostics);
             }
             marrow_syntax::ResourceMember::Group(group) => {
                 for key in &group.keys {
-                    check_type_annotation(&key.ty, key.ty.span, context, diagnostics);
+                    check_type_annotation(&key.ty, key.ty.span(), context, diagnostics);
                 }
                 check_resource_type_annotations(&group.members, context, diagnostics);
             }
@@ -661,7 +661,7 @@ fn check_resource_identity_annotations(
                     push_unknown_identity_type_diagnostic(
                         name,
                         Type::resolve(&field.ty),
-                        field.ty.span,
+                        field.ty.span(),
                         context,
                         diagnostics,
                     );
@@ -699,7 +699,7 @@ fn push_unknown_identity_type_diagnostic(
 }
 
 fn unknown_identity_type_ref(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     context: &TypeAnnotationContext<'_>,
 ) -> Option<String> {
     annotation_unknown_identity_name(&Type::resolve(ty), context.program)
@@ -711,6 +711,6 @@ fn check_block_type_annotations(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     crate::annotation_refs::walk_block_type_refs(block, &mut |ty| {
-        check_type_annotation(ty, ty.span, context, diagnostics);
+        check_type_annotation(ty, ty.span(), context, diagnostics);
     });
 }

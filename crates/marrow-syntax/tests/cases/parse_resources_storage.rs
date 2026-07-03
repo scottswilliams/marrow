@@ -20,7 +20,7 @@ fn parses_split_store_declaration() {
     assert_eq!(store.root.root, "books");
     assert_eq!(store.root.keys.len(), 1);
     assert_eq!(store.root.keys[0].name, "id");
-    assert_eq!(store.root.keys[0].ty.text, "int");
+    assert_eq!(store.root.keys[0].ty.to_string(), "int");
     assert_eq!(store.resource, "Book");
 }
 
@@ -421,7 +421,7 @@ fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
             .root
             .keys
             .iter()
-            .map(|key| (key.name.clone(), key.ty.text.clone()))
+            .map(|key| (key.name.clone(), key.ty.to_string()))
             .collect::<Vec<_>>(),
         vec![
             ("id".to_string(), "int".to_string()),

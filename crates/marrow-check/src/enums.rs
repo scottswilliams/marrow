@@ -74,7 +74,7 @@ pub(crate) fn annotation_unknown_identity_name(
 }
 
 pub(crate) fn resolve_diagnosed_annotation_type(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
@@ -1033,7 +1033,7 @@ fn enum_schema_named<'p>(
 /// closed instead of picking one. A qualified `mod::Status` resolves to `mod`'s
 /// enum when `mod` declares it.
 pub(crate) fn resolve_type(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
@@ -1063,7 +1063,7 @@ pub(crate) struct ResolvedResourceAnnotation {
 }
 
 pub(crate) fn resolve_resource_annotation(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
@@ -1214,7 +1214,7 @@ pub(crate) enum EnumAnnotationResolution {
 }
 
 pub(crate) fn resolve_enum_annotation(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
@@ -1240,7 +1240,7 @@ fn visible_enum_annotation(
 /// to a non-`pub` owner is precisely the case a public signature would leak. A
 /// foreign private enum resolves to `Private` and is reported elsewhere.
 pub(crate) fn same_module_private_enum(
-    ty: &marrow_syntax::TypeRef,
+    ty: &marrow_syntax::TypeExpr,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,

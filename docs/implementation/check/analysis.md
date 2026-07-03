@@ -48,12 +48,12 @@ from the checked program or snapshot:
   files. Use sites are keyed by accepted or proposal catalog ids and typed as
   saved roots, resource type annotations, resource constructors, resource
   members, store indexes, enums, or enum members.
-- `tooling::identity_type_annotations(snapshot, file)` returns token-tight
-  spans for checked `Id(^root)` type annotations in the requested analyzed
-  source file. It walks parsed type annotations, resolves them through the
-  checker, requires the store root to exist in the checked program, and recurses
-  through `sequence[...]` annotations, so editor callers do not classify
-  identity type constructors from token spelling alone.
+- `tooling::identity_type_annotations(snapshot, file)` returns the constructor
+  and root spans for checked `Id(^root)` type annotations in the requested
+  analyzed source file. It walks the structural `TypeExpr` nodes, which record
+  those spans at parse time, requires the store root to exist in the checked
+  program, and recurses through `sequence[...]` annotations, so editor callers
+  do not classify identity type constructors from token spelling alone.
 - `tooling::source_type_annotation_cursor_fact_at(snapshot, file, offset)`
   returns the parsed source type-annotation span under `offset`, including
   declaration and checked-body annotations retained in broken-buffer snapshots.

@@ -12,7 +12,7 @@ use super::tokens::{
 };
 use crate::ast::{
     Block, CatchClause, Comment, CommentMarker, CommentPlacement, ElseIf, Expression, MatchArm,
-    Statement, TypeRef,
+    Statement, TypeExpr,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -25,7 +25,7 @@ enum IfHead {
     Expr(Option<Expression>),
     ConstBinding {
         name: String,
-        ty: Option<TypeRef>,
+        ty: Option<TypeExpr>,
         value: Expression,
     },
 }
