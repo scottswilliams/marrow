@@ -330,7 +330,9 @@ pub struct SurfaceReadIdentity {
 pub struct SurfaceEnumValue {
     pub enum_catalog_id: CatalogId,
     pub member_catalog_id: CatalogId,
-    /// A display label from the source enum member; compatibility never depends on it.
+    /// A display label: the member's path below the enum owner (`internal::admin`), bare
+    /// for a flat enum, so duplicate leaf names stay distinguishable in rendered envelopes.
+    /// Compatibility never depends on it.
     pub render_label: String,
 }
 
@@ -3451,7 +3453,7 @@ fn decode_surface_enum(
     Some(SurfaceEnumValue {
         enum_catalog_id: stored.enum_id().clone(),
         member_catalog_id: stored.member_id().clone(),
-        render_label: member.name.clone(),
+        render_label: facts.enum_member_render_path(member.id)?,
     })
 }
 

@@ -90,6 +90,21 @@ surface Books from ^books
     fields title, status, author
 ";
 
+const NESTED_ENUM_SURFACE: &str = "\
+enum Cat
+    category tiger
+        paw
+    category lion
+        paw
+
+resource Sighting
+    required spotted: Cat
+store ^sightings(id: int): Sighting
+
+surface Sightings from ^sightings
+    fields spotted
+";
+
 const COLLECTION_SURFACE: &str = "\
 resource Book
     required title: string
@@ -674,6 +689,58 @@ fn point_read_projects_enum_and_identity_fields_as_surface_values() {
                 })),
             ),
         ]
+    );
+}
+
+#[test]
+fn point_read_renders_nested_enum_labels_as_qualified_paths() {
+    let (program, runtime) = committed_program_and_runtime(NESTED_ENUM_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    let lion_paw = runtime
+        .facts()
+        .enum_members()
+        .iter()
+        .find(|member| {
+            runtime
+                .facts()
+                .enum_member_render_path(member.id)
+                .as_deref()
+                == Some("lion::paw")
+        })
+        .expect("lion::paw member fact");
+    let stored = TreeEnumMember::new(
+        enum_catalog_id(&runtime, "Cat"),
+        catalog_id(&lion_paw.catalog_id),
+    );
+    write_data_bytes(
+        &runtime,
+        &store,
+        "sightings",
+        &identity,
+        &data_path(&runtime, "sightings", &["spotted"]),
+        encode_tree_enum_member(&stored).expect("surface test enum encodes"),
+    );
+
+    // Duplicate leaves under different categories must render as their qualifying path, so the
+    // envelope label stays injective and cannot show the wrong sibling member.
+    let record = read_surface_point(
+        &program,
+        &store,
+        surface_id(&program, "Sightings"),
+        &identity,
+    )
+    .expect("surface point read");
+    assert_eq!(
+        field_values(&record),
+        vec![(
+            field_catalog_id(&runtime, "sightings", &["spotted"]),
+            Some(SurfaceValue::Enum(SurfaceEnumValue {
+                enum_catalog_id: enum_catalog_id(&runtime, "Cat"),
+                member_catalog_id: catalog_id(&lion_paw.catalog_id),
+                render_label: "lion::paw".into(),
+            })),
+        )]
     );
 }
 
