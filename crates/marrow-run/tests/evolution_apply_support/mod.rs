@@ -295,6 +295,28 @@ pub fn read_scalar(
     bytes.map(|bytes| decode_value(&bytes, scalar).expect("decode value"))
 }
 
+/// Read a scalar nested one group deep, addressed by the group and leaf stable ids. A
+/// rename never moves a stable id, so a deep-tree rename fixture reads a descendant's
+/// stored cell back under the identical ids it was seeded with to prove the data stays
+/// attached.
+pub fn read_nested_scalar(
+    store: &TreeStore,
+    store_id: &CatalogId,
+    id: i64,
+    group_member_id: &str,
+    member_id: &str,
+    scalar: marrow_store::value::ScalarType,
+) -> Option<Scalar> {
+    let path = [
+        DataPathSegment::Member(CatalogId::new(group_member_id).expect("group member id")),
+        DataPathSegment::Member(CatalogId::new(member_id).expect("member id")),
+    ];
+    let bytes = store
+        .read_data_value(store_id, &[SavedKey::Int(id)], &path)
+        .expect("read nested member");
+    bytes.map(|bytes| decode_value(&bytes, scalar).expect("decode value"))
+}
+
 /// Build a fixture whose accepted catalog carries a `subtitle` member current source
 /// retires, with two records populated. Source first declares `subtitle` and is
 /// accepted, so the member binds a real stable id and old records carry data under it;

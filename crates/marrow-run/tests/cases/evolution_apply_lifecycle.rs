@@ -10,7 +10,7 @@ use marrow_check::{CHECK_CATALOG_INTENT, CheckReport, check_project_with_catalog
 use marrow_run::evolution::{ApplyError, Approval, apply, commit_catalog_baseline};
 use marrow_store::cell::CatalogId;
 use marrow_store::tree::TreeStore;
-use marrow_store::value::Scalar;
+use marrow_store::value::{Scalar, ScalarType};
 
 const BASELINE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -61,6 +61,26 @@ const RENAME_NAME_TO_LABEL: &str = "module books\n\
      store ^books(id: int): Book\n\
      evolve\n\
      \x20   rename Book.name -> Book.label\n";
+
+// A resource with a nested group, so a whole-resource rename must carry a descendant
+// leaf's identity forward, not just the top-level members.
+const DEEP_BASELINE: &str = "module books\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   meta\n\
+     \x20       required note: string\n\
+     store ^books(id: int): Book\n";
+
+// The same tree renamed `Book -> Volume`. The store keeps its own path and stable id;
+// only the resource and its subtree relocate.
+const DEEP_RENAME: &str = "module books\n\
+     resource Volume\n\
+     \x20   required title: string\n\
+     \x20   meta\n\
+     \x20       required note: string\n\
+     store ^books(id: int): Volume\n\
+     evolve\n\
+     \x20   rename Book -> Volume\n";
 
 fn publish_baseline(root: &Path, store: &TreeStore, source: &str) -> marrow_check::CheckedProgram {
     write(root, "src/books.mw", source);
@@ -247,6 +267,83 @@ fn rename_chain_preserves_one_stable_id_and_accumulates_aliases()
             .aliases
             .iter()
             .any(|alias| alias == "books::Book::name")
+    );
+
+    Ok(())
+}
+
+/// A whole-resource rename over a populated deep tree preserves every descendant's
+/// stable id and keeps its stored cells attached — the 752a0574 regression class. The
+/// resource, its top-level field, its group, and the leaf nested inside the group all
+/// carry their identity forward under the new resource name, and the seeded `title` and
+/// `meta.note` cells read back unchanged under the identical stable ids. Data is keyed on
+/// member stable ids, never on the source path, so the rename moves no cell key.
+#[test]
+fn a_deep_tree_rename_preserves_every_descendant_stable_id_and_its_stored_data()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("apply-lifecycle-deep-rename", |_| {});
+    let store = TreeStore::memory();
+    let accepted = publish_baseline(&root, &store, DEEP_BASELINE);
+    let place = root_place(&accepted, "books")?;
+    let store_id = store_id_of(&place)?;
+
+    let baseline_catalog = store
+        .read_catalog_snapshot()
+        .expect("read catalog")
+        .expect("baseline catalog");
+    let book_id = catalog_entry(&baseline_catalog, "books::Book")
+        .stable_id
+        .clone();
+    let title_id = member_catalog_id(&place, "title")?;
+    let meta_id = group_member_catalog_id(&place, "meta")?;
+    let note_id = nested_member_catalog_id(&place, "meta", "note")?;
+
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Mort".into()));
+    seed.nested_member_by_id(1, &meta_id, &note_id, Scalar::Str("Discworld".into()));
+
+    write(&root, "src/books.mw", DEEP_RENAME);
+    let renamed = recheck_against_store_snapshot(&root, &store);
+    apply_program(&renamed, &store);
+
+    let renamed_catalog = store
+        .read_catalog_snapshot()
+        .expect("read catalog")
+        .expect("catalog after deep rename");
+    assert_eq!(
+        catalog_entry(&renamed_catalog, "books::Volume").stable_id,
+        book_id,
+        "the resource carries its id forward"
+    );
+    assert_eq!(
+        catalog_entry(&renamed_catalog, "books::Volume::title").stable_id,
+        title_id,
+        "the top-level field carries its id forward"
+    );
+    assert_eq!(
+        catalog_entry(&renamed_catalog, "books::Volume::meta").stable_id,
+        meta_id,
+        "the group carries its id forward"
+    );
+    assert_eq!(
+        catalog_entry(&renamed_catalog, "books::Volume::meta::note").stable_id,
+        note_id,
+        "the nested leaf carries its id forward"
+    );
+
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &title_id, ScalarType::Str),
+        Some(Scalar::Str("Mort".into())),
+        "the top-level field keeps its stored cell after the rename"
+    );
+    assert_eq!(
+        read_nested_scalar(&store, &store_id, 1, &meta_id, &note_id, ScalarType::Str),
+        Some(Scalar::Str("Discworld".into())),
+        "the nested leaf keeps its stored cell after the rename"
     );
 
     Ok(())
