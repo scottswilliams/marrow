@@ -138,6 +138,21 @@ impl IndexAddress {
     }
 }
 
+/// Reconcile the root a saved-path enumeration is about to walk against the sealed commit record,
+/// once per handle. The store-open path validates the record in O(1); an enumerating read owes the
+/// subtree-granularity digest check on the root it touches so a btree-corrupt root fails closed
+/// rather than streaming a truncated set.
+pub(crate) fn verify_root_touched(
+    store: &TreeStore,
+    store_catalog_id: &Option<String>,
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    let store_id = catalog_id(store_catalog_id, "store", span)?;
+    store
+        .verify_root_digest_once(&store_id)
+        .map_err(|error| RuntimeError::fatal(error.code(), error.to_string(), span))
+}
+
 pub(crate) fn catalog_id(
     raw: &Option<String>,
     what: &'static str,

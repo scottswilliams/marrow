@@ -132,6 +132,11 @@ pub struct TreeStore {
     /// persists, so the anchor always reflects exactly the cells the commit holds. Cleared
     /// whenever a transaction closes.
     digest_deltas: RefCell<HashMap<CatalogId, RootDigest>>,
+    /// Roots whose live cells this handle has already reconciled against the sealed commit
+    /// record. A run or serve enumerates a root by walking it, so the first walk verifies the
+    /// root's digest — the subtree-granularity "verify what you touch" check — and later walks in
+    /// the same session skip it, since backend damage cannot appear mid-session on an open handle.
+    verified_roots: RefCell<std::collections::HashSet<CatalogId>>,
 }
 
 #[derive(Clone, Copy)]
@@ -219,6 +224,7 @@ impl TreeStore {
         Self {
             backend: RefCell::new(backend),
             digest_deltas: RefCell::new(HashMap::new()),
+            verified_roots: RefCell::new(std::collections::HashSet::new()),
         }
     }
 
@@ -574,7 +580,23 @@ impl TreeStore {
     /// auxiliary cells too. The deep O(N) re-derivation of live cells against this record is
     /// `verify_structural_digests`, which `data integrity`, `recover`, and `backup` run.
     pub fn validate_commit_record(&self) -> Result<(), StoreError> {
+        let uid = self.read_store_uid()?;
         let commit = self.read_commit_metadata()?;
+        let snapshot = self.read_catalog_snapshot()?;
+        if let (Some(commit), Some(snapshot)) = (&commit, &snapshot)
+            && commit.catalog_epoch != snapshot.epoch
+        {
+            return Err(StoreError::Corruption {
+                message: "commit metadata catalog epoch disagrees with the accepted catalog snapshot"
+                    .into(),
+            });
+        }
+        // The record is stamped and re-sealed at the outermost commit, so a handle mid-write does
+        // not carry it for this transaction's staged state; the stamp proves it at commit, and the
+        // deep pass reconciles the staged cells against the pending digests directly.
+        if self.transaction_depth() > 0 {
+            return Ok(());
+        }
         let Some(record) = self.read_commit_record()? else {
             if commit.is_some() {
                 return Err(StoreError::Corruption {
@@ -583,7 +605,7 @@ impl TreeStore {
             }
             return Ok(());
         };
-        if record.store_uid != self.read_store_uid()? {
+        if record.store_uid != uid {
             return Err(StoreError::Corruption {
                 message: "the store uid disagrees with the sealed commit record".into(),
             });
@@ -593,23 +615,58 @@ impl TreeStore {
                 message: "the commit epoch disagrees with the sealed commit record".into(),
             });
         }
-        let snapshot = self.read_catalog_snapshot()?;
         if record.catalog_digest != snapshot.as_ref().map(|snapshot| snapshot.digest.clone()) {
             return Err(StoreError::Corruption {
                 message: "the catalog digest disagrees with the sealed commit record".into(),
             });
         }
-        if let (Some(commit), Some(snapshot)) = (&commit, &snapshot)
-            && commit.catalog_epoch != snapshot.epoch
-        {
-            return Err(StoreError::Corruption {
-                message: "commit metadata catalog epoch disagrees with the accepted catalog snapshot"
-                    .into(),
-            });
-        }
         if record.active_roots != active_store_roots(snapshot.as_ref())? {
             return Err(StoreError::Corruption {
                 message: "the active saved roots disagree with the sealed commit record".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Reconcile one root's live cells against the digest the sealed commit record holds, once per
+    /// handle: the subtree-granularity witness a run or serve owes the root it enumerates. The open
+    /// path validates the record in O(1) and drops the store-wide scan, so a localized backend flip
+    /// that silently drops a cell, rewrites a torn-but-decodable value, or misroutes a point lookup
+    /// in a root would otherwise let an enumeration return a truncated set with no fault. Walking the
+    /// root the reader is about to enumerate, folding its digest, and confirming each cell is
+    /// point-reachable fails such a root closed while leaving untouched roots unscanned.
+    pub fn verify_root_digest_once(&self, store: &CatalogId) -> Result<(), StoreError> {
+        if self.verified_roots.borrow().contains(store) {
+            return Ok(());
+        }
+        self.verify_root_digest(store)?;
+        self.verified_roots.borrow_mut().insert(store.clone());
+        Ok(())
+    }
+
+    fn verify_root_digest(&self, store: &CatalogId) -> Result<(), StoreError> {
+        let mut live = RootDigest::zero();
+        let prefix = CellKey::record_prefix(store, &[]);
+        self.for_each_cell_under(prefix.as_bytes(), &mut |key, value| {
+            if decode_data_family_store(key).as_ref() != Some(store) {
+                return Ok(());
+            }
+            if self.read_cell(key)?.is_none() {
+                return Err(StoreError::Corruption {
+                    message: "a committed data cell is unreachable by point lookup".into(),
+                });
+            }
+            live.add_cell(key, value);
+            Ok(())
+        })?;
+        let sealed = self
+            .stamped_root_digests()?
+            .get(store)
+            .copied()
+            .unwrap_or_default();
+        if live != sealed {
+            return Err(StoreError::Corruption {
+                message: "a root holds different data than its commit digest recorded".into(),
             });
         }
         Ok(())

@@ -713,10 +713,11 @@ pub(crate) fn resolve_store_path(
 /// Inspection reads run before or without a checked program's accepted identity, so this
 /// family holds the stage-1 [`SealedStore`] and never an admitted handle.
 ///
-/// The opened store's sealed commit record is validated before it is handed to an inspection
-/// command, the O(1) store-open witness `run` and `serve` share; each read then verifies the
-/// cells it touches through the strict value codec. The O(N) deep re-walk that re-derives every
-/// index and per-root digest is `data integrity`, `recover`, and `backup`, not this light path.
+/// The opened store is proven fully traversable before it is handed to an inspection command,
+/// the same deep `verify_readable` walk `data recover` runs: the inspection verbs look closely
+/// and traverse the store anyway, so — unlike the `run` and `serve` admission opens, which
+/// validate the O(1) sealed commit record and let each read verify the cells it touches — they
+/// share `data integrity`'s deep oracle rather than blessing a store it would fail closed.
 pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -733,7 +734,7 @@ pub(crate) fn open_store_for_inspection(
         return Ok(None);
     }
     match marrow_run::admission::open_read(&path)
-        .and_then(|store| store.validate_commit_record().map(|()| store))
+        .and_then(|store| store.verify_readable().map(|()| store))
     {
         Ok(store) => Ok(Some(store)),
         Err(error) => {

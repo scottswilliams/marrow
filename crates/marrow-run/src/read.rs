@@ -431,6 +431,7 @@ pub(crate) fn count_iterable_layer(
                     path.span(),
                 ));
             }
+            crate::store::verify_root_touched(env.store, &place.store_catalog_id, path.span())?;
             let store = crate::store::catalog_id(&place.store_catalog_id, "store", path.span())?;
             if address.range.is_some() {
                 let cursor = RecordCursor::new_bounded(
