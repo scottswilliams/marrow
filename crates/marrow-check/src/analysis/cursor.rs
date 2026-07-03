@@ -576,14 +576,10 @@ fn collect_block_expression<'b>(
                 else_block,
                 ..
             } => {
-                if let Some(condition) = condition {
-                    collect_expression(condition, offset, best);
-                }
+                collect_expression(condition, offset, best);
                 collect_block_expression(then_block, offset, best);
                 for else_if in else_ifs {
-                    if let Some(condition) = &else_if.condition {
-                        collect_expression(condition, offset, best);
-                    }
+                    collect_expression(&else_if.condition, offset, best);
                     collect_block_expression(&else_if.block, offset, best);
                 }
                 if let Some(block) = else_block {
@@ -600,9 +596,7 @@ fn collect_block_expression<'b>(
                 collect_expression(value, offset, best);
                 collect_block_expression(then_block, offset, best);
                 for else_if in else_ifs {
-                    if let Some(condition) = &else_if.condition {
-                        collect_expression(condition, offset, best);
-                    }
+                    collect_expression(&else_if.condition, offset, best);
                     collect_block_expression(&else_if.block, offset, best);
                 }
                 if let Some(block) = else_block {
@@ -612,9 +606,7 @@ fn collect_block_expression<'b>(
             Statement::While {
                 condition, body, ..
             } => {
-                if let Some(condition) = condition {
-                    collect_expression(condition, offset, best);
-                }
+                collect_expression(condition, offset, best);
                 collect_block_expression(body, offset, best);
             }
             Statement::For { iterable, body, .. } => {
@@ -631,9 +623,7 @@ fn collect_block_expression<'b>(
             Statement::Match {
                 scrutinee, arms, ..
             } => {
-                if let Some(scrutinee) = scrutinee {
-                    collect_expression(scrutinee, offset, best);
-                }
+                collect_expression(scrutinee, offset, best);
                 for arm in arms {
                     collect_block_expression(&arm.block, offset, best);
                 }

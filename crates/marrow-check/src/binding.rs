@@ -39,6 +39,7 @@ use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_f
 use crate::facts::{FunctionId, LocalId};
 use crate::infer::{infer_only, local_binding};
 use crate::source_spans::{identifier_span_in, last_identifier_span_in, source_span_at};
+use crate::walk::present_expr;
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
     resolve, resolve_function_in_module, short_name, split_type_path,
@@ -1134,14 +1135,10 @@ impl UseWalker<'_, '_> {
                 else_block,
                 ..
             } => {
-                if let Some(condition) = condition {
-                    self.walk_expr(condition, scope, type_scope);
-                }
+                self.walk_expr(condition, scope, type_scope);
                 self.walk_block(then_block, scope, type_scope);
                 for else_if in else_ifs {
-                    if let Some(condition) = &else_if.condition {
-                        self.walk_expr(condition, scope, type_scope);
-                    }
+                    self.walk_expr(&else_if.condition, scope, type_scope);
                     self.walk_block(&else_if.block, scope, type_scope);
                 }
                 if let Some(block) = else_block {
@@ -1181,9 +1178,7 @@ impl UseWalker<'_, '_> {
                 };
                 self.walk_if_const_then(*span, name, binding_type, then_block, scope, type_scope);
                 for else_if in else_ifs {
-                    if let Some(condition) = &else_if.condition {
-                        self.walk_expr(condition, scope, type_scope);
-                    }
+                    self.walk_expr(&else_if.condition, scope, type_scope);
                     self.walk_block(&else_if.block, scope, type_scope);
                 }
                 if let Some(block) = else_block {
@@ -1193,9 +1188,7 @@ impl UseWalker<'_, '_> {
             Statement::While {
                 condition, body, ..
             } => {
-                if let Some(condition) = condition {
-                    self.walk_expr(condition, scope, type_scope);
-                }
+                self.walk_expr(condition, scope, type_scope);
                 self.walk_block(body, scope, type_scope);
             }
             Statement::For {
@@ -1210,7 +1203,7 @@ impl UseWalker<'_, '_> {
             }
             Statement::Match {
                 scrutinee, arms, ..
-            } => self.walk_match(scrutinee.as_ref(), arms, scope, type_scope),
+            } => self.walk_match(present_expr(scrutinee), arms, scope, type_scope),
             Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
         }
     }

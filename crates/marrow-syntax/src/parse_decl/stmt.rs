@@ -22,7 +22,7 @@ use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
 
 enum IfHead {
-    Expr(Option<Expression>),
+    Expr(Expression),
     ConstBinding {
         name: String,
         ty: Option<TypeExpr>,
@@ -190,22 +190,21 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
+        let error_span = line_span_or(line, self.tokens[self.pos].span);
         let before = self.diagnostics.len();
         let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
         // Suppress the generic fallback when an inline syntax rule already reported.
         if statement.is_none() && self.diagnostics.len() == before {
-            let span = line_span_or(
-                &self.tokens[self.pos..content_end],
-                self.tokens[self.pos].span,
-            );
             self.error_span_reason(
-                span,
+                error_span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
                 "expected a statement",
             );
         }
         self.pos = (newline + 1).min(self.tokens.len());
-        statement
+        // Total parsing: a line that did not structure becomes an error node
+        // carrying its span, so the body is never silently short a statement.
+        Some(statement.unwrap_or(Statement::Error { span: error_span }))
     }
 
     /// If the token just before `line_end` is a trailing comment, record it as
@@ -533,54 +532,52 @@ impl<'a> StmtParser<'a> {
     /// missing expression at the gap just past it, never the start of input.
     /// Returns `None`, after raising a syntax error, when the header does not
     /// parse as a complete expression.
-    fn header_expression(&mut self, keyword: SourceSpan) -> Option<Expression> {
+    fn header_expression(&mut self, keyword: SourceSpan) -> Expression {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
+        let error_span = line_span_or(line, keyword);
         let before = self.diagnostics.len();
         let expr = expr_of_after(self.source, line, keyword, &mut self.diagnostics);
         // Suppress the generic fallback when an inline syntax rule already reported.
         if expr.is_none() && self.diagnostics.len() == before {
             self.error_span_reason(
-                line_span_or(&self.tokens[self.pos..content_end], keyword),
+                error_span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected an expression",
             );
         }
         self.pos = (newline + 1).min(self.tokens.len());
-        expr
+        expr.unwrap_or(Expression::Error { span: error_span })
     }
 
     fn if_head(&mut self, keyword: SourceSpan) -> IfHead {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
+        let error_span = line_span_or(line, keyword);
         let before = self.diagnostics.len();
+        // A `const` head is an existence binding; any other head is a condition
+        // expression. Both fail to `Expression::Error`, so the head is always
+        // present.
         let head = if matches!(
             line.first().map(|token| token.kind),
             Some(TokenKind::Keyword(Keyword::Const))
         ) {
             parse_if_const_head(self.source, line, &mut self.diagnostics)
-                .map_or(IfHead::Expr(None), |(name, ty, value)| {
-                    IfHead::ConstBinding { name, ty, value }
-                })
+                .map(|(name, ty, value)| IfHead::ConstBinding { name, ty, value })
         } else {
-            IfHead::Expr(expr_of_after(
-                self.source,
-                line,
-                keyword,
-                &mut self.diagnostics,
-            ))
+            expr_of_after(self.source, line, keyword, &mut self.diagnostics).map(IfHead::Expr)
         };
-        if matches!(head, IfHead::Expr(None)) && self.diagnostics.len() == before {
+        if head.is_none() && self.diagnostics.len() == before {
             self.error_span_reason(
-                line_span_or(&self.tokens[self.pos..content_end], keyword),
+                error_span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected an expression",
             );
         }
         self.pos = (newline + 1).min(self.tokens.len());
-        head
+        head.unwrap_or(IfHead::Expr(Expression::Error { span: error_span }))
     }
 
     /// Consume the rest of a header line up to and including its `NEWLINE`.

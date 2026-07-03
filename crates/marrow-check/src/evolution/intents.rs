@@ -683,14 +683,10 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
             else_block,
             ..
         } => {
-            if let Some(condition) = condition {
-                walk_expression(condition, visit);
-            }
+            walk_expression(condition, visit);
             walk_block_expressions(then_block, visit);
             for else_if in else_ifs {
-                if let Some(condition) = &else_if.condition {
-                    walk_expression(condition, visit);
-                }
+                walk_expression(&else_if.condition, visit);
                 walk_block_expressions(&else_if.block, visit);
             }
             if let Some(block) = else_block {
@@ -707,9 +703,7 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
             walk_expression(value, visit);
             walk_block_expressions(then_block, visit);
             for else_if in else_ifs {
-                if let Some(condition) = &else_if.condition {
-                    walk_expression(condition, visit);
-                }
+                walk_expression(&else_if.condition, visit);
                 walk_block_expressions(&else_if.block, visit);
             }
             if let Some(block) = else_block {
@@ -719,9 +713,7 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
         Statement::While {
             condition, body, ..
         } => {
-            if let Some(condition) = condition {
-                walk_expression(condition, visit);
-            }
+            walk_expression(condition, visit);
             walk_block_expressions(body, visit);
         }
         Statement::For {
@@ -746,9 +738,7 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
         Statement::Match {
             scrutinee, arms, ..
         } => {
-            if let Some(scrutinee) = scrutinee {
-                walk_expression(scrutinee, visit);
-            }
+            walk_expression(scrutinee, visit);
             for arm in arms {
                 walk_block_expressions(&arm.block, visit);
             }

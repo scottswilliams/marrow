@@ -84,10 +84,10 @@ fn parses_if_else_if_else_chain() {
     assert!(
         matches!(
             condition,
-            Some(Expression::Binary {
+            Expression::Binary {
                 op: BinaryOp::Less,
                 ..
-            })
+            }
         ),
         "condition: {condition:?}"
     );
@@ -96,10 +96,10 @@ fn parses_if_else_if_else_chain() {
     assert!(
         matches!(
             &else_ifs[0].condition,
-            Some(Expression::Binary {
+            Expression::Binary {
                 op: BinaryOp::Equal,
                 ..
-            })
+            }
         ),
         "else-if condition: {:?}",
         else_ifs[0].condition
@@ -201,10 +201,10 @@ fn parses_while_and_for_loops() {
     };
     assert!(matches!(
         condition,
-        Some(Expression::Binary {
+        Expression::Binary {
             op: BinaryOp::Less,
             ..
-        })
+        }
     ));
     assert_eq!(body.statements.len(), 1);
 
@@ -530,7 +530,7 @@ fn parses_a_match_statement_with_bare_member_arms() {
     else {
         panic!("expected a match, got {:?}", f.body.statements[0]);
     };
-    assert!(matches!(scrutinee, Some(Expression::Name { .. })));
+    assert!(matches!(scrutinee, Expression::Name { .. }));
     let paths: Vec<Vec<&str>> = arms
         .iter()
         .map(|arm| arm.path.iter().map(String::as_str).collect())

@@ -5,6 +5,7 @@ use marrow_syntax::{self as syntax, SourceSpan};
 
 use crate::program::{CheckedProgram, MarrowType};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
+use crate::walk::present_expr;
 
 use super::expr::{checked_enum_ref, lower_optional_expr};
 use super::{
@@ -316,7 +317,7 @@ impl CheckedStmt {
                 else_block,
                 span,
             } => Self::If {
-                condition: lower_optional_expr(condition.as_ref(), context, scope)?,
+                condition: lower_optional_expr(present_expr(condition), context, scope)?,
                 then_block: CheckedBody::lower_scoped(then_block, context, scope)?,
                 else_ifs: else_ifs
                     .iter()
@@ -395,7 +396,7 @@ impl CheckedStmt {
                 body,
                 span,
             } => Self::While {
-                condition: lower_optional_expr(condition.as_ref(), context, scope)?,
+                condition: lower_optional_expr(present_expr(condition), context, scope)?,
                 body: CheckedBody::lower_scoped(body, context, scope)?,
                 span: *span,
             },
@@ -461,12 +462,12 @@ impl CheckedStmt {
                 span,
                 ..
             } => {
-                let match_enum = infer_match_enum(scrutinee.as_ref(), context, scope);
+                let match_enum = infer_match_enum(present_expr(scrutinee), context, scope);
                 let match_enum_ref = match_enum
                     .as_ref()
                     .map(|(module, name)| (module.as_str(), name.as_str()));
                 Self::Match {
-                    scrutinee: lower_optional_expr(scrutinee.as_ref(), context, scope)?,
+                    scrutinee: lower_optional_expr(present_expr(scrutinee), context, scope)?,
                     arms: arms
                         .iter()
                         .map(|arm| CheckedMatchArm::lower(arm, match_enum_ref, context, scope))

@@ -699,7 +699,7 @@ pub enum Statement {
         span: SourceSpan,
     },
     If {
-        condition: Option<Expression>,
+        condition: Expression,
         then_block: Block,
         else_ifs: Vec<ElseIf>,
         else_block: Option<Block>,
@@ -719,7 +719,7 @@ pub enum Statement {
         span: SourceSpan,
     },
     While {
-        condition: Option<Expression>,
+        condition: Expression,
         body: Block,
         span: SourceSpan,
     },
@@ -750,7 +750,7 @@ pub enum Statement {
     /// a local enum's `match` has no wildcard arm. Exhaustiveness and member
     /// validity are checker rules.
     Match {
-        scrutinee: Option<Expression>,
+        scrutinee: Expression,
         arms: Vec<MatchArm>,
         span: SourceSpan,
     },
@@ -758,7 +758,9 @@ pub enum Statement {
     /// node in place of a dropped line so every body parses to a statement list;
     /// it always travels with a `parse.syntax` diagnostic at its span, and
     /// semantic processing is gated on `!ParsedSource::has_errors`.
-    Error { span: SourceSpan },
+    Error {
+        span: SourceSpan,
+    },
 }
 
 /// `path` is the arm's member path relative to the scrutinee enum, as written;
@@ -774,8 +776,9 @@ pub struct MatchArm {
 /// One `else if` clause of an `if` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElseIf {
-    /// `None` when the condition text did not parse; the parser reports the error.
-    pub condition: Option<Expression>,
+    /// `Expression::Error` when the condition text did not parse; the parser
+    /// reports the error at that span.
+    pub condition: Expression,
     pub block: Block,
 }
 

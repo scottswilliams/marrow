@@ -491,12 +491,19 @@ fn rejects_merge_as_reserved_statement() {
         "{:#?}",
         parsed.diagnostics
     );
+    // Total parsing keeps the rejected `merge` line as an error node rather than
+    // dropping it, so the body reads as the reserved line followed by the print.
     let commit = parsed.file.function("commit").expect("commit function");
-    assert_eq!(commit.body.statements.len(), 1, "{commit:#?}");
+    assert_eq!(commit.body.statements.len(), 2, "{commit:#?}");
     assert!(
-        matches!(&commit.body.statements[0], Statement::Expr { .. }),
+        matches!(&commit.body.statements[0], Statement::Error { .. }),
         "{:#?}",
         commit.body.statements[0]
+    );
+    assert!(
+        matches!(&commit.body.statements[1], Statement::Expr { .. }),
+        "{:#?}",
+        commit.body.statements[1]
     );
 }
 

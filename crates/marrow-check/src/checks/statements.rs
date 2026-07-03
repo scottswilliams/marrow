@@ -18,6 +18,7 @@ use crate::infer::{
 use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::is_optional_value;
+use crate::walk::present_expr;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
     CHECK_LOSSY_ROUND_TRIP, CHECK_UNANNOTATED_ABSENT, CHECK_UNKNOWN_ROOT, CHECK_UNRESOLVED_NAME,
@@ -146,9 +147,7 @@ fn check_undeclared_saved_roots(
                 else_block,
                 ..
             } => {
-                if let Some(condition) = condition {
-                    reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
-                }
+                reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
                 check_branch_saved_roots(
                     program,
                     file,
@@ -178,9 +177,7 @@ fn check_undeclared_saved_roots(
             Statement::While {
                 condition, body, ..
             } => {
-                if let Some(condition) = condition {
-                    reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
-                }
+                reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
                 check_undeclared_saved_roots(program, file, body, diagnostics);
             }
             Statement::For {
@@ -207,9 +204,7 @@ fn check_undeclared_saved_roots(
             Statement::Match {
                 scrutinee, arms, ..
             } => {
-                if let Some(scrutinee) = scrutinee {
-                    reject_undeclared_roots_in_expr(program, file, scrutinee, diagnostics);
-                }
+                reject_undeclared_roots_in_expr(program, file, scrutinee, diagnostics);
                 for arm in arms {
                     check_undeclared_saved_roots(program, file, &arm.block, diagnostics);
                 }
@@ -231,9 +226,7 @@ fn check_branch_saved_roots(
 ) {
     check_undeclared_saved_roots(program, file, then_block, diagnostics);
     for else_if in else_ifs {
-        if let Some(condition) = &else_if.condition {
-            reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
-        }
+        reject_undeclared_roots_in_expr(program, file, &else_if.condition, diagnostics);
         check_undeclared_saved_roots(program, file, &else_if.block, diagnostics);
     }
     if let Some(else_block) = else_block {
@@ -507,7 +500,7 @@ impl StatementCheck<'_> {
                 else_block,
                 ..
             } => self.check_conditional(
-                condition.as_ref(),
+                present_expr(condition),
                 then_block,
                 else_ifs,
                 else_block.as_ref(),
@@ -515,7 +508,7 @@ impl StatementCheck<'_> {
             Statement::IfConst { .. } => self.check_if_const(statement),
             Statement::While {
                 condition, body, ..
-            } => self.check_while(condition.as_ref(), body),
+            } => self.check_while(present_expr(condition), body),
             Statement::For {
                 binding,
                 iterable,
@@ -532,7 +525,7 @@ impl StatementCheck<'_> {
                 arms,
                 span,
                 ..
-            } => self.check_match_statement(scrutinee.as_ref(), arms, *span),
+            } => self.check_match_statement(present_expr(scrutinee), arms, *span),
             Statement::Break { .. } | Statement::Continue { .. } => {
                 self.required_fields.invalidate_all();
             }
@@ -981,9 +974,7 @@ impl StatementCheck<'_> {
                 else_block,
                 ..
             } => {
-                if let Some(condition) = condition {
-                    self.narrow_invalidate_if_writes_saved(condition);
-                }
+                self.narrow_invalidate_if_writes_saved(condition);
                 self.invalidate_conditional_writes(then_block, else_ifs, else_block.as_ref());
             }
             Statement::IfConst {
@@ -999,9 +990,7 @@ impl StatementCheck<'_> {
             Statement::While {
                 condition, body, ..
             } => {
-                if let Some(condition) = condition {
-                    self.narrow_invalidate_if_writes_saved(condition);
-                }
+                self.narrow_invalidate_if_writes_saved(condition);
                 self.invalidate_block_writes(body);
             }
             Statement::For {
@@ -1026,9 +1015,7 @@ impl StatementCheck<'_> {
             Statement::Match {
                 scrutinee, arms, ..
             } => {
-                if let Some(scrutinee) = scrutinee {
-                    self.narrow_invalidate_if_writes_saved(scrutinee);
-                }
+                self.narrow_invalidate_if_writes_saved(scrutinee);
                 self.narrowing.invalidate_saved();
                 for arm in arms {
                     self.invalidate_block_writes(&arm.block);
@@ -1046,9 +1033,7 @@ impl StatementCheck<'_> {
     ) {
         self.invalidate_block_writes(then_block);
         for else_if in else_ifs {
-            if let Some(condition) = &else_if.condition {
-                self.narrow_invalidate_if_writes_saved(condition);
-            }
+            self.narrow_invalidate_if_writes_saved(&else_if.condition);
             self.invalidate_block_writes(&else_if.block);
         }
         if let Some(else_block) = else_block {
@@ -1452,11 +1437,11 @@ impl StatementCheck<'_> {
         }
         self.check_guarded_block(condition, then_block);
         for else_if in else_ifs {
-            if let Some(condition) = &else_if.condition {
+            if let Some(condition) = present_expr(&else_if.condition) {
                 self.check_condition_expr(condition);
                 self.narrow_invalidate_if_writes_saved(condition);
             }
-            self.check_guarded_block(else_if.condition.as_ref(), &else_if.block);
+            self.check_guarded_block(present_expr(&else_if.condition), &else_if.block);
         }
         if let Some(block) = else_block {
             self.check_inconclusive_block(block);
@@ -1536,11 +1521,11 @@ impl StatementCheck<'_> {
         frame.insert(name.to_string(), binding_type);
         self.check_block_under_frame_narrowed(frame, augment, then_block);
         for else_if in else_ifs {
-            if let Some(condition) = &else_if.condition {
+            if let Some(condition) = present_expr(&else_if.condition) {
                 self.check_condition_expr(condition);
                 self.narrow_invalidate_if_writes_saved(condition);
             }
-            self.check_guarded_block(else_if.condition.as_ref(), &else_if.block);
+            self.check_guarded_block(present_expr(&else_if.condition), &else_if.block);
         }
         if let Some(block) = else_block {
             self.check_inconclusive_block(block);

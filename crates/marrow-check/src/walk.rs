@@ -1,5 +1,14 @@
 use marrow_syntax::{Expression, InterpolationPart, SourceSpan};
 
+/// A parsed expression unless it is the total-parser's `Error` placeholder.
+/// Semantic checks that emit a diagnostic from a scrutinee or condition treated a
+/// missing (pre-total-parser `Option`) subexpression as absent; skipping an
+/// `Error` node the same way keeps them from resolving a node the parser could
+/// not structure and inventing a second diagnostic on top of the parse error.
+pub(crate) fn present_expr(expr: &Expression) -> Option<&Expression> {
+    (!expr.is_error()).then_some(expr)
+}
+
 /// Apply `visit` to each immediate sub-expression of `expr`, in source order. This
 /// is the single owner of the expression-tree shape for the checker's read-only
 /// passes: a pass inspects a node, then recurses by handing its children back here,

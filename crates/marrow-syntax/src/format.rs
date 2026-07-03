@@ -1219,13 +1219,7 @@ fn format_statement_with_comments(
                 start_byte: span.start_byte,
                 level,
             };
-            return format_if(
-                ctx,
-                condition.as_ref(),
-                then_block,
-                else_ifs,
-                else_block.as_ref(),
-            );
+            return format_if(ctx, condition, then_block, else_ifs, else_block.as_ref());
         }
         Statement::IfConst {
             name,
@@ -1257,10 +1251,7 @@ fn format_statement_with_comments(
             body,
             span,
         } => {
-            let header = format!(
-                "{pad}while {}",
-                format_opt_expression_at(condition.as_ref(), level)
-            );
+            let header = format!("{pad}while {}", format_expression_at(condition, level));
             let ctx = StatementFormatContext {
                 source,
                 comments,
@@ -1313,7 +1304,7 @@ fn format_statement_with_comments(
                 start_byte: span.start_byte,
                 level,
             };
-            return format_match(ctx, scrutinee.as_ref(), arms, *span);
+            return format_match(ctx, scrutinee, arms, *span);
         }
         // The formatter is invoked on parsed source and the CLI gates emission on
         // `!has_errors`, so this renders only in a best-effort `format_source` over
@@ -1329,13 +1320,13 @@ fn format_statement_with_comments(
 
 fn format_if(
     ctx: StatementFormatContext<'_, '_>,
-    condition: Option<&Expression>,
+    condition: &Expression,
     then_block: &Block,
     else_ifs: &[ElseIf],
     else_block: Option<&Block>,
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
-    let mut header = format!("{pad}if {}", format_opt_expression_at(condition, ctx.level));
+    let mut header = format!("{pad}if {}", format_expression_at(condition, ctx.level));
     append_trailing_comment_between(
         &mut header,
         ctx.comments,
@@ -1405,7 +1396,7 @@ fn format_else_chain(
     for else_if in else_ifs {
         let mut header = format!(
             "{pad}else if {}",
-            format_opt_expression_at(else_if.condition.as_ref(), ctx.level)
+            format_expression_at(&else_if.condition, ctx.level)
         );
         append_trailing_comment_between(
             &mut header,
@@ -1496,16 +1487,13 @@ fn format_try(
 
 fn format_match(
     ctx: StatementFormatContext<'_, '_>,
-    scrutinee: Option<&Expression>,
+    scrutinee: &Expression,
     arms: &[MatchArm],
     span: crate::SourceSpan,
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
     let arm_pad = INDENT.repeat(ctx.level + 1);
-    let mut out = format!(
-        "{pad}match {}",
-        format_opt_expression_at(scrutinee, ctx.level)
-    );
+    let mut out = format!("{pad}match {}", format_expression_at(scrutinee, ctx.level));
     let first_arm_start = arms
         .first()
         .map_or(span.end_byte, |arm| arm.span.start_byte);

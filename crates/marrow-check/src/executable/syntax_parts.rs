@@ -6,6 +6,7 @@ use marrow_syntax::{self as syntax, SourceSpan};
 use crate::checks::catch_frame;
 use crate::facts::EnumMemberId;
 use crate::program::MarrowType;
+use crate::walk::present_expr;
 
 use super::expr::lower_optional_expr;
 use super::{CheckedBody, CheckedExecutableContext, CheckedExpr, checked_enum_member_ref_in};
@@ -208,7 +209,7 @@ impl CheckedElseIf {
         scope: &mut Vec<HashMap<String, MarrowType>>,
     ) -> Option<Self> {
         Some(Self {
-            condition: lower_optional_expr(else_if.condition.as_ref(), context, scope)?,
+            condition: lower_optional_expr(present_expr(&else_if.condition), context, scope)?,
             block: CheckedBody::lower_scoped(&else_if.block, context, scope)?,
         })
     }

@@ -12,6 +12,7 @@ use crate::checks::file_prelude;
 use crate::enums::{enum_schema_in, resolve_type};
 use crate::infer::{infer_assignment_target_type_with_read_scope, infer_only};
 use crate::walk::for_each_child_expr;
+use crate::walk::present_expr;
 use crate::{CheckedModule, CheckedProgram, MarrowType};
 
 use super::signatures::{active_signature_help_parameter, source_signature_help_fact_at};
@@ -428,11 +429,13 @@ fn match_scrutinee_with_start(block: &Block, match_start: usize) -> Option<&Expr
     for statement in &block.statements {
         match statement {
             Statement::Match {
-                scrutinee: Some(scrutinee),
+                scrutinee,
                 arms,
                 span,
             } => {
-                if span.start_byte == match_start {
+                if span.start_byte == match_start
+                    && let Some(scrutinee) = present_expr(scrutinee)
+                {
                     return Some(scrutinee);
                 }
                 if let Some(scrutinee) = arms
@@ -603,11 +606,9 @@ fn expected_source_context_for_statement<'a>(
             function_return_type.map(ExpectedSourceContext::TypeExpr)
         }
         Statement::Match {
-            scrutinee: Some(scrutinee),
-            arms,
-            ..
+            scrutinee, arms, ..
         } if cursor_on_match_arm_path(arms, offset) => {
-            Some(ExpectedSourceContext::MatchArmScrutinee(scrutinee))
+            present_expr(scrutinee).map(ExpectedSourceContext::MatchArmScrutinee)
         }
         _ => None,
     }

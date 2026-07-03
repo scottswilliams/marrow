@@ -606,11 +606,8 @@ fn walk_commit_amplification(
             } => {
                 walk_commit_amplification(file, then_block, in_loop, in_transaction, out);
                 for else_if in else_ifs {
-                    if in_loop
-                        && !in_transaction
-                        && let Some(condition) = &else_if.condition
-                    {
-                        push_append_write_warnings(file, condition, out);
+                    if in_loop && !in_transaction {
+                        push_append_write_warnings(file, &else_if.condition, out);
                     }
                     walk_commit_amplification(file, &else_if.block, in_loop, in_transaction, out);
                 }
@@ -621,7 +618,7 @@ fn walk_commit_amplification(
             Statement::While {
                 condition, body, ..
             } => {
-                if !in_transaction && let Some(condition) = condition {
+                if !in_transaction {
                     push_append_write_warnings(file, condition, out);
                 }
                 walk_commit_amplification(file, body, true, in_transaction, out);
@@ -693,9 +690,7 @@ fn push_commit_amplification_warnings(
             push_append_write_warnings(file, value, out);
         }
         Statement::If { condition, .. } => {
-            if let Some(condition) = condition {
-                push_append_write_warnings(file, condition, out);
-            }
+            push_append_write_warnings(file, condition, out);
         }
         Statement::IfConst { value, .. } => push_append_write_warnings(file, value, out),
         Statement::For { iterable, step, .. } => {
@@ -705,9 +700,7 @@ fn push_commit_amplification_warnings(
             }
         }
         Statement::Match { scrutinee, .. } => {
-            if let Some(scrutinee) = scrutinee {
-                push_append_write_warnings(file, scrutinee, out);
-            }
+            push_append_write_warnings(file, scrutinee, out);
         }
         Statement::Break { .. }
         | Statement::Continue { .. }

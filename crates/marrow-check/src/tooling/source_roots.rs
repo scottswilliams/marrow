@@ -198,14 +198,12 @@ fn collect_branch_roots(
 ) {
     collect_block_roots(source, then_block, facts);
     for else_if in else_ifs {
-        if let Some(condition) = &else_if.condition {
-            collect_expr_roots(
-                source,
-                condition,
-                SourceSavedRootCursorKind::Expression,
-                facts,
-            );
-        }
+        collect_expr_roots(
+            source,
+            &else_if.condition,
+            SourceSavedRootCursorKind::Expression,
+            facts,
+        );
         collect_block_roots(source, &else_if.block, facts);
     }
     if let Some(else_block) = else_block {
@@ -242,14 +240,12 @@ fn collect_statement_roots(
             else_block,
             ..
         } => {
-            if let Some(condition) = condition {
-                collect_expr_roots(
-                    source,
-                    condition,
-                    SourceSavedRootCursorKind::Expression,
-                    facts,
-                );
-            }
+            collect_expr_roots(
+                source,
+                condition,
+                SourceSavedRootCursorKind::Expression,
+                facts,
+            );
             collect_branch_roots(source, then_block, else_ifs, else_block.as_ref(), facts);
         }
         Statement::IfConst {
@@ -265,14 +261,12 @@ fn collect_statement_roots(
         Statement::While {
             condition, body, ..
         } => {
-            if let Some(condition) = condition {
-                collect_expr_roots(
-                    source,
-                    condition,
-                    SourceSavedRootCursorKind::Expression,
-                    facts,
-                );
-            }
+            collect_expr_roots(
+                source,
+                condition,
+                SourceSavedRootCursorKind::Expression,
+                facts,
+            );
             collect_block_roots(source, body, facts);
         }
         Statement::For {
@@ -302,14 +296,12 @@ fn collect_statement_roots(
         Statement::Match {
             scrutinee, arms, ..
         } => {
-            if let Some(scrutinee) = scrutinee {
-                collect_expr_roots(
-                    source,
-                    scrutinee,
-                    SourceSavedRootCursorKind::Expression,
-                    facts,
-                );
-            }
+            collect_expr_roots(
+                source,
+                scrutinee,
+                SourceSavedRootCursorKind::Expression,
+                facts,
+            );
             for arm in arms {
                 collect_block_roots(source, &arm.block, facts);
             }
