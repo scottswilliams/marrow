@@ -34,17 +34,17 @@ Parsing is total: every value the grammar cannot structure becomes an `Expressio
 
 Compound assignment is represented as its own `Statement::CompoundAssign` with a
 typed `CompoundAssignOp`; the parser does not desugar it into a binary expression
-plus assignment. Statement parsing recognizes both adjacent operator tokens
-(`x+=1`) and the whitespace-separated token sequence (`x + = 1`) for the five
-arithmetic compound operators, leaving equality and comparison operators
-unchanged.
+plus assignment. Each of the five arithmetic compound operators (`+=`, `-=`,
+`*=`, `/=`, `%=`) is one lexer token, so statement parsing dispatches on that
+single token; a space before the `=` (`x * = 1`) is rejected as a parse error
+with a recovery node.
 
 ## Formatter
 
 `format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. It re-emits retained comments from the AST and keeps a parse/format structural fingerprint over the documented corpus. Within a body it preserves a single grouping blank line wherever the source held one or more (collapsing runs and dropping leading/trailing blanks), read from the source layout rather than the AST. `format_preserves_comments` is the losslessness predicate the CLI applies before emitting in any `fmt` mode (stdout, `--check`, `--write`). `format_declaration` and `format_expression` are public node-level renderers; note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
 
-Compound assignment formats canonically as `target op= value`, so `x*=1` and
-`x * = 1` both render as `x *= 1`.
+Compound assignment formats canonically as `target op= value`, so `x*=1` renders
+as `x *= 1`.
 
 ## Modules
 

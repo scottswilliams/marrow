@@ -369,18 +369,19 @@ pub enum CompoundAssignOp {
 }
 
 impl CompoundAssignOp {
-    /// The compound-assign operator a token spells when it sits immediately
-    /// before the `=` of `+=`, `-=`, `*=`, `/=`, `%=`, or `None` for any other
-    /// token. This is the single owner of the operator-token classification,
-    /// shared by the statement parser (which splits a compound assignment) and
-    /// the expression parser (which rejects one reached in expression position).
+    /// The compound-assign operator a single `+=`, `-=`, `*=`, `/=`, or `%=`
+    /// token spells, or `None` for any other token. Each compound operator is
+    /// one lexer token, so this classifies that token directly; it is the single
+    /// owner shared by the statement parser (which builds a compound assignment)
+    /// and the expression parser (which rejects one reached in expression
+    /// position).
     pub(crate) fn from_operator_token(kind: TokenKind) -> Option<Self> {
         match kind {
-            TokenKind::Plus => Some(Self::Add),
-            TokenKind::Minus => Some(Self::Subtract),
-            TokenKind::Star => Some(Self::Multiply),
-            TokenKind::Slash => Some(Self::Divide),
-            TokenKind::Percent => Some(Self::Remainder),
+            TokenKind::PlusEqual => Some(Self::Add),
+            TokenKind::MinusEqual => Some(Self::Subtract),
+            TokenKind::StarEqual => Some(Self::Multiply),
+            TokenKind::SlashEqual => Some(Self::Divide),
+            TokenKind::PercentEqual => Some(Self::Remainder),
             _ => None,
         }
     }

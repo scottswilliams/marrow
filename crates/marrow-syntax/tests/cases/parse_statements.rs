@@ -771,12 +771,18 @@ fn finally_is_an_ordinary_variable_name() {
 }
 
 #[test]
-fn parses_compound_assignment_with_adjacent_or_spaced_operator() {
+fn parses_compound_assignment_from_single_operator_token() {
     for (source, expected_op) in [
-        ("module app\nfn f()\n    i*=3\n", CompoundAssignOp::Multiply),
+        ("module app\nfn f()\n    i+=3\n", CompoundAssignOp::Add),
         (
-            "module app\nfn f()\n    i * = 3\n",
-            CompoundAssignOp::Multiply,
+            "module app\nfn f()\n    i -= 3\n",
+            CompoundAssignOp::Subtract,
+        ),
+        ("module app\nfn f()\n    i*=3\n", CompoundAssignOp::Multiply),
+        ("module app\nfn f()\n    i /= 3\n", CompoundAssignOp::Divide),
+        (
+            "module app\nfn f()\n    i%=3\n",
+            CompoundAssignOp::Remainder,
         ),
     ] {
         let parsed = parse_source(source);
@@ -796,6 +802,26 @@ fn parses_compound_assignment_with_adjacent_or_spaced_operator() {
             f.body.statements[0]
         );
     }
+}
+
+#[test]
+fn split_compound_assignment_is_rejected_with_a_recovery_node() {
+    // Each compound operator is a single token, so a space before the `=`
+    // (`i * = 3`) is not a compound assignment: it reports and leaves an error
+    // node so the body still parses.
+    let parsed = parse_source("module app\nfn f()\n    i * = 3\n");
+    assert!(
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::SplitCompoundAssign)),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    let f = parsed.file.function("f").expect("function");
+    assert!(
+        matches!(&f.body.statements[0], Statement::Error { .. }),
+        "{:#?}",
+        f.body.statements[0]
+    );
 }
 
 #[test]

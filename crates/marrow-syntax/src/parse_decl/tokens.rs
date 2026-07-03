@@ -183,6 +183,21 @@ pub(super) fn find_arrow(tokens: &[Token]) -> Option<usize> {
 pub(super) fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
     find_at_top_level(tokens, |index, tokens| tokens[index].kind == kind)
 }
+/// Index of the first top-level compound-assign operator token (`+=`, `-=`,
+/// `*=`, `/=`, `%=`) at parenthesis/bracket depth 0, so a compound operator
+/// inside a call argument does not split the statement.
+pub(super) fn find_top_level_compound_assign(tokens: &[Token]) -> Option<usize> {
+    find_at_top_level(tokens, |index, tokens| {
+        matches!(
+            tokens[index].kind,
+            TokenKind::PlusEqual
+                | TokenKind::MinusEqual
+                | TokenKind::StarEqual
+                | TokenKind::SlashEqual
+                | TokenKind::PercentEqual
+        )
+    })
+}
 /// The zero-width gap position just after `anchor`, where a missing operand that
 /// follows a `=`/keyword/operator is reported.
 fn gap_after(anchor: SourceSpan) -> SourceSpan {

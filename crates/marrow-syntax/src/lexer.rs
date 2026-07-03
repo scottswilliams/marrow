@@ -816,6 +816,11 @@ impl<'a> Lexer<'a> {
             ("??", TokenKind::QuestionQuestion),
             ("<=", TokenKind::LessEqual),
             (">=", TokenKind::GreaterEqual),
+            ("+=", TokenKind::PlusEqual),
+            ("-=", TokenKind::MinusEqual),
+            ("*=", TokenKind::StarEqual),
+            ("/=", TokenKind::SlashEqual),
+            ("%=", TokenKind::PercentEqual),
         ] {
             if tail.starts_with(text) {
                 return Some((kind, text.len()));

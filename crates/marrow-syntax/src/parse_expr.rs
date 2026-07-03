@@ -110,12 +110,9 @@ impl<'a> ExprParser<'a> {
             );
             return true;
         }
-        if let Some(op) = CompoundAssignOp::from_operator_token(token.kind)
-            && self.peek_at(1) == Some(TokenKind::Equal)
-        {
-            let span = join_spans(token.span, self.tokens[self.pos + 1].span);
+        if let Some(op) = CompoundAssignOp::from_operator_token(token.kind) {
             self.error(
-                span,
+                token.span,
                 ParseDiagnosticReason::CompoundAssignInExpression,
                 format!(
                     "`{}` is assignment, not an expression; assignment does not chain",
@@ -273,17 +270,6 @@ impl<'a> ExprParser<'a> {
         }
         let mut levels = 0;
         while let Some(op) = self.peek().and_then(&operator) {
-            // A binary operator immediately followed by `=` is a compound-assign
-            // operator (`+=`): a statement, never an expression. Stop the chain and
-            // leave it for the stray-assignment-operator recovery, rather than
-            // consuming the operator and failing on the trailing `=`.
-            if self.peek_at(1) == Some(TokenKind::Equal)
-                && self
-                    .peek()
-                    .is_some_and(|kind| CompoundAssignOp::from_operator_token(kind).is_some())
-            {
-                break;
-            }
             if !self.enter_chain_level() {
                 self.leave_chain(levels);
                 return self.nesting_limit_error();

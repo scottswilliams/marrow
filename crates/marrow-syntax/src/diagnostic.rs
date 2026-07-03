@@ -54,6 +54,10 @@ pub enum ParseDiagnosticReason {
     /// expression position, as in `a += b += c`: assignment does not chain and
     /// is not an expression.
     CompoundAssignInExpression,
+    /// A compound-assign operator written with a space before the `=`
+    /// (`x * = y`). Each compound operator is a single token, so the split
+    /// spelling is rejected; write it compact (`x *= y`).
+    SplitCompoundAssign,
     /// A bare `=` left in expression position, the common `=`-for-`==` mistake.
     EqualsInExpression,
     Expected(ExpectedSyntax),

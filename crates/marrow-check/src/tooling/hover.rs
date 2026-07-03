@@ -372,7 +372,12 @@ fn operator_spelling(kind: TokenKind, text: &str) -> Option<&str> {
         | TokenKind::Minus
         | TokenKind::Star
         | TokenKind::Slash
-        | TokenKind::Percent => Some(text),
+        | TokenKind::Percent
+        | TokenKind::PlusEqual
+        | TokenKind::MinusEqual
+        | TokenKind::StarEqual
+        | TokenKind::SlashEqual
+        | TokenKind::PercentEqual => Some(text),
         _ => None,
     }
 }
@@ -394,6 +399,11 @@ fn operator_fact(spelling: &str) -> Option<SourceOperatorHoverFact> {
         "*" => "multiplication.",
         "/" => "division.",
         "%" => "remainder.",
+        "+=" => "add and assign.",
+        "-=" => "subtract and assign.",
+        "*=" => "multiply and assign.",
+        "/=" => "divide and assign.",
+        "%=" => "remainder and assign.",
         "??" => "fallback value selection.",
         "?." => "optional member access.",
         ".." => "exclusive range.",

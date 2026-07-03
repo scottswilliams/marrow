@@ -348,7 +348,7 @@ fn formats_compound_assignment_canonically() {
     let source = "module app\n\
          fn run()\n\
          \x20   count*=3\n\
-         \x20   total + = count\n";
+         \x20   total+=count\n";
     let expected = "\
          \x20   count *= 3\n\
          \x20   total += count";

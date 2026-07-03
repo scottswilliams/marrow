@@ -68,6 +68,11 @@ pub enum TokenKind {
     Star,
     Slash,
     Percent,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
+    PercentEqual,
     Caret,
 }
 

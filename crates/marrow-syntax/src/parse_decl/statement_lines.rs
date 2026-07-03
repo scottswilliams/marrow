@@ -7,7 +7,8 @@ use super::head::parse_key_params_tokens;
 use super::params::match_paren;
 use super::tokens::{
     expr_of, expr_of_after, expr_of_before, expr_of_in_header, find_top_level,
-    find_top_level_equal, line_span_or, parse_type, push_parse_error,
+    find_top_level_compound_assign, find_top_level_equal, line_span_or, parse_type,
+    push_parse_error,
 };
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
@@ -288,21 +289,37 @@ fn parse_assign_or_expr(
     line: &[Token],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Statement> {
+    if let Some(op_index) = find_top_level_compound_assign(line) {
+        let op_token = line[op_index];
+        let op = CompoundAssignOp::from_operator_token(op_token.kind)
+            .expect("find_top_level_compound_assign yields a compound-assign token");
+        let target = expr_of_before(source, &line[..op_index], op_token.span, diagnostics)?;
+        let value = expr_of_after(source, &line[op_index + 1..], op_token.span, diagnostics)?;
+        return Some(Statement::CompoundAssign {
+            span: join_spans(target.span(), value.span()),
+            target,
+            op,
+            op_span: op_token.span,
+            value,
+        });
+    }
     if let Some(equal) = find_top_level_equal(line) {
         let equal_span = line[equal].span;
-        if equal > 0
-            && let Some(op) = CompoundAssignOp::from_operator_token(line[equal - 1].kind)
-        {
+        // A compound operator lexes as one token, so an arithmetic operator with
+        // a space before the `=` (`x * = y`) is the split spelling: reject it
+        // rather than silently canonicalize.
+        if equal > 0 && is_split_compound_operator(line[equal - 1].kind) {
             let op_span = line[equal - 1].span;
-            let target = expr_of_before(source, &line[..equal - 1], op_span, diagnostics)?;
-            let value = expr_of_after(source, &line[equal + 1..], equal_span, diagnostics)?;
-            return Some(Statement::CompoundAssign {
-                span: join_spans(target.span(), value.span()),
-                target,
-                op,
-                op_span,
-                value,
+            diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::SplitCompoundAssign),
+                severity: Severity::Error,
+                message: "write a compound assignment as one operator (`*=`), not a spaced `* =`"
+                    .to_string(),
+                help: None,
+                span: join_spans(op_span, equal_span),
             });
+            return None;
         }
         let target = expr_of_before(source, &line[..equal], equal_span, diagnostics)?;
         let value = expr_of_after(source, &line[equal + 1..], equal_span, diagnostics)?;
@@ -318,6 +335,20 @@ fn parse_assign_or_expr(
             value,
         })
     }
+}
+
+/// Whether a bare arithmetic-operator token, sitting directly before a top-level
+/// `=`, spells the split form of a compound assignment (`+ =`, `- =`, `* =`,
+/// `/ =`, `% =`).
+fn is_split_compound_operator(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+    )
 }
 
 /// Parse an `if const name [: type] = place` head into the bound name, optional

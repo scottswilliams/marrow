@@ -53,7 +53,9 @@ A `qualified_name` segment may also be a type keyword used as a name — the
 paths spell those names directly.
 
 Multi-character punctuation is matched by longest match, so `?.` and `??` are
-recognized before a lone `?`. A single `?` is the optional type suffix: `string?`
+recognized before a lone `?`, and each compound-assign operator (`+=`, `-=`,
+`*=`, `/=`, `%=`) is one token recognized before its bare arithmetic operator.
+A single `?` is the optional type suffix: `string?`
 lexes as `string` then `?`, `string??` lexes as `string` then one `??` token
 (rejected as the double-optional spelling in type position), and `?.`/`??` keep
 their operator meaning elsewhere. There is no parse ambiguity between type and
@@ -367,10 +369,10 @@ expression_stmt = expression NEWLINE ;
 ```
 
 Field and path assignments preserve omitted fields and children at the written
-entry. The parser also accepts compound assignment when the operator and `=` are
-lexed separately by whitespace (`x * = y`); the AST and formatter canonicalize
-that spelling to `x *= y`. `if exists(place)` narrows a maybe-present read inside
-the guarded block.
+entry. Each compound-assign operator (`+=`, `-=`, `*=`, `/=`, `%=`) is a single
+token, so a space before the `=` (`x * = y`) is not a compound assignment and is
+a parse error. `if exists(place)` narrows a maybe-present read inside the guarded
+block.
 
 ## Conditionals And Loops
 

@@ -211,9 +211,9 @@ For plain `=` assignment, the right-hand expression is evaluated before the
 target is changed.
 
 Compound assignment is available for the arithmetic operators: `+=`, `-=`,
-`*=`, `/=`, and `%=`. The compact spelling (`i*=3`) and the whitespace-separated
-spelling (`i * = 3`) parse the same way; the formatter writes the compact
-operator with spaces around it (`i *= 3`). A compound assignment resolves and
+`*=`, `/=`, and `%=`. Each is a single operator token, so a space before the `=`
+(`i * = 3`) is a parse error; the formatter writes the operator with spaces
+around it (`i *= 3`). A compound assignment resolves and
 reads the target, evaluates the right-hand expression, applies the corresponding
 binary operator, then writes the result back through the same target. Type
 checking is the same as writing `target = target op value`: the target must be
