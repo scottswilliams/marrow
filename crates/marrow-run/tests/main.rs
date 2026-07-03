@@ -120,6 +120,8 @@ mod evolution_apply_transform_faults;
 mod evolution_apply_transforms;
 #[path = "cases/evolution_auto_apply.rs"]
 mod evolution_auto_apply;
+#[path = "cases/local_kernel_architecture.rs"]
+mod local_kernel_architecture;
 #[path = "cases/project_session.rs"]
 mod project_session;
 #[path = "cases/run_cli_fence.rs"]
