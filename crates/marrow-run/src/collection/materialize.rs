@@ -1,12 +1,10 @@
 use marrow_check::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
+use super::local::{enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir};
 use crate::env::Env;
 use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
-use crate::local_collection::{
-    enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir,
-};
 use crate::stdlib::check_key_collection;
 use crate::value::{Sequence, Value};
 

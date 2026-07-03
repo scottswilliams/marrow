@@ -42,7 +42,6 @@ mod group_write;
 mod host;
 mod host_effects;
 mod index_maintenance;
-mod local_collection;
 mod loop_exec;
 mod neighbor;
 mod path;

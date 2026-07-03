@@ -2,9 +2,9 @@ use marrow_check::{CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedMembe
 use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 
+use crate::collection::eval_local_collection_delete;
 use crate::env::{Env, TraversedLayer};
 use crate::error::{RUN_ABSENT, RuntimeError, raise_fault, unsupported};
-use crate::local_collection::eval_local_collection_delete;
 use crate::path::{KeyRole, SavedPath, Terminal, direct_root_place, lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::write::{

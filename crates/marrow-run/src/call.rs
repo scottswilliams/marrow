@@ -12,6 +12,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
 use crate::call_args::{bind_arguments, eval_identity_constructor, eval_resource_constructor};
+use crate::collection::eval_local_collection_read;
 use crate::collection::{
     Direction, eval_append, eval_entries, eval_keys, eval_next_id, eval_reversed, eval_values,
 };
@@ -23,7 +24,6 @@ use crate::error::{
 };
 use crate::expr::eval_expr;
 use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
-use crate::local_collection::eval_local_collection_read;
 use crate::neighbor::eval_neighbor;
 use crate::std_pure::eval_std;
 use crate::stdlib::{

@@ -528,7 +528,7 @@ fn saved_key_preview(key: &SavedKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::LocalTree;
+    use crate::value::{CollectionKey, LocalTree};
 
     #[test]
     fn local_tree_child_labels_bound_key_tuple_arity() {
@@ -536,7 +536,7 @@ mod tests {
             .map(|value| SavedKey::Int(value as i64))
             .collect();
         let mut local_tree = LocalTree::default();
-        local_tree.insert(keys, Value::Int(42));
+        local_tree.insert(CollectionKey::new(keys), Value::Int(42));
         let tree = DebugValue::from_value(Value::LocalTree(local_tree));
 
         let children = tree.children(DebugValuePage::default(), DebugValueFilter::Named);

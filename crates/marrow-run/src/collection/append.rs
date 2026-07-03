@@ -12,7 +12,7 @@ use crate::path::{direct_root_place, lower};
 use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_value, value_to_leaf};
-use crate::write::{next_after, next_id, next_layer_pos, plan_layer_leaf_write};
+use crate::write::{next_id, next_layer_pos, plan_layer_leaf_write};
 
 pub(crate) fn eval_next_id(
     args: &[ExecArg],
@@ -78,10 +78,10 @@ fn eval_local_append(
         Ok(_) => return Err(unsupported("appending to this path", span)),
         Err(error) => return Err(assign_error(name, error, *target_span)),
     };
-    let highest = items.highest_position().unwrap_or(0);
-    let pos = next_after(highest).map_err(|error| write_fault(error, span))?;
-    items.append(pos, appended);
-    Ok(Some(Value::Int(pos)))
+    let position = items
+        .append(appended)
+        .map_err(|error| write_fault(error, span))?;
+    Ok(Some(Value::Int(position.get())))
 }
 
 fn eval_saved_append(

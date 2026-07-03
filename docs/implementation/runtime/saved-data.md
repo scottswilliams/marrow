@@ -36,7 +36,7 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 - **Address resolution** (`read.rs`): classify an iterable path into Root / Index branch / ChildLayer; build node-backed record cursors plus index/data child cursors; count and probe presence without materializing.
 - **Loop driver** (`saved_iter.rs` + four scan modules): the `ChildCursor` trait, the depth-bounded `walk_keyed_children`/`count_keyed_children` tree walk, the `LoopShape` row contract, and `SavedLoopSpec`/`SavedLoopPlan` that pick one of four scans (Root / Index / UniqueIndex / ChildLayer).
 - **Builtins** (`collection.rs` + `collection/`): `keys`/`values`/`entries`/`reversed` dispatch, `Direction`, local materialization, and `append`/`nextId`.
-- **Local collections** (`local_collection.rs`): in-memory `Sequence`/`LocalTree` that mirror the saved iteration contract.
+- **Local collections** (`collection/local.rs`): the in-memory `Sequence`/`LocalTree` kernel, addressed by the validated `Position`/`CollectionKey` newtypes minted at this one boundary; mirrors the saved iteration contract.
 
 ## Module map
 
@@ -54,7 +54,7 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 | `crates/marrow-run/src/collection.rs` | `keys`/`values`/`entries`/`reversed` dispatch, `Direction`, `absent_read` (catchable `run.absent_element` a below-1 sequence position raises at write/lowering time), the no-materialize-durable rule. |
 | `crates/marrow-run/src/collection/materialize.rs` | `values_or_entries`/`MaterializeKind`, `reversed_materialized`/`reversed_keys`: materialize local keyed collections, reject durable places. |
 | `crates/marrow-run/src/collection/append.rs` | `eval_append`/`eval_next_id`: append to a local sequence or saved layer (read next free position, guard, plan+apply leaf write), mint next record id. |
-| `crates/marrow-run/src/local_collection.rs` | In-memory `Sequence`/`LocalTree` read/write/count and ordered key/value/entry materialization mirroring the saved contract. |
+| `crates/marrow-run/src/collection/local.rs` | The one boundary that mints a `Position`/`CollectionKey` address for the in-memory `Sequence`/`LocalTree` kernel: read/write/delete/count and ordered key/value/entry materialization mirroring the saved contract. |
 
 ## Key invariants
 
@@ -66,7 +66,7 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 - **One tree-walk owner.** `walk_keyed_children_after` threads `query_prefix` and `identity_prefix` separately and returns the visitor's `ControlFlow<Flow>` unchanged; an index walk passes its exact prefix as both, yields the full index tuple, then slices the identity. Preserving the `ControlFlow` lets a body `break` stop `stream_index_branch`'s enum-member loop instead of bleeding into the next member. `walk_keyed_children` is the `Flow`-collapsing wrapper used where there is no surrounding member loop; `count_keyed_children` reuses it, folding a per-leaf count with `checked_add` and never paging. `read.rs` `stream_index_branch` is the single owner of branch iteration for the loop, count, and presence paths; a fully pinned tuple is read as an exact entry paged at `INDEX_SCAN_PAGE_LIMIT` (128).
 - **`SavedLoopPlan::run` pushes a `TraversedLayer`** for the streamed layer; `append` and writes call `guard_traversed_layer`, so mutating a layer mid-iteration faults rather than corrupting the walk.
 - **`append` reads before it writes.** It computes `next_layer_pos` from the store tail, then plans and applies a leaf write at that 1-based position through `crate::write` (`plan_layer_leaf_write`) and `Env::apply_plan`; it lives in this read area because position allocation is fundamentally a tail read.
-- **Local sequences are 1-based; both `Sequence` and `LocalTree` are key-ordered maps** so both enumerate in saved ascending order. `Sequence` backs the local sequence with a `BTreeMap` from position to value and `LocalTree` backs the keyed local tree with a `BTreeMap` from the full key tuple to its value, keeping insert/lookup/delete `O(log n)` for any position or key arrival order. Composite local-tree keys enumerate only the first column.
+- **Local sequences are 1-based; both `Sequence` and `LocalTree` are key-ordered maps** so both enumerate in saved ascending order. `Sequence` backs the local sequence with a `BTreeMap` from position to value and `LocalTree` backs the keyed local tree with a `BTreeMap` from the full key tuple to its value, keeping insert/lookup/delete `O(log n)` for any position or key arrival order. Composite local-tree keys enumerate only the first column. A position below 1 never becomes a `Position`, so an out-of-range sequence address is unrepresentable rather than guarded by convention.
 
 ## Read next
 

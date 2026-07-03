@@ -3,20 +3,25 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
+use self::local::enumerate_local_collection_dir;
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::expr::eval_expr;
-use crate::local_collection::{
-    enumerate_local_collection_dir, enumerate_local_keys_call_arg, materialize_local_collection_dir,
-};
 use crate::read::keys_argument;
 use crate::stdlib::check_key_collection;
 use crate::value::{Sequence, Value};
 
 mod append;
+mod local;
 mod materialize;
 
 pub(crate) use append::{eval_append, eval_next_id};
+pub(crate) use local::{
+    enumerate_local_keys_call_arg, enumerate_reversed_local_keys_call_arg,
+    eval_local_collection_delete, eval_local_collection_read, eval_local_collection_write,
+    eval_local_collection_write_value, local_collection_count, materialize_local_collection_dir,
+    resolve_local_collection_target,
+};
 pub(crate) use materialize::{
     MaterializeKind, reversed_keys, reversed_materialized, values_or_entries,
 };

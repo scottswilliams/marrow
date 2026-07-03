@@ -19,6 +19,7 @@ use marrow_check::{
 };
 
 use crate::error::{Located, RuntimeError, type_error, unsupported};
+use crate::write::{WriteError, next_after};
 
 const DIAGNOSTIC_PREVIEW_SCALAR_LIMIT: usize = 64;
 
@@ -68,6 +69,67 @@ pub enum Value {
     Identity(IdentityValue),
 }
 
+/// A 1-based position addressing a node in a local sequence, or the lone int column
+/// of a sequence-shaped local tree. A value below 1 addresses no node, so it never
+/// becomes a `Position`: the type makes an out-of-range position unrepresentable, and
+/// the runtime boundary that turns a looked-up int into an address is the only place a
+/// `Position` is minted from user input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Position(i64);
+
+impl Position {
+    /// The position addressing `value`, or `None` when it falls below the 1-based
+    /// range and therefore addresses no node.
+    pub(crate) fn new(value: i64) -> Option<Self> {
+        (value >= 1).then_some(Self(value))
+    }
+
+    /// The 1-based position as its raw int, for a caller returning it as a runtime
+    /// value.
+    pub(crate) fn get(self) -> i64 {
+        self.0
+    }
+
+    /// The next append position, one past the highest populated one (or the first
+    /// position when the sequence is empty). Routed through the single owner of the
+    /// 1-based key-space-exhaustion contract, so a local sequence and a saved layer
+    /// exhaust the int key space identically.
+    fn allocate_after(highest: Option<Self>) -> Result<Self, WriteError> {
+        next_after(highest.map_or(0, Self::get)).map(Self)
+    }
+}
+
+/// The full key tuple addressing a row in a local tree. Built at the one runtime
+/// boundary from evaluated lookup arguments, each already validated as a scalar key.
+/// A lone int column is a 1-based sequence position, so the boundary funnels a below-1
+/// lone key through [`Position`], rejecting it exactly as a local sequence read does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CollectionKey(Vec<SavedKey>);
+
+impl CollectionKey {
+    pub(crate) fn new(keys: Vec<SavedKey>) -> Self {
+        Self(keys)
+    }
+
+    /// The lone int this key addresses when the tree is single-int-keyed (and thus
+    /// sequence-shaped), or `None` for any composite or non-int key. The boundary
+    /// validates such a key through [`Position::new`].
+    pub(crate) fn lone_int(&self) -> Option<i64> {
+        match self.0.as_slice() {
+            [SavedKey::Int(position)] => Some(*position),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_keys(&self) -> &[SavedKey] {
+        &self.0
+    }
+
+    pub(crate) fn into_keys(self) -> Vec<SavedKey> {
+        self.0
+    }
+}
+
 /// A 1-based integer-keyed local sequence held as an ordered map from a populated
 /// position to its value. Holes are absent positions, not stored entries, so a
 /// positional write past the dense range or a delete leaves a gap that iteration,
@@ -98,43 +160,35 @@ impl Sequence {
         self.0.len()
     }
 
-    /// The value at `position`, or `None` when the position is a hole or non-positive.
-    pub(crate) fn get(&self, position: i64) -> Option<&Value> {
-        self.0.get(&position)
+    /// The value at `position`, or `None` when the position is a hole.
+    pub(crate) fn get(&self, position: Position) -> Option<&Value> {
+        self.0.get(&position.get())
     }
 
-    /// Write `value` at `position`, replacing any existing entry or inserting a new one.
-    /// The map keeps positions in ascending order, so any position is `O(log n)`. A
-    /// non-positive position addresses no node and is rejected by the caller first.
-    pub(crate) fn set(&mut self, position: i64, value: Value) {
-        self.0.insert(position, value);
+    /// Write `value` at `position`, replacing any existing entry or inserting a new
+    /// one. The map keeps positions in ascending order, so any position is `O(log n)`.
+    pub(crate) fn set(&mut self, position: Position, value: Value) {
+        self.0.insert(position.get(), value);
     }
 
     /// Remove the entry at `position`, returning whether one was present. Deleting a
     /// hole removes nothing.
-    pub(crate) fn remove(&mut self, position: i64) -> bool {
-        self.0.remove(&position).is_some()
+    pub(crate) fn remove(&mut self, position: Position) -> bool {
+        self.0.remove(&position.get()).is_some()
     }
 
-    /// The highest populated position, or `None` when empty. Callers allocate the
-    /// next append position one past this through the shared key-space allocator, so
-    /// the strictly-ascending, exhaustion-faulting contract has a single owner.
-    pub(crate) fn highest_position(&self) -> Option<i64> {
-        self.0.keys().next_back().copied()
+    /// Append `value` at the next position past the highest populated one, returning
+    /// that position. Append never fills a hole, so it only ever extends the tail and
+    /// the strictly-ascending invariant holds; an exhausted int key space faults.
+    pub(crate) fn append(&mut self, value: Value) -> Result<Position, WriteError> {
+        let position = Position::allocate_after(self.highest_position())?;
+        self.0.insert(position.get(), value);
+        Ok(position)
     }
 
-    /// Store `value` at `position`, which the caller has allocated strictly above
-    /// every existing key. Append never fills a hole, so this only ever extends the
-    /// tail and the ascending invariant holds.
-    pub(crate) fn append(&mut self, position: i64, value: Value) {
-        debug_assert!(
-            self.0
-                .keys()
-                .next_back()
-                .is_none_or(|last| position > *last),
-            "append position must exceed every existing key"
-        );
-        self.0.insert(position, value);
+    /// The highest populated position, or `None` when empty.
+    fn highest_position(&self) -> Option<Position> {
+        self.0.keys().next_back().copied().map(Position)
     }
 
     /// The populated positions in ascending key order.
@@ -169,22 +223,21 @@ impl Sequence {
 pub struct LocalTree(std::collections::BTreeMap<Vec<SavedKey>, Value>);
 
 impl LocalTree {
-    /// The value stored under the exact key tuple `keys`, or `None` when no row is
-    /// addressed.
-    pub(crate) fn get(&self, keys: &[SavedKey]) -> Option<&Value> {
-        self.0.get(keys)
+    /// The value stored under the exact key tuple, or `None` when no row is addressed.
+    pub(crate) fn get(&self, key: &CollectionKey) -> Option<&Value> {
+        self.0.get(key.as_keys())
     }
 
-    /// Overwrite the row at `keys`, or insert a new one. The map keeps rows in
+    /// Overwrite the row at `key`, or insert a new one. The map keeps rows in
     /// ascending key-tuple order, so no caller re-sorts and any arrival order is
     /// `O(log n)`.
-    pub(crate) fn insert(&mut self, keys: Vec<SavedKey>, value: Value) {
-        self.0.insert(keys, value);
+    pub(crate) fn insert(&mut self, key: CollectionKey, value: Value) {
+        self.0.insert(key.into_keys(), value);
     }
 
-    /// Remove the row at `keys`. Deleting an absent key removes nothing.
-    pub(crate) fn remove(&mut self, keys: &[SavedKey]) {
-        self.0.remove(keys);
+    /// Remove the row at `key`. Deleting an absent key removes nothing.
+    pub(crate) fn remove(&mut self, key: &CollectionKey) {
+        self.0.remove(key.as_keys());
     }
 
     /// The number of stored rows.

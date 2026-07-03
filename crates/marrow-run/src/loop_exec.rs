@@ -10,14 +10,14 @@ use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, durable_collection_value, peel_reversed, values_or_entries};
+use crate::collection::{
+    enumerate_local_keys_call_arg, enumerate_reversed_local_keys_call_arg,
+    materialize_local_collection_dir,
+};
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
-use crate::local_collection::{
-    enumerate_local_keys_call_arg, enumerate_reversed_local_keys_call_arg,
-    materialize_local_collection_dir,
-};
 use crate::range_expr::checked_range;
 use crate::read::keys_argument;
 use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};

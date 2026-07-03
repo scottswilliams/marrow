@@ -9,6 +9,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::call::eval_call;
 use crate::call_args::default_value;
+use crate::collection::{
+    eval_local_collection_write, eval_local_collection_write_value, resolve_local_collection_target,
+};
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, assign_error, type_error, unsupported};
 use crate::exec::{eval_block, eval_match, local_target};
@@ -17,9 +20,6 @@ use crate::expr::{
 };
 use crate::group_write::eval_group_entry_write_value;
 use crate::host::Frame;
-use crate::local_collection::{
-    eval_local_collection_write, eval_local_collection_write_value, resolve_local_collection_target,
-};
 use crate::loop_exec::{eval_for, eval_while};
 use crate::path::{direct_root_place, lower};
 use crate::stdlib::convert_to_error_code;
