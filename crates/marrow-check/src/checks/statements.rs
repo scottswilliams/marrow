@@ -18,7 +18,6 @@ use crate::infer::{
 use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::is_optional_value;
-use crate::walk::present_expr;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
     CHECK_LOSSY_ROUND_TRIP, CHECK_UNANNOTATED_ABSENT, CHECK_UNKNOWN_ROOT, CHECK_UNRESOLVED_NAME,
@@ -499,16 +498,11 @@ impl StatementCheck<'_> {
                 else_ifs,
                 else_block,
                 ..
-            } => self.check_conditional(
-                present_expr(condition),
-                then_block,
-                else_ifs,
-                else_block.as_ref(),
-            ),
+            } => self.check_conditional(condition, then_block, else_ifs, else_block.as_ref()),
             Statement::IfConst { .. } => self.check_if_const(statement),
             Statement::While {
                 condition, body, ..
-            } => self.check_while(present_expr(condition), body),
+            } => self.check_while(condition, body),
             Statement::For {
                 binding,
                 iterable,
@@ -525,7 +519,7 @@ impl StatementCheck<'_> {
                 arms,
                 span,
                 ..
-            } => self.check_match_statement(present_expr(scrutinee), arms, *span),
+            } => self.check_match_statement(scrutinee, arms, *span),
             Statement::Break { .. } | Statement::Continue { .. } => {
                 self.required_fields.invalidate_all();
             }
@@ -639,12 +633,10 @@ impl StatementCheck<'_> {
     /// invalidated — on exit.
     fn check_guarded_block(
         &mut self,
-        condition: Option<&marrow_syntax::Expression>,
+        condition: &marrow_syntax::Expression,
         block: &marrow_syntax::Block,
     ) {
-        let augment = condition
-            .map(|condition| self.condition_narrowings(condition))
-            .unwrap_or_default();
+        let augment = self.condition_narrowings(condition);
         let snapshot = self.narrowing.enter(augment);
         self.check_inconclusive_block(block);
         self.narrowing.exit(snapshot);
@@ -1426,33 +1418,25 @@ impl StatementCheck<'_> {
 
     fn check_conditional(
         &mut self,
-        condition: Option<&marrow_syntax::Expression>,
+        condition: &marrow_syntax::Expression,
         then_block: &marrow_syntax::Block,
         else_ifs: &[marrow_syntax::ElseIf],
         else_block: Option<&marrow_syntax::Block>,
     ) {
-        if let Some(condition) = condition {
-            self.check_condition_expr(condition);
-            self.narrow_invalidate_if_writes_saved(condition);
-        }
+        self.check_condition_expr(condition);
+        self.narrow_invalidate_if_writes_saved(condition);
         self.check_guarded_block(condition, then_block);
         for else_if in else_ifs {
-            if let Some(condition) = present_expr(&else_if.condition) {
-                self.check_condition_expr(condition);
-                self.narrow_invalidate_if_writes_saved(condition);
-            }
-            self.check_guarded_block(present_expr(&else_if.condition), &else_if.block);
+            self.check_condition_expr(&else_if.condition);
+            self.narrow_invalidate_if_writes_saved(&else_if.condition);
+            self.check_guarded_block(&else_if.condition, &else_if.block);
         }
         if let Some(block) = else_block {
             self.check_inconclusive_block(block);
         }
         // A fall-through-preventing `if not exists(place)` proves the place present
         // for the statements that follow the guard.
-        if else_ifs.is_empty()
-            && else_block.is_none()
-            && block_prevents_fallthrough(then_block)
-            && let Some(condition) = condition
-        {
+        if else_ifs.is_empty() && else_block.is_none() && block_prevents_fallthrough(then_block) {
             let narrowings = self.negated_exists_narrowings(condition);
             self.narrowing.add(narrowings);
         }
@@ -1521,11 +1505,9 @@ impl StatementCheck<'_> {
         frame.insert(name.to_string(), binding_type);
         self.check_block_under_frame_narrowed(frame, augment, then_block);
         for else_if in else_ifs {
-            if let Some(condition) = present_expr(&else_if.condition) {
-                self.check_condition_expr(condition);
-                self.narrow_invalidate_if_writes_saved(condition);
-            }
-            self.check_guarded_block(present_expr(&else_if.condition), &else_if.block);
+            self.check_condition_expr(&else_if.condition);
+            self.narrow_invalidate_if_writes_saved(&else_if.condition);
+            self.check_guarded_block(&else_if.condition, &else_if.block);
         }
         if let Some(block) = else_block {
             self.check_inconclusive_block(block);
@@ -1556,15 +1538,9 @@ impl StatementCheck<'_> {
         ));
     }
 
-    fn check_while(
-        &mut self,
-        condition: Option<&marrow_syntax::Expression>,
-        body: &marrow_syntax::Block,
-    ) {
-        if let Some(condition) = condition {
-            self.check_condition_expr(condition);
-            self.narrow_invalidate_if_writes_saved(condition);
-        }
+    fn check_while(&mut self, condition: &marrow_syntax::Expression, body: &marrow_syntax::Block) {
+        self.check_condition_expr(condition);
+        self.narrow_invalidate_if_writes_saved(condition);
         let snapshot = self.narrowing.enter(Vec::new());
         self.rewiden_loop_header(body);
         self.check_inconclusive_block(body);
@@ -1708,14 +1684,12 @@ impl StatementCheck<'_> {
 
     fn check_match_statement(
         &mut self,
-        scrutinee: Option<&marrow_syntax::Expression>,
+        scrutinee: &marrow_syntax::Expression,
         arms: &[marrow_syntax::MatchArm],
         span: SourceSpan,
     ) {
-        if let Some(scrutinee) = scrutinee {
-            check_entries_value_position(self.file, scrutinee, self.diagnostics);
-            self.check_range_value(scrutinee);
-        }
+        check_entries_value_position(self.file, scrutinee, self.diagnostics);
+        self.check_range_value(scrutinee);
         check_match(MatchCheck {
             program: self.program,
             file: self.file,

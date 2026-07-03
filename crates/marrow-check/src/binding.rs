@@ -39,7 +39,6 @@ use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_f
 use crate::facts::{FunctionId, LocalId};
 use crate::infer::{infer_only, local_binding};
 use crate::source_spans::{identifier_span_in, last_identifier_span_in, source_span_at};
-use crate::walk::present_expr;
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
     resolve, resolve_function_in_module, short_name, split_type_path,
@@ -1203,7 +1202,7 @@ impl UseWalker<'_, '_> {
             }
             Statement::Match {
                 scrutinee, arms, ..
-            } => self.walk_match(present_expr(scrutinee), arms, scope, type_scope),
+            } => self.walk_match(scrutinee, arms, scope, type_scope),
             Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
         }
     }
@@ -1331,16 +1330,13 @@ impl UseWalker<'_, '_> {
     /// the scrutinee's enum, then each arm body under its own block frame.
     fn walk_match(
         &mut self,
-        scrutinee: Option<&Expression>,
+        scrutinee: &Expression,
         arms: &[MatchArm],
         scope: &mut Vec<HashMap<String, DefId>>,
         type_scope: &mut Vec<HashMap<String, MarrowType>>,
     ) {
-        if let Some(scrutinee) = scrutinee {
-            self.walk_expr(scrutinee, scope, type_scope);
-        }
-        let enum_identity =
-            scrutinee.and_then(|scrutinee| self.match_scrutinee_enum(scrutinee, type_scope));
+        self.walk_expr(scrutinee, scope, type_scope);
+        let enum_identity = self.match_scrutinee_enum(scrutinee, type_scope);
         if let Some((enum_module, enum_name)) = enum_identity {
             for arm in arms {
                 self.resolve_match_arm(&enum_module, &enum_name, arm);

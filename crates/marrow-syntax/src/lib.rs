@@ -86,20 +86,29 @@ pub fn parse_source(source: &str) -> ParsedSource {
 pub fn parse_expression(source: &str) -> (Option<Expression>, Vec<Diagnostic>) {
     let lexed = lex_source(source);
     let mut diagnostics = lexed.diagnostics;
-    let expression =
-        parse_expr::ExprParser::new(source, &lexed.tokens).parse_complete(&mut diagnostics);
-    if expression.is_none() && diagnostics.is_empty() {
-        diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
-            reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                ExpectedSyntax::Expression,
-            )),
-            severity: Severity::Error,
-            message: "expected an expression".to_string(),
-            help: None,
-            span: SourceSpan::default(),
-        });
-    }
+    let gap = lexed
+        .tokens
+        .first()
+        .map_or_else(SourceSpan::default, |token| token.span);
+    let expression = match parse_expr::ExprParser::new(source, &lexed.tokens, gap)
+        .parse_complete(&mut diagnostics)
+    {
+        parse_expr::ParseComplete::Complete(expr) => Some(expr),
+        parse_expr::ParseComplete::Reported => None,
+        parse_expr::ParseComplete::Incomplete(span) => {
+            diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::Expression,
+                )),
+                severity: Severity::Error,
+                message: "expected an expression".to_string(),
+                help: None,
+                span,
+            });
+            None
+        }
+    };
     diagnostics.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
     (expression, diagnostics)
 }
@@ -269,8 +278,8 @@ mod decl_parser_corpus {
             decl.value
         );
 
-        // A bare type name is not an expression, so it is a syntax error and
-        // carries no value rather than being silently accepted.
+        // A bare type name is not an expression, so it is a syntax error. Total
+        // parsing keeps the written value as an error node rather than dropping it.
         let ParsedSource { file, diagnostics } = parse_source("const Bad = int\n");
         assert!(
             diagnostics.iter().any(|d| d.code == PARSE_SYNTAX),
@@ -280,8 +289,8 @@ mod decl_parser_corpus {
             panic!("expected a const declaration: {file:#?}");
         };
         assert!(
-            decl.value.is_none(),
-            "expected no value for `const Bad = int`: {:#?}",
+            matches!(decl.value, Some(Expression::Error { .. })),
+            "expected an error-node value for `const Bad = int`: {:#?}",
             decl.value
         );
     }
@@ -549,15 +558,19 @@ mod decl_parser_corpus {
         }
     }
 
-    /// A line that is genuinely not a statement still gets the generic
-    /// "expected a statement", so the gap diagnostic does not over-fire.
+    /// A line the parser cannot begin as an expression reports one diagnostic at
+    /// the offending token: `*` cannot start an expression, so it reports there.
     #[test]
-    fn a_non_statement_line_still_expects_a_statement() {
+    fn a_non_statement_line_reports_at_the_failure_token() {
         let ParsedSource { diagnostics, .. } = parse_source("fn f()\n    * nope\n");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.message.contains("expected a statement")),
+            diagnostics[0].message.contains("expected an expression"),
+            "{diagnostics:#?}"
+        );
+        assert_eq!(
+            (diagnostics[0].span.line, diagnostics[0].span.column),
+            (2, 5),
             "{diagnostics:#?}"
         );
     }

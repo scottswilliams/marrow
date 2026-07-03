@@ -12,7 +12,7 @@ use crate::ast::{
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
 };
-use crate::parse_expr::{ExprParser, join_spans};
+use crate::parse_expr::{ExprParser, ParseComplete, join_spans};
 use crate::token::{Keyword, Token, TokenKind, is_qualified_name};
 
 /// The end byte of the physical line containing `start`, excluding the trailing
@@ -183,27 +183,79 @@ pub(super) fn find_arrow(tokens: &[Token]) -> Option<usize> {
 pub(super) fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
     find_at_top_level(tokens, |index, tokens| tokens[index].kind == kind)
 }
+/// The zero-width gap position just after `anchor`, where a missing operand that
+/// follows a `=`/keyword/operator is reported.
+fn gap_after(anchor: SourceSpan) -> SourceSpan {
+    SourceSpan {
+        start_byte: anchor.end_byte,
+        end_byte: anchor.end_byte,
+        line: anchor.line,
+        column: anchor.column,
+    }
+}
+
+/// The zero-width gap position just before `anchor`, where a missing assignment
+/// target that precedes a `=` is reported.
+fn gap_before(anchor: SourceSpan) -> SourceSpan {
+    SourceSpan {
+        start_byte: anchor.start_byte,
+        end_byte: anchor.start_byte,
+        line: anchor.line,
+        column: anchor.column,
+    }
+}
+
+/// Parse `tokens` as one complete expression anchored at `gap`. A failure is
+/// reported once — at the failure token by the expression parser, or at the first
+/// trailing token here when a complete expression is followed by tokens that are
+/// not part of it — and yields `None`, so every `None` carries a diagnostic.
+fn expr_slice(
+    source: &str,
+    tokens: &[Token],
+    gap: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    match ExprParser::new(source, tokens, gap).parse_complete(diagnostics) {
+        ParseComplete::Complete(expr) => Some(expr),
+        ParseComplete::Reported => None,
+        ParseComplete::Incomplete(span) => {
+            diagnostics.push(Diagnostic {
+                code: ParseDiagnosticReason::Expected(ExpectedSyntax::Expression).code(),
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::Expression,
+                )),
+                severity: Severity::Error,
+                message: "expected an expression".to_string(),
+                help: None,
+                span,
+            });
+            None
+        }
+    }
+}
+
 pub(super) fn expr_of(
     source: &str,
     tokens: &[Token],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Expression> {
-    ExprParser::new(source, tokens).parse_complete(diagnostics)
+    let gap = tokens
+        .first()
+        .map_or_else(SourceSpan::default, |token| token.span);
+    expr_slice(source, tokens, gap, diagnostics)
 }
 
 /// Parse the operand text that follows `anchor` — a `=`, statement keyword, or
-/// operator the caller stripped. An absent operand reports the missing
-/// expression at the gap just past `anchor`, so the diagnostic lands there
-/// rather than on the statement keyword.
+/// operator the caller stripped. An absent operand reports the missing expression
+/// at the gap just past `anchor`, so the diagnostic lands there rather than on the
+/// statement keyword.
 pub(super) fn expr_of_after(
     source: &str,
     tokens: &[Token],
     anchor: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Expression> {
-    ExprParser::new(source, tokens)
-        .after(anchor)
-        .parse_complete(diagnostics)
+    expr_slice(source, tokens, gap_after(anchor), diagnostics)
 }
 
 /// Parse an assignment target that precedes `anchor` — the `=` that follows it.
@@ -214,19 +266,21 @@ pub(super) fn expr_of_before(
     anchor: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Expression> {
-    ExprParser::new(source, tokens)
-        .before(anchor)
-        .parse_complete(diagnostics)
+    expr_slice(source, tokens, gap_before(anchor), diagnostics)
 }
 
-/// Parse an operand inside a `for` header, where a malformed or empty operand is
-/// reported once against the whole header rather than as a separate gap.
-pub(super) fn expr_of_in_header(
-    source: &str,
-    tokens: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Expression> {
-    ExprParser::new(source, tokens).parse_complete_in_header(diagnostics)
+/// Parse an operand inside a `for` header. A malformed or empty operand is
+/// reported once against the whole header by the caller, so this discards the
+/// operand's own diagnostics and yields `None`.
+pub(super) fn expr_of_in_header(source: &str, tokens: &[Token]) -> Option<Expression> {
+    let gap = tokens
+        .first()
+        .map_or_else(SourceSpan::default, |token| token.span);
+    let mut discarded = Vec::new();
+    match ExprParser::new(source, tokens, gap).parse_complete(&mut discarded) {
+        ParseComplete::Complete(expr) => Some(expr),
+        ParseComplete::Reported | ParseComplete::Incomplete(_) => None,
+    }
 }
 /// Parse a type annotation from its token slice into the structural [`TypeExpr`],
 /// the one owner of type-spelling grammar. The slice must be exactly one type

@@ -580,11 +580,18 @@ impl<'a> DeclParser<'a> {
         if tokens.is_empty() {
             return None;
         }
-        self.parse_expr_with_fallback(
-            tokens,
-            line_span_or(tokens, tokens[0].span),
-            ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-            "expected an expression",
+        // A written-but-malformed value keeps its span as an error node rather than
+        // vanishing, so tooling that locates the initializer (signature help, the
+        // const header boundary) still sees where the value began.
+        let span = line_span_or(tokens, tokens[0].span);
+        Some(
+            self.parse_expr_with_fallback(
+                tokens,
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected an expression",
+            )
+            .unwrap_or(Expression::Error { span }),
         )
     }
 }

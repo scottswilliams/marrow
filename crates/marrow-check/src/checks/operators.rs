@@ -35,6 +35,11 @@ pub(crate) fn check_condition(
     read_scope: crate::presence::ReadScope<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    // A condition the parser could not structure carries its own parse error; do
+    // not type-check the placeholder and stack a second diagnostic on it.
+    if condition.is_error() {
+        return;
+    }
     let condition_type = infer_type_with_read_scope(
         program,
         condition,

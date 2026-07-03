@@ -19,6 +19,42 @@ use crate::diagnostic::{
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
 
+/// Report that `line` does not form a statement, at the line span, and yield
+/// `None`. The single owner of the generic statement-shape failure, so every
+/// unstructured line carries one diagnostic without a separate fallback pass.
+fn expected_statement(line: &[Token], diagnostics: &mut Vec<Diagnostic>) -> Option<Statement> {
+    let span = line_span_or(line, line[0].span);
+    diagnostics.push(Diagnostic {
+        code: ParseDiagnosticReason::Expected(ExpectedSyntax::Statement).code(),
+        reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+            ExpectedSyntax::Statement,
+        )),
+        severity: Severity::Error,
+        message: "expected a statement".to_string(),
+        help: None,
+        span,
+    });
+    None
+}
+
+/// Report that `line` is missing the expression it needed, at the line span, and
+/// yield `None`. Used where a malformed header could not be structured as either
+/// its binding form or a condition expression.
+fn expected_expression_line<T>(line: &[Token], diagnostics: &mut Vec<Diagnostic>) -> Option<T> {
+    let span = line_span_or(line, line[0].span);
+    diagnostics.push(Diagnostic {
+        code: ParseDiagnosticReason::Expected(ExpectedSyntax::Expression).code(),
+        reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+            ExpectedSyntax::Expression,
+        )),
+        severity: Severity::Error,
+        message: "expected an expression".to_string(),
+        help: None,
+        span,
+    });
+    None
+}
+
 pub(super) fn parse_simple_statement(
     source: &str,
     line: &[Token],
@@ -69,7 +105,9 @@ fn parse_const_or_var(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Statement> {
     let keyword = line[0];
-    let name_token = line.get(1)?;
+    let Some(name_token) = line.get(1) else {
+        return expected_statement(line, diagnostics);
+    };
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
             let kind = if is_var { "variable" } else { "const" };
@@ -88,8 +126,9 @@ fn parse_const_or_var(
                 help: Some("choose an identifier that is not reserved".to_string()),
                 span: name_token.span,
             });
+            return None;
         }
-        return None;
+        return expected_statement(line, diagnostics);
     }
     let name = name_token.text(source).to_string();
     let mut index = 2;
@@ -99,7 +138,7 @@ fn parse_const_or_var(
     let mut keys = Vec::new();
     if line.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
         if !is_var {
-            return None;
+            return expected_statement(line, diagnostics);
         }
         match parse_var_keys(source, line, index) {
             Ok((parsed_keys, after)) => {
@@ -121,7 +160,7 @@ fn parse_const_or_var(
             .map(|equal| type_start + equal)
             .unwrap_or(line.len());
         if type_end == type_start {
-            return None;
+            return expected_statement(line, diagnostics);
         }
         let expected = if is_var {
             ExpectedSyntax::ParameterType
@@ -173,7 +212,7 @@ fn parse_const_or_var(
             value: None,
             span: join_spans(keyword.span, line[line.len() - 1].span),
         }),
-        _ => None,
+        _ => expected_statement(line, diagnostics),
     }
 }
 
@@ -235,7 +274,7 @@ fn parse_break_or_continue(
             });
             join_spans(keyword.span, token.span)
         }
-        _ => return None,
+        _ => return expected_statement(line, diagnostics),
     };
     Some(if is_break {
         Statement::Break { span }
@@ -292,7 +331,9 @@ pub(super) fn parse_if_const_head(
     line: &[Token],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<(String, Option<TypeExpr>, Expression)> {
-    let name_token = line.get(1)?;
+    let Some(name_token) = line.get(1) else {
+        return expected_expression_line(line, diagnostics);
+    };
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
             diagnostics.push(Diagnostic {
@@ -308,8 +349,9 @@ pub(super) fn parse_if_const_head(
                 help: Some("choose an identifier that is not reserved".to_string()),
                 span: name_token.span,
             });
+            return None;
         }
-        return None;
+        return expected_expression_line(line, diagnostics);
     }
     let name = name_token.text(source).to_string();
 
@@ -322,7 +364,7 @@ pub(super) fn parse_if_const_head(
             .map(|equal| type_start + equal)
             .unwrap_or(line.len());
         if type_end == type_start {
-            return None;
+            return expected_expression_line(line, diagnostics);
         }
         match parse_type(
             source,
@@ -340,7 +382,7 @@ pub(super) fn parse_if_const_head(
     }
 
     if line.get(index).map(|token| token.kind) != Some(TokenKind::Equal) {
-        return None;
+        return expected_expression_line(line, diagnostics);
     }
     let equal = line[index];
     let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
@@ -354,19 +396,18 @@ pub(super) fn parse_if_const_head(
 pub(super) fn parse_for_header(
     source: &str,
     header: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<(ForBinding, Expression, Option<Expression>)> {
     let in_index = find_top_level(header, TokenKind::Keyword(Keyword::In))?;
     let binding = parse_for_binding(source, &header[..in_index])?;
     let after_in = &header[in_index + 1..];
     let (iterable_tokens, step) = match find_top_level_by(source, after_in) {
         Some(by_index) => {
-            let step = expr_of_in_header(source, &after_in[by_index + 1..], diagnostics)?;
+            let step = expr_of_in_header(source, &after_in[by_index + 1..])?;
             (&after_in[..by_index], Some(step))
         }
         None => (after_in, None),
     };
-    let iterable = expr_of_in_header(source, iterable_tokens, diagnostics)?;
+    let iterable = expr_of_in_header(source, iterable_tokens)?;
     Some((binding, iterable, step))
 }
 

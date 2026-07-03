@@ -8,7 +8,7 @@ use crate::ast::{
     Block, Comment, CommentMarker, CommentPlacement, EvolveDecl, EvolveStep, Expression,
 };
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
-use crate::parse_expr::ExprParser;
+use crate::parse_expr::{ExprParser, ParseComplete};
 use crate::token::{Token, TokenKind};
 
 impl<'a> DeclParser<'a> {
@@ -241,11 +241,10 @@ impl<'a> DeclParser<'a> {
         )
     }
 
-    /// Parse `tokens` as one complete expression. When it does not parse and the
-    /// expression parser raised nothing more specific, report `reason`/`message`
-    /// against `err`. The diagnostic-count guard suppresses this generic fallback
-    /// whenever an inline syntax rule (a keyword field name, a reserved form)
-    /// already explained the failure, so each position reports once.
+    /// Parse `tokens` as one complete expression. A failure the expression parser
+    /// reports at its own token yields `None` directly; a complete expression
+    /// followed by trailing tokens is reported once against `err` with
+    /// `reason`/`message`, the evolve step's own account of the failure.
     pub(super) fn parse_expr_with_fallback(
         &mut self,
         tokens: &[Token],
@@ -253,11 +252,16 @@ impl<'a> DeclParser<'a> {
         reason: ParseDiagnosticReason,
         message: &'static str,
     ) -> Option<Expression> {
-        let before = self.diagnostics.len();
-        let parsed = ExprParser::new(self.source, tokens).parse_complete(&mut self.diagnostics);
-        if parsed.is_none() && self.diagnostics.len() == before {
-            self.error_span(err, reason, message);
+        let gap = tokens
+            .first()
+            .map_or_else(SourceSpan::default, |token| token.span);
+        match ExprParser::new(self.source, tokens, gap).parse_complete(&mut self.diagnostics) {
+            ParseComplete::Complete(expr) => Some(expr),
+            ParseComplete::Reported => None,
+            ParseComplete::Incomplete(_) => {
+                self.error_span(err, reason, message);
+                None
+            }
         }
-        parsed
     }
 }

@@ -1,6 +1,12 @@
 //! The expression parser: a recursive-descent parser for a single Marrow
 //! expression over a token slice, covering primary, postfix, unary, and binary
 //! precedence levels including calls and saved paths.
+//!
+//! Parsing is total: every entry yields an [`Expression`], and a failure yields
+//! [`Expression::Error`] carrying the span it could not structure. One diagnostic
+//! is reported at the failure token; a failed sub-expression collapses to that
+//! error node as it unwinds, so no ancestor reports a second, cascading
+//! diagnostic on top of it.
 
 use crate::token::is_trivia;
 use crate::{
@@ -16,8 +22,19 @@ use crate::{
 /// lowering and renders in `marrow check`, where `help` is dropped.
 const COMPARE_NONASSOC_REMEDY: &str = "use parentheses to compare boolean results";
 
-/// A value the parser does not fully structure yields `None`, which the caller
-/// turns into a syntax diagnostic.
+/// The outcome of parsing a token slice as one complete expression.
+pub(crate) enum ParseComplete {
+    /// The whole slice parsed as one expression.
+    Complete(Expression),
+    /// The slice did not parse; a single diagnostic was reported at the failure
+    /// token and the parsed value is [`Expression::Error`].
+    Reported,
+    /// A complete expression is followed by tokens that are not part of it. No
+    /// diagnostic was reported; the span names the first trailing token so the
+    /// caller reports the failure in its own context (a statement, a header).
+    Incomplete(SourceSpan),
+}
+
 pub(crate) struct ExprParser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -27,24 +44,18 @@ pub(crate) struct ExprParser<'a> {
     /// exceeding [`NESTING_DEPTH_LIMIT`] stops the recursion with a located
     /// [`NESTING_LIMIT`] error before the native stack can overflow.
     depth: usize,
-    /// The zero-width point where a missing operand should be reported when the
-    /// operand slice is empty — just past the `=`/operator the caller stripped,
-    /// or just before the `=` for an empty assignment target. Without it an
-    /// empty slice has no consumed token to anchor to and would report at the
-    /// start of input (line 0), which is never a valid source position.
-    gap_anchor: Option<SourceSpan>,
-    /// How many contexts that own their own recovery diagnostic are currently
-    /// open: a `(` group that names its missing `)`, an interpolation hole that
-    /// names its missing operand, or a malformed `for` header reported once
-    /// against the whole header. A missing operand inside one of these is that
-    /// caller's error, so the generic gap diagnostic only fires at the
-    /// statement-expression top level.
-    gap_suppression_depth: usize,
+    /// The zero-width position to report a missing operand when nothing has been
+    /// consumed yet — just past the `=`/keyword/operator the caller stripped, or
+    /// just before the `=` of an empty assignment target. An empty slice has no
+    /// consumed token to anchor to; this keeps the diagnostic on a real 1-based
+    /// position rather than the line-0 default.
+    gap: SourceSpan,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> ExprParser<'a> {
-    pub(crate) fn new(source: &'a str, tokens: &[Token]) -> Self {
+    /// Build a parser whose missing-leading-operand diagnostics anchor at `gap`.
+    pub(crate) fn new(source: &'a str, tokens: &[Token], gap: SourceSpan) -> Self {
         let tokens = tokens
             .iter()
             .copied()
@@ -55,83 +66,37 @@ impl<'a> ExprParser<'a> {
             tokens,
             pos: 0,
             depth: 0,
-            gap_anchor: None,
-            gap_suppression_depth: 0,
+            gap,
             diagnostics: Vec::new(),
         }
     }
 
-    /// Parse `inner` inside a context that owns its own recovery diagnostic, so
-    /// a missing operand within it is left to that caller rather than reported
-    /// as a statement-level expression gap.
-    fn while_caller_owns_recovery<T>(&mut self, inner: impl FnOnce(&mut Self) -> T) -> T {
-        self.gap_suppression_depth += 1;
-        let result = inner(self);
-        self.gap_suppression_depth -= 1;
+    /// Parse the whole slice as one expression, draining diagnostics into the
+    /// caller's vec and classifying the outcome.
+    pub(crate) fn parse_complete(mut self, diagnostics: &mut Vec<Diagnostic>) -> ParseComplete {
+        let expr = self.expression();
+        let result = if expr.is_error() {
+            ParseComplete::Reported
+        } else if self.report_stray_assignment_operator() {
+            // A `=` left where the expression should have ended is the `=`-for-`==`
+            // mistake, and a trailing compound-assign operator is a misplaced
+            // assignment; either way this owns the single diagnostic for it.
+            ParseComplete::Reported
+        } else if self.pos < self.tokens.len() {
+            ParseComplete::Incomplete(self.tokens[self.pos].span)
+        } else {
+            ParseComplete::Complete(expr)
+        };
+        diagnostics.append(&mut self.diagnostics);
         result
     }
 
-    /// Report a missing operand just past `anchor` — the `=` or operator the
-    /// caller stripped before handing over the operand text — when the slice is
-    /// empty, so the gap lands after that token rather than at the start of input.
-    pub(crate) fn after(mut self, anchor: SourceSpan) -> Self {
-        self.gap_anchor = Some(SourceSpan {
-            start_byte: anchor.end_byte,
-            end_byte: anchor.end_byte,
-            line: anchor.line,
-            column: anchor.column,
-        });
-        self
-    }
-
-    /// Report a missing operand just before `anchor` — the `=` that follows an
-    /// empty assignment target — so the gap lands at that token rather than at
-    /// the start of input.
-    pub(crate) fn before(mut self, anchor: SourceSpan) -> Self {
-        self.gap_anchor = Some(SourceSpan {
-            start_byte: anchor.start_byte,
-            end_byte: anchor.start_byte,
-            line: anchor.line,
-            column: anchor.column,
-        });
-        self
-    }
-
-    /// Run `parse_complete` while a missing operand is owned by a malformed-header
-    /// recovery diagnostic, so an empty `for` iterable or step does not also emit
-    /// a statement-level expression gap.
-    pub(crate) fn parse_complete_in_header(
-        mut self,
-        diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<Expression> {
-        self.gap_suppression_depth += 1;
-        self.parse_complete(diagnostics)
-    }
-
-    /// Returns `None` unless the whole slice parses as one expression. Syntax
-    /// diagnostics raised while parsing are drained into the caller's vec.
-    pub(crate) fn parse_complete(
-        mut self,
-        diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<Expression> {
-        let expr = self.expression();
-        // A `=` left where the expression should have ended is the `=`-for-`==`
-        // mistake: `=` is assignment only, so it never appears mid-expression.
-        if expr.is_some() {
-            self.report_stray_assignment_operator();
-        }
-        diagnostics.append(&mut self.diagnostics);
-        let expr = expr?;
-        (self.pos == self.tokens.len()).then_some(expr)
-    }
-
     /// If the next unconsumed token begins a stray assignment operator in
-    /// expression position, report it at that operator and return `true`. This is
-    /// the single owner of that recovery: a bare `=` is the `=`-vs-`==` mistake,
-    /// and a compound-assign operator (`+=`, `-=`, …) is a chained or misplaced
-    /// assignment, which does not chain and is not an expression. Both are
-    /// reported here so the diagnostic lands on the operator rather than bubbling
-    /// to a generic "expected a statement" at the statement keyword.
+    /// expression position, report it at that operator and return `true`. A bare
+    /// `=` is the `=`-vs-`==` mistake, and a compound-assign operator (`+=`, `-=`,
+    /// …) is a chained or misplaced assignment, which does not chain and is not an
+    /// expression. Reporting here lands the diagnostic on the operator rather than
+    /// bubbling to a generic failure at the statement keyword.
     fn report_stray_assignment_operator(&mut self) -> bool {
         let Some(token) = self.tokens.get(self.pos).copied() else {
             return false;
@@ -180,17 +145,26 @@ impl<'a> ExprParser<'a> {
         });
     }
 
-    /// Report a missing operand at the gap where one was expected: just past a
-    /// trailing `=` or binary operator already consumed, or at the caller's gap
-    /// anchor when the operand slice is empty. Reporting is skipped inside a
-    /// context that owns its own recovery diagnostic.
-    fn expected_expression_at_gap(&mut self) {
-        if self.gap_suppression_depth > 0 {
-            return;
-        }
-        let span = match self.pos.checked_sub(1) {
-            Some(last) => {
-                let end = self.tokens[last].span;
+    /// Report a diagnostic at `span` and return the error node for it, the single
+    /// place a leaf turns a failure into a reported [`Expression::Error`].
+    fn error_expr(
+        &mut self,
+        span: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: String,
+        help: Option<String>,
+    ) -> Expression {
+        self.error(span, reason, message, help);
+        Expression::Error { span }
+    }
+
+    /// The zero-width position where a missing operand should be reported: just
+    /// past the last consumed token, or the caller's `gap` anchor when nothing has
+    /// been consumed. Always a valid 1-based position.
+    fn gap_span(&self) -> SourceSpan {
+        match self.pos.checked_sub(1) {
+            Some(prev) => {
+                let end = self.tokens[prev].span;
                 SourceSpan {
                     start_byte: end.end_byte,
                     end_byte: end.end_byte,
@@ -198,44 +172,8 @@ impl<'a> ExprParser<'a> {
                     column: end.column,
                 }
             }
-            None => match self.gap_anchor {
-                Some(anchor) => anchor,
-                None => return,
-            },
-        };
-        self.error(
-            span,
-            ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-            "expected an expression".to_string(),
-            None,
-        );
-    }
-
-    /// Report a missing call/group delimiter at the gap just past the last
-    /// consumed token, when a complete operand sits inside an unterminated `(` or
-    /// before a missing `,`. Suppressed inside a context that owns its own
-    /// recovery diagnostic — an outer delimiter or a `for` header — so that
-    /// caller's single diagnostic stands alone. The span is the zero-width point
-    /// after the operand, which is always a valid 1-based position.
-    fn expected_delimiter_at_gap(&mut self, expected: ExpectedSyntax, message: &str) {
-        if self.gap_suppression_depth > 0 {
-            return;
+            None => self.gap,
         }
-        let Some(last) = self.pos.checked_sub(1) else {
-            return;
-        };
-        let end = self.tokens[last].span;
-        self.error(
-            SourceSpan {
-                start_byte: end.end_byte,
-                end_byte: end.end_byte,
-                line: end.line,
-                column: end.column,
-            },
-            ParseDiagnosticReason::Expected(expected),
-            message.to_string(),
-            None,
-        );
     }
 
     fn peek(&self) -> Option<TokenKind> {
@@ -258,7 +196,7 @@ impl<'a> ExprParser<'a> {
         token
     }
 
-    fn expression(&mut self) -> Option<Expression> {
+    fn expression(&mut self) -> Expression {
         self.descend(Self::or_expr)
     }
 
@@ -270,15 +208,11 @@ impl<'a> ExprParser<'a> {
     /// located [`NESTING_LIMIT`] error at the offending token rather than
     /// overflowing the stack. The counter is decremented on the way back up so a
     /// wide-but-shallow expression is never penalized.
-    fn descend(
-        &mut self,
-        parse: impl FnOnce(&mut Self) -> Option<Expression>,
-    ) -> Option<Expression> {
+    fn descend(&mut self, parse: impl FnOnce(&mut Self) -> Expression) -> Expression {
         self.depth += 1;
         if self.depth > NESTING_DEPTH_LIMIT {
             self.depth -= 1;
-            self.nesting_limit_error();
-            return None;
+            return self.nesting_limit_error();
         }
         let result = parse(self);
         self.depth -= 1;
@@ -289,15 +223,13 @@ impl<'a> ExprParser<'a> {
     /// operator chain or a postfix field/call chain. A flat `1 + 1 + …` line or
     /// `a.f.f…` chain builds an AST as deep as it is long without recursing here,
     /// so each accumulation step must count toward the same limit as a
-    /// parenthesis. Returns `false` once the limit is crossed, after reporting the
-    /// overflow, so the chain stops growing. The caller unwinds the levels it
-    /// added with [`Self::leave_chain`] before returning, since the finished chain
-    /// sits at its caller's depth.
+    /// parenthesis. Returns `false` once the limit is crossed so the chain stops
+    /// growing; the caller unwinds the levels it added with [`Self::leave_chain`]
+    /// and reports the overflow.
     fn enter_chain_level(&mut self) -> bool {
         self.depth += 1;
         if self.depth > NESTING_DEPTH_LIMIT {
             self.depth -= 1;
-            self.nesting_limit_error();
             return false;
         }
         true
@@ -308,8 +240,9 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Report the nesting-limit overflow at the next unconsumed token (the deepest
-    /// construct the parser reached), or at end of input when none remains.
-    fn nesting_limit_error(&mut self) {
+    /// construct the parser reached), or at end of input when none remains, and
+    /// return the error node for it.
+    fn nesting_limit_error(&mut self) -> Expression {
         let span = self
             .tokens
             .get(self.pos)
@@ -322,25 +255,28 @@ impl<'a> ExprParser<'a> {
             help: None,
             span,
         });
+        Expression::Error { span }
     }
 
-    /// Parse a left-associated chain of one operator precedence: an `operand`,
-    /// then each `operator operand` repetition the operator table accepts. Each
+    /// Parse a left-associated chain of one operator precedence: an `operand`, then
+    /// each `operator operand` repetition the operator table accepts. Each
     /// repetition deepens the AST by one node, so it counts toward the nesting
-    /// limit; the levels added are unwound once the chain is complete, since the
-    /// finished chain sits at its caller's depth.
+    /// limit; the levels added are unwound once the chain is complete.
     fn binary_chain(
         &mut self,
-        operand: impl Fn(&mut Self) -> Option<Expression>,
+        operand: impl Fn(&mut Self) -> Expression,
         operator: impl Fn(TokenKind) -> Option<BinaryOp>,
-    ) -> Option<Expression> {
-        let mut left = operand(self)?;
+    ) -> Expression {
+        let mut left = operand(self);
+        if left.is_error() {
+            return left;
+        }
         let mut levels = 0;
         while let Some(op) = self.peek().and_then(&operator) {
             // A binary operator immediately followed by `=` is a compound-assign
-            // operator (`+=`): a statement, never an expression. Stop the chain
-            // and leave it for the stray-assignment-operator recovery, rather
-            // than consuming the operator and failing on the trailing `=`.
+            // operator (`+=`): a statement, never an expression. Stop the chain and
+            // leave it for the stray-assignment-operator recovery, rather than
+            // consuming the operator and failing on the trailing `=`.
             if self.peek_at(1) == Some(TokenKind::Equal)
                 && self
                     .peek()
@@ -350,24 +286,28 @@ impl<'a> ExprParser<'a> {
             }
             if !self.enter_chain_level() {
                 self.leave_chain(levels);
-                return None;
+                return self.nesting_limit_error();
             }
             levels += 1;
             self.advance();
-            let right = operand(self)?;
+            let right = operand(self);
+            if right.is_error() {
+                self.leave_chain(levels);
+                return right;
+            }
             left = binary_expr(op, left, right);
         }
         self.leave_chain(levels);
-        Some(left)
+        left
     }
 
-    fn or_expr(&mut self) -> Option<Expression> {
+    fn or_expr(&mut self) -> Expression {
         self.binary_chain(Self::and_expr, |kind| {
             matches!(kind, TokenKind::Keyword(Keyword::Or)).then_some(BinaryOp::Or)
         })
     }
 
-    fn and_expr(&mut self) -> Option<Expression> {
+    fn and_expr(&mut self) -> Expression {
         self.binary_chain(Self::is_expr, |kind| {
             matches!(kind, TokenKind::Keyword(Keyword::And)).then_some(BinaryOp::And)
         })
@@ -375,53 +315,68 @@ impl<'a> ExprParser<'a> {
 
     /// `is` sits one level looser than equality and tighter than `and`, on its own
     /// non-associative level: a single `is`, never chained (`a is X is Y` is
-    /// rejected). The right operand is parsed as an equality-level expression;
-    /// any narrower member-path restriction is enforced by the checker.
-    fn is_expr(&mut self) -> Option<Expression> {
-        let left = self.equality_expr()?;
-        if !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
-            return Some(left);
+    /// rejected). The right operand is parsed as an equality-level expression; any
+    /// narrower member-path restriction is enforced by the checker.
+    fn is_expr(&mut self) -> Expression {
+        let left = self.equality_expr();
+        if left.is_error() || !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
+            return left;
         }
         self.advance();
-        let right = self.equality_expr()?;
+        let right = self.equality_expr();
+        if right.is_error() {
+            return right;
+        }
         if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
             return self.reject_chained_operator(
                 "is",
                 "each `is` yields a bool, so join the subtree tests with `and`/`or`",
             );
         }
-        Some(binary_expr(BinaryOp::Is, left, right))
+        binary_expr(BinaryOp::Is, left, right)
     }
 
-    fn equality_expr(&mut self) -> Option<Expression> {
-        let left = self.comparison_expr()?;
+    fn equality_expr(&mut self) -> Expression {
+        let left = self.comparison_expr();
+        if left.is_error() {
+            return left;
+        }
         let (op, text) = match self.peek() {
             Some(TokenKind::EqualEqual) => (BinaryOp::Equal, "=="),
             Some(TokenKind::BangEqual) => (BinaryOp::NotEqual, "!="),
-            _ => return Some(left),
+            _ => return left,
         };
         self.advance();
-        let right = self.comparison_expr()?;
+        let right = self.comparison_expr();
+        if right.is_error() {
+            return right;
+        }
         if matches!(
             self.peek(),
             Some(TokenKind::EqualEqual | TokenKind::BangEqual)
         ) {
             return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
         }
-        Some(binary_expr(op, left, right))
+        binary_expr(op, left, right)
     }
 
-    fn comparison_expr(&mut self) -> Option<Expression> {
-        let left = self.range_expr()?;
+    fn comparison_expr(&mut self) -> Expression {
+        let left = self.range_expr();
+        if left.is_error() {
+            return left;
+        }
         let (op, text) = match self.peek() {
             Some(TokenKind::Less) => (BinaryOp::Less, "<"),
             Some(TokenKind::LessEqual) => (BinaryOp::LessEqual, "<="),
             Some(TokenKind::Greater) => (BinaryOp::Greater, ">"),
             Some(TokenKind::GreaterEqual) => (BinaryOp::GreaterEqual, ">="),
-            _ => return Some(left),
+            _ => return left,
         };
         self.advance();
-        let right = self.range_expr()?;
+        let right = self.range_expr();
+        if right.is_error() {
+            return right;
+        }
         if matches!(
             self.peek(),
             Some(
@@ -433,113 +388,136 @@ impl<'a> ExprParser<'a> {
         ) {
             return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
         }
-        Some(binary_expr(op, left, right))
+        binary_expr(op, left, right)
     }
 
     /// Report a second operator on a non-associative level (`==`/`!=`, a
-    /// comparison, or `is`) at that operator's own token and abort the
-    /// expression. `text` is the operator
-    /// spelling and `remedy` the spec fix; both ride in the message so the remedy
-    /// survives the checker's parse-diagnostic lowering and renders in
-    /// `marrow check`, where the `help` field is dropped. Returning `None` after
-    /// reporting suppresses the statement parser's generic fallback, so the only
-    /// diagnostic is this operator-spanned one rather than a misplaced "expected a
-    /// statement" at the line start.
-    fn reject_chained_operator(&mut self, text: &str, remedy: &str) -> Option<Expression> {
+    /// comparison, or `is`) at that operator's own token and abort the expression.
+    /// `text` is the operator spelling and `remedy` the spec fix; both ride in the
+    /// message so the remedy survives the checker's parse-diagnostic lowering and
+    /// renders in `marrow check`, where the `help` field is dropped.
+    fn reject_chained_operator(&mut self, text: &str, remedy: &str) -> Expression {
         let operator = self.tokens[self.pos];
-        self.error(
+        self.error_expr(
             operator.span,
             ParseDiagnosticReason::NonAssociativeOperator,
             format!("`{text}` does not chain; {remedy}"),
             None,
-        );
-        None
+        )
     }
 
-    fn range_expr(&mut self) -> Option<Expression> {
+    fn range_expr(&mut self) -> Expression {
         if matches!(
             self.peek(),
             Some(TokenKind::DotDot | TokenKind::DotDotEqual)
         ) {
             let op = self.advance();
             let end = if self.peek().is_some_and(starts_expression) {
-                Some(Box::new(self.coalesce_expr()?))
+                let end = self.coalesce_expr();
+                if end.is_error() {
+                    return end;
+                }
+                Some(Box::new(end))
             } else {
                 None
             };
-            let step = self.range_step()?;
+            let step = match self.range_step() {
+                Ok(step) => step,
+                Err(error) => return error,
+            };
             let span = match (&end, &step) {
                 (_, Some(step)) => join_spans(op.span, step.span()),
                 (Some(end), None) => join_spans(op.span, end.span()),
                 (None, None) => op.span,
             };
-            return Some(Expression::Range {
+            return Expression::Range {
                 start: None,
                 end,
                 inclusive_end: op.kind == TokenKind::DotDotEqual,
                 step,
                 span,
-            });
+            };
         }
-        let left = self.coalesce_expr()?;
+        let left = self.coalesce_expr();
+        if left.is_error() {
+            return left;
+        }
         let op = match self.peek() {
             Some(TokenKind::DotDot) => BinaryOp::RangeExclusive,
             Some(TokenKind::DotDotEqual) => BinaryOp::RangeInclusive,
-            _ => return Some(left),
+            _ => return left,
         };
         let range_token = self.advance();
         if !self.peek().is_some_and(starts_expression) {
-            let step = self.range_step()?;
+            let step = match self.range_step() {
+                Ok(step) => step,
+                Err(error) => return error,
+            };
             let span = match &step {
                 Some(step) => join_spans(left.span(), step.span()),
                 None => join_spans(left.span(), range_token.span),
             };
-            return Some(Expression::Range {
+            return Expression::Range {
                 start: Some(Box::new(left)),
                 end: None,
                 inclusive_end: matches!(op, BinaryOp::RangeInclusive),
                 step,
                 span,
-            });
+            };
         }
-        let right = self.coalesce_expr()?;
-        let step = self.range_step()?;
+        let right = self.coalesce_expr();
+        if right.is_error() {
+            return right;
+        }
+        let step = match self.range_step() {
+            Ok(step) => step,
+            Err(error) => return error,
+        };
         if let Some(step) = step {
             let span = join_spans(left.span(), step.span());
-            return Some(Expression::Range {
+            return Expression::Range {
                 start: Some(Box::new(left)),
                 end: Some(Box::new(right)),
                 inclusive_end: matches!(op, BinaryOp::RangeInclusive),
                 step: Some(step),
                 span,
-            });
+            };
         }
-        Some(binary_expr(op, left, right))
+        binary_expr(op, left, right)
     }
 
-    fn range_step(&mut self) -> Option<Option<Box<Expression>>> {
+    /// Parse an optional `by <step>` range suffix. `Ok(None)` when no `by` follows;
+    /// `Err(error)` propagates a failed step operand as the collapsing error node.
+    fn range_step(&mut self) -> Result<Option<Box<Expression>>, Expression> {
         if !self.peek_is_contextual("by") {
-            return Some(None);
+            return Ok(None);
         }
         self.advance();
-        Some(Some(Box::new(self.coalesce_expr()?)))
+        let step = self.coalesce_expr();
+        if step.is_error() {
+            return Err(step);
+        }
+        Ok(Some(Box::new(step)))
     }
 
     /// `??` sits one level tighter than ranges and looser than addition:
     /// `count ?? 0 < 5` parses as `(count ?? 0) < 5`. It is right-associative, so
-    /// `a ?? b ?? c` parses as `a ?? (b ?? c)`, each `??` defaulting the optional
-    /// on its left and the chain typing under the coalesce rule.
-    fn coalesce_expr(&mut self) -> Option<Expression> {
-        let left = self.additive_expr()?;
-        if !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
-            return Some(left);
+    /// `a ?? b ?? c` parses as `a ?? (b ?? c)`, each `??` defaulting the optional on
+    /// its left and the chain typing under the coalesce rule.
+    fn coalesce_expr(&mut self) -> Expression {
+        let left = self.additive_expr();
+        if left.is_error() || !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
+            return left;
         }
         self.advance();
-        let right = self.descend(Self::coalesce_expr)?;
-        Some(binary_expr(BinaryOp::Coalesce, left, right))
+        let right = self.descend(Self::coalesce_expr);
+        if right.is_error() {
+            return right;
+        }
+        binary_expr(BinaryOp::Coalesce, left, right)
     }
 
-    fn additive_expr(&mut self) -> Option<Expression> {
+    fn additive_expr(&mut self) -> Expression {
         self.binary_chain(Self::multiplicative_expr, |kind| match kind {
             TokenKind::Plus => Some(BinaryOp::Add),
             TokenKind::Minus => Some(BinaryOp::Subtract),
@@ -547,7 +525,7 @@ impl<'a> ExprParser<'a> {
         })
     }
 
-    fn multiplicative_expr(&mut self) -> Option<Expression> {
+    fn multiplicative_expr(&mut self) -> Expression {
         self.binary_chain(Self::unary_expr, |kind| match kind {
             TokenKind::Star => Some(BinaryOp::Multiply),
             TokenKind::Slash => Some(BinaryOp::Divide),
@@ -556,50 +534,61 @@ impl<'a> ExprParser<'a> {
         })
     }
 
-    fn unary_expr(&mut self) -> Option<Expression> {
+    fn unary_expr(&mut self) -> Expression {
         let op = match self.peek() {
             Some(TokenKind::Minus) => UnaryOp::Neg,
             Some(TokenKind::Keyword(Keyword::Not)) => UnaryOp::Not,
             _ => return self.postfix_expr(),
         };
         let op_token = self.advance();
-        let operand = self.descend(Self::unary_expr)?;
+        let operand = self.descend(Self::unary_expr);
+        if operand.is_error() {
+            return operand;
+        }
         let span = join_spans(op_token.span, operand.span());
-        Some(Expression::Unary {
+        Expression::Unary {
             op,
             operand: Box::new(operand),
             span,
-        })
+        }
     }
 
-    fn postfix_expr(&mut self) -> Option<Expression> {
-        let mut expr = self.primary_expr()?;
+    fn postfix_expr(&mut self) -> Expression {
+        let mut expr = self.primary_expr();
+        if expr.is_error() {
+            return expr;
+        }
         let mut levels = 0;
         loop {
             // A `.f`, `?.f`, or `(…)` postfix each wraps the current expression in
-            // one more node, so a long `a.f.f…` or `a()()…` chain deepens the AST
-            // by its length and counts toward the nesting limit.
+            // one more node, so a long `a.f.f…` or `a()()…` chain deepens the AST by
+            // its length and counts toward the nesting limit.
             if matches!(
                 self.peek(),
                 Some(TokenKind::LeftParen | TokenKind::Dot | TokenKind::QuestionDot)
             ) {
                 if !self.enter_chain_level() {
                     self.leave_chain(levels);
-                    return None;
+                    return self.nesting_limit_error();
                 }
                 levels += 1;
             }
             match self.peek() {
                 Some(TokenKind::LeftParen) => {
                     let open = self.advance();
-                    let parsed_args = self.while_caller_owns_recovery(Self::arguments)?;
+                    let parsed_args = match self.arguments() {
+                        Ok(args) => args,
+                        Err(error) => {
+                            self.leave_chain(levels);
+                            return error;
+                        }
+                    };
                     let Some(TokenKind::RightParen) = self.peek() else {
-                        // The argument list is unterminated: a token follows the
-                        // last argument where a `,` or `)` was expected. Name the
-                        // missing delimiter at the gap, then recover the call node
-                        // with the arguments parsed so far so downstream analysis
-                        // — callee contexts, signature help — still sees an
-                        // incomplete call rather than losing the callee.
+                        // The argument list is unterminated: a token follows the last
+                        // argument where a `,` or `)` was expected. Name the missing
+                        // delimiter at the gap, then recover the call node with the
+                        // arguments parsed so far so downstream analysis — callee
+                        // contexts, signature help — still sees an incomplete call.
                         let (expected, message) = if self.peek().is_some_and(starts_expression) {
                             (ExpectedSyntax::Comma, "expected `,`")
                         } else {
@@ -610,12 +599,12 @@ impl<'a> ExprParser<'a> {
                         let span = join_spans(expr.span(), end);
                         let multiline = parsed_args.trailing_comma || end.line > open.span.line;
                         self.leave_chain(levels);
-                        return Some(Expression::Call {
+                        return Expression::Call {
                             callee: Box::new(expr),
                             args: parsed_args.args,
                             multiline,
                             span,
-                        });
+                        };
                     };
                     let close = self.advance();
                     let span = join_spans(expr.span(), close.span);
@@ -628,7 +617,13 @@ impl<'a> ExprParser<'a> {
                     };
                 }
                 Some(TokenKind::Dot) => {
-                    let (name, quoted, name_span) = self.field_segment()?;
+                    let (name, quoted, name_span) = match self.field_segment() {
+                        Ok(segment) => segment,
+                        Err(error) => {
+                            self.leave_chain(levels);
+                            return error;
+                        }
+                    };
                     let span = join_spans(expr.span(), name_span);
                     expr = Expression::Field {
                         base: Box::new(expr),
@@ -639,10 +634,16 @@ impl<'a> ExprParser<'a> {
                     };
                 }
                 // `base?.name`: the same field segment as `.`, but the read
-                // short-circuits to absent rather than failing if the base or
-                // field is missing.
+                // short-circuits to absent rather than failing if the base or field
+                // is missing.
                 Some(TokenKind::QuestionDot) => {
-                    let (name, quoted, name_span) = self.field_segment()?;
+                    let (name, quoted, name_span) = match self.field_segment() {
+                        Ok(segment) => segment,
+                        Err(error) => {
+                            self.leave_chain(levels);
+                            return error;
+                        }
+                    };
                     let span = join_spans(expr.span(), name_span);
                     expr = Expression::OptionalField {
                         base: Box::new(expr),
@@ -656,46 +657,61 @@ impl<'a> ExprParser<'a> {
             }
         }
         self.leave_chain(levels);
-        Some(expr)
+        expr
     }
 
     /// Parse the identifier segment after `.` or `?.`, consuming both tokens.
-    fn field_segment(&mut self) -> Option<(String, bool, SourceSpan)> {
+    /// `Err(error)` collapses a malformed segment into the reported error node.
+    fn field_segment(&mut self) -> Result<(String, bool, SourceSpan), Expression> {
         let op = self.advance();
-        let segment = *self.tokens.get(self.pos)?;
+        let Some(segment) = self.tokens.get(self.pos).copied() else {
+            return Err(self.error_expr(
+                self.gap_span(),
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected a field name".to_string(),
+                None,
+            ));
+        };
         let text = segment.text(self.source);
         let (name, quoted) = match segment.kind {
             TokenKind::Identifier => (text.to_string(), false),
             TokenKind::String => {
-                self.error(
+                return Err(self.error_expr(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::Unsupported(UnsupportedSyntax::QuotedFieldSegments),
                     "quoted field segments are not part of expression grammar".to_string(),
                     None,
-                );
-                return None;
+                ));
             }
             // A reserved word is never a valid field name; report it with both
             // tokens in view.
             TokenKind::Keyword(_) => {
-                self.error(
+                return Err(self.error_expr(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::KeywordFieldName,
                     format!("`{text}` is a keyword and cannot be used as a field name"),
                     None,
-                );
-                return None;
+                ));
             }
-            _ => return None,
+            _ => {
+                return Err(self.error_expr(
+                    segment.span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                    "expected a field name".to_string(),
+                    None,
+                ));
+            }
         };
         self.advance();
-        Some((name, quoted, segment.span))
+        Ok((name, quoted, segment.span))
     }
 
-    fn arguments(&mut self) -> Option<ParsedArguments> {
+    /// Parse a comma-separated argument list up to the closing `)`. `Err(error)`
+    /// collapses a failed argument into the reported error node.
+    fn arguments(&mut self) -> Result<ParsedArguments, Expression> {
         let mut args = Vec::new();
         if matches!(self.peek(), Some(TokenKind::RightParen)) {
-            return Some(ParsedArguments {
+            return Ok(ParsedArguments {
                 args,
                 trailing_comma: false,
             });
@@ -727,13 +743,13 @@ impl<'a> ExprParser<'a> {
                 break;
             }
         }
-        Some(ParsedArguments {
+        Ok(ParsedArguments {
             args,
             trailing_comma,
         })
     }
 
-    fn argument(&mut self) -> Option<Argument> {
+    fn argument(&mut self) -> Result<Argument, Expression> {
         self.recover_removed_argument_mode();
         let name = if matches!(self.peek(), Some(TokenKind::Identifier))
             && matches!(self.peek_at(1), Some(TokenKind::Colon))
@@ -744,8 +760,11 @@ impl<'a> ExprParser<'a> {
         } else {
             None
         };
-        let value = self.expression()?;
-        Some(Argument { name, value })
+        let value = self.expression();
+        if value.is_error() {
+            return Err(value);
+        }
+        Ok(Argument { name, value })
     }
 
     fn recover_removed_argument_mode(&mut self) {
@@ -772,52 +791,33 @@ impl<'a> ExprParser<'a> {
         self.advance();
     }
 
-    fn primary_expr(&mut self) -> Option<Expression> {
+    fn primary_expr(&mut self) -> Expression {
         let Some(token) = self.tokens.get(self.pos).copied() else {
-            self.expected_expression_at_gap();
-            return None;
+            return self.error_expr(
+                self.gap_span(),
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected an expression".to_string(),
+                None,
+            );
         };
-        let literal = |kind| {
-            Some(Expression::Literal {
-                kind,
-                text: token.text(self.source).to_string(),
-                span: token.span,
-            })
-        };
+        let text = token.text(self.source);
         match token.kind {
-            TokenKind::Integer => {
-                self.advance();
-                literal(LiteralKind::Integer)
-            }
-            TokenKind::Decimal => {
-                self.advance();
-                literal(LiteralKind::Decimal)
-            }
-            TokenKind::Duration => {
-                self.advance();
-                literal(LiteralKind::Duration)
-            }
-            TokenKind::String => {
-                self.advance();
-                literal(LiteralKind::String)
-            }
-            TokenKind::Bytes => {
-                self.advance();
-                literal(LiteralKind::Bytes)
-            }
+            TokenKind::Integer => self.literal(token, LiteralKind::Integer),
+            TokenKind::Decimal => self.literal(token, LiteralKind::Decimal),
+            TokenKind::Duration => self.literal(token, LiteralKind::Duration),
+            TokenKind::String => self.literal(token, LiteralKind::String),
+            TokenKind::Bytes => self.literal(token, LiteralKind::Bytes),
             TokenKind::Keyword(Keyword::True | Keyword::False) => {
-                self.advance();
-                literal(LiteralKind::Bool)
+                self.literal(token, LiteralKind::Bool)
             }
             // `absent` is the empty-optional primary value, inert until resolved.
             TokenKind::Keyword(Keyword::Absent) => {
                 self.advance();
-                Some(Expression::Absent { span: token.span })
+                Expression::Absent { span: token.span }
             }
             TokenKind::Identifier => self.name_expr(),
             // A path segment keyword leading `::` starts a name path
-            // (`bytes::length`). Keyword call recovery still treats keyword call
-            // heads as callable only for single-token calls.
+            // (`bytes::length`).
             TokenKind::Keyword(keyword)
                 if is_expression_path_segment_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::DoubleColon)) =>
@@ -831,78 +831,107 @@ impl<'a> ExprParser<'a> {
                     && matches!(self.peek_at(1), Some(TokenKind::LeftParen)) =>
             {
                 self.advance();
-                Some(Expression::Name {
-                    segments: vec![token.text(self.source).to_string()],
+                Expression::Name {
+                    segments: vec![text.to_string()],
                     segment_spans: vec![token.span],
                     span: token.span,
-                })
+                }
             }
             TokenKind::Caret => {
                 self.advance();
-                let name = *self.tokens.get(self.pos)?;
+                let Some(name) = self.tokens.get(self.pos).copied() else {
+                    return self.error_expr(
+                        self.gap_span(),
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                        "expected a saved-root name after `^`".to_string(),
+                        None,
+                    );
+                };
                 if name.kind != TokenKind::Identifier {
-                    return None;
+                    return self.error_expr(
+                        name.span,
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                        "expected a saved-root name after `^`".to_string(),
+                        None,
+                    );
                 }
                 self.advance();
-                Some(Expression::SavedRoot {
+                Expression::SavedRoot {
                     name: name.text(self.source).to_string(),
                     span: join_spans(token.span, name.span),
-                })
+                }
             }
             TokenKind::LeftParen => {
                 self.advance();
-                let inner = self.while_caller_owns_recovery(Self::expression)?;
+                let inner = self.expression();
+                if inner.is_error() {
+                    // The failed operand already reported at its own token; the
+                    // missing `)` is a consequence of it, not a second fault.
+                    return inner;
+                }
                 if matches!(self.peek(), Some(TokenKind::RightParen)) {
                     self.advance();
-                    Some(inner)
-                } else {
-                    // A stray assignment operator before the closing `)` — a bare
-                    // `=` or a compound-assign operator — is reported pointedly at
-                    // that operator rather than as an unstructured group. Otherwise
-                    // the group is unterminated: name the missing `)` at the gap so
-                    // the error lands on the delimiter, not on the enclosing
-                    // statement keyword.
-                    if !self.report_stray_assignment_operator() {
-                        self.expected_delimiter_at_gap(ExpectedSyntax::CloseParen, "expected `)`");
+                    inner
+                } else if self.report_stray_assignment_operator() {
+                    // A stray `=`/compound-assign before the `)` is reported at that
+                    // operator rather than as an unstructured group.
+                    Expression::Error {
+                        span: self.tokens[self.pos].span,
                     }
-                    None
+                } else {
+                    self.expected_delimiter_at_gap(ExpectedSyntax::CloseParen, "expected `)`");
+                    Expression::Error {
+                        span: self.gap_span(),
+                    }
                 }
             }
             TokenKind::InterpolationStart => self.interpolation_expr(),
-            TokenKind::LeftBracket => {
-                self.error(
-                    token.span,
-                    ParseDiagnosticReason::Unsupported(
-                        UnsupportedSyntax::BracketCollectionLiterals,
-                    ),
-                    "bracket collection literals are not part of expression grammar".to_string(),
-                    Some(
-                        "build a local sequence with `var xs: sequence[T]` and \
-                        `append(xs, value)`, or call a function that returns a sequence"
-                            .to_string(),
-                    ),
-                );
-                None
-            }
-            TokenKind::Keyword(_) => {
-                let keyword = token.text(self.source);
-                self.error(
-                    token.span,
-                    ParseDiagnosticReason::KeywordExpression,
-                    format!("`{keyword}` is a keyword and cannot be used as an expression"),
-                    Some("choose an identifier that is not reserved".to_string()),
-                );
-                None
-            }
-            _ => None,
+            TokenKind::LeftBracket => self.error_expr(
+                token.span,
+                ParseDiagnosticReason::Unsupported(UnsupportedSyntax::BracketCollectionLiterals),
+                "bracket collection literals are not part of expression grammar".to_string(),
+                Some(
+                    "build a local sequence with `var xs: sequence[T]` and \
+                    `append(xs, value)`, or call a function that returns a sequence"
+                        .to_string(),
+                ),
+            ),
+            TokenKind::Keyword(_) => self.error_expr(
+                token.span,
+                ParseDiagnosticReason::KeywordExpression,
+                format!("`{text}` is a keyword and cannot be used as an expression"),
+                Some("choose an identifier that is not reserved".to_string()),
+            ),
+            _ => self.error_expr(
+                token.span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected an expression".to_string(),
+                None,
+            ),
         }
     }
 
-    fn interpolation_expr(&mut self) -> Option<Expression> {
+    fn literal(&mut self, token: Token, kind: LiteralKind) -> Expression {
+        self.advance();
+        Expression::Literal {
+            kind,
+            text: token.text(self.source).to_string(),
+            span: token.span,
+        }
+    }
+
+    fn interpolation_expr(&mut self) -> Expression {
         let start = self.advance();
         let mut parts = Vec::new();
         loop {
-            let token = *self.tokens.get(self.pos)?;
+            let Some(token) = self.tokens.get(self.pos).copied() else {
+                return self.error_expr(
+                    self.gap_span(),
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                    "expected an expression".to_string(),
+                    None,
+                );
+            };
             match token.kind {
                 TokenKind::InterpolationText => {
                     self.advance();
@@ -912,58 +941,48 @@ impl<'a> ExprParser<'a> {
                     });
                 }
                 TokenKind::InterpolationExprStart => {
-                    let hole = self.advance();
-                    match self.while_caller_owns_recovery(Self::expression) {
-                        Some(expr) => match self.peek() {
-                            Some(TokenKind::InterpolationExprEnd) => {
-                                self.advance();
-                                parts.push(InterpolationPart::Expr(expr));
-                            }
-                            // A complete operand followed by trailing tokens
-                            // before the closing brace (`{a b}`) leaves the hole
-                            // unclosed. Name the stray token and skip to the brace
-                            // so the rest of the string still parses, rather than
-                            // bubbling a silent `None` to the statement fallback.
-                            _ => {
-                                let span = self
-                                    .tokens
-                                    .get(self.pos)
-                                    .map_or(hole.span, |token| token.span);
-                                self.error(
-                                    span,
-                                    ParseDiagnosticReason::Expected(
-                                        ExpectedSyntax::InterpolationHoleEnd,
-                                    ),
-                                    "expected the end of the interpolation hole".to_string(),
-                                    Some("close the hole with `}`".to_string()),
-                                );
-                                self.recover_to_interpolation_hole_end();
-                            }
-                        },
-                        // An empty `{}` or a hole ending on a dangling operator
-                        // (`{a +}`) carries no operand. Report the missing
-                        // expression at the hole and skip to the closing brace so
-                        // the remaining text and later holes still parse, rather
-                        // than bubbling a silent `None` to the statement fallback.
-                        None => {
-                            self.error(
-                                hole.span,
-                                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-                                "expected an expression".to_string(),
-                                None,
-                            );
-                            self.recover_to_interpolation_hole_end();
-                        }
+                    self.advance();
+                    let expr = self.expression();
+                    if expr.is_error() {
+                        // An empty `{}` or a dangling operator failed at its own
+                        // token; skip to the closing brace so later text and holes
+                        // still parse rather than aborting the whole string.
+                        self.recover_to_interpolation_hole_end();
+                    } else if matches!(self.peek(), Some(TokenKind::InterpolationExprEnd)) {
+                        self.advance();
+                        parts.push(InterpolationPart::Expr(expr));
+                    } else {
+                        // A complete operand followed by trailing tokens before the
+                        // closing brace (`{a b}`) leaves the hole unclosed. Name the
+                        // stray token and skip to the brace.
+                        let span = self
+                            .tokens
+                            .get(self.pos)
+                            .map_or(token.span, |token| token.span);
+                        self.error(
+                            span,
+                            ParseDiagnosticReason::Expected(ExpectedSyntax::InterpolationHoleEnd),
+                            "expected the end of the interpolation hole".to_string(),
+                            Some("close the hole with `}`".to_string()),
+                        );
+                        self.recover_to_interpolation_hole_end();
                     }
                 }
                 TokenKind::InterpolationEnd => {
                     self.advance();
-                    return Some(Expression::Interpolation {
+                    return Expression::Interpolation {
                         parts,
                         span: join_spans(start.span, token.span),
-                    });
+                    };
                 }
-                _ => return None,
+                _ => {
+                    return self.error_expr(
+                        token.span,
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                        "expected an expression".to_string(),
+                        None,
+                    );
+                }
             }
         }
     }
@@ -982,34 +1001,60 @@ impl<'a> ExprParser<'a> {
         }
     }
 
-    fn name_expr(&mut self) -> Option<Expression> {
+    fn name_expr(&mut self) -> Expression {
         let first = self.advance();
         let mut segments = vec![first.text(self.source).to_string()];
         let mut segment_spans = vec![first.span];
         let mut end = first.span;
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
-            let segment = *self.tokens.get(self.pos)?;
-            // A path segment is an identifier or an allowed keyword used as a
-            // name, such as the `bytes` in `std::bytes::length`.
+            let Some(segment) = self.tokens.get(self.pos).copied() else {
+                return self.error_expr(
+                    self.gap_span(),
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                    "expected a name segment after `::`".to_string(),
+                    None,
+                );
+            };
+            // A path segment is an identifier or an allowed keyword used as a name,
+            // such as the `bytes` in `std::bytes::length`.
             let is_segment = match segment.kind {
                 TokenKind::Identifier => true,
                 TokenKind::Keyword(keyword) => is_expression_path_segment_keyword(keyword),
                 _ => false,
             };
             if !is_segment {
-                return None;
+                return self.error_expr(
+                    segment.span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                    "expected a name segment after `::`".to_string(),
+                    None,
+                );
             }
             self.advance();
             segments.push(segment.text(self.source).to_string());
             segment_spans.push(segment.span);
             end = segment.span;
         }
-        Some(Expression::Name {
+        Expression::Name {
             segments,
             segment_spans,
             span: join_spans(first.span, end),
-        })
+        }
+    }
+
+    /// Report a missing call/group delimiter at the gap just past the last consumed
+    /// token, when a complete operand sits inside an unterminated `(` or before a
+    /// missing `,`. The span is the zero-width point after the operand, always a
+    /// valid 1-based position.
+    fn expected_delimiter_at_gap(&mut self, expected: ExpectedSyntax, message: &str) {
+        let span = self.gap_span();
+        self.error(
+            span,
+            ParseDiagnosticReason::Expected(expected),
+            message.to_string(),
+            None,
+        );
     }
 }
 

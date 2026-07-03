@@ -191,19 +191,11 @@ impl<'a> StmtParser<'a> {
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
         let error_span = line_span_or(line, self.tokens[self.pos].span);
-        let before = self.diagnostics.len();
         let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
-        // Suppress the generic fallback when an inline syntax rule already reported.
-        if statement.is_none() && self.diagnostics.len() == before {
-            self.error_span_reason(
-                error_span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
-                "expected a statement",
-            );
-        }
         self.pos = (newline + 1).min(self.tokens.len());
-        // Total parsing: a line that did not structure becomes an error node
-        // carrying its span, so the body is never silently short a statement.
+        // Total parsing: a line that did not structure reported its own diagnostic
+        // and becomes an error node carrying its span, so the body is never silently
+        // short a statement.
         Some(statement.unwrap_or(Statement::Error { span: error_span }))
     }
 
@@ -268,7 +260,7 @@ impl<'a> StmtParser<'a> {
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
         let header_span = line_span_or(header, keyword.span);
-        let parsed = parse_for_header(self.source, header, &mut self.diagnostics);
+        let parsed = parse_for_header(self.source, header);
         self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
 
@@ -537,17 +529,10 @@ impl<'a> StmtParser<'a> {
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
         let error_span = line_span_or(line, keyword);
-        let before = self.diagnostics.len();
         let expr = expr_of_after(self.source, line, keyword, &mut self.diagnostics);
-        // Suppress the generic fallback when an inline syntax rule already reported.
-        if expr.is_none() && self.diagnostics.len() == before {
-            self.error_span_reason(
-                error_span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-                "expected an expression",
-            );
-        }
         self.pos = (newline + 1).min(self.tokens.len());
+        // A failed header reported its own missing-expression diagnostic; the error
+        // node stands in for the condition so the statement still parses.
         expr.unwrap_or(Expression::Error { span: error_span })
     }
 
@@ -556,10 +541,9 @@ impl<'a> StmtParser<'a> {
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
         let error_span = line_span_or(line, keyword);
-        let before = self.diagnostics.len();
         // A `const` head is an existence binding; any other head is a condition
-        // expression. Both fail to `Expression::Error`, so the head is always
-        // present.
+        // expression. Both report their own failure and fall back to
+        // `Expression::Error`, so the head is always present.
         let head = if matches!(
             line.first().map(|token| token.kind),
             Some(TokenKind::Keyword(Keyword::Const))
@@ -569,13 +553,6 @@ impl<'a> StmtParser<'a> {
         } else {
             expr_of_after(self.source, line, keyword, &mut self.diagnostics).map(IfHead::Expr)
         };
-        if head.is_none() && self.diagnostics.len() == before {
-            self.error_span_reason(
-                error_span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-                "expected an expression",
-            );
-        }
         self.pos = (newline + 1).min(self.tokens.len());
         head.unwrap_or(IfHead::Expr(Expression::Error { span: error_span }))
     }

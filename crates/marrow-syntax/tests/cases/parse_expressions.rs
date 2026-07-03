@@ -166,8 +166,8 @@ fn bare_type_keyword_is_not_a_value() {
         panic!("expected const declaration");
     };
     assert!(
-        decl.value.is_none(),
-        "expected bare `int` to carry no value, got {:?}",
+        matches!(decl.value, Some(Expression::Error { .. })),
+        "expected bare `int` to parse to an error node, got {:?}",
         decl.value
     );
 }
@@ -217,8 +217,8 @@ fn const_chained_equality_is_not_associative() {
             panic!("expected const declaration for {source:?}");
         };
         assert!(
-            decl.value.is_none(),
-            "expected chained `{operator}` to carry no value, got {:?}",
+            matches!(decl.value, Some(Expression::Error { .. })),
+            "expected chained `{operator}` to parse to an error node, got {:?}",
             decl.value
         );
     }
@@ -424,8 +424,8 @@ fn underscore_no_longer_parses_as_string_concatenation() {
         panic!("expected const declaration");
     };
     assert!(
-        decl.value.is_none(),
-        "expected obsolete `_` concatenation to carry no value, got {:?}",
+        matches!(decl.value, Some(Expression::Error { .. })),
+        "expected obsolete `_` concatenation to parse to an error node, got {:?}",
         decl.value
     );
 }

@@ -250,7 +250,7 @@ pub(crate) struct MatchCheck<'a> {
     pub(crate) program: &'a CheckedProgram,
     pub(crate) file: &'a Path,
     pub(crate) return_type: &'a MarrowType,
-    pub(crate) scrutinee: Option<&'a marrow_syntax::Expression>,
+    pub(crate) scrutinee: &'a marrow_syntax::Expression,
     pub(crate) arms: &'a [marrow_syntax::MatchArm],
     pub(crate) span: SourceSpan,
     pub(crate) scope: &'a mut Vec<HashMap<String, MarrowType>>,
@@ -292,20 +292,18 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         aliases,
         diagnostics,
     };
-    let scrutinee_type = scrutinee
-        .map(|expr| {
-            infer_type_with_read_scope(
-                env.program,
-                expr,
-                env.scope,
-                env.aliases,
-                env.file,
-                env.diagnostics,
-                env.const_ints,
-                crate::presence::ReadScope::none(),
-            )
-        })
-        .unwrap_or(MarrowType::Unknown);
+    // An error-node scrutinee infers as `Unknown`, which `report_non_enum_match`
+    // leaves alone, so the parse error is not compounded with a match diagnostic.
+    let scrutinee_type = infer_type_with_read_scope(
+        env.program,
+        scrutinee,
+        env.scope,
+        env.aliases,
+        env.file,
+        env.diagnostics,
+        env.const_ints,
+        crate::presence::ReadScope::none(),
+    );
     check_match_arm_bodies(&mut env, arms);
 
     let MarrowType::Enum {

@@ -183,8 +183,8 @@ fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_ho
         .expect("expected-expression diagnostic");
     assert_eq!(
         (hole.span.line, hole.span.column),
-        (2, 18),
-        "the gap should anchor at the `{{` hole, not the statement keyword: {:#?}",
+        (2, 19),
+        "the missing operand anchors at the hole's closing brace, not the statement keyword: {:#?}",
         hole.span
     );
 }
