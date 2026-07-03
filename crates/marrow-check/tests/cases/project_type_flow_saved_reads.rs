@@ -266,7 +266,10 @@ fn partial_key_value_rejected(name: &str, src: &str, access: &str, layer: &str) 
         found[0]
     );
     let DiagnosticPayload::LayerNotValue { field, .. } = &found[0].payload else {
-        panic!("{name}: expected LayerNotValue payload: {:#?}", found[0].payload);
+        panic!(
+            "{name}: expected LayerNotValue payload: {:#?}",
+            found[0].payload
+        );
     };
     assert_eq!(field, layer, "{name}: {:#?}", found[0].payload);
 }
@@ -1547,7 +1550,10 @@ fn descent_layer_not_value(report: &marrow_check::CheckReport, src: &str, field:
         "span should end at `{field}`: {:#?}",
         found[0]
     );
-    let DiagnosticPayload::LayerNotValue { field: found_field, .. } = &found[0].payload else {
+    let DiagnosticPayload::LayerNotValue {
+        field: found_field, ..
+    } = &found[0].payload
+    else {
         panic!("expected LayerNotValue payload: {:#?}", found[0].payload);
     };
     assert_eq!(found_field, field, "{:#?}", found[0].payload);

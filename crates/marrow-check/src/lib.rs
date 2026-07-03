@@ -77,8 +77,7 @@ pub use diagnostics::{
     CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
     ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticAnchor,
     DiagnosticPayload, EnumDiagnostic, IO_READ, IsTypeFault, LayerNotValueReason, MatchScrutinee,
-    PendingRecord,
-    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
+    PendingRecord, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
     SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
     SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
 };

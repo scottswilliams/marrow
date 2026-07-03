@@ -197,7 +197,9 @@ fn enum_message(diagnostic: &EnumDiagnostic) -> String {
             ),
         },
         EnumDiagnostic::CategoryNotSelectable { path } => {
-            format!("`{path}` is a category and cannot be selected; pick a concrete member under it")
+            format!(
+                "`{path}` is a category and cannot be selected; pick a concrete member under it"
+            )
         }
     }
 }
@@ -420,9 +422,9 @@ mod tests {
     use super::{MIGRATED_CODES, render_message};
     use crate::diagnostics::{
         AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
-        LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
-        SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin,
-        SurfaceTargetDiagnostic,
+        LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic,
+        SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList,
+        SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
     };
     use crate::program::MarrowType;
     use marrow_codes::Code;
