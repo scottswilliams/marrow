@@ -32,6 +32,8 @@ mod parse_surface;
 mod parse_type_expr;
 #[path = "cases/parse_types_params.rs"]
 mod parse_types_params;
+#[path = "cases/roundtrip.rs"]
+mod roundtrip;
 #[path = "cases/total_parser_architecture.rs"]
 mod total_parser_architecture;
 #[path = "cases/type_expr_architecture.rs"]
