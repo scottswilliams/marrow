@@ -488,10 +488,24 @@ fn probe_lock_against_store(
         let mut data = serde_json::Map::new();
         data.insert("lock_epoch".into(), json!(lock.epoch_high_water));
         data.insert("store_epoch".into(), json!(accepted.epoch));
+        // Direction decides authority. A store ahead of the lock is authoritative and the lock is
+        // stale. A store BEHIND the lock has not caught up to a committed activation — or its body
+        // was restored to an older epoch — so it is not authoritative: regenerating the lock from it
+        // would discard the committed activation. A whole-body rollback to a consistent older epoch
+        // is locally indistinguishable from a never-advanced checkout, so the honest advice is to
+        // advance or restore, never to overwrite the lock.
+        let remedy = if lock.epoch_high_water > accepted.epoch {
+            "the store is behind the committed lock: run marrow evolve apply to advance it, or \
+             restore a current store body if it was rolled back to an older epoch -- do not \
+             regenerate the lock from the behind store"
+        } else {
+            "the live store is ahead and authoritative; regenerate marrow.lock with a run or \
+             evolve apply"
+        };
         findings.push(Finding::new(
             Code::DoctorStoreLockEpochMismatch.as_str(),
             "the committed lock and the live store record different accepted epochs",
-            "the live store is authoritative; regenerate marrow.lock with a run or evolve apply",
+            remedy,
             doctor_command(dir),
             data,
         ));

@@ -1434,6 +1434,14 @@ fn a_deleted_lock_reprojects_unstamped_and_condemns_a_missing_root() {
 /// The inspections read the store clean at its own epoch, run and both serve modes classify it
 /// `run.store_behind` with the actionable apply remedy, and `evolve apply` advances the store and
 /// materializes the new root — no wedge, in-band recovery, everything clean after.
+///
+/// This is the R36-01 residual boundary. The sealed commit record closes every store-INTERNAL
+/// corruption — a partial rollback, torn value, dropped cell, or a covered-root drop the store's
+/// own epoch covers all fail closed (the sibling lock-root tests). But a whole-body rollback that
+/// reverts the record along with the data to a consistent OLDER epoch is locally indistinguishable
+/// from this never-advanced checkout, so it stays documented behavior — advance-with-advisory —
+/// not corruption. The mitigation is backup/restore plus doctor's accurate epoch-mismatch advisory
+/// (see `doctor_cli`), never a lock or sidecar change.
 #[test]
 fn a_store_behind_a_newly_activated_root_reads_behind_and_advances_cleanly() {
     let (project, dir) =

@@ -637,6 +637,18 @@ fn doctor_reports_a_store_vs_lock_epoch_mismatch_distinct_from_a_collision() {
         serde_json::json!(store_epoch),
         "{value:#?}"
     );
+    // The store is BEHIND the committed lock — the R36-01 whole-body-rollback residual state, a
+    // store restored to an older epoch being locally indistinguishable from a never-advanced
+    // checkout. The advisory must be accurate for a behind store: advise advancing or restoring,
+    // and explicitly refuse to declare the behind store authoritative or regenerate the lock from
+    // it (which would discard the committed activation).
+    let remedy = mismatch["remedy"].as_str().expect("remedy string");
+    assert!(
+        remedy.contains("behind the committed lock")
+            && remedy.contains("do not regenerate")
+            && !remedy.contains("authoritative"),
+        "the behind-store advisory must not declare the rolled-back store authoritative: {remedy}"
+    );
 
     assert_eq!(
         fs::read(store_path(&project)).expect("read store after doctor"),
