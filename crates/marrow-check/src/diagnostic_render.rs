@@ -186,6 +186,11 @@ mod tests {
     /// the first argument. A migrated code must never appear there: its prose lives
     /// only in `render_message`, reached through the message-less
     /// `CheckDiagnostic::new`.
+    ///
+    /// Blind spots, as with the L3/L4 tidy scans: this matches only the literal
+    /// `CheckDiagnostic::error(`/`warning(` spellings and the hand-maintained tokens
+    /// above, so an aliased or renamed constructor, or a code assembled at runtime,
+    /// would slip past. Reviewers block those the same way.
     #[test]
     fn no_prose_at_migrated_construction() {
         assert_eq!(

@@ -889,10 +889,17 @@ pub struct CheckDiagnostic {
 /// through [`CheckDiagnostic::new`] a location, so a diagnostic can never carry a
 /// silently-zeroed span: [`at`](Self::at) takes a real span, and a finding about a
 /// whole file with no meaningful position within it is the explicit
-/// [`whole_file`](Self::whole_file) variant, which resolves to the file's start
-/// rather than the unplaceable `0:0`.
+/// [`whole_file`](Self::whole_file) constructor, which resolves to the file's start
+/// rather than the unplaceable `0:0`. The location shape is a private inner enum, so
+/// these two constructors are the sole way to build an anchor — a caller cannot
+/// assemble a zeroed span directly and bypass `at`'s guard.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiagnosticAnchor {
+pub struct DiagnosticAnchor(Anchor);
+
+/// The private location shape behind [`DiagnosticAnchor`]. Module-private so no code
+/// outside constructs a variant directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Anchor {
     /// A specific span within a source file.
     At { file: PathBuf, span: SourceSpan },
     /// A whole file, when the finding is about the file as a unit and no position
@@ -908,26 +915,26 @@ impl DiagnosticAnchor {
             "a zeroed span is not a location; use DiagnosticAnchor::whole_file for a \
              finding with no position within the file",
         );
-        Self::At {
+        Self(Anchor::At {
             file: file.to_path_buf(),
             span,
-        }
+        })
     }
 
     /// Anchor at a whole file with no meaningful span.
     pub fn whole_file(file: &Path) -> Self {
-        Self::WholeFile {
+        Self(Anchor::WholeFile {
             file: file.to_path_buf(),
-        }
+        })
     }
 
     /// The single place an anchor becomes the `(file, span)` a [`CheckDiagnostic`]
     /// stores. A whole-file finding points at the file's start so an editor can
     /// place it, never the unplaceable `0:0`.
     fn resolve(self) -> (PathBuf, SourceSpan) {
-        match self {
-            Self::At { file, span } => (file, span),
-            Self::WholeFile { file } => (file, crate::source_spans::start_of_file()),
+        match self.0 {
+            Anchor::At { file, span } => (file, span),
+            Anchor::WholeFile { file } => (file, crate::source_spans::start_of_file()),
         }
     }
 }
