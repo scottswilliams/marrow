@@ -288,7 +288,7 @@ pub(super) fn parse_type(
             detail,
         ));
     }
-    Ok(build_type_expr(source, tokens))
+    build_type_expr(source, tokens, expected)
 }
 
 /// The noun for the type position a stray trailing token followed, so a
@@ -370,69 +370,127 @@ fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
 /// Classify one validated type production into its structure, mirroring the
 /// language's spelling grammar: a trailing `?` is the optional suffix,
 /// `sequence[T]` recurses on its element, `Id(^root)` is a saved-store identity,
-/// and everything else is a name resolved downstream. The token slice is one
-/// complete production, so the classification is total.
-fn build_type_expr(source: &str, tokens: &[Token]) -> TypeExpr {
+/// and everything else is a name resolved downstream. As the sole owner of type
+/// grammar, it rejects a structurally malformed identity or a `?` with no base
+/// here rather than deferring a misleading semantic error downstream.
+fn build_type_expr(
+    source: &str,
+    tokens: &[Token],
+    expected: ExpectedSyntax,
+) -> ParseResult<TypeExpr> {
     let span = join_spans(tokens[0].span, tokens[tokens.len() - 1].span);
-    // Strip exactly one trailing `?` and wrap the base as an optional. A lone `?`
-    // has no base to wrap, so it stays an unresolvable name.
+    // Strip exactly one trailing `?` and wrap the base as an optional. A `?` with
+    // no base names no type to make optional.
     if let Some((last, base)) = tokens.split_last()
         && last.kind == TokenKind::Question
-        && !base.is_empty()
     {
-        return TypeExpr::Optional {
-            inner: Box::new(build_type_expr(source, base)),
+        if base.is_empty() {
+            return Err(ParseError::at(
+                last.span,
+                ParseDiagnosticReason::Expected(expected),
+                "expected a type before `?`",
+            ));
+        }
+        return Ok(TypeExpr::Optional {
+            inner: Box::new(build_type_expr(source, base, expected)?),
             span,
-        };
+        });
     }
-    if let Some(identity) = build_identity(source, tokens) {
-        return identity;
+    if opens_as_identity(tokens) {
+        return build_identity(source, tokens, span, expected);
     }
-    if let Some(sequence) = build_sequence(source, tokens, span) {
-        return sequence;
+    if let Some(sequence) = build_sequence(source, tokens, span, expected)? {
+        return Ok(sequence);
     }
-    TypeExpr::Name {
+    Ok(TypeExpr::Name {
         text: type_text(source, tokens),
         span,
-    }
+    })
 }
 
-/// The canonical `Id ( ^ root )` saved-store identity, or `None` for any other
-/// spelling. A non-canonical `Id(...)` spelling names no saved store, so it stays
-/// an unresolvable name the checker reports.
-fn build_identity(source: &str, tokens: &[Token]) -> Option<TypeExpr> {
-    let [id, open, caret, root, close] = tokens else {
-        return None;
+/// Whether a token slice opens as an identity constructor `Id ( ^`. `Id` is a
+/// reserved keyword, so this opening always intends a saved-store identity: the
+/// parser commits to that reading and reports a malformed one rather than folding
+/// it into a name.
+fn opens_as_identity(tokens: &[Token]) -> bool {
+    matches!(
+        tokens,
+        [id, open, caret, ..]
+            if id.kind == TokenKind::Keyword(Keyword::Id)
+                && open.kind == TokenKind::LeftParen
+                && caret.kind == TokenKind::Caret
+    )
+}
+
+/// Build the saved-store identity a token slice that opens `Id ( ^` names. The
+/// only well-formed spelling is `Id ( ^ root )` with a single saved-root name; a
+/// dotted or empty root, or stray tokens after the close, is a targeted parse
+/// error rather than an unresolvable name the checker would misreport.
+fn build_identity(
+    source: &str,
+    tokens: &[Token],
+    span: SourceSpan,
+    expected: ExpectedSyntax,
+) -> ParseResult<TypeExpr> {
+    let malformed_root = |at: SourceSpan| {
+        ParseError::at(
+            at,
+            ParseDiagnosticReason::Expected(expected),
+            "the root of `Id(...)` must be a single saved-root name",
+        )
     };
-    if id.kind != TokenKind::Keyword(Keyword::Id)
-        || open.kind != TokenKind::LeftParen
-        || caret.kind != TokenKind::Caret
-        || root.kind != TokenKind::Identifier
-        || close.kind != TokenKind::RightParen
-    {
-        return None;
+    let open = 1;
+    let caret = 2;
+    let Some(close) = balanced_group_end(tokens, open) else {
+        return Err(malformed_root(tokens[open].span));
+    };
+    let root_tokens = &tokens[caret + 1..close];
+    let [root] = root_tokens else {
+        // An empty root points at the close paren where a name should be; a longer
+        // root points at the first token past the name that breaks it up.
+        let at = root_tokens
+            .get(1)
+            .map_or(tokens[close].span, |token| token.span);
+        return Err(malformed_root(at));
+    };
+    if root.kind != TokenKind::Identifier {
+        return Err(malformed_root(root.span));
     }
-    Some(TypeExpr::Identity(IdentityTypeExpr {
+    if let Some(trailing) = tokens.get(close + 1) {
+        return Err(ParseError::at(
+            trailing.span,
+            ParseDiagnosticReason::Expected(expected),
+            "unexpected tokens after `Id(...)`",
+        ));
+    }
+    Ok(TypeExpr::Identity(IdentityTypeExpr {
         root: root.text(source).to_string(),
-        keyword_span: id.span,
-        caret_span: caret.span,
+        keyword_span: tokens[0].span,
+        caret_span: tokens[caret].span,
         root_span: root.span,
-        span: join_spans(id.span, close.span),
+        span,
     }))
 }
 
 /// A `sequence[T]` whose bracket group spans the whole tail, recursing on the
-/// element spelling. `None` for any other spelling, including a name that merely
-/// carries a bracket group (`Foo[bar]`), which stays a name.
-fn build_sequence(source: &str, tokens: &[Token], span: SourceSpan) -> Option<TypeExpr> {
+/// element spelling. `Ok(None)` for any other spelling, including a name that
+/// merely carries a bracket group (`Foo[bar]`), which stays a name.
+fn build_sequence(
+    source: &str,
+    tokens: &[Token],
+    span: SourceSpan,
+    expected: ExpectedSyntax,
+) -> ParseResult<Option<TypeExpr>> {
     let open = 1;
-    let last = tokens.len().checked_sub(1)?;
-    if tokens.first()?.kind != TokenKind::Keyword(Keyword::Sequence)
-        || tokens.get(open)?.kind != TokenKind::LeftBracket
+    let Some(last) = tokens.len().checked_sub(1) else {
+        return Ok(None);
+    };
+    if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Sequence))
+        || tokens.get(open).map(|token| token.kind) != Some(TokenKind::LeftBracket)
         || tokens[last].kind != TokenKind::RightBracket
-        || balanced_group_end(tokens, open)? != last
+        || balanced_group_end(tokens, open) != Some(last)
     {
-        return None;
+        return Ok(None);
     }
     let inner = &tokens[open + 1..last];
     let element = if inner.is_empty() {
@@ -443,12 +501,12 @@ fn build_sequence(source: &str, tokens: &[Token], span: SourceSpan) -> Option<Ty
             span: join_spans(tokens[open].span, tokens[last].span),
         }
     } else {
-        build_type_expr(source, inner)
+        build_type_expr(source, inner, expected)?
     };
-    Some(TypeExpr::Sequence {
+    Ok(Some(TypeExpr::Sequence {
         element: Box::new(element),
         span,
-    })
+    }))
 }
 
 /// The whitespace-free source spelling of a type-token slice. The stored spelling

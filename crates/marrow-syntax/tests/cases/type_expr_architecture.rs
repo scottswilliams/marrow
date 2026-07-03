@@ -7,6 +7,13 @@
 //! `strip_prefix("Id(^"`) that recovered `sequence[T]` and `Id(^root)` from that text.
 //! A resurrection of either is caught here rather than silently reintroducing a second
 //! grammar.
+//!
+//! Blind spot: this is a literal-pattern scan, so a respelled structure-parse — a
+//! `contains`/`split`/re-lex of type text under a different shape — would slip past
+//! it. The load-bearing enforcement is the typed node itself: `TypeExpr` exposes no
+//! raw type-text accessor for downstream crates to re-parse, only `Name.text`, a
+//! genuine leaf-name spelling. This scan guards the two historical regressions;
+//! reviewers still block a new type-text re-parse the scan cannot name.
 
 use std::fs;
 use std::path::{Path, PathBuf};

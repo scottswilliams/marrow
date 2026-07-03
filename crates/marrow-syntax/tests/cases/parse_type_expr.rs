@@ -130,17 +130,80 @@ fn display_round_trips_the_whitespace_free_spelling() {
     assert_eq!(field_type("sequence[ int ]").to_string(), "sequence[int]");
 }
 
+/// The structurally malformed spellings the parser now rejects, each paired with
+/// the exact parse-level message it yields. The string carrier used to slice these
+/// into an `Identity`/`Optional` or fold them to a `Name` that the checker then
+/// misreported as "not a declared enum"; as the sole owner of type grammar the
+/// parser names the real problem here.
+const MALFORMED: &[(&str, &str)] = &[
+    (
+        "Id(^a.b)",
+        "the root of `Id(...)` must be a single saved-root name",
+    ),
+    (
+        "Id(^)",
+        "the root of `Id(...)` must be a single saved-root name",
+    ),
+    (
+        "Id(^a.b.c)",
+        "the root of `Id(...)` must be a single saved-root name",
+    ),
+    ("Id(^a)(b)", "unexpected tokens after `Id(...)`"),
+    ("?", "expected a type before `?`"),
+    ("int??", "an optional type is written `T?`"),
+];
+
+/// Every type-annotation position, each routing through `parse_type` with its own
+/// context. `%` marks where the spelling is placed.
+const POSITIONS: &[(&str, &str)] = &[
+    ("resource field", "resource R\n    value: %\n"),
+    ("keyed key", "resource R\n    value(k: %): int\n"),
+    ("function parameter", "fn f(x: %)\n    return\n"),
+    ("function return", "fn f(): %\n    return\n"),
+    ("const", "const c: % = 0\n"),
+    ("local var", "fn f()\n    var x: % = 0\n    return\n"),
+];
+
 #[test]
-fn a_doubled_question_is_rejected_not_a_nested_optional() {
-    // `T??` has no second optional layer to denote; the parser rejects the
-    // doubled suffix rather than building a nested optional.
-    let parsed = parse_source("resource R\n    value: int??\n");
-    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
-    assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("an optional type is written `T?`")),
-        "expected the doubled-optional guidance: {:#?}",
-        parsed.diagnostics
-    );
+fn a_malformed_type_is_a_parse_error_in_every_position() {
+    for (spelling, message) in MALFORMED {
+        for (position, template) in POSITIONS {
+            let source = template.replace('%', spelling);
+            let parsed = parse_source(&source);
+            let matched = parsed.diagnostics.iter().find(|diagnostic| {
+                diagnostic.code == "parse.syntax" && diagnostic.message == *message
+            });
+            assert!(
+                matched.is_some(),
+                "`{spelling}` in {position} position must be the parse error \
+                 `{message}`, got:\n{:#?}",
+                parsed.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn a_malformed_type_span_points_at_the_offending_token() {
+    for (spelling, offending) in [
+        ("Id(^a.b)", "."),
+        ("Id(^)", ")"),
+        ("Id(^a.b.c)", "."),
+        ("Id(^a)(b)", "("),
+        ("?", "?"),
+        ("int??", "??"),
+    ] {
+        let source = format!("resource R\n    value: {spelling}\n");
+        let parsed = parse_source(&source);
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "parse.syntax")
+            .unwrap_or_else(|| panic!("expected a parse error for `{spelling}`: {parsed:#?}"));
+        assert_eq!(
+            &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+            offending,
+            "`{spelling}` should point its diagnostic at `{offending}`"
+        );
+    }
 }

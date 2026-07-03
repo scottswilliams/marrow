@@ -30,6 +30,30 @@ fn split_store_applies_saved_field_schema_rules() {
 }
 
 #[test]
+fn a_malformed_saved_identity_field_is_a_parse_error_not_a_non_enum_leak() {
+    // A structurally malformed `Id(...)` is rejected by the parser, so the checker
+    // never sees a bare name to misreport as "not a declared enum". The parser owns
+    // the type grammar; the real problem is named where it is.
+    let report = check_module_report(
+        "malformed-saved-identity",
+        "module m\n\
+         resource Book\n\
+         \x20   ref: Id(^a.b)\n\
+         store ^books(id: int): Book\n",
+    );
+    assert!(
+        !with_code(&report, "parse.syntax").is_empty(),
+        "a malformed `Id(^a.b)` must be a targeted parse error: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "schema.non_enum_named_field").is_empty(),
+        "a malformed identity must not leak as a non-enum field error: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn typed_keyed_resource_layer_compiles_as_group_entry() {
     let root = temp_project("keyed-resource-field-schema", |root| {
         write(
