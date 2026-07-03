@@ -465,6 +465,128 @@ pub struct ConversionUnsupportedSourceDiagnostic {
     pub accepted_sources: Vec<MarrowType>,
 }
 
+/// Which argument a per-argument `check.call_argument` type mismatch is about: a
+/// named parameter when one is known (user functions, constructor fields) or a
+/// 1-based position otherwise (positional std helpers). The rendered forms
+/// (`parameter \`name\`` / `argument N`) distinguish two failures on one line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallArgumentSlot {
+    Named(String),
+    /// The zero-based argument index; rendered 1-based.
+    Position(usize),
+}
+
+impl CallArgumentSlot {
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Named(name) => format!("parameter `{name}`"),
+            Self::Position(index) => format!("argument {}", index + 1),
+        }
+    }
+}
+
+/// Why a `check.unresolved_call` was raised. The two forms share their carried
+/// name but render distinct prose, so the form is a stored fact rather than one
+/// recovered from the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresolvedCallKind {
+    /// A bare or qualified call names no builtin and no declared function.
+    Function,
+    /// A `std::…` path names no standard-library operation.
+    StdOperation,
+}
+
+/// The single owner of every `check.call_argument` shape. The code is emitted for
+/// many distinct argument faults — arity, named-argument, constructor-field,
+/// per-argument type, builtin-shape, and saved-collection faults — so each shape is
+/// a typed variant here and the renderer selects its template, rather than a stringly
+/// payload reconstructing the fault from prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallArgumentFault {
+    /// A fixed-arity callee named by `label` (a builtin, std helper, or `assert`)
+    /// received the wrong number of arguments.
+    Arity {
+        label: String,
+        expected: usize,
+        given: usize,
+    },
+    /// A user function received the wrong number of arguments.
+    FunctionArity {
+        callee: String,
+        expected: usize,
+        given: usize,
+    },
+    /// `std::assert::equal` compared two scalars of different type.
+    AssertEqualMismatch {
+        label: String,
+        first: MarrowType,
+        second: MarrowType,
+    },
+    /// `std::assert::equal` received a non-scalar operand; `found` is the offending type.
+    AssertEqualNonScalar { label: String, found: MarrowType },
+    /// A named argument does not match any parameter of the user function.
+    UnknownParameter { callee: String, parameter: String },
+    /// A user function parameter is supplied more than once.
+    DuplicateParameter { callee: String, name: String },
+    /// A named-field constructor received a positional argument.
+    ConstructorNeedsNamedFields { label: String },
+    /// A named-field constructor argument does not match any field.
+    UnknownField { label: String, field: String },
+    /// A named-field constructor field is supplied more than once.
+    DuplicateField { name: String },
+    /// A required named-field constructor field is missing.
+    RequiredField { label: String, field: String },
+    /// A supplied argument's type does not match its parameter.
+    ArgumentType {
+        label: String,
+        slot: CallArgumentSlot,
+        expected: MarrowType,
+        found: MarrowType,
+    },
+    /// An `append` value does not match the target element type.
+    AppendValue {
+        expected: MarrowType,
+        found: MarrowType,
+    },
+    /// An `append` target is not an int-keyed leaf layer.
+    AppendTarget(AppendTargetDiagnostic),
+    /// A conversion call rejects the known source type.
+    ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
+    /// A conversion call's sole argument was named.
+    ConversionArgumentNamed { label: String, name: String },
+    /// A saved collection was passed to a by-value local-collection parameter of
+    /// the callee named `label`.
+    SavedCollectionByValue {
+        label: String,
+        parameter: MarrowType,
+    },
+    /// `std::assert::isAbsent` received a non-optional value.
+    AssertAbsentRequiresOptional,
+    /// `exists` was asked to guard a read whose key carries an effect.
+    ExistsEffectInKey,
+    /// `exists` was applied to an always-present value.
+    ExistsAlwaysPresent,
+    /// `exists` was applied to something that is not a saved path.
+    ExistsRequiresSavedPath,
+    /// A string literal in an error-code position is not a dotted lowercase code.
+    /// `label` names the offending place, pre-quoted.
+    ErrorCodeLiteral { label: String },
+    /// `Id` received a named argument.
+    IdArgumentsPositional,
+    /// `Id` received no arguments.
+    IdExpectsRoot,
+    /// `Id`'s first argument is not a saved root.
+    IdExpectsRootFirst,
+    /// `nextId` received a saved path that is not a bare store root.
+    NextIdRequiresBareRoot,
+    /// `nextId` received a concrete non-saved argument; `found` is its type.
+    NextIdRequiresRoot { found: MarrowType },
+    /// `key` received a concrete non-identity argument; `found` is its type.
+    KeyRequiresIdentity { found: MarrowType },
+    /// A saved key lookup or identity constructor received a named argument.
+    SavedKeyArgumentsPositional,
+}
+
 /// Structured facts for enum-member and enum-match diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnumDiagnostic {
@@ -762,10 +884,9 @@ pub struct SurfaceFieldDiagnostic {
 /// Duplicate root ownership names the saved root and first owning file.
 /// Rejected-source-surface diagnostics name the rejected surface. Enum diagnostics
 /// carry the member or coverage fact. Private enum diagnostics name the
-/// inaccessible enum. Duplicate named arguments carry the repeated argument or
-/// field name. Append target diagnostics carry the rejected target shape.
-/// Conversion unsupported-source diagnostics carry the target, rejected source,
-/// and accepted static sources. Interpolation unsupported-source diagnostics
+/// inaccessible enum. Call-argument diagnostics carry the typed argument fault
+/// (arity, named-argument, constructor-field, per-argument type, builtin-shape, or
+/// saved-collection). Interpolation unsupported-source diagnostics
 /// carry the source type that interpolation cannot render directly. Reserved
 /// catalog path reuse diagnostics carry the reused source identity and reserved
 /// stable id. Catalog-intent diagnostics carry structured intent facts.
@@ -781,8 +902,12 @@ pub enum DiagnosticPayload {
     None,
     /// `cannot resolve import`: the `use` path that named no module.
     UnresolvedImport(String),
-    /// `function … is not defined`: the call's (possibly qualified) name.
-    UnresolvedCall(String),
+    /// `check.unresolved_call`: the call's (possibly qualified) name and which
+    /// resolution form it failed. Resolution-suppression keys on the name.
+    UnresolvedCall {
+        name: String,
+        kind: UnresolvedCallKind,
+    },
     /// `unknown type`: the structured type the checker did not recognize. Carries
     /// the resolved [`marrow_schema::Type`] (sequence wrappers and named segments
     /// already classified) so resolution-suppression compares it against hidden
@@ -847,12 +972,15 @@ pub enum DiagnosticPayload {
     /// `check.exposed_private_enum`: the leaked enum's fully-qualified name and the
     /// public function whose signature exposes it.
     ExposedPrivateEnum { enum_name: String, function: String },
-    /// `check.call_argument`: a named argument or constructor field repeated.
-    DuplicateNamedArgument(String),
-    /// `check.call_argument`: an `append` target is not an int-keyed leaf layer.
-    AppendTarget(AppendTargetDiagnostic),
-    /// `check.call_argument`: a conversion call rejects the known source type.
-    ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
+    /// `check.call_argument`: the typed argument fault.
+    CallArgument(CallArgumentFault),
+    /// `check.private_function`: the inaccessible function's (possibly qualified) name.
+    PrivateFunction(String),
+    /// `check.ambiguous_call`: the bare call leaf and the modules that expose it.
+    AmbiguousCall {
+        leaf: String,
+        candidates: Vec<String>,
+    },
     /// `check.operator_type`: a render surface (print/interpolation) rejects a
     /// known source type.
     RenderUnsupportedSource { source: MarrowType },
@@ -893,11 +1021,6 @@ pub enum DiagnosticPayload {
         expected: MarrowType,
         found: MarrowType,
     },
-    /// `check.call_argument`: a saved collection was passed to a by-value
-    /// local-collection parameter. A saved collection is iterated in place, never
-    /// materialized as a local value, so the parameter type it could not fill is the
-    /// fact a consumer needs.
-    SavedCollectionByValue { parameter: MarrowType },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

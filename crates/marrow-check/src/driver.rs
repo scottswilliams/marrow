@@ -407,7 +407,9 @@ impl TestResolutionSuppression {
             DiagnosticPayload::UnresolvedImport(name) => {
                 self.references_hidden_module_exactly(name)
             }
-            DiagnosticPayload::UnresolvedCall(name) => self.references_hidden_module_member(name),
+            DiagnosticPayload::UnresolvedCall { name, .. } => {
+                self.references_hidden_module_member(name)
+            }
             DiagnosticPayload::UnknownType(ty) | DiagnosticPayload::AmbiguousType { ty, .. } => {
                 self.references_hidden_type(ty)
             }
@@ -427,9 +429,9 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::Enum(_)
             | DiagnosticPayload::PrivateEnum(_)
             | DiagnosticPayload::ExposedPrivateEnum { .. }
-            | DiagnosticPayload::DuplicateNamedArgument(_)
-            | DiagnosticPayload::AppendTarget(_)
-            | DiagnosticPayload::ConversionUnsupportedSource(_)
+            | DiagnosticPayload::CallArgument(_)
+            | DiagnosticPayload::PrivateFunction(_)
+            | DiagnosticPayload::AmbiguousCall { .. }
             | DiagnosticPayload::RenderUnsupportedSource { .. }
             | DiagnosticPayload::ReservedCatalogPathReuse { .. }
             | DiagnosticPayload::CatalogIntent(_)
@@ -438,7 +440,6 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::UnknownField { .. }
             | DiagnosticPayload::RequiredAbsent { .. }
             | DiagnosticPayload::TypeMismatch { .. }
-            | DiagnosticPayload::SavedCollectionByValue { .. }
             | DiagnosticPayload::LayerNotValue { .. }
             | DiagnosticPayload::None => false,
         }

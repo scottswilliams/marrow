@@ -1,6 +1,7 @@
 use crate::support;
 use marrow_check::{
-    AppendTargetDiagnostic, DiagnosticPayload, MarrowType, ScalarType, check_project, check_tests,
+    AppendTargetDiagnostic, CallArgumentFault, DiagnosticPayload, MarrowType, ScalarType,
+    check_project, check_tests,
 };
 use marrow_project::parse_config;
 
@@ -874,9 +875,11 @@ fn appending_to_a_string_keyed_layer_is_rejected() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::NonIntKeyedLayer {
-            key_type: MarrowType::Primitive(ScalarType::Str),
-        }),
+        DiagnosticPayload::CallArgument(CallArgumentFault::AppendTarget(
+            AppendTargetDiagnostic::NonIntKeyedLayer {
+                key_type: MarrowType::Primitive(ScalarType::Str),
+            },
+        )),
         "{found:#?}"
     );
 }

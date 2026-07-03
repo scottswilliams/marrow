@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_codes::Code;
 use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
@@ -13,18 +14,18 @@ use marrow_syntax::SourceSpan;
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
-    as_primitive, expects_conversion, is_optional_value, marrow_type_name, mismatch_display,
-    type_compatible, unresolved_optional, unresolved_optional_diagnostic,
+    as_primitive, expects_conversion, is_optional_value, marrow_type_name, type_compatible,
+    unresolved_optional, unresolved_optional_diagnostic,
 };
 use crate::{
-    AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_CALL_ARGUMENT,
-    CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_REQUIRES_SINGLE_KEY, CHECK_NEIGHBOR_UNSUPPORTED,
-    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_PRIVATE_FUNCTION, CHECK_UNRESOLVED_CALL,
-    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedModule, CheckedProgram, ConversionTarget,
-    ConversionUnsupportedSourceDiagnostic, Def, DefItem, DiagnosticPayload, MarrowType, Resolution,
-    ResolvableKind, TypeNames, builtin_return_type, conversion_return_type,
-    identity_type_for_store, is_builtin_call, is_unknown_std_operation, module_of_file, resolve,
-    resource_type_name, std_call_params, std_call_return_type,
+    AppendTargetDiagnostic, CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_REQUIRES_SINGLE_KEY,
+    CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_UNTYPED_VALUE,
+    CallArgumentFault, CallArgumentSlot, CheckDiagnostic, CheckedModule, CheckedProgram,
+    ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def, DefItem, DiagnosticAnchor,
+    DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, UnresolvedCallKind,
+    builtin_return_type, conversion_return_type, identity_type_for_store, is_builtin_call,
+    is_unknown_std_operation, module_of_file, resolve, resource_type_name, std_call_params,
+    std_call_return_type,
 };
 
 use super::collections::{
@@ -32,8 +33,23 @@ use super::collections::{
     is_recognized_collection, is_saved_index_range_path, is_saved_key_range_path,
     is_saved_unique_index_branch_path, saved_path_key_type, saved_path_value_type,
 };
-use super::diagnostics::{call_diagnostic, key_type_diagnostic};
+use super::diagnostics::key_type_diagnostic;
 use super::saved_keys::{check_identity_sequence_position, check_keys_against};
+
+/// A `check.call_argument` diagnostic carrying its typed fault, located at a call
+/// or argument span. The one construction path for the code's many argument-fault
+/// shapes; its prose lives in the diagnostic renderer.
+pub(super) fn call_argument(
+    file: &Path,
+    span: SourceSpan,
+    fault: CallArgumentFault,
+) -> CheckDiagnostic {
+    CheckDiagnostic::new(
+        Code::CheckCallArgument,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::CallArgument(fault),
+    )
+}
 
 pub(crate) struct CallCheck<'a> {
     pub(crate) program: &'a CheckedProgram,
@@ -249,37 +265,44 @@ fn check_assert_equal_args(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if arg_types.len() != 2 {
-        diagnostics.push(call_diagnostic(
+        diagnostics.push(call_argument(
             file,
             span,
-            format!(
-                "`{label}` expects 2 argument(s), but {} were given",
-                arg_types.len(),
-            ),
+            CallArgumentFault::Arity {
+                label: label.to_string(),
+                expected: 2,
+                given: arg_types.len(),
+            },
         ));
         return;
     }
     match (&arg_types[0], &arg_types[1]) {
         (MarrowType::Primitive(actual), MarrowType::Primitive(expected)) if actual == expected => {}
         (MarrowType::Primitive(_), MarrowType::Primitive(_)) => {
-            let (expected, found) = mismatch_display(&arg_types[0], &arg_types[1]);
-            diagnostics.push(call_diagnostic(
+            diagnostics.push(call_argument(
                 file,
                 span,
-                format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
+                CallArgumentFault::AssertEqualMismatch {
+                    label: label.to_string(),
+                    first: arg_types[0].clone(),
+                    second: arg_types[1].clone(),
+                },
             ));
         }
         (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => {}
         (actual, expected) => {
             let found = if matches!(actual, MarrowType::Primitive(_)) {
-                marrow_type_name(expected)
+                expected
             } else {
-                marrow_type_name(actual)
+                actual
             };
-            diagnostics.push(call_diagnostic(
+            diagnostics.push(call_argument(
                 file,
                 span,
-                format!("argument to `{label}` expects a scalar, but found `{found}`"),
+                CallArgumentFault::AssertEqualNonScalar {
+                    label: label.to_string(),
+                    found: found.clone(),
+                },
             ));
         }
     }
@@ -287,15 +310,14 @@ fn check_assert_equal_args(
 
 fn check_unknown_std_operation(env: &mut CallEnv<'_>, segments: &[String]) {
     let label = segments.join("::");
-    env.diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_UNRESOLVED_CALL,
-            env.file,
-            env.span,
-            format!("`{label}` is not a standard-library operation"),
-        )
-        .with_payload(DiagnosticPayload::UnresolvedCall(label.to_string())),
-    );
+    env.diagnostics.push(CheckDiagnostic::new(
+        Code::CheckUnresolvedCall,
+        DiagnosticAnchor::at(env.file, env.span),
+        DiagnosticPayload::UnresolvedCall {
+            name: label,
+            kind: UnresolvedCallKind::StdOperation,
+        },
+    ));
 }
 
 fn check_resource_constructor_call(
@@ -344,47 +366,37 @@ fn check_user_function_call(
         }) => function,
         Resolution::NotVisible(name) => {
             if file_in_program(env.program, env.file) {
-                env.diagnostics.push(CheckDiagnostic::error(
-                    CHECK_PRIVATE_FUNCTION,
-                    env.file,
-                    env.span,
-                    format!(
-                        "function `{name}` is private to its module; mark it `pub` to call it \
-                         from another module"
-                    ),
+                env.diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckPrivateFunction,
+                    DiagnosticAnchor::at(env.file, env.span),
+                    DiagnosticPayload::PrivateFunction(name),
                 ));
             }
             return MarrowType::Unknown;
         }
         Resolution::Ambiguous(candidates) => {
             if file_in_program(env.program, env.file) {
-                let leaf = segments.join("::");
-                let options = candidates
-                    .iter()
-                    .map(|module| format!("`{module}::{leaf}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                env.diagnostics.push(CheckDiagnostic::error(
-                    CHECK_AMBIGUOUS_CALL,
-                    env.file,
-                    env.span,
-                    format!("call to `{leaf}` is ambiguous; qualify it as one of {options}"),
+                env.diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckAmbiguousCall,
+                    DiagnosticAnchor::at(env.file, env.span),
+                    DiagnosticPayload::AmbiguousCall {
+                        leaf: segments.join("::"),
+                        candidates,
+                    },
                 ));
             }
             return MarrowType::Unknown;
         }
         Resolution::Found(_) | Resolution::Unresolved => {
             if file_in_program(env.program, env.file) {
-                let name = segments.join("::");
-                env.diagnostics.push(
-                    CheckDiagnostic::error(
-                        CHECK_UNRESOLVED_CALL,
-                        env.file,
-                        env.span,
-                        format!("function `{name}` is not defined"),
-                    )
-                    .with_payload(DiagnosticPayload::UnresolvedCall(name)),
-                );
+                env.diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckUnresolvedCall,
+                    DiagnosticAnchor::at(env.file, env.span),
+                    DiagnosticPayload::UnresolvedCall {
+                        name: segments.join("::"),
+                        kind: UnresolvedCallKind::Function,
+                    },
+                ));
             }
             return MarrowType::Unknown;
         }
@@ -402,10 +414,13 @@ fn check_user_function_call(
                 let param_index = function.params.iter().position(|param| &param.name == name);
                 if param_index.is_none() {
                     named_argument_fault = true;
-                    env.diagnostics.push(call_diagnostic(
+                    env.diagnostics.push(call_argument(
                         env.file,
                         env.span,
-                        format!("function `{callee}` has no parameter `{name}`"),
+                        CallArgumentFault::UnknownParameter {
+                            callee: callee.clone(),
+                            parameter: name.clone(),
+                        },
                     ));
                 }
                 param_index
@@ -416,20 +431,14 @@ fn check_user_function_call(
             let param = &function.params[param_index];
             if supplied[param_index] {
                 named_argument_fault = true;
-                env.diagnostics.push(
-                    CheckDiagnostic::error(
-                        CHECK_CALL_ARGUMENT,
-                        env.file,
-                        env.span,
-                        format!(
-                            "function `{callee}` parameter `{}` is supplied more than once",
-                            param.name
-                        ),
-                    )
-                    .with_payload(DiagnosticPayload::DuplicateNamedArgument(
-                        param.name.clone(),
-                    )),
-                );
+                env.diagnostics.push(call_argument(
+                    env.file,
+                    env.span,
+                    CallArgumentFault::DuplicateParameter {
+                        callee: callee.clone(),
+                        name: param.name.clone(),
+                    },
+                ));
                 continue;
             }
             supplied[param_index] = true;
@@ -456,14 +465,14 @@ fn check_user_function_call(
         }
     }
     if args.len() != function.params.len() && !named_argument_fault {
-        env.diagnostics.push(call_diagnostic(
+        env.diagnostics.push(call_argument(
             env.file,
             env.span,
-            format!(
-                "function `{callee}` expects {} argument(s), but {} were given",
-                function.params.len(),
-                args.len(),
-            ),
+            CallArgumentFault::FunctionArity {
+                callee: callee.clone(),
+                expected: function.params.len(),
+                given: args.len(),
+            },
         ));
     }
     // A maybe-present (`T?`) return types the call as its present arm `T`; the
@@ -553,10 +562,10 @@ fn check_assert_absent_args(
     if arg_types.first().is_some_and(is_optional_value) {
         return;
     }
-    env.diagnostics.push(call_diagnostic(
+    env.diagnostics.push(call_argument(
         env.file,
         env.span,
-        "`std::assert::isAbsent` expects an optional value".to_string(),
+        CallArgumentFault::AssertAbsentRequiresOptional,
     ));
 }
 
@@ -590,11 +599,10 @@ fn check_exists_args(
 ) {
     let [arg] = args else { return };
     if crate::presence::guard_subject_key_effect(env.program, &arg.value, env.scope, env.file) {
-        env.diagnostics.push(call_diagnostic(
+        env.diagnostics.push(call_argument(
             env.file,
             env.span,
-            "`exists` cannot guard a read with an effect in a key; bind the key to a local first"
-                .to_string(),
+            CallArgumentFault::ExistsEffectInKey,
         ));
         return;
     }
@@ -605,17 +613,17 @@ fn check_exists_args(
     // always-present rejection rather than the saved-path shape error, since `exists`
     // now accepts local optionals too. A non-value argument is not a testable place.
     if arg_types.first().is_some_and(is_always_present_value) {
-        env.diagnostics.push(call_diagnostic(
+        env.diagnostics.push(call_argument(
             env.file,
             env.span,
-            "`exists` applies only to an optional value; this value is always present".to_string(),
+            CallArgumentFault::ExistsAlwaysPresent,
         ));
         return;
     }
-    env.diagnostics.push(call_diagnostic(
+    env.diagnostics.push(call_argument(
         env.file,
         env.span,
-        "`exists` expects a saved path".to_string(),
+        CallArgumentFault::ExistsRequiresSavedPath,
     ));
 }
 
@@ -688,32 +696,33 @@ fn check_named_field_args<F>(
             // located on the first offending arg, rather than repeating it for each.
             if !reported_positional {
                 reported_positional = true;
-                diagnostics.push(call_diagnostic(
+                diagnostics.push(call_argument(
                     file,
                     arg.value.span(),
-                    format!("`{label}` constructor takes named fields"),
+                    CallArgumentFault::ConstructorNeedsNamedFields {
+                        label: label.to_string(),
+                    },
                 ));
             }
             continue;
         };
         let Some(index) = fields.iter().position(|field| field_name(field) == name) else {
-            diagnostics.push(call_diagnostic(
+            diagnostics.push(call_argument(
                 file,
                 span,
-                format!("`{label}` has no field `{name}`"),
+                CallArgumentFault::UnknownField {
+                    label: label.to_string(),
+                    field: name.clone(),
+                },
             ));
             continue;
         };
         if supplied[index] {
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_CALL_ARGUMENT,
-                    file,
-                    span,
-                    format!("field `{name}` is supplied more than once"),
-                )
-                .with_payload(DiagnosticPayload::DuplicateNamedArgument(name.clone())),
-            );
+            diagnostics.push(call_argument(
+                file,
+                span,
+                CallArgumentFault::DuplicateField { name: name.clone() },
+            ));
             continue;
         }
         supplied[index] = true;
@@ -732,10 +741,13 @@ fn check_named_field_args<F>(
 
     for (field, supplied) in fields.iter().zip(supplied) {
         if is_required(field) && !supplied {
-            diagnostics.push(call_diagnostic(
+            diagnostics.push(call_argument(
                 file,
                 span,
-                format!("`{label}` requires `{}`", field_name(field)),
+                CallArgumentFault::RequiredField {
+                    label: label.to_string(),
+                    field: field_name(field).to_string(),
+                },
             ));
         }
     }
@@ -818,10 +830,12 @@ pub(crate) fn check_error_code_literal(
         return;
     };
     if !marrow_schema::error::is_error_code_text(&text) {
-        diagnostics.push(call_diagnostic(
+        diagnostics.push(call_argument(
             file,
             *span,
-            format!("{label} expects a dotted lowercase error code"),
+            CallArgumentFault::ErrorCodeLiteral {
+                label: label.to_string(),
+            },
         ));
     }
 }
@@ -837,10 +851,13 @@ fn check_conversion_call_shape(
     if let [arg] = args
         && let Some(name) = &arg.name
     {
-        diagnostics.push(call_diagnostic(
+        diagnostics.push(call_argument(
             file,
             span,
-            format!("argument to `{label}` cannot be named `{name}`"),
+            CallArgumentFault::ConversionArgumentNamed {
+                label: label.to_string(),
+                name: name.clone(),
+            },
         ));
     }
 }
@@ -987,17 +1004,11 @@ fn check_append_args(
     if !saved_layer_is_group(env.program, &target.value, env.scope, env.file) {
         return;
     }
-    env.diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_CALL_ARGUMENT,
-            env.file,
-            env.span,
-            "`append` target must be a keyed leaf layer, but this path names a group layer",
-        )
-        .with_payload(DiagnosticPayload::AppendTarget(
-            AppendTargetDiagnostic::GroupLayer,
-        )),
-    );
+    env.diagnostics.push(call_argument(
+        env.file,
+        env.span,
+        CallArgumentFault::AppendTarget(AppendTargetDiagnostic::GroupLayer),
+    ));
 }
 
 /// Type-check the value `append` writes into one element slot. A maybe-present
@@ -1023,19 +1034,14 @@ fn check_append_value(
         return;
     }
     if matches!(type_compatible(&element, value_type), Some(false)) {
-        let (expected, found) = mismatch_display(&element, value_type);
-        env.diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
-                env.file,
-                span,
-                format!("`append` value expects `{expected}`, but found `{found}`"),
-            )
-            .with_payload(DiagnosticPayload::TypeMismatch {
+        env.diagnostics.push(call_argument(
+            env.file,
+            span,
+            CallArgumentFault::AppendValue {
                 expected: element,
                 found: value_type.clone(),
-            }),
-        );
+            },
+        ));
     }
 }
 
@@ -1130,26 +1136,15 @@ fn check_conversion_arg(
     if target.accepts(arg_type) {
         return;
     }
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_CALL_ARGUMENT,
-            file,
-            span,
-            format!(
-                "`{}` cannot convert `{}`; supported sources are {}",
-                target.spelling(),
-                marrow_type_name(arg_type),
-                target.supported_sources_message()
-            ),
-        )
-        .with_payload(DiagnosticPayload::ConversionUnsupportedSource(
-            ConversionUnsupportedSourceDiagnostic {
-                target,
-                source: arg_type.clone(),
-                accepted_sources: target.accepted_source_types(),
-            },
-        )),
-    );
+    diagnostics.push(call_argument(
+        file,
+        span,
+        CallArgumentFault::ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic {
+            target,
+            source: arg_type.clone(),
+            accepted_sources: target.accepted_source_types(),
+        }),
+    ));
 }
 
 fn reversed_type(
@@ -1266,11 +1261,18 @@ pub(crate) enum ArgParam<'a> {
 }
 
 impl ArgParam<'_> {
-    fn describe(&self) -> String {
+    /// The owned slot fact carried by a `check.call_argument` type mismatch.
+    fn to_slot(&self) -> CallArgumentSlot {
         match self {
-            ArgParam::Named(name) => format!("parameter `{name}`"),
-            ArgParam::Position(index) => format!("argument {}", index + 1),
+            ArgParam::Named(name) => CallArgumentSlot::Named((*name).to_string()),
+            ArgParam::Position(index) => CallArgumentSlot::Position(*index),
         }
+    }
+
+    /// The rendered slot phrase (`parameter \`name\`` / `argument N`), shared with the
+    /// diagnostic renderer through [`CallArgumentSlot::describe`].
+    fn describe(&self) -> String {
+        self.to_slot().describe()
     }
 }
 
@@ -1299,23 +1301,16 @@ pub(crate) fn check_one_arg(
     match type_compatible(parameter, arg_type) {
         Some(true) => {}
         Some(false) => {
-            // `mismatch_display` qualifies two same-named enums from different
-            // modules so the message distinguishes them.
-            let (expected, found) = mismatch_display(parameter, arg_type);
-            diagnostics.push(
-                call_diagnostic(
-                    file,
-                    span,
-                    format!(
-                        "{} to `{label}` expects `{expected}`, but found `{found}`",
-                        param.describe(),
-                    ),
-                )
-                .with_payload(DiagnosticPayload::TypeMismatch {
+            diagnostics.push(call_argument(
+                file,
+                span,
+                CallArgumentFault::ArgumentType {
+                    label: label.to_string(),
+                    slot: param.to_slot(),
                     expected: parameter.clone(),
                     found: arg_type.clone(),
-                }),
-            );
+                },
+            ));
         }
         // Strict typing: an untyped argument against a convertible parameter must be
         // converted first.
@@ -1392,21 +1387,14 @@ fn reject_saved_collection_by_value(
     if !materializes_saved_collection_by_value(program, arg, scope, file) {
         return false;
     }
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_CALL_ARGUMENT,
-            file,
-            arg.span(),
-            format!(
-                "argument to `{label}` is a saved collection, which is iterated in place, not \
-                 passed by value into `{}`; iterate it or build a local collection",
-                marrow_type_name(parameter),
-            ),
-        )
-        .with_payload(DiagnosticPayload::SavedCollectionByValue {
+    diagnostics.push(call_argument(
+        file,
+        arg.span(),
+        CallArgumentFault::SavedCollectionByValue {
+            label: label.to_string(),
             parameter: parameter.clone(),
-        }),
-    );
+        },
+    ));
     true
 }
 
@@ -1425,14 +1413,14 @@ pub(crate) fn check_args_against(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if arg_types.len() != params.len() {
-        diagnostics.push(call_diagnostic(
+        diagnostics.push(call_argument(
             file,
             span,
-            format!(
-                "`{label}` expects {} argument(s), but {} were given",
-                params.len(),
-                arg_types.len(),
-            ),
+            CallArgumentFault::Arity {
+                label: label.to_string(),
+                expected: params.len(),
+                given: arg_types.len(),
+            },
         ));
     }
     for (index, (parameter, arg_type)) in params.iter().zip(arg_types).enumerate() {
@@ -1467,26 +1455,22 @@ fn check_identity_constructor(
 ) -> MarrowType {
     for arg in args {
         if arg.name.is_some() {
-            diagnostics.push(call_diagnostic(
+            diagnostics.push(call_argument(
                 file,
                 arg.value.span(),
-                "`Id` arguments must be positional".to_string(),
+                CallArgumentFault::IdArgumentsPositional,
             ));
         }
     }
     let Some(root_arg) = args.first() else {
-        diagnostics.push(call_diagnostic(
-            file,
-            span,
-            "`Id` expects a saved root followed by its key argument(s)".to_string(),
-        ));
+        diagnostics.push(call_argument(file, span, CallArgumentFault::IdExpectsRoot));
         return MarrowType::Unknown;
     };
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &root_arg.value else {
-        diagnostics.push(call_diagnostic(
+        diagnostics.push(call_argument(
             file,
             root_arg.value.span(),
-            "`Id` expects a saved root as its first argument".to_string(),
+            CallArgumentFault::IdExpectsRootFirst,
         ));
         return MarrowType::Unknown;
     };
@@ -1545,25 +1529,21 @@ pub(crate) fn check_next_id(
         // shape. A non-saved argument is rejected only when its type is concrete;
         // an `unknown`-typed non-saved value defers to a cross-module result.
         if crate::rules::is_saved_path(&arg.value) {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
+            diagnostics.push(call_argument(
                 file,
                 span,
-                "`nextId` requires a bare keyed store root (`^store`), \
-                 not a saved path into one",
+                CallArgumentFault::NextIdRequiresBareRoot,
             ));
         } else if let Some(arg_type) = arg_types
             .first()
             .filter(|ty| !matches!(ty, MarrowType::Unknown))
         {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
+            diagnostics.push(call_argument(
                 file,
                 span,
-                format!(
-                    "`nextId` requires a keyed store root (`^store`), but this argument is `{}`",
-                    marrow_type_name(arg_type)
-                ),
+                CallArgumentFault::NextIdRequiresRoot {
+                    found: arg_type.clone(),
+                },
             ));
         }
         return MarrowType::Unknown;
@@ -1676,14 +1656,12 @@ fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
             .first()
             .filter(|ty| !matches!(ty, MarrowType::Unknown))
         {
-            env.diagnostics.push(CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
+            env.diagnostics.push(call_argument(
                 env.file,
                 env.span,
-                format!(
-                    "`key` requires a store identity (`Id(^store)`), but this argument is `{}`",
-                    marrow_type_name(arg_type)
-                ),
+                CallArgumentFault::KeyRequiresIdentity {
+                    found: (*arg_type).clone(),
+                },
             ));
         }
         return MarrowType::Unknown;
@@ -1726,18 +1704,11 @@ fn check_append(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     // the bare outer layer, a partial prefix, nor the full leaf. Reject it before the
     // per-column int check, whose inner-column key type would otherwise admit it.
     if saved_append_target_is_composite(env.program, &target.value, env.scope, env.file) {
-        env.diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
-                env.file,
-                env.span,
-                "`append` requires a single int-keyed layer, but this layer keys multiple \
-                 columns; allocate a position only in a single-column layer",
-            )
-            .with_payload(DiagnosticPayload::AppendTarget(
-                AppendTargetDiagnostic::CompositeLayer,
-            )),
-        );
+        env.diagnostics.push(call_argument(
+            env.file,
+            env.span,
+            CallArgumentFault::AppendTarget(AppendTargetDiagnostic::CompositeLayer),
+        ));
         return;
     }
     let Some(key_type) = saved_path_key_type(env.program, &target.value, env.scope, env.file)
@@ -1745,20 +1716,11 @@ fn check_append(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
         return;
     };
     if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
-        env.diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_CALL_ARGUMENT,
-                env.file,
-                env.span,
-                format!(
-                    "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
-                    marrow_type_name(&key_type)
-                ),
-            )
-            .with_payload(DiagnosticPayload::AppendTarget(
-                AppendTargetDiagnostic::NonIntKeyedLayer { key_type },
-            )),
-        );
+        env.diagnostics.push(call_argument(
+            env.file,
+            env.span,
+            CallArgumentFault::AppendTarget(AppendTargetDiagnostic::NonIntKeyedLayer { key_type }),
+        ));
     }
 }
 
@@ -1821,13 +1783,14 @@ pub(crate) fn check_arity(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if args.len() != arity {
-        diagnostics.push(call_diagnostic(
+        diagnostics.push(call_argument(
             file,
             span,
-            format!(
-                "`{name}` expects {arity} argument(s), but {} were given",
-                args.len()
-            ),
+            CallArgumentFault::Arity {
+                label: name.to_string(),
+                expected: arity,
+                given: args.len(),
+            },
         ));
     }
 }

@@ -1,5 +1,5 @@
 use crate::support;
-use marrow_check::{DiagnosticPayload, check_project};
+use marrow_check::{DiagnosticPayload, UnresolvedCallKind, check_project};
 
 use support::{assert_clean, config, temp_project, with_code, write};
 
@@ -205,7 +205,10 @@ fn removed_clock_shift_helper_is_not_a_standard_library_operation() {
     assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(
         unresolved[0].payload,
-        DiagnosticPayload::UnresolvedCall("std::clock::add".into())
+        DiagnosticPayload::UnresolvedCall {
+            name: "std::clock::add".into(),
+            kind: UnresolvedCallKind::StdOperation,
+        }
     );
 }
 
@@ -227,7 +230,10 @@ fn removed_imported_clock_shift_helper_is_not_a_standard_library_operation() {
     assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(
         unresolved[0].payload,
-        DiagnosticPayload::UnresolvedCall("std::clock::add".into())
+        DiagnosticPayload::UnresolvedCall {
+            name: "std::clock::add".into(),
+            kind: UnresolvedCallKind::StdOperation,
+        }
     );
 }
 

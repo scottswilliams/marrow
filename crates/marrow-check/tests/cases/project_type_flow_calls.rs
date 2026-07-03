@@ -1,5 +1,5 @@
 use crate::support;
-use marrow_check::{DiagnosticPayload, MarrowType, check_project};
+use marrow_check::{CallArgumentFault, DiagnosticPayload, MarrowType, check_project};
 use marrow_schema::ScalarType;
 
 use support::{check_module, check_module_report, config, temp_project, with_code, write};
@@ -224,9 +224,10 @@ fn passing_a_bare_saved_root_to_a_sequence_parameter_is_a_check_error() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::SavedCollectionByValue {
+        DiagnosticPayload::CallArgument(CallArgumentFault::SavedCollectionByValue {
+            label: "take".into(),
             parameter: MarrowType::Sequence(Box::new(MarrowType::Identity("players".into()))),
-        },
+        }),
         "{found:#?}"
     );
     // The error points at the `^players` argument, not the whole call head.
@@ -250,12 +251,13 @@ fn passing_a_bare_saved_root_to_a_keyed_tree_parameter_is_a_check_error() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::SavedCollectionByValue {
+        DiagnosticPayload::CallArgument(CallArgumentFault::SavedCollectionByValue {
+            label: "take".into(),
             parameter: MarrowType::LocalTree {
                 keys: vec![MarrowType::Primitive(ScalarType::Int)],
                 value: Box::new(MarrowType::Resource("m::Player".into())),
             },
-        },
+        }),
         "{found:#?}"
     );
 }
@@ -277,9 +279,10 @@ fn passing_a_saved_index_branch_to_a_sequence_parameter_is_a_check_error() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::SavedCollectionByValue {
+        DiagnosticPayload::CallArgument(CallArgumentFault::SavedCollectionByValue {
+            label: "take".into(),
             parameter: MarrowType::Sequence(Box::new(MarrowType::Identity("players".into()))),
-        },
+        }),
         "{found:#?}"
     );
 }

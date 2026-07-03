@@ -1,8 +1,8 @@
 use crate::support;
 use crate::support_enum;
 use marrow_check::{
-    CheckedCallTarget, CheckedExpr, CheckedRuntimeValueType, CheckedStmt, DiagnosticPayload,
-    EnumDiagnostic, MarrowType, ScalarType, check_project,
+    CallArgumentFault, CheckedCallTarget, CheckedExpr, CheckedRuntimeValueType, CheckedStmt,
+    DiagnosticPayload, EnumDiagnostic, MarrowType, ScalarType, check_project,
 };
 
 use support::{
@@ -17,9 +17,11 @@ fn enum_type(module: &str, name: &str) -> MarrowType {
     }
 }
 
-/// Assert that the lone diagnostic carries a `TypeMismatch` naming the concrete
-/// `expected`/`found` operands, pinning *which* nominal identities mismatched
-/// rather than merely that some type error of this code fired.
+/// Assert that the lone diagnostic names the concrete `expected`/`found` operands,
+/// pinning *which* nominal identities mismatched rather than merely that some type
+/// error of this code fired. A place mismatch (`return`/assignment) carries the
+/// shared `TypeMismatch`; a call/constructor argument carries the typed
+/// `check.call_argument` `ArgumentType` fault. Both name the same two operands.
 fn assert_only_mismatch<D: std::fmt::Debug>(
     found: &[D],
     payload_of: impl Fn(&D) -> &DiagnosticPayload,
@@ -27,14 +29,17 @@ fn assert_only_mismatch<D: std::fmt::Debug>(
     actual: MarrowType,
 ) {
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(
-        *payload_of(&found[0]),
-        DiagnosticPayload::TypeMismatch {
+    let (got_expected, got_found) = match payload_of(&found[0]) {
+        DiagnosticPayload::TypeMismatch { expected, found } => (expected, found),
+        DiagnosticPayload::CallArgument(CallArgumentFault::ArgumentType {
             expected,
-            found: actual,
-        },
-        "{found:#?}"
-    );
+            found,
+            ..
+        }) => (expected, found),
+        other => panic!("expected a type-mismatch payload, got {other:#?}"),
+    };
+    assert_eq!(*got_expected, expected, "{found:#?}");
+    assert_eq!(*got_found, actual, "{found:#?}");
 }
 
 #[test]

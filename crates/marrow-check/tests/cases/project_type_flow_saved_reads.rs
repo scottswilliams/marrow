@@ -1,5 +1,5 @@
 use crate::support;
-use marrow_check::DiagnosticPayload;
+use marrow_check::{CallArgumentFault, DiagnosticPayload};
 use support::{assert_clean, check_module, check_module_report, with_code};
 
 fn codes(report: &marrow_check::CheckReport) -> Vec<&str> {
@@ -1248,9 +1248,9 @@ fn append_to_a_composite_layer_is_rejected_at_check() {
         assert!(
             matches!(
                 found[0].payload,
-                DiagnosticPayload::AppendTarget(
+                DiagnosticPayload::CallArgument(CallArgumentFault::AppendTarget(
                     marrow_check::AppendTargetDiagnostic::CompositeLayer
-                )
+                ))
             ),
             "{name}: {:#?}",
             found[0].payload

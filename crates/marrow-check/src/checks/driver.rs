@@ -110,7 +110,7 @@ pub(crate) fn check_resolved_files(
             .diagnostics
             .retain(|diagnostic| match &diagnostic.payload {
                 DiagnosticPayload::UnresolvedImport(name) => !incomplete_modules.contains(name),
-                DiagnosticPayload::UnresolvedCall(name) => {
+                DiagnosticPayload::UnresolvedCall { name, .. } => {
                     !references_incomplete_module_member(name, &incomplete_modules)
                 }
                 DiagnosticPayload::UnknownType(_)
@@ -131,9 +131,9 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::Enum(_)
                 | DiagnosticPayload::PrivateEnum(_)
                 | DiagnosticPayload::ExposedPrivateEnum { .. }
-                | DiagnosticPayload::DuplicateNamedArgument(_)
-                | DiagnosticPayload::AppendTarget(_)
-                | DiagnosticPayload::ConversionUnsupportedSource(_)
+                | DiagnosticPayload::CallArgument(_)
+                | DiagnosticPayload::PrivateFunction(_)
+                | DiagnosticPayload::AmbiguousCall { .. }
                 | DiagnosticPayload::RenderUnsupportedSource { .. }
                 | DiagnosticPayload::ReservedCatalogPathReuse { .. }
                 | DiagnosticPayload::CatalogIntent(_)
@@ -142,7 +142,6 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::UnknownField { .. }
                 | DiagnosticPayload::RequiredAbsent { .. }
                 | DiagnosticPayload::TypeMismatch { .. }
-                | DiagnosticPayload::SavedCollectionByValue { .. }
                 | DiagnosticPayload::LayerNotValue { .. }
                 | DiagnosticPayload::None => true,
             });

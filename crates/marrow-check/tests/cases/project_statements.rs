@@ -1,5 +1,5 @@
 use crate::support;
-use marrow_check::{DiagnosticPayload, check_project};
+use marrow_check::{CallArgumentFault, DiagnosticPayload, check_project};
 use marrow_project::parse_config;
 
 use support::{
@@ -882,7 +882,10 @@ fn rejects_duplicate_named_arguments() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::DuplicateNamedArgument("a".into())
+        DiagnosticPayload::CallArgument(CallArgumentFault::DuplicateParameter {
+            callee: "add".into(),
+            name: "a".into(),
+        })
     );
 }
 
@@ -901,7 +904,10 @@ fn a_duplicate_named_argument_does_not_also_report_arity() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::DuplicateNamedArgument("a".into())
+        DiagnosticPayload::CallArgument(CallArgumentFault::DuplicateParameter {
+            callee: "add".into(),
+            name: "a".into(),
+        })
     );
 }
 

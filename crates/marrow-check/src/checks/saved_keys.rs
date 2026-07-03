@@ -18,12 +18,13 @@ use crate::typerules::{
     unresolved_optional_diagnostic,
 };
 use crate::{
-    CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedPlace,
-    CheckedSavedTerminal, MarrowType, TypeNames, identity_type_for_store,
+    CallArgumentFault, CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam,
+    CheckedSavedPlace, CheckedSavedTerminal, MarrowType, TypeNames, identity_type_for_store,
 };
 
+use super::calls::call_argument;
 use super::const_int::fold_const_int;
-use super::diagnostics::{call_diagnostic, key_type_diagnostic};
+use super::diagnostics::key_type_diagnostic;
 
 /// A sequence-position write target and the environment its position folds in.
 pub(crate) struct SequencePositionWrite<'a, 'd> {
@@ -433,10 +434,10 @@ fn check_saved_key_argument_names(
 ) {
     for arg in args {
         if arg.name.is_some() {
-            diagnostics.push(call_diagnostic(
+            diagnostics.push(call_argument(
                 file,
                 arg.value.span(),
-                "saved key arguments must be positional".to_string(),
+                CallArgumentFault::SavedKeyArgumentsPositional,
             ));
         }
     }

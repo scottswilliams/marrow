@@ -5,9 +5,7 @@ use std::path::Path;
 
 use marrow_syntax::SourceSpan;
 
-use crate::{
-    CHECK_CALL_ARGUMENT, CHECK_KEY_TYPE, CHECK_OPERATOR_TYPE, CHECK_RANGE, CheckDiagnostic,
-};
+use crate::{CHECK_KEY_TYPE, CHECK_OPERATOR_TYPE, CHECK_RANGE, CheckDiagnostic};
 
 /// A `check.range` diagnostic located at a range expression's span.
 pub(super) fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
@@ -30,9 +28,4 @@ pub(super) fn operator_diagnostic(
     message: String,
 ) -> CheckDiagnostic {
     CheckDiagnostic::error(CHECK_OPERATOR_TYPE, file, span, message)
-}
-
-/// A `check.call_argument` diagnostic located at a call's span.
-pub(super) fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
-    CheckDiagnostic::error(CHECK_CALL_ARGUMENT, file, span, message)
 }

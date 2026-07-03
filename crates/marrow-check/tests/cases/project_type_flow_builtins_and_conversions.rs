@@ -1,8 +1,8 @@
 use crate::support;
 use crate::support_conversion;
 use marrow_check::{
-    AppendTargetDiagnostic, CheckDiagnostic, ConversionTarget, DiagnosticPayload, MarrowType,
-    ScalarType,
+    AppendTargetDiagnostic, CallArgumentFault, CheckDiagnostic, ConversionTarget,
+    DiagnosticPayload, MarrowType, ScalarType, UnresolvedCallKind,
 };
 
 use support::{assert_clean, check_module, check_module_report, with_code};
@@ -37,7 +37,9 @@ fn append_to_a_group_layer_is_a_check_error() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::AppendTarget(AppendTargetDiagnostic::GroupLayer),
+        DiagnosticPayload::CallArgument(CallArgumentFault::AppendTarget(
+            AppendTargetDiagnostic::GroupLayer,
+        )),
         "{found:#?}"
     );
 }
@@ -812,7 +814,10 @@ fn an_unknown_op_in_a_closed_pure_module_is_flagged_at_check() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::UnresolvedCall("std::math::bogus".into()),
+        DiagnosticPayload::UnresolvedCall {
+            name: "std::math::bogus".into(),
+            kind: UnresolvedCallKind::StdOperation,
+        },
         "{found:#?}"
     );
 }
@@ -883,7 +888,10 @@ fn an_unknown_op_in_a_host_module_is_flagged_at_check() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::UnresolvedCall("std::io::frobnicate".into()),
+        DiagnosticPayload::UnresolvedCall {
+            name: "std::io::frobnicate".into(),
+            kind: UnresolvedCallKind::StdOperation,
+        },
         "{found:#?}"
     );
 }

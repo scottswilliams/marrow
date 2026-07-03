@@ -7,9 +7,10 @@
 use marrow_codes::Code;
 
 use crate::diagnostics::{
-    AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
-    LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
-    SurfaceFieldDiagnostic, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, DefaultEntryProblem,
+    DiagnosticPayload, EnumDiagnostic, IsTypeFault, LayerNotValueReason, MatchScrutinee,
+    SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+    SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic, UnresolvedCallKind,
 };
 use crate::typerules::{marrow_type_name, mismatch_display};
 
@@ -41,6 +42,10 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckUnresolvedImport,
     Code::CheckUnknownField,
     Code::CheckLayerNotValue,
+    Code::CheckCallArgument,
+    Code::CheckUnresolvedCall,
+    Code::CheckPrivateFunction,
+    Code::CheckAmbiguousCall,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -107,9 +112,160 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
         (Code::CheckLayerNotValue, DiagnosticPayload::LayerNotValue { field, reason }) => {
             layer_not_value_message(field, *reason)
         }
+        (Code::CheckCallArgument, DiagnosticPayload::CallArgument(fault)) => {
+            call_argument_message(fault)
+        }
+        (Code::CheckUnresolvedCall, DiagnosticPayload::UnresolvedCall { name, kind }) => match kind
+        {
+            UnresolvedCallKind::Function => format!("function `{name}` is not defined"),
+            UnresolvedCallKind::StdOperation => {
+                format!("`{name}` is not a standard-library operation")
+            }
+        },
+        (Code::CheckPrivateFunction, DiagnosticPayload::PrivateFunction(name)) => format!(
+            "function `{name}` is private to its module; mark it `pub` to call it from another module"
+        ),
+        (Code::CheckAmbiguousCall, DiagnosticPayload::AmbiguousCall { leaf, candidates }) => {
+            let options = candidates
+                .iter()
+                .map(|module| format!("`{module}::{leaf}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("call to `{leaf}` is ambiguous; qualify it as one of {options}")
+        }
         (code, payload) => {
             unreachable!("no message template for {code:?} with payload {payload:?}")
         }
+    }
+}
+
+fn call_argument_message(fault: &CallArgumentFault) -> String {
+    match fault {
+        CallArgumentFault::Arity {
+            label,
+            expected,
+            given,
+        } => format!("`{label}` expects {expected} argument(s), but {given} were given"),
+        CallArgumentFault::FunctionArity {
+            callee,
+            expected,
+            given,
+        } => format!("function `{callee}` expects {expected} argument(s), but {given} were given"),
+        CallArgumentFault::AssertEqualMismatch {
+            label,
+            first,
+            second,
+        } => {
+            let (expected, found) = mismatch_display(first, second);
+            format!("argument to `{label}` expects `{expected}`, but found `{found}`")
+        }
+        CallArgumentFault::AssertEqualNonScalar { label, found } => format!(
+            "argument to `{label}` expects a scalar, but found `{}`",
+            marrow_type_name(found)
+        ),
+        CallArgumentFault::UnknownParameter { callee, parameter } => {
+            format!("function `{callee}` has no parameter `{parameter}`")
+        }
+        CallArgumentFault::DuplicateParameter { callee, name } => {
+            format!("function `{callee}` parameter `{name}` is supplied more than once")
+        }
+        CallArgumentFault::ConstructorNeedsNamedFields { label } => {
+            format!("`{label}` constructor takes named fields")
+        }
+        CallArgumentFault::UnknownField { label, field } => {
+            format!("`{label}` has no field `{field}`")
+        }
+        CallArgumentFault::DuplicateField { name } => {
+            format!("field `{name}` is supplied more than once")
+        }
+        CallArgumentFault::RequiredField { label, field } => {
+            format!("`{label}` requires `{field}`")
+        }
+        CallArgumentFault::ArgumentType {
+            label,
+            slot,
+            expected,
+            found,
+        } => {
+            let (expected, found) = mismatch_display(expected, found);
+            format!(
+                "{} to `{label}` expects `{expected}`, but found `{found}`",
+                slot.describe()
+            )
+        }
+        CallArgumentFault::AppendValue { expected, found } => {
+            let (expected, found) = mismatch_display(expected, found);
+            format!("`append` value expects `{expected}`, but found `{found}`")
+        }
+        CallArgumentFault::AppendTarget(target) => append_target_message(target),
+        CallArgumentFault::ConversionUnsupportedSource(diagnostic) => format!(
+            "`{}` cannot convert `{}`; supported sources are {}",
+            diagnostic.target.spelling(),
+            marrow_type_name(&diagnostic.source),
+            diagnostic.target.supported_sources_message(),
+        ),
+        CallArgumentFault::ConversionArgumentNamed { label, name } => {
+            format!("argument to `{label}` cannot be named `{name}`")
+        }
+        CallArgumentFault::SavedCollectionByValue { label, parameter } => format!(
+            "argument to `{label}` is a saved collection, which is iterated in place, not passed \
+             by value into `{}`; iterate it or build a local collection",
+            marrow_type_name(parameter)
+        ),
+        CallArgumentFault::AssertAbsentRequiresOptional => {
+            "`std::assert::isAbsent` expects an optional value".to_string()
+        }
+        CallArgumentFault::ExistsEffectInKey => {
+            "`exists` cannot guard a read with an effect in a key; bind the key to a local first"
+                .to_string()
+        }
+        CallArgumentFault::ExistsAlwaysPresent => {
+            "`exists` applies only to an optional value; this value is always present".to_string()
+        }
+        CallArgumentFault::ExistsRequiresSavedPath => "`exists` expects a saved path".to_string(),
+        CallArgumentFault::ErrorCodeLiteral { label } => {
+            format!("{label} expects a dotted lowercase error code")
+        }
+        CallArgumentFault::IdArgumentsPositional => "`Id` arguments must be positional".to_string(),
+        CallArgumentFault::IdExpectsRoot => {
+            "`Id` expects a saved root followed by its key argument(s)".to_string()
+        }
+        CallArgumentFault::IdExpectsRootFirst => {
+            "`Id` expects a saved root as its first argument".to_string()
+        }
+        CallArgumentFault::NextIdRequiresBareRoot => {
+            "`nextId` requires a bare keyed store root (`^store`), not a saved path into one"
+                .to_string()
+        }
+        CallArgumentFault::NextIdRequiresRoot { found } => format!(
+            "`nextId` requires a keyed store root (`^store`), but this argument is `{}`",
+            marrow_type_name(found)
+        ),
+        CallArgumentFault::KeyRequiresIdentity { found } => format!(
+            "`key` requires a store identity (`Id(^store)`), but this argument is `{}`",
+            marrow_type_name(found)
+        ),
+        CallArgumentFault::SavedKeyArgumentsPositional => {
+            "saved key arguments must be positional".to_string()
+        }
+    }
+}
+
+fn append_target_message(target: &AppendTargetDiagnostic) -> String {
+    match target {
+        AppendTargetDiagnostic::GroupLayer => {
+            "`append` target must be a keyed leaf layer, but this path names a group layer"
+                .to_string()
+        }
+        AppendTargetDiagnostic::CompositeLayer => {
+            "`append` requires a single int-keyed layer, but this layer keys multiple columns; \
+             allocate a position only in a single-column layer"
+                .to_string()
+        }
+        AppendTargetDiagnostic::NonIntKeyedLayer { key_type } => format!(
+            "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
+            marrow_type_name(key_type)
+        ),
     }
 }
 
@@ -421,10 +577,12 @@ fn default_entry_reason(problem: DefaultEntryProblem) -> &'static str {
 mod tests {
     use super::{MIGRATED_CODES, render_message};
     use crate::diagnostics::{
-        AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
-        LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic,
-        SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList,
-        SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+        AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, CallArgumentSlot,
+        ConversionTarget, ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem,
+        DiagnosticPayload, EnumDiagnostic, IsTypeFault, LayerNotValueReason, MatchScrutinee,
+        SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+        SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+        UnresolvedCallKind,
     };
     use crate::program::MarrowType;
     use marrow_codes::Code;
@@ -1008,6 +1166,256 @@ mod tests {
         );
     }
 
+    /// The call/argument diagnostic family renders exactly the message its old
+    /// construction sites built, across every `check.call_argument` fault shape and
+    /// the three call-resolution codes (`unresolved_call` in both forms,
+    /// `private_function`, `ambiguous_call`). This is the exhaustive prose oracle for
+    /// the overloaded `check.call_argument` payload now owned by the renderer.
+    #[test]
+    fn renders_call_argument_prose_byte_identical() {
+        let call = |fault| {
+            render_message(
+                Code::CheckCallArgument,
+                &DiagnosticPayload::CallArgument(fault),
+            )
+        };
+
+        assert_eq!(
+            call(CallArgumentFault::Arity {
+                label: "std::assert::equal".into(),
+                expected: 2,
+                given: 3,
+            }),
+            "`std::assert::equal` expects 2 argument(s), but 3 were given",
+        );
+        assert_eq!(
+            call(CallArgumentFault::FunctionArity {
+                callee: "add".into(),
+                expected: 2,
+                given: 1,
+            }),
+            "function `add` expects 2 argument(s), but 1 were given",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AssertEqualMismatch {
+                label: "std::assert::equal".into(),
+                first: primitive(ScalarType::Int),
+                second: primitive(ScalarType::Str),
+            }),
+            "argument to `std::assert::equal` expects `int`, but found `string`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AssertEqualNonScalar {
+                label: "std::assert::equal".into(),
+                found: MarrowType::Identity("books".into()),
+            }),
+            "argument to `std::assert::equal` expects a scalar, but found `Id(^books)`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::UnknownParameter {
+                callee: "add".into(),
+                parameter: "c".into(),
+            }),
+            "function `add` has no parameter `c`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::DuplicateParameter {
+                callee: "add".into(),
+                name: "a".into(),
+            }),
+            "function `add` parameter `a` is supplied more than once",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ConstructorNeedsNamedFields {
+                label: "Book".into(),
+            }),
+            "`Book` constructor takes named fields",
+        );
+        assert_eq!(
+            call(CallArgumentFault::UnknownField {
+                label: "Book".into(),
+                field: "author".into(),
+            }),
+            "`Book` has no field `author`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::DuplicateField {
+                name: "title".into(),
+            }),
+            "field `title` is supplied more than once",
+        );
+        assert_eq!(
+            call(CallArgumentFault::RequiredField {
+                label: "Book".into(),
+                field: "title".into(),
+            }),
+            "`Book` requires `title`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ArgumentType {
+                label: "add".into(),
+                slot: CallArgumentSlot::Named("count".into()),
+                expected: primitive(ScalarType::Int),
+                found: primitive(ScalarType::Str),
+            }),
+            "parameter `count` to `add` expects `int`, but found `string`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ArgumentType {
+                label: "text::join".into(),
+                slot: CallArgumentSlot::Position(0),
+                expected: primitive(ScalarType::Int),
+                found: primitive(ScalarType::Str),
+            }),
+            "argument 1 to `text::join` expects `int`, but found `string`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AppendValue {
+                expected: primitive(ScalarType::Int),
+                found: primitive(ScalarType::Str),
+            }),
+            "`append` value expects `int`, but found `string`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AppendTarget(
+                AppendTargetDiagnostic::GroupLayer
+            )),
+            "`append` target must be a keyed leaf layer, but this path names a group layer",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AppendTarget(
+                AppendTargetDiagnostic::CompositeLayer
+            )),
+            "`append` requires a single int-keyed layer, but this layer keys multiple columns; \
+             allocate a position only in a single-column layer",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AppendTarget(
+                AppendTargetDiagnostic::NonIntKeyedLayer {
+                    key_type: primitive(ScalarType::Str),
+                }
+            )),
+            "`append` requires an int-keyed layer, but this layer is keyed by `string`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ConversionUnsupportedSource(
+                ConversionUnsupportedSourceDiagnostic {
+                    target: ConversionTarget::Int,
+                    source: primitive(ScalarType::Bool),
+                    accepted_sources: ConversionTarget::Int.accepted_source_types(),
+                }
+            )),
+            "`int` cannot convert `bool`; supported sources are `int`, `string`, `decimal`, or `unknown`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ConversionArgumentNamed {
+                label: "int".into(),
+                name: "value".into(),
+            }),
+            "argument to `int` cannot be named `value`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::SavedCollectionByValue {
+                label: "sum".into(),
+                parameter: MarrowType::Sequence(Box::new(primitive(ScalarType::Int))),
+            }),
+            "argument to `sum` is a saved collection, which is iterated in place, not passed by \
+             value into `sequence[int]`; iterate it or build a local collection",
+        );
+        assert_eq!(
+            call(CallArgumentFault::AssertAbsentRequiresOptional),
+            "`std::assert::isAbsent` expects an optional value",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ExistsEffectInKey),
+            "`exists` cannot guard a read with an effect in a key; bind the key to a local first",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ExistsAlwaysPresent),
+            "`exists` applies only to an optional value; this value is always present",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ExistsRequiresSavedPath),
+            "`exists` expects a saved path",
+        );
+        assert_eq!(
+            call(CallArgumentFault::ErrorCodeLiteral {
+                label: "`Error.code`".into(),
+            }),
+            "`Error.code` expects a dotted lowercase error code",
+        );
+        assert_eq!(
+            call(CallArgumentFault::IdArgumentsPositional),
+            "`Id` arguments must be positional",
+        );
+        assert_eq!(
+            call(CallArgumentFault::IdExpectsRoot),
+            "`Id` expects a saved root followed by its key argument(s)",
+        );
+        assert_eq!(
+            call(CallArgumentFault::IdExpectsRootFirst),
+            "`Id` expects a saved root as its first argument",
+        );
+        assert_eq!(
+            call(CallArgumentFault::NextIdRequiresBareRoot),
+            "`nextId` requires a bare keyed store root (`^store`), not a saved path into one",
+        );
+        assert_eq!(
+            call(CallArgumentFault::NextIdRequiresRoot {
+                found: primitive(ScalarType::Int),
+            }),
+            "`nextId` requires a keyed store root (`^store`), but this argument is `int`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::KeyRequiresIdentity {
+                found: primitive(ScalarType::Int),
+            }),
+            "`key` requires a store identity (`Id(^store)`), but this argument is `int`",
+        );
+        assert_eq!(
+            call(CallArgumentFault::SavedKeyArgumentsPositional),
+            "saved key arguments must be positional",
+        );
+
+        assert_eq!(
+            render_message(
+                Code::CheckUnresolvedCall,
+                &DiagnosticPayload::UnresolvedCall {
+                    name: "missing".into(),
+                    kind: UnresolvedCallKind::Function,
+                },
+            ),
+            "function `missing` is not defined",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckUnresolvedCall,
+                &DiagnosticPayload::UnresolvedCall {
+                    name: "std::math::bogus".into(),
+                    kind: UnresolvedCallKind::StdOperation,
+                },
+            ),
+            "`std::math::bogus` is not a standard-library operation",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckPrivateFunction,
+                &DiagnosticPayload::PrivateFunction("shelf::add".into()),
+            ),
+            "function `shelf::add` is private to its module; mark it `pub` to call it from another module",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckAmbiguousCall,
+                &DiagnosticPayload::AmbiguousCall {
+                    leaf: "add".into(),
+                    candidates: vec!["shelf".into(), "store".into()],
+                },
+            ),
+            "call to `add` is ambiguous; qualify it as one of `shelf::add`, `store::add`",
+        );
+    }
+
     /// The identifiers a migrated code would appear as in a first argument to a
     /// message-bearing `CheckDiagnostic::error`/`warning` call: its `Code` variant
     /// and its `CHECK_*` wire-string constant. Mirrors [`MIGRATED_CODES`]; kept in
@@ -1057,6 +1465,14 @@ mod tests {
         "CHECK_UNKNOWN_FIELD",
         "Code::CheckLayerNotValue",
         "CHECK_LAYER_NOT_VALUE",
+        "Code::CheckCallArgument",
+        "CHECK_CALL_ARGUMENT",
+        "Code::CheckUnresolvedCall",
+        "CHECK_UNRESOLVED_CALL",
+        "Code::CheckPrivateFunction",
+        "CHECK_PRIVATE_FUNCTION",
+        "Code::CheckAmbiguousCall",
+        "CHECK_AMBIGUOUS_CALL",
     ];
 
     fn src_root() -> PathBuf {

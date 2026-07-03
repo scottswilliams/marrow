@@ -1,6 +1,9 @@
 use crate::support;
 use crate::support_conversion;
-use marrow_check::{ConversionTarget, DiagnosticPayload, MarrowType, ScalarType, check_project};
+use marrow_check::{
+    CallArgumentFault, CallArgumentSlot, ConversionTarget, DiagnosticPayload, MarrowType,
+    ScalarType, check_project,
+};
 
 use support::{
     assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
@@ -200,8 +203,8 @@ fn a_resource_constructor_checks_field_arguments() {
 #[test]
 fn a_wrong_user_function_argument_points_at_the_argument_and_names_the_parameter() {
     // The diagnostic must span the offending argument expression (the string
-    // literal at column 13), not the call token, and the message must name the
-    // parameter it failed against so two errors on one line are distinguishable.
+    // literal at column 13), not the call token, and its typed payload must name
+    // the parameter it failed against so two errors on one line are distinguishable.
     let found = check_module(
         "user-call-arg-span",
         "module m\n\
@@ -214,9 +217,15 @@ fn a_wrong_user_function_argument_points_at_the_argument_and_names_the_parameter
     // `    return t(1, 2, "wrong")` — the offending literal opens at column 20,
     // not the call token `t` at column 12.
     assert_eq!(found[0].span.column, 20, "{found:#?}");
-    assert!(
-        found[0].message.contains("`c`"),
-        "message should name parameter `c`: {found:#?}"
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::CallArgument(CallArgumentFault::ArgumentType {
+            label: "t".into(),
+            slot: CallArgumentSlot::Named("c".into()),
+            expected: MarrowType::Primitive(ScalarType::Int),
+            found: MarrowType::Primitive(ScalarType::Str),
+        }),
+        "diagnostic should name parameter `c`: {found:#?}"
     );
 }
 
@@ -505,7 +514,9 @@ fn a_resource_constructor_rejects_duplicate_fields() {
     assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
-        DiagnosticPayload::DuplicateNamedArgument("title".into())
+        DiagnosticPayload::CallArgument(CallArgumentFault::DuplicateField {
+            name: "title".into()
+        })
     );
 }
 
