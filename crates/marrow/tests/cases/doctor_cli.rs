@@ -361,6 +361,16 @@ fn doctor_reports_same_epoch_different_digest_collision_against_lock_and_store_w
         collision["data"]["lock_digest"], collision["data"]["store_digest"],
         "a collision is different-digest by definition: {value:#?}"
     );
+    // The next command regenerates the stale lock from the authoritative store, never loops the
+    // read-only diagnostic back through `marrow doctor`.
+    let next = collision["next_command"]
+        .as_str()
+        .expect("next_command string");
+    assert_eq!(
+        next,
+        format!("marrow run {dir}"),
+        "the collision next command must regenerate the lock, not re-run doctor: {next}"
+    );
 
     // The store report block names the live store as the binding authority.
     assert_eq!(value["store"]["stamp"], "stamped", "{value:#?}");
@@ -648,6 +658,16 @@ fn doctor_reports_a_store_vs_lock_epoch_mismatch_distinct_from_a_collision() {
             && remedy.contains("do not regenerate")
             && !remedy.contains("authoritative"),
         "the behind-store advisory must not declare the rolled-back store authoritative: {remedy}"
+    );
+    // The next command must make progress — advance the behind store — never loop the read-only
+    // diagnostic back through `marrow doctor`.
+    let next = mismatch["next_command"]
+        .as_str()
+        .expect("next_command string");
+    assert_eq!(
+        next,
+        format!("marrow evolve apply {dir}"),
+        "the behind-store next command must advance, not re-run doctor: {next}"
     );
 
     assert_eq!(

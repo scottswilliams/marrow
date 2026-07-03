@@ -179,9 +179,15 @@ data-identity cells it seals: a commit epoch, catalog digest, or active-root set
 that both the record and the cell carry and that disagree is a self-consistent swap
 the seal alone could not see, failed closed. A value absent on either side is lag,
 not corruption, and skips. The store uid is sealed but not held against its cell —
-it names no data (records key on catalog ids), so a torn uid cell is a cosmetic
-fault (a process killed mid-write can leave it so), not a data-soundness one. The
-`run` and `serve`
+it names no data (records key on catalog ids), so a swapped or torn uid cell is a
+cosmetic identity fault, not a data-soundness one, and a process killed mid-write
+can legitimately leave the cell torn while the record's sealed uid stays intact.
+Backup and restore key store identity on the catalog the backup carries, not the
+uid cell (restore mints a fresh uid), so no durable decision rides on uid-cell
+equality; the only consumer that compares it is the serve paging cursor, where a
+mismatch invalidates an outstanding cursor and the client re-pages. Catching a
+uid-cell swap needs an external witness that survives a whole-body revert, deferred
+with the store's other external-identity work. The `run` and `serve`
 admission opens and the point-read inspection share this O(1) witness; an
 enumerating read additionally reconciles the root it walks against that root's
 sealed digest (`verify_root_digest_once`), so a btree-corrupt root fails closed as
@@ -194,6 +200,19 @@ index entry reachable by an index seek, and each entry's stored identity matchin
 its redundant copy) — is the deep pass `data integrity`, `backup`, and `data
 recover` run, never the admission open. `data stats` and `data dump` traverse the
 whole store and share that deep pass through the inspection open.
+
+A point or keyed single-record read verifies what it touches at O(1): the value's
+encoding is round-trip-checked on decode (a torn value faults), and a required
+member absent from a stored record faults. One shape it cannot distinguish at
+O(1) is a backend-dropped **optional** member cell: absence is the lack of a cell,
+so a dropped optional reads identically to a legitimately-unset one. This is the
+subtree-granularity tradeoff — verifying it at point-read time would re-derive the
+whole record's expected members, making a single-record read cost scale with the
+record rather than stay O(1). It is instead caught by the deep pass (`data
+integrity`, `recover`, `backup`) and by any enumeration of the root, which now
+reconciles the root's sealed digest. Real backend corruption is page-granular, so
+a page fault is caught structurally; a surgically dropped single optional cell that
+leaves every other cell intact is the narrow residual this leaves open.
 
 The record cannot witness a corruption that drops the record itself: a flip that
 rolls the store back to its empty initial commit presents zero records and zero

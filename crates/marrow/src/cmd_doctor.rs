@@ -494,19 +494,27 @@ fn probe_lock_against_store(
         // would discard the committed activation. A whole-body rollback to a consistent older epoch
         // is locally indistinguishable from a never-advanced checkout, so the honest advice is to
         // advance or restore, never to overwrite the lock.
-        let remedy = if lock.epoch_high_water > accepted.epoch {
-            "the store is behind the committed lock: run marrow evolve apply to advance it, or \
-             restore a current store body if it was rolled back to an older epoch -- do not \
-             regenerate the lock from the behind store"
+        // The next command must make progress, never re-run the read-only diagnostic: a behind
+        // store advances (or is restored), an ahead store regenerates the stale lock.
+        let (remedy, next_command) = if lock.epoch_high_water > accepted.epoch {
+            (
+                "the store is behind the committed lock: run marrow evolve apply to advance it, or \
+                 restore a current store body if it was rolled back to an older epoch -- do not \
+                 regenerate the lock from the behind store",
+                format!("marrow evolve apply {dir}"),
+            )
         } else {
-            "the live store is ahead and authoritative; regenerate marrow.lock with a run or \
-             evolve apply"
+            (
+                "the live store is ahead and authoritative; regenerate marrow.lock with a run or \
+                 evolve apply",
+                run_command(dir),
+            )
         };
         findings.push(Finding::new(
             Code::DoctorStoreLockEpochMismatch.as_str(),
             "the committed lock and the live store record different accepted epochs",
             remedy,
-            doctor_command(dir),
+            next_command,
             data,
         ));
         return;
@@ -531,7 +539,7 @@ fn probe_lock_against_store(
         Code::DoctorCatalogCollision.as_str(),
         "the committed lock and the live store record the same accepted epoch with different shapes",
         "the live store is authoritative; regenerate marrow.lock with a run or evolve apply",
-        doctor_command(dir),
+        run_command(dir),
         data,
     ));
 }
