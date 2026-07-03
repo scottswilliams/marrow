@@ -188,5 +188,7 @@ mod static_soundness;
 mod surface_abi;
 #[path = "cases/surface_wire_profile_architecture.rs"]
 mod surface_wire_profile_architecture;
+#[path = "cases/total_parser_soundness.rs"]
+mod total_parser_soundness;
 #[path = "cases/v01_fixtures.rs"]
 mod v01_fixtures;

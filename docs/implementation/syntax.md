@@ -26,7 +26,7 @@ Layout-token discipline differs by layer and mixing them breaks block framing:
 - `StmtParser` — function/transform body statements; keeps layout tokens. Bodies are fed a byte-bounded token slice via `tokens_in_range(span)` so a trailing EOF `DEDENT` is excluded.
 - `ExprParser` — a single expression over a trivia-filtered slice (no newlines/indents/comments); the full precedence ladder (or/and/is/equality/comparison/range/coalesce/additive/multiplicative/unary/postfix/primary).
 
-A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnostic, never a partial node. Diagnostics fire at most once per failing position (a `before = diagnostics.len()` guard suppresses the generic fallback when an inline rule already explained the failure).
+Parsing is total: every value the grammar cannot structure becomes an `Expression::Error`/`Statement::Error` node carrying its span, so a parse never drops a node or leaves a hole. One `parse.syntax` diagnostic is reported at the failure token; a failed sub-expression collapses to that error node as it unwinds (`is_error` short-circuits each level), so no ancestor reports a second, cascading diagnostic. `ExprParser::parse_complete` reports whether a slice parsed whole, failed with its own diagnostic, or left trailing tokens the caller names. Every error node travels with a diagnostic, so a clean `ParsedSource::has_errors` means a fully structured tree — the invariant the checker's per-file gate relies on to skip an unparsed body. The `tests/cases/total_parser_architecture.rs` property pins it, and a source scan keeps the deleted recovery machinery gone.
 
 ## The AST
 
