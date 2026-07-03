@@ -75,7 +75,8 @@ pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,
     count_activation_integrity_problems, count_integrity_problems, count_orphan_cells,
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
-    verify_store_completeness, verify_store_roots_against_lock, visit_integrity_problems,
+    verify_index_integrity, verify_store_completeness, verify_store_roots_against_lock,
+    visit_integrity_problems,
 };
 pub use navigation::{
     SourceCatalogLocationFact, source_catalog_definition_fact_at, source_catalog_reference_facts_at,

@@ -489,7 +489,10 @@ mod tests {
         use super::{decode_commit_record, encode_commit_record};
         let record = rich_commit_record();
         let bytes = encode_commit_record(&record).expect("record encodes");
-        assert_eq!(decode_commit_record(&bytes).expect("record decodes"), record);
+        assert_eq!(
+            decode_commit_record(&bytes).expect("record decodes"),
+            record
+        );
     }
 
     #[test]
@@ -497,7 +500,10 @@ mod tests {
         use super::{CommitRecord, decode_commit_record, encode_commit_record};
         let record = CommitRecord::default();
         let bytes = encode_commit_record(&record).expect("record encodes");
-        assert_eq!(decode_commit_record(&bytes).expect("record decodes"), record);
+        assert_eq!(
+            decode_commit_record(&bytes).expect("record decodes"),
+            record
+        );
     }
 
     #[test]

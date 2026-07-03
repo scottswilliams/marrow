@@ -1305,11 +1305,12 @@ fn admission_drift_error(reason: admission::AdmissionDrift) -> ProjectSessionErr
     }
 }
 
-/// The shared surface-store checks between open and admission: a populated store must be
-/// stamped and carry a durable identity. Admission already validated the sealed commit record,
-/// so serving trusts that O(1) witness and verifies what each read touches; the schema-driven
-/// completeness cross-check that re-derives every index is the O(N) deep pass `data integrity`,
-/// `backup`, and `recover` own.
+/// The shared surface-store checks between open and admission: a populated store must be stamped
+/// and carry a durable identity. Admission already validated the O(1) sealed commit record, but a
+/// server admits arbitrary reads it cannot predict, so — unlike a run, which verifies each root as
+/// it touches it — it proves the whole store readable before it listens rather than faulting a
+/// live request. The full O(N) re-derivation stays the `data integrity`/`backup`/`recover` owner's;
+/// serving borrows it once at open.
 fn verify_surface_store(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -1320,6 +1321,7 @@ fn verify_surface_store(
     if store.read_store_uid()?.is_none() || store.read_commit_metadata()?.is_none() {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
+    tooling::verify_store_completeness(store, program)?;
     Ok(())
 }
 
@@ -1798,10 +1800,12 @@ fn finish_commit_open(
     })
 }
 
-/// A populated store must carry an activation stamp. Admission already validated the sealed
-/// commit record, so a run opens by trusting that O(1) witness and verifying what each read
-/// touches; the schema-driven completeness cross-check that re-derives every index from the
-/// data records is the O(N) deep pass `data integrity`, `backup`, and `recover` own.
+/// A populated store must carry an activation stamp. Admission already validated the O(1) sealed
+/// commit record, and a run verifies each root's data digest as it enumerates it, so the data
+/// family owes no store-wide scan here. The derived index is the exception: a dropped index entry
+/// under-returns with no fault a touch can see, and its oracle is the data records, so the index
+/// integrity cross-check runs at open. The full data re-derivation stays in `data integrity`,
+/// `backup`, and `recover`.
 fn verify_run_store(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -1809,6 +1813,7 @@ fn verify_run_store(
     if populated_unstamped_store(program, store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
+    tooling::verify_index_integrity(store, program)?;
     Ok(())
 }
 

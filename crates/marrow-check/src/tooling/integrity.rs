@@ -939,6 +939,21 @@ pub fn verify_store_completeness(
     program: &CheckedProgram,
 ) -> Result<(), StoreError> {
     store.verify_structural_digests()?;
+    verify_index_integrity(store, program)
+}
+
+/// The index half of the completeness witness: the derived index family verified by structural
+/// decode and re-descent, then the schema-driven cross-check that each declared index enumerates
+/// exactly the entries its data records derive. A dropped index entry is invisible to a structural
+/// scan (neither pass sees what the backend never yields), so the data records are the independent
+/// oracle; that oracle is a data-record scan, so this witness is inherently O(data-for-indexed) and
+/// belongs on the paths that own it — the deep re-walk and the run open, which a corrupt index would
+/// otherwise let silently under-return, distinct from the per-root data digest a run verifies as it
+/// touches each root.
+pub fn verify_index_integrity(
+    store: &TreeStore,
+    program: &CheckedProgram,
+) -> Result<(), StoreError> {
     store.verify_index_readable()?;
     verify_index_completeness(store, &checked_places(program))
 }

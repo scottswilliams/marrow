@@ -172,9 +172,12 @@ decode shifts every enumeration with no structural fault. The record is recomput
 from the replayed cells, not carried, on restore, so a restored store re-verifies.
 
 The **store-open** path validates the commit record in O(1): decoding recomputes
-its content seal, so a flip of any bound field fails closed, and the record is
-cross-checked against the store's own uid, commit stamp, and catalog snapshot, so a
-flip in one of those auxiliary cells fails closed too. The `run` and `serve`
+its content seal, so a flip of any bound field fails closed, and the auxiliary uid,
+commit-stamp, and catalog cells are re-decoded so a flip there fails closed too,
+with the commit epoch held to the accepted snapshot's. The seal detects backend
+damage, not a hostile re-forge, so the record is not held against those mutable
+cells value-for-value — a fresh uid the next commit has not yet re-sealed is lag,
+not corruption. The `run` and `serve`
 admission opens and the point-read inspection share this O(1) witness; an
 enumerating read additionally reconciles the root it walks against that root's
 sealed digest (`verify_root_digest_once`), so a btree-corrupt root fails closed as
