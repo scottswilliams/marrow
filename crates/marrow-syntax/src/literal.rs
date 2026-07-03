@@ -30,8 +30,16 @@ pub enum BytesLiteralError {
 
 /// Decode a full string literal — surrounding quotes included — into its value.
 /// A bad-escape offset is reported relative to the full literal, so it accounts
-/// for the opening quote stripped here.
+/// for the opening quote stripped here. A literal written inside an interpolation
+/// hole delimits its quotes with a backslash (`\"..\"`); that spelling is
+/// recognized here so the same decoder serves both forms.
 pub fn decode_string_literal(text: &str) -> Result<String, StringLiteralError> {
+    if let Some(inner) = text
+        .strip_prefix("\\\"")
+        .and_then(|rest| rest.strip_suffix("\\\""))
+    {
+        return decode_string_escapes(inner).map_err(|error| shift_string_offset(error, 2));
+    }
     let inner = text
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
@@ -247,6 +255,16 @@ mod tests {
             decode_string_literal(r#""hi\nthere""#).unwrap(),
             "hi\nthere"
         );
+    }
+
+    #[test]
+    fn decode_string_literal_accepts_escaped_hole_quotes() {
+        // The spelling a nested string literal takes inside an interpolation
+        // hole, `\"..\"`, decodes to the same value as its plainly quoted form,
+        // with interior escapes still honored.
+        assert_eq!(decode_string_literal(r#"\"audit\""#).unwrap(), "audit");
+        assert_eq!(decode_string_literal(r#"\"\""#).unwrap(), "");
+        assert_eq!(decode_string_literal("\\\"a\\nb\\\"").unwrap(), "a\nb");
     }
 
     #[test]

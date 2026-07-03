@@ -385,6 +385,9 @@ Inside interpolation strings, text segments decode the same string escapes;
 `{{` emits `{` and `}}` emits `}`. A lone `}` is ordinary text. A lone `{`
 starts an interpolation expression, so literal `{` text must be written as `{{`.
 Interpolation expressions are ordinary expressions and cannot contain statements.
+A string literal inside an expression hole may write its quotes plainly (`{f("x")}`)
+or escaped (`{f(\"x\")}`), the latter being the natural spelling inside the
+enclosing `$"..."`; both denote the same literal.
 
 Interpolation formats values as text for that string. It does not create an
 implicit conversion for assignment, calls, or saved writes.

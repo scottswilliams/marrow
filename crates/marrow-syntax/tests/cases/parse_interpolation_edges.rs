@@ -254,6 +254,70 @@ fn valid_interpolation_hole_parses_without_diagnostics() {
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }
 
+/// A nested string literal inside an interpolation hole may be written with
+/// escaped quotes, the spelling an author reaches for inside a `$"..."` string.
+/// The hole is an ordinary expression, so `f(\"x\")` parses as a call whose
+/// argument is the string literal `"x"`, decoding to `x` — no spurious
+/// "unterminated interpolation expression". Plain quotes stay valid too.
+#[test]
+fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
+    for source in [
+        "fn main()\n    print($\"cost: {total(\\\"audit\\\")}\")\n",
+        "fn main()\n    print($\"cost: {total(\"audit\")}\")\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{source:?}: {:#?}",
+            parsed.diagnostics
+        );
+
+        let Some(Declaration::Function(func)) = parsed.file.declarations.first() else {
+            panic!("expected a function: {:#?}", parsed.file.declarations);
+        };
+        let hole = func
+            .body
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                marrow_syntax::Statement::Expr { value, .. } => Some(value),
+                _ => None,
+            })
+            .expect("an expression statement");
+        // print(<interpolation>) -> the interpolation's hole -> total("audit")
+        let Expression::Call { args, .. } = hole else {
+            panic!("expected the print call: {hole:?}");
+        };
+        let Expression::Interpolation { parts, .. } = &args[0].value else {
+            panic!("expected an interpolation argument: {:?}", args[0].value);
+        };
+        let inner = parts
+            .iter()
+            .find_map(|part| match part {
+                InterpolationPart::Expr(expr) => Some(expr),
+                InterpolationPart::Text { .. } => None,
+            })
+            .expect("a hole expression");
+        let Expression::Call {
+            args: inner_args, ..
+        } = inner
+        else {
+            panic!("expected the call inside the hole: {inner:?}");
+        };
+        let Expression::Literal { text, .. } = &inner_args[0].value else {
+            panic!(
+                "expected a string-literal argument: {:?}",
+                inner_args[0].value
+            );
+        };
+        assert_eq!(
+            marrow_syntax::decode_string_literal(text).expect("decodes"),
+            "audit",
+            "the nested string literal decodes to its value for {source:?}"
+        );
+    }
+}
+
 #[test]
 fn a_lone_closing_brace_is_literal_interpolation_text() {
     let parsed = parse_source("const Label = $\"book }\"\n");
