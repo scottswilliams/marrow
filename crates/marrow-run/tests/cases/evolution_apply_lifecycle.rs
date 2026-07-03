@@ -273,7 +273,7 @@ fn rename_chain_preserves_one_stable_id_and_accumulates_aliases()
 }
 
 /// A whole-resource rename over a populated deep tree preserves every descendant's
-/// stable id and keeps its stored cells attached — the 752a0574 regression class. The
+/// stable id and keeps its stored cells attached. The
 /// resource, its top-level field, its group, and the leaf nested inside the group all
 /// carry their identity forward under the new resource name, and the seeded `title` and
 /// `meta.note` cells read back unchanged under the identical stable ids. Data is keyed on
