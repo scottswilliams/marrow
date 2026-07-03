@@ -104,9 +104,13 @@ each test on a fresh in-memory store. The memory backend admits only a program
 with no durable declarations; a program that declares a durable surface (a
 `resource`, a saved `store`, or an `enum`) needs a native store. The backend is
 statically known, so `marrow check` rejects a durable program without native
-storage with `check.durable_store_required`; `marrow run` enforces the same
-contract as `run.durable_store_required`. The supported production saved-data
-backend is the native redb store.
+storage with `check.durable_store_required`. `marrow run` runs that same static
+check before it opens a store, so a memory-backed durable program fails its
+pre-run check with `check.durable_store_required` too. The separate
+`run.durable_store_required` fault is the native-store runtime guard for a
+different trigger: a configured native store that cannot establish accepted
+durable identity. The supported production saved-data backend is the native redb
+store.
 
 - `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
   present (and may be omitted). This backend is not a production `^` durability

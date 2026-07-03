@@ -297,7 +297,7 @@ against a different one.
 | Populated but unstamped (saved records, no activation stamp) | `run.store_unstamped`: run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to activate the accepted catalog first. |
 | Stamped epoch equals the program's, and the source digest matches | Proceeds. An apply advances the store to the proposal epoch; a run executes normally. |
 | Stamped epoch equals the program's, but the source digest differs | `run.schema_drift`: the store was stamped under a structurally different schema at this epoch; run `marrow evolve preview` or `marrow evolve apply`. |
-| Stamped epoch newer than the program | `run.store_evolved`: a newer binary evolved the store. Recompile or upgrade against the current accepted catalog. |
+| Stamped epoch newer than an already-bound program's epoch | `run.store_evolved`: a concurrent run or apply advanced the store past a long-running binding's epoch. Recompile or upgrade against the current accepted catalog. A fresh command rebinds against the store's current snapshot instead and reports same-epoch `run.schema_drift`. |
 | Stamped epoch older than the program | `run.store_behind`: the store predates this catalog. Run `marrow evolve apply` to activate it to the program's epoch first. |
 | Engine profile differs from the binary's layout | `run.engine_profile`: the physical storage layout has drifted. |
 

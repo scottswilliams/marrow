@@ -9,6 +9,10 @@
 
 use crate::{Code, Family, Lifecycle};
 
+/// The heading that opens the internal-codes section. `generate` emits it and the
+/// coverage test splits the page on it, so the two cannot disagree.
+pub(crate) const INTERNAL_HEADING: &str = "### Internal Fail-Closed Codes";
+
 /// The heading that opens the reserved-codes section. `generate` emits it and the
 /// coverage test splits the page on it, so the two cannot disagree.
 pub(crate) const RESERVED_HEADING: &str = "### Reserved And Future Codes";
@@ -27,6 +31,15 @@ fn reserved(family: Family) -> Vec<Code> {
         .iter()
         .copied()
         .filter(|c| c.lifecycle() == Lifecycle::Reserved && c.family() == family)
+        .collect()
+}
+
+/// The internal fail-closed codes, in registry order, across every family.
+fn internal() -> Vec<Code> {
+    Code::ALL
+        .iter()
+        .copied()
+        .filter(|c| c.lifecycle() == Lifecycle::Internal)
         .collect()
 }
 
@@ -171,7 +184,7 @@ over every configured source and test file.
 
 | Code | Meaning |
 |---|---|"#.to_string(),
-        rows(&[Code::CheckFailed, Code::CheckModulePath, Code::CheckDefaultEntry, Code::CheckDuplicateModule, Code::CheckMultipleScripts, Code::CheckDuplicateDeclaration, Code::CheckBuiltinCollision, Code::CheckSurfaceCollision, Code::CheckSurfaceTarget, Code::CheckSurfaceField, Code::CheckSurfaceAction, Code::CheckSurfaceComputedRead, Code::CheckUnresolvedImport, Code::CheckUnknownType, Code::CheckRecursiveKeyedEntry, Code::CheckReturnValue, Code::CheckMissingReturn, Code::CheckOperatorType, Code::CheckConditionType, Code::CheckCallArgument, Code::CheckReturnType, Code::CheckAssignmentType, Code::CheckLossyRoundTrip, Code::CheckRequiredAbsent, Code::CheckUninitializedVar, Code::CheckCommitAmplification, Code::CheckUntypedValue, Code::CheckKeyType, Code::CheckSequencePosition, Code::CheckUnresolvedName, Code::CheckUnknownField, Code::CheckUnknownRoot, Code::CheckLayerNotValue, Code::CheckUnresolvedCall, Code::CheckPrivateFunction, Code::CheckAmbiguousCall, Code::CheckNextIdRequiresSingleInt, Code::CheckNextIdCollision, Code::CheckRejectedSurface, Code::CheckCatalogIntent, Code::CheckLockCorrupt, Code::CheckLockMissing, Code::CheckStaleLock, Code::CheckStaleClient, Code::CheckDurableStoreRequired, Code::CheckUnresolvedOptional, Code::CheckUnannotatedAbsent, Code::CheckLiteralRange, Code::CheckStringEscape, Code::CheckBytesEscape, Code::CheckLoopControlFlow, Code::CheckCatchType, Code::CheckThrowType, Code::CheckMatchRequiresEnum, Code::CheckUnknownEnumMember, Code::CheckDuplicateMatchArm, Code::CheckNonexhaustiveMatch, Code::CheckAmbiguousMatchArm, Code::CheckScrutineeQualifiedMatchArm, Code::CheckAmbiguousMember, Code::CheckCategoryNotSelectable, Code::CheckIsRequiresEnum, Code::CheckIsType, Code::CheckInvalidAssignTarget, Code::CheckNonConstantConst, Code::CheckLoopMutatesTraversedLayer, Code::CheckNeighborUnsupported, Code::CheckKeyRequiresSingleKey, Code::CheckRange, Code::CheckRangeValue, Code::CheckCollectionUnsupported, Code::CheckReadOnlyExpressionContext, Code::CheckReadOnlyExpressionWrite, Code::CheckReadOnlyExpressionHostEffect, Code::CheckReadOnlyExpressionUnindexedLookup, Code::CheckPrivateEnum, Code::CheckExposedPrivateEnum, Code::CheckNestingLimit, Code::CheckEvolveTarget, Code::CheckEvolveType, Code::CheckEvolveTransform]),
+        rows(&[Code::CheckFailed, Code::CheckModulePath, Code::CheckDefaultEntry, Code::CheckDuplicateModule, Code::CheckMultipleScripts, Code::CheckDuplicateDeclaration, Code::CheckBuiltinCollision, Code::CheckSurfaceCollision, Code::CheckSurfaceTarget, Code::CheckSurfaceField, Code::CheckSurfaceAction, Code::CheckSurfaceComputedRead, Code::CheckUnresolvedImport, Code::CheckUnknownType, Code::CheckRecursiveKeyedEntry, Code::CheckReturnValue, Code::CheckMissingReturn, Code::CheckOperatorType, Code::CheckConditionType, Code::CheckCallArgument, Code::CheckReturnType, Code::CheckAssignmentType, Code::CheckLossyRoundTrip, Code::CheckRequiredAbsent, Code::CheckUninitializedVar, Code::CheckCommitAmplification, Code::CheckUntypedValue, Code::CheckKeyType, Code::CheckSequencePosition, Code::CheckUnresolvedName, Code::CheckUnknownField, Code::CheckUnknownRoot, Code::CheckLayerNotValue, Code::CheckUnresolvedCall, Code::CheckPrivateFunction, Code::CheckAmbiguousCall, Code::CheckNextIdRequiresSingleInt, Code::CheckNextIdCollision, Code::CheckRejectedSurface, Code::CheckCatalogIntent, Code::CheckLockMissing, Code::CheckStaleLock, Code::CheckStaleClient, Code::CheckDurableStoreRequired, Code::CheckUnresolvedOptional, Code::CheckUnannotatedAbsent, Code::CheckLiteralRange, Code::CheckStringEscape, Code::CheckBytesEscape, Code::CheckLoopControlFlow, Code::CheckCatchType, Code::CheckThrowType, Code::CheckMatchRequiresEnum, Code::CheckUnknownEnumMember, Code::CheckDuplicateMatchArm, Code::CheckNonexhaustiveMatch, Code::CheckAmbiguousMatchArm, Code::CheckScrutineeQualifiedMatchArm, Code::CheckAmbiguousMember, Code::CheckCategoryNotSelectable, Code::CheckIsRequiresEnum, Code::CheckIsType, Code::CheckInvalidAssignTarget, Code::CheckNonConstantConst, Code::CheckLoopMutatesTraversedLayer, Code::CheckNeighborUnsupported, Code::CheckKeyRequiresSingleKey, Code::CheckRange, Code::CheckRangeValue, Code::CheckCollectionUnsupported, Code::CheckReadOnlyExpressionContext, Code::CheckReadOnlyExpressionWrite, Code::CheckReadOnlyExpressionHostEffect, Code::CheckReadOnlyExpressionUnindexedLookup, Code::CheckPrivateEnum, Code::CheckExposedPrivateEnum, Code::CheckNestingLimit, Code::CheckEvolveTarget, Code::CheckEvolveType, Code::CheckEvolveTransform]),
         r#"
 ### `schema.*` — kind `check`
 
@@ -360,6 +373,17 @@ runtime continuation value at the HTTP boundary.
 | Code | Meaning |
 |---|---|"#.to_string(),
         rows(&[Code::SurfaceRequest, Code::SurfaceAuth, Code::SurfaceAbsent, Code::SurfaceCursor, Code::SurfaceStaleCursor, Code::SurfaceAbiMismatch, Code::SurfaceInvalidData, Code::SurfaceLimit, Code::SurfaceConflict, Code::SurfaceWrite, Code::SurfaceAction, Code::SurfaceComputed, Code::SurfaceIntegrity, Code::SurfaceStore]),
+        r#""#.to_string(),
+        INTERNAL_HEADING.to_string(),
+        r#"
+These codes are emitted, but only as defense-in-depth fail-closed guards over an
+invariant the surrounding layers already close. A lower layer classifies every
+publicly reachable case first, so an internal code has no public product repro.
+It stands as an independent gate rather than a user-facing diagnostic.
+
+| Code | Meaning |
+|---|---|"#.to_string(),
+        rows(&internal()),
         r#""#.to_string(),
         RESERVED_HEADING.to_string(),
         r#"

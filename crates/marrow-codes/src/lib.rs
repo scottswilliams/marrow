@@ -118,13 +118,20 @@ pub enum Catchability {
     NotApplicable,
 }
 
-/// Whether a code is emitted by the current build. A `Reserved` code documents
-/// a future contract: it holds its name and meaning in the reference, and a
-/// tidy gate proves no production emit site names it. Moving a code to `Active`
-/// relocates its reference row out of the reserved section on regeneration.
+/// Whether a code is emitted by the current build, and how it reaches a user. An
+/// `Active` code is emitted and has a public product surface: a CLI or tooling
+/// path a developer can reach. An `Internal` code is emitted too, but only as a
+/// defense-in-depth fail-closed guard over an invariant the surrounding layers
+/// already close, so it has no public product repro — a lower layer classifies
+/// every reachable case first. A `Reserved` code is not emitted at all: it
+/// documents a future contract, its name and meaning held in the reference while
+/// a tidy gate proves no production emit site names it. The reference renders
+/// each lifecycle in its own section, so a lifecycle change relocates a code's
+/// row on regeneration.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lifecycle {
     Active,
+    Internal,
     Reserved,
 }
 
@@ -222,7 +229,7 @@ codes! {
     CheckNextIdCollision => r#"check.next_id_collision"#, Check, Warning, NotApplicable, Active, r#"A warning: two `nextId(^root)` results for the same store are both written as record keys with no write to that store between the two allocations. `nextId` returns `max + 1` and does not advance until a record is written, so both calls return the same value and the second write silently overwrites the first. Interleave the writes (`allocate, write, allocate, write`) for distinct ids."#;
     CheckRejectedSurface => r#"check.rejected_surface"#, Check, Error, NotApplicable, Active, r#"Source uses a parsed construct outside the accepted v0.1 surface, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead."#;
     CheckCatalogIntent => r#"check.catalog_intent"#, Check, Error, NotApplicable, Active, r#"Binding source against the accepted saved-data identity cannot resolve it soundly: proposed declarations whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration not yet recorded as accepted identity is informational, not an error: it reports that durable identity is not yet frozen. An additive declaration — a sparse field, a new resource, store, enum, or group — is recorded by the next `marrow run` or `marrow evolve apply`; a newly `required` field added over an established store needs `marrow evolve preview` then `marrow evolve apply` to backfill existing records, since a plain run fences `run.schema_drift`."#;
-    CheckLockCorrupt => r#"check.lock_corrupt"#, Check, Error, NotApplicable, Active, r#"The committed `marrow.lock` cannot seed first-run identity for a fresh empty store: a source declaration would adopt a stable id the lock's append-only ledger has retired. Adoption fails closed so a retired id is never reissued. Restore or regenerate `marrow.lock` from a valid live store."#;
+    CheckLockCorrupt => r#"check.lock_corrupt"#, Check, Error, NotApplicable, Internal, r#"A defense-in-depth adoption guard: the committed `marrow.lock` cannot seed first-run identity for a fresh empty store because a source declaration would adopt a stable id the lock's append-only ledger has retired. Adoption fails closed so a retired id is never reissued. The catalog lock decoder rejects every publicly reachable malformed lock as `catalog.lock_corrupt` first, so this checker guard has no public product repro; it stands as an independent fail-closed gate. Restore or regenerate `marrow.lock` from a valid live store."#;
     CheckLockMissing => r#"check.lock_missing"#, Check, Error, NotApplicable, Active, r#"A `marrow check --locked` failure for CI: the committed `marrow.lock` is absent over a project that has durable shape to lock — any present native store, whether its accepted catalog reads back cleanly or the store is recovery-required after an unclean shutdown — so the gate fails closed rather than passing a project whose lock was never committed or was deleted. Distinct from `check.stale_lock`, which reports a present-but-behind lock. A legitimate first run, which has no durable store yet, raises no condition: an absent lock there is expected and `--locked` still passes."#;
     CheckStaleLock => r#"check.stale_lock"#, Check, Warning, NotApplicable, Active, r#"A non-fatal advisory: the committed `marrow.lock` records a different producing source shape than the current source, so the lock is behind the project. `marrow check` is read-only and cannot regenerate it, so it reports the staleness and still passes; a `run` or `evolve apply` regenerates the lock. `marrow check --locked` treats this condition as a failure for CI."#;
     CheckStaleClient => r#"check.stale_client"#, Check, Warning, NotApplicable, Active, r#"A non-fatal advisory: the project declares a callable `surface` and a `client` output path, but the declared TypeScript client is absent or carries a different `marrow-client-digest` than the current TypeScript client profile and surface. `marrow check` is read-only and cannot rewrite it, so it reports the staleness and still passes; a `run`, `serve` startup, or `evolve apply` rewrites it. `marrow check --locked` treats this condition as a failure for CI. Stale and absent are one condition here, unlike the lock's split `check.stale_lock`/`check.lock_missing` pair."#;
@@ -317,7 +324,7 @@ codes! {
     RunNoEntry => r#"run.no_entry"#, Run, Error, Fatal, Active, r#"`marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`."#;
     RunDurableStoreRequired => r#"run.durable_store_required"#, Run, Error, Fatal, Active, r#"A command needs a native durable store to establish accepted durable identity, but no native durable store is configured."#;
     RunDryRunIsolation => r#"run.dry_run_isolation"#, Run, Error, Fatal, Active, r#"Dry-run execution exhausted attempts to allocate a unique temporary store directory."#;
-    RunStoreEvolved => r#"run.store_evolved"#, Run, Error, Fatal, Active, r#"The store was stamped at a catalog epoch newer than this program accepted, so a newer binary evolved it. Recompile or upgrade against the current accepted catalog. Fenced before any execution; the store is unchanged."#;
+    RunStoreEvolved => r#"run.store_evolved"#, Run, Error, Fatal, Active, r#"An already-bound program is fenced because the store advanced past the catalog epoch that program accepted: a concurrent run or `marrow evolve apply` stamped a newer epoch under a long-running binding. Recompile or upgrade against the current accepted catalog. A fresh command instead rebinds against the store's current snapshot and reports same-epoch `run.schema_drift`, so this fence surfaces through a linked, long-running runtime rather than a fresh CLI over old source. Fenced before any execution; the store is unchanged."#;
     RunStoreBehind => r#"run.store_behind"#, Run, Error, Fatal, Active, r#"The store is older than the accepted catalog. On a plain `run`, the store predates this program's catalog: run `marrow evolve apply` to activate the store first. On an `evolve apply`, the local store is behind the committed `marrow.lock` by more than a single catch-up step, so applying would regress the committed lock: reconcile the local store with the team's up-to-date store (pull or rebuild it to match the committed lock) instead of re-running apply. Fenced before any execution; the store is unchanged."#;
     RunSchemaDrift => r#"run.schema_drift"#, Run, Error, Fatal, Active, r#"The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it. Fenced before any execution; the store is unchanged."#;
     RunEngineProfile => r#"run.engine_profile"#, Run, Error, Fatal, Active, r#"The store's engine profile does not match this binary's storage layout. Fenced before any execution; the store is unchanged."#;
@@ -533,13 +540,17 @@ mod tests {
     #[test]
     fn generated_reference_covers_every_code_in_its_section() {
         let generated = crate::generate();
-        let (active_part, reserved_part) = generated
+        let (before_reserved, reserved_part) = generated
             .split_once(crate::docs::RESERVED_HEADING)
             .expect("generated reference has the reserved-codes section");
+        let (active_part, internal_part) = before_reserved
+            .split_once(crate::docs::INTERNAL_HEADING)
+            .expect("generated reference has the internal-codes section");
         for &code in Code::ALL {
             let row_prefix = format!("| `{}` |", code.as_str());
             let (section, name) = match code.lifecycle() {
                 Lifecycle::Active => (active_part, "active"),
+                Lifecycle::Internal => (internal_part, "internal"),
                 Lifecycle::Reserved => (reserved_part, "reserved"),
             };
             assert!(
