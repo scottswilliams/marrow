@@ -46,6 +46,42 @@ fn formatted_trailing_comma_call_inside_interpolation_still_evaluates() {
 }
 
 #[test]
+fn escaped_nested_string_in_a_hole_renders_like_its_plain_twin() {
+    // A nested string literal inside a hole may be written with escaped quotes.
+    // A structural character it contains is content, so the escaped spelling must
+    // render byte-for-byte like the plain one; the earlier mis-scan closed the
+    // hole at an interior `}` and leaked corrupted trailing text into the result.
+    let cases = [
+        (r#"$"x {\"}\"} y""#, r#"$"x {"}"} y""#, "x } y"),
+        (r#"$"x {\"{\"} y""#, r#"$"x {"{"} y""#, "x { y"),
+        (
+            r#"$"pre {\"(\"} post""#,
+            r#"$"pre {"("} post""#,
+            "pre ( post",
+        ),
+        (
+            r#"$"a {$"b {\"c\"} d"} e""#,
+            r#"$"a {$"b {"c"} d"} e""#,
+            "a b c d e",
+        ),
+    ];
+    for (escaped, plain, expected) in cases {
+        let src = |body: &str| format!("pub fn run(): string\n    return {body}\n");
+        let escaped_value = eval_source(&src(escaped), "run", vec![]);
+        let plain_value = eval_source(&src(plain), "run", vec![]);
+        assert_eq!(
+            escaped_value,
+            Ok(Some(Value::Str(expected.to_string()))),
+            "escaped {escaped:?}",
+        );
+        assert_eq!(
+            escaped_value, plain_value,
+            "escaped and plain spellings must render identically for {escaped:?}",
+        );
+    }
+}
+
+#[test]
 fn evaluates_boolean_logic() {
     let source = "pub fn f(a: bool, b: bool): bool\n    return a and not b\n";
     assert_eq!(

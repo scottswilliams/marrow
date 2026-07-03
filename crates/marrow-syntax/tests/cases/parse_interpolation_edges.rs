@@ -318,6 +318,127 @@ fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
     }
 }
 
+/// The soundness family behind the escaped-quote fix: a nested escaped string is
+/// one string literal, so its interior `}` `{` `(` `)`, bare `"`, and a nested
+/// `$"..."` are content — never live tokens that close the hole early, corrupt
+/// the trailing text, or emit overlapping token spans. Each escaped body lexes to
+/// non-overlapping tokens and parses to the same interpolation — identical
+/// surrounding text and identical decoded hole value — as its plain-quote twin.
+#[test]
+fn escaped_nested_strings_carry_structural_characters_as_content() {
+    fn interpolation(source: &str) -> Vec<InterpolationPart> {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+            panic!("expected a const: {source:?}");
+        };
+        let Some(Expression::Interpolation { parts, .. }) = &decl.value else {
+            panic!("expected an interpolation for {source:?}: {:?}", decl.value);
+        };
+        parts.clone()
+    }
+
+    fn text_parts(parts: &[InterpolationPart]) -> Vec<String> {
+        parts
+            .iter()
+            .filter_map(|part| match part {
+                InterpolationPart::Text { text, .. } => Some(text.clone()),
+                InterpolationPart::Expr(_) => None,
+            })
+            .collect()
+    }
+
+    // The decoded value of the innermost string literal reached by descending
+    // through call arguments and nested interpolation holes — the value the fix
+    // must make identical for the escaped and plain spellings.
+    fn hole_value(parts: &[InterpolationPart]) -> String {
+        let hole = parts
+            .iter()
+            .find_map(|part| match part {
+                InterpolationPart::Expr(expr) => Some(expr),
+                InterpolationPart::Text { .. } => None,
+            })
+            .expect("a hole expression");
+        fn dig(expr: &Expression) -> String {
+            match expr {
+                Expression::Literal { text, .. } => {
+                    marrow_syntax::decode_string_literal(text).expect("decodes")
+                }
+                Expression::Call { args, .. } => dig(&args[0].value),
+                Expression::Interpolation { parts, .. } => hole_value(parts),
+                other => panic!("no string literal in hole: {other:?}"),
+            }
+        }
+        dig(hole)
+    }
+
+    // Each pair spells the same interpolation body with escaped and plain quotes.
+    let pairs = [
+        // A bare string literal whose content is a structural character.
+        (r#"const L = $"x {\"}\"} y""#, r#"const L = $"x {"}"} y""#),
+        (r#"const L = $"x {\"{\"} y""#, r#"const L = $"x {"{"} y""#),
+        // A structural character inside a call argument (paren depth > 0): the
+        // plain forms parse, so the escaped twins must too — no false rejection.
+        (
+            r#"const L = $"x {f(\"}\")} y""#,
+            r#"const L = $"x {f("}")} y""#,
+        ),
+        (
+            r#"const L = $"x {f(\"{\")} y""#,
+            r#"const L = $"x {f("{")} y""#,
+        ),
+        (
+            r#"const L = $"x {f(\"(\")} y""#,
+            r#"const L = $"x {f("(")} y""#,
+        ),
+        (
+            r#"const L = $"x {f(\")\")} y""#,
+            r#"const L = $"x {f(")")} y""#,
+        ),
+        // A nested interpolation whose own hole holds an escaped string.
+        (
+            r#"const L = $"a {$"b {\"c\"} d"} e""#,
+            r#"const L = $"a {$"b {"c"} d"} e""#,
+        ),
+    ];
+
+    for (escaped, plain) in pairs {
+        let escaped = format!("{escaped}\n");
+        let plain = format!("{plain}\n");
+
+        let escaped_parts = interpolation(&escaped);
+        let plain_parts = interpolation(&plain);
+
+        assert_eq!(
+            text_parts(&escaped_parts),
+            text_parts(&plain_parts),
+            "surrounding text must survive the escaped nested string for {escaped:?}",
+        );
+        assert_eq!(
+            hole_value(&escaped_parts),
+            hole_value(&plain_parts),
+            "escaped and plain spellings must denote the same value for {escaped:?}",
+        );
+
+        // The specific bug signature: the escaped string mis-scanned as a live
+        // `}`/`"` produced overlapping token spans and corrupted trailing text.
+        // A correct lex yields tokens whose spans never overlap.
+        let tokens = lex_source(&escaped).tokens;
+        for window in tokens.windows(2) {
+            assert!(
+                window[1].span.start_byte >= window[0].span.end_byte,
+                "tokens must not overlap for {escaped:?}: {:?} then {:?}",
+                window[0],
+                window[1],
+            );
+        }
+    }
+}
+
 #[test]
 fn a_lone_closing_brace_is_literal_interpolation_text() {
     let parsed = parse_source("const Label = $\"book }\"\n");

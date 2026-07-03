@@ -36,6 +36,16 @@ enum InterpolationScanError {
     NestingLimit(usize),
 }
 
+/// Whether a range being lexed is an interpolation hole. Inside a hole a nested
+/// string literal may write its quotes escaped (`\"..\"`), the spelling an author
+/// reaches for within the enclosing `$"..."`; at top level that spelling is not a
+/// string.
+#[derive(Clone, Copy)]
+enum HoleContext {
+    TopLevel,
+    InHole,
+}
+
 struct Lexer<'a> {
     source: &'a str,
     lines: Vec<Line<'a>>,
@@ -256,13 +266,18 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_line(&mut self, line: Line<'a>) {
-        self.lex_range(line, line.start_byte + line.indent, line.end_byte, false);
+        self.lex_range(
+            line,
+            line.start_byte + line.indent,
+            line.end_byte,
+            HoleContext::TopLevel,
+        );
     }
 
-    /// Lex `[start, end)` as expression tokens. `in_hole` is set while lexing an
-    /// interpolation hole, where a nested string literal may be written with
-    /// escaped quotes because it sits inside the enclosing `$"..."`.
-    fn lex_range(&mut self, line: Line<'a>, start: usize, end: usize, in_hole: bool) {
+    /// Lex `[start, end)` as expression tokens. When `context` is a hole, a nested
+    /// string literal may be written with escaped quotes because it sits inside
+    /// the enclosing `$"..."`.
+    fn lex_range(&mut self, line: Line<'a>, start: usize, end: usize, context: HoleContext) {
         let mut index = start;
         while index < end {
             let Some(tail) = self.source.get(index..line.end_byte) else {
@@ -287,8 +302,8 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            if in_hole && tail.starts_with("\\\"") {
-                index = self.lex_escaped_hole_string(line, index);
+            if matches!(context, HoleContext::InHole) && tail.starts_with("\\\"") {
+                index = self.lex_escaped_hole_string(line, index, end);
                 continue;
             }
 
@@ -455,7 +470,7 @@ impl<'a> Lexer<'a> {
                     }
                 };
 
-                self.lex_range(line, expr_start_end, expr_end, true);
+                self.lex_range(line, expr_start_end, expr_end, HoleContext::InHole);
                 self.push(
                     TokenKind::InterpolationExprEnd,
                     self.span(line, expr_end, expr_end + 1),
@@ -509,11 +524,14 @@ impl<'a> Lexer<'a> {
                 index = self.find_interpolation_string_end(line, index, depth + 1)?;
                 continue;
             }
-            // An escaped quote is the spelling a nested string literal uses inside
-            // the enclosing `$"..."`; skip the pair so its quotes neither open a
-            // plain-string scan nor masquerade as the hole terminator.
+            // An escaped quote opens a nested string literal, the spelling used
+            // inside the enclosing `$"..."`. Skip the whole `\"..\"` so its
+            // interior braces, parens, and bare quotes are content, not live
+            // tokens that could prematurely close the hole or shift its span.
             if tail.starts_with("\\\"") {
-                index += 2;
+                index = self
+                    .escaped_hole_string_end(index, line.end_byte)
+                    .ok_or(InterpolationScanError::Unterminated)?;
                 continue;
             }
             let Some(ch) = tail.chars().next() else { break };
@@ -738,43 +756,52 @@ impl<'a> Lexer<'a> {
         line.end_byte
     }
 
-    /// Lex a nested string literal written with escaped quotes inside an
-    /// interpolation hole: opened by `\"` and closed by the next `\"`, with a
-    /// bare `"` a literal quote and `\x` an interior escape. The `String` token
-    /// spans the whole `\"...\"`, so [`crate::decode_string_literal`] recovers
-    /// the value the same way it does for a plainly quoted literal.
-    fn lex_escaped_hole_string(&mut self, line: Line<'a>, start: usize) -> usize {
+    /// Find the byte just past the closing `\"` of an escaped-quote string
+    /// opened at `start` (a `\"`), searching within `limit`. A bare `"` is a
+    /// literal quote and `\x` an interior escape, so only an unescaped `\"`
+    /// closes it; the whole span is one nested string. Returns `None` when no
+    /// close appears before `limit`. This is the single owner of the escaped
+    /// string's extent, shared by the hole scanner and the hole lexer so both
+    /// agree on where the string — and its interior structural characters — end.
+    fn escaped_hole_string_end(&self, start: usize, limit: usize) -> Option<usize> {
         let mut index = start + 2;
-        while index < line.end_byte {
-            let Some(tail) = self.source.get(index..line.end_byte) else {
-                break;
-            };
+        while index < limit {
+            let tail = self.source.get(index..limit)?;
             if tail.starts_with("\\\"") {
-                let end = index + 2;
-                self.push(TokenKind::String, self.span(line, start, end));
-                return end;
+                return Some(index + 2);
             }
-            let Some(ch) = tail.chars().next() else {
-                break;
-            };
+            let ch = tail.chars().next()?;
             index += ch.len_utf8();
             if ch == '\\'
-                && let Some(next) = self
-                    .source
-                    .get(index..line.end_byte)
-                    .and_then(|tail| tail.chars().next())
+                && let Some(next) = self.source.get(index..limit).and_then(|t| t.chars().next())
             {
                 index += next.len_utf8();
             }
         }
+        None
+    }
 
-        self.error_at(
-            self.span(line, start, line.end_byte),
-            LexerDiagnosticReason::UnterminatedString,
-            "unterminated string",
-        );
-        self.push(TokenKind::String, self.span(line, start, line.end_byte));
-        line.end_byte
+    /// Lex a nested string literal written with escaped quotes inside an
+    /// interpolation hole: opened by `\"` and closed by the next `\"`. The
+    /// `String` token spans the whole `\"...\"`, bounded by the hole's `end`, so
+    /// [`crate::decode_string_literal`] recovers the value the same way it does
+    /// for a plainly quoted literal.
+    fn lex_escaped_hole_string(&mut self, line: Line<'a>, start: usize, end: usize) -> usize {
+        match self.escaped_hole_string_end(start, end) {
+            Some(close) => {
+                self.push(TokenKind::String, self.span(line, start, close));
+                close
+            }
+            None => {
+                self.error_at(
+                    self.span(line, start, end),
+                    LexerDiagnosticReason::UnterminatedString,
+                    "unterminated string",
+                );
+                self.push(TokenKind::String, self.span(line, start, end));
+                end
+            }
+        }
     }
 
     fn punctuation(&self, index: usize, line_end: usize) -> Option<(TokenKind, usize)> {

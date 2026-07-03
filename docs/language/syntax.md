@@ -387,7 +387,9 @@ starts an interpolation expression, so literal `{` text must be written as `{{`.
 Interpolation expressions are ordinary expressions and cannot contain statements.
 A string literal inside an expression hole may write its quotes plainly (`{f("x")}`)
 or escaped (`{f(\"x\")}`), the latter being the natural spelling inside the
-enclosing `$"..."`; both denote the same literal.
+enclosing `$"..."`; both denote the same literal. Its contents, including any `{`,
+`}`, or quote, are that literal's text, not hole or string structure; the
+enclosing `$"..."` closes only at its own unescaped closing quote.
 
 Interpolation formats values as text for that string. It does not create an
 implicit conversion for assignment, calls, or saved writes.
