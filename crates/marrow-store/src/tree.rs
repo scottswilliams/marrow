@@ -8,8 +8,7 @@ use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::cell::{
     CatalogId, CellKey, IndexCellKey, MetaCell, NODE_MARKER, SequencePosition,
     decode_data_cell_key, decode_data_child_key, decode_data_family_store, decode_index_cell_key,
-    decode_index_child_key, decode_index_entry_key, decode_index_identity,
-    decode_structural_digest_store, prefix_successor,
+    decode_index_child_key, decode_index_entry_key, decode_index_identity, prefix_successor,
 };
 use crate::codec::BoundedReader;
 use crate::digest::RootDigest;
@@ -17,8 +16,8 @@ use crate::key::{
     INDEX_MARKER, KEY_INT_EXCLUSIVE_END, SavedKey, encode_identity_payload, encode_key_value,
 };
 use crate::metadata::{
-    decode_commit_metadata, decode_store_uid, decode_structural_digest, encode_commit_metadata,
-    encode_store_uid, encode_structural_digest,
+    CommitRecord, decode_commit_metadata, decode_commit_record, decode_store_uid,
+    encode_commit_metadata, encode_commit_record, encode_store_uid,
 };
 
 pub use crate::backup::{
@@ -281,37 +280,34 @@ impl TreeStore {
         self.verify_index_readable()
     }
 
-    /// Cross-check every committed cell under each root against the durable per-root
-    /// structural digest the commit recorded.
+    /// The deep re-derivation behind the sealed commit record: re-scan every committed cell and
+    /// prove the live per-root digests equal the ones the record sealed.
     ///
-    /// The linear and seek passes above traverse the data family, but a single damaged
-    /// page can make both read straight past a run of cells, or read a torn-but-decodable
-    /// value, with no structural fault: the data family is its own derivation, so any
-    /// expectation drawn from the live cells shifts with them. The independent oracle is
-    /// the digest the commit stamped in the meta family, which sorts ahead of the data and
-    /// survives a localized data-page flip. Re-deriving the digest from a full data-family
-    /// scan and comparing it to the stamped value catches a dropped cell, a torn value,
-    /// and a moved field alike: each changes the per-cell hash that feeds the sum. A root
-    /// that holds data but stamped no digest, or whose live digest disagrees with its
-    /// stamp, is backend damage, failed closed as corruption.
+    /// The store-open path validates the record alone. That catches a flip of any sealed field
+    /// but not a localized data-page fault that drops a run of cells or rewrites a torn-but-
+    /// decodable value while every traversal still reads cleanly past it: the data family is its
+    /// own derivation, so any expectation drawn from the live cells shifts with them. The record's
+    /// per-root digests are the independent oracle — a content sum over every cell, sealed ahead of
+    /// the data and surviving a localized data-page flip. Re-deriving each root's digest from a
+    /// full data-family scan and comparing it to the record catches a dropped cell, a torn value,
+    /// and a moved field alike: each changes the per-cell hash that feeds the sum. A root that
+    /// holds data the record's digest does not cover, or whose live digest disagrees, is backend
+    /// damage, failed closed as corruption.
     ///
-    /// Two independent witnesses run first, so a store no digest comparison can condemn still
-    /// fails closed. The catalog/meta family — the store uid, the accepted commit stamp, and the
-    /// accepted catalog snapshot — is decoded and value-validated the way the runtime store-open
-    /// and the json snapshot stamp read it, so a present-but-undecodable cell there is backend
-    /// damage every store-open verdict rejects, making that verdict a property of the store rather
-    /// than of a particular caller or output format; an absent cell is the empty/first-run store
-    /// and decodes as nothing. And redb positions a range scan by walking leaf pages while a point
-    /// lookup navigates interior branch separators, so a flipped separator can misroute a lookup
-    /// past a committed cell the range scan — and therefore the digest — still covers:
-    /// `verify_data_cells_seek_reachable` reconciles the two and fails a store holding a committed
-    /// cell no read can reach.
+    /// [`validate_commit_record`] runs first, so a store no digest comparison can condemn still
+    /// fails closed on a broken uid, commit stamp, or catalog snapshot. And redb positions a range
+    /// scan by walking leaf pages while a point lookup navigates interior branch separators, so a
+    /// flipped separator can misroute a lookup past a committed cell the range scan — and therefore
+    /// the digest — still covers: `verify_data_cells_seek_reachable` reconciles the two and fails a
+    /// store holding a committed cell no read can reach.
     ///
-    /// `data integrity` runs this directly, the same way it runs [`verify_index_readable`]:
-    /// its record and orphan passes traverse the data family but would otherwise bless a
-    /// store whose cells were silently truncated or rewritten below the anchor.
+    /// `data integrity`, `recover`, and `backup` run this directly: their record and orphan passes
+    /// traverse the data family but would otherwise bless a store whose cells were silently
+    /// truncated or rewritten below the sealed digest.
+    ///
+    /// [`validate_commit_record`]: TreeStore::validate_commit_record
     pub fn verify_structural_digests(&self) -> Result<(), StoreError> {
-        self.verify_meta_family_decodes()?;
+        self.validate_commit_record()?;
         self.verify_data_cells_seek_reachable()?;
         let live = self.live_root_digests()?;
         let mut stamped = self.stamped_root_digests()?;
@@ -323,8 +319,8 @@ impl TreeStore {
                 });
             }
         }
-        // A stamped digest with no live data is a root whose cells were dropped wholesale
-        // while its anchor survived; only a zero stamp (an empty root) is consistent.
+        // A sealed digest with no live data is a root whose cells were dropped wholesale while
+        // the record survived; only a zero digest (an empty root) is consistent.
         if stamped.values().any(|digest| !digest.is_zero()) {
             return Err(StoreError::Corruption {
                 message: "a root holds different data than its commit digest recorded".into(),
@@ -347,39 +343,6 @@ impl TreeStore {
         Ok(digests)
     }
 
-    /// Decode and value-validate every committed cell of the catalog/meta family the runtime
-    /// store-open and the json snapshot stamp read: the store uid, the accepted commit stamp,
-    /// and the accepted catalog snapshot. This family sorts ahead of the data and carries no
-    /// structural digest, so a flip there leaves the data digests intact and would slip past a
-    /// digest comparison; only re-decoding each cell catches it. Each read reconstructs its cell
-    /// and fails closed — the catalog read additionally recomputes the snapshot digest from the
-    /// stored rows and rejects a header that no longer matches — so a store the runtime refuses is
-    /// refused here too. An absent cell is the empty/first-run store and decodes as nothing.
-    ///
-    /// Decoding each cell alone still admits a store whose cells are individually valid but
-    /// mutually inconsistent. The commit stamp records the accepted catalog epoch, and the
-    /// catalog snapshot carries its own epoch; the two describe one accepted catalog and must
-    /// agree. A flip of the stamped `catalog_epoch` leaves both cells decodable while the store
-    /// now claims two different accepted epochs — the internal contradiction backup rejects at
-    /// write and the runtime fence rejects at open. Cross-checking the two here fails such a
-    /// store closed, so this store-open witness owns the binding for integrity and recover just
-    /// as backup and the fence own it on their paths.
-    fn verify_meta_family_decodes(&self) -> Result<(), StoreError> {
-        self.read_store_uid()?;
-        let commit = self.read_commit_metadata()?;
-        let snapshot = self.read_catalog_snapshot()?;
-        if let (Some(commit), Some(snapshot)) = (&commit, &snapshot)
-            && commit.catalog_epoch != snapshot.epoch
-        {
-            return Err(StoreError::Corruption {
-                message:
-                    "commit metadata catalog epoch disagrees with the accepted catalog snapshot"
-                        .into(),
-            });
-        }
-        Ok(())
-    }
-
     /// Every committed data cell the linear scan yields must also be reachable by the
     /// point-lookup descent typed reads use. A range scan iterates leaf pages while a point
     /// lookup navigates interior branch separators, so a flipped separator can misroute a
@@ -398,19 +361,18 @@ impl TreeStore {
         })
     }
 
-    /// The digest each root will carry once the current state is committed: the durable
-    /// stamp folded with any delta accumulated by writes still staged in an open
-    /// transaction. The anchors live in the meta family, sorted ahead of the data, so the
-    /// stamp enumeration is unaffected by a localized data-page corruption. Folding the
-    /// pending delta lets a mid-transaction verify — the schema check a restore replay runs
-    /// before its commit stamps the digest — compare against the cells the same transaction
-    /// already staged, rather than a stamp that has not caught up yet.
+    /// The digest each root will carry once the current state is committed: the digests the
+    /// sealed record holds folded with any delta accumulated by writes still staged in an open
+    /// transaction. The record sorts ahead of the data, so this enumeration is unaffected by a
+    /// localized data-page corruption. Folding the pending delta lets a mid-transaction verify —
+    /// the schema check a restore replay runs before its commit re-seals the record — compare
+    /// against the cells the same transaction already staged, rather than a record that has not
+    /// caught up yet.
     fn stamped_root_digests(&self) -> Result<HashMap<CatalogId, RootDigest>, StoreError> {
-        let mut digests = HashMap::new();
-        self.for_each_structural_digest_anchor(&mut |store, digest| {
-            digests.insert(store, digest);
-            Ok(())
-        })?;
+        let mut digests: HashMap<CatalogId, RootDigest> = self
+            .read_commit_record()?
+            .map(|record| record.root_digests.into_iter().collect())
+            .unwrap_or_default();
         for (store, delta) in self.digest_deltas.borrow().iter() {
             digests.entry(store.clone()).or_default().add(*delta);
         }
@@ -550,7 +512,7 @@ impl TreeStore {
         // same transaction as the cells it covers. Nested commits leave the anchor to the
         // outer bracket; a no-op commit with no open transaction has nothing to stamp.
         if self.transaction_depth() == 1 {
-            self.stamp_digest_deltas()?;
+            self.stamp_commit_record()?;
         }
         let result = self.backend.borrow_mut().commit();
         if self.transaction_depth() == 0 {
@@ -565,11 +527,14 @@ impl TreeStore {
         result
     }
 
-    /// Apply each touched root's accumulated delta to its durable structural digest. The
-    /// delta is the net change the transaction's writes and deletes made, so folding it
-    /// into the prior stamp yields the digest of exactly the cells the commit now holds,
-    /// without rescanning the root.
-    fn stamp_digest_deltas(&self) -> Result<(), StoreError> {
+    /// Refresh the durable sealed commit record from the transaction's staged state before it
+    /// commits. Each touched root's net digest delta folds into the record's per-root digests,
+    /// and the record's sealed activation binding — store uid, accepted epoch, catalog digest,
+    /// and active saved roots — is re-read from the store's own cells so it always describes the
+    /// cells this commit now holds. Because the whole record is re-sealed here, the store-open
+    /// path validates it alone instead of rescanning every cell.
+    fn stamp_commit_record(&self) -> Result<(), StoreError> {
+        let mut record = self.read_commit_record()?.unwrap_or_default();
         let deltas: Vec<(CatalogId, RootDigest)> = self
             .digest_deltas
             .borrow()
@@ -577,71 +542,77 @@ impl TreeStore {
             .map(|(store, delta)| (store.clone(), *delta))
             .collect();
         for (store, delta) in deltas {
-            let mut digest = self.read_structural_digest(&store)?;
-            digest.add(delta);
-            self.write_structural_digest(&store, digest)?;
+            fold_root_digest(&mut record.root_digests, &store, delta);
         }
-        Ok(())
+        record.root_digests.retain(|(_, digest)| !digest.is_zero());
+        record.root_digests.sort_by(|left, right| left.0.cmp(&right.0));
+        record.store_uid = self.read_store_uid()?;
+        record.catalog_epoch = self.read_commit_metadata()?.map(|commit| commit.catalog_epoch);
+        let snapshot = self.read_catalog_snapshot()?;
+        record.catalog_digest = snapshot.as_ref().map(|snapshot| snapshot.digest.clone());
+        record.active_roots = active_store_roots(snapshot.as_ref())?;
+        self.write_commit_record(&record)
     }
 
-    /// Read the durable structural-digest anchor for one root, or the zero digest when the
-    /// root has never stamped one.
-    fn read_structural_digest(&self, store: &CatalogId) -> Result<RootDigest, StoreError> {
-        match self.read_cell(CellKey::structural_digest(store).as_bytes())? {
-            Some(bytes) => decode_structural_digest(&bytes),
-            None => Ok(RootDigest::zero()),
-        }
+    fn read_commit_record(&self) -> Result<Option<CommitRecord>, StoreError> {
+        self.read_cell(CellKey::meta(MetaCell::CommitRecord).as_bytes())?
+            .map(|bytes| decode_commit_record(&bytes))
+            .transpose()
     }
 
-    /// Write the durable structural-digest anchor for one root.
-    fn write_structural_digest(
-        &self,
-        store: &CatalogId,
-        digest: RootDigest,
-    ) -> Result<(), StoreError> {
+    fn write_commit_record(&self, record: &CommitRecord) -> Result<(), StoreError> {
         self.write_cell(
-            CellKey::structural_digest(store).as_bytes(),
-            encode_structural_digest(digest),
+            CellKey::meta(MetaCell::CommitRecord).as_bytes(),
+            encode_commit_record(record)?,
         )
     }
 
-    /// Visit every store root that carries a durable structural-digest anchor, paired with
-    /// its recorded digest. The anchors live in the meta family, sorted ahead of the data,
-    /// so this enumeration is unaffected by a localized data-page corruption. The scan is
-    /// raw rather than via the data-cell backup decoder, which only accepts data keys.
-    fn for_each_structural_digest_anchor(
-        &self,
-        visit: &mut dyn FnMut(CatalogId, RootDigest) -> Result<(), StoreError>,
-    ) -> Result<(), StoreError> {
-        let prefix = CellKey::structural_digest_family();
-        let prefix = prefix.as_bytes();
-        let mut page = self.scan(prefix, BACKUP_SCAN_PAGE)?;
-        let mut previous_resume: Option<Vec<u8>> = None;
-        loop {
-            for (key, value) in &page.entries {
-                let store =
-                    decode_structural_digest_store(key).ok_or_else(|| StoreError::Corruption {
-                        message: "structural-digest anchor key is malformed".into(),
-                    })?;
-                visit(store, decode_structural_digest(value)?)?;
+    /// The store-open integrity check: validate the single sealed commit record instead of
+    /// scanning every cell. Decoding recomputes the record's own content seal — so a flip of any
+    /// bound field fails closed — and the cross-checks confirm the store's uid, commit stamp, and
+    /// catalog snapshot still agree with that sealed binding, catching a flip in one of those
+    /// auxiliary cells too. The deep O(N) re-derivation of live cells against this record is
+    /// `verify_structural_digests`, which `data integrity`, `recover`, and `backup` run.
+    pub fn validate_commit_record(&self) -> Result<(), StoreError> {
+        let commit = self.read_commit_metadata()?;
+        let Some(record) = self.read_commit_record()? else {
+            if commit.is_some() {
+                return Err(StoreError::Corruption {
+                    message: "the sealed commit record is missing from a stamped store".into(),
+                });
             }
-            if !page.truncated {
-                return Ok(());
-            }
-            let resume = page
-                .entries
-                .last()
-                .map(|(key, _)| key.clone())
-                .ok_or_else(|| StoreError::InvalidCursor {
-                    message: "structural-digest anchor scan page was truncated without a cursor"
-                        .into(),
-                })?;
-            if let Some(previous) = &previous_resume {
-                guard_page_cursor_advances(&resume, previous, std::cmp::Ordering::Greater)?;
-            }
-            page = self.scan_after(prefix, &resume, BACKUP_SCAN_PAGE)?;
-            previous_resume = Some(resume);
+            return Ok(());
+        };
+        if record.store_uid != self.read_store_uid()? {
+            return Err(StoreError::Corruption {
+                message: "the store uid disagrees with the sealed commit record".into(),
+            });
         }
+        if record.catalog_epoch != commit.as_ref().map(|commit| commit.catalog_epoch) {
+            return Err(StoreError::Corruption {
+                message: "the commit epoch disagrees with the sealed commit record".into(),
+            });
+        }
+        let snapshot = self.read_catalog_snapshot()?;
+        if record.catalog_digest != snapshot.as_ref().map(|snapshot| snapshot.digest.clone()) {
+            return Err(StoreError::Corruption {
+                message: "the catalog digest disagrees with the sealed commit record".into(),
+            });
+        }
+        if let (Some(commit), Some(snapshot)) = (&commit, &snapshot)
+            && commit.catalog_epoch != snapshot.epoch
+        {
+            return Err(StoreError::Corruption {
+                message: "commit metadata catalog epoch disagrees with the accepted catalog snapshot"
+                    .into(),
+            });
+        }
+        if record.active_roots != active_store_roots(snapshot.as_ref())? {
+            return Err(StoreError::Corruption {
+                message: "the active saved roots disagree with the sealed commit record".into(),
+            });
+        }
+        Ok(())
     }
 
     pub fn transaction_depth(&self) -> usize {
@@ -1519,7 +1490,7 @@ impl TreeStore {
         self.delete_cells(CellKey::data_family().as_bytes())?;
         self.delete_cells(CellKey::index_family().as_bytes())?;
         self.delete_cells(CellKey::catalog_family().as_bytes())?;
-        self.delete_cells(CellKey::structural_digest_family().as_bytes())?;
+        self.delete_cells(CellKey::meta(MetaCell::CommitRecord).as_bytes())?;
         self.delete_cells(CellKey::meta(MetaCell::Commit).as_bytes())?;
         self.delete_cells(CellKey::meta(MetaCell::StoreUid).as_bytes())
     }
@@ -1660,7 +1631,7 @@ impl TreeStore {
         // transaction behind for teardown to trip over.
         self.backend.borrow().require_write_access(op)?;
         self.begin()?;
-        let result = mutate(store.as_ref()).and_then(|()| self.stamp_digest_deltas());
+        let result = mutate(store.as_ref()).and_then(|()| self.stamp_commit_record());
         match result {
             Ok(()) => {
                 self.backend.borrow_mut().commit()?;
@@ -2444,6 +2415,43 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
     StoreError::Corruption {
         message: format!("tree-cell data is malformed ({} bytes)", bytes.len()),
     }
+}
+
+/// Fold a root's net digest delta into the commit record's per-root list, keyed by store id.
+fn fold_root_digest(digests: &mut Vec<(CatalogId, RootDigest)>, store: &CatalogId, delta: RootDigest) {
+    match digests.iter_mut().find(|(id, _)| id == store) {
+        Some((_, digest)) => digest.add(delta),
+        None => {
+            let mut digest = RootDigest::zero();
+            digest.add(delta);
+            digests.push((store.clone(), digest));
+        }
+    }
+}
+
+/// The active saved roots the accepted catalog declares, by store id in canonical order — the set
+/// the commit record seals and the store-open path cross-checks the record against.
+fn active_store_roots(
+    snapshot: Option<&marrow_catalog::CatalogMetadata>,
+) -> Result<Vec<CatalogId>, StoreError> {
+    let Some(snapshot) = snapshot else {
+        return Ok(Vec::new());
+    };
+    let mut roots = snapshot
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == marrow_catalog::CatalogEntryKind::Store
+                && entry.lifecycle == marrow_catalog::CatalogLifecycle::Active
+        })
+        .map(|entry| {
+            CatalogId::new(&entry.stable_id).map_err(|_| StoreError::Corruption {
+                message: "an active saved root has a malformed catalog id".into(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    roots.sort();
+    Ok(roots)
 }
 
 /// A committed index entry stores its record identity after the `INDEX_IDENTITY` separator and

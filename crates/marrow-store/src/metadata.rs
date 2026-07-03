@@ -68,6 +68,29 @@ pub struct CommitMetadata {
     pub changed_index_catalog_ids: Vec<CatalogId>,
 }
 
+/// The sealed commit record: the single durable witness the store-open path validates.
+///
+/// It binds the store's identity, the accepted-catalog epoch and digest it was last committed
+/// at, its active saved roots, and each root's structural digest under one content seal. Because
+/// a localized backend flip of any bound field breaks the seal, a store opens by validating this
+/// one record — recompute the seal, then cross-check its bound fields against the store's own uid,
+/// commit stamp, and catalog snapshot — instead of scanning every cell. The seal is a content hash,
+/// not a MAC: it detects backend damage, not a hostile re-forge, matching the corruption threat
+/// model every other durable digest here defends against. The per-root digests live here rather
+/// than in a separate anchor family, so the record is their single durable home.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct CommitRecord {
+    pub(crate) store_uid: Option<StoreUid>,
+    pub(crate) catalog_epoch: Option<u64>,
+    pub(crate) catalog_digest: Option<String>,
+    pub(crate) active_roots: Vec<CatalogId>,
+    pub(crate) root_digests: Vec<(CatalogId, RootDigest)>,
+}
+
+const COMMIT_RECORD_VERSION_V0: u8 = 0;
+const COMMIT_RECORD_SEAL_BYTES: usize = 16;
+const MIN_ENCODED_ROOT_DIGEST_BYTES: usize = MIN_ENCODED_CATALOG_ID_BYTES + RootDigest::ENCODED_LEN;
+
 /// Stable identity for one physical store, spelled `store_<32 lowercase hex>`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoreUid(String);
@@ -153,14 +176,149 @@ pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, Sto
     })
 }
 
-pub(crate) fn encode_structural_digest(digest: RootDigest) -> Vec<u8> {
-    digest.to_be_bytes().to_vec()
+/// Encode the sealed commit record as `[seal][body]`, where the seal is a content hash over the
+/// exact body bytes. Decode recomputes the seal over the same body, so any flip in a bound field
+/// or in the seal itself fails closed.
+pub(crate) fn encode_commit_record(record: &CommitRecord) -> Result<Vec<u8>, StoreError> {
+    let mut body = vec![COMMIT_RECORD_VERSION_V0];
+    put_optional_bytes(record.store_uid.as_ref().map(StoreUid::as_str), &mut body)?;
+    put_optional_u64(record.catalog_epoch, &mut body);
+    put_optional_bytes(record.catalog_digest.as_deref(), &mut body)?;
+    put_catalog_ids(&record.active_roots, &mut body)?;
+    put_root_digests(&record.root_digests, &mut body)?;
+    let seal = seal_bytes(&body);
+    let mut bytes = Vec::with_capacity(seal.len() + body.len());
+    bytes.extend_from_slice(&seal);
+    bytes.extend_from_slice(&body);
+    Ok(bytes)
 }
 
-pub(crate) fn decode_structural_digest(bytes: &[u8]) -> Result<RootDigest, StoreError> {
-    let encoded: [u8; RootDigest::ENCODED_LEN] =
-        bytes.try_into().map_err(|_| corrupt_metadata(bytes))?;
-    Ok(RootDigest::from_be_bytes(encoded))
+pub(crate) fn decode_commit_record(bytes: &[u8]) -> Result<CommitRecord, StoreError> {
+    let mut cursor = BoundedReader::new(bytes, corrupt_record);
+    let seal = cursor.take_array::<COMMIT_RECORD_SEAL_BYTES>()?;
+    let body = cursor.take_rest();
+    if seal_bytes(body) != seal {
+        return Err(corrupt_record(bytes));
+    }
+    let mut cursor = BoundedReader::new(body, corrupt_record);
+    if cursor.take_u8()? != COMMIT_RECORD_VERSION_V0 {
+        return Err(corrupt_record(body));
+    }
+    let store_uid = take_optional(&mut cursor, decode_store_uid)?;
+    let catalog_epoch = take_optional_u64(&mut cursor)?;
+    let catalog_digest = take_optional(&mut cursor, |raw| {
+        std::str::from_utf8(raw)
+            .map(str::to_string)
+            .map_err(|_| corrupt_record(raw))
+    })?;
+    let active_roots = take_catalog_ids(&mut cursor)?;
+    let root_digests = take_root_digests(&mut cursor)?;
+    if !cursor.is_empty() {
+        return Err(corrupt_record(body));
+    }
+    Ok(CommitRecord {
+        store_uid,
+        catalog_epoch,
+        catalog_digest,
+        active_roots,
+        root_digests,
+    })
+}
+
+/// A 128-bit content seal over the record body: two FNV-1a streams over distinct bases, so a
+/// single flipped body byte diverges the result. The store's threat model is backend corruption,
+/// not a keyed adversary, so a content hash — not a MAC — is the right primitive, as for every
+/// other durable digest here.
+fn seal_bytes(body: &[u8]) -> [u8; COMMIT_RECORD_SEAL_BYTES] {
+    const BASIS_HI: u64 = 0xcbf2_9ce4_8422_2325;
+    const BASIS_LO: u64 = 0x9e37_79b9_7f4a_7c15;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hi = BASIS_HI;
+    let mut lo = BASIS_LO;
+    for &byte in body {
+        hi = (hi ^ u64::from(byte)).wrapping_mul(PRIME);
+        lo = (lo ^ u64::from(byte)).wrapping_mul(PRIME);
+    }
+    let mut seal = [0u8; COMMIT_RECORD_SEAL_BYTES];
+    seal[..8].copy_from_slice(&hi.to_be_bytes());
+    seal[8..].copy_from_slice(&lo.to_be_bytes());
+    seal
+}
+
+fn put_optional_bytes(value: Option<&str>, out: &mut Vec<u8>) -> Result<(), StoreError> {
+    match value {
+        Some(value) => {
+            out.push(1);
+            put_bytes(value.as_bytes(), out)
+        }
+        None => {
+            out.push(0);
+            Ok(())
+        }
+    }
+}
+
+fn put_optional_u64(value: Option<u64>, out: &mut Vec<u8>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+fn put_root_digests(
+    digests: &[(CatalogId, RootDigest)],
+    out: &mut Vec<u8>,
+) -> Result<(), StoreError> {
+    let len = u32::try_from(digests.len()).map_err(|_| StoreError::LimitExceeded {
+        limit: "tree cell metadata length",
+    })?;
+    out.extend_from_slice(&len.to_be_bytes());
+    for (store, digest) in digests {
+        put_bytes(store.as_str().as_bytes(), out)?;
+        out.extend_from_slice(&digest.to_be_bytes());
+    }
+    Ok(())
+}
+
+fn take_optional<T>(
+    cursor: &mut MetadataReader<'_>,
+    decode: impl Fn(&[u8]) -> Result<T, StoreError>,
+) -> Result<Option<T>, StoreError> {
+    match cursor.take_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(decode(cursor.take_prefixed_bytes()?)?)),
+        _ => Err(corrupt_record(&[])),
+    }
+}
+
+fn take_optional_u64(cursor: &mut MetadataReader<'_>) -> Result<Option<u64>, StoreError> {
+    match cursor.take_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(cursor.take_u64()?)),
+        _ => Err(corrupt_record(&[])),
+    }
+}
+
+fn take_root_digests(
+    cursor: &mut MetadataReader<'_>,
+) -> Result<Vec<(CatalogId, RootDigest)>, StoreError> {
+    let len = cursor.take_bounded_count(MIN_ENCODED_ROOT_DIGEST_BYTES)?;
+    (0..len)
+        .map(|_| {
+            let store = take_catalog_id(cursor)?;
+            let digest = RootDigest::from_be_bytes(cursor.take_array()?);
+            Ok((store, digest))
+        })
+        .collect()
+}
+
+fn corrupt_record(bytes: &[u8]) -> StoreError {
+    StoreError::Corruption {
+        message: format!("commit record is malformed ({} bytes)", bytes.len()),
+    }
 }
 
 pub(crate) fn encode_store_uid(uid: &StoreUid) -> Vec<u8> {
@@ -307,6 +465,65 @@ mod tests {
 
         assert!(matches!(
             decode_commit_metadata(&bytes),
+            Err(StoreError::Corruption { .. })
+        ));
+    }
+
+    fn rich_commit_record() -> super::CommitRecord {
+        use crate::digest::RootDigest;
+        let mut first = RootDigest::zero();
+        first.add_cell(b"k1", b"v1");
+        let mut second = RootDigest::zero();
+        second.add_cell(b"k2", b"v2");
+        super::CommitRecord {
+            store_uid: Some(StoreUid::from_entropy_bytes([7; 16])),
+            catalog_epoch: Some(4),
+            catalog_digest: Some("sha256:cafe".into()),
+            active_roots: vec![catalog_id("1"), catalog_id("2")],
+            root_digests: vec![(catalog_id("1"), first), (catalog_id("2"), second)],
+        }
+    }
+
+    #[test]
+    fn commit_record_codec_round_trips_every_field() {
+        use super::{decode_commit_record, encode_commit_record};
+        let record = rich_commit_record();
+        let bytes = encode_commit_record(&record).expect("record encodes");
+        assert_eq!(decode_commit_record(&bytes).expect("record decodes"), record);
+    }
+
+    #[test]
+    fn commit_record_codec_round_trips_an_empty_record() {
+        use super::{CommitRecord, decode_commit_record, encode_commit_record};
+        let record = CommitRecord::default();
+        let bytes = encode_commit_record(&record).expect("record encodes");
+        assert_eq!(decode_commit_record(&bytes).expect("record decodes"), record);
+    }
+
+    #[test]
+    fn a_flip_of_any_sealed_byte_fails_closed() {
+        use super::{decode_commit_record, encode_commit_record};
+        let bytes = encode_commit_record(&rich_commit_record()).expect("record encodes");
+        for index in 0..bytes.len() {
+            let mut corrupt = bytes.clone();
+            corrupt[index] ^= 0x01;
+            assert!(
+                matches!(
+                    decode_commit_record(&corrupt),
+                    Err(StoreError::Corruption { .. })
+                ),
+                "a flip at byte {index} must fail the seal"
+            );
+        }
+    }
+
+    #[test]
+    fn commit_record_codec_rejects_trailing_bytes() {
+        use super::{decode_commit_record, encode_commit_record};
+        let mut bytes = encode_commit_record(&rich_commit_record()).expect("record encodes");
+        bytes.push(0);
+        assert!(matches!(
+            decode_commit_record(&bytes),
             Err(StoreError::Corruption { .. })
         ));
     }

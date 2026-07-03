@@ -56,9 +56,8 @@ impl std::error::Error for CellIdError {}
 pub(crate) enum MetaCell {
     Commit,
     StoreUid,
+    CommitRecord,
 }
-
-const META_STRUCTURAL_DIGEST_TAG: u8 = 0x06;
 
 /// A sequence position encoded in unsigned numeric order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -90,26 +89,10 @@ impl CellKey {
         let tag = match cell {
             MetaCell::Commit => 0x04,
             MetaCell::StoreUid => 0x05,
+            MetaCell::CommitRecord => 0x07,
         };
         let mut bytes = family(FAMILY_META);
         bytes.push(tag);
-        Self(bytes)
-    }
-
-    /// The durable per-root structural-digest cell for `store`. It lives in the meta
-    /// family, sorted ahead of every data cell, so a localized data-page corruption that
-    /// truncates or rewrites a cell leaves this independent digest intact for the
-    /// completeness cross-check.
-    pub(crate) fn structural_digest(store: &CatalogId) -> Self {
-        let mut bytes = Self::structural_digest_family().into_bytes();
-        encode_id(store.as_str(), &mut bytes);
-        Self(bytes)
-    }
-
-    /// The prefix covering every structural-digest cell.
-    pub(crate) fn structural_digest_family() -> Self {
-        let mut bytes = family(FAMILY_META);
-        bytes.push(META_STRUCTURAL_DIGEST_TAG);
         Self(bytes)
     }
 
@@ -401,26 +384,6 @@ pub(crate) fn decode_data_family_store(bytes: &[u8]) -> Option<CatalogId> {
         return None;
     };
     let (store, _) = decode_escaped_id(rest)?;
-    CatalogId::new(store).ok()
-}
-
-/// Decodes the store catalog id from a structural-digest cell key, or `None` for a key
-/// outside the digest family or with malformed id bytes.
-pub(crate) fn decode_structural_digest_store(bytes: &[u8]) -> Option<CatalogId> {
-    let [
-        EMPTY_PLACEMENT_PREFIX,
-        TREE_CELL_PROFILE_V0,
-        FAMILY_META,
-        META_STRUCTURAL_DIGEST_TAG,
-        rest @ ..,
-    ] = bytes
-    else {
-        return None;
-    };
-    let (store, after_store) = decode_escaped_id(rest)?;
-    if !after_store.is_empty() {
-        return None;
-    }
     CatalogId::new(store).ok()
 }
 

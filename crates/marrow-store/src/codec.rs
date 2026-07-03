@@ -26,6 +26,13 @@ impl<'a, E> BoundedReader<'a, E> {
         Ok(self.take(1)?[0])
     }
 
+    /// Consume and return every remaining byte.
+    pub(crate) fn take_rest(&mut self) -> &'a [u8] {
+        let rest = self.bytes;
+        self.bytes = &[];
+        rest
+    }
+
     pub(crate) fn take_array<const N: usize>(&mut self) -> Result<[u8; N], E> {
         let bytes = self.take(N)?;
         let mut array = [0; N];
