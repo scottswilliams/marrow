@@ -129,8 +129,17 @@ fn fresh_checkout_apply_reaches_the_same_epoch_and_identity_as_the_present_store
         fresh_catalog.digest, present_catalog.digest,
         "the fresh checkout reaches the identical accepted-catalog identity"
     );
+    // Accepted identity is a stable-id-keyed set, order-independent like the digest asserted above:
+    // a fresh checkout seeds from the canonically-sorted lock while a present store keeps source
+    // order, so compare every entry by identity, not by Vec position.
+    let by_id = |entries: &[marrow_catalog::CatalogEntry]| {
+        let mut entries = entries.to_vec();
+        entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+        entries
+    };
     assert_eq!(
-        fresh_catalog.entries, present_catalog.entries,
+        by_id(&fresh_catalog.entries),
+        by_id(&present_catalog.entries),
         "every accepted entry — identity, aliases, lifecycle, and shape — matches the present store"
     );
 }
