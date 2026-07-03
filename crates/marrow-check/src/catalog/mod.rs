@@ -27,23 +27,24 @@ pub(crate) use source_digest::{
 };
 use stable_id::{CatalogIdEntropy, StableIdAllocator};
 
+#[derive(Debug)]
 enum CatalogProposalError {
     Allocation(io::Error),
     Catalog(marrow_catalog::CatalogError),
 }
 
-/// The result of first-run binding when no accepted store catalog is present. A committed lock
-/// that adopts the current source cleanly is the accepted reference itself (`Accepted`); a fresh
-/// mint or a lock the source has drifted from is a pending change (`Proposal`); a corrupt lock
-/// refuses adoption (`Refused`), having already pushed the typed [`CHECK_LOCK_CORRUPT`].
+/// The result of binding current source against the resolved accepted authority. Source that
+/// matches the accepted reference exactly is that reference itself (`Accepted`); a real change is a
+/// pending change (`Proposal`); an adopted id that would reissue a retired one refuses the bind
+/// (`Refused`), having already pushed the typed [`CHECK_LOCK_CORRUPT`].
 ///
-/// The accepted reference is the same [`CatalogMetadata`] a live store snapshot would carry: its
-/// epoch, digest, and entries are derived through the one catalog owner, so a fresh checkout that
-/// adopts the lock binds the identical accepted digest a present store binds. A read-only context
-/// digest folds in that accepted digest, so deriving it here keeps the surface ABI stable whether
-/// a checkout reads its identity from the committed lock or from a present (or momentarily locked)
-/// store.
-enum FirstRunOutcome {
+/// The accepted reference is the same [`CatalogMetadata`] whichever authority governs: a live store
+/// snapshot binds directly, and a store-less checkout that adopts its committed lock reconstructs
+/// the identical accepted catalog — same epoch, digest, and entries through the one catalog owner —
+/// so the surface ABI and the read-only context digest are stable whether identity is read from a
+/// present (or momentarily writer-locked) store or from the committed lock.
+#[derive(Debug)]
+enum BindOutcome {
     Accepted(CatalogMetadata),
     Proposal(CatalogMetadata),
     Refused,
@@ -344,6 +345,148 @@ where
     }
 }
 
+/// The single resolved authority for accepted saved-data identity. Exactly one governs a bind: a
+/// live store snapshot is the identity authority; with no store, a committed lock seeds first-run
+/// adoption of the committed identity; with neither, identity is minted fresh. A committed lock
+/// present alongside a store is a secondary input under `Store` — it contributes only its
+/// never-reuse ledger and its monotonic epoch high-water, never identity. Resolving the
+/// store-else-lock precedence here, once, is what collapses the former dual binding path into one.
+enum AcceptedAuthority<'a> {
+    Store {
+        catalog: &'a CatalogMetadata,
+        lock: Option<&'a CatalogLock>,
+    },
+    Lock(&'a CatalogLock),
+    FirstRun,
+}
+
+impl<'a> AcceptedAuthority<'a> {
+    fn resolve(accepted: Option<&'a CatalogMetadata>, lock: Option<&'a CatalogLock>) -> Self {
+        match accepted {
+            Some(catalog) => Self::Store { catalog, lock },
+            None => match lock {
+                Some(lock) => Self::Lock(lock),
+                None => Self::FirstRun,
+            },
+        }
+    }
+
+    /// The accepted identity this authority governs, materialized as the catalog the bind carries
+    /// forward. A store snapshot is authoritative as-is; a committed lock reconstructs its accepted
+    /// catalog — the committed entries plus the reserved rows its ledger tombstones name — with its
+    /// signatures unknown, because the lock records only shape fingerprints; a first run starts
+    /// empty.
+    fn accepted_catalog(&self) -> Result<CatalogMetadata, CatalogProposalError> {
+        match self {
+            Self::Store { catalog, .. } => Ok((*catalog).clone()),
+            Self::Lock(lock) => lock_accepted_catalog(lock),
+            Self::FirstRun => Ok(CatalogMetadata::new(0, Vec::new())?),
+        }
+    }
+
+    /// The accepted per-entry signatures a proposal diffs against, present only under a store
+    /// snapshot. A committed lock records fingerprints, not signatures, so its bind cannot see a
+    /// shape-only reshape here; it detects one through the fingerprint reconciliation in
+    /// [`adopts_source_unchanged`](Self::adopts_source_unchanged) instead. Modeling the difference
+    /// as the authority's own typed state is the one place the store/lock signature asymmetry is
+    /// reconciled.
+    fn accepted_signatures<'b>(
+        &self,
+        accepted_catalog: &'b CatalogMetadata,
+    ) -> Option<&'b CatalogMetadata> {
+        match self {
+            Self::Store { .. } => Some(accepted_catalog),
+            Self::Lock(_) | Self::FirstRun => None,
+        }
+    }
+
+    /// The append-only id ledger the allocator must never reissue from: a committed lock's
+    /// tombstones, or none.
+    fn ledger(&self) -> &'a [LockLedgerTombstone] {
+        match self {
+            Self::Store { lock, .. } => lock.map_or(&[][..], |lock| lock.ledger.as_slice()),
+            Self::Lock(lock) => &lock.ledger,
+            Self::FirstRun => &[],
+        }
+    }
+
+    /// The accepted epoch a real change advances past, together with the monotonic version floor
+    /// the committed lock's high-water contributes. A store advances past its own epoch but never
+    /// below a committed lock's high-water; a store-less checkout advances past the lock's
+    /// high-water; a first run advances past nothing, minting at epoch 1.
+    fn proposal_epoch(&self) -> u64 {
+        match self {
+            Self::Store { catalog, lock } => {
+                advance_epoch(catalog.epoch, lock.map_or(0, |lock| lock.epoch_high_water))
+            }
+            Self::Lock(lock) => advance_epoch(lock.epoch_high_water, lock.epoch_high_water),
+            Self::FirstRun => advance_epoch(0, 0),
+        }
+    }
+
+    /// The catalog a clean adoption binds. A store snapshot is the authority and binds VERBATIM —
+    /// its accepted entries must not be rewritten with the signatures freshly recorded this bind,
+    /// so an injected snapshot binds exactly as given. A store-less checkout binds the reconstructed
+    /// proposal at the lock's epoch, since the lock records no signatures of its own to preserve. A
+    /// first run never adopts a source unchanged, so it never reaches here.
+    fn clean_adoption_reference(
+        &self,
+        proposal_entries: Vec<CatalogEntry>,
+    ) -> Result<CatalogMetadata, CatalogProposalError> {
+        match self {
+            Self::Store { catalog, .. } => Ok((*catalog).clone()),
+            Self::Lock(lock) => Ok(CatalogMetadata::new(
+                lock.epoch_high_water,
+                proposal_entries,
+            )?),
+            Self::FirstRun => {
+                unreachable!("a first run has no accepted reference to adopt unchanged")
+            }
+        }
+    }
+
+    /// Whether a newly-minted entity is reported as pending identity. A store is the accepted
+    /// authority, so an entity absent from it is a genuine addition a developer is told to save on
+    /// the next run. A store-less checkout or a first run has no accepted store to be pending
+    /// against — its whole identity is proposed at once — so per-entity pending notes would be
+    /// noise, and the coarse first-run reporting covers it instead.
+    fn reports_pending_identity(&self) -> bool {
+        matches!(self, Self::Store { .. })
+    }
+
+    /// Whether an accepted reference exists for evolve intents to resolve against. A first run has
+    /// none, so every rename relocates nothing and a transform has no accepted data to recompute:
+    /// its intents are trivially unresolved, and no discharge mark is stamped until identity is
+    /// first accepted. A store snapshot or a committed lock carries an accepted reference these
+    /// intents resolve and discharge against.
+    fn has_accepted_reference(&self) -> bool {
+        !matches!(self, Self::FirstRun)
+    }
+
+    /// Whether the bound proposal is the accepted reference unchanged, so it binds directly with no
+    /// pending change. A store snapshot carries signatures, so the accumulated `changed` flag
+    /// already reflects every reshape. A committed lock records only fingerprints, so a shape-only
+    /// reshape is invisible to `changed`; reconcile it against the lock's committed fingerprints,
+    /// and never treat ambiguous source identity as a clean adoption. A first run has no reference
+    /// to adopt.
+    fn adopts_source_unchanged(
+        &self,
+        changed: bool,
+        source: &CatalogSource,
+        proposal_entries: &[CatalogEntry],
+    ) -> bool {
+        match self {
+            Self::Store { .. } => !changed,
+            Self::Lock(lock) => {
+                !changed
+                    && source.duplicate_keys.is_empty()
+                    && source_shapes_match_lock(proposal_entries, lock)
+            }
+            Self::FirstRun => false,
+        }
+    }
+}
+
 fn catalog_binding(
     program: &CheckedProgram,
     accepted: Option<&CatalogMetadata>,
@@ -369,35 +512,18 @@ fn catalog_binding(
             proposal: None,
         };
     }
+    // One resolved authority governs identity, and one bind carries current source against it.
+    // A clean adoption — source matching the accepted reference exactly — binds that reference
+    // directly with no pending change, whether it came from a live store or a store-less
+    // checkout's committed lock.
+    let authority = AcceptedAuthority::resolve(accepted, lock);
     let mut ids = HashMap::new();
-    // A live accepted store catalog is the sole identity authority: its ids bind onto
-    // facts and the lock only raises the epoch floor for the advanced proposal. With no
-    // accepted catalog the lock drives first-run binding — adopting committed identity
-    // and the epoch high-water into the empty store, or minting fresh when absent.
-    let proposal = match accepted {
-        Some(catalog) => bind_against_accepted(
-            program,
-            catalog,
-            lock,
-            evolve,
-            &source,
-            &mut ids,
-            diagnostics,
-        ),
-        None => match adopt_or_mint_first_run(program, evolve, &source, lock, diagnostics) {
-            // A clean lock adoption with no store is the accepted reference itself, exactly as
-            // the committed file once was: its committed identity binds onto facts at the lock's
-            // epoch with no pending change, so a store-less surface ABI is stable.
-            Ok(FirstRunOutcome::Accepted(accepted)) => {
-                return accepted_lock_binding(accepted, source.duplicate_keys);
-            }
-            Ok(FirstRunOutcome::Proposal(proposal)) => Ok(Some(proposal)),
-            Ok(FirstRunOutcome::Refused) => Ok(None),
-            Err(error) => Err(error),
-        },
-    };
-    let proposal = match proposal {
-        Ok(proposal) => proposal,
+    let proposal = match bind(&authority, program, evolve, &source, &mut ids, diagnostics) {
+        Ok(BindOutcome::Accepted(reference)) => {
+            return accepted_reference_binding(reference, source.duplicate_keys);
+        }
+        Ok(BindOutcome::Proposal(proposal)) => Some(proposal),
+        Ok(BindOutcome::Refused) => None,
         Err(CatalogProposalError::Allocation(error)) => {
             diagnostics.push(catalog_diagnostic(
                 first_source_file(&source.entries),
@@ -483,14 +609,13 @@ fn allocation_failure_binding(
     }
 }
 
-/// The binding a clean lock adoption produces with no accepted store: the committed identity
-/// binds onto facts, the lock's epoch is the accepted epoch, the adopted entries are the accepted
-/// ABI the surface binds operations against, and there is no pending proposal — the same shape a
-/// live store would bind. The accepted digest is derived from the adopted catalog, identical to
-/// the digest a present store snapshot of the same identity carries, so a read-only context digest
-/// — and the surface computed-read tag that folds it in — is the same whether a checkout binds
-/// from the committed lock or from a present (or momentarily writer-locked) store.
-fn accepted_lock_binding(
+/// The binding a clean adoption produces when source matches the accepted reference exactly: the
+/// accepted identity binds onto facts, its epoch is the accepted epoch, its entries are the ABI the
+/// surface binds operations against, and there is no pending proposal. The reference is the same
+/// whether it came from a live store snapshot or a store-less checkout's reconstructed committed
+/// lock, so the accepted digest — and the read-only context digest and surface computed-read tag
+/// that fold it in — is identical across the two, keeping the surface ABI stable.
+fn accepted_reference_binding(
     accepted: CatalogMetadata,
     duplicate_source_keys: HashSet<CatalogKey>,
 ) -> CatalogBinding {
@@ -622,29 +747,48 @@ fn bind_source_id(
     }
 }
 
-/// Bind current source against an existing accepted catalog: carry accepted identity forward,
-/// apply renames and retires, mint identity for new entities, and record signatures, binding
-/// the resolved stable ids into `ids`. Returns the advanced proposal on any real change, or
-/// `None` when the source matches the accepted catalog exactly.
-fn bind_against_accepted(
+/// The one binding path for every entry kind and every authority. Materialize the accepted
+/// reference the resolved authority governs, then carry current source against it: resolve renames,
+/// carry accepted identity forward, apply retires, drop bare removals, mint identity for new
+/// entities, and record signatures — binding the resolved stable ids into `ids`. Returns
+/// [`BindOutcome::Accepted`] when source matches the accepted reference exactly (bind it directly,
+/// no pending change), [`BindOutcome::Proposal`] on any real change (advance the epoch), or
+/// [`BindOutcome::Refused`] — having pushed [`CHECK_LOCK_CORRUPT`] — when an adopted id would
+/// reissue a retired one, failing closed before any identity is bound.
+///
+/// A store snapshot and a store-less checkout's committed lock reach this one function through the
+/// same [`AcceptedAuthority`], so a fresh checkout carries the identical identity a present store
+/// would. The store/lock signature asymmetry lives entirely in the authority's typed state — which
+/// accepted catalog it materializes, whether it exposes accepted signatures to diff against, and
+/// how it judges a clean adoption — never in a second binding path here.
+fn bind(
+    authority: &AcceptedAuthority<'_>,
     program: &CheckedProgram,
-    catalog: &CatalogMetadata,
-    lock: Option<&CatalogLock>,
     evolve: &EvolveIntents,
     source: &CatalogSource,
     ids: &mut HashMap<CatalogKey, String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Result<Option<CatalogMetadata>, CatalogProposalError> {
-    let accepted_index = AcceptedCatalog::new(catalog);
+) -> Result<BindOutcome, CatalogProposalError> {
+    let accepted_catalog = authority.accepted_catalog()?;
+    let accepted_index = AcceptedCatalog::new(&accepted_catalog);
     let source_catalog = SourceCatalog::new(&source.entries);
-    let mut renames = resolve_renames(
-        &accepted_index,
-        &source_catalog,
-        &evolve.renames,
-        diagnostics,
-    );
-    let mut proposal_entries = catalog.entries.clone();
-    let mut allocator = StableIdAllocator::over(lock_ledger(lock), &proposal_entries);
+    let mut renames = if authority.has_accepted_reference() {
+        resolve_renames(
+            &accepted_index,
+            &source_catalog,
+            &evolve.renames,
+            diagnostics,
+        )
+    } else {
+        // A first run carries no accepted identity, so every rename relocates nothing; report each
+        // at its own target token and resolve to an empty map.
+        for rename in &evolve.renames {
+            report_unresolved_intent(&rename.file, rename.span, diagnostics);
+        }
+        HashMap::new()
+    };
+    let mut proposal_entries = accepted_catalog.entries.clone();
+    let mut allocator = StableIdAllocator::over(authority.ledger(), &proposal_entries);
     let mut changed = bind_source_entries(
         &accepted_index,
         source,
@@ -652,6 +796,7 @@ fn bind_against_accepted(
         ids,
         &mut proposal_entries,
         &mut allocator,
+        authority.reports_pending_identity(),
         diagnostics,
     )?;
     report_unresolved_renames(&renames, diagnostics);
@@ -667,20 +812,35 @@ fn bind_against_accepted(
     if drop_bare_removed_entries(&mut proposal_entries, &source_catalog) {
         changed = true;
     }
-    if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
+    if record_signatures_into(
+        program,
+        &mut proposal_entries,
+        authority.accepted_signatures(&accepted_catalog),
+    ) {
         changed = true;
     }
-    if record_transform_marks(&mut proposal_entries, &evolve.transforms, catalog) {
+    if authority.has_accepted_reference()
+        && record_transform_marks(&mut proposal_entries, &evolve.transforms, &accepted_catalog)
+    {
         changed = true;
     }
-    if changed {
-        Ok(Some(CatalogMetadata::new(
-            advance_epoch(catalog.epoch, lock_high_water(lock)),
-            proposal_entries,
-        )?))
-    } else {
-        Ok(None)
+    // Fail closed before binding any identity if an adopted or minted id would reissue a retired
+    // one. The allocator never mints a tombstoned id and carry-forward adopts only committed active
+    // ids, so under a valid lock this cannot fire — it is the defense that keeps a torn or
+    // hand-edited ledger from resurrecting a retired identity rather than a routine branch.
+    if let Some(reissued) = tombstone_reissue(&proposal_entries, authority.ledger()) {
+        diagnostics.push(lock_corrupt_diagnostic(&source.entries, reissued));
+        return Ok(BindOutcome::Refused);
     }
+    if authority.adopts_source_unchanged(changed, source, &proposal_entries) {
+        return Ok(BindOutcome::Accepted(
+            authority.clean_adoption_reference(proposal_entries)?,
+        ));
+    }
+    Ok(BindOutcome::Proposal(CatalogMetadata::new(
+        authority.proposal_epoch(),
+        proposal_entries,
+    )?))
 }
 
 /// Stamp every live `evolve transform` target with its own per-transform identity (a hash of
@@ -745,6 +905,10 @@ fn record_transform_marks(
 /// declaration has disappeared but is neither renamed nor retired stays active with no source
 /// backing: dropping a sparse field is a legal no-op, so it is a discharge obligation rather
 /// than a binding error.
+// Threads the accepted index, source, the rename resolution, the id and proposal accumulators, the
+// allocator, the pending-identity policy, and the diagnostic sink — distinct inputs, outputs, and a
+// resource, not a bag a params struct would clarify.
+#[allow(clippy::too_many_arguments)]
 fn bind_source_entries<E: CatalogIdEntropy>(
     accepted_index: &AcceptedCatalog<'_>,
     source: &CatalogSource,
@@ -752,6 +916,7 @@ fn bind_source_entries<E: CatalogIdEntropy>(
     ids: &mut HashMap<CatalogKey, String>,
     proposal_entries: &mut Vec<CatalogEntry>,
     allocator: &mut StableIdAllocator<E>,
+    report_pending_identity: bool,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> io::Result<bool> {
     let mut changed = false;
@@ -782,7 +947,9 @@ fn bind_source_entries<E: CatalogIdEntropy>(
             changed = true;
         } else {
             let entry = proposed_catalog_entry(source_entry, allocator)?;
-            push_pending_identity(source_entry, diagnostics);
+            if report_pending_identity {
+                push_pending_identity(source_entry, diagnostics);
+            }
             prepare_proposal_path(proposal_entries, source_entry.kind, &source_entry.path);
             proposal_entries.push(entry);
             changed = true;
@@ -838,164 +1005,6 @@ fn advance_epoch(accepted_epoch: u64, lock_high_water: u64) -> u64 {
     accepted_epoch.max(lock_high_water).saturating_add(1)
 }
 
-/// The lock's append-only id ledger, or an empty slice when no lock is present. The
-/// never-reuse authority a fresh mint is seeded against and an adopted id is checked against.
-fn lock_ledger(lock: Option<&CatalogLock>) -> &[LockLedgerTombstone] {
-    lock.map(|lock| lock.ledger.as_slice()).unwrap_or_default()
-}
-
-/// The lock's epoch high-water, or zero when no lock is present.
-fn lock_high_water(lock: Option<&CatalogLock>) -> u64 {
-    lock.map(|lock| lock.epoch_high_water).unwrap_or(0)
-}
-
-/// Bind current source with no accepted catalog: a present committed lock drives first-run
-/// adoption of its identity and epoch high-water into the empty store, an absent lock mints a
-/// fresh baseline at epoch 1. Every rename or retire is an unresolved intent (nothing to carry
-/// forward). When the lock adopts the source CLEANLY — every source `(kind, path)` matches a
-/// committed lock entry with none left over, no rename or retire pending, and the source shape
-/// digest equals the lock's recorded digest — the lock IS the accepted reference, so the binding
-/// is [`FirstRunOutcome::Accepted`] at the lock's epoch with no pending change, restoring the
-/// store-less stable-ABI guarantee the committed file once gave. Any drift (a new or removed
-/// entity, a pending rename/retire, a stale digest) keeps the binding a proposal: a drifted
-/// source has no committed ABI and must not be falsely reported as accepted. Returns
-/// [`FirstRunOutcome::Refused`], having pushed the typed [`CHECK_LOCK_CORRUPT`], when a present
-/// lock refuses adoption (a tombstone reissue).
-fn adopt_or_mint_first_run(
-    program: &CheckedProgram,
-    evolve: &EvolveIntents,
-    source: &CatalogSource,
-    lock: Option<&CatalogLock>,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Result<FirstRunOutcome, CatalogProposalError> {
-    let Some(lock) = lock else {
-        // With no committed identity to carry forward, every rename or retire relocates nothing.
-        for rename in &evolve.renames {
-            report_unresolved_intent(&rename.file, rename.span, diagnostics);
-        }
-        for retire in &evolve.retires {
-            report_unresolved_intent(&retire.file, retire.span, diagnostics);
-        }
-        return mint_first_run(program, &source.entries, &[]).map(FirstRunOutcome::Proposal);
-    };
-    let Some(mut proposal_entries) =
-        adopt_first_run_entries(&source.entries, lock, &lock.ledger, evolve, diagnostics)?
-    else {
-        return Ok(FirstRunOutcome::Refused);
-    };
-    // Record the source shape signatures onto the adopted entries: clean or not, the accepted ABI
-    // and the proposal both carry the current shape under the committed identity.
-    record_signatures_into(program, &mut proposal_entries, None);
-    // A kept consumed rename or retire block resolves against the seeded catalog exactly as it
-    // does against a present store: a rename whose old spelling the lock carries as an alias, and a
-    // retire whose path the lock's ledger reconstructs as a reserved row, are already recorded, not
-    // unresolved. Only an intent naming nothing the seed reconstructs is a `check.evolve_target`.
-    let unresolved_intent =
-        report_seeded_unresolved_intents(evolve, &proposal_entries, source, diagnostics);
-    if !unresolved_intent && lock_adopts_source_cleanly(source, lock, &proposal_entries) {
-        return Ok(FirstRunOutcome::Accepted(CatalogMetadata::new(
-            lock.epoch_high_water,
-            proposal_entries,
-        )?));
-    }
-    // Source has drifted from the committed lock: a fresh checkout carries the same pending evolution
-    // a present store would discharge. A present store advances that change past its accepted epoch,
-    // so the fresh-checkout proposal must advance past the lock's epoch high-water too — freezing it
-    // AT the high-water would fold the delta into the committed epoch and under-advance, diverging
-    // from the present-store path on identical committed inputs. A pending shape-neutral transform
-    // carried alongside the drift records its consuming mark here, exactly as `bind_against_accepted`
-    // does, so a later apply recognizes it as already applied rather than re-firing it against the
-    // empty seed.
-    record_transform_marks(
-        &mut proposal_entries,
-        &evolve.transforms,
-        &lock_accepted_catalog(lock)?,
-    );
-    Ok(FirstRunOutcome::Proposal(CatalogMetadata::new(
-        advance_epoch(lock.epoch_high_water, lock.epoch_high_water),
-        proposal_entries,
-    )?))
-}
-
-/// Resolve the evolve renames and retires against the seeded first-run catalog, reporting only
-/// those that name nothing the seed reconstructs. A kept consumed rename — its old spelling carried
-/// as an alias on the active seeded entry — and a kept consumed retire — its path reconstructed as
-/// a reserved row from the lock's ledger — are already recorded and push no diagnostic, exactly as
-/// they resolve against a present store. The seeded entries are not mutated: the lock already
-/// reflects the post-transition state, so this only classifies each intent as consumed or
-/// genuinely unresolvable. Returns whether any intent was reported unresolved.
-fn report_seeded_unresolved_intents(
-    evolve: &EvolveIntents,
-    seeded_entries: &[CatalogEntry],
-    source: &CatalogSource,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> bool {
-    let before = diagnostics.len();
-    let seeded = CatalogMetadata::new(0, seeded_entries.to_vec());
-    let Ok(seeded) = seeded else {
-        // A seeded catalog that fails its identity invariants is reported by the caller's
-        // proposal validation; resolution against it would be meaningless, so treat every intent
-        // as unresolved rather than silently accept it.
-        return !evolve.renames.is_empty() || !evolve.retires.is_empty();
-    };
-    let accepted_index = AcceptedCatalog::new(&seeded);
-    let source_catalog = SourceCatalog::new(&source.entries);
-    resolve_renames(
-        &accepted_index,
-        &source_catalog,
-        &evolve.renames,
-        diagnostics,
-    );
-    for retire in &evolve.retires {
-        // A `Rejected` retire has already pushed its typed diagnostic; `Consumed` and `Active`
-        // are both legitimate resolutions of a kept block against the seeded reserved row.
-        let _ = retire_target(
-            seeded_entries,
-            &accepted_index,
-            &source_catalog,
-            retire,
-            diagnostics,
-        );
-    }
-    diagnostics.len() != before
-}
-
-/// Whether the committed lock adopts the current source as its exact accepted reference. The
-/// load-bearing cleanliness gate: the source `(kind, path)` set must equal the lock's committed
-/// entries one-for-one — no source entity the lock never recorded, no committed entry the source
-/// no longer declares (a removal or rename) — and every entity's shape must match the shape the
-/// lock committed for it, so a shape edit the lock predates is read as drift. An ambiguous source
-/// path (a duplicate `(kind, path)`) is never clean: its identity is unresolved. When this holds,
-/// the lock carries a complete, current accepted ABI and binds as accepted; otherwise the source
-/// has drifted from the lock and stays a proposal.
-///
-/// Shape is compared per entry, not through the whole-source shape digest. The digest folds the
-/// canonical rendering in source order, so a pure enum-member reorder drifts it even though no
-/// entity's shape changed. The present-store bind advances the epoch only when a per-entry
-/// signature actually changes, so keying the seed on the same per-entry shapes gives the two paths
-/// one reconciliation rule: a reorder is a clean adoption at the committed epoch, and a genuine
-/// shape edit stays a drifted proposal.
-fn lock_adopts_source_cleanly(
-    source: &CatalogSource,
-    lock: &CatalogLock,
-    proposal_entries: &[CatalogEntry],
-) -> bool {
-    if !source.duplicate_keys.is_empty() {
-        return false;
-    }
-    let source_keys: HashSet<(CatalogEntryKind, &str)> = source
-        .entries
-        .iter()
-        .map(|entry| (entry.kind, entry.path.as_str()))
-        .collect();
-    let lock_keys: HashSet<(CatalogEntryKind, &str)> = lock
-        .entries
-        .iter()
-        .map(|entry| (entry.kind, entry.path.as_str()))
-        .collect();
-    source_keys == lock_keys && source_shapes_match_lock(proposal_entries, lock)
-}
-
 /// Whether every entity the source declares carries the same shape the lock committed for it, by
 /// per-entry shape fingerprint over the seeded proposal (which records the current source shapes
 /// under the adopted committed identities). Order-insensitive by construction: a reorder that
@@ -1020,140 +1029,6 @@ fn source_shapes_match_lock(proposal_entries: &[CatalogEntry], lock: &CatalogLoc
                 .get(&(lock_entry.kind, lock_entry.path.as_str()))
                 .is_some_and(|fingerprint| *fingerprint == lock_entry.shape_fingerprint)
         })
-}
-
-/// Mint a fresh first-run proposal at epoch 1: every source entity gets a newly allocated id,
-/// re-rolled past every id the ledger has tombstoned so a retired id is never reissued.
-fn mint_first_run(
-    program: &CheckedProgram,
-    source_entries: &[SourceCatalogEntry],
-    ledger: &[LockLedgerTombstone],
-) -> Result<CatalogMetadata, CatalogProposalError> {
-    let mut allocator = StableIdAllocator::empty(ledger);
-    let mut proposal_entries: Vec<CatalogEntry> = source_entries
-        .iter()
-        .map(|source| proposed_catalog_entry(source, &mut allocator))
-        .collect::<io::Result<_>>()?;
-    record_signatures_into(program, &mut proposal_entries, None);
-    Ok(CatalogMetadata::new(1, proposal_entries)?)
-}
-
-/// Build the first-run proposal entries for a present lock: materialize the lock's ledger
-/// tombstones as Reserved entries, carry a committed id forward onto each source entity whose
-/// `(kind, path)` the lock records — or whose pending evolve rename names a committed old path,
-/// recording that old spelling as an alias — reserve the committed entry a pending retire names,
-/// and mint a fresh id (seeded never to reuse a committed or tombstoned id) for a genuinely new
-/// entity the lock records nowhere. Resolving the pending intents against the lock's committed
-/// identity is what makes a fresh checkout carry the same identity forward a present store would.
-/// Materializing the tombstones is what
-/// makes the never-reuse defense survive store loss: a fresh checkout seeded from the lock alone
-/// commits these reserved rows into its baseline store, so a later projection re-derives the same
-/// ledger and re-declaring a retired path still fails closed.
-///
-/// A source `(kind, path)` that re-declares a reserved tombstone fails closed with the same typed
-/// reserved-path-reuse diagnostic the live-store binding gives, and is not adopted as an active
-/// entry — only the reserved row survives, exactly as it would against a live store. Returns
-/// `None`, having pushed [`CHECK_LOCK_CORRUPT`], when an adopted id reissues a ledger tombstone:
-/// the binding fails closed before any id is bound rather than resurrect a retired identity.
-/// Adoption keys on the `(kind, path)` anchor, never the shape fingerprint: a first-run source
-/// pre-image records none of the accepted shape a committed entry was fingerprinted under, so a
-/// fingerprint match would silently miss every shaped entity, and distinct entities sharing a
-/// shape would collide. The fingerprint is a drift signal for later staleness detection, not an
-/// identity key.
-fn adopt_first_run_entries(
-    source_entries: &[SourceCatalogEntry],
-    lock: &CatalogLock,
-    ledger: &[LockLedgerTombstone],
-    evolve: &EvolveIntents,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
-    // Seed the never-reuse set, through the allocator's single never-reuse owner, with the ledger
-    // tombstones and every committed lock id, so a fresh mint for an unrecorded entity re-rolls
-    // past an id the lock already commits or has retired. The committed ids enter as entry stubs
-    // because the allocator seeds from catalog entries.
-    let committed_stubs = committed_id_stubs(&lock.entries);
-    let allocator = StableIdAllocator::over(ledger, &committed_stubs);
-    adopt_first_run_entries_with(source_entries, lock, ledger, evolve, allocator, diagnostics)
-}
-
-/// The adoption body, generic over the allocator's entropy so a fault-injecting test can drive the
-/// mint path. An OS-entropy `allocate()` failure (fd exhaustion, a sandbox blocking `/dev/urandom`)
-/// propagates as [`CatalogProposalError::Allocation`] rather than collapsing to a diagnostic-less
-/// refusal, so the binding fails closed loudly exactly as the no-lock mint does. The Refused result
-/// (`Ok(None)`) is reserved for the tombstone-reissue case, which has already pushed its typed
-/// diagnostic.
-fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
-    source_entries: &[SourceCatalogEntry],
-    lock: &CatalogLock,
-    ledger: &[LockLedgerTombstone],
-    evolve: &EvolveIntents,
-    mut allocator: StableIdAllocator<E>,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
-    let committed: HashMap<(CatalogEntryKind, &str), &LockEntry> = lock
-        .entries
-        .iter()
-        .map(|entry| ((entry.kind, entry.path.as_str()), entry))
-        .collect();
-    let reserved: HashMap<(CatalogEntryKind, &str), CatalogEntry> = ledger
-        .iter()
-        .map(|tombstone| {
-            (
-                (tombstone.kind, tombstone.path.as_str()),
-                tombstone.reserved_catalog_entry(),
-            )
-        })
-        .collect();
-    // The accepted catalog the committed lock represents. A pending (unapplied) rename or retire
-    // names its old `(kind, path)` against this committed identity, so resolving the intent here
-    // carries the committed id forward exactly as a present store does against its live accepted
-    // catalog. The resolution only seeds identity; report_seeded_unresolved_intents is the single
-    // authoritative reporter, so these diagnostics are discarded.
-    let lock_accepted = lock_accepted_catalog(lock)?;
-    let accepted_index = AcceptedCatalog::new(&lock_accepted);
-    let source_catalog = SourceCatalog::new(source_entries);
-    let mut discarded = Vec::new();
-    let renames = resolve_renames(
-        &accepted_index,
-        &source_catalog,
-        &evolve.renames,
-        &mut discarded,
-    );
-    let mut proposal_entries = Vec::with_capacity(source_entries.len() + reserved.len());
-    for source in source_entries {
-        if let Some(reserved_entry) = reserved.get(&(source.kind, source.path.as_str())) {
-            // A source declaration at a reserved path cannot reclaim the retired identity; report
-            // the reuse and keep only the reserved row, exactly as the live-store binding does.
-            push_reserved_reuse(source, reserved_entry, diagnostics);
-            continue;
-        }
-        let entry = if let Some(committed) = committed.get(&(source.kind, source.path.as_str())) {
-            adopted_catalog_entry(
-                source,
-                &committed.stable_id,
-                &committed.aliases,
-                committed.applied_transform.as_deref(),
-            )
-        } else if let Some(carried) = renamed_carry_forward(source, &renames, &committed) {
-            carried
-        } else {
-            proposed_catalog_entry(source, &mut allocator)?
-        };
-        proposal_entries.push(entry);
-    }
-    reserve_retired_committed_entries(
-        &lock_accepted.entries,
-        &accepted_index,
-        &source_catalog,
-        &evolve.retires,
-        &mut proposal_entries,
-    );
-    if let Some(reissued) = tombstone_reissue(&proposal_entries, ledger) {
-        diagnostics.push(lock_corrupt_diagnostic(source_entries, reissued));
-        return Ok(None);
-    }
-    proposal_entries.extend(reserved.into_values());
-    Ok(Some(proposal_entries))
 }
 
 /// The accepted catalog the committed lock represents: its committed entries at their recorded
@@ -1190,105 +1065,6 @@ fn lock_entry_to_catalog_entry(entry: &LockEntry) -> CatalogEntry {
         accepted_struct: None,
         applied_transform: entry.applied_transform.clone(),
     }
-}
-
-/// Carry the committed identity a pending rename relocates onto this source path. When the source
-/// entity is a resolved rename target whose old `(kind, path)` the lock records as a committed
-/// active entry, adopt that committed id and record the old spelling as an alias, mirroring the
-/// present store's `apply_rename`. Returns `None` when the source path is not a rename target or
-/// the lock records no committed active entry at the old path, so the caller mints a fresh id.
-fn renamed_carry_forward(
-    source: &SourceCatalogEntry,
-    renames: &HashMap<String, ResolvedRename>,
-    committed: &HashMap<(CatalogEntryKind, &str), &LockEntry>,
-) -> Option<CatalogEntry> {
-    let rename = renames.get(&source.path)?;
-    let committed_entry = committed.get(&(source.kind, rename.from_path.as_str()))?;
-    if committed_entry.lifecycle != CatalogLifecycle::Active {
-        return None;
-    }
-    let mut aliases = committed_entry.aliases.clone();
-    if !aliases.iter().any(|alias| alias == &rename.from_path) {
-        aliases.push(rename.from_path.clone());
-    }
-    Some(adopted_catalog_entry(
-        source,
-        &committed_entry.stable_id,
-        &aliases,
-        committed_entry.applied_transform.as_deref(),
-    ))
-}
-
-/// Reserve each pending retire's committed active entry. A retire whose path names a committed
-/// active entry the source no longer declares reconstructs the reserved row the present store's
-/// `apply_retires` would leave, carrying the committed identity and aliases at the retired path so
-/// the seed reconstructs the never-reuse reservation. A retire naming a ledger-reserved path, a
-/// still-declared source entity, or nothing is left to the authoritative reporter.
-fn reserve_retired_committed_entries(
-    lock_entries: &[CatalogEntry],
-    accepted_index: &AcceptedCatalog<'_>,
-    source_catalog: &SourceCatalog<'_>,
-    retires: &[RetireIntent],
-    proposal_entries: &mut Vec<CatalogEntry>,
-) {
-    let mut discarded = Vec::new();
-    for retire in retires {
-        if let RetireTarget::Active(index) = retire_target(
-            lock_entries,
-            accepted_index,
-            source_catalog,
-            retire,
-            &mut discarded,
-        ) {
-            let mut reserved_row = lock_entries[index].clone();
-            reserved_row.lifecycle = CatalogLifecycle::Reserved;
-            proposal_entries.push(reserved_row);
-        }
-    }
-}
-
-/// Adopt a committed lock id onto an unkeyed source view directly, for the binding's
-/// fail-closed guard tests. Production binding reaches the same path through
-/// [`adopt_or_mint_first_run`]; this exposes the adopting builder with the ledger threaded
-/// explicitly so the tombstone-reissue refusal is exercised without a structurally invalid lock.
-#[cfg(test)]
-fn adopt_first_run(
-    source_entries: &[SourceCatalogEntry],
-    lock: &CatalogLock,
-    ledger: &[LockLedgerTombstone],
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Option<CatalogMetadata> {
-    let entries = match adopt_first_run_entries(
-        source_entries,
-        lock,
-        ledger,
-        &EvolveIntents::default(),
-        diagnostics,
-    ) {
-        Ok(entries) => entries?,
-        Err(_) => panic!("adoption mints without an entropy fault in these fixtures"),
-    };
-    CatalogMetadata::new(lock.epoch_high_water, entries).ok()
-}
-
-/// Catalog-entry stubs carrying each committed lock id, so the allocator's never-reuse seed
-/// (its single owner) includes the committed ids without a second never-reuse set in this module.
-/// The stubs are seed-only: their kind and path are placeholders never published into a proposal.
-fn committed_id_stubs(committed: &[LockEntry]) -> Vec<CatalogEntry> {
-    committed
-        .iter()
-        .map(|entry| CatalogEntry {
-            kind: CatalogEntryKind::Resource,
-            path: String::from("lock-committed-id-seed"),
-            stable_id: entry.stable_id.clone(),
-            aliases: Vec::new(),
-            lifecycle: CatalogLifecycle::Reserved,
-            accepted_key_shape: None,
-            accepted_index_shape: None,
-            accepted_struct: None,
-            applied_transform: None,
-        })
-        .collect()
 }
 
 /// The first ACTIVE adopted id that a ledger tombstone records, or `None` when adoption reissues
@@ -2784,6 +2560,43 @@ mod tests {
         .expect("lock builds")
     }
 
+    /// Drive the one bind against a store-less authority for the first-run adoption tests: a
+    /// present committed lock is the `Lock` authority; its absence a fresh mint. This is the exact
+    /// path the production check takes when no accepted store snapshot is present.
+    fn bind_no_store(
+        program: &CheckedProgram,
+        evolve: &EvolveIntents,
+        source: &CatalogSource,
+        lock: Option<&CatalogLock>,
+        diagnostics: &mut Vec<CheckDiagnostic>,
+    ) -> Result<BindOutcome, CatalogProposalError> {
+        let mut ids = HashMap::new();
+        bind(
+            &AcceptedAuthority::resolve(None, lock),
+            program,
+            evolve,
+            source,
+            &mut ids,
+            diagnostics,
+        )
+    }
+
+    /// The catalog a store-less adoption binds — the accepted reference on a clean adoption or the
+    /// advanced proposal on drift — or `None` when the bind refused a tombstone-reissuing identity.
+    fn bind_no_store_catalog(
+        program: &CheckedProgram,
+        source: &CatalogSource,
+        lock: &CatalogLock,
+        evolve: &EvolveIntents,
+        diagnostics: &mut Vec<CheckDiagnostic>,
+    ) -> Option<CatalogMetadata> {
+        match bind_no_store(program, evolve, source, Some(lock), diagnostics) {
+            Ok(BindOutcome::Accepted(catalog) | BindOutcome::Proposal(catalog)) => Some(catalog),
+            Ok(BindOutcome::Refused) => None,
+            Err(error) => panic!("first-run bind failed: {error:?}"),
+        }
+    }
+
     /// A reserved tombstone for `stable_id` at a retired member path distinct from any source
     /// entity, so a reissue of the id surfaces as an active entry carrying a tombstoned id rather
     /// than a reserved-path reuse at the same `(kind, path)`.
@@ -2795,38 +2608,6 @@ mod tests {
             lifecycle: CatalogLifecycle::Reserved,
             high_water,
         }
-    }
-
-    /// An OS-entropy failure while minting a fresh id for a source entity the lock does not record
-    /// must surface as a hard allocation error, exactly as the no-lock mint does, not collapse to a
-    /// diagnostic-less Refused that lets the check go green with no identity bound.
-    #[test]
-    fn adoption_mint_entropy_failure_is_a_hard_allocation_error_not_a_silent_refusal() {
-        // The lock records nothing, so the lone source entity must be freshly minted; the injected
-        // entropy fails, so the mint cannot succeed.
-        let committed = lock(Vec::new(), Vec::new(), 0);
-        let source_entries = vec![source_entry(CatalogEntryKind::Store, "books::^books")];
-        let allocator =
-            StableIdAllocator::with_entropy(std::collections::HashSet::new(), FailingEntropy);
-        let mut diagnostics = Vec::new();
-
-        let result = adopt_first_run_entries_with(
-            &source_entries,
-            &committed,
-            &committed.ledger,
-            &EvolveIntents::default(),
-            allocator,
-            &mut diagnostics,
-        );
-
-        assert!(
-            matches!(result, Err(CatalogProposalError::Allocation(_))),
-            "an entropy fault must propagate as an allocation error, got {:?}",
-            result
-                .as_ref()
-                .map(|outcome| outcome.is_some())
-                .map_err(|_| ())
-        );
     }
 
     /// A reserved tombstone for a retired entity at `(kind, path)`, materialized into a first-run
@@ -2863,14 +2644,24 @@ mod tests {
             7,
         )];
         let committed = lock(Vec::new(), ledger.clone(), 7);
+        let program = CheckedProgram::default();
+        let source = CatalogSource {
+            duplicate_keys: HashSet::new(),
+            entries: Vec::new(),
+        };
         let mut diagnostics = Vec::new();
 
         // No source entity re-declares the retired index, so the only proposal row is the
-        // materialized reserved tombstone. Build through CatalogMetadata::new + validate, exactly
-        // as the first-run proposal path does, so the reserved StoreIndex row is held to the real
-        // accepted invariants.
-        let proposal = adopt_first_run(&[], &committed, &ledger, &mut diagnostics)
-            .expect("a store-index tombstone materializes into a valid first-run proposal");
+        // materialized reserved tombstone. Bind through the production path, so the reserved
+        // StoreIndex row is held to the real accepted invariants.
+        let proposal = bind_no_store_catalog(
+            &program,
+            &source,
+            &committed,
+            &EvolveIntents::default(),
+            &mut diagnostics,
+        )
+        .expect("a store-index tombstone materializes into a valid first-run proposal");
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         let reserved = proposal
             .entries
@@ -2904,10 +2695,21 @@ mod tests {
             7,
         )];
         let committed = lock(Vec::new(), ledger.clone(), 7);
+        let program = CheckedProgram::default();
+        let source = CatalogSource {
+            duplicate_keys: HashSet::new(),
+            entries: Vec::new(),
+        };
         let mut diagnostics = Vec::new();
 
-        let proposal = adopt_first_run(&[], &committed, &ledger, &mut diagnostics)
-            .expect("a store tombstone materializes into a valid first-run proposal");
+        let proposal = bind_no_store_catalog(
+            &program,
+            &source,
+            &committed,
+            &EvolveIntents::default(),
+            &mut diagnostics,
+        )
+        .expect("a store tombstone materializes into a valid first-run proposal");
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
         let reserved = proposal
             .entries
@@ -2963,7 +2765,7 @@ mod tests {
         // cleanly and the binding is a pending proposal carrying the adopted identity at the epoch a
         // present store would discharge to.
         let mut diagnostics = Vec::new();
-        let Ok(FirstRunOutcome::Proposal(proposal)) = adopt_or_mint_first_run(
+        let Ok(BindOutcome::Proposal(proposal)) = bind_no_store(
             &program,
             &evolve,
             &source,
@@ -2990,16 +2792,34 @@ mod tests {
         // codec keeps a committed id off its ledger, so the refusal is the binding's
         // independent fail-closed gate over the adopted result, exercised here directly.
         let tombstoned = store_id.clone();
+        // A valid lock keeps its committed ids off its own ledger, so build the reissuing lock
+        // directly, bypassing lock self-validation, to exercise the bind's INDEPENDENT fail-closed
+        // guard: the committed active id `store_id` is also a ledger tombstone here.
+        let reissuing = CatalogLock {
+            entries: vec![committed_lock_entry(
+                CatalogEntryKind::Store,
+                store_path,
+                &store_id,
+                Some("int"),
+            )],
+            ledger: vec![tombstone(&tombstoned, high_water)],
+            epoch_high_water: high_water,
+            source_digest:
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            root_activations: std::collections::BTreeMap::new(),
+        };
         let mut refusal_diagnostics = Vec::new();
-        let refused = adopt_first_run(
-            &source.entries,
-            &committed,
-            &[tombstone(&tombstoned, high_water)],
+        let refused = bind_no_store(
+            &program,
+            &evolve,
+            &source,
+            Some(&reissuing),
             &mut refusal_diagnostics,
         );
         assert!(
-            refused.is_none(),
-            "a tombstone-reissuing adoption carries no proposal"
+            matches!(refused, Ok(BindOutcome::Refused)),
+            "a tombstone-reissuing adoption refuses the bind, carrying no proposal: {refused:?}"
         );
         assert!(
             refusal_diagnostics
@@ -3107,7 +2927,7 @@ mod tests {
             .push(rename("pets::Pet::mammal", "pets::Pet::beast"));
 
         let mut diagnostics = Vec::new();
-        let Ok(outcome) = adopt_or_mint_first_run(
+        let Ok(outcome) = bind_no_store(
             &program,
             &evolve,
             &source,
@@ -3117,10 +2937,7 @@ mod tests {
             panic!("seeding a kept category-rename block binds");
         };
         assert!(
-            matches!(
-                outcome,
-                FirstRunOutcome::Accepted(_) | FirstRunOutcome::Proposal(_)
-            ),
+            matches!(outcome, BindOutcome::Accepted(_) | BindOutcome::Proposal(_)),
             "a kept consumed category rename seeds rather than refusing"
         );
         assert!(
@@ -3165,7 +2982,7 @@ mod tests {
 
         let mut diagnostics = Vec::new();
         assert!(
-            adopt_or_mint_first_run(
+            bind_no_store(
                 &program,
                 &evolve,
                 &source,
@@ -3227,7 +3044,7 @@ mod tests {
             .push(rename("pets::Pet::mammal", "pets::Pet::beast"));
 
         let mut diagnostics = Vec::new();
-        let Ok(outcome) = adopt_or_mint_first_run(
+        let Ok(outcome) = bind_no_store(
             &program,
             &evolve,
             &source,
@@ -3242,7 +3059,7 @@ mod tests {
                 .all(|diagnostic| diagnostic.code != CHECK_EVOLVE_TARGET),
             "a pending category rename resolves against the committed old spelling: {diagnostics:#?}"
         );
-        let FirstRunOutcome::Proposal(proposal) = outcome else {
+        let BindOutcome::Proposal(proposal) = outcome else {
             panic!("a pending rename drifts the source from the lock, so it is a proposal");
         };
         let category = proposal
@@ -3591,6 +3408,7 @@ mod tests {
             &mut ids,
             &mut proposal_entries,
             &mut allocator,
+            true,
             &mut diagnostics,
         );
 

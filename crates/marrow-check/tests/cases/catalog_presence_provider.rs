@@ -285,6 +285,77 @@ fn first_run_lock_adoption_refuses_a_tombstoned_committed_id() {
     );
 }
 
+/// A fully-shaped accepted snapshot for `books_source`: the store carries its `int` identity-key
+/// shape and the member its `leaf:string` structural signature, so a reshaped source is diffed
+/// against real accepted shapes rather than backfilled without flagging.
+fn books_shaped_accepted() -> CatalogMetadata {
+    let resource = entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]);
+    let mut store = entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]);
+    store.accepted_key_shape = Some("int".to_string());
+    let mut member = entry(
+        CatalogEntryKind::ResourceMember,
+        "books::Book::title",
+        "member-title",
+        &[],
+    );
+    member.accepted_struct = Some("leaf:string".to_string());
+    CatalogMetadata::new(7, vec![resource, store, member]).expect("shaped accepted builds")
+}
+
+/// The signature asymmetry between the two authorities is reconciled: a member reshape that changes
+/// its durable signature drifts the bind whether identity comes from a store snapshot — which
+/// carries signatures the checker diffs — or a committed lock, which carries only a fingerprint. The
+/// lock records no signature to diff, yet the reshape still drifts it, because the clean-adoption
+/// decision reconciles the missing signatures against the committed fingerprint. Neither authority
+/// may silently bless a reshaped source as unchanged.
+#[test]
+fn a_member_reshape_drifts_under_both_the_store_and_the_lock_authority() {
+    // Source reshapes `title` from the accepted `string` (`leaf:string`) to `int` (`leaf:int`).
+    let reshape = |root: &std::path::Path| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\nresource Book\n    title: int\nstore ^books(id: int): Book\n",
+        );
+    };
+
+    // Store authority: the accepted snapshot's `leaf:string` signature diffs against the reshaped
+    // `leaf:int`, so the bind advances a proposal.
+    let store_root = temp_root("provider-reshape-store");
+    reshape(&store_root);
+    let store = analyze_project(
+        &store_root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&books_shaped_accepted()),
+        None,
+    )
+    .expect("analyze against the store snapshot");
+    assert!(
+        store.program.catalog.proposal.is_some(),
+        "the store authority drifts a reshaped member: {:#?}",
+        store.report.diagnostics
+    );
+
+    // Lock authority: no store, so the committed lock — carrying only the member's `leaf:string`
+    // fingerprint, no signature — must still drift the reshape through fingerprint reconciliation.
+    let lock_root = temp_root("provider-reshape-lock");
+    reshape(&lock_root);
+    let lock = analyze_project(
+        &lock_root,
+        &config(),
+        &ProjectSources::new(),
+        None,
+        Some(&books_committed_lock(7)),
+    )
+    .expect("analyze against the committed lock");
+    assert!(
+        lock.program.catalog.proposal.is_some(),
+        "the lock authority drifts a reshaped member despite carrying no signature to diff: {:#?}",
+        lock.report.diagnostics
+    );
+}
+
 #[test]
 fn injected_snapshot_binds_identity_exactly_as_the_accepted_catalog_did() {
     let root = temp_root("provider-identity-preserved");

@@ -22,16 +22,6 @@ pub(super) struct StableIdAllocator<E = OsCatalogIdEntropy> {
 }
 
 impl StableIdAllocator<OsCatalogIdEntropy> {
-    /// First-run minting with the adopted lock's id ledger: an empty store may still inherit
-    /// retired ids from a present lock, so even minting from scratch must skip them. A
-    /// genuinely-no-lock first run passes an empty ledger.
-    pub(super) fn empty(ledger: &[LockLedgerTombstone]) -> Self {
-        Self {
-            used: seed_never_reuse(ledger, &[]),
-            entropy: OsCatalogIdEntropy,
-        }
-    }
-
     /// Seeds the never-reuse set from the lock id ledger unioned with the in-memory proposal
     /// entries, so an id retired into a tombstone is never handed back out even when no
     /// surviving entry still carries it.

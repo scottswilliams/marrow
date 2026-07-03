@@ -18,6 +18,8 @@ mod binding_name_resolution;
 mod binding_rename_safety;
 #[path = "cases/binding_resource_constructors.rs"]
 mod binding_resource_constructors;
+#[path = "cases/catalog_one_bind_path.rs"]
+mod catalog_one_bind_path;
 #[path = "cases/catalog_presence_binding.rs"]
 mod catalog_presence_binding;
 #[path = "cases/catalog_presence_enum.rs"]
