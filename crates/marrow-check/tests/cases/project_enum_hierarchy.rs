@@ -1,6 +1,6 @@
 use crate::support;
 use crate::support_enum;
-use marrow_check::{DiagnosticPayload, EnumDiagnostic, check_project};
+use marrow_check::{AmbiguousMemberForm, DiagnosticPayload, EnumDiagnostic, check_project};
 use marrow_schema::SchemaErrorKind;
 
 use support::{
@@ -415,6 +415,7 @@ fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
             enum_name: "Cat".into(),
             label: "paw".into(),
             candidates: vec!["Cat::tiger::paw".into(), "Cat::lion::paw".into()],
+            form: AmbiguousMemberForm::ValuePosition,
         },
     );
 }
@@ -448,12 +449,8 @@ fn a_category_sharing_a_leaf_name_offers_only_the_selectable_leaf() {
             enum_name: "E".into(),
             label: "x".into(),
             candidates: vec!["E::x::x".into()],
+            form: AmbiguousMemberForm::ValuePosition,
         },
-    );
-    assert!(
-        errors[0].message.contains("`E::x::x`") && !errors[0].message.contains("or `E::x`"),
-        "{}",
-        errors[0].message
     );
 }
 
@@ -488,14 +485,8 @@ fn an_all_category_clash_in_value_position_offers_the_selectable_leaves() {
             enum_name: "E".into(),
             label: "p".into(),
             candidates: vec!["E::a::p::q".into(), "E::b::p::r".into()],
+            form: AmbiguousMemberForm::ValuePosition,
         },
-    );
-    assert!(
-        errors[0].message.contains("`E::a::p::q`")
-            && errors[0].message.contains("`E::b::p::r`")
-            && !errors[0].message.ends_with("qualify as "),
-        "{}",
-        errors[0].message
     );
 }
 
@@ -530,6 +521,7 @@ fn a_leaf_and_a_same_named_category_in_value_position_never_offers_the_rejected_
             enum_name: "E".into(),
             label: "p".into(),
             candidates: vec!["E::g::p::r".into()],
+            form: AmbiguousMemberForm::ValuePosition,
         },
     );
     // The leading message names the rejected input; only the hint after `qualify as`
@@ -590,6 +582,7 @@ fn a_bare_member_literal_with_ambiguous_foreign_enum_owner_is_rejected() {
             enum_name: "Status".into(),
             label: "active".into(),
             candidates: vec!["a::Status::active".into(), "b::Status::active".into()],
+            form: AmbiguousMemberForm::BareForeignOwner,
         },
     );
 }
@@ -614,6 +607,7 @@ fn a_bare_member_literal_with_multiple_private_foreign_enum_owners_is_ambiguous(
             enum_name: "Status".into(),
             label: "active".into(),
             candidates: vec!["a::Status::active".into(), "b::Status::active".into()],
+            form: AmbiguousMemberForm::BareForeignOwner,
         },
     );
     assert!(
@@ -686,6 +680,7 @@ fn is_operand_with_ambiguous_foreign_enum_owner_member_literal_is_rejected() {
             enum_name: "Status".into(),
             label: "active".into(),
             candidates: vec!["a::Status::active".into(), "b::Status::active".into()],
+            form: AmbiguousMemberForm::BareForeignOwner,
         },
     );
 }
@@ -905,6 +900,7 @@ fn is_with_a_bare_duplicated_member_is_ambiguous() {
             enum_name: "Cat".into(),
             label: "paw".into(),
             candidates: vec!["Cat::tiger::paw".into(), "Cat::lion::paw".into()],
+            form: AmbiguousMemberForm::ValuePosition,
         },
     );
 }

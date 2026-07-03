@@ -8,8 +8,6 @@ crates/marrow-check/tests/cases/checked_program_navigation.rs 8
 crates/marrow-check/tests/cases/discharge_enum.rs 7
 crates/marrow-check/tests/cases/optional_boundary_sites.rs 1
 crates/marrow-check/tests/cases/project_calls.rs 1
-crates/marrow-check/tests/cases/project_enum_hierarchy.rs 4
-crates/marrow-check/tests/cases/project_enum_member_and_match.rs 4
 crates/marrow-check/tests/cases/project_enum_nominal_identity.rs 2
 crates/marrow-check/tests/cases/project_statements.rs 1
 crates/marrow-check/tests/cases/ranges.rs 1

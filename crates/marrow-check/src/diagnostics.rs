@@ -481,6 +481,7 @@ pub enum EnumDiagnostic {
         enum_name: String,
         label: String,
         candidates: Vec<String>,
+        form: AmbiguousMemberForm,
     },
     AmbiguousMatchArm {
         enum_name: String,
@@ -488,9 +489,12 @@ pub enum EnumDiagnostic {
         candidates: Vec<String>,
     },
     /// A `match` arm written as `Enum::member` where `Enum` is the scrutinee enum's
-    /// own name. `relative` is the corrected arm with that prefix dropped.
+    /// own name.
     ScrutineeQualifiedMatchArm {
         enum_name: String,
+        /// The arm exactly as written, including the redundant scrutinee-enum prefix.
+        written: String,
+        /// The corrected arm with that prefix dropped.
         relative: String,
     },
     NonexhaustiveMatch {
@@ -502,6 +506,46 @@ pub enum EnumDiagnostic {
     },
     CategoryNotSelectable {
         label: String,
+    },
+    /// A `match` scrutinee is not a usable enum value.
+    MatchRequiresEnum(MatchScrutinee),
+    /// The left operand of `is` is a known non-enum value.
+    IsRequiresEnum {
+        found: MarrowType,
+    },
+    /// The right operand of `is` is not a valid member of the left operand's enum.
+    IsType(IsTypeFault),
+}
+
+/// Which construction produced a `check.ambiguous_member`. The two forms render
+/// distinct messages from the same facts, so the form is stored rather than
+/// recovered from the rendered prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmbiguousMemberForm {
+    /// A bare `Enum::member` whose enum owner is exposed by several foreign modules.
+    BareForeignOwner,
+    /// A duplicated member name reached where a single concrete member is required.
+    ValuePosition,
+}
+
+/// Why a `match` scrutinee is not a usable enum value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchScrutinee {
+    /// The scrutinee's enum is named, but the project declares no such enum.
+    UndeclaredEnum { enum_name: String },
+    /// The scrutinee has a known non-enum type.
+    NonEnum { found: MarrowType },
+}
+
+/// Why the right operand of `is` is rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IsTypeFault {
+    /// The right operand does not name a member of the left operand's enum.
+    RequiresMember { left_name: String },
+    /// The right operand names a member of a different enum than the left operand.
+    DifferentEnum {
+        left_name: String,
+        right_name: String,
     },
 }
 

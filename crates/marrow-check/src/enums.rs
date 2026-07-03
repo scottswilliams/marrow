@@ -4,22 +4,20 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_codes::Code;
 use marrow_schema::{MemberPathResolution, ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::checks::{ConstIntScope, check_block_types};
+use crate::diagnostics::{AmbiguousMemberForm, IsTypeFault, MatchScrutinee};
 use crate::infer::infer_type_with_read_scope;
 use crate::resolve::resolve_store_by_root;
-use crate::typerules::marrow_type_name;
 use crate::{
-    CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
-    CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
-    CHECK_PRIVATE_ENUM, CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM, CHECK_UNKNOWN_ENUM_MEMBER,
-    CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram, Def, DefItem,
-    DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution, ResolvableKind, TypeNames,
-    build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
-    resource_type_name, split_type_path,
+    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram, Def,
+    DefItem, DiagnosticAnchor, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution,
+    ResolvableKind, TypeNames, build_alias_map, expand_alias, expand_module_alias, module_of_file,
+    resolve, resource_type_name, split_type_path,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -315,13 +313,14 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         return;
     };
     let Some(schema) = enum_schema_in(program, enum_module, enum_name) else {
-        env.diagnostics.push(CheckDiagnostic::error(
-            CHECK_MATCH_REQUIRES_ENUM,
-            file,
-            span,
-            format!(
-                "`match` requires an enum value, but the scrutinee's enum `{enum_name}` is not declared"
-            ),
+        env.diagnostics.push(CheckDiagnostic::new(
+            Code::CheckMatchRequiresEnum,
+            DiagnosticAnchor::at(file, span),
+            DiagnosticPayload::Enum(EnumDiagnostic::MatchRequiresEnum(
+                MatchScrutinee::UndeclaredEnum {
+                    enum_name: enum_name.to_string(),
+                },
+            )),
         ));
         return;
     };
@@ -346,14 +345,12 @@ fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchAr
 
 fn report_non_enum_match(env: &mut MatchEnv<'_>, scrutinee_type: &MarrowType, span: SourceSpan) {
     if !matches!(scrutinee_type, MarrowType::Unknown | MarrowType::Invalid) {
-        env.diagnostics.push(CheckDiagnostic::error(
-            CHECK_MATCH_REQUIRES_ENUM,
-            env.file,
-            span,
-            format!(
-                "`match` requires an enum value, but the scrutinee is `{}`",
-                marrow_type_name(scrutinee_type)
-            ),
+        env.diagnostics.push(CheckDiagnostic::new(
+            Code::CheckMatchRequiresEnum,
+            DiagnosticAnchor::at(env.file, span),
+            DiagnosticPayload::Enum(EnumDiagnostic::MatchRequiresEnum(MatchScrutinee::NonEnum {
+                found: scrutinee_type.clone(),
+            })),
         ));
     }
 }
@@ -380,23 +377,18 @@ fn check_match_coverage(
             && !is_top_level_member(schema, head)
         {
             let relative_label = relative.join("::");
-            env.diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM,
+            env.diagnostics.push(CheckDiagnostic::new(
+                Code::CheckScrutineeQualifiedMatchArm,
+                DiagnosticAnchor::at(
                     env.file,
                     arm.path_spans.first().copied().unwrap_or(arm.span),
-                    format!(
-                        "`match` arms are relative to the scrutinee enum `{enum_name}`; \
-                         write the arm as `{relative_label}`, not `{arm_label}`"
-                    ),
-                )
-                .with_payload(DiagnosticPayload::Enum(
-                    EnumDiagnostic::ScrutineeQualifiedMatchArm {
-                        enum_name: enum_name.to_string(),
-                        relative: relative_label,
-                    },
-                )),
-            );
+                ),
+                DiagnosticPayload::Enum(EnumDiagnostic::ScrutineeQualifiedMatchArm {
+                    enum_name: enum_name.to_string(),
+                    written: arm_label,
+                    relative: relative_label,
+                }),
+            ));
             continue;
         }
         let arm_ordinal = match schema.walk_member_path(&segments) {
@@ -424,22 +416,15 @@ fn check_match_coverage(
                     .map(|&ordinal| schema.member_path(ordinal).join("::"))
                     .filter(|candidate| *candidate != arm_label)
                     .collect();
-                env.diagnostics.push(
-                    CheckDiagnostic::error(
-                        CHECK_AMBIGUOUS_MATCH_ARM,
-                        env.file,
-                        arm.span,
-                        format!(
-                            "`{arm_label}` names more than one member of `{enum_name}`; qualify as {}",
-                            join_or(&candidates)
-                        ),
-                    )
-                    .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMatchArm {
+                env.diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckAmbiguousMatchArm,
+                    DiagnosticAnchor::at(env.file, arm.span),
+                    DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMatchArm {
                         enum_name: enum_name.to_string(),
                         label: arm_label,
                         candidates,
-                    })),
-                );
+                    }),
+                ));
                 continue;
             }
         };
@@ -448,17 +433,11 @@ fn check_match_coverage(
             .filter(|&ordinal| schema.is_selectable_leaf(ordinal))
             .collect();
         if arm_leaves.iter().any(|leaf| covered.contains(leaf)) {
-            env.diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_DUPLICATE_MATCH_ARM,
-                    env.file,
-                    arm.span,
-                    format!("`match` has a duplicate arm for `{arm_label}`"),
-                )
-                .with_payload(DiagnosticPayload::Enum(
-                    EnumDiagnostic::DuplicateMatchArm { label: arm_label },
-                )),
-            );
+            env.diagnostics.push(CheckDiagnostic::new(
+                Code::CheckDuplicateMatchArm,
+                DiagnosticAnchor::at(env.file, arm.span),
+                DiagnosticPayload::Enum(EnumDiagnostic::DuplicateMatchArm { label: arm_label }),
+            ));
             had_overlap = true;
             continue;
         }
@@ -471,27 +450,14 @@ fn check_match_coverage(
         .map(|ordinal| schema.member_path(ordinal).join("::"))
         .collect();
     if !missing.is_empty() && !had_overlap {
-        env.diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_NONEXHAUSTIVE_MATCH,
-                env.file,
-                span,
-                format!(
-                    "`match` on `{enum_name}` does not cover {}",
-                    missing
-                        .iter()
-                        .map(|path| format!("`{path}`"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            )
-            .with_payload(DiagnosticPayload::Enum(
-                EnumDiagnostic::NonexhaustiveMatch {
-                    enum_name: enum_name.to_string(),
-                    missing,
-                },
-            )),
-        );
+        env.diagnostics.push(CheckDiagnostic::new(
+            Code::CheckNonexhaustiveMatch,
+            DiagnosticAnchor::at(env.file, span),
+            DiagnosticPayload::Enum(EnumDiagnostic::NonexhaustiveMatch {
+                enum_name: enum_name.to_string(),
+                missing,
+            }),
+        ));
     }
 }
 
@@ -573,13 +539,9 @@ fn unknown_enum_member_diagnostic(
 ) -> CheckDiagnostic {
     let member = member_segments[offending].clone();
     let suggestions = valid_member_forms(schema, enum_name, &member_segments[offending..]);
-    let mut message = format!("`{enum_name}` has no member `{member}`");
-    if let [only] = suggestions.as_slice() {
-        message.push_str(&format!("; did you mean `{only}`?"));
-    } else if !suggestions.is_empty() {
-        message.push_str(&format!("; did you mean {}?", join_or(&suggestions)));
-    }
-    CheckDiagnostic::error(CHECK_UNKNOWN_ENUM_MEMBER, file, segment_span, message).with_payload(
+    CheckDiagnostic::new(
+        Code::CheckUnknownEnumMember,
+        DiagnosticAnchor::at(file, segment_span),
         DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
             enum_name: enum_name.to_string(),
             member,
@@ -649,21 +611,16 @@ pub(crate) struct AmbiguousEnumMemberPath {
 
 impl AmbiguousEnumMemberPath {
     pub(crate) fn diagnostic(self, file: &Path, span: SourceSpan) -> CheckDiagnostic {
-        let path = format!("{}::{}", self.enum_name, self.member_label);
-        CheckDiagnostic::error(
-            CHECK_AMBIGUOUS_MEMBER,
-            file,
-            span,
-            format!(
-                "`{path}` is ambiguous; qualify as {}",
-                join_or(&self.candidates)
-            ),
+        CheckDiagnostic::new(
+            Code::CheckAmbiguousMember,
+            DiagnosticAnchor::at(file, span),
+            DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
+                enum_name: self.enum_name,
+                label: self.member_label,
+                candidates: self.candidates,
+                form: AmbiguousMemberForm::BareForeignOwner,
+            }),
         )
-        .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
-            enum_name: self.enum_name,
-            label: self.member_label,
-            candidates: self.candidates,
-        }))
     }
 }
 
@@ -780,18 +737,6 @@ fn resolved_member_path<'p>(
     })
 }
 
-/// Join member paths into an actionable "qualify as `a` or `b`" hint, each path
-/// quoted. One path drops the "or" (it should never arise for an ambiguity, but
-/// the join is total).
-pub(crate) fn join_or(paths: &[String]) -> String {
-    let quoted: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
-    match quoted.as_slice() {
-        [one] => one.clone(),
-        [head @ .., last] => format!("{} or {last}", head.join(", ")),
-        [] => String::new(),
-    }
-}
-
 /// Build the `check.ambiguous_member` diagnostic for a bare duplicated name reached
 /// in a value or `is`-RHS position. There a member is named by its full enum-qualified
 /// path, so each candidate carries the enum prefix (`Cat::tiger::paw`) — the spelling
@@ -833,20 +778,16 @@ pub(crate) fn ambiguous_member_value_diagnostic(
             .filter(|candidate| *candidate != rejected)
             .collect();
     }
-    CheckDiagnostic::error(
-        CHECK_AMBIGUOUS_MEMBER,
-        file,
-        span,
-        format!(
-            "`{rejected}` names more than one member of `{enum_name}`; qualify as {}",
-            join_or(&candidates)
-        ),
+    CheckDiagnostic::new(
+        Code::CheckAmbiguousMember,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
+            enum_name: enum_name.to_string(),
+            label,
+            candidates,
+            form: AmbiguousMemberForm::ValuePosition,
+        }),
     )
-    .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
-        enum_name: enum_name.to_string(),
-        label,
-        candidates,
-    }))
 }
 
 pub(crate) fn ambiguous_enum_annotation_diagnostic(
@@ -896,14 +837,12 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         // diagnostic that already fired, so neither cascades a second error naming the
         // internal placeholder. A known non-enum is rejected.
         if !matches!(left_type, MarrowType::Unknown | MarrowType::Invalid) {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_IS_REQUIRES_ENUM,
-                file,
-                span,
-                format!(
-                    "operator `is` requires an enum value on the left, but found `{}`",
-                    marrow_type_name(left_type)
-                ),
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckIsRequiresEnum,
+                DiagnosticAnchor::at(file, span),
+                DiagnosticPayload::Enum(EnumDiagnostic::IsRequiresEnum {
+                    found: left_type.clone(),
+                }),
             ));
         }
         return bool_type;
@@ -918,11 +857,12 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
             return bool_type;
         }
         EnumMemberPathResolution::MissingOrNonEnum => {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_IS_TYPE,
-                file,
-                right_span,
-                format!("operator `is` requires a member of `{left_name}` on the right"),
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckIsType,
+                DiagnosticAnchor::at(file, right_span),
+                DiagnosticPayload::Enum(EnumDiagnostic::IsType(IsTypeFault::RequiresMember {
+                    left_name: left_name.to_string(),
+                })),
             ));
             return bool_type;
         }
@@ -944,14 +884,13 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
     // Both sides must name the same enum, by owning module and name, so two
     // same-named enums in different modules never alias.
     if &resolved.module != left_module || &resolved.enum_name != left_name {
-        diagnostics.push(CheckDiagnostic::error(
-            CHECK_IS_TYPE,
-            file,
-            right_span,
-            format!(
-                "operator `is` compares within one enum, but the left is `{left_name}` and the right names `{}`",
-                resolved.enum_name
-            ),
+        diagnostics.push(CheckDiagnostic::new(
+            Code::CheckIsType,
+            DiagnosticAnchor::at(file, right_span),
+            DiagnosticPayload::Enum(EnumDiagnostic::IsType(IsTypeFault::DifferentEnum {
+                left_name: left_name.to_string(),
+                right_name: resolved.enum_name.clone(),
+            })),
         ));
         return bool_type;
     }
@@ -972,11 +911,12 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
                 false,
             ))
         }
-        MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic::error(
-            CHECK_IS_TYPE,
-            file,
-            right_span,
-            format!("operator `is` requires a member of `{left_name}` on the right"),
+        MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic::new(
+            Code::CheckIsType,
+            DiagnosticAnchor::at(file, right_span),
+            DiagnosticPayload::Enum(EnumDiagnostic::IsType(IsTypeFault::RequiresMember {
+                left_name: left_name.to_string(),
+            })),
         )),
     }
     bool_type

@@ -7,10 +7,11 @@
 use marrow_codes::Code;
 
 use crate::diagnostics::{
-    DefaultEntryProblem, DiagnosticPayload, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
-    SurfaceFieldDiagnostic, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
+    MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+    SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
 };
-use crate::typerules::mismatch_display;
+use crate::typerules::{marrow_type_name, mismatch_display};
 
 /// The codes whose prose is owned by [`render_message`]. Their construction sites
 /// pass a typed payload to [`CheckDiagnostic::new`](crate::CheckDiagnostic::new) and
@@ -26,6 +27,15 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckSurfaceField,
     Code::CheckSurfaceAction,
     Code::CheckSurfaceComputedRead,
+    Code::CheckUnknownEnumMember,
+    Code::CheckAmbiguousMember,
+    Code::CheckAmbiguousMatchArm,
+    Code::CheckScrutineeQualifiedMatchArm,
+    Code::CheckNonexhaustiveMatch,
+    Code::CheckDuplicateMatchArm,
+    Code::CheckMatchRequiresEnum,
+    Code::CheckIsRequiresEnum,
+    Code::CheckIsType,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -67,9 +77,121 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
         (Code::CheckSurfaceComputedRead, DiagnosticPayload::SurfaceComputedRead(read)) => {
             surface_computed_read_message(read)
         }
+        (
+            Code::CheckUnknownEnumMember
+            | Code::CheckAmbiguousMember
+            | Code::CheckAmbiguousMatchArm
+            | Code::CheckScrutineeQualifiedMatchArm
+            | Code::CheckNonexhaustiveMatch
+            | Code::CheckDuplicateMatchArm
+            | Code::CheckMatchRequiresEnum
+            | Code::CheckIsRequiresEnum
+            | Code::CheckIsType,
+            DiagnosticPayload::Enum(diagnostic),
+        ) => enum_message(diagnostic),
         (code, payload) => {
             unreachable!("no message template for {code:?} with payload {payload:?}")
         }
+    }
+}
+
+fn enum_message(diagnostic: &EnumDiagnostic) -> String {
+    match diagnostic {
+        EnumDiagnostic::UnknownMember {
+            enum_name,
+            member,
+            suggestions,
+        } => {
+            let mut message = format!("`{enum_name}` has no member `{member}`");
+            if let [only] = suggestions.as_slice() {
+                message.push_str(&format!("; did you mean `{only}`?"));
+            } else if !suggestions.is_empty() {
+                message.push_str(&format!("; did you mean {}?", join_or(suggestions)));
+            }
+            message
+        }
+        EnumDiagnostic::AmbiguousMember {
+            enum_name,
+            label,
+            candidates,
+            form,
+        } => {
+            let path = format!("{enum_name}::{label}");
+            match form {
+                AmbiguousMemberForm::BareForeignOwner => {
+                    format!("`{path}` is ambiguous; qualify as {}", join_or(candidates))
+                }
+                AmbiguousMemberForm::ValuePosition => format!(
+                    "`{path}` names more than one member of `{enum_name}`; qualify as {}",
+                    join_or(candidates)
+                ),
+            }
+        }
+        EnumDiagnostic::AmbiguousMatchArm {
+            enum_name,
+            label,
+            candidates,
+        } => format!(
+            "`{label}` names more than one member of `{enum_name}`; qualify as {}",
+            join_or(candidates)
+        ),
+        EnumDiagnostic::ScrutineeQualifiedMatchArm {
+            enum_name,
+            written,
+            relative,
+        } => format!(
+            "`match` arms are relative to the scrutinee enum `{enum_name}`; \
+             write the arm as `{relative}`, not `{written}`"
+        ),
+        EnumDiagnostic::NonexhaustiveMatch { enum_name, missing } => format!(
+            "`match` on `{enum_name}` does not cover {}",
+            missing
+                .iter()
+                .map(|path| format!("`{path}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        EnumDiagnostic::DuplicateMatchArm { label } => {
+            format!("`match` has a duplicate arm for `{label}`")
+        }
+        EnumDiagnostic::MatchRequiresEnum(scrutinee) => match scrutinee {
+            MatchScrutinee::UndeclaredEnum { enum_name } => format!(
+                "`match` requires an enum value, but the scrutinee's enum `{enum_name}` is not declared"
+            ),
+            MatchScrutinee::NonEnum { found } => format!(
+                "`match` requires an enum value, but the scrutinee is `{}`",
+                marrow_type_name(found)
+            ),
+        },
+        EnumDiagnostic::IsRequiresEnum { found } => format!(
+            "operator `is` requires an enum value on the left, but found `{}`",
+            marrow_type_name(found)
+        ),
+        EnumDiagnostic::IsType(fault) => match fault {
+            IsTypeFault::RequiresMember { left_name } => {
+                format!("operator `is` requires a member of `{left_name}` on the right")
+            }
+            IsTypeFault::DifferentEnum {
+                left_name,
+                right_name,
+            } => format!(
+                "operator `is` compares within one enum, but the left is `{left_name}` and the right names `{right_name}`"
+            ),
+        },
+        EnumDiagnostic::CategoryNotSelectable { .. } => {
+            unreachable!("CategoryNotSelectable is not built through CheckDiagnostic::new")
+        }
+    }
+}
+
+/// Join member paths into an actionable "qualify as `a` or `b`" hint, each path
+/// quoted. One path drops the "or"; the join is total over any candidate list.
+fn join_or(paths: &[String]) -> String {
+    let quoted: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
+    match quoted.as_slice() {
+        [one] => one.clone(),
+        [head @ .., last] => format!("{} or {last}", head.join(", ")),
+        [] => String::new(),
     }
 }
 
@@ -265,9 +387,10 @@ fn default_entry_reason(problem: DefaultEntryProblem) -> &'static str {
 mod tests {
     use super::{MIGRATED_CODES, render_message};
     use crate::diagnostics::{
-        DefaultEntryProblem, DiagnosticPayload, SurfaceActionDiagnostic,
-        SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList,
-        SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+        AmbiguousMemberForm, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, IsTypeFault,
+        MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
+        SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin,
+        SurfaceTargetDiagnostic,
     };
     use crate::program::MarrowType;
     use marrow_codes::Code;
@@ -621,6 +744,170 @@ mod tests {
         );
     }
 
+    /// The enum diagnostic family renders exactly the message its old construction
+    /// sites built, across every migrated variant. Both `AmbiguousMember` forms are
+    /// exercised, since the two share their facts and differ only by the stored
+    /// discriminant. Pins the prose the renderer now owns for the enum codes.
+    #[test]
+    fn renders_enum_prose_byte_identical() {
+        let enum_msg =
+            |code, diagnostic| render_message(code, &DiagnosticPayload::Enum(diagnostic));
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckUnknownEnumMember,
+                EnumDiagnostic::UnknownMember {
+                    enum_name: "Animal".into(),
+                    member: "tabby".into(),
+                    suggestions: vec![],
+                },
+            ),
+            "`Animal` has no member `tabby`",
+        );
+        assert_eq!(
+            enum_msg(
+                Code::CheckUnknownEnumMember,
+                EnumDiagnostic::UnknownMember {
+                    enum_name: "Animal".into(),
+                    member: "tabby".into(),
+                    suggestions: vec!["Animal::mammal::cat::tabby".into()],
+                },
+            ),
+            "`Animal` has no member `tabby`; did you mean `Animal::mammal::cat::tabby`?",
+        );
+        assert_eq!(
+            enum_msg(
+                Code::CheckUnknownEnumMember,
+                EnumDiagnostic::UnknownMember {
+                    enum_name: "Animal".into(),
+                    member: "tabby".into(),
+                    suggestions: vec!["Animal::cat::tabby".into(), "Animal::tabby".into()],
+                },
+            ),
+            "`Animal` has no member `tabby`; did you mean `Animal::cat::tabby` or `Animal::tabby`?",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckAmbiguousMember,
+                EnumDiagnostic::AmbiguousMember {
+                    enum_name: "Cat".into(),
+                    label: "paw".into(),
+                    candidates: vec!["Cat::tiger::paw".into(), "Cat::lion::paw".into()],
+                    form: AmbiguousMemberForm::BareForeignOwner,
+                },
+            ),
+            "`Cat::paw` is ambiguous; qualify as `Cat::tiger::paw` or `Cat::lion::paw`",
+        );
+        assert_eq!(
+            enum_msg(
+                Code::CheckAmbiguousMember,
+                EnumDiagnostic::AmbiguousMember {
+                    enum_name: "Cat".into(),
+                    label: "paw".into(),
+                    candidates: vec!["Cat::tiger::paw".into(), "Cat::lion::paw".into()],
+                    form: AmbiguousMemberForm::ValuePosition,
+                },
+            ),
+            "`Cat::paw` names more than one member of `Cat`; qualify as `Cat::tiger::paw` or `Cat::lion::paw`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckAmbiguousMatchArm,
+                EnumDiagnostic::AmbiguousMatchArm {
+                    enum_name: "Cat".into(),
+                    label: "paw".into(),
+                    candidates: vec!["tiger::paw".into(), "lion::paw".into()],
+                },
+            ),
+            "`paw` names more than one member of `Cat`; qualify as `tiger::paw` or `lion::paw`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckScrutineeQualifiedMatchArm,
+                EnumDiagnostic::ScrutineeQualifiedMatchArm {
+                    enum_name: "Status".into(),
+                    written: "Status::active".into(),
+                    relative: "active".into(),
+                },
+            ),
+            "`match` arms are relative to the scrutinee enum `Status`; \
+             write the arm as `active`, not `Status::active`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckNonexhaustiveMatch,
+                EnumDiagnostic::NonexhaustiveMatch {
+                    enum_name: "Status".into(),
+                    missing: vec!["active".into(), "closed".into()],
+                },
+            ),
+            "`match` on `Status` does not cover `active`, `closed`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckDuplicateMatchArm,
+                EnumDiagnostic::DuplicateMatchArm {
+                    label: "active".into(),
+                },
+            ),
+            "`match` has a duplicate arm for `active`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckMatchRequiresEnum,
+                EnumDiagnostic::MatchRequiresEnum(MatchScrutinee::UndeclaredEnum {
+                    enum_name: "Status".into(),
+                }),
+            ),
+            "`match` requires an enum value, but the scrutinee's enum `Status` is not declared",
+        );
+        assert_eq!(
+            enum_msg(
+                Code::CheckMatchRequiresEnum,
+                EnumDiagnostic::MatchRequiresEnum(MatchScrutinee::NonEnum {
+                    found: primitive(ScalarType::Int),
+                }),
+            ),
+            "`match` requires an enum value, but the scrutinee is `int`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckIsRequiresEnum,
+                EnumDiagnostic::IsRequiresEnum {
+                    found: primitive(ScalarType::Bool),
+                },
+            ),
+            "operator `is` requires an enum value on the left, but found `bool`",
+        );
+
+        assert_eq!(
+            enum_msg(
+                Code::CheckIsType,
+                EnumDiagnostic::IsType(IsTypeFault::RequiresMember {
+                    left_name: "Status".into(),
+                }),
+            ),
+            "operator `is` requires a member of `Status` on the right",
+        );
+        assert_eq!(
+            enum_msg(
+                Code::CheckIsType,
+                EnumDiagnostic::IsType(IsTypeFault::DifferentEnum {
+                    left_name: "Status".into(),
+                    right_name: "Color".into(),
+                }),
+            ),
+            "operator `is` compares within one enum, but the left is `Status` and the right names `Color`",
+        );
+    }
+
     /// The identifiers a migrated code would appear as in a first argument to a
     /// message-bearing `CheckDiagnostic::error`/`warning` call: its `Code` variant
     /// and its `CHECK_*` wire-string constant. Mirrors [`MIGRATED_CODES`]; kept in
@@ -642,6 +929,24 @@ mod tests {
         "CHECK_SURFACE_ACTION",
         "Code::CheckSurfaceComputedRead",
         "CHECK_SURFACE_COMPUTED_READ",
+        "Code::CheckUnknownEnumMember",
+        "CHECK_UNKNOWN_ENUM_MEMBER",
+        "Code::CheckAmbiguousMember",
+        "CHECK_AMBIGUOUS_MEMBER",
+        "Code::CheckAmbiguousMatchArm",
+        "CHECK_AMBIGUOUS_MATCH_ARM",
+        "Code::CheckScrutineeQualifiedMatchArm",
+        "CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM",
+        "Code::CheckNonexhaustiveMatch",
+        "CHECK_NONEXHAUSTIVE_MATCH",
+        "Code::CheckDuplicateMatchArm",
+        "CHECK_DUPLICATE_MATCH_ARM",
+        "Code::CheckMatchRequiresEnum",
+        "CHECK_MATCH_REQUIRES_ENUM",
+        "Code::CheckIsRequiresEnum",
+        "CHECK_IS_REQUIRES_ENUM",
+        "Code::CheckIsType",
+        "CHECK_IS_TYPE",
     ];
 
     fn src_root() -> PathBuf {

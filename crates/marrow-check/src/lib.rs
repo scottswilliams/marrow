@@ -53,7 +53,7 @@ pub use binding::{
     SourceRenameOccurrence, SymbolKind, SymbolOccurrence, SymbolRef, build_binding_index,
 };
 pub use diagnostics::{
-    AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_AMBIGUOUS_MATCH_ARM,
+    AmbiguousMemberForm, AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_AMBIGUOUS_MATCH_ARM,
     CHECK_AMBIGUOUS_MEMBER, CHECK_ASSIGNMENT_TYPE, CHECK_BYTES_ESCAPE, CHECK_CALL_ARGUMENT,
     CHECK_CATALOG_INTENT, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
     CHECK_COMMIT_AMPLIFICATION, CHECK_CONDITION_TYPE, CHECK_DEFAULT_ENTRY,
@@ -76,10 +76,10 @@ pub use diagnostics::{
     CHECK_UNRESOLVED_OPTIONAL, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind,
     CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
     ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticAnchor,
-    DiagnosticPayload, EnumDiagnostic, IO_READ, PendingRecord, RejectedSurface,
-    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic, SurfaceCollisionNameKind,
-    SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
-    SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    DiagnosticPayload, EnumDiagnostic, IO_READ, IsTypeFault, MatchScrutinee, PendingRecord,
+    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
+    SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+    SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
