@@ -242,6 +242,7 @@ pub fn admit_read(
     policy: AdmissionPolicy,
 ) -> Result<ReadAdmission, StoreError> {
     let store = sealed.into_store();
+    store.validate_commit_record()?;
     match policy {
         AdmissionPolicy::Run => match behind_then_bind(&store, program, lock, policy)? {
             LadderOutcome::Pass => Ok(ReadAdmission::Admitted(AdmittedStore::new(store))),
@@ -261,6 +262,7 @@ pub fn admit_committed_memory_read(
     program: &CheckedProgram,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<ReadAdmission, StoreError> {
+    store.validate_commit_record()?;
     admit_surface_read(store, program, lock)
 }
 
@@ -290,6 +292,7 @@ pub fn admit_write(
     policy: AdmissionPolicy,
 ) -> Result<WriteAdmission, StoreError> {
     let store = sealed.into_store();
+    store.validate_commit_record()?;
     match behind_then_bind(&store, program, lock, policy)? {
         LadderOutcome::Pass => Ok(WriteAdmission::Admitted(AdmittedStore::new(store))),
         LadderOutcome::Behind(behind) => Ok(WriteAdmission::Behind(behind)),

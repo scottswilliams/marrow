@@ -1306,11 +1306,10 @@ fn admission_drift_error(reason: admission::AdmissionDrift) -> ProjectSessionErr
 }
 
 /// The shared surface-store checks between open and admission: a populated store must be
-/// stamped, a durable identity must be present, and serving saved data owes the same
-/// schema-driven completeness cross-check the runtime open, inspection family, backup, and
-/// recover run — the structural witness the open ran proves the store traversable but not
-/// that its index holds exactly the entries its records derive, so a truncated index fails
-/// closed here rather than streaming an under-returning range.
+/// stamped and carry a durable identity. Admission already validated the sealed commit record,
+/// so serving trusts that O(1) witness and verifies what each read touches; the schema-driven
+/// completeness cross-check that re-derives every index is the O(N) deep pass `data integrity`,
+/// `backup`, and `recover` own.
 fn verify_surface_store(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -1321,7 +1320,6 @@ fn verify_surface_store(
     if store.read_store_uid()?.is_none() || store.read_commit_metadata()?.is_none() {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
-    tooling::verify_store_completeness(store, program)?;
     Ok(())
 }
 
@@ -1476,7 +1474,6 @@ fn open_existing_surface_store_read(
     };
     let sealed =
         admission::open_read(&path).map_err(|error| surface_store_open_error(&path, error))?;
-    verify_surface_store_readable(&sealed)?;
     Ok((path, sealed))
 }
 
@@ -1489,19 +1486,7 @@ fn open_existing_surface_store_write(
     };
     let sealed =
         admission::open_write(&path).map_err(|error| surface_store_open_error(&path, error))?;
-    verify_surface_store_readable(&sealed)?;
     Ok((path, sealed))
-}
-
-/// Serving saved data is a store read, so it owes the same readability cross-check the runtime
-/// and inspection families run: the data cells are their own derivation, so a backend page that
-/// silently drops a cell or rewrites a stored value shifts every enumeration with no structural
-/// fault until a read walks the damaged page. Verifying the per-root structural digest here fails
-/// a btree-corrupt store closed at open rather than letting the server admit it and stream a
-/// truncated prefix until a page reaches the corrupt cell.
-fn verify_surface_store_readable(sealed: &SealedStore) -> Result<(), ProjectSessionError> {
-    sealed.verify_readable()?;
-    Ok(())
 }
 
 fn surface_store_open_error(path: &Path, error: StoreError) -> ProjectSessionError {
@@ -1769,14 +1754,6 @@ fn open_store_file(
     } else {
         return Ok(None);
     };
-    // The runtime read of saved data is a store read, so it owes the same readability
-    // cross-check the inspection family runs: the data cells are their own derivation, so a
-    // backend page that silently drops a cell or truncates a record range shifts every
-    // enumeration with no structural fault, and a torn page faults only when a read walks it.
-    // Verifying the store readable here — the per-root structural digest plus the record and
-    // index re-walks — fails a btree-corrupt store closed at open rather than letting a run
-    // enumerate it truncated or fault mid-evaluation.
-    store.verify_readable()?;
     Ok(Some(NativeRunStore { path, store }))
 }
 
@@ -1821,13 +1798,10 @@ fn finish_commit_open(
     })
 }
 
-/// A populated store must be stamped, and reading saved data owes the schema-driven
-/// completeness cross-check the inspection family, backup, and recover run through their
-/// single owner. The structural witness the open already ran proves the store traversable
-/// but cannot tell that the index holds exactly the entries its data records derive: a
-/// truncated index reads under-returning with no structural fault. Running it here fails
-/// such a store closed at open rather than letting a run enumerate it truncated or accept
-/// a write onto it.
+/// A populated store must carry an activation stamp. Admission already validated the sealed
+/// commit record, so a run opens by trusting that O(1) witness and verifying what each read
+/// touches; the schema-driven completeness cross-check that re-derives every index from the
+/// data records is the O(N) deep pass `data integrity`, `backup`, and `recover` own.
 fn verify_run_store(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -1835,7 +1809,6 @@ fn verify_run_store(
     if populated_unstamped_store(program, store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
-    tooling::verify_store_completeness(store, program)?;
     Ok(())
 }
 
@@ -2158,9 +2131,9 @@ fn open_store_for_inspection(
 ///
 /// The replay is attempted only when a read-only probe reports the store needs it, so
 /// a healthy store is never reopened for writing or modified. Genuine corruption is
-/// not blessed: the replayed handle is proven structurally readable here, the
-/// committed-lock witness runs in the lock-root guard, and the per-root structural
-/// digest runs when the store-read open re-opens the store for the run.
+/// not blessed: the replayed handle is proven structurally readable here — the same deep
+/// re-walk `recover` runs to prove convergence — and the committed-lock witness runs in the
+/// lock-root guard.
 pub fn recover_store_for_write(
     root: &Path,
     config: &ProjectConfig,
