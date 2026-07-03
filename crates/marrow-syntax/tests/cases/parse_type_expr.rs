@@ -184,6 +184,30 @@ fn a_malformed_type_is_a_parse_error_in_every_position() {
 }
 
 #[test]
+fn a_malformed_identity_leaves_no_identity_node_for_tooling_to_read() {
+    // The field fails to parse, so no `Identity` node reaches the AST — the
+    // saved-root cursor scan walks the parsed type nodes and finds nothing, so no
+    // spurious `^a` root fact survives a malformed `Id(^a.b)`.
+    let parsed = parse_source("resource R\n    ref: Id(^a.b)\n");
+    let identities = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Resource(resource) => Some(resource),
+            _ => None,
+        })
+        .flat_map(|resource| &resource.members)
+        .filter_map(|member| match member {
+            marrow_syntax::ResourceMember::Field(field) => Some(&field.ty),
+            marrow_syntax::ResourceMember::Group(_) => None,
+        })
+        .filter(|ty| matches!(ty, TypeExpr::Identity(_)))
+        .count();
+    assert_eq!(identities, 0, "{parsed:#?}");
+}
+
+#[test]
 fn a_malformed_type_span_points_at_the_offending_token() {
     for (spelling, offending) in [
         ("Id(^a.b)", "."),
