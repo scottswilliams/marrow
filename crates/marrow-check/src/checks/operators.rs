@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_codes::Code;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
@@ -15,8 +16,8 @@ use crate::typerules::{
     unary_symbol, unresolved_optional, unresolved_optional_diagnostic,
 };
 use crate::{
-    CHECK_ASSIGNMENT_TYPE, CHECK_CONDITION_TYPE, CHECK_RETURN_TYPE, CHECK_THROW_TYPE,
-    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
+    CHECK_CONDITION_TYPE, CHECK_THROW_TYPE, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram,
+    DiagnosticAnchor, DiagnosticPayload, MarrowType,
 };
 
 use super::diagnostics::operator_diagnostic;
@@ -148,19 +149,14 @@ pub(crate) fn check_return_type(
     match type_compatible(return_type, value_type) {
         Some(true) => {}
         Some(false) => {
-            let (expected_name, found_name) = mismatch_display(return_type, value_type);
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_RETURN_TYPE,
-                    file,
-                    span,
-                    format!("function returns `{expected_name}`, but this value is `{found_name}`"),
-                )
-                .with_payload(DiagnosticPayload::TypeMismatch {
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckReturnType,
+                DiagnosticAnchor::at(file, span),
+                DiagnosticPayload::TypeMismatch {
                     expected: return_type.clone(),
                     found: value_type.clone(),
-                }),
-            );
+                },
+            ));
         }
         // Strict typing: an untyped value returned where a convertible type is
         // declared must be converted first. A return type with no conversion boundary
@@ -206,19 +202,14 @@ pub(crate) fn check_assignment(
     match compatible {
         Some(true) => {}
         Some(false) => {
-            let (expected, found) = mismatch_display(place, value);
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_ASSIGNMENT_TYPE,
-                    file,
-                    span,
-                    format!("expected `{expected}`, but the value is `{found}`"),
-                )
-                .with_payload(DiagnosticPayload::TypeMismatch {
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckAssignmentType,
+                DiagnosticAnchor::at(file, span),
+                DiagnosticPayload::TypeMismatch {
                     expected: place.clone(),
                     found: value.clone(),
-                }),
-            );
+                },
+            ));
         }
         // An untyped value stored into a place with a conversion boundary.
         None if matches!(value, MarrowType::Unknown) && expects_conversion(place) => {

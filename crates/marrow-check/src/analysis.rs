@@ -6,21 +6,22 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use marrow_codes::Code;
 use marrow_project::{DiscoverError, ProjectConfig, Sha256Digest, StoreBackend, discover_modules};
 use marrow_syntax::SourceSpan;
 
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
 use crate::enums::normalize_program_named_types;
 use crate::{
-    CHECK_DEFAULT_ENTRY, CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS,
-    CHECK_READ_ONLY_EXPRESSION_CONTEXT, CheckDiagnostic, CheckReport, CheckedDebugExpression,
-    CheckedFile, CheckedModule, CheckedProgram, DebugSourceIdentity, DefaultEntryProblem,
-    DiagnosticPayload, IO_READ, ProjectSources, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact,
-    SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceComputedReadFact,
-    SurfaceComputedReadOperationDescriptor, SurfaceCreateOperationDescriptor, SurfaceDeleteFact,
-    SurfaceDeleteOperationDescriptor, SurfaceFact, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor, TestResolutionSuppression,
-    check_file_source, enum_visibility, module_path_error, read_source,
+    CHECK_DUPLICATE_MODULE, CHECK_READ_ONLY_EXPRESSION_CONTEXT, CheckDiagnostic, CheckReport,
+    CheckedDebugExpression, CheckedFile, CheckedModule, CheckedProgram, DebugSourceIdentity,
+    DefaultEntryProblem, DiagnosticAnchor, DiagnosticPayload, IO_READ, ProjectSources,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact, SurfaceActionOperationDescriptor,
+    SurfaceCatalogStatus, SurfaceComputedReadFact, SurfaceComputedReadOperationDescriptor,
+    SurfaceCreateOperationDescriptor, SurfaceDeleteFact, SurfaceDeleteOperationDescriptor,
+    SurfaceFact, SurfaceReadOperationDescriptor, SurfaceReadOperationFact,
+    SurfaceUpdateOperationDescriptor, TestResolutionSuppression, check_file_source,
+    enum_visibility, module_path_error, read_source,
 };
 
 mod catalog_nav;
@@ -799,12 +800,10 @@ pub(crate) fn analyze_source_project(
         program.modules.append(&mut scripts);
     } else {
         for script in &scripts {
-            report.diagnostics.push(CheckDiagnostic::error(
-                CHECK_MULTIPLE_SCRIPTS,
-                &script.source_file,
-                crate::source_spans::start_of_file(),
-                "a project may have at most one file without a `module` \
-                    declaration (its single-file script); declare a `module` for this file",
+            report.diagnostics.push(CheckDiagnostic::new(
+                Code::CheckMultipleScripts,
+                DiagnosticAnchor::whole_file(&script.source_file),
+                DiagnosticPayload::None,
             ));
         }
     }
@@ -986,26 +985,14 @@ fn check_default_entry(
     {
         return;
     }
-    let reason = match problem {
-        DefaultEntryProblem::Missing => "names no public entry",
-        DefaultEntryProblem::Private => "names a private function; mark it `pub`",
-        DefaultEntryProblem::Ambiguous => "is ambiguous; qualify it as `module::function`",
-        DefaultEntryProblem::HasParameters => {
-            "declares parameters, but a default entry runs with no arguments"
-        }
-    };
-    diagnostics.push(
-        CheckDiagnostic::error(
-            CHECK_DEFAULT_ENTRY,
-            &project_root.join("marrow.json"),
-            crate::source_spans::start_of_file(),
-            format!("`run.defaultEntry` `{entry}` {reason}"),
-        )
-        .with_payload(DiagnosticPayload::DefaultEntry {
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckDefaultEntry,
+        DiagnosticAnchor::whole_file(&project_root.join("marrow.json")),
+        DiagnosticPayload::DefaultEntry {
             entry: entry.to_string(),
             problem,
-        }),
-    );
+        },
+    ));
 }
 
 fn overlay_module_file(

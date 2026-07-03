@@ -885,7 +885,70 @@ pub struct CheckDiagnostic {
     pub payload: DiagnosticPayload,
 }
 
+/// Where a diagnostic points. The only way to give a [`CheckDiagnostic`] built
+/// through [`CheckDiagnostic::new`] a location, so a diagnostic can never carry a
+/// silently-zeroed span: [`at`](Self::at) takes a real span, and a finding about a
+/// whole file with no meaningful position within it is the explicit
+/// [`whole_file`](Self::whole_file) variant, which resolves to the file's start
+/// rather than the unplaceable `0:0`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagnosticAnchor {
+    /// A specific span within a source file.
+    At { file: PathBuf, span: SourceSpan },
+    /// A whole file, when the finding is about the file as a unit and no position
+    /// within it is meaningful.
+    WholeFile { file: PathBuf },
+}
+
+impl DiagnosticAnchor {
+    /// Anchor at a real span within `file`.
+    pub fn at(file: &Path, span: SourceSpan) -> Self {
+        debug_assert!(
+            span != SourceSpan::default(),
+            "a zeroed span is not a location; use DiagnosticAnchor::whole_file for a \
+             finding with no position within the file",
+        );
+        Self::At {
+            file: file.to_path_buf(),
+            span,
+        }
+    }
+
+    /// Anchor at a whole file with no meaningful span.
+    pub fn whole_file(file: &Path) -> Self {
+        Self::WholeFile {
+            file: file.to_path_buf(),
+        }
+    }
+
+    /// The single place an anchor becomes the `(file, span)` a [`CheckDiagnostic`]
+    /// stores. A whole-file finding points at the file's start so an editor can
+    /// place it, never the unplaceable `0:0`.
+    fn resolve(self) -> (PathBuf, SourceSpan) {
+        match self {
+            Self::At { file, span } => (file, span),
+            Self::WholeFile { file } => (file, crate::source_spans::start_of_file()),
+        }
+    }
+}
+
 impl CheckDiagnostic {
+    /// Construct a diagnostic from typed inputs: a registry [`Code`] (which owns the
+    /// wire string and severity), a typed [`DiagnosticAnchor`], and a typed payload.
+    /// The human message is derived from `(code, payload)` by the single renderer, so
+    /// no prose is built at the construction site.
+    pub fn new(code: Code, anchor: DiagnosticAnchor, payload: DiagnosticPayload) -> Self {
+        let (file, span) = anchor.resolve();
+        Self {
+            code: code.as_str(),
+            severity: severity_of(code),
+            file,
+            message: crate::diagnostic_render::render_message(code, &payload),
+            span,
+            payload,
+        }
+    }
+
     /// An error diagnostic with no typed payload. The single owner of the
     /// `Severity::Error` and owned-file defaults; attach structured facts with
     /// [`with_payload`](Self::with_payload).
@@ -928,6 +991,16 @@ impl CheckDiagnostic {
     pub fn with_payload(mut self, payload: DiagnosticPayload) -> Self {
         self.payload = payload;
         self
+    }
+}
+
+/// The checker severity a registry code renders under. The registry is the single
+/// owner of the severity class, so a diagnostic built through
+/// [`CheckDiagnostic::new`] never restates whether it is an error or a warning.
+fn severity_of(code: Code) -> Severity {
+    match code.severity_class() {
+        marrow_codes::SeverityClass::Error => Severity::Error,
+        marrow_codes::SeverityClass::Warning => Severity::Warning,
     }
 }
 

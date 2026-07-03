@@ -14,6 +14,7 @@ pub mod binding;
 mod catalog;
 mod checks;
 mod data_text;
+mod diagnostic_render;
 mod diagnostics;
 mod driver;
 pub mod durable_path;
@@ -74,10 +75,11 @@ pub use diagnostics::{
     CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME,
     CHECK_UNRESOLVED_OPTIONAL, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind,
     CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
-    ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic,
-    IO_READ, PendingRecord, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
-    SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
-    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
+    ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticAnchor,
+    DiagnosticPayload, EnumDiagnostic, IO_READ, PendingRecord, RejectedSurface,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic, SurfaceCollisionNameKind,
+    SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
+    SurfaceTargetDiagnostic,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
