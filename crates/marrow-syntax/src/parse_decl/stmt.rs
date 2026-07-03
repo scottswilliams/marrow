@@ -187,16 +187,27 @@ impl<'a> StmtParser<'a> {
             _ => {}
         }
 
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
-        let line = &self.tokens[self.pos..content_end];
-        let error_span = line_span_or(line, self.tokens[self.pos].span);
+        let start = self.tokens[self.pos].span;
+        let line = self.take_line();
+        let error_span = line_span_or(line, start);
         let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
-        self.pos = (newline + 1).min(self.tokens.len());
         // Total parsing: a line that did not structure reported its own diagnostic
         // and becomes an error node carrying its span, so the body is never silently
         // short a statement.
         Some(statement.unwrap_or(Statement::Error { span: error_span }))
+    }
+
+    /// Take the current statement or header line: the content tokens up to the
+    /// layout token that ends the line, with any trailing comment recorded as
+    /// block trivia, advancing past the closing `NEWLINE`. The returned slice
+    /// outlives the advance (it borrows the whole-file token stream), so a caller
+    /// parses it after the cursor has moved to the next line.
+    fn take_line(&mut self) -> &'a [Token] {
+        let newline = self.find_line_end();
+        let content_end = self.split_trailing_comment(newline);
+        let line = &self.tokens[self.pos..content_end];
+        self.pos = (newline + 1).min(self.tokens.len());
+        line
     }
 
     /// If the token just before `line_end` is a trailing comment, record it as
@@ -256,12 +267,9 @@ impl<'a> StmtParser<'a> {
 
     fn for_stmt(&mut self) -> Option<Statement> {
         let keyword = self.advance(); // `for`
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
-        let header = &self.tokens[self.pos..content_end];
+        let header = self.take_line();
         let header_span = line_span_or(header, keyword.span);
         let parsed = parse_for_header(self.source, header);
-        self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
 
         match parsed {
@@ -360,9 +368,7 @@ impl<'a> StmtParser<'a> {
 
     fn catch_clause(&mut self) -> CatchClause {
         let keyword = self.advance(); // `catch`
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
-        let header = &self.tokens[self.pos..content_end];
+        let header = self.take_line();
         let (name, ty) = match parse_catch_header(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -371,7 +377,6 @@ impl<'a> StmtParser<'a> {
                 (String::new(), None)
             }
         };
-        self.pos = (newline + 1).min(self.tokens.len());
         let block = self.block_body();
         CatchClause { name, ty, block }
     }
@@ -486,21 +491,18 @@ impl<'a> StmtParser<'a> {
     /// block. An arm header that is not a `::`-separated run of identifiers is a
     /// parse error.
     fn match_arm(&mut self) -> Option<MatchArm> {
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
-        let header = &self.tokens[self.pos..content_end];
-        let span = line_span_or(header, self.tokens[self.pos].span);
+        let start = self.tokens[self.pos].span;
+        let header = self.take_line();
+        let span = line_span_or(header, start);
         let Some((path, path_spans)) = arm_member_path(self.source, header) else {
             self.error_span_reason(
                 span,
                 ParseDiagnosticReason::MatchArmMemberPath,
                 "a match arm is a member path relative to the enum",
             );
-            self.pos = (newline + 1).min(self.tokens.len());
             self.skip_block_if_indented();
             return None;
         };
-        self.pos = (newline + 1).min(self.tokens.len());
         let block = self.block_body();
         Some(MatchArm {
             path,
@@ -525,21 +527,16 @@ impl<'a> StmtParser<'a> {
     /// Returns `None`, after raising a syntax error, when the header does not
     /// parse as a complete expression.
     fn header_expression(&mut self, keyword: SourceSpan) -> Expression {
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
-        let line = &self.tokens[self.pos..content_end];
+        let line = self.take_line();
         let error_span = line_span_or(line, keyword);
         let expr = expr_of_after(self.source, line, keyword, &mut self.diagnostics);
-        self.pos = (newline + 1).min(self.tokens.len());
         // A failed header reported its own missing-expression diagnostic; the error
         // node stands in for the condition so the statement still parses.
         expr.unwrap_or(Expression::Error { span: error_span })
     }
 
     fn if_head(&mut self, keyword: SourceSpan) -> IfHead {
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
-        let line = &self.tokens[self.pos..content_end];
+        let line = self.take_line();
         let error_span = line_span_or(line, keyword);
         // A `const` head is an existence binding; any other head is a condition
         // expression. Both report their own failure and fall back to
@@ -553,7 +550,6 @@ impl<'a> StmtParser<'a> {
         } else {
             expr_of_after(self.source, line, keyword, &mut self.diagnostics).map(IfHead::Expr)
         };
-        self.pos = (newline + 1).min(self.tokens.len());
         head.unwrap_or(IfHead::Expr(Expression::Error { span: error_span }))
     }
 
