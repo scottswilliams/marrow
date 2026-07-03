@@ -35,6 +35,13 @@ pub(crate) fn check_condition(
     read_scope: crate::presence::ReadScope<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    // A condition the parser could not structure carries its own parse error. Skip
+    // the placeholder so it is not typed and does not stack a second diagnostic. The
+    // per-file body gate already spares a function body this, but an evolve transform
+    // body is type-checked ungated, so the poison-skip is load-bearing here.
+    if condition.is_error() {
+        return;
+    }
     let condition_type = infer_type_with_read_scope(
         program,
         condition,

@@ -264,7 +264,11 @@ fn build_file_prelude(
                 .ty
                 .as_ref()
                 .map(|ty| resolve_diagnosed_annotation_type(ty, program, &aliases, file));
-            let value_type = constant.value.as_ref().map(|value| {
+            // A value that did not parse is an error node carrying its own parse
+            // diagnostic; treat it as absent so inference does not compound it with a
+            // type diagnostic on the placeholder.
+            let value = constant.value.as_ref().filter(|value| !value.is_error());
+            let value_type = value.map(|value| {
                 infer_module_const_value(
                     program,
                     value,
@@ -275,7 +279,7 @@ fn build_file_prelude(
                 )
             });
             if let (Some(value), Some(expected), Some(found), Some(diagnostics)) = (
-                constant.value.as_ref(),
+                value,
                 &annotation_type,
                 &value_type,
                 diagnostics.as_deref_mut(),

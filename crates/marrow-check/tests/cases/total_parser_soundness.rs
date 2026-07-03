@@ -38,6 +38,21 @@ const MALFORMED: &[(&str, &str)] = &[
         "module m\nfn f()\n    show(@)\n\nfn show(x: int)\n    return\n",
     ),
     ("const-value", "module m\nconst C = @\n"),
+    // Lexes-clean error nodes: every token is valid, but the value is not an
+    // expression, so the parser yields an error node rather than a lexer fault.
+    // These are the module-const positions the file-level body gate does not cover.
+    ("const-typed-error-value", "module m\nconst C: int = int\n"),
+    ("const-untyped-error-value", "module m\nconst C = int\n"),
+    (
+        "const-referenced-error-value",
+        "module m\nconst A = int\nfn f(): int\n    return A\n",
+    ),
+    // Evolve default values are checked ungated (no per-file body gate), so a
+    // value error node must be poison at the checker boundary.
+    (
+        "evolve-default-error-value",
+        "module m\nresource Book\n    title: string\nstore ^books(id: int): Book\nevolve\n    default Book.title = int\n",
+    ),
     (
         "var-value",
         "module m\nfn f()\n    var x: int = @\n    return\n",
@@ -94,5 +109,44 @@ fn analyze_pipeline_survives_error_nodes() {
             .find(|file| file.path == paths[0])
             .expect("analyzed file present");
         let _ = marrow_check::tooling::document_symbols(&file.parsed.file, source);
+    }
+}
+
+/// An error node inside an evolve transform body never reaches body type-checking.
+/// A parse error excludes the file's declarations from the program, so the evolve
+/// target does not resolve and the transform short-circuits before its body (base
+/// reports the same `check.evolve_target`); the body's error node is contained
+/// upstream. The one guarantee that matters here is that no body-type diagnostic —
+/// an untyped condition, a wrong-typed value — is stacked on the error node.
+#[test]
+fn evolve_transform_body_error_reaches_no_body_check() {
+    let bodies = [
+        (
+            "error-condition",
+            "module m\nresource Book\n    title: string\nstore ^books(id: int): Book\nevolve\n    transform Book.title\n        if int\n            return old.title\n        return old.title\n",
+        ),
+        (
+            "error-statement",
+            "module m\nresource Book\n    title: string\nstore ^books(id: int): Book\nevolve\n    transform Book.title\n        * bad\n        return old.title\n",
+        ),
+    ];
+    for (label, source) in bodies {
+        let report = check_module_report(&format!("total-transform-{label}"), source);
+        assert!(
+            report.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+            "{label}: the parse error must be reported: {:#?}",
+            report.diagnostics
+        );
+        // `check.evolve_target` is the target short-circuit (present in base too);
+        // the body-type codes would appear only if the error node reached body
+        // type-checking, which it must not.
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|d| d.code == "parse.syntax" || d.code == "check.evolve_target"),
+            "{label}: no body-type diagnostic may stack on the transform body error node: {:#?}",
+            report.diagnostics
+        );
     }
 }

@@ -935,7 +935,11 @@ pub(crate) fn check_file_source(
                 enums.push(schema);
             }
             marrow_syntax::Declaration::Const(constant) => {
-                if let Some(value) = &constant.value {
+                // A value that did not parse is an error node carrying its own parse
+                // diagnostic; treat it as absent so it reaches neither the constness
+                // check nor the checked program.
+                let value = constant.value.as_ref().filter(|value| !value.is_error());
+                if let Some(value) = value {
                     // Earlier module constants in declaration order are already folded
                     // in `constants`, so a `const` defined over a preceding one resolves
                     // its overflow at check rather than faulting at run.
@@ -952,7 +956,7 @@ pub(crate) fn check_file_source(
                         .ty
                         .as_ref()
                         .map(|ty| MarrowType::resolve(ty, names)),
-                    value: constant.value.clone(),
+                    value: value.cloned(),
                     span: constant.span,
                 });
             }
