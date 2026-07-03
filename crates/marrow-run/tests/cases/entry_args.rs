@@ -887,8 +887,11 @@ fn protocol_enum_arguments_round_trip_duplicate_leaf_catalog_ids() {
     let [tiger_paw, lion_paw] = members.as_slice() else {
         panic!("expected two selectable paw members");
     };
-    assert_eq!(tiger_paw.render_label, "paw");
-    assert_eq!(lion_paw.render_label, "paw");
+    // Leaves that repeat under different categories carry their qualifying path, so the labels stay
+    // injective and a generated client can never collapse the two distinct members onto one label.
+    assert_eq!(tiger_paw.render_label, "tiger::paw");
+    assert_eq!(lion_paw.render_label, "lion::paw");
+    assert_ne!(tiger_paw.render_label, lion_paw.render_label);
     assert_ne!(tiger_paw.catalog_id, lion_paw.catalog_id);
     let tiger_paw = tiger_paw.catalog_id.clone();
     let lion_paw = lion_paw.catalog_id.clone();

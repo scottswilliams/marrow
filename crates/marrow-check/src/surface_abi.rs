@@ -728,7 +728,7 @@ fn value_shape(
                             .iter()
                             .find(|member| member.id == *member_id)?;
                         Some(SurfaceOperationEnumMember {
-                            render_label: member.name.clone(),
+                            render_label: program.facts.enum_member_render_path(*member_id)?,
                             catalog_id: accepted_catalog_id(program, member.catalog_id.as_deref())?,
                         })
                     })

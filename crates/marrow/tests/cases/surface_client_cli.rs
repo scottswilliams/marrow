@@ -1809,6 +1809,270 @@ fn client_typescript_temporal_scalars_run_against_live_surface_server() {
     );
 }
 
+// A surface projecting a nested enum whose leaf names repeat under different categories
+// (`internal::support` vs `external::support`), plus a flat enum and a nested enum with a unique
+// leaf. The generated client labels a nested member by its qualifying path below the enum owner, so
+// duplicate leaves stay distinct; a flat enum keeps bare leaf names. The computed reads return and
+// accept `DeliveryRoute` so a member survives a full round trip: a value one operation returns, fed
+// back into another, must land on the same accepted member.
+const NESTED_ENUM_SURFACE_SOURCE: &str = r#"module app
+
+pub enum DeliveryRoute
+    category internal
+        admin
+        support
+        contact
+    category external
+        support
+        contact
+
+pub enum Priority
+    low
+    high
+
+pub enum Cat
+    category tiger
+        bengal
+    housecat
+
+resource Message
+    required subject: string
+    required route: DeliveryRoute
+    required priority: Priority
+store ^messages(id: int): Message
+
+pub fn seed()
+    var a: Message
+    a.subject = "hello"
+    a.route = DeliveryRoute::internal::support
+    a.priority = Priority::low
+    var b: Message
+    b.subject = "world"
+    b.route = DeliveryRoute::external::support
+    b.priority = Priority::high
+    transaction
+        ^messages(1) = a
+        ^messages(2) = b
+
+pub fn describeRoute(route: DeliveryRoute): string
+    match route
+        internal::admin
+            return "internal-admin"
+        internal::support
+            return "internal-support"
+        internal::contact
+            return "internal-contact"
+        external::support
+            return "external-support"
+        external::contact
+            return "external-contact"
+
+pub fn routeFor(tag: string): DeliveryRoute
+    if tag == "ia"
+        return DeliveryRoute::internal::admin
+    if tag == "is"
+        return DeliveryRoute::internal::support
+    if tag == "ic"
+        return DeliveryRoute::internal::contact
+    if tag == "es"
+        return DeliveryRoute::external::support
+    return DeliveryRoute::external::contact
+
+pub fn catFor(which: string): Cat
+    if which == "b"
+        return Cat::tiger::bengal
+    return Cat::housecat
+
+surface Messages from ^messages
+    fields subject, route, priority
+    read describeRoute
+    read routeFor
+    read catFor
+"#;
+
+#[test]
+fn client_typescript_nested_enum_labels_are_injective_qualified_paths() {
+    let root = temp_project("surface-client-nested-enum-labels", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", NESTED_ENUM_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    let stdout = String::from_utf8(client.stdout).expect("client stdout utf8");
+
+    // A nested member carries its qualifying path below the enum owner, so leaves that repeat under
+    // different categories stay distinct labels rather than collapsing.
+    for label in [
+        "\"internal::admin\"",
+        "\"internal::support\"",
+        "\"internal::contact\"",
+        "\"external::support\"",
+        "\"external::contact\"",
+    ] {
+        assert!(
+            stdout.contains(label),
+            "nested enum label {label} must appear as a qualified path; client:\n{stdout}"
+        );
+    }
+
+    // A nested enum with a unique leaf still qualifies (nesting, not leaf ambiguity, decides), while a
+    // top-level member of a nested enum stays bare.
+    assert!(stdout.contains("\"tiger::bengal\""), "{stdout}");
+    assert!(stdout.contains("\"housecat\""), "{stdout}");
+
+    // A flat enum keeps bare leaf names, so the common case is unchanged.
+    assert!(stdout.contains("\"low\""), "{stdout}");
+    assert!(stdout.contains("\"high\""), "{stdout}");
+
+    // The collapse this fix removes: no bare duplicate leaf may survive as a label, or the union
+    // would carry a repeated literal and the reverse lookup would keep one member id per label.
+    for collapsed in ["\"support\"", "\"contact\"", "\"admin\"", "\"bengal\""] {
+        assert!(
+            !stdout.contains(collapsed),
+            "bare leaf {collapsed} must not appear; a nested member must be qualified; client:\n{stdout}"
+        );
+    }
+}
+
+// The strict consumer pins the qualified nested labels into the types: a bare leaf is not a member of
+// the union, so assigning `"internal::support"` and passing a returned member back into a computed
+// read only type-checks when the client labels nested members by path.
+const NESTED_ENUM_STRICT_CONSUMER: &str = r#"import {
+  createClient,
+  messagesId,
+  type app__Cat,
+  type DeliveryRoute,
+  type Priority,
+} from "./marrow-client.ts";
+
+export async function pinNestedEnum(client: ReturnType<typeof createClient>): Promise<void> {
+  const explicit: DeliveryRoute = "internal::support";
+  const other: DeliveryRoute = "external::support";
+  const internalScoped: DeliveryRoute = await client.Messages.routeFor("is");
+  const externalScoped: DeliveryRoute = await client.Messages.routeFor("es");
+  const desc: string = await client.Messages.describeRoute(internalScoped);
+  const cat: app__Cat = await client.Messages.catFor("b");
+  const record = await client.Messages.get(messagesId(1));
+  const route: DeliveryRoute = record.route;
+  const priority: Priority = record.priority;
+  void explicit;
+  void other;
+  void externalScoped;
+  void desc;
+  void cat;
+  void route;
+  void priority;
+}
+"#;
+
+const NESTED_ENUM_CLIENT_APP: &str = r#"import assert from "node:assert/strict";
+import { createClient, messagesId } from "./marrow-client.ts";
+
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
+
+// Two nested members that share the leaf `support` under different categories round-trip as distinct
+// labels rather than collapsing onto one.
+const internalSupport = await client.Messages.routeFor("is");
+const externalSupport = await client.Messages.routeFor("es");
+assert.equal(internalSupport, "internal::support");
+assert.equal(externalSupport, "external::support");
+assert.notEqual(internalSupport, externalSupport);
+
+// A member one operation returns, fed back into another, lands on the SAME accepted member — the
+// wrong-member collapse is impossible. Both shared-leaf members resolve to their own describe arm.
+assert.equal(await client.Messages.describeRoute(internalSupport), "internal-support");
+assert.equal(await client.Messages.describeRoute(externalSupport), "external-support");
+assert.equal(await client.Messages.describeRoute("internal::admin"), "internal-admin");
+assert.equal(await client.Messages.describeRoute("internal::contact"), "internal-contact");
+assert.equal(await client.Messages.describeRoute("external::contact"), "external-contact");
+
+// Projection decode carries the qualified nested label and the bare flat label, and a projected
+// member round-trips back into the computed read to the same accepted member.
+const a = await client.Messages.get(messagesId(1));
+assert.equal(a.route, "internal::support");
+assert.equal(a.priority, "low");
+assert.equal(await client.Messages.describeRoute(a.route), "internal-support");
+const b = await client.Messages.get(messagesId(2));
+assert.equal(b.route, "external::support");
+assert.equal(b.priority, "high");
+assert.equal(await client.Messages.describeRoute(b.route), "external-support");
+
+// A nested enum with a unique leaf still qualifies; a top-level member stays bare.
+assert.equal(await client.Messages.catFor("b"), "tiger::bengal");
+assert.equal(await client.Messages.catFor("h"), "housecat");
+
+// A bare duplicate leaf is not an accepted label and is rejected before any request leaves the client.
+await assert.rejects(() => client.Messages.describeRoute("support"), /generated catalog/);
+
+console.log("nested-enum-e2e-ok");
+"#;
+
+#[test]
+fn client_typescript_nested_enum_round_trips_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!("nested-enum client E2E requires Node with --experimental-strip-types");
+        }
+        eprintln!("skipping nested-enum client E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-nested-enum-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", NESTED_ENUM_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    assert!(client.stderr.is_empty(), "client: {client:?}");
+    let app = support::temp_dir("surface-client-nested-enum-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "app.ts", NESTED_ENUM_CLIENT_APP);
+
+    // A bare-leaf union would reject the qualified string literals as no-overlap type errors, so the
+    // strict gate proves the client's enum types are the injective qualified paths.
+    type_check_strict(&app, NESTED_ENUM_STRICT_CONSUMER);
+
+    let (_server, addr) = spawn_surface_server(&root);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("app.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run nested-enum client app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "nested-enum client app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("app stdout utf8")
+            .trim(),
+        "nested-enum-e2e-ok"
+    );
+}
+
 fn node_with_type_stripping() -> Option<PathBuf> {
     let candidates = std::env::var_os("MARROW_TEST_NODE")
         .map(PathBuf::from)

@@ -559,7 +559,7 @@ fn enum_argument_shape(
         .map(|member_id| {
             let member = program.facts().enum_member(*member_id)?;
             Some(EntryEnumMember {
-                render_label: member.name.clone(),
+                render_label: program.facts().enum_member_render_path(*member_id)?,
                 catalog_id: accepted_catalog_id(program, member.catalog_id.as_deref())?,
             })
         })
@@ -920,7 +920,7 @@ fn stored_value_shape(
                 .map(|member_id| {
                     let member = program.facts.enum_member(*member_id)?;
                     Some(EntryEnumMember {
-                        render_label: member.name.clone(),
+                        render_label: program.facts.enum_member_render_path(*member_id)?,
                         catalog_id: checked_accepted_catalog_id_value(
                             program,
                             member.catalog_id.as_deref(),

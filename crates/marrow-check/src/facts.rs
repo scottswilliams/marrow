@@ -331,6 +331,16 @@ impl CheckedFacts {
         ))
     }
 
+    /// The label a surface client shows for an enum member: its member path below the
+    /// enum owner, joined by `::`. A flat enum yields the bare leaf name; a nested member
+    /// yields its qualifying path (`internal::admin`). Because a full path is unique within
+    /// an enum, the label stays injective, so the generated client's label-to-member-id
+    /// mapping never collapses two members that share a leaf name.
+    pub fn enum_member_render_path(&self, id: EnumMemberId) -> Option<String> {
+        let path = member_name_path(&self.enum_members, id.0 as usize)?;
+        Some(path.join("::"))
+    }
+
     /// The `Enum::member` form a member renders as, dropping the module prefix so
     /// the text reads as the value's source spelling rather than its catalog path.
     pub fn enum_member_short_path(&self, id: EnumMemberId) -> Option<String> {

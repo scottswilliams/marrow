@@ -448,7 +448,14 @@ validate every request from clients that bypass generated code. The client's job
 is to fail loud: a malformed or missing field throws a typed error rather than
 silently producing wrong data. Decoding is exact — a Marrow `int` decodes to a
 `bigint` (a JS `number` truncates above 2^53), an identity decodes to a branded
-id, and an enum decodes by its member catalog id. Temporal and bytes scalars
+id, and an enum decodes by its member catalog id. An enum value is a string union
+of its member labels: a flat enum uses bare leaf names, and a nested member uses
+its qualifying path below the enum owner in source spelling (`internal::admin`).
+Because a full member path is unique within an enum, these labels are injective —
+leaves that repeat under different categories (`internal::support` and
+`external::support`) stay distinct — so the label-to-member-id mapping is
+bijective and a member one operation returns re-encodes to the same accepted
+member when passed into another. Temporal and bytes scalars
 decode to their faithful wire datum without loss: a `date` to its
 day-count `number`, an `instant`/`duration` to its nanosecond-count `bigint`, a
 `decimal` to its canonical text, and `bytes` to its base64 text. An identity key
