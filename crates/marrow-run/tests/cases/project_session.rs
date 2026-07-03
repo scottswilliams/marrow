@@ -1484,9 +1484,11 @@ fn publish_ahead_lock_with_ghost_root(root: &Path, ghost_activated: u64) {
         .expect("read committed lock")
         .expect("committed lock");
     let mut entries = lock.entries.clone();
-    entries.push(fresh_active_store_root(&lock, "shelf::^ghost", 0x6058));
+    let ghost = fresh_active_store_root(&lock, "shelf::^ghost", 0x6058);
+    let ghost_id = ghost.stable_id.clone();
+    entries.push(ghost);
     let mut activations = lock.root_activations.clone();
-    activations.insert("shelf::^ghost".to_string(), ghost_activated);
+    activations.insert(ghost_id, ghost_activated);
     let ahead_lock = marrow_catalog::CatalogLock::new(
         entries,
         lock.ledger.clone(),

@@ -1011,7 +1011,7 @@ pub fn verify_store_roots_against_lock(
                 .entries
                 .iter()
                 .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
-                .map(|entry| entry.path.as_str())
+                .map(|entry| entry.stable_id.as_str())
                 .collect()
         })
         .unwrap_or_default();
@@ -1020,9 +1020,13 @@ pub fn verify_store_roots_against_lock(
         .entries
         .iter()
         .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
-        .filter(|entry| !presented.contains(entry.path.as_str()))
+        .filter(|entry| !presented.contains(entry.stable_id.as_str()))
         .any(|entry| {
-            let activated = lock.root_activations.get(&entry.path).copied().unwrap_or(0);
+            let activated = lock
+                .root_activations
+                .get(&entry.stable_id)
+                .copied()
+                .unwrap_or(0);
             store_epoch.is_none_or(|epoch| epoch >= activated)
         });
     if lost {

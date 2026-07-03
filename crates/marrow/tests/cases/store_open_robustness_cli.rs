@@ -970,6 +970,17 @@ fn committed_lock(project: &Path) -> CatalogLock {
     CatalogLock::from_lock_json(&bytes).expect("parse committed lock")
 }
 
+/// The stable id the lock records for the active saved root at `path`. Activation floors key on
+/// this id, not the path, so a test that asserts a root's activation epoch looks it up by identity.
+fn root_stable_id(lock: &CatalogLock, path: &str) -> String {
+    lock.entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::Store && entry.path == path)
+        .unwrap_or_else(|| panic!("committed lock records a store root at `{path}`"))
+        .stable_id
+        .clone()
+}
+
 /// Overwrite the committed lock with `lock`'s canonical projection.
 fn write_committed_lock(project: &Path, lock: &CatalogLock) {
     write(
@@ -1201,14 +1212,11 @@ fn an_epoch_behind_store_missing_a_committed_root_fails_closed() {
     // activation advanced the high-water to 2. The store presents only `^notes`, so it is missing
     // a root its epoch covers; being behind the high-water must not excuse the loss.
     let mut entries = real_lock.entries.clone();
-    entries.push(fresh_active_entry(
-        &real_lock,
-        CatalogEntryKind::Store,
-        "app::^ghost",
-        0x6058,
-    ));
+    let ghost = fresh_active_entry(&real_lock, CatalogEntryKind::Store, "app::^ghost", 0x6058);
+    let ghost_id = ghost.stable_id.clone();
+    entries.push(ghost);
     let mut root_activations = real_lock.root_activations.clone();
-    root_activations.insert("app::^ghost".to_string(), 1);
+    root_activations.insert(ghost_id, 1);
     let ahead_lost_root_lock = CatalogLock::new(
         entries,
         real_lock.ledger.clone(),
@@ -1309,13 +1317,17 @@ fn two_root_activation_project(name: &str) -> (support::TempProject, String, Vec
     let lock = committed_lock(&project);
     assert_eq!(lock.epoch_high_water, 2);
     assert_eq!(
-        lock.root_activations.get("app::^tags").copied(),
+        lock.root_activations
+            .get(&root_stable_id(&lock, "app::^tags"))
+            .copied(),
         Some(2),
-        "the projection stamps the new root at its activation epoch: {:?}",
+        "the projection stamps the new root at its activation epoch, keyed on its stable id: {:?}",
         lock.root_activations,
     );
     assert_eq!(
-        lock.root_activations.get("app::^notes").copied(),
+        lock.root_activations
+            .get(&root_stable_id(&lock, "app::^notes"))
+            .copied(),
         None,
         "a root first projected with no prior lock stays unstamped, the strict fail-closed \
          default: {:?}",

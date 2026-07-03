@@ -588,16 +588,16 @@ fn root_activations(
             entry.kind == marrow_catalog::CatalogEntryKind::Store
                 && entry.lifecycle == marrow_catalog::CatalogLifecycle::Active
         })
-        .map(|entry| entry.path.as_str())
+        .map(|entry| entry.stable_id.as_str())
         .collect();
     active
         .iter()
         .filter(|entry| entry.kind == marrow_catalog::CatalogEntryKind::Store)
         .filter_map(|entry| {
-            if let Some(recorded) = existing.root_activations.get(&entry.path) {
-                Some((entry.path.clone(), *recorded))
-            } else if !known_roots.contains(entry.path.as_str()) {
-                Some((entry.path.clone(), snapshot.epoch))
+            if let Some(recorded) = existing.root_activations.get(&entry.stable_id) {
+                Some((entry.stable_id.clone(), *recorded))
+            } else if !known_roots.contains(entry.stable_id.as_str()) {
+                Some((entry.stable_id.clone(), snapshot.epoch))
             } else {
                 None
             }
@@ -1230,6 +1230,100 @@ mod tests {
                     .any(|stone| stone.id == format!("cat_{:032x}", 7)),
                 "a previously-committed retired-id tombstone must never be dropped by re-projection"
             );
+        }
+
+        #[test]
+        fn the_root_witness_matches_presence_on_stable_id_not_path() {
+            // The store presents its saved root under stable id `cat_..02` at path `app::books`.
+            // A lock recording a root at the SAME path but a DIFFERENT stable id is not the same
+            // durable identity: the store does not present the lock's root, so the witness must
+            // condemn the loss rather than bless a path collision between two distinct identities.
+            let (store, _snapshot) = stamped_store(5);
+            let foreign_root = CatalogLock::new(
+                vec![
+                    LockEntry::from_catalog_entry(&entry(
+                        CatalogEntryKind::Resource,
+                        "app::Book",
+                        1,
+                    )),
+                    LockEntry::from_catalog_entry(&entry(
+                        CatalogEntryKind::Store,
+                        "app::books",
+                        0x99,
+                    )),
+                ],
+                Vec::new(),
+                5,
+                "sha256:".to_string() + &"0".repeat(64),
+            )
+            .expect("foreign-identity lock builds");
+
+            let verdict = crate::tooling::integrity::verify_store_roots_against_lock(
+                &store,
+                Some(&foreign_root),
+            );
+            assert!(
+                matches!(verdict, Err(marrow_store::StoreError::Corruption { .. })),
+                "a root present at the same path under a different stable id is a loss, not a match: {verdict:?}"
+            );
+        }
+
+        #[test]
+        fn re_projecting_across_a_root_rename_preserves_the_activation_floor_under_the_stable_id() {
+            // A saved root stamped at its activation epoch, then renamed. Because a root's
+            // activation floor is keyed on its stable id — not its path — the rename carries the
+            // floor forward: the re-projected lock still fences a store that lost the root at the
+            // original activation epoch, rather than silently raising the floor to the rename epoch
+            // and blessing the loss.
+            let root = temp_root("reproject-root-rename-floor");
+            let root_id = format!("cat_{:032x}", 2);
+            let existing = CatalogLock::new(
+                vec![
+                    LockEntry::from_catalog_entry(&entry(
+                        CatalogEntryKind::Resource,
+                        "app::Note",
+                        1,
+                    )),
+                    LockEntry::from_catalog_entry(&entry(CatalogEntryKind::Store, "app::notes", 2)),
+                ],
+                Vec::new(),
+                3,
+                "sha256:".to_string() + &"0".repeat(64),
+            )
+            .expect("existing lock builds")
+            .with_root_activations([(root_id.clone(), 3)].into_iter().collect())
+            .expect("the root activation is keyed on the root stable id");
+            fs::write(
+                root.join(CATALOG_FILE_NAME),
+                existing.to_lock_json_pretty().expect("lock renders"),
+            )
+            .expect("write existing lock");
+
+            // The same store identity at a later epoch with the root renamed: the store keeps its
+            // stable id (`cat_..02`) and only its path moves from `app::notes` to `app::ledger`.
+            let renamed = CatalogMetadata::new(
+                4,
+                vec![
+                    entry(CatalogEntryKind::Resource, "app::Note", 1),
+                    entry(CatalogEntryKind::Store, "app::ledger", 2),
+                ],
+            )
+            .expect("renamed snapshot builds");
+            project_store_lock(&root, &renamed, &renamed.digest)
+                .expect("re-project across the rename");
+            let reprojected = CatalogLock::from_lock_json(
+                &fs::read_to_string(root.join(CATALOG_FILE_NAME)).expect("read reprojected lock"),
+            )
+            .expect("reprojected lock parses");
+
+            assert_eq!(
+                reprojected.root_activations.get(&root_id).copied(),
+                Some(3),
+                "the activation floor stays keyed on the root stable id at its original epoch, \
+                 not re-stamped at the rename epoch: {:?}",
+                reprojected.root_activations,
+            );
+            fs::remove_dir_all(&root).ok();
         }
 
         #[test]

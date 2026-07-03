@@ -264,10 +264,12 @@ pub struct CatalogLock {
     pub ledger: Vec<LockLedgerTombstone>,
     pub epoch_high_water: u64,
     pub source_digest: String,
-    /// The epoch at which each active saved root became active, keyed by the root's canonical
-    /// path. The lock-root witness compares a store against the roots the lock committed; a
+    /// The epoch at which each active saved root became active, keyed by the root's stable id.
+    /// The lock-root witness compares a store against the roots the lock committed; a
     /// behind store legitimately lacks a root activated after its own epoch, so the witness
-    /// needs each root's activation epoch to tell that state from a loss. The projection stamps
+    /// needs each root's activation epoch to tell that state from a loss. Keying on stable id
+    /// rather than path keeps the floor attached to the root's identity across a rename, so a
+    /// renamed root cannot silently forfeit its loss protection. The projection stamps
     /// a root only when it is first added to an existing committed lock and carries the recorded
     /// epoch forward on every later projection; a root present since the first projection, and
     /// every root when there is no prior lock, stays unstamped. A root missing from this map has
@@ -300,8 +302,8 @@ impl CatalogLock {
     }
 
     /// Attach the per-root activation epochs, re-validating the lock's self-consistency: every
-    /// key must name an active saved root the lock records, and every epoch must be a real
-    /// activation within the high-water.
+    /// key must be the stable id of an active saved root the lock records, and every epoch must be
+    /// a real activation within the high-water.
     pub fn with_root_activations(
         mut self,
         root_activations: BTreeMap<String, u64>,
@@ -375,7 +377,8 @@ impl CatalogLock {
     /// active saved root, an epoch of zero (no activation happens before the first epoch), or an
     /// epoch above the high-water (nothing activates past the last recorded advance). Each would
     /// make the lock-root witness reason from a fabricated activation, so a tampered or torn map
-    /// fails closed at decode.
+    /// fails closed at decode. The key is the root's stable id, so a rename that moves the root's
+    /// path leaves its activation floor attached to the same identity.
     fn validate_root_activations(&self) -> Result<(), CatalogError> {
         let active_roots: HashSet<&str> = self
             .entries
@@ -383,17 +386,17 @@ impl CatalogLock {
             .filter(|entry| {
                 entry.kind == CatalogEntryKind::Store && entry.lifecycle == CatalogLifecycle::Active
             })
-            .map(|entry| entry.path.as_str())
+            .map(|entry| entry.stable_id.as_str())
             .collect();
-        for (path, epoch) in &self.root_activations {
-            if !active_roots.contains(path.as_str()) {
+        for (id, epoch) in &self.root_activations {
+            if !active_roots.contains(id.as_str()) {
                 return Err(CatalogError::lock_corrupt(format!(
-                    "root activation `{path}` names no active saved root"
+                    "root activation `{id}` names no active saved root"
                 )));
             }
             if *epoch == 0 || *epoch > self.epoch_high_water {
                 return Err(CatalogError::lock_corrupt(format!(
-                    "root activation `{path}` records epoch {epoch} outside 1..={}",
+                    "root activation `{id}` records epoch {epoch} outside 1..={}",
                     self.epoch_high_water
                 )));
             }
@@ -947,11 +950,17 @@ mod lock_root_activation_tests {
 
     const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
+    /// The stable id of the one active saved root `store_root_lock` records; a root activation
+    /// keys on this id, not the `app::^notes` path.
+    fn root_id() -> String {
+        format!("cat_{:032x}", 7u64)
+    }
+
     fn store_root_lock(high_water: u64) -> CatalogLock {
         let entry = LockEntry::from_catalog_entry(&CatalogEntry {
             kind: CatalogEntryKind::Store,
             path: "app::^notes".to_string(),
-            stable_id: format!("cat_{:032x}", 7u64),
+            stable_id: root_id(),
             aliases: Vec::new(),
             lifecycle: CatalogLifecycle::Active,
             accepted_key_shape: Some("int".to_string()),
@@ -963,14 +972,14 @@ mod lock_root_activation_tests {
             .expect("lock builds")
     }
 
-    fn activations(path: &str, epoch: u64) -> BTreeMap<String, u64> {
-        BTreeMap::from([(path.to_string(), epoch)])
+    fn activations(id: &str, epoch: u64) -> BTreeMap<String, u64> {
+        BTreeMap::from([(id.to_string(), epoch)])
     }
 
     #[test]
     fn root_activations_round_trip_through_the_wire_form() {
         let lock = store_root_lock(3)
-            .with_root_activations(activations("app::^notes", 2))
+            .with_root_activations(activations(&root_id(), 2))
             .expect("activation within the high-water validates");
         let json = lock.to_lock_json_pretty().expect("lock renders");
         let decoded = CatalogLock::from_lock_json(&json).expect("lock decodes");
@@ -990,7 +999,7 @@ mod lock_root_activation_tests {
     #[test]
     fn an_activation_naming_no_active_root_is_rejected() {
         let error = store_root_lock(3)
-            .with_root_activations(activations("app::^ghost", 2))
+            .with_root_activations(activations(&format!("cat_{:032x}", 0xffu64), 2))
             .expect_err("an activation for an unrecorded root is rejected");
         assert_eq!(error.code, LOCK_CORRUPT);
     }
@@ -998,12 +1007,12 @@ mod lock_root_activation_tests {
     #[test]
     fn an_activation_outside_the_epoch_range_is_rejected() {
         let error = store_root_lock(3)
-            .with_root_activations(activations("app::^notes", 0))
+            .with_root_activations(activations(&root_id(), 0))
             .expect_err("epoch zero precedes every activation");
         assert_eq!(error.code, LOCK_CORRUPT);
 
         let error = store_root_lock(3)
-            .with_root_activations(activations("app::^notes", 4))
+            .with_root_activations(activations(&root_id(), 4))
             .expect_err("nothing activates past the recorded high-water");
         assert_eq!(error.code, LOCK_CORRUPT);
     }
