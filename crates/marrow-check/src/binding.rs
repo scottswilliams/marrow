@@ -1211,7 +1211,7 @@ impl UseWalker<'_, '_> {
             Statement::Match {
                 scrutinee, arms, ..
             } => self.walk_match(scrutinee.as_ref(), arms, scope, type_scope),
-            Statement::Break { .. } | Statement::Continue { .. } => {}
+            Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
         }
     }
 
@@ -1430,7 +1430,7 @@ impl UseWalker<'_, '_> {
                     }
                 }
             }
-            Expression::Literal { .. } => {}
+            Expression::Literal { .. } | Expression::Error { .. } => {}
         }
     }
 

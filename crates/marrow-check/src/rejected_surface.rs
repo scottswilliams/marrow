@@ -158,7 +158,7 @@ fn check_statement(
                 check_block(program, file, &arm.block, diagnostics);
             }
         }
-        Statement::Break { .. } | Statement::Continue { .. } => {}
+        Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
     }
 }
 

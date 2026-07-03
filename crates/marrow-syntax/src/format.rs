@@ -421,7 +421,8 @@ fn strip_statement_block_comments(statement: &mut Statement) {
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
-        | Statement::Expr { .. } => {}
+        | Statement::Expr { .. }
+        | Statement::Error { .. } => {}
     }
 }
 
@@ -1314,6 +1315,13 @@ fn format_statement_with_comments(
             };
             return format_match(ctx, scrutinee.as_ref(), arms, *span);
         }
+        // The formatter is invoked on parsed source and the CLI gates emission on
+        // `!has_errors`, so this renders only in a best-effort `format_source` over
+        // input that failed to parse. Echo the unstructured span verbatim rather
+        // than dropping it, so no source is silently lost.
+        Statement::Error { span } => {
+            format!("{pad}{}", &source[span.start_byte..span.end_byte])
+        }
     };
     append_first_trailing_comment(&mut text, comments);
     text
@@ -1594,6 +1602,11 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
         Expression::Name { segments, .. } => segments.join("::"),
         Expression::SavedRoot { name, .. } => format!("^{name}"),
         Expression::Absent { .. } => "absent".to_string(),
+        // Reachable only in a best-effort `format_source` over input that failed to
+        // parse (emission is gated on `!has_errors`). The node carries no text, so
+        // the unstructured fragment renders empty here; the surrounding statement
+        // still formats.
+        Expression::Error { .. } => String::new(),
         Expression::Call {
             callee,
             args,

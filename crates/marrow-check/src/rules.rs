@@ -166,7 +166,8 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
         Expression::Name { .. }
         | Expression::SavedRoot { .. }
         | Expression::Absent { .. }
-        | Expression::Call { .. } => {}
+        | Expression::Call { .. }
+        | Expression::Error { .. } => {}
     }
 }
 
@@ -323,7 +324,8 @@ fn walk_statement(
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
-        | Statement::Expr { .. } => {}
+        | Statement::Expr { .. }
+        | Statement::Error { .. } => {}
     }
 }
 
@@ -469,7 +471,8 @@ fn walk_loop_control_flow(
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
-            | Statement::Expr { .. } => {}
+            | Statement::Expr { .. }
+            | Statement::Error { .. } => {}
         }
     }
 }
@@ -571,7 +574,8 @@ fn walk_loop_layer_mutations(
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
-            | Statement::Expr { .. } => {}
+            | Statement::Expr { .. }
+            | Statement::Error { .. } => {}
         }
     }
 }
@@ -648,7 +652,8 @@ fn walk_commit_amplification(
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
-            | Statement::Expr { .. } => {}
+            | Statement::Expr { .. }
+            | Statement::Error { .. } => {}
         }
     }
 }
@@ -708,7 +713,8 @@ fn push_commit_amplification_warnings(
         | Statement::Continue { .. }
         | Statement::While { .. }
         | Statement::Transaction { .. }
-        | Statement::Try { .. } => {}
+        | Statement::Try { .. }
+        | Statement::Error { .. } => {}
     }
 }
 
@@ -980,6 +986,8 @@ fn is_constant_expr(expr: &Expression) -> bool {
             InterpolationPart::Text { .. } => true,
             InterpolationPart::Expr(expr) => is_constant_expr(expr),
         }),
+        // A parse-error placeholder is not a constant.
+        Expression::Error { .. } => false,
     }
 }
 

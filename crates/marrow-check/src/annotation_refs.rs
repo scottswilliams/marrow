@@ -157,7 +157,8 @@ fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeE
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
-        | Statement::Expr { .. } => {}
+        | Statement::Expr { .. }
+        | Statement::Error { .. } => {}
     }
 }
 

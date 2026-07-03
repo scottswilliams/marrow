@@ -521,7 +521,8 @@ pub(crate) fn check_entries_value_position(
         Expression::Literal { .. }
         | Expression::Name { .. }
         | Expression::SavedRoot { .. }
-        | Expression::Absent { .. } => {}
+        | Expression::Absent { .. }
+        | Expression::Error { .. } => {}
     }
 }
 

@@ -75,7 +75,8 @@ pub(crate) fn check_return_values(
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
-            | Statement::Expr { .. } => {}
+            | Statement::Expr { .. }
+            | Statement::Error { .. } => {}
         }
     }
 }
@@ -131,6 +132,7 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
         | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Break { .. }
-        | Statement::Continue { .. } => false,
+        | Statement::Continue { .. }
+        | Statement::Error { .. } => false,
     }
 }

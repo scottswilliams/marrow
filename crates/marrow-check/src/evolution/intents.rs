@@ -753,7 +753,7 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
                 walk_block_expressions(&arm.block, visit);
             }
         }
-        Statement::Break { .. } | Statement::Continue { .. } => {}
+        Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
     }
 }
 

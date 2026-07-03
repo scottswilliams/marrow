@@ -214,7 +214,7 @@ fn check_undeclared_saved_roots(
                     check_undeclared_saved_roots(program, file, &arm.block, diagnostics);
                 }
             }
-            Statement::Break { .. } | Statement::Continue { .. } => {}
+            Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
         }
     }
 }
@@ -536,6 +536,7 @@ impl StatementCheck<'_> {
             Statement::Break { .. } | Statement::Continue { .. } => {
                 self.required_fields.invalidate_all();
             }
+            Statement::Error { .. } => {}
         }
     }
 
@@ -1033,7 +1034,7 @@ impl StatementCheck<'_> {
                     self.invalidate_block_writes(&arm.block);
                 }
             }
-            Statement::Break { .. } | Statement::Continue { .. } => {}
+            Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
         }
     }
 
@@ -1813,7 +1814,8 @@ fn statement_prevents_fallthrough(statement: &marrow_syntax::Statement) -> bool 
         | Statement::Delete { .. }
         | Statement::Expr { .. }
         | Statement::While { .. }
-        | Statement::For { .. } => false,
+        | Statement::For { .. }
+        | Statement::Error { .. } => false,
     }
 }
 

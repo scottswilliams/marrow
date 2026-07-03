@@ -374,6 +374,10 @@ impl CheckedExpr {
                     .collect::<Option<Vec<_>>>()?,
                 span: *span,
             },
+            // A parse-error placeholder does not lower. Lowering runs only on a
+            // program that checked without errors, so this is unreachable; `None`
+            // is the same non-lowering result the other unresolved arms return.
+            syntax::Expression::Error { .. } => return None,
         })
     }
 

@@ -222,6 +222,12 @@ pub enum Expression {
         parts: Vec<InterpolationPart>,
         span: SourceSpan,
     },
+    /// A span of source the parser could not structure as an expression. Total
+    /// parsing yields this node in place of a dropped operand so every parse
+    /// produces a tree; it always travels with a `parse.syntax` diagnostic at its
+    /// span, and semantic processing is gated on `!ParsedSource::has_errors`, so a
+    /// checker or runtime never resolves an `Error`.
+    Error { span: SourceSpan },
 }
 
 impl Expression {
@@ -237,8 +243,15 @@ impl Expression {
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Range { span, .. }
-            | Self::Interpolation { span, .. } => *span,
+            | Self::Interpolation { span, .. }
+            | Self::Error { span } => *span,
         }
+    }
+
+    /// Whether this node is the total-parser's error placeholder. Recovery uses it
+    /// to propagate a failure upward without emitting a second diagnostic.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Error { .. })
     }
 }
 
@@ -741,6 +754,11 @@ pub enum Statement {
         arms: Vec<MatchArm>,
         span: SourceSpan,
     },
+    /// A statement line the parser could not structure. Total parsing yields this
+    /// node in place of a dropped line so every body parses to a statement list;
+    /// it always travels with a `parse.syntax` diagnostic at its span, and
+    /// semantic processing is gated on `!ParsedSource::has_errors`.
+    Error { span: SourceSpan },
 }
 
 /// `path` is the arm's member path relative to the scrutinee enum, as written;
@@ -797,7 +815,8 @@ impl Statement {
             | Self::For { span, .. }
             | Self::Transaction { span, .. }
             | Self::Try { span, .. }
-            | Self::Match { span, .. } => *span,
+            | Self::Match { span, .. }
+            | Self::Error { span } => *span,
         }
     }
 }

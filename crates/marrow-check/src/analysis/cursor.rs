@@ -638,7 +638,7 @@ fn collect_block_expression<'b>(
                     collect_block_expression(&arm.block, offset, best);
                 }
             }
-            Statement::Break { .. } | Statement::Continue { .. } => {}
+            Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => {}
         }
     }
 }

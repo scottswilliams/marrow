@@ -730,6 +730,10 @@ fn infer_value(
         // The empty optional: assignable to any `T?` place, inert until resolved.
         Expression::Absent { .. } => MarrowType::Absent,
         Expression::Name { .. } => MarrowType::Unknown,
+        // A parse-error placeholder infers as `Unknown`, the checker's poison that
+        // suppresses cascades. It is unreachable in practice: inference runs only
+        // when the file parsed without errors.
+        Expression::Error { .. } => MarrowType::Unknown,
     };
     wrap_maybe_present(program, expr, position, ty, scope, file, read_scope)
 }

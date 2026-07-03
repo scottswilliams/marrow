@@ -1124,7 +1124,8 @@ fn check_block_local_key_types(
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
-            | Statement::Expr { .. } => {}
+            | Statement::Expr { .. }
+            | Statement::Error { .. } => {}
         }
     }
 }
@@ -1406,7 +1407,8 @@ fn statement_child_blocks_declare_local_name(statement: &Statement, name: &str) 
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
-        | Statement::Expr { .. } => false,
+        | Statement::Expr { .. }
+        | Statement::Error { .. } => false,
     }
 }
 
