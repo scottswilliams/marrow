@@ -6,8 +6,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use marrow_codes::Code;
 use marrow_syntax::SourceSpan;
 
+use crate::diagnostics::{DiagnosticAnchor, UninitializedVarKind};
 use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
@@ -20,8 +22,7 @@ use crate::resolve::resolve_store_by_root;
 use crate::typerules::is_optional_value;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
-    CHECK_LOSSY_ROUND_TRIP, CHECK_UNANNOTATED_ABSENT, CHECK_UNKNOWN_ROOT, CHECK_UNRESOLVED_NAME,
-    CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
+    CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
 use super::calls::is_by_value_collection_slot;
@@ -241,11 +242,12 @@ fn reject_undeclared_roots_in_expr(
 ) {
     crate::walk::for_each_saved_root(expr, &mut |root, span| {
         if resolve_store_by_root(program, root).is_none() {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_UNKNOWN_ROOT,
-                file,
-                span,
-                format!("`^{root}` names no declared store"),
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckUnknownRoot,
+                DiagnosticAnchor::at(file, span),
+                DiagnosticPayload::UnknownRoot {
+                    root: root.to_string(),
+                },
             ));
         }
     });
@@ -733,11 +735,10 @@ impl StatementCheck<'_> {
             && matches!(value_type, MarrowType::Absent)
             && let Some(value) = value
         {
-            self.diagnostics.push(CheckDiagnostic::error(
-                CHECK_UNANNOTATED_ABSENT,
-                self.file,
-                value.span(),
-                "a bare `absent` has no element type to infer; annotate the binding's optional type (for example `: string?`)",
+            self.diagnostics.push(CheckDiagnostic::new(
+                Code::CheckUnannotatedAbsent,
+                DiagnosticAnchor::at(self.file, value.span()),
+                DiagnosticPayload::None,
             ));
         }
         if value.is_none() {
@@ -772,18 +773,17 @@ impl StatementCheck<'_> {
         let ty =
             resolve_diagnosed_annotation_type(annotation, self.program, self.aliases, self.file);
         let kind = match ty {
-            MarrowType::Enum { .. } => "an enum",
-            MarrowType::Identity(_) => "a store identity",
+            MarrowType::Enum { .. } => UninitializedVarKind::Enum,
+            MarrowType::Identity(_) => UninitializedVarKind::Identity,
             _ => return,
         };
-        self.diagnostics.push(CheckDiagnostic::error(
-            crate::diagnostics::CHECK_UNINITIALIZED_VAR,
-            self.file,
-            *span,
-            format!(
-                "a `var` of {kind} type (`{}`) must be given an initial value; it has no default to start from",
-                annotation
-            ),
+        self.diagnostics.push(CheckDiagnostic::new(
+            Code::CheckUninitializedVar,
+            DiagnosticAnchor::at(self.file, *span),
+            DiagnosticPayload::UninitializedVar {
+                kind,
+                annotation: annotation.to_string(),
+            },
         ));
     }
 
@@ -1248,11 +1248,10 @@ impl StatementCheck<'_> {
         {
             return;
         }
-        self.diagnostics.push(CheckDiagnostic::warning(
-            CHECK_LOSSY_ROUND_TRIP,
-            self.file,
-            target.span(),
-            "whole saved-record replacement clears keyed child layers omitted from the value",
+        self.diagnostics.push(CheckDiagnostic::new(
+            Code::CheckLossyRoundTrip,
+            DiagnosticAnchor::at(self.file, target.span()),
+            DiagnosticPayload::None,
         ));
     }
 

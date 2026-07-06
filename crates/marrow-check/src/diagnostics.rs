@@ -1021,6 +1021,14 @@ pub enum DiagnosticPayload {
         expected: MarrowType,
         found: MarrowType,
     },
+    /// `check.unknown_root`: a `^root` that names no declared store.
+    UnknownRoot { root: String },
+    /// `check.uninitialized_var`: a `var` of a no-default type (an enum or a store
+    /// identity) declared without an initializer, and the annotation as written.
+    UninitializedVar {
+        kind: UninitializedVarKind,
+        annotation: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1028,6 +1036,25 @@ pub enum CatalogIntentKind {
     RetireTarget,
     RenameSource,
     RenameTarget,
+}
+
+/// Which uninitialized-declaration shape a `check.uninitialized_var` is about. An
+/// enum and a store identity are the two types with no buildable initial form, and
+/// they render distinct prose, so the shape is a stored discriminant rather than one
+/// recovered from the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UninitializedVarKind {
+    Enum,
+    Identity,
+}
+
+impl UninitializedVarKind {
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Self::Enum => "an enum",
+            Self::Identity => "a store identity",
+        }
+    }
 }
 
 /// Why a configured `run.defaultEntry` cannot run with no arguments.

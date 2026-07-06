@@ -46,6 +46,10 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckUnresolvedCall,
     Code::CheckPrivateFunction,
     Code::CheckAmbiguousCall,
+    Code::CheckUnknownRoot,
+    Code::CheckUnannotatedAbsent,
+    Code::CheckUninitializedVar,
+    Code::CheckLossyRoundTrip,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -132,6 +136,25 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("call to `{leaf}` is ambiguous; qualify it as one of {options}")
+        }
+        (Code::CheckUnknownRoot, DiagnosticPayload::UnknownRoot { root }) => {
+            format!("`^{root}` names no declared store")
+        }
+        (Code::CheckUnannotatedAbsent, DiagnosticPayload::None) => {
+            "a bare `absent` has no element type to infer; annotate the binding's optional type \
+             (for example `: string?`)"
+                .to_string()
+        }
+        (Code::CheckUninitializedVar, DiagnosticPayload::UninitializedVar { kind, annotation }) => {
+            format!(
+                "a `var` of {} type (`{annotation}`) must be given an initial value; it has no \
+             default to start from",
+                kind.describe()
+            )
+        }
+        (Code::CheckLossyRoundTrip, DiagnosticPayload::None) => {
+            "whole saved-record replacement clears keyed child layers omitted from the value"
+                .to_string()
         }
         (code, payload) => {
             unreachable!("no message template for {code:?} with payload {payload:?}")
@@ -582,7 +605,7 @@ mod tests {
         DiagnosticPayload, EnumDiagnostic, IsTypeFault, LayerNotValueReason, MatchScrutinee,
         SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
         SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
-        UnresolvedCallKind,
+        UninitializedVarKind, UnresolvedCallKind,
     };
     use crate::program::MarrowType;
     use marrow_codes::Code;
@@ -1416,6 +1439,55 @@ mod tests {
         );
     }
 
+    /// The statement/collection diagnostic family renders exactly the message its old
+    /// construction sites built, across every migrated variant: the `unknown_root`
+    /// fact, the two constant-message holdouts (`unannotated_absent`, the
+    /// `lossy_round_trip` warning), and both `uninitialized_var` kinds. Pins the prose
+    /// the renderer now owns for these codes.
+    #[test]
+    fn renders_statement_prose_byte_identical() {
+        assert_eq!(
+            render_message(
+                Code::CheckUnknownRoot,
+                &DiagnosticPayload::UnknownRoot {
+                    root: "books".into(),
+                },
+            ),
+            "`^books` names no declared store",
+        );
+        assert_eq!(
+            render_message(Code::CheckUnannotatedAbsent, &DiagnosticPayload::None),
+            "a bare `absent` has no element type to infer; annotate the binding's optional type \
+             (for example `: string?`)",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckUninitializedVar,
+                &DiagnosticPayload::UninitializedVar {
+                    kind: UninitializedVarKind::Enum,
+                    annotation: "Status".into(),
+                },
+            ),
+            "a `var` of an enum type (`Status`) must be given an initial value; it has no default \
+             to start from",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckUninitializedVar,
+                &DiagnosticPayload::UninitializedVar {
+                    kind: UninitializedVarKind::Identity,
+                    annotation: "Id(^books)".into(),
+                },
+            ),
+            "a `var` of a store identity type (`Id(^books)`) must be given an initial value; it \
+             has no default to start from",
+        );
+        assert_eq!(
+            render_message(Code::CheckLossyRoundTrip, &DiagnosticPayload::None),
+            "whole saved-record replacement clears keyed child layers omitted from the value",
+        );
+    }
+
     /// The identifiers a migrated code would appear as in a first argument to a
     /// message-bearing `CheckDiagnostic::error`/`warning` call: its `Code` variant
     /// and its `CHECK_*` wire-string constant. Mirrors [`MIGRATED_CODES`]; kept in
@@ -1473,6 +1545,14 @@ mod tests {
         "CHECK_PRIVATE_FUNCTION",
         "Code::CheckAmbiguousCall",
         "CHECK_AMBIGUOUS_CALL",
+        "Code::CheckUnknownRoot",
+        "CHECK_UNKNOWN_ROOT",
+        "Code::CheckUnannotatedAbsent",
+        "CHECK_UNANNOTATED_ABSENT",
+        "Code::CheckUninitializedVar",
+        "CHECK_UNINITIALIZED_VAR",
+        "Code::CheckLossyRoundTrip",
+        "CHECK_LOSSY_ROUND_TRIP",
     ];
 
     fn src_root() -> PathBuf {
