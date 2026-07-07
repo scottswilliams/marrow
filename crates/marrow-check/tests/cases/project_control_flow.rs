@@ -820,14 +820,14 @@ fn const_value_with_a_nested_saved_read_is_rejected() {
 
 #[test]
 fn deleting_the_root_a_loop_traverses_is_rejected() {
-    // `keys(^books)` traverses the `^books` identity layer; `delete ^books(id)`
+    // `for id in ^books` traverses the `^books` identity layer; `delete ^books(id)`
     // removes a key from that same layer, which the checker rejects.
     let found = check_module(
         "loop-delete-root",
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    for id in keys(^books)\n        delete ^books(id)\n",
+         fn f()\n    for id in ^books\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -841,7 +841,7 @@ fn deleting_a_reversed_key_loop_traverses_is_rejected() {
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n",
+         fn f()\n    for id in reversed ^books\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -891,7 +891,7 @@ fn writing_a_keyed_leaf_the_loop_traverses_is_rejected() {
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    for pos in keys(^books(1).tags)\n        ^books(1).tags(pos) = \"x\"\n",
+         fn f()\n    for pos in ^books(1).tags\n        ^books(1).tags(pos) = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -904,7 +904,7 @@ fn reversed_loop_mutating_the_traversed_layer_is_rejected() {
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    for tag in reversed(^books(1).tags)\n        append(^books(1).tags, \"x\")\n",
+         fn f()\n    for tag in reversed ^books(1).tags\n        append(^books(1).tags, \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -943,17 +943,154 @@ fn appending_into_the_loop_key_entry_is_allowed() {
 
 #[test]
 fn collecting_keys_first_then_mutating_is_allowed() {
-    // The documented safe pattern: snapshot the keys into a local, iterate the
-    // local, and mutate the layer. The loop traverses a local value, not the layer.
+    // The documented safe pattern: snapshot the keys into a local sequence, iterate
+    // the local, and mutate the layer. The second loop traverses a local value, not
+    // the layer, so the mutation is safe.
     let found = check_module(
         "loop-collect-first",
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    const ids = keys(^books)\n    for id in ids\n        delete ^books(id)\n",
+         fn f()\n    var ids: sequence[int]\n    for id in ^books\n        append(ids, id)\n    for id in ids\n        delete ^books(id)\n",
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+/// A composite grid store: a two-key-column `cells` layer whose leaf is a record.
+/// A write into that traversed layer is exempt only when it addresses exactly the
+/// loop's cursor — every key column a bare positional loop name.
+const GRID_STORE: &str = "module m\n\
+     resource Cell\n    required v: int\n\
+     resource Grid\n    cells(row: int, col: int): Cell\n\
+     store ^grids(id: int): Grid\n\n";
+
+#[test]
+fn a_computed_key_sibling_write_in_a_composite_head_is_flagged() {
+    // The red-team repro: an enclosing keyed step whose outer argument is a computed
+    // key inserts a sibling into the traversed composite layer. The full positional
+    // match fails at the computed argument, so the write fails closed.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int)\n    for row, col, cell in ^grids(g).cells\n        ^grids(g).cells(col + 1, row).v = 1\n"
+    );
+    let found = check_module(
+        "composite-computed-key",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_swapped_order_write_in_a_composite_head_is_flagged() {
+    // Addressing `cells(col, row)` swaps the columns, so it does not name the cursor
+    // the loop is visiting; the positional match fails at column 0.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int)\n    for row, col, cell in ^grids(g).cells\n        ^grids(g).cells(col, row).v = 1\n"
+    );
+    let found = check_module(
+        "composite-swapped",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_full_positional_match_write_in_a_composite_head_is_exempt() {
+    // `cells(row, col)` addresses exactly the entry the cursor is visiting — every key
+    // column a bare positional loop name — so revisiting it is safe.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int)\n    for row, col, cell in ^grids(g).cells\n        ^grids(g).cells(row, col).v = 1\n"
+    );
+    let found = check_module(
+        "composite-exact",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_one_name_composite_head_flags_a_multi_arg_sibling_write() {
+    // A 1-name head over a multi-column layer binds only the outer column, so it
+    // exempts only the 1-arg step. Any multi-arg step fails the arity match and is
+    // conservatively flagged, because exemption requires proving every key column.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int)\n    for row in ^grids(g).cells\n        ^grids(g).cells(row, 1).v = 1\n"
+    );
+    let found = check_module(
+        "composite-one-name-multi-arg",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_nested_for_head_shadowing_a_composite_column_clears_the_exemption() {
+    // A nested loop's own head name shadows the outer loop's key column, so binding it
+    // permanently clears that column: the enclosing full-positional write is no longer
+    // the live cursor and fails closed. The inner iterable is a local sequence, so it
+    // adds no traversed layer of its own — only the cleared outer column decides.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int, xs: sequence[int])\n    for row, col, cell in ^grids(g).cells\n        for row in xs\n            ^grids(g).cells(row, col).v = 1\n"
+    );
+    let found = check_module(
+        "composite-nested-head-shadow",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_catch_binder_shadowing_a_composite_column_clears_the_exemption() {
+    // The caught-error name binds over the catch block; shadowing a loop column with it
+    // clears that column, so an enclosing write there fails closed.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int)\n    for row, col, cell in ^grids(g).cells\n        try\n            print(1)\n        catch col\n            ^grids(g).cells(row, col).v = 1\n"
+    );
+    let found = check_module(
+        "composite-catch-shadow",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_rebound_column_write_in_a_composite_head_is_flagged() {
+    // Reassigning a bound column name (here shadowing `col` with a `const`) means it no
+    // longer denotes the live cursor, so the enclosing full-positional write at it fails
+    // closed even though the other column still matches.
+    let src = format!(
+        "{GRID_STORE}fn f(g: int)\n    for row, col, cell in ^grids(g).cells\n        if true\n            const col = 99\n            ^grids(g).cells(row, col).v = 1\n"
+    );
+    let found = check_module(
+        "composite-rebound-column",
+        &src,
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_if_const_binding_shadowing_the_loop_key_clears_the_exemption() {
+    // An `if const` presence binding rebinds its name over the then block to an
+    // arbitrary key; without clearing it, a sibling write at that name would be falsely
+    // exempt. Binding it clears the slot so the write fails closed, like `const id =`.
+    let found = check_module(
+        "loop-if-const-shadow",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         resource Pick\n    target: int?\n\
+         store ^books(id: int): Book\n\
+         store ^picks(id: int): Pick\n\n\
+         fn f()\n    for id in ^books\n        if const id = ^picks(1).target\n            ^books(id).title = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -1061,7 +1198,7 @@ fn writing_a_whole_keyed_entry_at_the_loop_key_is_rejected() {
          resource Team\n    required lead: string\n\
          resource Org\n    required name: string\n    teams(teamId: int): Team\n\
          store ^orgs(id: int): Org\n\n\
-         fn f()\n    for k, v in entries(^orgs(1).teams)\n        ^orgs(1).teams(k) = Team(lead: \"x\")\n",
+         fn f()\n    for k, v in ^orgs(1).teams\n        ^orgs(1).teams(k) = Team(lead: \"x\")\n",
         "check.loop_mutates_traversed_layer",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -1078,7 +1215,7 @@ fn writing_a_field_at_the_loop_key_in_a_two_name_layer_loop_is_allowed() {
          resource Team\n    required lead: string\n\
          resource Org\n    required name: string\n    teams(teamId: int): Team\n\
          store ^orgs(id: int): Org\n\n\
-         fn f()\n    for k, v in entries(^orgs(1).teams)\n        ^orgs(1).teams(k).lead = \"x\"\n",
+         fn f()\n    for k, v in ^orgs(1).teams\n        ^orgs(1).teams(k).lead = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");

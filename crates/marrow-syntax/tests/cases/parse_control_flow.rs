@@ -183,9 +183,9 @@ fn parses_while_and_for_loops() {
          fn run()\n\
          \x20   while n < 10\n\
          \x20       n = n + 1\n\
-         \x20   for id in keys(^books)\n\
+         \x20   for id in ^books\n\
          \x20       print(id)\n\
-         \x20   for shelf, id in entries(^books.byShelf)\n\
+         \x20   for shelf, id in ^books.byShelf\n\
          \x20       print(id)\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -214,15 +214,96 @@ fn parses_while_and_for_loops() {
     else {
         panic!("expected for, got {:?}", statements[1]);
     };
-    assert_eq!(binding.first, "id");
-    assert_eq!(binding.second, None);
-    assert!(matches!(iterable, Expression::Call { .. }));
+    let names: Vec<&str> = binding.names.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["id"]);
+    assert!(matches!(iterable, Expression::SavedRoot { .. }));
 
     let Statement::For { binding, .. } = &statements[2] else {
         panic!("expected paired for, got {:?}", statements[2]);
     };
-    assert_eq!(binding.first, "shelf");
-    assert_eq!(binding.second.as_deref(), Some("id"));
+    let names: Vec<&str> = binding.names.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["shelf", "id"]);
+}
+
+/// The head-slot keyword discipline for `reversed`, pinned as parser-law tests: an
+/// identifier `reversed` immediately after `in` is always the order keyword, never
+/// the iterable. This suite is the executable definition; a future head keyword
+/// (`distinct`) is added against the same baseline.
+#[test]
+fn reversed_is_a_head_slot_keyword() {
+    use marrow_syntax::LoopOrder;
+
+    let head = |head: &str| -> marrow_syntax::ParsedSource {
+        parse_source(&format!(
+            "module app\nfn run()\n\x20   for x in {head}\n\x20       print(x)\n"
+        ))
+    };
+    let for_stmt = |parsed: &marrow_syntax::ParsedSource| -> Option<(LoopOrder, Expression)> {
+        let run = parsed.file.function("run")?;
+        match run.body.statements.first()? {
+            Statement::For {
+                order, iterable, ..
+            } => Some((*order, iterable.clone())),
+            _ => None,
+        }
+    };
+
+    // `reversed <path>` — the order keyword followed by an iterable.
+    let parsed = head("reversed ^books");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let (order, iterable) = for_stmt(&parsed).expect("for");
+    assert_eq!(order, LoopOrder::Reversed);
+    assert!(
+        matches!(iterable, Expression::SavedRoot { .. }),
+        "{iterable:?}"
+    );
+
+    // `reversed(<path>)` — the pinned reinterpretation: order keyword then a
+    // parenthesized path, parsing identically to the old wrapper spelling.
+    let parsed = head("reversed(^books)");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let (order, iterable) = for_stmt(&parsed).expect("for");
+    assert_eq!(order, LoopOrder::Reversed);
+    assert!(
+        matches!(iterable, Expression::SavedRoot { .. }),
+        "{iterable:?}"
+    );
+
+    // `reversed reversed` — the second `reversed` is an ordinary local name.
+    let parsed = head("reversed reversed");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let (order, iterable) = for_stmt(&parsed).expect("for");
+    assert_eq!(order, LoopOrder::Reversed);
+    assert!(
+        matches!(&iterable, Expression::Name { segments, .. } if segments.as_slice() == ["reversed"]),
+        "{iterable:?}"
+    );
+
+    // Bare `reversed` — no iterable after the keyword is a parse error.
+    let parsed = head("reversed");
+    assert!(
+        !parsed.diagnostics.is_empty(),
+        "bare reversed should not parse"
+    );
+
+    // `reversed.field` — `.` does not begin an expression, so the head is a parse error.
+    let parsed = head("reversed.field");
+    assert!(
+        !parsed.diagnostics.is_empty(),
+        "reversed.field should not parse"
+    );
+}
+
+/// `reversed` in a non-head position is an ordinary identifier, unchanged.
+#[test]
+fn reversed_outside_the_head_is_an_ordinary_name() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   const reversed = 1\n\
+         \x20   print(reversed)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]

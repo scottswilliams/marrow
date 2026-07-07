@@ -2,9 +2,8 @@ use crate::support;
 use support::*;
 
 use marrow_check::{
-    CHECK_COLLECTION_UNSUPPORTED, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
-    CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE, check_project,
-    check_project_with_catalog,
+    CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
+    CHECK_READ_ONLY_EXPRESSION_WRITE, check_project, check_project_with_catalog,
 };
 use marrow_run::{RUN_UNSUPPORTED, Value};
 
@@ -115,23 +114,6 @@ fn checked_read_only_expression_rejects_saved_writes() {
         "{diagnostics:#?}"
     );
 }
-
-#[test]
-fn checked_read_only_expression_rejects_entries_values() {
-    let (checked, _runtime) = committed_program_and_runtime(BOOKS_SOURCE);
-
-    let diagnostics = checked
-        .checked_read_only_expression("test", "entries(^books)")
-        .expect_err("entries is loop-head only");
-
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_COLLECTION_UNSUPPORTED),
-        "{diagnostics:#?}"
-    );
-}
-
 #[test]
 fn checked_read_only_expression_rejects_host_effects() {
     let (checked, _runtime) = committed_program_and_runtime(BOOKS_SOURCE);

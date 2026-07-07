@@ -143,11 +143,12 @@ pub(crate) fn eval_statement(
         } => eval_while(condition.as_ref(), body, *span, env),
         ExecStmt::For {
             binding,
+            order,
             iterable,
             step,
             body,
             span,
-        } => eval_for(binding, iterable, step.as_ref(), body, *span, env),
+        } => eval_for(binding, *order, iterable, step.as_ref(), body, *span, env),
         ExecStmt::Transaction { body, span, .. } => eval_transaction(body, *span, env),
         ExecStmt::Try { body, catch, .. } => eval_try(body, catch.as_ref(), env),
     }

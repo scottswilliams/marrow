@@ -17,7 +17,7 @@ use crate::read::{
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, saved_key_to_value};
 
-use super::{LoopShape, SavedLoopRow, SavedLoopSpec, shape_row};
+use super::{SavedLoopRow, SavedLoopSpec, saved_loop_row};
 
 pub(super) struct ChildLayerScan {
     place: CheckedSavedPlace,
@@ -29,7 +29,12 @@ pub(super) struct ChildLayerScan {
     range: Option<IndexRangeBounds>,
     address: DataAddress,
     dir: crate::collection::Direction,
-    shape: LoopShape,
+    /// The number of key columns this head streams. One for a key-first single
+    /// binding or a two-name single-column layer; more for an (n+1)-name head over a
+    /// composite layer, which walks every remaining column outermost-first. A range
+    /// bound coincides only with a single streamed column.
+    key_columns: usize,
+    with_value: bool,
     span: SourceSpan,
 }
 
@@ -65,7 +70,8 @@ impl ChildLayerScan {
             range,
             address,
             dir: spec.dir,
-            shape: spec.shape,
+            key_columns: spec.key_columns,
+            with_value: spec.with_value,
             span: spec.span,
         })
     }
@@ -79,50 +85,72 @@ impl ChildLayerScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        let mut child = match &self.range {
-            Some(range) => {
-                first_data_child_in_range(env.store, &self.address, range, self.dir, self.span)?
-            }
-            None => first_data_child(env.store, &self.address, self.dir, self.span)?,
-        };
-        while let Some(key) = child {
-            let anchor = key.clone();
-            match self.visit_key(key, env, visit)? {
-                ControlFlow::Continue(()) => {}
-                ControlFlow::Break(flow) => return Ok(flow),
-            }
-            child = match &self.range {
-                Some(range) => next_data_child_in_range(
-                    env.store,
-                    &self.address,
-                    &anchor,
-                    range,
-                    self.dir,
-                    self.span,
-                )?,
-                None => next_data_child(env.store, &self.address, &anchor, self.dir, self.span)?,
-            };
+        let mut columns = Vec::with_capacity(self.key_columns);
+        match self.stream_columns(self.exact_prefix.clone(), &mut columns, env, visit)? {
+            ControlFlow::Continue(()) => Ok(Flow::Normal),
+            ControlFlow::Break(flow) => Ok(flow),
         }
-        Ok(Flow::Normal)
     }
 
-    fn visit_key(
+    /// Walk the remaining key columns depth-first. `prefix` is the pinned exact keys
+    /// plus the columns bound so far; `columns` accumulates their bound values. At the
+    /// last column the row is produced with the leaf value read once when the head
+    /// binds it. A range bound applies only to a single streamed column, so it is
+    /// consulted only at the final depth.
+    fn stream_columns(
         &self,
-        key: SavedKey,
+        prefix: Vec<SavedKey>,
+        columns: &mut Vec<Value>,
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        validate_scanned_child_key(&self.key_scalars, self.exact_prefix.len(), &key, self.span)?;
-        let key_value = saved_key_to_value(key.clone(), self.span)?;
-        let row = shape_row(self.shape, key_value, || self.read_entry(key, env))?;
-        visit(row, env)
+        let last_column = columns.len() + 1 == self.key_columns;
+        let address = self.address_at(&prefix)?;
+        let mut child = match (&self.range, last_column) {
+            (Some(range), true) => {
+                first_data_child_in_range(env.store, &address, range, self.dir, self.span)?
+            }
+            _ => first_data_child(env.store, &address, self.dir, self.span)?,
+        };
+        while let Some(key) = child {
+            let anchor = key.clone();
+            validate_scanned_child_key(&self.key_scalars, prefix.len(), &key, self.span)?;
+            columns.push(saved_key_to_value(key.clone(), self.span)?);
+            let mut next_prefix = prefix.clone();
+            next_prefix.push(key);
+            let flow = if last_column {
+                let row = saved_loop_row(self.with_value, columns.clone(), || {
+                    self.read_entry(&next_prefix, env)
+                })?;
+                visit(row, env)?
+            } else {
+                self.stream_columns(next_prefix, columns, env, visit)?
+            };
+            columns.pop();
+            if let ControlFlow::Break(flow) = flow {
+                return Ok(ControlFlow::Break(flow));
+            }
+            child = match (&self.range, last_column) {
+                (Some(range), true) => next_data_child_in_range(
+                    env.store, &address, &anchor, range, self.dir, self.span,
+                )?,
+                _ => next_data_child(env.store, &address, &anchor, self.dir, self.span)?,
+            };
+        }
+        Ok(ControlFlow::Continue(()))
     }
 
-    fn read_entry(&self, key: SavedKey, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
+    /// The data address of the layer under a given key prefix (the pinned keys plus
+    /// the columns bound so far).
+    fn address_at(&self, keys: &[SavedKey]) -> Result<DataAddress, RuntimeError> {
+        let mut address_layers = self.parent_layers.clone();
+        address_layers.push(LayerAddress::from_checked(&self.layer_facts, keys.to_vec()));
+        DataAddress::layer_prefix(&self.place, &self.identity, &address_layers, self.span)
+    }
+
+    fn read_entry(&self, keys: &[SavedKey], env: &mut Env<'_>) -> Result<Value, RuntimeError> {
         let mut layers = self.parent_layers.clone();
-        let mut keys = self.exact_prefix.clone();
-        keys.push(key);
-        layers.push(LayerAddress::from_checked(&self.layer_facts, keys));
+        layers.push(LayerAddress::from_checked(&self.layer_facts, keys.to_vec()));
         if layers.len() == 1 {
             read_layer_entry(
                 &self.place,

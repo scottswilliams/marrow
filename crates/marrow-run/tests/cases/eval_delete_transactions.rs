@@ -103,7 +103,7 @@ fn deleting_an_indexed_field_removes_its_index_entry() {
     // `delete ^books(id).shelf` where `shelf` feeds `byShelf` tears down the entry,
     // so a later `keys(^books.byShelf(...))` no longer yields the record.
     let program = checked_program(&format!(
-        "{BOOK_SHELF_INDEX_SCHEMA}pub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn drop_shelf(id: int)\n    delete ^books(id).shelf\n\npub fn count_on(shelf: string): int\n    var c = 0\n    for id in keys(^books.byShelf(shelf))\n        c = c + 1\n    return c\n"
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn drop_shelf(id: int)\n    delete ^books(id).shelf\n\npub fn count_on(shelf: string): int\n    var c = 0\n    for id in ^books.byShelf(shelf)\n        c = c + 1\n    return c\n"
     ));
     let store = TreeStore::memory();
     run_entry(

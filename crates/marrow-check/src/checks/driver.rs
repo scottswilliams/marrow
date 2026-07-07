@@ -142,6 +142,8 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::EvolveDefaultType { .. }
                 | DiagnosticPayload::EvolveTransform(_)
                 | DiagnosticPayload::SuggestedIndex { .. }
+                | DiagnosticPayload::LoopHeadArity { .. }
+                | DiagnosticPayload::LoopHeadViewCall(_)
                 | DiagnosticPayload::UnresolvedName { .. }
                 | DiagnosticPayload::UnknownField { .. }
                 | DiagnosticPayload::RequiredAbsent { .. }

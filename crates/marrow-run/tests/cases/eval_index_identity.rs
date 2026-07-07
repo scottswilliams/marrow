@@ -435,20 +435,6 @@ fn helper_call_mutating_a_traversed_unique_index_faults() {
         RUN_TRAVERSAL,
     );
 }
-
-/// A unique index lookup addresses a single identity, so it has no key stream
-/// for `keys(...)` to yield. The checker rejects it with
-/// `check.collection_unsupported`, so the program never reaches the runtime.
-#[test]
-fn keys_over_a_unique_index_lookup_is_rejected_by_the_checker() {
-    checker_rejects(
-        &format!(
-            "{BOOK_ISBN_SCHEMA}pub fn countKeysByIsbn(isbn: string): int\n    var c = 0\n    for id in keys(^books.byIsbn(isbn))\n        c = c + 1\n    return c\n"
-        ),
-        "check.collection_unsupported",
-    );
-}
-
 #[test]
 fn unique_index_prefix_branch_presence_count_and_iteration_agree() {
     checker_rejects(
@@ -650,7 +636,7 @@ fn bare_enum_led_index_iterates_in_declared_ordinal_order() {
          \x20       print(^items(id).ord ?? 0)\n\
          \n\
          pub fn bareDescending()\n\
-         \x20   for id in reversed(^items.bySize)\n\
+         \x20   for id in reversed ^items.bySize\n\
          \x20       print(^items(id).ord ?? 0)\n",
     );
     let store = TreeStore::memory();

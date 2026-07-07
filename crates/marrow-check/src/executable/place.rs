@@ -213,13 +213,6 @@ impl<'a> SavedPlaceResolver<'a> {
         })
     }
 
-    /// A non-unique index branch always yields the store identity in its branch,
-    /// so any partial prefix supports identity reads and two-name resource loops.
-    pub(crate) fn non_unique_index_branch_yields_identity(&self, expr: &CheckedExpr) -> bool {
-        self.index_branch_info(expr)
-            .is_some_and(|info| !info.unique)
-    }
-
     /// Whether the innermost keyed layer is addressed by a partial key prefix — at
     /// least one column unfilled and no range bound. Such a path names an iterable
     /// inner sub-layer, not a writable entry, so it is a read/descend place only.
@@ -259,16 +252,6 @@ impl<'a> SavedPlaceResolver<'a> {
             && self.key_type(expr).is_some()
     }
 
-    /// Whether iterating this path would pair each streamed key with a sub-layer
-    /// rather than a leaf value — a partial composite layer with more than one column
-    /// still to fill. Its value position is itself a collection, so any value-reading
-    /// loop head (`values(...)`, `entries(...)`, or a two-name binding) over it must
-    /// descend one column first.
-    pub(crate) fn value_position_is_sublayer(&self, expr: &CheckedExpr) -> bool {
-        self.layer_columns_remaining(expr)
-            .is_some_and(|remaining| remaining > 1)
-    }
-
     /// The number of key columns still unfilled on the innermost keyed layer of a
     /// record-terminal access. A composite layer is a chain of single-key
     /// sub-layers, so more than one remaining column means the access names a
@@ -284,6 +267,38 @@ impl<'a> SavedPlaceResolver<'a> {
             return None;
         }
         Some(layer.key_params.len().saturating_sub(layer.args.len()))
+    }
+
+    /// The remaining key-column types (outermost-first) and the leaf value type of a
+    /// keyed child-layer head. A composite layer is a chain of single-key sub-layers,
+    /// so an unfilled prefix streams every remaining column; the leaf is the value
+    /// reached once all columns are supplied. `None` for a store root (its identity is
+    /// one column, handled by the caller), an index, a field, or a range-bounded head.
+    /// This is the one owner of the loop-head arity of a composite saved layer.
+    pub(crate) fn loop_layer_columns(
+        &self,
+        expr: &CheckedExpr,
+    ) -> Option<(Vec<MarrowType>, MarrowType)> {
+        let place = expr.saved_place()?;
+        if !matches!(place.terminal, CheckedSavedTerminal::Record) {
+            return None;
+        }
+        let layer = place.layers.last()?;
+        if range_arg_position_in(&layer.args).is_some() {
+            return None;
+        }
+        if layer.args.len() >= layer.key_params.len() {
+            return None;
+        }
+        let columns = layer.key_params[layer.args.len()..]
+            .iter()
+            .map(|param| checked_key_param_type(param).unwrap_or(MarrowType::Unknown))
+            .collect();
+        let leaf = match &layer.leaf {
+            Some(leaf) => self.leaf_type(leaf)?,
+            None => self.group_entry_type(place)?,
+        };
+        Some((columns, leaf))
     }
 
     pub(crate) fn saved_key_params<'p>(

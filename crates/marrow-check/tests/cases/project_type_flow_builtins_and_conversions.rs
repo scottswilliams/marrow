@@ -895,23 +895,6 @@ fn an_unknown_op_in_a_host_module_is_flagged_at_check() {
         "{found:#?}"
     );
 }
-
-#[test]
-fn nesting_reversed_over_a_saved_traversal_is_a_check_error() {
-    // `reversed(^books)` is a saved traversal iterated directly; wrapping it in
-    // another `reversed` would have to materialize the saved data as a value, which
-    // the runtime refuses (`run.unsupported`). The checker rejects it earlier.
-    let found = check_module(
-        "reversed-nested-saved",
-        "module m\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n\
-         fn f()\n    for id in reversed(reversed(^books))\n        print(id)\n",
-        "check.collection_unsupported",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
 #[test]
 fn nesting_reversed_over_a_local_sequence_still_checks_clean() {
     // A local sequence is an in-memory value, so `reversed(reversed(xs))` is a plain
@@ -919,7 +902,7 @@ fn nesting_reversed_over_a_local_sequence_still_checks_clean() {
     let report = check_module_report(
         "reversed-nested-local",
         "module m\n\
-         fn f()\n    var xs: sequence[int]\n    append(xs, 1)\n    for x in reversed(reversed(xs))\n        print(x)\n",
+         fn f()\n    var xs: sequence[int]\n    append(xs, 1)\n    for x in reversed reversed(xs)\n        print(x)\n",
     );
     assert!(
         with_code(&report, "check.collection_unsupported").is_empty(),
@@ -944,10 +927,10 @@ fn collection_combinators_reject_a_concrete_scalar_argument() {
     // The combinator and the loop head that consumes its result.
     let combinators = [
         ("count", "const c = count(n)"),
-        ("keys", "for x in keys(n)\n        print($\"{x}\")"),
+        ("keys", "for x in n\n        print($\"{x}\")"),
         ("values", "for x in values(n)\n        print($\"{x}\")"),
-        ("entries", "for k, x in entries(n)\n        print($\"{x}\")"),
-        ("reversed", "for x in reversed(n)\n        print($\"{x}\")"),
+        ("entries", "for k, x in n\n        print($\"{x}\")"),
+        ("reversed", "for x in reversed n\n        print($\"{x}\")"),
     ];
     for (kind, literal) in scalars {
         for (combinator, head) in combinators {
@@ -965,49 +948,6 @@ fn collection_combinators_reject_a_concrete_scalar_argument() {
         }
     }
 }
-
-/// Every collection combinator wrapping a saved traversal (`reversed`/`keys`/
-/// `values`/`entries` over saved data) is a check error: the runtime streams the
-/// inner traversal and refuses to re-materialize it. A bare saved layer stays valid.
-#[test]
-fn collection_combinators_reject_a_wrapped_saved_traversal() {
-    let header = "module m\n\
-         resource Book\n    required title: string\n    tags(pos: int): string\n\
-         store ^books(id: int): Book\n\n";
-    let wrapped = [
-        (
-            "count(reversed(^books))",
-            "fn f(): int\n    return count(reversed(^books))\n",
-        ),
-        (
-            "keys(reversed(^books))",
-            "fn f()\n    for k in keys(reversed(^books))\n        print($\"{k}\")\n",
-        ),
-        (
-            "values(reversed(^books))",
-            "fn f()\n    for v in values(reversed(^books))\n        print($\"{v}\")\n",
-        ),
-        (
-            "count(keys(^books))",
-            "fn f(): int\n    return count(keys(^books))\n",
-        ),
-        (
-            "values(keys(^books))",
-            "fn f()\n    for v in values(keys(^books))\n        print($\"{v}\")\n",
-        ),
-    ];
-    for (label, body) in wrapped {
-        let src = format!("{header}{body}");
-        let report = check_module_report(&format!("combinator-wrapped-{label}"), &src);
-        assert_eq!(
-            with_code(&report, "check.collection_unsupported").len(),
-            1,
-            "`{label}` over a saved traversal must report exactly one collection error\n{:#?}",
-            report.diagnostics,
-        );
-    }
-}
-
 /// A collection combinator over a bare saved layer is valid: `count(^books)`,
 /// `keys(^books)`, and `reversed(^books)` each stream the layer directly.
 #[test]
@@ -1018,80 +958,11 @@ fn collection_combinators_accept_a_bare_saved_layer() {
          resource Book\n    required title: string\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
          fn counts(): int\n    return count(^books)\n\n\
-         fn iter()\n    for id in keys(^books)\n        print($\"{id}\")\n    for id in reversed(^books)\n        print($\"{id}\")\n",
+         fn iter()\n    for id in ^books\n        print($\"{id}\")\n    for id in reversed ^books\n        print($\"{id}\")\n",
     );
     assert!(
         with_code(&report, "check.collection_unsupported").is_empty(),
         "{:#?}",
         report.diagnostics
     );
-}
-
-/// A rejected `count`/`keys`/`values` combinator types its result `invalid`, not
-/// `unknown`, so a typed binding, a conversion-boundary argument, or an `if`/`while`
-/// condition consuming it defers instead of stacking a second `check.untyped_value`
-/// on top of the one root-cause `check.collection_unsupported`.
-#[test]
-fn a_rejected_combinator_in_a_typed_position_reports_one_error() {
-    let header = "module m\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n";
-    let cases: &[(&str, &str)] = &[
-        (
-            "count-scalar-typed-binding",
-            "fn f(): int\n    const n: int = 5\n    const c: int = count(n)\n    return c\n",
-        ),
-        (
-            "count-wrapped-typed-binding",
-            "fn f(): int\n    const c: int = count(reversed(^books))\n    return c\n",
-        ),
-        (
-            "keys-scalar-typed-conversion-arg",
-            "fn f(): int\n    const n: int = 5\n    return int(keys(n))\n",
-        ),
-        (
-            "values-scalar-typed-conversion-arg",
-            "fn f(): int\n    const n: int = 5\n    return int(values(n))\n",
-        ),
-        (
-            "count-scalar-condition",
-            "fn f()\n    const n: int = 5\n    if count(n) > 0\n        print(\"hi\")\n",
-        ),
-        (
-            "count-wrapped-condition",
-            "fn f()\n    if count(reversed(^books)) > 0\n        print(\"hi\")\n",
-        ),
-        (
-            "count-nested-scalar-typed-binding",
-            "fn f(): int\n    const n: int = 5\n    const c: int = count(reversed(n))\n    return c\n",
-        ),
-        (
-            "reversed-scalar-typed-sequence-binding",
-            "fn f()\n    const n: int = 5\n    const r: sequence[int] = reversed(n)\n",
-        ),
-    ];
-    for (name, body) in cases {
-        let report = check_module_report(name, &format!("{header}{body}"));
-        assert_eq!(
-            with_code(&report, "check.collection_unsupported").len(),
-            1,
-            "{name}: one collection error per root cause\n{:#?}",
-            report.diagnostics,
-        );
-        // A rejected combinator types its result `invalid`, so no second type
-        // diagnostic — untyped, assignment, return, or condition — stacks onto the one
-        // root-cause error.
-        for cascaded in [
-            "check.untyped_value",
-            "check.assignment_type",
-            "check.return_type",
-            "check.condition_type",
-        ] {
-            assert!(
-                with_code(&report, cascaded).is_empty(),
-                "{name}: a rejected combinator must not cascade into {cascaded}\n{:#?}",
-                report.diagnostics,
-            );
-        }
-    }
 }

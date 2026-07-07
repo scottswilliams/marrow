@@ -160,6 +160,7 @@ pub enum CheckedStmt {
     },
     For {
         binding: CheckedForBinding,
+        order: marrow_syntax::LoopOrder,
         iterable: CheckedExpr,
         step: Option<CheckedExpr>,
         body: CheckedBody,
@@ -401,12 +402,14 @@ impl CheckedStmt {
             },
             syntax::Statement::For {
                 binding,
+                order,
                 iterable,
                 step,
                 body,
                 span,
             } => Self::For {
                 binding: CheckedForBinding::lower(binding),
+                order: *order,
                 iterable: CheckedExpr::lower(iterable, context, scope)?,
                 step: lower_optional_expr(step.as_ref(), context, scope)?,
                 body: {

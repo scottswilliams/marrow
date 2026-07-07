@@ -1367,7 +1367,7 @@ fn by_shelf_project(name: &str, books: i64) -> support::TempProject {
                  \x20\x20\x20\x20index byShelf(shelf, id)\n\n\
                  pub fn count_fiction()\n\
                  \x20\x20\x20\x20var c = 0\n\
-                 \x20\x20\x20\x20for id in keys(^books.byShelf(\"fiction\"))\n\
+                 \x20\x20\x20\x20for id in ^books.byShelf(\"fiction\")\n\
                  \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
                  \x20\x20\x20\x20print($\"{{c}}\")\n\n\
                  {seed}"

@@ -14,7 +14,7 @@ pub fn enroll(s: string, c: string, st: string)
     ^enrollments(s, c) = enrollment
 
 pub fn activeStatuses()
-    for id in keys(^enrollments.byStatus("active"))
+    for id in ^enrollments.byStatus("active")
         if const status = ^enrollments(id).status
             print(status)
 
@@ -36,7 +36,7 @@ pub fn activeCourseExactPair(student: string, course: string)
             print($"{savedCourse}:{enrollment.course}")
 
 pub fn activeCourseExactKeys(student: string, course: string)
-    for id in keys(^enrollments.byStatus("active", student, course))
+    for id in ^enrollments.byStatus("active", student, course)
         if const savedCourse = ^enrollments(id).course
             print(savedCourse)
 

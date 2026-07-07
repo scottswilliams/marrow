@@ -16,7 +16,7 @@ use marrow_store::tree::TreeStore;
 fn traversal_faults_are_not_catchable_errors() {
     checker_rejects(
         &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear(): string\n    try\n        for id in keys(^books)\n            delete ^books(id)\n        return \"completed\"\n    catch error: Error\n        return error.code\n"
+            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear(): string\n    try\n        for id in ^books\n            delete ^books(id)\n        return \"completed\"\n    catch error: Error\n        return error.code\n"
         ),
         "check.loop_mutates_traversed_layer",
     );
@@ -48,7 +48,7 @@ fn helper_appending_to_the_sequence_being_traversed_is_a_traversal_fault() {
 fn helper_deleting_from_the_root_being_traversed_is_a_traversal_fault() {
     checker_rejects(
         &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn remove(id: int)\n    delete ^books(id)\n\npub fn walk()\n    for id in keys(^books)\n        remove(id)\n"
+            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn remove(id: int)\n    delete ^books(id)\n\npub fn walk()\n    for id in ^books\n        remove(id)\n"
         ),
         "check.call_argument",
     );

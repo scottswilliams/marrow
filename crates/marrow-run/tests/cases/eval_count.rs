@@ -63,7 +63,7 @@ pub fn countBranch(shelf: string): int
 
 pub fn keysBranch(shelf: string): int
     var c = 0
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         c = c + 1
     return c
 

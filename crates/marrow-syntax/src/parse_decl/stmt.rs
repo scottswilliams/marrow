@@ -273,8 +273,9 @@ impl<'a> StmtParser<'a> {
         let body = self.block_body();
 
         match parsed {
-            Some((binding, iterable, step)) => Some(Statement::For {
+            Some((binding, order, iterable, step)) => Some(Statement::For {
                 binding,
+                order,
                 iterable,
                 step,
                 span: join_spans(keyword.span, body.span),

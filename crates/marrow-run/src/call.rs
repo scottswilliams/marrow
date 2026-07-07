@@ -13,9 +13,7 @@ use marrow_syntax::SourceSpan;
 use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
 use crate::call_args::{bind_arguments, eval_identity_constructor, eval_resource_constructor};
 use crate::collection::eval_local_collection_read;
-use crate::collection::{
-    Direction, eval_append, eval_entries, eval_keys, eval_next_id, eval_reversed, eval_values,
-};
+use crate::collection::{Direction, eval_append, eval_keys, eval_next_id, eval_values};
 use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read};
 use crate::env::{Context, Env};
 use crate::error::{
@@ -192,8 +190,6 @@ fn eval_builtin_call(
         CheckedBuiltinCall::Keys => eval_keys(args, span, env).map(Some),
         CheckedBuiltinCall::Count => eval_count(args, span, env).map(Some),
         CheckedBuiltinCall::Values => eval_values(args, span, env).map(Some),
-        CheckedBuiltinCall::Entries => eval_entries(args, span, env).map(Some),
-        CheckedBuiltinCall::Reversed => eval_reversed(args, span, env).map(Some),
         CheckedBuiltinCall::Next => eval_neighbor(Direction::Ascending, args, span, env).map(Some),
         CheckedBuiltinCall::Prev => eval_neighbor(Direction::Descending, args, span, env).map(Some),
         CheckedBuiltinCall::Key => eval_key(args, span, env).map(Some),

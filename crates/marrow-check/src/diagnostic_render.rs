@@ -58,6 +58,8 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckEvolveType,
     Code::CheckEvolveTransform,
     Code::CheckConditionType,
+    Code::CheckLoopHeadArity,
+    Code::CheckLoopHeadViewCall,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -151,6 +153,20 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
         (Code::CheckConditionType, DiagnosticPayload::ConditionType(fault)) => {
             condition_type_message(fault)
         }
+        (
+            Code::CheckLoopHeadArity,
+            DiagnosticPayload::LoopHeadArity {
+                column_count,
+                given,
+            },
+        ) => format!(
+            "this loop head binds {given} name(s), but its iterable has {column_count} key column(s): bind 1 name for the key, or {} for every column plus the value",
+            column_count + 1,
+        ),
+        (Code::CheckLoopHeadViewCall, DiagnosticPayload::LoopHeadViewCall(view)) => format!(
+            "iterate the collection directly, not `{}(...)`: `for k in xs` streams keys, `for k, v in xs` pairs each key with its value",
+            view.spelling(),
+        ),
         (Code::CheckUnannotatedAbsent, DiagnosticPayload::None) => {
             "a bare `absent` has no element type to infer; annotate the binding's optional type \
              (for example `: string?`)"
@@ -1816,6 +1832,10 @@ mod tests {
         "CHECK_EVOLVE_TRANSFORM",
         "Code::CheckConditionType",
         "CHECK_CONDITION_TYPE",
+        "Code::CheckLoopHeadArity",
+        "CHECK_LOOP_HEAD_ARITY",
+        "Code::CheckLoopHeadViewCall",
+        "CHECK_LOOP_HEAD_VIEW_CALL",
     ];
 
     fn src_root() -> PathBuf {

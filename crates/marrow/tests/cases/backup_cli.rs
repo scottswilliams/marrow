@@ -344,7 +344,7 @@ fn restore_replace_project(name: &str) -> (TempProject, PathBuf) {
              \n\
              pub fn count_shelf()\n\
              \x20\x20\x20\x20var c = 0\n\
-             \x20\x20\x20\x20for id in keys(^books.byShelf(\"fiction\"))\n\
+             \x20\x20\x20\x20for id in ^books.byShelf(\"fiction\")\n\
              \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
              \x20\x20\x20\x20print($\"{c}\")\n",
         );
@@ -1526,7 +1526,7 @@ fn indexed_project(name: &str) -> (TempProject, PathBuf) {
              \n\
              pub fn count_shelf()\n\
              \x20\x20\x20\x20var c = 0\n\
-             \x20\x20\x20\x20for id in keys(^books.byShelf(\"fiction\"))\n\
+             \x20\x20\x20\x20for id in ^books.byShelf(\"fiction\")\n\
              \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
              \x20\x20\x20\x20print($\"{c}\")\n",
         );

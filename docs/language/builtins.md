@@ -46,33 +46,30 @@ guard is rejected, whether it is the read itself (`exists(append(xs, v))`,
 
 ## Collection Traversal
 
-A durable collection — a store root, keyed child layer, or index branch — is an
-iterable. The `for`-loop forms that walk one, including single versus two loop
-variables and the lazy-streaming guarantee, are described under Loops in
-[Control Flow And Errors](control-flow-and-effects.md). The traversal builtins
-below name the common walk shapes.
+A durable collection — a store root, keyed child layer, or index branch — is
+iterated with a `for` loop; the key-first head, single versus two loop variables,
+the `reversed` direction keyword, and the lazy-streaming guarantee are described
+under Loops in [Control Flow And Errors](control-flow-and-effects.md). Saved data
+is never materialized as a value. The builtins below cover local materialization,
+counting, and ordered neighbors.
 
 | Builtin | Meaning |
 |---|---|
-| `keys(collection)` | Element addresses |
-| `values(collection)` | Stored values |
-| `entries(collection)` | Address and stored-value bindings in a two-name loop head |
+| `keys(collection)` | A local sequence of a local collection's addresses |
+| `values(collection)` | A local sequence of a local collection's stored values |
 | `count(path)` | Populated immediate children, or path presence |
-| `reversed(iterable)` | The same iterable shape in reverse key order |
 | `next(element)` | The nearest stored neighbor identity in key order |
 | `prev(element)` | The nearest stored neighbor identity, the other way |
 
-`keys(...)` is the lightest traversal shape when code only needs identities,
-positions, map keys, or other addresses. Over a durable collection these
-builtins are loop-iterable forms only: materializing durable saved data as a
-value is rejected, so iterate the result directly. Because the result is a
-stream, not a value, wrapping a saved traversal in `count`, `keys`, or `values`
-— such as `count(reversed(^books))` or `values(keys(^books))` — is rejected at
-check; count or iterate the saved layer itself. Over a local collection,
-`keys(...)` yields an address sequence that can be passed around as a value.
-`values(...)` yields stored values where value materialization is available.
-`entries(...)` is not a value: use it only as `for key, value in entries(...)`,
-or inside `reversed(entries(...))` in that same two-name loop-head position.
+`keys(...)` and `values(...)` materialize a local sequence over a local
+collection — a keyed `var`, a keyed parameter, or a sequence value. `keys(...)`
+yields the addresses and `values(...)` yields the stored values, each a `sequence`
+value that can be bound, passed, or returned. They are rejected over any saved
+path: durable saved data is never materialized as a value, so iterate it with
+`for ... in`. They are also rejected directly as a loop-head iterable
+(`for k in keys(xs)`), where the key-first head already binds addresses; bind the
+sequence first when a materialized copy is wanted.
+
 Sequences and keyed maps are conveniences over saved tree layers, not separate
 database features. Key-only collections such as non-unique index branches do
 not have separate values; their generated marker values are an inspection
@@ -81,12 +78,12 @@ evolution tools.
 
 ### Stored Entries In Key Order
 
-Every form of iteration — `for`, `keys(...)`, `values(...)`, `entries(...)`,
-`reversed(...)`, and `next(...)`/`prev(...)` — visits only **stored** entries, in
-key order, and **skips holes**. There are no placeholder positions to step onto:
-deleting an entry removes it from every traversal, and a gap left by a delete or
-by sparse keys is passed over rather than visited. This is the storage guarantee
-the ordered-navigation helpers below rest on.
+Every form of iteration — a `for` loop, forward or `reversed`, and
+`next(...)`/`prev(...)` — visits only **stored** entries, in key order, and
+**skips holes**. There are no placeholder positions to step onto: deleting an
+entry removes it from every traversal, and a gap left by a delete or by sparse
+keys is passed over rather than visited. This is the storage guarantee the
+ordered-navigation helpers below rest on.
 
 Do not mutate the same tree layer a loop is traversing. The checker rejects
 obvious cases. When a dynamic path writes the layer currently being traversed,
@@ -111,38 +108,6 @@ paths, store an explicit counter or use a declared index.
 
 String and byte lengths use `std::text::length(text)` and
 `std::bytes::length(value)`.
-
-### Reverse Iteration
-
-`reversed(iterable)` yields the same elements as the iterable in reverse key
-order. It works over a layer or index branch directly, over `keys(...)` of either,
-over `values(...)`, over `entries(...)` in a two-name loop head, and over an
-in-memory `sequence`:
-
-```mw
-for id in reversed(^books)
-    if const title = ^books(id).title
-        print(title)
-
-for pos in reversed(^books(id).tags)
-    if const tag = ^books(id).tags(pos)
-        print(tag)
-
-for word in reversed(values(std::text::split(line, ",")))
-    print(word)
-```
-
-Over a saved layer the reversal streams stored keys from high to low — it is a
-true reverse, not a copy of the forward result reversed after the fact. An early
-`break` stops the scan. A composite identity reverses at every key level, so
-`reversed(^enrollments)` is the exact reverse of `^enrollments`, not its
-outermost key flipped over a forward tail. Over a `sequence` value, the elements
-are reversed directly.
-
-A saved traversal is iterated, never materialized as a value, so it cannot be
-re-reversed: `reversed(reversed(^books))` is rejected at check. Reverse a saved
-layer once and iterate it directly. (Re-reversing an in-memory `sequence` is
-fine, since a `sequence` is already a materialized value.)
 
 ### Stored Neighbors
 

@@ -1163,7 +1163,7 @@ fn repeated_text_args_collect_scalar_sequences_in_argv_order() {
     let program = checked_program(
         "pub fn sum(xs: sequence[int]): int\n\
          \x20   var total = 0\n\
-         \x20   for x in values(xs)\n\
+         \x20   for k, x in xs\n\
          \x20       total = total + x\n\
          \x20   return total\n",
     );
@@ -1347,7 +1347,7 @@ fn text_args_decode_scalar_sequence_elements_as_language_literals() {
     let program = checked_program(
         "pub fn check(spans: sequence[duration]): int\n\
          \x20   var total = 0.hours\n\
-         \x20   for span in values(spans)\n\
+         \x20   for k, span in spans\n\
          \x20       total = total + span\n\
          \x20   if total == 3.hours\n\
          \x20       return 1\n\

@@ -149,17 +149,18 @@ impl CheckedBinaryOp {
     }
 }
 
+/// The lowered loop-head names, outermost-first: `names[0]` is the key a single
+/// binding takes; additional names bind the remaining key columns and the leaf
+/// value per the head arity. The parser guarantees the vector is non-empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedForBinding {
-    pub first: String,
-    pub second: Option<String>,
+    pub names: Vec<String>,
 }
 
 impl CheckedForBinding {
     pub(super) fn lower(binding: &syntax::ForBinding) -> Self {
         Self {
-            first: binding.first.clone(),
-            second: binding.second.clone(),
+            names: binding.names.iter().map(|n| n.name.clone()).collect(),
         }
     }
 }

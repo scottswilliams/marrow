@@ -4,22 +4,21 @@ use std::cmp::Ordering;
 use std::ops::ControlFlow;
 
 use marrow_check::{
-    CheckedBody as ExecBody, CheckedExpr as ExecExpr, CheckedForBinding as ForBinding,
+    CheckedBody as ExecBody, CheckedExpr as ExecExpr, CheckedForBinding as ForBinding, LoopOrder,
 };
 use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{Direction, durable_collection_value, peel_reversed, values_or_entries};
+use crate::collection::Direction;
 use crate::collection::{
-    enumerate_local_keys_call_arg, enumerate_reversed_local_keys_call_arg,
-    materialize_local_collection_dir,
+    durable_collection_value, enumerate_local_keys_call_arg,
+    enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir,
 };
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
 use crate::range_expr::checked_range;
-use crate::read::keys_argument;
 use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};
 use crate::value::Value;
 
@@ -56,79 +55,64 @@ pub(crate) fn eval_while(
 
 pub(crate) fn eval_for(
     binding: &ForBinding,
+    order: LoopOrder,
     iterable: &ExecExpr,
     step: Option<&ExecExpr>,
     body: &ExecBody,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if let Some(second) = binding.second.as_deref() {
-        return eval_two_name_for(&binding.first, second, iterable, body, span, env);
-    }
-
     if is_range_expr(iterable) {
+        // A range's direction is spelled with its endpoints and `by`; the checker
+        // rejects `reversed` over a range, so a range head is always forward here.
         return eval_range_for(binding, iterable, step, body, span, env);
     }
-
-    eval_single_name_collection_for(binding, iterable, body, span, env)
+    let dir = match order {
+        LoopOrder::Forward => Direction::Ascending,
+        LoopOrder::Reversed => Direction::Descending,
+    };
+    // A single binding is key-first (one streamed key column, no value); an
+    // (n+1)-name head binds every remaining key column plus the leaf value.
+    let names = &binding.names;
+    let with_value = names.len() >= 2;
+    let key_columns = if names.len() == 1 { 1 } else { names.len() - 1 };
+    if let Some(saved_loop) = SavedLoopSpec::from_head(iterable, key_columns, with_value, dir) {
+        return saved_loop.run(env, &mut |row, env| {
+            loop_step_flow(run_row_body(names, row, body, env)?)
+        });
+    }
+    eval_local_for(names, iterable, dir, body, span, env)
 }
 
-fn eval_two_name_for(
-    first: &str,
-    second: &str,
+/// A `for` over a local collection: a single binding streams the collection's keys
+/// (a sequence's 1-based positions), a two-name binding pairs each key with its
+/// value. `dir` walks those keys ascending or descending.
+fn eval_local_for(
+    names: &[String],
     iterable: &ExecExpr,
+    dir: Direction,
     body: &ExecBody,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if is_range_expr(iterable) {
-        return Err(unsupported("a two-name binding over a range", span));
-    }
-    if let Some(saved_loop) = SavedLoopSpec::from_iterable(iterable, true) {
-        return saved_loop.run(env, &mut |row, env| {
-            // A two-name head always requests `Entries`, which only ever yields pair
-            // rows; the `else` guards that shape contract rather than reachable input.
-            let SavedLoopRow::Pair(key, value) = row else {
-                return Err(non_pair_iterable(span));
-            };
-            loop_step_flow(run_two_name_body(first, second, key, value, body, env)?)
-        });
-    }
-    let entries = eval_collection_entry_rows(iterable, span, env)?;
-    for (key, value) in entries {
-        match run_two_name_body(first, second, key, value, body, env)? {
-            LoopStep::Iterate => {}
-            LoopStep::Stop => break,
-            LoopStep::Propagate(flow) => return Ok(flow),
+    if names.len() >= 2 {
+        let rows = materialize_local_collection_dir(eval_expr(iterable, env)?, dir, span)?;
+        for (key, value) in rows {
+            match run_row_body(names, SavedLoopRow::Full(vec![key], value), body, env)? {
+                LoopStep::Iterate => {}
+                LoopStep::Stop => break,
+                LoopStep::Propagate(flow) => return Ok(flow),
+            }
         }
+        return Ok(Flow::Normal);
     }
-    Ok(Flow::Normal)
-}
-
-fn eval_single_name_collection_for(
-    binding: &ForBinding,
-    iterable: &ExecExpr,
-    body: &ExecBody,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Flow, RuntimeError> {
-    if let Some(saved_loop) = SavedLoopSpec::from_iterable(iterable, false) {
-        return saved_loop.run(env, &mut |row, env| {
-            let value = match row {
-                SavedLoopRow::Single(value) => value,
-                SavedLoopRow::Pair(_, _) => {
-                    return Err(unsupported(
-                        "entries(...) is only valid in a two-name loop head",
-                        span,
-                    ));
-                }
-            };
-            loop_step_flow(run_single_name_body(&binding.first, value, body, env)?)
-        });
-    }
-    let values = eval_collection(iterable, env)?;
-    for value in values {
-        match run_single_name_body(&binding.first, value, body, env)? {
+    let keys = match dir {
+        Direction::Ascending => enumerate_local_keys_call_arg(iterable, span, env)?,
+        Direction::Descending => enumerate_reversed_local_keys_call_arg(iterable, span, env)?,
+    };
+    let keys = keys.ok_or_else(|| durable_collection_value(span))?;
+    for key in keys {
+        match run_row_body(names, SavedLoopRow::Key(key), body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
@@ -145,9 +129,10 @@ fn eval_range_for(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
+    let first = &binding.names[0];
     let mut range = range_iter(iterable, step, span, env)?;
     while let Some(value) = range.next_value(span)? {
-        match run_single_name_body(&binding.first, value, body, env)? {
+        match run_single_name_body(first, value, body, env)? {
             LoopStep::Iterate => {}
             LoopStep::Stop => break,
             LoopStep::Propagate(flow) => return Ok(flow),
@@ -173,17 +158,25 @@ fn run_single_name_body(
     Ok(classify(flow?))
 }
 
-fn run_two_name_body(
-    first: &str,
-    second: &str,
-    key: Value,
-    value: Value,
+/// Bind a streamed row to the head names and run the body. A key-only row binds the
+/// single key-first name; a full row binds every key column outermost-first then the
+/// leaf value to the final name.
+fn run_row_body(
+    names: &[String],
+    row: SavedLoopRow,
     body: &ExecBody,
     env: &mut Env<'_>,
 ) -> Result<LoopStep, RuntimeError> {
     env.push_scope();
-    env.bind(first.to_string(), key, false);
-    env.bind(second.to_string(), value, false);
+    match row {
+        SavedLoopRow::Key(value) => env.bind(names[0].clone(), value, false),
+        SavedLoopRow::Full(columns, leaf) => {
+            for (name, value) in names.iter().zip(columns) {
+                env.bind(name.clone(), value, false);
+            }
+            env.bind(names[names.len() - 1].clone(), leaf, false);
+        }
+    }
     let flow = eval_block(body, env);
     env.pop_scope();
     Ok(classify(flow?))
@@ -405,82 +398,4 @@ fn duration_whole_days(nanos: i128, span: SourceSpan) -> Result<i64, RuntimeErro
         ));
     }
     i64::try_from(nanos / NANOS_PER_DAY).map_err(|_| overflow(span))
-}
-
-/// What a single-name local-collection loop binds. A local collection streams its
-/// keys: a local sequence is a 1-based integer-keyed tree, so `for x in xs` binds
-/// its positions exactly as a keyed tree binds its keys and a saved sequence binds
-/// its positions, with `reversed` walking those keys descending. `values(...)` is
-/// the explicit value view, materialized to its element sequence.
-pub(crate) fn eval_collection(
-    iterable: &ExecExpr,
-    env: &mut Env<'_>,
-) -> Result<Vec<Value>, RuntimeError> {
-    let (inner, direction) = peel_reversed(iterable);
-    if is_value_view(inner) {
-        return match eval_expr(inner, env)? {
-            Value::Sequence(items) => {
-                let mut values = items.into_values();
-                if direction == Direction::Descending {
-                    values.reverse();
-                }
-                Ok(values)
-            }
-            _ => Err(unsupported("iterating this value", iterable.span())),
-        };
-    }
-    let layer = keys_argument(inner).unwrap_or(inner);
-    let keys = match direction {
-        Direction::Ascending => enumerate_local_keys_call_arg(layer, iterable.span(), env)?,
-        Direction::Descending => {
-            enumerate_reversed_local_keys_call_arg(layer, iterable.span(), env)?
-        }
-    };
-    keys.ok_or_else(|| durable_collection_value(iterable.span()))
-}
-
-/// Whether `iterable` is an explicit value view — `values(...)` — that materializes
-/// element values rather than keys. The caller peels any `reversed` wrapper first.
-fn is_value_view(iterable: &ExecExpr) -> bool {
-    matches!(
-        values_or_entries(iterable),
-        Some(call) if matches!(call.kind, crate::collection::MaterializeKind::Values)
-    )
-}
-
-/// A two-name head materializes pair rows from a local keyed collection. Every
-/// `reversed(...)` wrapper composes by parity into the walk direction, so the base
-/// keyed collection is resolved directly rather than through a collapsed value —
-/// keeping `reversed(reversed(x)) == x` and every key paired with its own value.
-fn eval_collection_entry_rows(
-    iterable: &ExecExpr,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Vec<(Value, Value)>, RuntimeError> {
-    let (inner, direction) = peel_reversed(iterable);
-    let layer = match values_or_entries(inner) {
-        Some(call) if matches!(call.kind, crate::collection::MaterializeKind::Entries) => {
-            call.layer
-        }
-        Some(_) => return Err(non_pair_iterable(span)),
-        None => inner,
-    };
-    if layer.saved_place().is_some() {
-        return Err(durable_collection_value(iterable.span()));
-    }
-    match eval_expr(layer, env)? {
-        value @ (Value::LocalTree(_) | Value::Sequence(_)) => {
-            materialize_local_collection_dir(value, direction, iterable.span())
-        }
-        _ => Err(non_pair_iterable(span)),
-    }
-}
-
-/// A two-name binding requires pair rows; a scalar iterable has no keys to bind, so
-/// the head must wrap it in `entries(...)`.
-fn non_pair_iterable(span: SourceSpan) -> RuntimeError {
-    unsupported(
-        "a two-name binding over a non-pair iterable (use entries(...))",
-        span,
-    )
 }

@@ -10,8 +10,9 @@
 use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
-    FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ResourceDecl, ResourceMember,
-    Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget, TokenKind, TypeExpr, UnaryOp,
+    FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, ParamDecl, ResourceDecl,
+    ResourceMember, Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget, TokenKind,
+    TypeExpr, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -1120,6 +1121,7 @@ fn format_statement_with_comments(
         }
         Statement::For {
             binding,
+            order,
             iterable,
             step,
             body,
@@ -1131,7 +1133,7 @@ fn format_statement_with_comments(
                 start_byte: span.start_byte,
                 level,
             };
-            return format_for(ctx, binding, iterable, step.as_ref(), body);
+            return format_for(ctx, binding, *order, iterable, step.as_ref(), body);
         }
         Statement::Transaction { body, span } => {
             let ctx = StatementFormatContext {
@@ -1286,21 +1288,28 @@ fn format_else_chain(
 fn format_for(
     ctx: StatementFormatContext<'_, '_>,
     binding: &ForBinding,
+    order: LoopOrder,
     iterable: &Expression,
     step: Option<&Expression>,
     body: &Block,
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
-    let binding = match &binding.second {
-        Some(second) => format!("{}, {second}", binding.first),
-        None => binding.first.clone(),
+    let binding = binding
+        .names
+        .iter()
+        .map(|name| name.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order = match order {
+        LoopOrder::Forward => "",
+        LoopOrder::Reversed => "reversed ",
     };
     let step = match step {
         Some(step) => format!(" by {}", format_expression_at(step, ctx.level)),
         None => String::new(),
     };
     let header = format!(
-        "{pad}for {binding} in {}{step}",
+        "{pad}for {binding} in {order}{}{step}",
         format_expression_at(iterable, ctx.level)
     );
     format_header_block(ctx, header, body)

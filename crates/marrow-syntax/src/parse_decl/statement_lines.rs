@@ -12,7 +12,9 @@ use super::tokens::{
 };
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
-use crate::ast::{CompoundAssignOp, Expression, ForBinding, KeyParam, Statement, TypeExpr};
+use crate::ast::{
+    CompoundAssignOp, Expression, ForBinding, ForName, KeyParam, LoopOrder, Statement, TypeExpr,
+};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
     UnsupportedSyntax,
@@ -420,26 +422,43 @@ pub(super) fn parse_if_const_head(
     Some((name, ty, value))
 }
 
-/// Parse a `for` header `binding in iterable [by step]` into the loop binding,
-/// the iterable expression, and the optional range step. Returns `None` if the
-/// `in` keyword or binding is malformed. `by` is a contextual keyword: it splits
-/// the header only as a bare top-level word, so a name `by` elsewhere is unaffected.
+/// Parse a `for` header `binding in [reversed] iterable [by step]` into the loop
+/// binding, traversal order, the iterable expression, and the optional range step.
+/// Returns `None` if the `in` keyword or binding is malformed, or if `reversed`
+/// stands in the head slot with no iterable after it. `reversed` is a reserved
+/// head-slot keyword: an identifier spelling `reversed` immediately after `in` is
+/// always the order keyword, never the iterable. `by` is a contextual keyword: it
+/// splits the header only as a bare top-level word, so a name `by` elsewhere is
+/// unaffected.
 pub(super) fn parse_for_header(
     source: &str,
     header: &[Token],
-) -> Option<(ForBinding, Expression, Option<Expression>)> {
+) -> Option<(ForBinding, LoopOrder, Expression, Option<Expression>)> {
     let in_index = find_top_level(header, TokenKind::Keyword(Keyword::In))?;
     let binding = parse_for_binding(source, &header[..in_index])?;
     let after_in = &header[in_index + 1..];
-    let (iterable_tokens, step) = match find_top_level_by(source, after_in) {
+    let (order, rest) = match after_in.first() {
+        Some(token) if is_reversed_keyword(source, token) => (LoopOrder::Reversed, &after_in[1..]),
+        _ => (LoopOrder::Forward, after_in),
+    };
+    // A bare `reversed` in the head slot has no iterable to walk; the empty rest
+    // fails `expr_of_in_header` below, which the caller reports as a for-header error.
+    let (iterable_tokens, step) = match find_top_level_by(source, rest) {
         Some(by_index) => {
-            let step = expr_of_in_header(source, &after_in[by_index + 1..])?;
-            (&after_in[..by_index], Some(step))
+            let step = expr_of_in_header(source, &rest[by_index + 1..])?;
+            (&rest[..by_index], Some(step))
         }
-        None => (after_in, None),
+        None => (rest, None),
     };
     let iterable = expr_of_in_header(source, iterable_tokens)?;
-    Some((binding, iterable, step))
+    Some((binding, order, iterable, step))
+}
+
+/// Whether `token` is the head-slot `reversed` keyword: an ordinary identifier
+/// spelling `reversed`. It is reserved only in the loop-head order slot; anywhere
+/// else it is a normal name.
+fn is_reversed_keyword(source: &str, token: &Token) -> bool {
+    token.kind == TokenKind::Identifier && token.text(source) == "reversed"
 }
 
 /// Index of a top-level contextual `by` in a range-for header. `by` is a plain
@@ -485,19 +504,31 @@ pub(super) fn parse_catch_header(
     Ok((name, ty))
 }
 
+/// Parse the comma-separated loop-head names `a`, `a, b`, `a, b, c`, ... into a
+/// non-empty name vector, each name carrying its own span. Names alternate with
+/// commas; any other shape (empty, trailing comma, non-identifier) fails the header.
 fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
-    let ident = |token: &Token| {
-        (token.kind == TokenKind::Identifier).then(|| token.text(source).to_string())
-    };
-    match tokens {
-        [first] => Some(ForBinding {
-            first: ident(first)?,
-            second: None,
-        }),
-        [first, comma, second] if comma.kind == TokenKind::Comma => Some(ForBinding {
-            first: ident(first)?,
-            second: Some(ident(second)?),
-        }),
-        _ => None,
+    if tokens.is_empty() {
+        return None;
     }
+    let mut names = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if index % 2 == 0 {
+            if token.kind != TokenKind::Identifier {
+                return None;
+            }
+            names.push(ForName {
+                name: token.text(source).to_string(),
+                span: token.span,
+            });
+        } else if token.kind != TokenKind::Comma {
+            return None;
+        }
+    }
+    // A trailing comma leaves the final token at an even index without a following
+    // name, so the loop ends on a comma — reject that dangling separator.
+    if tokens.len() % 2 == 0 {
+        return None;
+    }
+    Some(ForBinding { names })
 }

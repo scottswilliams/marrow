@@ -380,7 +380,7 @@ fn a_bare_sparse_field_of_a_loop_bound_group_entry_must_be_resolved() {
         "loop-group-sparse-bare",
         &format!(
             "{GROUP_LOOP_PRELUDE}fn f()\n\
-             \x20   for b in values(^libraries(1).books)\n\
+             \x20   for k, b in ^libraries(1).books\n\
              \x20       print(b.subtitle)\n"
         ),
     );
@@ -392,7 +392,7 @@ fn guards_resolve_a_sparse_field_of_a_loop_bound_group_entry() {
         "loop-group-sparse-guards",
         &format!(
             "{GROUP_LOOP_PRELUDE}fn f()\n\
-             \x20   for b in values(^libraries(1).books)\n\
+             \x20   for k, b in ^libraries(1).books\n\
              \x20       print(b.subtitle ?? \"\")\n\
              \x20       if exists(b.subtitle)\n\
              \x20           print(b.subtitle)\n"

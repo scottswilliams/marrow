@@ -166,6 +166,11 @@ pub const CHECK_KEY_REQUIRES_SINGLE_KEY: &str = Code::CheckKeyRequiresSingleKey.
 /// non-unique index branch. These shapes are valid for key traversal, but they do
 /// not have materialized values distinct from their keys.
 pub const CHECK_COLLECTION_UNSUPPORTED: &str = Code::CheckCollectionUnsupported.as_str();
+/// A `for` head binds the wrong number of names for its iterable's arity.
+pub const CHECK_LOOP_HEAD_ARITY: &str = Code::CheckLoopHeadArity.as_str();
+/// A `for` head iterable is a direct `keys(...)`/`values(...)` view call; iterate
+/// the collection directly instead.
+pub const CHECK_LOOP_HEAD_VIEW_CALL: &str = Code::CheckLoopHeadViewCall.as_str();
 /// A parsed construct is outside the accepted v0.1 source surface.
 pub const CHECK_REJECTED_SURFACE: &str = Code::CheckRejectedSurface.as_str();
 /// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
@@ -704,6 +709,24 @@ pub enum ConditionTypeFault {
     IfConstRequiresBindable,
 }
 
+/// The view builtin a `for` head names directly, for `check.loop_head_view_call`.
+/// The head teaches iterate-in-place, so which builtin was misused is a typed
+/// discriminant, not prose to parse back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinView {
+    Keys,
+    Values,
+}
+
+impl BuiltinView {
+    pub fn spelling(self) -> &'static str {
+        match self {
+            Self::Keys => "keys",
+            Self::Values => "values",
+        }
+    }
+}
+
 /// The source of a name that participates in a `check.surface_collision`
 /// diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1025,6 +1048,11 @@ pub enum DiagnosticPayload {
     EvolveTransform(EvolveTransformFault),
     /// `check.collection_unsupported`: a lookup names no declared index.
     SuggestedIndex { declaration: String },
+    /// `check.loop_head_arity`: the iterable's key-column count and the number of
+    /// names the head bound, so the LSP keys on arity as a distinct condition.
+    LoopHeadArity { column_count: usize, given: usize },
+    /// `check.loop_head_view_call`: the view builtin the head named directly.
+    LoopHeadViewCall(BuiltinView),
     /// `check.unresolved_name`: the bare name that resolved to no binding. Carries the
     /// name so repeated uses of one undeclared name collapse to a single root cause.
     UnresolvedName { name: String },

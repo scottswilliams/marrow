@@ -726,6 +726,11 @@ pub enum Statement {
     },
     For {
         binding: ForBinding,
+        /// Traversal direction of the head. `reversed` is a reserved keyword in the
+        /// head slot between `in` and the iterable; everywhere else it is an ordinary
+        /// identifier. A typed enum, not a `bool`: it selects behavior the runtime
+        /// must consume.
+        order: LoopOrder,
         iterable: Expression,
         /// The `by` step of a range header (`for x in lo..hi by step`), if one was
         /// written. Only a range iterable accepts a step; the checker rejects a step
@@ -792,12 +797,31 @@ pub struct CatchClause {
     pub block: Block,
 }
 
-/// The loop variable(s) of a `for` statement: `for first in ...` or
-/// `for first, second in ...`.
+/// The loop variable(s) of a `for` statement: `for k in ...`,
+/// `for k, v in ...`, or the composite-layer `for c0, c1, .., v in ...`. The
+/// binding is a non-empty name vector; the parser guarantees `names` holds at
+/// least one entry. A single name binds the key; additional names bind the
+/// remaining key columns and the leaf value, per the loop-head arity rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForBinding {
-    pub first: String,
-    pub second: Option<String>,
+    pub names: Vec<ForName>,
+}
+
+/// One bound name of a `for` head, carrying its own span for per-name arity
+/// diagnostics and editor cursors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForName {
+    pub name: String,
+    pub span: SourceSpan,
+}
+
+/// Traversal direction of a `for` head. `Reversed` walks a layer's addresses,
+/// a local collection's keys, or a range in descending order; `Forward` is the
+/// default ascending walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopOrder {
+    Forward,
+    Reversed,
 }
 
 impl Statement {

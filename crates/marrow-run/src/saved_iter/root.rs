@@ -16,7 +16,7 @@ use crate::read::{
 };
 use crate::value::saved_key_to_value;
 
-use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row, walk_keyed_children};
+use super::{ChildCursor, SavedLoopRow, SavedLoopSpec, saved_loop_row, walk_keyed_children};
 
 pub(super) struct RootScan {
     place: CheckedSavedPlace,
@@ -25,7 +25,7 @@ pub(super) struct RootScan {
     exact_prefix: Vec<SavedKey>,
     range: Option<IndexRangeBounds>,
     dir: Direction,
-    shape: LoopShape,
+    with_value: bool,
     span: SourceSpan,
 }
 
@@ -52,7 +52,7 @@ impl RootScan {
             exact_prefix: address.exact_prefix,
             range: address.range,
             dir: spec.dir,
-            shape: spec.shape,
+            with_value: spec.with_value,
             span: spec.span,
         })
     }
@@ -106,7 +106,7 @@ impl RootScan {
         } else {
             collected_identity_value(&identity, Some(&self.place.root), self.span)?
         };
-        let row = shape_row(self.shape, key, || {
+        let row = saved_loop_row(self.with_value, vec![key], || {
             read_resource(&self.place, &identity, self.span, env)
         })?;
         visit(row, env)

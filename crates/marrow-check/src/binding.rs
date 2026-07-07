@@ -1247,13 +1247,10 @@ impl UseWalker<'_, '_> {
     ) {
         self.walk_expr(iterable, scope, type_scope);
         let mut frame = HashMap::new();
-        if let Some(span) = for_binding_name_span(self.source, statement_span, &binding.first) {
-            frame.insert(binding.first.clone(), self.define_local(span));
-        }
-        if let Some(second) = &binding.second
-            && let Some(span) = for_binding_name_span(self.source, statement_span, second)
-        {
-            frame.insert(second.clone(), self.define_local(span));
+        for name in &binding.names {
+            if let Some(span) = for_binding_name_span(self.source, statement_span, &name.name) {
+                frame.insert(name.name.clone(), self.define_local(span));
+            }
         }
         let type_frame = for_frame(
             self.builder.program,

@@ -3,8 +3,8 @@
 use std::ops::ControlFlow;
 
 use marrow_check::{
-    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedKeyParam,
-    CheckedSavedPlace, CheckedSavedTerminal, StoredValueMeaning,
+    CheckedExpr as ExecExpr, CheckedSavedKeyParam, CheckedSavedPlace, CheckedSavedTerminal,
+    StoredValueMeaning,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -29,39 +29,6 @@ use crate::value::{
 };
 
 pub(crate) const INDEX_SCAN_PAGE_LIMIT: usize = 128;
-
-/// The single argument of a `reversed(<iterable>)` call. Lets collection helpers
-/// see through the wrapper without changing the saved layer they traverse.
-pub(crate) fn reversed_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
-    let ExecExpr::Call { target, args, .. } = expr else {
-        return None;
-    };
-    if !matches!(
-        target,
-        CheckedCallTarget::Builtin(CheckedBuiltinCall::Reversed)
-    ) {
-        return None;
-    }
-    match args.as_slice() {
-        [arg] if arg.name.is_none() => Some(&arg.value),
-        _ => None,
-    }
-}
-
-/// The single argument of a `keys(<path>)` call, or `None` for any other
-/// expression. Shared by the loop materializer and the standalone `keys` builtin.
-pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
-    let ExecExpr::Call { target, args, .. } = expr else {
-        return None;
-    };
-    if !matches!(target, CheckedCallTarget::Builtin(CheckedBuiltinCall::Keys)) {
-        return None;
-    }
-    match args.as_slice() {
-        [arg] if arg.name.is_none() => Some(&arg.value),
-        _ => None,
-    }
-}
 
 /// An ordered range supplied for the final scanned index component. A scalar
 /// component sorts by its order-preserving key bytes, so the store scans a byte

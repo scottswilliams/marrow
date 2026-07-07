@@ -935,8 +935,6 @@ fn intrinsic_completion_callables_enumerate_bare_callable_facts() {
         "keys",
         "count",
         "values",
-        "entries",
-        "reversed",
         "next",
         "prev",
         "key",

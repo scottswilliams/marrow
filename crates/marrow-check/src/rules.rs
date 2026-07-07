@@ -15,7 +15,7 @@ use marrow_syntax::{
     format_expression,
 };
 
-use crate::checks::{check_const_int_overflow, check_entries_value_position, check_range_value};
+use crate::checks::{check_const_int_overflow, check_range_value};
 use crate::typerules::{LiteralSign, check_literal_range, negated_integer_literal};
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_COMMIT_AMPLIFICATION, CheckDiagnostic};
@@ -115,7 +115,6 @@ pub(crate) fn check_const_value(
     }
     check_literal_ranges(file, value, out);
     check_const_int_overflow(file, value, std::slice::from_ref(const_ints), out);
-    check_entries_value_position(file, value, out);
     check_range_value(file, value, out);
 }
 
@@ -294,12 +293,13 @@ fn walk_statement(
                 walk_block(file, block, immutable, local_collections, out);
             }
         }
-        // A loop variable is immutable across the loop body.
+        // Every loop variable is immutable across the loop body.
         Statement::For { binding, body, .. } => {
-            let mut bound = vec![(binding.first.as_str(), ImmutableKind::LoopVariable)];
-            if let Some(second) = &binding.second {
-                bound.push((second.as_str(), ImmutableKind::LoopVariable));
-            }
+            let bound: Vec<(&str, ImmutableKind)> = binding
+                .names
+                .iter()
+                .map(|name| (name.name.as_str(), ImmutableKind::LoopVariable))
+                .collect();
             walk_block_with_immutable(file, body, immutable, local_collections, &bound, out);
         }
         Statement::While { body, .. } | Statement::Transaction { body, .. } => {
@@ -477,12 +477,31 @@ fn walk_loop_control_flow(
     }
 }
 
-/// A saved layer an enclosing `for` loop is traversing, with the loop's key binding.
-/// A field write into this layer at the loop key revisits the current entry and is
-/// safe; a write at any other key may insert or rewrite a sibling mid-traversal.
+/// A saved layer an enclosing `for` loop is traversing, with the loop's bound
+/// key-column names, outermost-first. A field write into this layer at exactly the
+/// loop's cursor — every key column bound positionally to its live loop name —
+/// revisits the current entry and is safe; any other key set may insert or rewrite
+/// a sibling mid-traversal.
+///
+/// The leaf value name of an (n+1)-name head is not a key and is not tracked. A slot
+/// is cleared to `None` once its name is rebound in the body: a rebound name no
+/// longer denotes the live loop key, so the whole exemption dies with it (failing
+/// closed on shadowing).
 struct TraversedLayer {
     text: String,
-    loop_key: Option<String>,
+    column_keys: Vec<Option<String>>,
+}
+
+/// The bound key-column names of a `for` head, outermost-first: a 1-name head binds
+/// its single key column; an (n+1)-name head binds all n key columns, and its final
+/// name is the leaf value, which is not a key.
+fn head_column_keys(binding: &marrow_syntax::ForBinding) -> Vec<Option<String>> {
+    let names = &binding.names;
+    let key_count = if names.len() == 1 { 1 } else { names.len() - 1 };
+    names[..key_count]
+        .iter()
+        .map(|name| Some(name.name.clone()))
+        .collect()
 }
 
 /// Walk a block reporting a write, delete, or append that mutates the same saved
@@ -497,12 +516,8 @@ fn walk_loop_layer_mutations(
     out: &mut Vec<CheckDiagnostic>,
 ) {
     for statement in &block.statements {
-        if let Some(rebound) = rebound_name(statement) {
-            for layer in traversed.iter_mut() {
-                if layer.loop_key.as_deref() == Some(rebound) {
-                    layer.loop_key = None;
-                }
-            }
+        for rebound in rebound_names(statement) {
+            clear_rebound_slot(traversed, rebound);
         }
         if loop_layer_mutation(statement, traversed) {
             out.push(diagnostic_at(
@@ -540,9 +555,15 @@ fn walk_loop_layer_mutations(
                 body,
                 ..
             } => {
+                // A nested loop's own head names may shadow an outer loop key; binding
+                // them permanently clears the matching outer slot, exactly as an
+                // assignment or `const`/`var` rebind does (failing closed on shadowing).
+                for name in &binding.names {
+                    clear_rebound_slot(traversed, &name.name);
+                }
                 let pushed = traversed_layer(iterable).map(|text| TraversedLayer {
                     text,
-                    loop_key: Some(binding.first.clone()),
+                    column_keys: head_column_keys(binding),
                 });
                 let depth = traversed.len();
                 if let Some(layer) = pushed {
@@ -557,6 +578,9 @@ fn walk_loop_layer_mutations(
             Statement::Try { body, catch, .. } => {
                 walk_loop_layer_mutations(file, body, traversed, out);
                 if let Some(catch) = catch {
+                    // The caught-error name binds over the catch block; treat it like any
+                    // other rebind of an outer loop key and clear the matching slot.
+                    clear_rebound_slot(traversed, &catch.name);
                     walk_loop_layer_mutations(file, &catch.block, traversed, out);
                 }
             }
@@ -734,43 +758,11 @@ fn push_append_write_warnings(file: &Path, expr: &Expression, out: &mut Vec<Chec
 }
 
 /// The saved layer a `for` loop traverses, as canonical text, or `None` for a loop
-/// over a range or a local value (the "collect keys first" pattern). Collection-view
-/// wrappers such as `keys`/`values`/`entries`/`reversed` are peeled first.
+/// over a range or a local value (the "collect keys first" pattern). The head
+/// iterable is a bare saved path — traversal direction is the head `reversed`
+/// keyword, not a wrapper, so nothing is peeled.
 fn traversed_layer(iterable: &Expression) -> Option<String> {
-    let path = traversal_path(iterable);
-    is_saved_path(path).then(|| format_expression(path))
-}
-
-/// Peel traversal-preserving wrappers until the saved layer expression remains.
-fn traversal_path(expr: &Expression) -> &Expression {
-    match traversal_argument(expr) {
-        Some(inner) => traversal_path(inner),
-        None => expr,
-    }
-}
-
-/// The sole argument of a `keys`/`values`/`entries`/`reversed` call, or `None` for
-/// any other expression. These wrap a saved layer without changing which layer is
-/// traversed.
-fn traversal_argument(expr: &Expression) -> Option<&Expression> {
-    let Expression::Call { callee, args, .. } = expr else {
-        return None;
-    };
-    let Expression::Name { segments, .. } = callee.as_ref() else {
-        return None;
-    };
-    if segments.len() != 1
-        || !matches!(
-            segments[0].as_str(),
-            "keys" | "values" | "entries" | "reversed"
-        )
-    {
-        return None;
-    }
-    match args.as_slice() {
-        [arg] if arg.name.is_none() => Some(&arg.value),
-        _ => None,
-    }
+    is_saved_path(iterable).then(|| format_expression(iterable))
 }
 
 /// Whether `statement` mutates a layer the enclosing loop is traversing in a way
@@ -781,12 +773,14 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
 /// whole keyed entry the write replaces or the delete removes — is always unsafe at a
 /// traversed layer: replacing an entry clears and rewrites its subtree (and a delete
 /// removes the key), which invalidates the cursor even at the current key. An
-/// *enclosing* step, descended into by a field or a further key, is safe only when its
-/// key is provably the loop's key binding; any other key may insert or rewrite a
-/// sibling mid-traversal, so the conservative rule flags it (failing closed on a
-/// computed-equal key). An `append(path, v)` adds a key to `path`'s own layer (always
-/// unsafe at a matching traversed layer) and, by auto-creating any absent enclosing
-/// entry, may insert a sibling into an enclosing layer just like a write.
+/// *enclosing* step, descended into by a field or a further key, is safe only when it
+/// addresses exactly the loop's cursor — every key column bound positionally to its
+/// live loop name; any other key set may insert or rewrite a sibling mid-traversal, so
+/// the conservative rule flags it (failing closed on a computed key, a swapped order,
+/// an arity mismatch, or a rebound column). An `append(path, v)` adds a key to
+/// `path`'s own layer (always unsafe at a matching traversed layer) and, by
+/// auto-creating any absent enclosing entry, may insert a sibling into an enclosing
+/// layer just like a write.
 fn loop_layer_mutation(statement: &Statement, traversed: &[TraversedLayer]) -> bool {
     match statement {
         Statement::Assign { target, .. } | Statement::CompoundAssign { target, .. } => {
@@ -807,12 +801,12 @@ fn loop_layer_mutation(statement: &Statement, traversed: &[TraversedLayer]) -> b
 /// Whether writing or deleting `place` changes the key set of any traversed layer.
 /// Walks the keyed-entry spine from the place outward. `terminal` marks the outermost
 /// keyed entry as the one the operation replaces or removes whole — that step has no
-/// loop-key exemption; every step reached by descending through it is an enclosing
-/// entry whose loop key is exempt.
+/// cursor exemption; every step reached by descending through it is an enclosing
+/// entry whose exact-cursor address is exempt.
 fn place_inserts_into(place: &Expression, terminal: bool, traversed: &[TraversedLayer]) -> bool {
     match place {
         Expression::Call { callee, args, .. } if is_saved_path(callee) => {
-            keyed_step_unsafe(callee, args.last(), terminal, traversed)
+            keyed_step_unsafe(callee, args, terminal, traversed)
                 || place_inserts_into(callee, false, traversed)
         }
         Expression::Field { base, .. } => place_inserts_into(base, false, traversed),
@@ -820,46 +814,69 @@ fn place_inserts_into(place: &Expression, terminal: bool, traversed: &[Traversed
     }
 }
 
-/// Whether a single keyed step `parent(key)` is an unsafe mutation of a traversed
-/// layer. A terminal step clears or removes the entry, so any matching layer is unsafe;
-/// an enclosing step is unsafe only when its key is not provably the loop key.
+/// Whether a single keyed step `parent(args)` is an unsafe mutation of a traversed
+/// layer. A terminal step clears or removes the entry, so any matching layer is
+/// unsafe; an enclosing step is unsafe unless it addresses exactly the traversed
+/// layer's live cursor.
 fn keyed_step_unsafe(
     parent: &Expression,
-    key: Option<&marrow_syntax::Argument>,
+    args: &[marrow_syntax::Argument],
     terminal: bool,
     traversed: &[TraversedLayer],
 ) -> bool {
     let layer = format_expression(parent);
-    let key = key.filter(|arg| arg.name.is_none()).map(|arg| &arg.value);
-    traversed.iter().any(|t| {
-        t.text == layer
-            && (terminal || !key.is_some_and(|key| key_is_loop_key(key, t.loop_key.as_deref())))
+    traversed
+        .iter()
+        .any(|t| t.text == layer && (terminal || !step_matches_cursor(args, &t.column_keys)))
+}
+
+/// Whether the keyed step's arguments address exactly the traversed layer's live
+/// cursor: the same arity as the head's bound key columns, and every argument a bare
+/// positional name equal to that column's still-live loop name. Anything else — a
+/// computed key, a named argument, a swapped order, an arity mismatch, or a rebound
+/// (cleared) column — fails the match, so the conservative rule flags the write.
+fn step_matches_cursor(args: &[marrow_syntax::Argument], column_keys: &[Option<String>]) -> bool {
+    if args.len() != column_keys.len() {
+        return false;
+    }
+    args.iter().zip(column_keys).all(|(arg, column)| {
+        let (Some(column), Expression::Name { segments, .. }) = (column, &arg.value) else {
+            return false;
+        };
+        arg.name.is_none() && matches!(segments.as_slice(), [name] if name == column)
     })
 }
 
-/// The local name a statement rebinds in the loop body — a `const`/`var`
-/// declaration, or an assignment whose target is a bare local name. Once a loop
-/// variable's name is rebound, it no longer denotes the live loop key, so the
-/// traversed layer drops its loop-key exception and every subsequent field write
-/// is treated as a sibling write (failing closed on shadowing).
-fn rebound_name(statement: &Statement) -> Option<&str> {
-    match statement {
-        Statement::Const { name, .. } | Statement::Var { name, .. } => Some(name),
-        Statement::Assign { target, .. } | Statement::CompoundAssign { target, .. } => {
-            place_root_name(target)
+/// Clear every traversed-layer column slot whose live loop name is `rebound`: once a
+/// bound column name is reassigned, declared over, or shadowed, it no longer denotes
+/// the live cursor, so the exemption for that column dies (and with it the layer's
+/// exact-cursor exemption, since the match now requires every column).
+fn clear_rebound_slot(traversed: &mut [TraversedLayer], rebound: &str) {
+    for layer in traversed.iter_mut() {
+        for column in layer.column_keys.iter_mut() {
+            if column.as_deref() == Some(rebound) {
+                *column = None;
+            }
         }
-        _ => None,
     }
 }
 
-/// Whether `key` is provably the loop's key binding — a bare name equal to the loop
-/// variable. A literal or any computed expression is not provably the loop key, so
-/// the conservative rule treats it as a sibling write.
-fn key_is_loop_key(key: &Expression, loop_key: Option<&str>) -> bool {
-    let (Expression::Name { segments, .. }, Some(loop_key)) = (key, loop_key) else {
-        return false;
-    };
-    matches!(segments.as_slice(), [name] if name == loop_key)
+/// The local names a statement rebinds in the loop body — a `const`/`var`
+/// declaration, an `if const` presence binding (which binds its name over the then
+/// block to an arbitrary key), or an assignment whose target is a bare local name.
+/// Once a loop column's name is rebound it no longer denotes the live loop key; the
+/// clear is conservative and permanent so a name shadowed in one branch fails closed
+/// everywhere after.
+fn rebound_names(statement: &Statement) -> Vec<&str> {
+    match statement {
+        Statement::Const { name, .. }
+        | Statement::Var { name, .. }
+        | Statement::IfConst { name, .. } => vec![name],
+        Statement::Assign { target, .. } | Statement::CompoundAssign { target, .. } => {
+            place_root_name(target).into_iter().collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The saved layer argument of `append(path, value)`, or `None` for any other
@@ -888,35 +905,6 @@ pub(crate) fn is_saved_path(expr: &Expression) -> bool {
         Expression::Call { callee, .. } => is_saved_path(callee),
         _ => false,
     }
-}
-
-/// A traversal of saved data: a saved path, or a `keys`/`values`/`entries`/`reversed`
-/// call wrapping one. Such a traversal yields its elements only by direct iteration;
-/// the runtime refuses to materialize it as a value, so it cannot be nested inside
-/// another value-materializing combinator.
-pub(crate) fn is_saved_traversal(expr: &Expression) -> bool {
-    match traversal_argument(expr) {
-        Some(inner) => is_saved_traversal(inner),
-        None => is_saved_path(expr),
-    }
-}
-
-/// A `keys`/`values`/`entries`/`reversed` call already wrapping a saved traversal.
-/// A bare saved layer can be counted or iterated, but once a combinator has produced a
-/// saved stream the value-materializing combinators (`count`/`keys`/`values`) cannot
-/// consume it, so wrapping such a stream in one of them is rejected.
-pub(crate) fn is_wrapped_saved_traversal(expr: &Expression) -> bool {
-    traversal_argument(expr).is_some() && is_saved_traversal(expr)
-}
-
-/// A `reversed(...)` call over a saved traversal. `reversed` reverses a
-/// `keys`/`values`/`entries` stream or a bare saved layer in place, but reversing the
-/// result of another `reversed` would force the inner stream to materialize, which the
-/// runtime refuses. This is the one wrap `reversed` itself cannot consume.
-pub(crate) fn is_reversed_over_saved_traversal(expr: &Expression) -> bool {
-    matches!(expr, Expression::Call { callee, args, .. }
-        if matches!(callee.as_ref(), Expression::Name { segments, .. } if segments.as_slice() == ["reversed"])
-            && matches!(args.as_slice(), [inner] if inner.name.is_none() && is_saved_traversal(&inner.value)))
 }
 
 /// A writable place: a bare name, a saved root, a field of a place, or a key

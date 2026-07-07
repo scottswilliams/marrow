@@ -11,7 +11,7 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
-use super::{Direction, absent_read, peel_reversed};
+use super::{Direction, absent_read};
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RuntimeError, assign_error, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
@@ -323,8 +323,8 @@ pub(crate) fn enumerate_local_keys_call_arg(
     enumerate_local_keys_in_dir(arg, Direction::Ascending, span, env)
 }
 
-/// Enumerate the keys of a local collection in descending key order, composing with
-/// any `reversed(...)` wrappers so `reversed(reversed(x))` walks ascending again.
+/// Enumerate the keys of a local collection in descending key order. `None` when the
+/// argument is a saved path, which is iterated in place rather than materialized.
 pub(crate) fn enumerate_reversed_local_keys_call_arg(
     arg: &ExecExpr,
     span: SourceSpan,
@@ -335,20 +335,14 @@ pub(crate) fn enumerate_reversed_local_keys_call_arg(
 
 fn enumerate_local_keys_in_dir(
     arg: &ExecExpr,
-    base_dir: Direction,
+    dir: Direction,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<Value>>, RuntimeError> {
-    let (inner, peeled) = peel_reversed(arg);
-    if inner.saved_place().is_some() {
+    if arg.saved_place().is_some() {
         return Ok(None);
     }
-    // A descending base flips the parity the wrappers already composed.
-    let dir = match base_dir {
-        Direction::Ascending => peeled,
-        Direction::Descending => peeled.flip(),
-    };
-    enumerate_local_collection_dir(eval_expr(inner, env)?, dir, span).map(Some)
+    enumerate_local_collection_dir(eval_expr(arg, env)?, dir, span).map(Some)
 }
 
 pub(crate) fn materialize_local_collection_dir(

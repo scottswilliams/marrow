@@ -271,12 +271,12 @@ const REFERENCE_EVOLVED: &str = "module lib\n\
      pub fn seed()\n\
      \x20   print(\"noop\")\n\
      pub fn link()\n\
-     \x20   for author in keys(^authors)\n\
+     \x20   for author in ^authors\n\
      \x20       transaction\n\
      \x20           ^books(1).authorId = author\n\
      \x20       return\n\
      pub fn linkedToFirstAuthor()\n\
-     \x20   for author in keys(^authors)\n\
+     \x20   for author in ^authors\n\
      \x20       const stored: Id(^authors) = ^books(1).authorId ?? author\n\
      \x20       print($\"linked={stored == author}\")\n\
      \x20       return\n";

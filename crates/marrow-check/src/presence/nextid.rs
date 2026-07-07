@@ -245,9 +245,8 @@ impl<'a> Guard<'a> {
                     self.observe_writes(step, scope);
                 }
                 scope.push_frame();
-                scope.bind(&binding.first);
-                if let Some(second) = &binding.second {
-                    scope.bind(second);
+                for name in &binding.names {
+                    scope.bind(name);
                 }
                 self.walk_block(body, scope);
                 scope.pop_frame();

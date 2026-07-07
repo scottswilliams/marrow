@@ -1,4 +1,3 @@
-use super::calls::wrapper_arg;
 use super::keys::binding_key;
 use super::scope::NameScope;
 use super::target::{ReadPlace, ReadTarget, ReadTargetValue, read_target_with_scope};
@@ -107,14 +106,17 @@ pub(super) fn traversal_narrowing(
     binding: &CheckedForBinding,
     scope: &NameScope,
 ) -> Option<ReadTarget> {
-    let two_name_loop = binding.second.is_some();
-    if binding.second.as_deref() == Some(binding.first.as_str()) {
+    // A single binding is key-first, so the first name always binds the streamed
+    // key; the iterable is the bare saved path (traversal direction is the head
+    // `reversed` keyword, not a wrapper). A name reused as a later column would
+    // double-narrow, so a duplicate skips the narrowing.
+    let first = binding.names.first()?;
+    if binding.names[1..].contains(first) {
         return None;
     }
-    let path = loop_key_path(iterable, two_name_loop)?;
-    let mut target = record_root_traversal_target(program, path, scope)
-        .or_else(|| index_record_traversal_target(program, path))?;
-    let key = binding_key(&binding.first, scope)?;
+    let mut target = record_root_traversal_target(program, iterable, scope)
+        .or_else(|| index_record_traversal_target(program, iterable))?;
+    let key = binding_key(first, scope)?;
     target.keys.push(key.text);
     target.key_types.push(key.ty);
     extend_unique(&mut target.key_bindings, key.bindings);
@@ -138,27 +140,6 @@ fn record_root_traversal_target(
     }
     read_target_with_scope(program, path, scope)
         .filter(|target| matches!(target.place, ReadPlace::Saved { .. }))
-}
-
-/// The iterable whose streamed key a `for` loop's first name binds, after a
-/// `reversed(...)` wrapper is peeled: `keys(x)` and a bare single name stream a key,
-/// `entries(x)` and a bare two-name loop stream the first name a key, and `values(x)`
-/// streams no key. The first name binds an entry key exactly when this is `Some`, so
-/// only then does iterating the collection prove that entry's read present.
-fn loop_key_path(iterable: &CheckedExpr, two_name_loop: bool) -> Option<&CheckedExpr> {
-    if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Reversed) {
-        return loop_key_path(arg, two_name_loop);
-    }
-    if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Keys) {
-        return (!two_name_loop).then_some(arg);
-    }
-    if wrapper_arg(iterable, CheckedBuiltinCall::Values).is_some() {
-        return None;
-    }
-    if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Entries) {
-        return two_name_loop.then_some(arg);
-    }
-    Some(iterable)
 }
 
 fn index_record_traversal_target(

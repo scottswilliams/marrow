@@ -665,20 +665,6 @@ fn unknown_cannot_reenter_a_saved_identity_keyspace() {
 }
 
 #[test]
-fn values_loop_does_not_narrow_value_as_an_entry_key() {
-    assert_bare_present_read(
-        "presence-values-loop-not-key",
-        "module books\n\
-             resource Book\n\
-             \x20   scores(pos: int): int\n\
-             store ^books(id: int): Book\n\
-             fn f()\n\
-             \x20   for score in values(^books(1).scores)\n\
-             \x20   \x20   print(^books(1).scores(score))\n",
-    );
-}
-
-#[test]
 fn entries_loop_does_not_narrow_value_as_an_entry_key() {
     assert_bare_present_read(
         "presence-entries-loop-value-not-key",
@@ -687,7 +673,7 @@ fn entries_loop_does_not_narrow_value_as_an_entry_key() {
              \x20   scores(pos: int): int\n\
              store ^books(id: int): Book\n\
              fn f()\n\
-             \x20   for pos, score in entries(^books(1).scores)\n\
+             \x20   for pos, score in ^books(1).scores\n\
              \x20   \x20   print(^books(1).scores(score))\n",
     );
 }
@@ -701,7 +687,7 @@ fn two_binding_keys_loop_does_not_narrow_ordinal_as_a_key() {
              \x20   scores(pos: int): int\n\
              store ^books(id: int): Book\n\
              fn f()\n\
-             \x20   for ordinal, pos in keys(^books(1).scores)\n\
+             \x20   for ordinal, pos in ^books(1).scores\n\
              \x20   \x20   print(^books(1).scores(ordinal))\n",
     );
 }
@@ -715,7 +701,7 @@ fn two_binding_reversed_keys_loop_does_not_narrow_ordinal_as_a_key() {
              \x20   scores(pos: int): int\n\
              store ^books(id: int): Book\n\
              fn f()\n\
-             \x20   for ordinal, pos in reversed(keys(^books(1).scores))\n\
+             \x20   for ordinal, pos in reversed ^books(1).scores\n\
              \x20   \x20   print(^books(1).scores(ordinal))\n",
     );
 }
@@ -768,7 +754,7 @@ fn duplicate_entries_loop_bindings_do_not_narrow_the_visible_value_as_a_key() {
              \x20   scores(pos: int): int\n\
              store ^books(id: int): Book\n\
              fn f()\n\
-             \x20   for x, x in entries(^books(1).scores)\n\
+             \x20   for x, x in ^books(1).scores\n\
              \x20   \x20   print(^books(1).scores(x))\n",
     );
 }

@@ -91,8 +91,7 @@ impl FlowCtx<'_> {
     ) -> Option<ReadTarget> {
         let checked = self.lower(iterable)?;
         let binding = CheckedForBinding {
-            first: binding.first.clone(),
-            second: binding.second.clone(),
+            names: binding.names.iter().map(|n| n.name.clone()).collect(),
         };
         traversal_narrowing(self.program, &checked, &binding, &self.name_scope())
     }

@@ -617,7 +617,7 @@ pub fn rootExists(): bool
 
 pub fn rootKeys(): int
     var n = 0
-    for event in keys(^events)
+    for event in ^events
         n = n + 1
     return n
 
@@ -635,19 +635,19 @@ pub fn noteExists(day: date): bool
 
 pub fn noteKeys(day: date): int
     var n = 0
-    for note_day in keys(^events(day).notes)
+    for note_day in ^events(day).notes
         n = n + 1
     return n
 
 pub fn noteValues(day: date): int
     var n = 0
-    for note in values(^events(day).notes)
+    for k, note in ^events(day).notes
         n = n + 1
     return n
 
 pub fn noteEntries(day: date): int
     var n = 0
-    for note_day, note in entries(^events(day).notes)
+    for note_day, note in ^events(day).notes
         n = n + 1
     return n
 

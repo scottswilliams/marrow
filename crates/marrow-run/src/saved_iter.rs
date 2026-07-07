@@ -6,11 +6,11 @@ use marrow_check::CheckedExpr as ExecExpr;
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{Direction, MaterializeKind, values_or_entries};
+use crate::collection::Direction;
 use crate::env::{Env, Flow, TraversedLayer};
 use crate::error::{RuntimeError, overflow, unsupported};
-use crate::read::{IterableLayer, iterable_layer, keys_argument, reversed_argument};
-use crate::stdlib::{check_key_collection, unique_index_lookup};
+use crate::read::{IterableLayer, iterable_layer};
+use crate::stdlib::unique_index_lookup;
 use crate::value::Value;
 
 mod child_layer;
@@ -26,30 +26,28 @@ use unique::UniqueIndexScan;
 pub(crate) use index::IndexCursor;
 pub(crate) use root::RecordCursor;
 
-#[derive(Clone, Copy)]
-pub(super) enum LoopShape {
-    Keys,
-    Values,
-    Entries,
-}
-
+/// A streamed loop row: a key-first single binding yields the streamed key; an
+/// (n+1)-name head yields every bound key column outermost-first plus the leaf
+/// value.
 pub(crate) enum SavedLoopRow {
-    Single(Value),
-    Pair(Value, Value),
+    Key(Value),
+    Full(Vec<Value>, Value),
 }
 
-/// The single owner of the Keys/Values/Entries row contract. `read_value` is
-/// consulted only when the shape needs the value, so a scan whose values are
-/// unsupported (or gated) pays nothing for `Keys`.
-pub(super) fn shape_row(
-    shape: LoopShape,
-    key: Value,
+/// The single owner of the row contract. `read_value` is consulted only when the
+/// head binds a value, so a key-only head pays nothing to read the leaf.
+pub(super) fn saved_loop_row(
+    with_value: bool,
+    columns: Vec<Value>,
     read_value: impl FnOnce() -> Result<Value, RuntimeError>,
 ) -> Result<SavedLoopRow, RuntimeError> {
-    match shape {
-        LoopShape::Keys => Ok(SavedLoopRow::Single(key)),
-        LoopShape::Values => Ok(SavedLoopRow::Single(read_value()?)),
-        LoopShape::Entries => Ok(SavedLoopRow::Pair(key, read_value()?)),
+    if with_value {
+        Ok(SavedLoopRow::Full(columns, read_value()?))
+    } else {
+        let mut columns = columns;
+        Ok(SavedLoopRow::Key(
+            columns.pop().expect("a key-only row binds one column"),
+        ))
     }
 }
 
@@ -214,53 +212,31 @@ pub(crate) fn count_keyed_children(
 pub(crate) struct SavedLoopSpec<'a> {
     pub(super) layer: &'a ExecExpr,
     pub(super) dir: Direction,
-    pub(super) shape: LoopShape,
-    from_keys_builtin: bool,
+    /// The number of key columns the head binds and the scan streams. A store root
+    /// or index branch collapses to one identity column; a composite child layer
+    /// streams this many columns.
+    pub(super) key_columns: usize,
+    /// Whether the head binds the leaf value at the fully-keyed position.
+    pub(super) with_value: bool,
     pub(super) span: SourceSpan,
 }
 
 impl<'a> SavedLoopSpec<'a> {
-    pub(crate) fn from_iterable(iterable: &'a ExecExpr, two_name: bool) -> Option<Self> {
-        let (iterable, dir) = match reversed_argument(iterable) {
-            Some(inner) => (inner, Direction::Descending),
-            None => (iterable, Direction::Ascending),
-        };
-        if let Some(layer) = keys_argument(iterable) {
-            return (!two_name && layer.saved_place().is_some()).then_some(Self {
-                layer,
-                dir,
-                shape: LoopShape::Keys,
-                from_keys_builtin: true,
-                span: iterable.span(),
-            });
-        }
-        if let Some(inner) = values_or_entries(iterable) {
-            let shape = match inner.kind {
-                MaterializeKind::Values => {
-                    if two_name {
-                        return None;
-                    }
-                    LoopShape::Values
-                }
-                MaterializeKind::Entries => LoopShape::Entries,
-            };
-            return inner.layer.saved_place().is_some().then_some(Self {
-                layer: inner.layer,
-                dir,
-                shape,
-                from_keys_builtin: false,
-                span: iterable.span(),
-            });
-        }
+    /// The loop spec for a saved-path head. The iterable is the bare saved path;
+    /// traversal direction is the head `reversed` keyword, not a wrapper, so there
+    /// is nothing to peel. `key_columns` is the count of bound key columns and
+    /// `with_value` whether the head also binds the leaf.
+    pub(crate) fn from_head(
+        iterable: &'a ExecExpr,
+        key_columns: usize,
+        with_value: bool,
+        dir: Direction,
+    ) -> Option<Self> {
         iterable.saved_place().is_some().then_some(Self {
             layer: iterable,
             dir,
-            shape: if two_name {
-                LoopShape::Entries
-            } else {
-                LoopShape::Keys
-            },
-            from_keys_builtin: false,
+            key_columns,
+            with_value,
             span: iterable.span(),
         })
     }
@@ -270,9 +246,6 @@ impl<'a> SavedLoopSpec<'a> {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        if self.from_keys_builtin {
-            check_key_collection(self.layer, self.span)?;
-        }
         let plan = SavedLoopPlan::new(self, env)?;
         plan.run(env, visit)
     }

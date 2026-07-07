@@ -90,8 +90,8 @@ This shows the main shape:
 - Assignment to an indexed field writes the field and maintains its index entries
   together.
 - A single managed write does not need a user-written transaction.
-- Single-variable durable loops walk addresses. Use two variables or
-  `values(...)` when code needs stored values.
+- Single-variable durable loops walk addresses key-first. Use a second variable
+  when code needs stored values.
 
 ## Reference Map
 
@@ -113,7 +113,7 @@ This shows the main shape:
 - [Cost Model](cost-model.md) defines how storage cost is counted, how to read
   it off the source, and the minimal-plan guarantee.
 - [Builtins](builtins.md) defines always-available helpers such as `exists`,
-  the `?.`/`??` presence operators, `keys`, `values`, `entries`, conversions,
+  the `?.`/`??` presence operators, `keys`, `values`, conversions,
   `append`, `nextId`, output, and errors.
 - [Standard Library](standard-library.md) defines the `std::` modules
   for clock/instant, IO, env/config, text, bytes, math, testing, and logging.

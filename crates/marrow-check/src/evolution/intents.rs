@@ -18,8 +18,7 @@ use marrow_syntax::{
 
 use crate::catalog::{SourceCatalogEntry, source_catalog_entries};
 use crate::checks::{
-    FilePrelude, TransformBlockTypeCheck, check_entries_value_position,
-    check_transform_block_types, file_prelude,
+    FilePrelude, TransformBlockTypeCheck, check_transform_block_types, file_prelude,
 };
 use crate::infer::infer_type;
 use crate::program::TypeNames;
@@ -325,7 +324,6 @@ impl TypeContext<'_> {
             report_target(self.file, target_span(target, span), diagnostics);
             return;
         }
-        check_entries_value_position(self.file, value, diagnostics);
         // Only a populated member target has a leaf type to check the value
         // against; a default on a store root, index, or enum has no leaf type, and
         // its applicability is the apply phase's concern.

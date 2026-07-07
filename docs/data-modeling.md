@@ -390,10 +390,10 @@ for id, book in ^books.byShelf("fiction")
 
 Plain durable iteration streams keys or identities. On a managed root, `^books`
 yields `Id(^books)` values. On a non-unique index branch,
-`^books.byShelf("fiction")` yields the identities in that branch. Use two loop
-variables, `entries(...)`, or `values(...)` when record values are needed. The
-marker values that back non-unique index entries are an internal storage
-detail; no command or language surface exposes them.
+`^books.byShelf("fiction")` yields the identities in that branch. Use a second
+loop variable when record values are needed. The marker values that back
+non-unique index entries are an internal storage detail; no command or language
+surface exposes them.
 
 By traversal, following a stored typed reference:
 

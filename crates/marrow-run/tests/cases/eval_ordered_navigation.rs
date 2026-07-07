@@ -24,16 +24,16 @@ pub fn tag(id: int, t: string)
     const p: int = append(^books(id).tags, t)
 
 pub fn idsDescending()
-    for id in reversed(keys(^books))
+    for id in reversed ^books
         print($\"{{id}}\")
 
 pub fn titlesDescending()
-    for id, book in reversed(^books)
+    for id, book in reversed ^books
         print(book.title)
 
 pub fn nextOfKey(id: int, fallback: string): string
     const wanted: string = ^books(id).title ?? \"\"
-    for current in keys(^books)
+    for current in ^books
         if (^books(current).title ?? \"\") == wanted
             const neighbor: Id(^books) = next(^books(current)) ?? current
             if neighbor == current
@@ -43,7 +43,7 @@ pub fn nextOfKey(id: int, fallback: string): string
 
 pub fn prevOfKey(id: int, fallback: string): string
     const wanted: string = ^books(id).title ?? \"\"
-    for current in keys(^books)
+    for current in ^books
         if (^books(current).title ?? \"\") == wanted
             const neighbor: Id(^books) = prev(^books(current)) ?? current
             if neighbor == current
@@ -52,20 +52,20 @@ pub fn prevOfKey(id: int, fallback: string): string
     return fallback
 
 pub fn firstIdKey(fallback: string): string
-    for current in keys(^books)
+    for current in ^books
         const first: Id(^books) = next(^books) ?? current
         return ^books(first).title ?? fallback
     return fallback
 
 pub fn lastIdKey(fallback: string): string
-    for current in keys(^books)
+    for current in ^books
         const last: Id(^books) = prev(^books) ?? current
         return ^books(last).title ?? fallback
     return fallback
 
 pub fn breakAfterFirst(): int
     var seen = 0
-    for id in reversed(^books)
+    for id in reversed ^books
         seen = seen + 1
         break
     return seen
@@ -752,10 +752,11 @@ fn neighbor_of_a_multi_column_partial_prefix_descends_to_the_first_unfilled_colu
 
 #[test]
 fn reversed_over_an_in_memory_sequence_reverses_directly() {
-    // `reversed(values(std::text::split(...)))` reverses the in-memory element
-    // values — no store involved — so a `for` over it yields them back-to-front.
+    // A `reversed` head over an in-memory sequence walks its positions descending; the
+    // two-name head binds each position and its element, so the elements print
+    // back-to-front — no store involved.
     let program = checked_program(
-        "pub fn rev()\n    for word in reversed(values(std::text::split(\"a,b,c\", \",\")))\n        print(word)\n",
+        "pub fn rev()\n    for pos, word in reversed std::text::split(\"a,b,c\", \",\")\n        print(word)\n",
     );
     let store = TreeStore::memory();
     let outcome = run_entry(&store, checked_entry!(&program, "test::rev")).expect("run");
@@ -766,7 +767,7 @@ fn reversed_over_an_in_memory_sequence_reverses_directly() {
 fn reversed_respects_the_traversed_layer_write_guard() {
     checker_rejects(
         &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear()\n    for id in reversed(keys(^books))\n        delete ^books(id)\n"
+            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear()\n    for id in reversed ^books\n        delete ^books(id)\n"
         ),
         "check.loop_mutates_traversed_layer",
     );
@@ -782,7 +783,7 @@ fn book_shelf_nav() -> String {
     ^books(id).shelf = s
 
 pub fn onShelfReversed(shelf: string)
-    for id in reversed(^books.byShelf(shelf))
+    for id in reversed ^books.byShelf(shelf)
         print($\"{{id}}\")
 "
     )
@@ -834,7 +835,7 @@ fn book_shelf_neighbor() -> String {
 
 pub fn nextOrDefaultKey(id: int, fallback: string): string
     const wanted: string = ^books(id).title ?? \"\"
-    for current in keys(^books)
+    for current in ^books
         if (^books(current).title ?? \"\") == wanted
             const neighbor: Id(^books) = next(^books(current)) ?? current
             if neighbor == current
@@ -846,7 +847,7 @@ pub fn nextOrSelfKey(id: int): string
     return nextOrDefaultKey(id, ^books(id).title ?? \"\")
 
 pub fn lastIdKey(fallback: string): string
-    for current in keys(^books)
+    for current in ^books
         const last: Id(^books) = prev(^books) ?? current
         return ^books(last).title ?? fallback
     return fallback

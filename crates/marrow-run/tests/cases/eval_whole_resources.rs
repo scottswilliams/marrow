@@ -189,7 +189,7 @@ fn sparse_whole_resource_assignment_creates_record_presence() {
          \x20\x20\x20\x20return count(^notes)\n\n\
          pub fn iterCount(): int\n\
          \x20\x20\x20\x20var n = 0\n\
-         \x20\x20\x20\x20for id in keys(^notes)\n\
+         \x20\x20\x20\x20for id in ^notes\n\
          \x20\x20\x20\x20\x20\x20\x20\x20n = n + 1\n\
          \x20\x20\x20\x20return n\n",
     );

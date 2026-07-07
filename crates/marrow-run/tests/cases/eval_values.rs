@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_TYPE, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_TYPE, Value};
 use marrow_store::tree::TreeStore;
 
 #[test]
@@ -299,7 +299,7 @@ fn splits_a_string_and_iterates_the_sequence() {
     let program = checked_program(
         "pub fn f(): string\n\
          \x20   var result = \"\"\n\
-         \x20   for word in values(std::text::split(\"a,b,c\", \",\"))\n\
+         \x20   for k, word in std::text::split(\"a,b,c\", \",\")\n\
          \x20       result = result + word\n\
          \x20   return result\n",
     );
@@ -351,13 +351,15 @@ fn print_renders_local_sequences() {
 }
 
 #[test]
-fn two_name_loop_over_a_range_is_unsupported() {
-    let program = checked_program(
+fn two_name_loop_over_a_range_is_rejected_by_the_checker() {
+    // A range head binds exactly one name; a two-name head is a `check.loop_head_arity`
+    // error, caught at check time rather than a runtime fault.
+    checker_rejects(
         "pub fn f()\n\
          \x20   for start, stop in 1..3\n\
          \x20       print($\"{start}{stop}\")\n",
+        "check.loop_head_arity",
     );
-    assert_run_error(run(checked_entry!(&program, "test::f")), RUN_UNSUPPORTED);
 }
 
 #[test]
@@ -563,11 +565,11 @@ fn local_sequence_iteration_visits_only_stored_positions() {
          \x20   var out: string = \"\"\n\
          \x20   for pos in xs\n\
          \x20       out = $\"{out}{pos};\"\n\
-         \x20   for value in values(xs)\n\
+         \x20   for k, value in xs\n\
          \x20       out = $\"{out}v{value};\"\n\
-         \x20   for pos in reversed(xs)\n\
+         \x20   for pos in reversed xs\n\
          \x20       out = $\"{out}r{pos};\"\n\
-         \x20   for pos, value in entries(xs)\n\
+         \x20   for pos, value in xs\n\
          \x20       out = $\"{out}e{pos}={value};\"\n\
          \x20   return out\n",
     );
@@ -684,37 +686,6 @@ fn two_name_loop_over_a_local_sequence_binds_position_and_value() {
         Some(Value::Str("1=10;2=20;3=30;".into()))
     );
 }
-
-#[test]
-fn local_sequence_value_and_entry_views_stay_value_based() {
-    let program = checked_program(
-        "pub fn seq(): string\n\
-         \x20   var xs: sequence[int]\n\
-         \x20   xs(1) = 10\n\
-         \x20   xs(2) = 20\n\
-         \x20   xs(3) = 30\n\
-         \x20   var out: string = \"\"\n\
-         \x20   for value in values(xs)\n\
-         \x20       const typed: int = value\n\
-         \x20       out = $\"{out}v{value};\"\n\
-         \x20   for pos in reversed(xs)\n\
-         \x20       const typedPos: int = pos\n\
-         \x20       out = $\"{out}r{pos};\"\n\
-         \x20   for value in reversed(values(xs))\n\
-         \x20       const typedValue: int = value\n\
-         \x20       out = $\"{out}rv{value};\"\n\
-         \x20   for pos, value in entries(xs)\n\
-         \x20       out = $\"{out}e{pos}={value};\"\n\
-         \x20   return out\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::seq")).unwrap(),
-        Some(Value::Str(
-            "v10;v20;v30;r3;r2;r1;rv30;rv20;rv10;e1=10;e2=20;e3=30;".into()
-        ))
-    );
-}
-
 #[test]
 fn count_over_a_local_sequence_types_int() {
     // `count` of a local collection returns `int`, usable in a typed binding and
@@ -776,7 +747,7 @@ fn two_name_reversed_loop_over_a_local_keyed_tree_binds_descending_pairs() {
          \x20   scores(\"p2\") = 20\n\
          \x20   scores(\"p1\") = 10\n\
          \x20   var out: string = \"\"\n\
-         \x20   for playerId, score in reversed(scores)\n\
+         \x20   for playerId, score in reversed scores\n\
          \x20       const typedPlayer: string = playerId\n\
          \x20       const typedScore: int = score\n\
          \x20       out = $\"{out}{playerId}={score};\"\n\
@@ -815,7 +786,7 @@ fn keys_over_reversed_local_keyed_tree_yields_descending_keys() {
          \x20   scores(\"p2\") = 20\n\
          \x20   scores(\"p1\") = 10\n\
          \x20   var out: string = \"\"\n\
-         \x20   for playerId in keys(reversed(scores))\n\
+         \x20   for playerId in reversed scores\n\
          \x20       const typed: string = playerId\n\
          \x20       out = $\"{out}{playerId};\"\n\
          \x20   return out\n",
@@ -834,7 +805,7 @@ fn reversed_keys_over_local_keyed_tree_yields_descending_keys() {
          \x20   scores(\"p2\") = 20\n\
          \x20   scores(\"p1\") = 10\n\
          \x20   var out: string = \"\"\n\
-         \x20   for playerId in reversed(keys(scores))\n\
+         \x20   for playerId in reversed scores\n\
          \x20       const typed: string = playerId\n\
          \x20       out = $\"{out}{playerId};\"\n\
          \x20   return out\n",
@@ -844,48 +815,6 @@ fn reversed_keys_over_local_keyed_tree_yields_descending_keys() {
         Some(Value::Str("p2;p1;".into()))
     );
 }
-
-#[test]
-fn reversed_keys_over_reversed_local_keyed_tree_yields_ascending_keys() {
-    let program = checked_program(
-        "pub fn keyed(): string\n\
-         \x20   var scores(playerId: string): int\n\
-         \x20   scores(\"p2\") = 20\n\
-         \x20   scores(\"p1\") = 10\n\
-         \x20   var out: string = \"\"\n\
-         \x20   for playerId in reversed(keys(reversed(scores)))\n\
-         \x20       const typed: string = playerId\n\
-         \x20       out = $\"{out}{playerId};\"\n\
-         \x20   return out\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::keyed")).unwrap(),
-        Some(Value::Str("p1;p2;".into()))
-    );
-}
-
-#[test]
-fn materialized_reversed_keys_over_reversed_local_keyed_tree_yields_ascending_keys() {
-    // `reversed(keys(reversed(scores)))` materializes a sequence whose values are
-    // the keys; iterating that sequence binds positions, so the captured keys are
-    // its `values(...)` view.
-    let program = checked_program(
-        "pub fn keyed(): string\n\
-         \x20   var scores(playerId: string): int\n\
-         \x20   scores(\"p2\") = 20\n\
-         \x20   scores(\"p1\") = 10\n\
-         \x20   const players = reversed(keys(reversed(scores)))\n\
-         \x20   var out: string = \"\"\n\
-         \x20   for playerId in values(players)\n\
-         \x20       out = $\"{out}{playerId};\"\n\
-         \x20   return out\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::keyed")).unwrap(),
-        Some(Value::Str("p1;p2;".into()))
-    );
-}
-
 #[test]
 fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
     let program = checked_program(
@@ -894,7 +823,7 @@ fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
          \x20   scores(\"p2\") = 20\n\
          \x20   scores(\"p1\") = 10\n\
          \x20   var out: string = \"\"\n\
-         \x20   for playerId in reversed(scores)\n\
+         \x20   for playerId in reversed scores\n\
          \x20       const typed: string = playerId\n\
          \x20       out = $\"{out}{playerId};\"\n\
          \x20   return out\n",
@@ -904,118 +833,6 @@ fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
         Some(Value::Str("p2;p1;".into()))
     );
 }
-
-#[test]
-fn reversed_local_keyed_tree_materializes_a_key_sequence() {
-    // `reversed(scores)` materializes a sequence of the descending keys; iterating
-    // it binds positions, so the captured keys are its `values(...)` view.
-    let program = checked_program(
-        "pub fn keyed(): string\n\
-         \x20   var scores(playerId: string): int\n\
-         \x20   scores(\"p2\") = 20\n\
-         \x20   scores(\"p1\") = 10\n\
-         \x20   const players = reversed(scores)\n\
-         \x20   var out: string = \"\"\n\
-         \x20   for playerId in values(players)\n\
-         \x20       const typed: string = playerId\n\
-         \x20       out = $\"{out}{playerId};\"\n\
-         \x20   return out\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::keyed")).unwrap(),
-        Some(Value::Str("p2;p1;".into()))
-    );
-}
-
-#[test]
-fn local_keyed_tree_value_and_entry_views_stay_value_based() {
-    let program = checked_program(
-        "pub fn keyed(): string\n\
-         \x20   var scores(playerId: string): int\n\
-         \x20   scores(\"p2\") = 20\n\
-         \x20   scores(\"p1\") = 10\n\
-         \x20   var out: string = \"\"\n\
-         \x20   for score in values(scores)\n\
-         \x20       const typedScore: int = score\n\
-         \x20       out = $\"{out}v{score};\"\n\
-         \x20   for score in reversed(values(scores))\n\
-         \x20       const typedScore: int = score\n\
-         \x20       out = $\"{out}rv{score};\"\n\
-         \x20   for playerId, score in entries(scores)\n\
-         \x20       const typedPlayer: string = playerId\n\
-         \x20       const typedScore: int = score\n\
-         \x20       out = $\"{out}e{playerId}={score};\"\n\
-         \x20   for playerId, score in reversed(entries(scores))\n\
-         \x20       const typedPlayer: string = playerId\n\
-         \x20       const typedScore: int = score\n\
-         \x20       out = $\"{out}re{playerId}={score};\"\n\
-         \x20   return out\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::keyed")).unwrap(),
-        Some(Value::Str(
-            "v10;v20;rv20;rv10;ep1=10;ep2=20;rep2=20;rep1=10;".into()
-        ))
-    );
-}
-
-#[test]
-fn double_reversed_local_keyed_map_is_the_identity() {
-    // `reversed(reversed(x)) == x`: re-reversing restores ascending order and keeps
-    // every key paired with its own value. A single reverse stays descending pairs.
-    let program = checked_program(
-        "pub fn keyed(): string\n\
-         \x20   var scores(player: string): int\n\
-         \x20   scores(\"amy\") = 10\n\
-         \x20   scores(\"bob\") = 20\n\
-         \x20   var one: string = \"\"\n\
-         \x20   for k, v in reversed(scores)\n\
-         \x20       one = $\"{one}{k}={v};\"\n\
-         \x20   var two: string = \"\"\n\
-         \x20   for k, v in reversed(reversed(scores))\n\
-         \x20       two = $\"{two}{k}={v};\"\n\
-         \x20   var twoKeys: string = \"\"\n\
-         \x20   for k in reversed(reversed(scores))\n\
-         \x20       twoKeys = $\"{twoKeys}{k};\"\n\
-         \x20   return $\"one:{one}two:{two}keys:{twoKeys}\"\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::keyed")).unwrap(),
-        Some(Value::Str(
-            "one:bob=20;amy=10;two:amy=10;bob=20;keys:amy;bob;".into()
-        ))
-    );
-}
-
-#[test]
-fn double_reversed_local_sequence_is_the_identity() {
-    // A sequence re-reversed restores ascending positions and elements. The single
-    // reverse stays descending; the value view reverses elements directly.
-    let program = checked_program(
-        "pub fn seq(): string\n\
-         \x20   var xs: sequence[int]\n\
-         \x20   append(xs, 100)\n\
-         \x20   append(xs, 200)\n\
-         \x20   append(xs, 300)\n\
-         \x20   var one: string = \"\"\n\
-         \x20   for p in reversed(xs)\n\
-         \x20       one = $\"{one}{p};\"\n\
-         \x20   var twoPos: string = \"\"\n\
-         \x20   for p in reversed(reversed(xs))\n\
-         \x20       twoPos = $\"{twoPos}{p};\"\n\
-         \x20   var twoPairs: string = \"\"\n\
-         \x20   for p, v in reversed(reversed(xs))\n\
-         \x20       twoPairs = $\"{twoPairs}{p}={v};\"\n\
-         \x20   return $\"one:{one}pos:{twoPos}pairs:{twoPairs}\"\n",
-    );
-    assert_eq!(
-        run(checked_entry!(&program, "test::seq")).unwrap(),
-        Some(Value::Str(
-            "one:3;2;1;pos:1;2;3;pairs:1=100;2=200;3=300;".into()
-        ))
-    );
-}
-
 #[test]
 fn reads_and_writes_a_multi_key_local_tree() {
     let program = checked_program(

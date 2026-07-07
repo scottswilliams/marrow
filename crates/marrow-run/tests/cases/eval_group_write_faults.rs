@@ -170,7 +170,7 @@ pub fn read_marker(): Marker
 
 pub fn marker_count(): int
     var total = 0
-    for seq in keys(^posts(1).markers)
+    for seq in ^posts(1).markers
         total = total + 1
     return total
 ";

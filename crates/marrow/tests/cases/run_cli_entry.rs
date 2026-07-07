@@ -314,7 +314,7 @@ fn entry_args_decode_scalars_sequences_enums_and_identities() {
              store ^authors(id: int): Author\n\n\
              pub fn show(n: int, label: string, status: Status, author: Id(^authors), xs: sequence[int])\n\
              \x20\x20\x20\x20var total = n\n\
-             \x20\x20\x20\x20for x in values(xs)\n\
+             \x20\x20\x20\x20for pos, x in xs\n\
              \x20\x20\x20\x20\x20\x20\x20\x20total = total + x\n\
              \x20\x20\x20\x20if status == Status::archived\n\
              \x20\x20\x20\x20\x20\x20\x20\x20print($\"{label}:{total}:archived\")\n\
@@ -368,7 +368,7 @@ fn entry_args_collect_repeated_enum_sequence_values_in_argv_order() {
              \x20\x20\x20\x20archived\n\n\
              pub fn countArchived(statuses: sequence[Status])\n\
              \x20\x20\x20\x20var total = 0\n\
-             \x20\x20\x20\x20for status in values(statuses)\n\
+             \x20\x20\x20\x20for pos, status in statuses\n\
              \x20\x20\x20\x20\x20\x20\x20\x20if status == Status::archived\n\
              \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20total = total + 1\n\
              \x20\x20\x20\x20print($\"{total}\")\n",

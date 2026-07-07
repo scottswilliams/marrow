@@ -221,8 +221,6 @@ impl CheckedBuiltinCall {
             | Self::Keys
             | Self::Count
             | Self::Values
-            | Self::Entries
-            | Self::Reversed
             | Self::Next
             | Self::Prev
             | Self::Key => 1,
@@ -249,9 +247,7 @@ const BUILTIN_CALLS: &[CheckedBuiltinCallDescriptor] = &[
     descriptor("append", CheckedBuiltinCall::Append, LAYER_VALUE, ret_scalar(marrow_schema::ScalarType::Int), "Appends a value to a layer and returns its key."),
     descriptor("keys", CheckedBuiltinCall::Keys, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the keys in a collection."),
     descriptor("count", CheckedBuiltinCall::Count, COLLECTION, ret_scalar(marrow_schema::ScalarType::Int), "Returns child count for a saved path, 1 for a scalar, or 0 when absent."),
-    descriptor("values", CheckedBuiltinCall::Values, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the values in a collection."),
-    descriptor("entries", CheckedBuiltinCall::Entries, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the entries in a collection."),
-    descriptor("reversed", CheckedBuiltinCall::Reversed, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the collection in reverse order."),
+    descriptor("values", CheckedBuiltinCall::Values, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the values in a local collection."),
     descriptor("next", CheckedBuiltinCall::Next, PATH, ret_value(CheckedBuiltinValueShape::Value), "Returns the next key after a saved path."),
     descriptor("prev", CheckedBuiltinCall::Prev, PATH, ret_value(CheckedBuiltinValueShape::Value), "Returns the previous key before a saved path."),
     descriptor("key", CheckedBuiltinCall::Key, IDENTITY, ret_value(CheckedBuiltinValueShape::Value), "Returns the scalar key of a single-key store identity."),

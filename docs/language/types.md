@@ -368,8 +368,8 @@ every integer position, including out-of-range and non-positive ones, which
 resolve to the fallback. A bare positional read is a compile error.
 
 Because a sequence is a keyed tree, a `for` loop over one binds its 1-based
-positions, with `values(...)` binding elements — the same loop shapes as any
-keyed collection, local or saved. See *Collection loops* in
+positions key-first, and a second name binds the element — the same loop shapes as
+any keyed collection, local or saved. See *Collection loops* in
 [Control Flow and Effects](control-flow-and-effects.md).
 
 ## Keyed Trees
@@ -500,8 +500,8 @@ IDs behind.
 (`Id(^books)`), so the neighbor is addressed like any identity:
 `const neighbor = next(^books(id)) ?? id` can then feed
 `^books(neighbor).title ?? ""`. Over a keyed child layer, `next` and `prev` type
-to the layer's key. `reversed(...)` preserves its argument's element type, so
-`for x in reversed(layer)` binds `x` exactly as `for x in layer` does. Stepping
+to the layer's key. `reversed` before the iterable preserves each binding's type,
+so `for x in reversed layer` binds `x` exactly as `for x in layer` does. Stepping
 off the edge yields no neighbor, so the result is maybe-present and is resolved
 at the read like any maybe-present value, commonly with `??` — the default's
 type drives the result. It does not raise a runtime fault.

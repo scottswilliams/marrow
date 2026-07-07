@@ -224,48 +224,6 @@ fn key_over_a_non_identity_argument_is_flagged() {
 }
 
 // --- Ordered navigation: reversed / next / prev ---
-
-/// `reversed`, `next`, and `prev` are builtins, so they never report
-/// `check.unresolved_call`. `reversed` is type-transparent over a value view: it
-/// yields the same element type as its argument, so `for w in
-/// reversed(values(std::text::split(...)))` binds `w` to `string` — and misusing
-/// it (`w + 1`, a string plus an int) is flagged. If `reversed` regressed the
-/// element type to `Unknown`, this misuse would pass silently, so the diagnostic
-/// proves the element type survives the wrapper.
-#[test]
-fn reversed_preserves_the_sequence_element_type() {
-    let root = temp_project("program-reversed-transparent", |root| {
-        write(
-            root,
-            "src/shelf/words.mw",
-            "module shelf::words\n\
-             fn shout()\n\
-             \x20   for w in reversed(values(std::text::split(\"a,b,c\", \",\")))\n\
-             \x20       var x = w + 1\n",
-        );
-    });
-    let (report, _) = check_project(&root, &config()).expect("check");
-
-    // `w` is `string`, so `w + 1` is a string-plus-int operator type error — not an
-    // unresolved-call error (which would mean `reversed` was never recognized).
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|d| d.code == CHECK_OPERATOR_TYPE),
-        "{:#?}",
-        report.diagnostics
-    );
-    assert!(
-        !report
-            .diagnostics
-            .iter()
-            .any(|d| d.code == CHECK_UNRESOLVED_CALL),
-        "reversed must be a recognized builtin: {:#?}",
-        report.diagnostics
-    );
-}
-
 #[test]
 fn local_collections_can_be_subscripted() {
     let root = temp_project("program-local-collection-subscript", |root| {
@@ -663,7 +621,7 @@ fn keys_over_composite_identity_index_bind_reconstructed_identities() {
              \x20   index byStudent(studentId, courseId)\n\
              fn total(studentId: string): int\n\
              \x20   var credits = 0\n\
-             \x20   for id in keys(^enrollments.byStudent(studentId))\n\
+             \x20   for id in ^enrollments.byStudent(studentId)\n\
              \x20       credits = credits + (^enrollments(id).credits ?? 0)\n\
              \x20   return credits\n",
         );
@@ -705,58 +663,12 @@ fn navigating_a_statically_known_scalar_is_a_check_error() {
             "fn f()\n    const n: int = 5\n    const c = count(n)\n",
             "check.collection_unsupported",
         ),
-        (
-            "reversed-over-scalar",
-            "fn f()\n    const n: int = 5\n    const r = reversed(n)\n",
-            "check.collection_unsupported",
-        ),
     ];
     for (name, src, code) in cases {
         let found = check_module(name, &format!("module m\n{src}"), code);
         assert_eq!(found.len(), 1, "{name}: {found:#?}");
     }
 }
-
-/// A `for` over a combinator whose inner expression is itself rejected reports the
-/// error once, at the inner root cause, not once per enclosing combinator. The `for`
-/// loop must not re-report an iterable its own subexpression already flagged.
-#[test]
-fn a_for_over_a_rejected_combinator_reports_one_error() {
-    let header = "module m\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n";
-    let cases: &[(&str, &str)] = &[
-        (
-            "for-reversed-scalar",
-            "fn f()\n    const n: int = 5\n    for x in reversed(n)\n        print(x)\n",
-        ),
-        (
-            "for-count-scalar",
-            "fn f()\n    const n: int = 5\n    for x in count(n)\n        print(x)\n",
-        ),
-        (
-            "for-triple-nested-reversed",
-            "fn f()\n    for id in reversed(reversed(reversed(^books)))\n        print(id)\n",
-        ),
-        // `count(^books)` is a valid call returning an int, so the combinator emits no
-        // error and the for-scalar rule must still flag the non-iterable int once —
-        // the suppression defers only to a real prior diagnostic.
-        (
-            "for-count-of-saved-layer",
-            "fn f()\n    for x in count(^books)\n        print(x)\n",
-        ),
-    ];
-    for (name, src) in cases {
-        let report = check_module_report(name, &format!("{header}{src}"));
-        assert_eq!(
-            with_code(&report, "check.collection_unsupported").len(),
-            1,
-            "{name}: one collection error per root cause\n{:#?}",
-            report.diagnostics,
-        );
-    }
-}
-
 /// The scalar split must not false-positive on a genuinely-unknown base. A local
 /// collection's `count` result and a `values(...)` materialization are typed
 /// `unknown`; a field read off either defers rather than firing `check.unknown_field`.

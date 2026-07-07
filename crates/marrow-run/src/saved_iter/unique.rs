@@ -11,11 +11,11 @@ use crate::stdlib::{UniqueIndexLookup, read_unique_index_identity};
 use crate::store::IndexAddress;
 use crate::value::identity_value;
 
-use super::{LoopShape, SavedLoopRow, SavedLoopSpec, shape_row};
+use super::{SavedLoopRow, SavedLoopSpec, saved_loop_row};
 
 pub(super) struct UniqueIndexScan {
     lookup: UniqueIndexLookup,
-    shape: LoopShape,
+    with_value: bool,
     span: SourceSpan,
 }
 
@@ -36,7 +36,7 @@ impl UniqueIndexScan {
                 place: place.clone(),
                 remaining_key_depth,
             },
-            shape: spec.shape,
+            with_value: spec.with_value,
             span: spec.span,
         }
     }
@@ -72,9 +72,8 @@ impl UniqueIndexScan {
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
         let key = identity_value(&self.lookup.place.root, identity.clone());
-        let row = shape_row(self.shape, key, || match self.shape {
-            LoopShape::Values => Err(unsupported("values over a unique index lookup", self.span)),
-            _ => read_resource(&self.lookup.place, &identity, self.span, env),
+        let row = saved_loop_row(self.with_value, vec![key], || {
+            read_resource(&self.lookup.place, &identity, self.span, env)
         })?;
         visit(row, env)
     }

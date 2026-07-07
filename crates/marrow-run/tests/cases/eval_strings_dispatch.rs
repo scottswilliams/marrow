@@ -240,20 +240,6 @@ fn an_unknown_function_is_rejected() {
     let error = rejected_entry_call(&program, "test::missing", Vec::new());
     assert_eq!(error.code(), RUN_UNKNOWN_FUNCTION);
 }
-
-#[test]
-fn values_and_entries_over_a_unique_index_lookup_are_unsupported() {
-    let resource = BOOK_ISBN_SCHEMA;
-    for builtin in ["values", "entries"] {
-        checker_rejects(
-            &format!(
-                "{resource}fn f()\n    for x in {builtin}(^books.byIsbn(\"978-0\"))\n        print($\"{{x}}\")\n"
-            ),
-            "check.collection_unsupported",
-        );
-    }
-}
-
 #[test]
 fn a_unique_index_lookup_loop_skips_an_absent_entry() {
     let program = checked_program(
@@ -292,7 +278,7 @@ fn rebuild_store_indexes_reconstructs_unique_and_non_unique_lookups() {
         return found\n\n\
         pub fn shelf_count(s: string): int\n    \
         var c = 0\n    \
-        for id in keys(^books.byShelf(s))\n        \
+        for id in ^books.byShelf(s)\n        \
         c = c + 1\n    \
         return c\n";
     let (program, runtime) = committed_program_and_runtime(source);

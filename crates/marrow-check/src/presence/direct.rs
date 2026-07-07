@@ -279,8 +279,6 @@ fn unindexed_collection_builtin(builtin: CheckedBuiltinCall) -> bool {
             | CheckedBuiltinCall::Count
             | CheckedBuiltinCall::Keys
             | CheckedBuiltinCall::Values
-            | CheckedBuiltinCall::Entries
-            | CheckedBuiltinCall::Reversed
             | CheckedBuiltinCall::Next
             | CheckedBuiltinCall::Prev
     )

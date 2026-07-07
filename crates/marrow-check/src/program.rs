@@ -979,7 +979,6 @@ impl CheckedProgram {
             &module.source_file,
             &mut diagnostics,
         );
-        crate::checks::check_entries_value_position(&module.source_file, &parsed, &mut diagnostics);
         let Some(expression) =
             crate::executable::lower_expr_for_file(self, &module.source_file, &parsed, scope)
         else {

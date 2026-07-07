@@ -106,10 +106,27 @@ step never progresses and is rejected.
 and descending temporal ranges are not yet supported. A negated duration step
 (`by -1.day`) is a check error.
 
-Collection loops walk durable iterables. A store, index, or keyed child layer
-is a durable iterable; a `for` loop over one streams lazily rather than
+Collection loops walk durable iterables. A store, index branch, or keyed child
+layer is a durable iterable; a `for` loop over one streams lazily rather than
 materializing it (binding or assigning such a saved collection into a local is a
-check error — iterate it directly or build a local collection):
+check error — iterate it directly or build a local collection).
+
+The loop head is the one iteration construct:
+
+```text
+for name ("," name)* in ("reversed")? iterable ("by" step)?
+```
+
+The bound names are key-first: the first name always binds an address, and each
+further name descends one layer to the value at that address. `reversed` is a
+traversal-direction keyword in the head slot; `by` sets a range step. There is no
+wrapper builtin between `in` and the iterable — the head's name count is the whole
+story.
+
+A single loop variable binds the durable key or identity being streamed. For a
+primary store root, it is the store identity. For a keyed child layer, it is the
+child key at a populated position. For a non-unique index branch, it is the
+identity stored in that lookup branch:
 
 ```mw
 for id in ^books
@@ -119,28 +136,25 @@ for id in ^books
 for pos in ^books(id).tags
     if const tag = ^books(id).tags(pos)
         print(tag)
-```
 
-A single loop variable is the durable key or identity being streamed. For a
-primary store root, it is the store identity. For a keyed child layer, it is the
-child key at a populated position. For a non-unique index branch, it is the
-identity stored in that lookup branch:
-
-```mw
 for id in ^books.byShelf("fiction")
     if const title = ^books(id).title
         print($"book {id}: {title}")
 ```
 
+The value is one descent away: read `^books(id).title` in the body, or bind it in
+the head. There is no value-only saved loop — iterating values without their
+addresses over saved data is a projection, not a navigation step, so the two-name
+head is the honest spelling.
+
 A bare non-unique index root — the index named with no lookup key
 (`^books.byShelf`) — streams every stored identity across all its branches in
-index order, the same identities `keys(^books.byShelf)` yields, not the distinct
-leading key values; with two loop variables it pairs each identity with its
-record. There is no form that enumerates an index's distinct leading values;
-deriving them means streaming the identities and deduplicating the leading key in
-code.
+index order, not the distinct leading key values; with two loop variables it pairs
+each identity with its record. There is no form that enumerates an index's
+distinct leading values; deriving them means streaming the identities and
+deduplicating the leading key in code.
 
-Use two loop variables when code needs each address and value together:
+A second loop variable binds the value reached at each address:
 
 ```mw
 for id, book in ^books
@@ -151,86 +165,72 @@ for pos, tag in ^books(id).tags
 ```
 
 A composite keyed layer is a chain of single-key sub-layers (see
-[Resources and Saved Data](resources-and-storage.md)), so a loop over it binds one
-key column. The single variable is the outer column; descend the layer at that key
-to reach the inner column:
+[Resources and Saved Data](resources-and-storage.md)). A loop over an N-column
+layer binds either the outer column alone (one name) or every key column
+outermost-first plus the leaf value (N+1 names):
 
 ```mw
-for row in ^grids(id).cells
+for row in ^grids(id).cells                 ; outer column only
     for col, value in ^grids(id).cells(row)
         print($"({row},{col}) = {value}")
+
+for row, col, value in ^grids(id).cells     ; both columns and the leaf
+    print($"({row},{col}) = {value}")
 ```
 
-A value-reading loop head over a composite layer that still has more than one
-column to fill pairs a key with a value that is itself a sub-layer, so it is
-rejected at compile time. This covers the bare two-name form
-(`for row, col in ^grids(id).cells`) and the `values(...)` and `entries(...)`
-wrappers (`for v in values(^grids(id).cells)`,
-`for row, v in entries(^grids(id).cells)`). Descend one column at a time instead;
-`keys(...)` and `count(...)`, which read only the next key column, remain valid.
+An intermediate arity — a name count that is neither 1 nor N+1 — is a compile
+error (`check.loop_head_arity`) carrying the layer's column count. Over the
+two-column `cells`, `for row, col in ^grids(id).cells` is rejected: two names name
+both keys but leave no leaf to bind. Bind the outer column and descend, or bind
+all columns and the value.
 
 A saved path that names a single stored value — a fully-keyed leaf
 (`^grids(id).cells(row, col)`), a scalar field (`^books(id).title`), or a whole
 record (`^books(id)`) — is not an iterable. A `for` loop over one is a compile-time
 error, since there is no key to stream.
 
-`entries(...)` is the explicit two-name loop-head form for the same address/value
-walk. It is not a collection value that can be assigned, returned, or passed to
-single-variable loops:
+`reversed` before the iterable walks it in reverse key order:
 
 ```mw
-for id, book in entries(^books)
-    print($"{id}: {book.title}")
+for id in reversed ^books
+    if const title = ^books(id).title
+        print(title)
 
-for id, book in reversed(entries(^books))
-    print($"{id}: {book.title}")
+for pos, tag in reversed ^books(id).tags
+    print($"{pos}: {tag}")
 ```
 
-Iteration helpers are not partially applied. `keys(...)`, `values(...)`, and
-`entries(...)` must receive their iterable at the read site; a helper name alone
-is not an iterator value.
+Over a saved layer the reversal streams stored keys from high to low — a true
+reverse, not a copy of the forward result flipped after the fact; an early `break`
+stops the scan. A composite identity reverses at every key level. `reversed` is a
+keyword only in this head slot, between `in` and the iterable; everywhere else it
+is an ordinary identifier. A range has no `reversed` form — spell a descending
+range with its endpoints and a negative `by` step (`for i in 10..1 by -1`).
 
-Use `values(...)` when code needs only values:
-
-```mw
-for book in values(^books)
-    print(book.title)
-```
-
-Use `keys(...)` when code wants to make address-only traversal explicit:
-
-```mw
-for id in keys(^books)
-    print($"{id}")
-
-for pos in keys(^books(id).tags)
-    print($"{pos}")
-```
-
-Value and two-variable loops also read the values they yield; `keys(...)` reads
-only the addresses.
-
-Local keyed trees use the same loop shapes. For `var scores(player: string): int`,
-`for player in scores` and `for player in keys(scores)` bind `string` keys,
-`for player, score in scores` and `for player, score in entries(scores)` bind
-key/value pairs, and `for score in values(scores)` binds values. `reversed(...)`
-preserves the selected shape in descending key order: direct local keyed-tree
-loops stay key-only or key/value by loop head, `reversed(values(scores))` yields
-values, and `reversed(entries(scores))` yields pairs.
+Local keyed trees use the same head, key-first. For
+`var scores(player: string): int`, `for player in scores` binds the `string` key
+and `for player, score in scores` binds key and value.
 
 A local keyed tree's key columns follow the same key-type contract as a saved
 keyed layer: each key must be an orderable scalar. An identity, an enum, a
 resource, a sequence, or a `decimal` key is rejected at check, on a local keyed
 `var` and a keyed function parameter alike.
 
-A local sequence is a 1-based integer-keyed tree, so it follows the same shapes
-as any other keyed collection — identical to a saved sequence. For
-`var xs: sequence[int]`, `for pos in xs` and `for pos in keys(xs)` bind the
-1-based `int` position, `for pos, x in xs` and `for pos, x in entries(xs)` bind
-position/value pairs, and `for x in values(xs)` binds element values. The same
-holds for any sequence-typed value, including one a function returns. `reversed`
-walks descending positions, with `reversed(values(xs))` yielding the values in
-reverse.
+A local sequence is a 1-based integer-keyed tree, so it follows the same head
+shapes. For `var xs: sequence[int]`, `for pos in xs` binds the 1-based `int`
+position and `for pos, x in xs` binds position and element. The same holds for any
+sequence-typed value, including one a function returns. `reversed xs` walks
+descending positions.
+
+The names in one loop head share one scope, so repeating a name (`for a, a in x`)
+is rejected under `check.duplicate_declaration`.
+
+`keys(...)` and `values(...)` are value-position builtins over local collections:
+they materialize a local sequence of addresses or elements (see
+[Builtins](builtins.md)). They are not loop heads. `for k in keys(xs)` is rejected
+(`check.loop_head_view_call`) because the head already binds addresses key-first;
+bind the sequence first when a materialized copy is what the code wants. They are
+also rejected over any saved path — iterate saved data with `for ... in`.
 
 `while` loops use a boolean condition:
 
@@ -250,20 +250,19 @@ A loop over a saved layer must not change that layer's key set while traversing
 it. Deleting, appending, writing a whole keyed entry, or writing a field at a key
 that is not the loop's own key all risk inserting or removing a sibling
 mid-traversal and are rejected. Writing a field of the current entry — at the loop
-key — is fine. To rewrite the key set, build a local sequence of the keys first,
+key — is fine. To rewrite the key set, copy the keys into a local sequence first,
 then iterate that local and mutate the layer:
 
 ```mw
 var ids: sequence[Id(^books)]
-for id in keys(^books)
+for id in ^books
     append(ids, id)
-for id in values(ids)
+for pos, id in ids
     delete ^books(id)
 ```
 
-`keys(^books)` is a stream over saved data, not a value: it can be iterated in
-place or counted, but never bound to a local, passed by value, or otherwise
-materialized. The loop above copies each key into the local `ids`, so the
+Iterating `^books` streams saved identities lazily and never materializes them as
+a value. The loop above copies each identity into the local `ids`, so the
 mutation traverses the snapshot rather than the live layer.
 
 ## Exiting Nested Loops

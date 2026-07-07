@@ -27,7 +27,7 @@ pub fn idsAndElementTitles()
         print($\"{{id}}: {{book.title}}\")
 
 pub fn reversedElementTitles()
-    for id, book in reversed(^books)
+    for id, book in reversed ^books
         print(book.title)
 "
     )
@@ -133,20 +133,6 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
     .expect("run");
     assert_eq!(outcome.output, "Sourcery\nMort\n");
 }
-
-#[test]
-fn reversed_primary_root_as_a_value_is_rejected() {
-    // Binding `reversed(^books)` to a local materializes a saved collection, which is
-    // an in-place stream with no local value. This is a check error, not a runtime
-    // fault, so it never reaches evaluation.
-    checker_rejects(
-        &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn reversedIdsAsValue()\n    const ids = reversed(^books)\n    for id in ids\n        print($\"{{id}}\")\n"
-        ),
-        "check.collection_unsupported",
-    );
-}
-
 #[test]
 fn keys_of_a_primary_root_as_a_value_is_rejected() {
     // `keys(^books)` is the same un-materializable saved stream; binding it to a local
@@ -205,7 +191,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     // reader and the writer share one committed catalog so their member catalog ids
     // address the same store cells.
     let program = checked_program(&format!(
-        "{ENROLLMENT_PRIMARY}\npub fn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status ?? \"\")\n"
+        "{ENROLLMENT_PRIMARY}\npub fn revStatuses()\n    for id, enrollment in reversed ^enrollments\n        print(enrollment.status ?? \"\")\n"
     ));
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {
@@ -252,15 +238,15 @@ pub fn tagEntries()
         print($\"{{pos}}={{tag}}\")
 
 pub fn tagValuesDescending()
-    for pos, tag in reversed(^books(1).tags)
+    for pos, tag in reversed ^books(1).tags
         print(tag)
 
 pub fn positionsDescending()
-    for pos in reversed(keys(^books(1).tags))
+    for pos in reversed ^books(1).tags
         print($\"{{pos}}\")
 
 pub fn keysOf()
-    for pos in keys(^books(1).tags)
+    for pos in ^books(1).tags
         print($\"{{pos}}\")
 
 pub fn positionsBetween(lo: int, hi: int)
@@ -268,15 +254,15 @@ pub fn positionsBetween(lo: int, hi: int)
         print($\"{{pos}}\")
 
 pub fn positionsBetweenKeys(lo: int, hi: int)
-    for pos in keys(^books(1).tags(lo..hi))
+    for pos in ^books(1).tags(lo..hi)
         print($\"{{pos}}\")
 
 pub fn entriesBetween(lo: int, hi: int)
-    for pos, tag in entries(^books(1).tags(lo..hi))
+    for pos, tag in ^books(1).tags(lo..hi)
         print($\"{{pos}}={{tag}}\")
 
 pub fn positionsBetweenDescending(lo: int, hi: int)
-    for pos in reversed(^books(1).tags(lo..hi))
+    for pos in reversed ^books(1).tags(lo..hi)
         print($\"{{pos}}\")
 "
     )
@@ -401,7 +387,7 @@ resource Game
 store ^games(id: int): Game
 
 pub fn players()
-    for p in keys(^games(1).scores)
+    for p in ^games(1).scores
         print(p)
 
 pub fn scores()
@@ -516,7 +502,7 @@ pub fn innerCount(row: int)
     print($\"{count(^grids(1).cells(row))}\")
 
 pub fn innerColsReversed(row: int)
-    for col in reversed(^grids(1).cells(row))
+    for col in reversed ^grids(1).cells(row)
         print($\"{col}\")
 ";
 
@@ -643,7 +629,7 @@ pub fn descendToLeaf()
                 print($\"{x},{y},{z}={v}\")
 
 pub fn leafValues(x: int, y: int)
-    for v in values(^cubes(1).cells(x, y))
+    for k, v in ^cubes(1).cells(x, y)
         print($\"{v}\")
 ";
 

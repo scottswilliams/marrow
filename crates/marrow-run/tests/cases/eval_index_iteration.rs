@@ -19,7 +19,7 @@ fn book_shelf() -> String {
 
 pub fn count_on(shelf: string): int
     var c = 0
-    for id in keys(^books.byShelf(shelf))
+    for id in ^books.byShelf(shelf)
         c = c + 1
     return c
 
@@ -30,7 +30,7 @@ pub fn count_via_bare_index(): int
     return c
 
 pub fn reshelve_while_iterating()
-    for id in keys(^books.byShelf(\"fiction\"))
+    for id in ^books.byShelf(\"fiction\")
         ^books(id).shelf = \"history\"
 
 pub fn reshelve_while_iterating_direct()
@@ -65,11 +65,11 @@ pub fn titlePairsBetween(start: int, end: int)
         print($\"{id}: {post.title}\")
 
 pub fn valuesBetween(start: int, end: int)
-    for post in values(^posts.byDate(start..end))
+    for k, post in ^posts.byDate(start..end)
         print(post.title)
 
 pub fn entriesBetween(start: int, end: int)
-    for id, post in entries(^posts.byDate(start..end))
+    for id, post in ^posts.byDate(start..end)
         print($\"{id}: {post.title}\")
 
 pub fn countBetween(start: int, end: int): int
@@ -547,7 +547,7 @@ pub fn breakAfterFirstPairs(): string
 pub fn breakAfterFirstReversed(): string
     var out = \"\"
     var n = 0
-    for id in reversed(^tasks.byPrio)
+    for id in reversed ^tasks.byPrio
         out = out + $\"{id} \"
         n = n + 1
         if n == 1

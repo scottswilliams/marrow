@@ -186,8 +186,6 @@ pub enum CheckedBuiltinCall {
     Keys,
     Count,
     Values,
-    Entries,
-    Reversed,
     Next,
     Prev,
     Key,

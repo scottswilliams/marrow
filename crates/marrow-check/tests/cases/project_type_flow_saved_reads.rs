@@ -178,26 +178,59 @@ const GRID_CELLS: &str = "module m\n\
      store ^grids(id: int): Grid\n\n";
 
 #[test]
-fn a_two_name_loop_over_a_composite_leaf_layer_is_rejected_with_a_descent_diagnostic() {
-    // The composite-direct two-var form addresses two key columns at once, which the
-    // tuple-free navigation model does not support: iterate the outer key, then
-    // descend `cells(outer)` for the inner. The checker rejects it at the iterable
-    // span rather than letting it check clean and fault `run.absent_element`.
+fn an_intermediate_arity_over_a_composite_layer_is_a_loop_head_arity_error() {
+    // A two-column composite layer binds 1 name (the outer key) or 3 (both key
+    // columns plus the leaf). The two-name intermediate arity is rejected with the
+    // typed `check.loop_head_arity` at the iterable span, not a key-type error.
     let src = format!(
         "{GRID_CELLS}fn f()\n    for row, col in ^grids(1).cells\n        print($\"{{row}},{{col}}\")\n"
     );
     let report = check_module_report("composite-two-name-loop", &src);
 
-    let found = with_code(&report, "check.collection_unsupported");
+    let found = with_code(&report, "check.loop_head_arity");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     let span = found[0].span;
     assert_eq!(&src[span.start_byte..span.end_byte], "^grids(1).cells");
 
     assert!(
         with_code(&report, "check.key_type").is_empty(),
-        "the composite two-name loop is a collection-shape error, not a key-type error: {:#?}",
+        "the composite intermediate arity is an arity error, not a key-type error: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn a_keys_or_values_view_call_in_a_loop_head_is_rejected() {
+    // The head teaches the one-construct grammar, so a direct `keys(...)`/`values(...)`
+    // view call as the iterable emits `check.loop_head_view_call`: iterate the
+    // collection directly.
+    for head in ["for k in keys(xs)", "for k in values(xs)"] {
+        let src =
+            format!("module m\nfn f(xs: sequence[int])\n    {head}\n        print($\"{{k}}\")\n");
+        let found = check_module("loop-head-view-call", &src, "check.loop_head_view_call");
+        assert_eq!(found.len(), 1, "{head}: {found:#?}");
+    }
+
+    // A sequence bound to a name first is an ordinary value, so iterating it is legal:
+    // the ban is a syntactic rule about the head spelling, not a property of the value.
+    let legal = "module m\nfn f(xs: sequence[int])\n    const s = keys(xs)\n    for k in s\n        print($\"{k}\")\n";
+    let report = check_module_report("loop-head-view-call-legal", legal);
+    assert!(
+        with_code(&report, "check.loop_head_view_call").is_empty(),
+        "a sequence value bound to a name is ordinary: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_full_arity_over_a_composite_layer_binds_every_column_and_the_leaf() {
+    // Binding all key columns plus the leaf (`for row, col, cell`) is the N+1 form and
+    // type-checks clean; each name resolves to its column/leaf type.
+    let src = format!(
+        "{GRID_CELLS}fn f()\n    for row, col, cell in ^grids(1).cells\n        const bad: bool = cell\n"
+    );
+    let found = check_module("composite-full-arity", &src, "check.assignment_type");
+    assert_eq!(found.len(), 1, "the leaf binds a concrete type: {found:#?}");
 }
 
 #[test]
@@ -1370,40 +1403,14 @@ fn iterating_a_singleton_root_is_rejected() {
 }
 
 #[test]
-fn values_and_entries_over_a_multi_column_partial_layer_are_rejected() {
-    // `cells(x)` on a three-key cube leaves a two-column sub-layer whose value
-    // position is itself a sub-layer, not a scalar. `values(...)` and `entries(...)`
-    // pair a key with that sub-layer, so both are rejected at check, mirroring the
-    // bare two-name loop. The same holds for the canonical two-column grid head.
-    for (name, head) in [
-        ("values-cube", "values(^cubes(1).cells(1))"),
-        ("entries-grid", "entries(^grids(1).cells)"),
-        ("values-grid", "values(^grids(1).cells)"),
-    ] {
-        let base = if head.contains("cubes") {
-            CUBE_CELLS
-        } else {
-            GRID_CELLS
-        };
-        let binding = if head.starts_with("entries") {
-            "row, v"
-        } else {
-            "v"
-        };
-        let src = format!("{base}fn f()\n    for {binding} in {head}\n        print($\"x\")\n");
-        let found = check_module(name, &src, "check.collection_unsupported");
-        assert_eq!(found.len(), 1, "{name}: {found:#?}");
-    }
-}
-
-#[test]
-fn entries_over_a_two_column_partial_layer_is_rejected() {
-    // `entries(^cubes(1).cells(1))` over a two-column-remaining sub-layer pairs the
-    // inner `y` key with a `z -> string` sub-layer, not a leaf value.
+fn an_intermediate_arity_over_a_multi_column_partial_layer_is_an_arity_error() {
+    // `cells(1)` on a three-key cube leaves a two-column sub-layer, whose valid head
+    // arities are 1 (outer key) or 3 (both remaining columns plus the leaf). The
+    // two-name intermediate arity is a typed `check.loop_head_arity`.
     let src = format!(
-        "{CUBE_CELLS}fn f()\n    for y, v in entries(^cubes(1).cells(1))\n        print($\"{{y}}={{v}}\")\n"
+        "{CUBE_CELLS}fn f()\n    for y, v in ^cubes(1).cells(1)\n        print($\"{{y}}={{v}}\")\n"
     );
-    let found = check_module("entries-cube-partial", &src, "check.collection_unsupported");
+    let found = check_module("cube-partial-intermediate", &src, "check.loop_head_arity");
     assert_eq!(found.len(), 1, "{found:#?}");
 }
 
@@ -1414,7 +1421,7 @@ fn keys_and_count_over_a_multi_column_partial_layer_stay_clean() {
     // not be swept up by the value-position rejection.
     let src = format!(
         "{CUBE_CELLS}fn f()\n    \
-         for x in keys(^cubes(1).cells(1))\n        print($\"{{x}}\")\n    \
+         for x in ^cubes(1).cells(1)\n        print($\"{{x}}\")\n    \
          const n: int = count(^cubes(1).cells(1))\n    print($\"{{n}}\")\n"
     );
     assert_clean(&check_module_report("keys-count-multi-column", &src));
@@ -1436,8 +1443,7 @@ fn descending_one_column_at_a_time_stays_clean() {
     let leaf_iters = format!(
         "{CUBE_CELLS}fn f(x: int, y: int)\n    \
          for z in ^cubes(1).cells(x, y)\n        print($\"{{z}}\")\n    \
-         for v in values(^cubes(1).cells(x, y))\n        print($\"{{v}}\")\n    \
-         for z, v in entries(^cubes(1).cells(x, y))\n        print($\"{{z}}={{v}}\")\n"
+         for z, v in ^cubes(1).cells(x, y)\n        print($\"{{z}}={{v}}\")\n"
     );
     assert_clean(&check_module_report("cube-leaf-iters-clean", &leaf_iters));
 }
@@ -1869,17 +1875,17 @@ fn a_saved_collection_on_one_operator_side_is_a_check_error() {
 
 #[test]
 fn a_saved_keys_combinator_as_an_operator_operand_is_a_check_error() {
-    // `keys(^books)` is a saved stream laundered through a combinator; as an operator
-    // operand it is the same un-materializable saved collection the bare root is.
+    // `keys(^books)` over a saved root is rejected at the `keys` call — saved data is
+    // iterated in place, never materialized. Two such calls raise one rejection each.
     let found = check_module(
         "saved-keys-operand",
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
          fn f(): int\n    return count(keys(^books) + keys(^books))\n",
-        "check.operator_type",
+        "check.collection_unsupported",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found.len(), 2, "{found:#?}");
 }
 
 #[test]
@@ -2126,9 +2132,9 @@ fn type_surface_ledger_reads_and_traversals_have_concrete_types() {
         "module m\n\
          resource Account\n    required name: string\n    amounts(pos: int): decimal\n\
          store ^accounts(code: string): Account\n\n\
-         fn sumAmounts(code: Id(^accounts)): decimal\n    var sum: decimal = 0.0\n    for amount in values(^accounts(code).amounts)\n        sum = sum + amount\n    return sum\n\n\
+         fn sumAmounts(code: Id(^accounts)): decimal\n    var sum: decimal = 0.0\n    for pos, amount in ^accounts(code).amounts\n        sum = sum + amount\n    return sum\n\n\
          fn countAccounts(): int\n    return count(^accounts)\n\n\
-         fn ids()\n    for code in keys(^accounts)\n        const typed: Id(^accounts) = code\n\n\
+         fn ids()\n    for code in ^accounts\n        const typed: Id(^accounts) = code\n\n\
          fn accounts()\n    for code, account in ^accounts\n        const name: string = account.name\n\n\
          fn handle(): bool\n    try\n        throw Error(code: \"x.y\", message: \"m\")\n    catch err: Error\n        return err.code == ErrorCode(\"x.y\")\n",
     );

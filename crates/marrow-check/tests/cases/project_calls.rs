@@ -636,119 +636,6 @@ fn a_typed_keyed_resource_layer_loop_binds_key_and_entry_value() {
     );
     assert_clean(&report);
 }
-
-#[test]
-fn single_name_entries_loops_are_rejected() {
-    let found = check_module(
-        "single-name-entries",
-        "module m\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n\
-         fn f()\n    for entry in entries(^books)\n        print($\"{entry}\")\n",
-        "check.collection_unsupported",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn entries_calls_are_rejected_outside_two_name_loop_heads() {
-    for (name, body) in [
-        ("entries-const", "const rows = entries(^books)\n"),
-        ("entries-return", "return entries(^books)\n"),
-        (
-            "entries-match",
-            "match entries(^books)\n        missing\n            return\n",
-        ),
-        (
-            "entries-local-const",
-            "var scores(player: string): int\n    const rows = entries(scores)\n",
-        ),
-    ] {
-        let found = check_module(
-            name,
-            &format!(
-                "module m\n\
-                 resource Book\n    required title: string\n\
-                 store ^books(id: int): Book\n\n\
-                 fn f()\n    {body}",
-            ),
-            "check.collection_unsupported",
-        );
-        assert_eq!(found.len(), 1, "{name}: {found:#?}");
-    }
-}
-
-#[test]
-fn entries_loop_heads_reject_nested_and_pass_through_wrappers() {
-    for (name, body) in [
-        (
-            "local-nested-entries",
-            "var scores(player: string): int\n    for player, score in entries(entries(scores))\n        print($\"{player}: {score}\")\n",
-        ),
-        (
-            "saved-nested-entries",
-            "for id, book in entries(entries(^books))\n        print($\"{id}: {book.title}\")\n",
-        ),
-        (
-            "saved-reversed-nested-entries",
-            "for id, book in reversed(entries(entries(^books)))\n        print($\"{id}: {book.title}\")\n",
-        ),
-        (
-            "saved-entries-values",
-            "for id, book in entries(values(^books))\n        print($\"{id}: {book.title}\")\n",
-        ),
-    ] {
-        let found = check_module(
-            name,
-            &format!(
-                "module m\n\
-                 resource Book\n    required title: string\n\
-                 store ^books(id: int): Book\n\n\
-                 fn f()\n    {body}",
-            ),
-            "check.collection_unsupported",
-        );
-        assert_eq!(found.len(), 1, "{name}: {found:#?}");
-    }
-}
-
-#[test]
-fn entries_loop_heads_reject_non_collection_arguments() {
-    for (name, iterable) in [
-        ("entries-binary", "entries(x + 1)"),
-        ("reversed-entries-binary", "reversed(entries(x + 1))"),
-    ] {
-        let found = check_module(
-            name,
-            &format!(
-                "module m\n\
-                 fn f()\n    var x = 1\n    for key, value in {iterable}\n        print($\"{{key}}: {{value}}\")\n",
-            ),
-            "check.collection_unsupported",
-        );
-        assert_eq!(found.len(), 1, "{name}: {found:#?}");
-    }
-}
-
-#[test]
-fn top_level_entries_const_reports_loop_head_only() {
-    let root = temp_project("entries-const-value", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             store ^books(id: int): Book\n\
-             const rows = entries(^books)\n",
-        );
-    });
-
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    let found = with_code(&report, "check.collection_unsupported");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-}
-
 #[test]
 fn local_keyed_tree_two_name_loops_bind_key_and_value() {
     let report = check_module_report(
@@ -764,77 +651,10 @@ fn local_sequence_entries_loops_bind_position_and_value() {
     let report = check_module_report(
         "local-sequence-entries-loop",
         "module m\n\
-         fn f()\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    for pos, x in entries(xs)\n        const pos_ok: int = pos\n        const value_ok: int = x\n    for pos, x in reversed(entries(xs))\n        const pos_ok: int = pos\n        const value_ok: int = x\n",
+         fn f()\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    for pos, x in xs\n        const pos_ok: int = pos\n        const value_ok: int = x\n    for pos, x in reversed xs\n        const pos_ok: int = pos\n        const value_ok: int = x\n",
     );
     assert_clean(&report);
 }
-
-#[test]
-fn local_sequence_key_and_value_views_bind_positions_and_values() {
-    let report = check_module_report(
-        "local-sequence-key-value-views",
-        "module m\n\
-         fn f()\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    for pos in keys(xs)\n        const pos_ok: int = pos\n    for x in values(xs)\n        const value_ok: int = x\n    for pos in reversed(keys(xs))\n        const reversed_pos_ok: int = pos\n    for x in reversed(values(xs))\n        const reversed_value_ok: int = x\n",
-    );
-    assert_clean(&report);
-}
-
-#[test]
-fn two_name_local_key_and_value_views_are_rejected() {
-    for (name, setup, iterable) in [
-        (
-            "sequence-keys",
-            "var xs: sequence[int]\n    xs(1) = 1\n",
-            "keys(xs)",
-        ),
-        (
-            "sequence-values",
-            "var xs: sequence[int]\n    xs(1) = 1\n",
-            "values(xs)",
-        ),
-        (
-            "sequence-reversed-keys",
-            "var xs: sequence[int]\n    xs(1) = 1\n",
-            "reversed(keys(xs))",
-        ),
-        (
-            "sequence-reversed-values",
-            "var xs: sequence[int]\n    xs(1) = 1\n",
-            "reversed(values(xs))",
-        ),
-        (
-            "tree-keys",
-            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
-            "keys(scores)",
-        ),
-        (
-            "tree-values",
-            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
-            "values(scores)",
-        ),
-        (
-            "tree-reversed-keys",
-            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
-            "reversed(keys(scores))",
-        ),
-        (
-            "tree-reversed-values",
-            "var scores(player: string): int\n    scores(\"p1\") = 10\n",
-            "reversed(values(scores))",
-        ),
-    ] {
-        let found = check_module(
-            &format!("two-name-local-{name}"),
-            &format!(
-                "module m\n\
-                 fn f()\n    {setup}    for first, second in {iterable}\n        print($\"{{first}}={{second}}\")\n",
-            ),
-            "check.collection_unsupported",
-        );
-        assert_eq!(found.len(), 1, "{name}: {found:#?}");
-    }
-}
-
 #[test]
 fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
     for wrapper in ["keys", "values"] {
@@ -1042,23 +862,6 @@ fn enum_index_range_arguments_check_endpoints_consistently() {
     );
     assert_clean(&report);
 }
-
-#[test]
-fn collection_wrappers_accept_saved_key_range_arguments() {
-    let report = check_module_report(
-        "wrapped-key-ranges",
-        "module m\n\
-         resource Cell\n    required value: int\n\
-         store ^cells(x: int, y: int): Cell\n\
-         resource Book\n    required title: string\n    tags(pos: int): string\n\
-         store ^books(id: int): Book\n\
-         resource Post\n    published: int\n    required title: string\n\
-         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
-         fn f(book: Id(^books), lo: int, hi: int)\n    for y in keys(^cells(1, lo..hi))\n        print(y)\n    for cell in values(^cells(1, lo..hi))\n        var v: int = cell.value\n    for y, cell in entries(^cells(1, lo..hi))\n        var typed_y: int = y\n        var entry_v: int = cell.value\n    for pos in keys(^books(book).tags(lo..hi))\n        print(pos)\n    for pos, tag in entries(^books(book).tags(lo..hi))\n        var typed_pos: int = pos\n        var s: string = tag\n    for post in keys(^posts.byDate(lo..hi))\n        print(post)\n",
-    );
-    assert_clean(&report);
-}
-
 #[test]
 fn saved_key_range_calls_are_rejected_in_value_position() {
     let found = check_module(
@@ -1153,40 +956,6 @@ fn count_accepts_index_range_but_rejects_root_and_layer_ranges_with_an_accurate_
         "the accurate count message owns the rejection, not the range-value catch-all: {:#?}",
         layer.diagnostics
     );
-
-    // Counting a saved traversal that a wrapper already produced is rejected by the
-    // re-materialization rule, not the index-branch rule: the inner path is a
-    // non-unique index branch, so the index-branch message would contradict itself.
-    let remat = "`count` cannot re-materialize a saved traversal; iterate it directly";
-    for wrapper in ["keys", "values", "entries", "reversed"] {
-        let report = check_module_report(
-            "count-wrapped-index-range",
-            &format!(
-                "module m\n\
-                 resource Post\n    published: int\n\
-                 store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
-                 fn f(lo: int, hi: int): int\n    return count({wrapper}(^posts.byDate(lo..hi)))\n"
-            ),
-        );
-        let messages: Vec<&str> = with_code(&report, "check.collection_unsupported")
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect();
-        assert!(
-            messages.contains(&remat),
-            "{}: expected the re-materialization message, got {:#?}",
-            wrapper,
-            report.diagnostics
-        );
-        assert!(
-            !messages
-                .iter()
-                .any(|m| m.contains("non-unique index branch")),
-            "{}: the index-branch message must not fire for a wrapped traversal: {:#?}",
-            wrapper,
-            report.diagnostics
-        );
-    }
 }
 
 #[test]
@@ -1295,24 +1064,11 @@ fn singleton_root_keys_do_not_bind_generated_identities() {
         "module m\n\
          resource Settings\n    value: int\n\
          store ^settings: Settings\n\n\
-         fn f()\n    for id in keys(^settings)\n        var n = id + 1\n",
+         fn f()\n    for id in ^settings\n        var n = id + 1\n",
         "check.operator_type",
     );
     assert!(found.is_empty(), "{found:#?}");
 }
-
-#[test]
-fn supported_collection_wrappers_bind_their_documented_shapes() {
-    let report = check_module_report(
-        "collection-wrapper-shapes",
-        "module m\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n\
-         fn f()\n    for id in keys(^books)\n        var typed: Id(^books) = id\n    for book in values(^books)\n        var title: string = book.title\n    for id, book in entries(^books)\n        var typed: Id(^books) = id\n        var title: string = book.title\n    for book in reversed(values(^books))\n        var title: string = book.title\n    for id, book in reversed(entries(^books))\n        var reversed_typed: Id(^books) = id\n        var reversed_title: string = book.title\n",
-    );
-    assert_clean(&report);
-}
-
 #[test]
 fn layer_key_traversal_binds_declared_key_types() {
     let report = check_module_report(
@@ -1320,7 +1076,7 @@ fn layer_key_traversal_binds_declared_key_types() {
         "module m\n\
          resource Run\n    terms: sequence[string]\n    amounts(pos: int): decimal\n\
          store ^runs(id: int): Run\n\n\
-         fn f(id: Id(^runs))\n    for pos in keys(^runs(id).terms)\n        const first: bool = pos == 1\n    for pos, amount in entries(^runs(id).amounts)\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
+         fn f(id: Id(^runs))\n    for pos in ^runs(id).terms\n        const first: bool = pos == 1\n    for pos, amount in ^runs(id).amounts\n        const numbered: bool = pos == 1\n        const total: decimal = amount + 1.0\n",
     );
     assert_clean(&report);
 }
@@ -1336,62 +1092,6 @@ fn composite_root_traversal_binds_addressable_identities() {
     );
     assert_clean(&report);
 }
-
-#[test]
-fn non_unique_index_branches_accept_value_materialization_wrappers() {
-    // A non-unique index branch yields the store identity, so `values`/`entries`
-    // materialize the whole record at that identity exactly as the bare two-name
-    // form does. The single-name `values(...)` binds the record; the two-name
-    // `entries(...)` binds the identity paired with the record.
-    let report = check_module_report(
-        "non-unique-index-materialization",
-        "module m\n\
-         resource Book\n    required title: string\n    shelf: string\n\
-         store ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
-         fn f()\n    \
-         for book in values(^books.byShelf(\"fiction\"))\n        var title: string = book.title\n    \
-         for id, book in entries(^books.byShelf(\"fiction\"))\n        var typed_id: Id(^books) = id\n        var title: string = book.title\n",
-    );
-    assert_clean(&report);
-}
-
-#[test]
-fn unique_index_branches_reject_collection_wrappers() {
-    // A unique index branch is a single-identity lookup, not a streaming
-    // collection, so every loop-wrapper over it stays a clean check error,
-    // matching the bare two-name rejection. `keys` has no key stream either: a
-    // single identity addresses no orderable key sequence.
-    for wrapper in ["keys", "values", "entries"] {
-        let found = check_module(
-            &format!("unique-index-{wrapper}-unsupported"),
-            &format!(
-                "module m\n\
-                 resource Book\n    required title: string\n    isbn: string\n\
-                 store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
-                 fn f()\n    for item in {wrapper}(^books.byIsbn(\"978\"))\n        print($\"{{item}}\")\n",
-            ),
-            "check.collection_unsupported",
-        );
-        assert!(!found.is_empty(), "{wrapper}: {found:#?}");
-    }
-}
-
-#[test]
-fn reversed_saved_collection_expressions_type_element_sequences() {
-    // A materialized `reversed(...)` is a local sequence whose values are the
-    // captured keys/values; `values(...)` over it binds those elements, so the two
-    // value-element misuses (`book.title + 1`, `tag + 1`) are operator type errors.
-    let found = check_module(
-        "reversed-saved-expressions",
-        "module m\n\
-         resource Book\n    required title: string\n    tags: sequence[string]\n\
-         store ^books(id: int): Book\n\n\
-         fn f(id: Id(^books))\n    const ids = reversed(^books)\n    for bookId in values(ids)\n        var typed: Id(^books) = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in values(positions)\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in values(books)\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in values(tags)\n        var also_bad = tag + 1\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 2, "{found:#?}");
-}
-
 #[test]
 fn unresolved_calls_are_suppressed_when_a_module_fails_to_parse() {
     // Module `a` has a lexical error (a leading tab), so it is excluded from the

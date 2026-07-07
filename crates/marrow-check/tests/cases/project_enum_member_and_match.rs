@@ -375,7 +375,7 @@ fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
          enum Status\n    active\n    archived\n\n\
          enum Color\n    red\n    green\n\n\
          fn f(items: sequence[Status])\n    \
-         for s in values(items)\n        \
+         for k, s in items\n        \
          match s\n            red\n                return\n            green\n                return\n",
         "check.unknown_enum_member",
     );

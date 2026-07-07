@@ -393,9 +393,9 @@ else_clause     = "else" NEWLINE block ;
 while_stmt      = "while" expression NEWLINE block ;
 
 for_stmt        =
-    "for" for_binding "in" expression ("by" expression)? NEWLINE block ;
+    "for" for_binding "in" ("reversed")? expression ("by" expression)? NEWLINE block ;
 
-for_binding     = identifier | identifier "," identifier ;
+for_binding     = identifier ("," identifier)* ;
 
 match_stmt      = "match" expression NEWLINE INDENT match_arm+ DEDENT ;
 match_arm       = identifier ("::" identifier)* NEWLINE block ;
@@ -404,6 +404,13 @@ match_arm       = identifier ("::" identifier)* NEWLINE block ;
 The `by` step is valid only on a range iterable (`lo..hi` or `lo..=hi`); the checker
 rejects it on any other iterable. `by` is contextual — recognized only in this
 position, so a name `by` elsewhere is unaffected.
+
+A `for` head binds key-first: one name binds the iterated address, and each
+further name descends one layer to the value. `reversed` immediately after `in`
+is a reserved traversal-direction keyword requiring an iterable after it; an
+identifier spelling `reversed` in that head slot is always the keyword, never a
+name, while `reversed` in every other position is an ordinary identifier. A range
+has no `reversed` form.
 
 A `match` dispatches on an enum value. Each arm is a member path relative to the
 scrutinee enum (the scrutinee supplies the enum, so an arm is `archived` or
@@ -613,12 +620,13 @@ These rules are part of the grammar contract:
 - `index` declarations are checked as direct members of keyed stores.
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
-- Direct durable collection iteration yields addresses. For a managed store root,
-  that means store identities; for a sequence or keyed layer, that means child
-  keys; for a non-unique index branch, that means the identities in the branch.
-- `keys` and `values` expose address-only and element-only traversal forms.
-  `entries(...)` is only valid as a two-name loop-head form, including
-  `reversed(entries(...))` in that same position.
+- Direct durable collection iteration binds key-first. A single loop name binds
+  the iterated address — store identities for a managed store root, child keys for
+  a sequence or keyed layer, branch identities for a non-unique index branch — and
+  each further name descends one layer to the value.
+- `keys(...)` and `values(...)` materialize a local sequence of addresses or
+  elements in value position over local collections. They are rejected over a
+  saved path and as a loop-head iterable.
 - Documentation comments attach to the next const, resource, store, enum, or
   function declaration, or to the next resource/store element, enum member, or
   parameter.

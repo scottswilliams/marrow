@@ -27,7 +27,7 @@ fn an_identity_field_round_trips_through_saved_data() {
          \x20   ^books(1).authorId = author\n\
          \n\
          pub fn read(): bool\n\
-         \x20   for author in keys(^authors)\n\
+         \x20   for author in ^authors\n\
          \x20       const stored: Id(^authors) = ^books(1).authorId ?? author\n\
          \x20       return stored == author\n\
          \x20   return false\n",
@@ -177,14 +177,14 @@ fn single_key_store_identity_behaves_like_other_identity_origins() {
          pub fn idValue(): Id(^docs)\n\
          \x20   const id = nextId(^docs)\n\
          \x20   ^docs(id).title = \"T\"\n\
-         \x20   for doc in keys(^docs)\n\
+         \x20   for doc in ^docs\n\
          \x20       return doc\n\
          \x20   return id\n\
          \n\
          pub fn mixedEq(): bool\n\
          \x20   const id = nextId(^docs)\n\
          \x20   ^docs(id).title = \"T\"\n\
-         \x20   for doc in keys(^docs)\n\
+         \x20   for doc in ^docs\n\
          \x20       return id == doc\n\
          \x20   return false\n",
     );
@@ -317,7 +317,7 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
          pub fn read(): bool\n\
          \x20   if exists(^books(1))\n\
          \x20       const b = ^books(1)\n\
-         \x20       for author in keys(^authors)\n\
+         \x20       for author in ^authors\n\
          \x20           if const stored = b.authorId\n\
          \x20               return stored == author\n\
          \x20   return false\n",

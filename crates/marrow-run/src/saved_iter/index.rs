@@ -13,13 +13,13 @@ use crate::read::{
     stream_index_branch,
 };
 
-use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row};
+use super::{ChildCursor, SavedLoopRow, SavedLoopSpec, saved_loop_row};
 
 pub(super) struct IndexScan {
     place: CheckedSavedPlace,
     branch: IndexBranchAddress,
     dir: Direction,
-    shape: LoopShape,
+    with_value: bool,
     span: SourceSpan,
 }
 
@@ -33,7 +33,7 @@ impl IndexScan {
             place: place.clone(),
             branch,
             dir: spec.dir,
-            shape: spec.shape,
+            with_value: spec.with_value,
             span: spec.span,
         }
     }
@@ -66,7 +66,7 @@ impl IndexScan {
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
         let key = collected_identity_value(&identity, Some(&self.place.root), self.span)?;
-        let row = shape_row(self.shape, key, || {
+        let row = saved_loop_row(self.with_value, vec![key], || {
             read_resource(&self.place, &identity, self.span, env)
         })?;
         visit(row, env)

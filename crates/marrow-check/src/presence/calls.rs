@@ -1,7 +1,7 @@
 use marrow_schema::stdlib::{self, ReturnType};
 
 use crate::facts::ReadKind;
-use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedProgram, MarrowType};
+use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedProgram, MarrowType};
 
 /// Whether a call's result is maybe-present (`T?`), read off the return type
 /// rather than a parallel presence flag: a std op declared `OptionalScalar`, or a
@@ -26,22 +26,6 @@ pub(super) fn neighbor_read(target: &CheckedCallTarget) -> Option<ReadKind> {
     match target {
         CheckedCallTarget::Builtin(CheckedBuiltinCall::Next) => Some(ReadKind::Next),
         CheckedCallTarget::Builtin(CheckedBuiltinCall::Prev) => Some(ReadKind::Prev),
-        _ => None,
-    }
-}
-
-/// The sole path argument of a collection-view call (`keys`/`values`/`entries`/
-/// `reversed`), matched by its typed builtin target rather than the callee name,
-/// or `None` for any other call.
-pub(super) fn wrapper_arg(expr: &CheckedExpr, wrapper: CheckedBuiltinCall) -> Option<&CheckedExpr> {
-    let CheckedExpr::Call { target, args, .. } = expr else {
-        return None;
-    };
-    if *target != CheckedCallTarget::Builtin(wrapper) {
-        return None;
-    }
-    match args.as_slice() {
-        [arg] if arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
 }

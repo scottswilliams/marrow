@@ -148,20 +148,6 @@ fn a_module_constant_reference_is_not_unresolved() {
     );
     assert!(found.is_empty(), "{found:#?}");
 }
-
-#[test]
-fn a_for_binding_over_a_sequence_value_view_types_the_element() {
-    // `std::text::split` yields `sequence[string]`; `values(...)` binds `part` to
-    // the `string` element, so `part + 1` is string-plus-int. (The bare sequence
-    // binds `int` positions, typed by `single_name_loop_over_a_sequence_binds_positions`.)
-    let found = check_module(
-        "for-elem",
-        "module m\nfn f(s: string)\n    for part in values(std::text::split(s, \",\"))\n        var x = part + 1\n",
-        "check.operator_type",
-    );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
 #[test]
 fn single_name_loop_over_a_sequence_binds_int_positions() {
     // A local sequence is a 1-based integer-keyed tree, so a single loop variable
@@ -657,8 +643,8 @@ fn returning_keys_of_a_saved_root_as_a_sequence_is_a_check_error() {
 
 #[test]
 fn passing_values_of_a_saved_root_to_a_sequence_parameter_is_a_check_error() {
-    // `values(^players)` passed to a by-value `sequence[Player]` parameter is the same
-    // saved-collection rejection the bare root gets — it is not a local value to copy.
+    // `values(^players)` is rejected at the `values` call — a saved root is iterated in
+    // place, never materialized into a local sequence to copy by value.
     let found = check_module(
         "pass-values-saved-root",
         "module m\n\
@@ -666,22 +652,22 @@ fn passing_values_of_a_saved_root_to_a_sequence_parameter_is_a_check_error() {
          store ^players(id: int): Player\n\n\
          fn take(xs: sequence[Player]): int\n    return count(xs)\n\n\
          fn f(): int\n    return take(values(^players))\n",
-        "check.call_argument",
+        "check.collection_unsupported",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
 fn passing_keys_of_a_saved_root_to_a_sequence_std_helper_is_a_check_error() {
-    // A std helper's `sequence[T]` parameter is the same by-value slot a user function
-    // takes; `keys(^tags)` laundered into `text::join` is rejected through the one owner.
+    // `keys` materializes a local collection; over a saved root it is rejected at the
+    // `keys` call itself — saved data is iterated in place with `for ... in`.
     let found = check_module(
         "pass-keys-std-helper",
         "module m\n\
          resource Tag\n    label: string\n\
          store ^tags(name: string): Tag\n\n\
          fn f(): string\n    return std::text::join(keys(^tags), \",\")\n",
-        "check.call_argument",
+        "check.collection_unsupported",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
 }
@@ -695,7 +681,7 @@ fn iterating_keys_of_a_saved_root_in_a_for_loop_is_not_flagged() {
         "module m\n\
          resource Player\n    name: string\n\
          store ^players(id: int): Player\n\n\
-         fn f(): int\n    var total = 0\n    for id in keys(^players)\n        total = total + 1\n    return total\n",
+         fn f(): int\n    var total = 0\n    for id in ^players\n        total = total + 1\n    return total\n",
     );
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }

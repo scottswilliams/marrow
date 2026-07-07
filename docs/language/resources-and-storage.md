@@ -405,9 +405,10 @@ first-class lookup path.
 Generated index entries are populated paths. Non-unique indexes use generated
 marker values at identity lookup paths. Unique indexes store the store identity
 at the lookup path.
-Typed code reads non-unique index identities through direct iteration or
-`keys(...)`. It reads a unique index identity from the lookup path. Generated
-marker values are visible only through checked inspection tooling.
+Typed code reads non-unique index identities through direct iteration
+(`for id in ^books.byShelf(...)`). It reads a unique index identity from the
+lookup path. Generated marker values are visible only through checked inspection
+tooling.
 
 Saved keyspace traversal may replace the final provided key argument with an
 ordered range bound. This applies to non-unique index branches, store-root
@@ -439,8 +440,7 @@ ordered scalar store/layer key components, not identity-typed components, and
 they do not apply to unique indexes. A bare `..`, `start..=`, non-trailing range,
 composite endpoint, or `by` step in a saved key argument is rejected.
 Ranged saved-key calls are traversal shapes, not value reads: use them as loop
-iterables, through `keys`/`values`/`entries` loop wrappers, or in supported
-cardinality/presence calls. A ranged key argument names a span of entries, not
+iterables or in supported cardinality/presence calls. A ranged key argument names a span of entries, not
 one entry, so it is also rejected as a write or `delete` address. In v0.1, ranged
 `exists(...)` and `count(...)` are supported for non-unique index branches;
 store-root and keyed-layer ranges are traversed rather than tested or counted as
@@ -713,12 +713,12 @@ Use sequences when integer order is the important access pattern. Use keyed
 trees when the keys have meaning, may be sparse, or are iterated in sorted key
 order.
 
-Iteration over any layer — forward (`for`, `keys`, `values`, `entries`), reverse
-(`reversed`), or by stored neighbor (`next`, `prev`) — visits only stored entries,
-in key order, and skips holes. A gap left by a delete, by failed work, or by
-sparse keys is passed over, never visited as an empty position. This stored-only,
-gap-skipping, key-ordered walk is the storage guarantee the `reversed`,
-`next`, and `prev` helpers in the builtins reference rest on.
+Iteration over any layer — a `for` loop, forward or `reversed`, or by stored
+neighbor (`next`, `prev`) — visits only stored entries, in key order, and skips
+holes. A gap left by a delete, by failed work, or by sparse keys is passed over,
+never visited as an empty position. This stored-only, gap-skipping, key-ordered
+walk is the storage guarantee the `next` and `prev` helpers in the builtins
+reference rest on.
 
 ### Composite Keyed Layers
 
@@ -1001,8 +1001,8 @@ Read-site resolution forms are:
 - `if const name = place`, which checks presence, reads once, and binds the
   value in the true branch;
 - `?.` optional field chains that end in one of the resolution forms above;
-- attached-data traversal such as `for id, value in ^root`, `values(...)`, and
-  `entries(...)`, where the traversal supplies the value it found.
+- attached-data traversal such as `for id, value in ^root`, where the two-name
+  head supplies the value it found.
 
 An early-return guard also narrows the following statements:
 

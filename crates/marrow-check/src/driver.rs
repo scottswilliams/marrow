@@ -440,6 +440,8 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::EvolveDefaultType { .. }
             | DiagnosticPayload::EvolveTransform(_)
             | DiagnosticPayload::SuggestedIndex { .. }
+            | DiagnosticPayload::LoopHeadArity { .. }
+            | DiagnosticPayload::LoopHeadViewCall(_)
             | DiagnosticPayload::UnresolvedName { .. }
             | DiagnosticPayload::UnknownField { .. }
             | DiagnosticPayload::RequiredAbsent { .. }
@@ -1357,9 +1359,7 @@ fn statement_declares_local_name(statement: &Statement, name: &str) -> bool {
             name: local_name, ..
         } => local_name == name || statement_child_blocks_declare_local_name(statement, name),
         Statement::For { binding, body, .. } => {
-            binding.first == name
-                || binding.second.as_deref() == Some(name)
-                || block_declares_local_name(body, name)
+            binding.names.iter().any(|n| n.name == name) || block_declares_local_name(body, name)
         }
         Statement::Try { body, catch, .. } => {
             block_declares_local_name(body, name)

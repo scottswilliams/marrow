@@ -26,13 +26,8 @@ use crate::{
 };
 
 use super::calls::is_by_value_collection_slot;
-use super::collections::{
-    catch_frame, check_entries_value_position, check_for_collection_support,
-    check_for_entries_support, check_for_scalar_iterable, for_frame, has_collection_unsupported,
-    is_partial_key_layer_path, is_saved_collection_path, is_saved_index_branch_path,
-    is_saved_key_range_path, is_saved_path_with_key_range_arg,
-};
 use super::const_int::{ConstIntScope, fold_const_int};
+use super::loop_head::{LoopHeadScope, check_for_head, for_frame};
 use super::operators::{
     check_assignment, check_binary, check_condition, check_return_type, check_throw_type,
 };
@@ -44,6 +39,19 @@ use super::returns::check_return_values;
 use super::saved_keys::{
     SequencePositionWrite, check_sequence_position_write, saved_root_args_address_record,
 };
+use super::saved_paths::{
+    is_partial_key_layer_path, is_saved_collection_path, is_saved_index_branch_path,
+    is_saved_key_range_path, is_saved_path_with_key_range_arg,
+};
+
+/// The scope frame a `catch` clause's block runs under: the caught error value
+/// bound to its name. Shared by the type pass and cursor scope reconstruction so the
+/// two cannot drift.
+pub(crate) fn catch_frame(clause: &marrow_syntax::CatchClause) -> HashMap<String, MarrowType> {
+    let mut frame = HashMap::new();
+    frame.insert(clause.name.clone(), MarrowType::Error);
+    frame
+}
 
 /// Type-check a function body, tracking the type of each in-scope binding and
 /// inferring each expression. A check fires only when a type or signature is known
@@ -507,11 +515,12 @@ impl StatementCheck<'_> {
             } => self.check_while(condition, body),
             Statement::For {
                 binding,
+                order,
                 iterable,
                 step,
                 body,
                 ..
-            } => self.check_for(binding, iterable, step.as_ref(), body),
+            } => self.check_for(binding, *order, iterable, step.as_ref(), body),
             Statement::Transaction { body, .. } => {
                 self.check_block(body);
             }
@@ -530,7 +539,7 @@ impl StatementCheck<'_> {
     }
 
     fn infer(&mut self, expr: &marrow_syntax::Expression) -> MarrowType {
-        let ty = infer_type_with_read_scope(
+        infer_type_with_read_scope(
             self.program,
             expr,
             self.scope,
@@ -539,9 +548,7 @@ impl StatementCheck<'_> {
             self.diagnostics,
             self.const_ints,
             ReadScope::new(self.transform_old, self.narrowing.current()),
-        );
-        check_entries_value_position(self.file, expr, self.diagnostics);
-        ty
+        )
     }
 
     /// The narrowings a guard condition proves for its then-block (built inline so
@@ -821,12 +828,6 @@ impl StatementCheck<'_> {
     }
 
     fn reject_saved_collection_materialization(&mut self, value: &marrow_syntax::Expression) {
-        // A combinator-wrapped saved traversal (`entries(^books)`) already carries a more
-        // precise `collection_unsupported` at this span from the combinator-position rule.
-        // Defer to it rather than push a second diagnostic at the same place.
-        if has_collection_unsupported(self.diagnostics, self.file, value.span()) {
-            return;
-        }
         self.diagnostics.push(CheckDiagnostic::error(
             CHECK_COLLECTION_UNSUPPORTED,
             self.file,
@@ -1309,7 +1310,6 @@ impl StatementCheck<'_> {
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
         );
-        check_entries_value_position(self.file, path, self.diagnostics);
         if is_saved_index_branch_path(self.program, path, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_COLLECTION_UNSUPPORTED,
@@ -1412,7 +1412,6 @@ impl StatementCheck<'_> {
             self.diagnostics,
         );
         self.check_range_value(condition);
-        check_entries_value_position(self.file, condition, self.diagnostics);
     }
 
     fn check_conditional(
@@ -1547,6 +1546,7 @@ impl StatementCheck<'_> {
     fn check_for(
         &mut self,
         binding: &marrow_syntax::ForBinding,
+        order: marrow_syntax::LoopOrder,
         iterable: &marrow_syntax::Expression,
         step: Option<&marrow_syntax::Expression>,
         body: &marrow_syntax::Block,
@@ -1606,15 +1606,6 @@ impl StatementCheck<'_> {
             self.required_fields.invalidate_all();
             return;
         }
-        check_for_entries_support(
-            self.program,
-            self.file,
-            binding,
-            iterable,
-            self.scope,
-            self.aliases,
-            self.diagnostics,
-        );
         if !is_saved_index_branch_path(self.program, iterable, self.scope, self.file)
             && !is_saved_key_range_path(self.program, iterable, self.scope, self.file)
         {
@@ -1622,7 +1613,6 @@ impl StatementCheck<'_> {
         }
         if let Some(step) = step {
             self.check_range_value(step);
-            check_entries_value_position(self.file, step, self.diagnostics);
         }
         check_range_header(
             self.program,
@@ -1633,21 +1623,16 @@ impl StatementCheck<'_> {
             self.aliases,
             self.diagnostics,
         );
-        check_for_collection_support(
-            self.program,
-            self.file,
+        check_for_head(
+            &LoopHeadScope {
+                program: self.program,
+                file: self.file,
+                scope: self.scope,
+                aliases: self.aliases,
+            },
             binding,
+            order,
             iterable,
-            self.scope,
-            self.aliases,
-            self.diagnostics,
-        );
-        check_for_scalar_iterable(
-            self.program,
-            self.file,
-            iterable,
-            self.scope,
-            self.aliases,
             self.diagnostics,
         );
         let frame = for_frame(
@@ -1684,7 +1669,6 @@ impl StatementCheck<'_> {
         arms: &[marrow_syntax::MatchArm],
         span: SourceSpan,
     ) {
-        check_entries_value_position(self.file, scrutinee, self.diagnostics);
         self.check_range_value(scrutinee);
         check_match(MatchCheck {
             program: self.program,

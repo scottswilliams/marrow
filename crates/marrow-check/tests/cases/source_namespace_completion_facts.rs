@@ -652,7 +652,7 @@ fn file_namespace_completion_fails_closed_when_function_local_binding_shadows_im
         ),
         (
             "for_second",
-            "    var scores(name: string): int\n    for key, books in entries(scores)\n        print(books)\n    return 0\n",
+            "    var scores(name: string): int\n    for key, books in scores\n        print(books)\n    return 0\n",
         ),
         (
             "catch",

@@ -28,13 +28,13 @@ use crate::{
     std_call_return_type,
 };
 
-use super::collections::{
-    collection_loop_binding_types, has_collection_unsupported, is_concrete_scalar_value,
-    is_recognized_collection, is_saved_index_range_path, is_saved_key_range_path,
-    is_saved_unique_index_branch_path, saved_path_key_type, saved_path_value_type,
-};
 use super::diagnostics::key_type_diagnostic;
+use super::loop_head::is_recognized_collection;
 use super::saved_keys::{check_identity_sequence_position, check_keys_against};
+use super::saved_paths::{
+    is_concrete_scalar_value, is_saved_index_range_path, is_saved_key_range_path,
+    saved_path_key_type, saved_path_value_type,
+};
 
 /// A `check.call_argument` diagnostic carrying its typed fault, located at a call
 /// or argument span. The one construction path for the code's many argument-fault
@@ -172,27 +172,28 @@ fn check_special_single_name_call(
             env.file,
             env.diagnostics,
         )),
-        "reversed" => {
-            // A rejected argument has no stream to reverse; typing the result `invalid`
-            // (not the argument's own scalar type) keeps a typed consumer from stacking a
-            // second diagnostic on the one root-cause error.
-            if check_collection_combinator_args(env, name, args, arg_types) {
-                return Some(MarrowType::Invalid);
-            }
-            Some(reversed_type(env, args, arg_types))
-        }
         "next" | "prev" => Some(check_neighbor(env, name, args, arg_types)),
         "key" => Some(check_key(env, arg_types)),
-        // `entries` is validated comprehensively by the two-name-loop-head and
-        // value-position rules (it is valid nowhere else), so its scalar and
-        // wrapped-traversal arguments are reported there; double-checking here would
-        // duplicate the diagnostic. `keys`/`values` have no such owner, so they take
-        // the shared combinator argument rule.
+        // `keys`/`values` build a local sequence in value position: they materialize a
+        // local collection's keys or values. Saved data is iterated in place with
+        // `for ... in`, never materialized, so a saved-path argument is rejected here.
         "keys" | "values" => {
-            let rejected = check_collection_combinator_args(env, name, args, arg_types);
-            if !rejected {
-                check_index_branch_wrapper_args(env, name, args);
-            }
+            let rejected = if let [arg] = args
+                && arg.name.is_none()
+                && crate::rules::is_saved_path(&arg.value)
+            {
+                env.diagnostics.push(CheckDiagnostic::error(
+                    CHECK_COLLECTION_UNSUPPORTED,
+                    env.file,
+                    arg.value.span(),
+                    format!(
+                        "`{name}` materializes a local collection; iterate saved data in place with `for ... in`",
+                    ),
+                ));
+                true
+            } else {
+                check_collection_combinator_args(env, name, args, arg_types)
+            };
             // A rejected argument has no stream to key or materialize; typing the
             // result `invalid` (not `unknown`) keeps a typed consumer from stacking a
             // second `check.untyped_value` on the one root-cause error. A valid argument
@@ -202,10 +203,6 @@ fn check_special_single_name_call(
             } else {
                 MarrowType::Unknown
             })
-        }
-        "entries" => {
-            check_index_branch_wrapper_args(env, name, args);
-            Some(MarrowType::Unknown)
         }
         "append" => {
             check_append_args(env, args, arg_types);
@@ -870,9 +867,7 @@ fn check_conversion_call_shape(
 /// rejects only a re-`reversed` saved stream. Either is a check error rather than a
 /// deferred runtime fault. Returns whether the argument is rejected, so the caller
 /// types the result `invalid` and the enclosing `for` does not re-report the same root
-/// cause. When the argument is an inner combinator that already reported its own error
-/// at the argument span, the outer combinator counts the argument rejected but defers
-/// to that single diagnostic instead of pushing a duplicate.
+/// cause.
 fn check_collection_combinator_args(
     env: &mut CallEnv<'_>,
     name: &str,
@@ -884,13 +879,6 @@ fn check_collection_combinator_args(
     };
     if arg.name.is_some() {
         return false;
-    }
-    // An inner combinator over a scalar types its result a scalar, so the outer
-    // combinator sees one too. Defer to the inner combinator's already-reported error
-    // rather than re-flagging the same root cause, while still treating the argument as
-    // rejected so the result types `invalid`.
-    if has_collection_unsupported(env.diagnostics, env.file, arg.value.span()) {
-        return true;
     }
     // A maybe-present collection (`sequence[T]?`) must be resolved before it is counted
     // or streamed; the one rule owns it before the scalar/saved gates so the message
@@ -912,11 +900,8 @@ fn check_collection_combinator_args(
     // A ranged index branch counts its matching entries, but a bare ranged store root
     // or keyed layer names a traversal span with no single cardinality to read; reject
     // it here with the accurate rule so the range-value catch-all does not claim the
-    // range is `for`-only. A wrapped saved traversal (`count(keys(^idx(lo..hi)))`, etc.)
-    // falls through to the re-materialization rule below, whose message is the accurate
-    // one for that shape.
+    // range is `for`-only.
     if name == "count"
-        && !crate::rules::is_wrapped_saved_traversal(&arg.value)
         && is_saved_key_range_path(env.program, &arg.value, env.scope, env.file)
         && !is_saved_index_range_path(env.program, &arg.value, env.scope, env.file)
     {
@@ -930,51 +915,7 @@ fn check_collection_combinator_args(
         ));
         return true;
     }
-    let unconsumable = if name == "reversed" {
-        crate::rules::is_reversed_over_saved_traversal(&arg.value)
-    } else {
-        crate::rules::is_wrapped_saved_traversal(&arg.value)
-    };
-    if unconsumable {
-        env.diagnostics.push(CheckDiagnostic::error(
-            CHECK_COLLECTION_UNSUPPORTED,
-            env.file,
-            env.span,
-            format!("`{name}` cannot re-materialize a saved traversal; iterate it directly"),
-        ));
-        return true;
-    }
     false
-}
-
-/// Reject a loop-wrapper over a unique index branch. A unique branch is a
-/// single-identity lookup, not a stream, so it has no key sequence for `keys` to
-/// yield and no record stream for `values`/`entries` to materialize. A non-unique
-/// branch streams the store identity, so its record materializes through every
-/// wrapper, exactly as the bare two-name form does.
-fn check_index_branch_wrapper_args(
-    env: &mut CallEnv<'_>,
-    name: &str,
-    args: &[marrow_syntax::Argument],
-) {
-    let [arg] = args else { return };
-    if arg.name.is_some()
-        || !is_saved_unique_index_branch_path(env.program, &arg.value, env.scope, env.file)
-    {
-        return;
-    }
-    let message = if name == "keys" {
-        "`keys` cannot stream keys from a unique index lookup, which addresses a single identity"
-            .to_string()
-    } else {
-        format!("`{name}` cannot materialize values from a unique index lookup; use `keys`")
-    };
-    env.diagnostics.push(CheckDiagnostic::error(
-        CHECK_COLLECTION_UNSUPPORTED,
-        env.file,
-        env.span,
-        message,
-    ));
 }
 
 fn check_append_args(
@@ -1145,26 +1086,6 @@ fn check_conversion_arg(
             accepted_sources: target.accepted_source_types(),
         }),
     ));
-}
-
-fn reversed_type(
-    env: &CallEnv<'_>,
-    args: &[marrow_syntax::Argument],
-    arg_types: &[MarrowType],
-) -> MarrowType {
-    if let [arg] = args
-        && arg.name.is_none()
-        && let Some((element, None)) =
-            collection_loop_binding_types(env.program, false, &arg.value, env.scope, env.file)
-    {
-        return MarrowType::Sequence(Box::new(element));
-    }
-    if let Some(MarrowType::LocalTree { keys, .. }) = arg_types.first() {
-        return MarrowType::Sequence(Box::new(
-            keys.first().cloned().unwrap_or(MarrowType::Unknown),
-        ));
-    }
-    arg_types.first().cloned().unwrap_or(MarrowType::Unknown)
 }
 
 struct ResourceConstructorCheck<'a> {
@@ -1355,9 +1276,6 @@ pub(crate) fn materializes_saved_collection_by_value(
     scope: &[HashMap<String, MarrowType>],
     file: &Path,
 ) -> bool {
-    if crate::rules::is_wrapped_saved_traversal(expr) {
-        return true;
-    }
     lower_expr_for_file(program, file, expr, scope)
         .is_some_and(|checked| SavedPlaceResolver::new(program).is_saved_collection(&checked))
 }

@@ -15,7 +15,7 @@ use marrow_store::tree::TreeStore;
 /// index entries so a root drop's effect is observable.
 fn maintenance_books() -> String {
     format!(
-        "{BOOK_SHELF_INDEX_SCHEMA}pub fn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\npub fn drop_root()\n    delete ^books\n\npub fn drop_root_while_iterating_index()\n    for id in keys(^books.byShelf(\"fiction\"))\n        delete ^books\n\npub fn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n\npub fn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n"
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\npub fn drop_root()\n    delete ^books\n\npub fn drop_root_while_iterating_index()\n    for id in ^books.byShelf(\"fiction\")\n        delete ^books\n\npub fn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n\npub fn shelf_count(s: string): int\n    var c = 0\n    for id in ^books.byShelf(s)\n        c = c + 1\n    return c\n"
     )
 }
 
@@ -487,7 +487,7 @@ fn unquoted_undeclared_field_write_is_rejected_at_check() {
 #[test]
 fn managed_write_to_a_declared_field_is_unaffected() {
     let program = checked_program(&format!(
-        "{BOOK_SHELF_INDEX_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn move_shelf(id: int, s: string)\n    ^books(id).shelf = s\n\npub fn shelf_at(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n"
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).shelf = \"fiction\"\n\npub fn move_shelf(id: int, s: string)\n    ^books(id).shelf = s\n\npub fn shelf_at(s: string): int\n    var c = 0\n    for id in ^books.byShelf(s)\n        c = c + 1\n    return c\n"
     ));
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
