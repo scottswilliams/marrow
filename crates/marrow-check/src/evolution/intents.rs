@@ -11,6 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use marrow_codes::Code;
 use marrow_syntax::{
     Block, Declaration, EvolveStep, Expression, ParsedSource, SourceSpan, Statement,
 };
@@ -22,11 +23,11 @@ use crate::checks::{
 };
 use crate::infer::infer_type;
 use crate::program::TypeNames;
-use crate::typerules::{marrow_type_name, type_compatible};
+use crate::typerules::type_compatible;
 use crate::walk::for_each_child_expr;
 use crate::{
-    CHECK_EVOLVE_TARGET, CHECK_EVOLVE_TRANSFORM, CHECK_EVOLVE_TYPE, CheckDiagnostic, CheckedBody,
-    CheckedModule, CheckedProgram, MarrowType,
+    CheckDiagnostic, CheckedBody, CheckedModule, CheckedProgram, DiagnosticAnchor,
+    DiagnosticPayload, EvolveTargetFault, EvolveTransformFault, MarrowType, TransformImpurity,
 };
 
 /// One declared rename: the entity is now spelled `to_path` and was formerly
@@ -235,13 +236,11 @@ pub(crate) fn check_transform_effects(
         let Some(body) = &transform.runtime_body else {
             continue;
         };
-        let reason = impurity_reason(program, body);
-        if let Some(reason) = reason {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_EVOLVE_TRANSFORM,
-                &transform.file,
-                transform.body_span,
-                format!("an evolve transform body must be pure: {reason}"),
+        if let Some(reason) = impurity_reason(program, body) {
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckEvolveTransform,
+                DiagnosticAnchor::at(&transform.file, transform.body_span),
+                DiagnosticPayload::EvolveTransform(EvolveTransformFault::Impure { reason }),
             ));
         }
     }
@@ -257,22 +256,21 @@ pub(crate) fn check_transform_effects(
 /// function of `old` only, so a direct `^root(key).field` read would let one record's
 /// stored value flow into every record's recomputed cell, bypassing both the `old`
 /// binding and the decodability proof discharge builds for each read member.
-fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<&'static str> {
+fn impurity_reason(program: &CheckedProgram, body: &CheckedBody) -> Option<TransformImpurity> {
     let effects = crate::presence::direct_effects_for_block(&program.facts, body);
     if !effects.saved_reads.is_empty() || !effects.saved_index_reads.is_empty() {
-        return Some("it reads saved data; a transform body may only read `old`");
+        return Some(TransformImpurity::ReadsSavedData);
     }
     if !effects.saved_writes.is_empty() {
-        return Some("it writes saved data");
+        return Some(TransformImpurity::WritesSavedData);
     }
     if !effects.host_calls.is_empty() {
-        return Some("it performs a host effect");
+        return Some(TransformImpurity::HostEffect);
     }
     if effects.transactions {
-        return Some("it opens a transaction");
+        return Some(TransformImpurity::Transaction);
     }
-    (!effects.user_function_calls.is_empty())
-        .then_some("it calls a function; inline the computation over `old`")
+    (!effects.user_function_calls.is_empty()).then_some(TransformImpurity::CallsFunction)
 }
 
 /// The catalog paths every `evolve default` and `evolve transform` step targets, across
@@ -343,16 +341,14 @@ impl TypeContext<'_> {
             diagnostics,
         );
         if type_compatible(&member_type, &actual) == Some(false) {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_EVOLVE_TYPE,
-                self.file,
-                value.span(),
-                format!(
-                    "default value is `{}` but `{}` is `{}`",
-                    marrow_type_name(&actual),
-                    marrow_syntax::format_expression(target),
-                    marrow_type_name(&member_type)
-                ),
+            diagnostics.push(CheckDiagnostic::new(
+                Code::CheckEvolveType,
+                DiagnosticAnchor::at(self.file, value.span()),
+                DiagnosticPayload::EvolveDefaultType {
+                    value: actual,
+                    target: marrow_syntax::format_expression(target),
+                    member: member_type,
+                },
             ));
         }
     }
@@ -376,7 +372,7 @@ impl TypeContext<'_> {
         if !self.target_is_top_level_member(target) {
             diagnostics.push(self.transform_error(
                 target_span(target, span),
-                "an evolve transform must target a top-level saved resource member".to_string(),
+                EvolveTransformFault::NonTopLevelMember,
             ));
             return;
         }
@@ -387,7 +383,7 @@ impl TypeContext<'_> {
         ) else {
             diagnostics.push(self.transform_error(
                 target_span(target, span),
-                "an evolve transform must target a top-level saved resource member".to_string(),
+                EvolveTransformFault::NonTopLevelMember,
             ));
             return;
         };
@@ -436,27 +432,29 @@ impl TypeContext<'_> {
         };
         for read in old_field_reads(body) {
             let read_path = transform_read_path(resource_prefix, &read.field);
-            let message = if read_path == target_path {
-                Some(format!(
-                    "a transform cannot read its own target `old.{}`; compute it from other members",
-                    read.field
-                ))
+            let fault = if read_path == target_path {
+                Some(EvolveTransformFault::ReadsOwnTarget {
+                    field: read.field.clone(),
+                })
             } else if self.rewritten_targets.contains(&read_path) {
-                Some(format!(
-                    "a transform cannot read `old.{}`, which the same evolve block changes; read a member no default or transform rewrites",
-                    read.field
-                ))
+                Some(EvolveTransformFault::ReadsRewrittenMember {
+                    field: read.field.clone(),
+                })
             } else {
                 None
             };
-            if let Some(message) = message {
-                diagnostics.push(self.transform_error(read.span, message));
+            if let Some(fault) = fault {
+                diagnostics.push(self.transform_error(read.span, fault));
             }
         }
     }
 
-    fn transform_error(&self, span: SourceSpan, message: String) -> CheckDiagnostic {
-        CheckDiagnostic::error(crate::CHECK_EVOLVE_TRANSFORM, self.file, span, message)
+    fn transform_error(&self, span: SourceSpan, fault: EvolveTransformFault) -> CheckDiagnostic {
+        CheckDiagnostic::new(
+            Code::CheckEvolveTransform,
+            DiagnosticAnchor::at(self.file, span),
+            DiagnosticPayload::EvolveTransform(fault),
+        )
     }
 
     /// Whether the target names a top-level member of a resource: a bare resource name
@@ -786,12 +784,10 @@ fn target_span(target: &Expression, step: SourceSpan) -> SourceSpan {
 }
 
 fn report_target(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic::error(
-        CHECK_EVOLVE_TARGET,
-        file,
-        span,
-        "evolve target does not name a catalog-addressable entity \
-            (a resource, a resource member, a saved root, a store index, an enum, or an enum member)",
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckEvolveTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::EvolveTarget(EvolveTargetFault::Unaddressable),
     ));
 }
 

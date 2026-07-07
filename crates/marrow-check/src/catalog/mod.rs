@@ -6,6 +6,7 @@ use marrow_catalog::{
     CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry,
     LockLedgerTombstone,
 };
+use marrow_codes::Code;
 use marrow_store::cell::CatalogId;
 use marrow_syntax::{Declaration, EnumMember, ParsedSource, SourceSpan};
 
@@ -14,9 +15,9 @@ use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent,
 use crate::facts::{StoreIndexFact, StoreIndexKeySource, StoredValueMeaning};
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
-    CHECK_CATALOG_INTENT, CHECK_DURABLE_STORE_REQUIRED, CHECK_EVOLVE_TARGET, CHECK_LOCK_CORRUPT,
-    CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic,
-    CheckedProgram, DiagnosticPayload, PendingRecord,
+    CHECK_CATALOG_INTENT, CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate,
+    CheckDiagnostic, CheckedProgram, DiagnosticAnchor, DiagnosticPayload, EvolveTargetFault,
+    PendingRecord,
 };
 
 mod source_digest;
@@ -137,11 +138,10 @@ pub(crate) fn require_durable_store(
     let Some(anchor) = source_entries.first() else {
         return;
     };
-    diagnostics.push(CheckDiagnostic::error(
-        CHECK_DURABLE_STORE_REQUIRED,
-        &anchor.file,
-        anchor.span,
-        "this program declares durable data, which requires a native store; the configured store has no durable identity",
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckDurableStoreRequired,
+        DiagnosticAnchor::at(&anchor.file, anchor.span),
+        DiagnosticPayload::None,
     ));
 }
 
@@ -1088,14 +1088,12 @@ fn lock_corrupt_diagnostic(
     source_entries: &[SourceCatalogEntry],
     reissued_id: &str,
 ) -> CheckDiagnostic {
-    CheckDiagnostic::error(
-        CHECK_LOCK_CORRUPT,
-        &first_source_file(source_entries),
-        crate::source_spans::start_of_file(),
-        format!(
-            "marrow.lock is corrupt: adopting catalog id `{reissued_id}` would reissue an id its \
-             ledger has retired"
-        ),
+    CheckDiagnostic::new(
+        Code::CheckLockCorrupt,
+        DiagnosticAnchor::whole_file(&first_source_file(source_entries)),
+        DiagnosticPayload::LockCorrupt {
+            reissued_id: reissued_id.to_string(),
+        },
     )
 }
 
@@ -1843,11 +1841,10 @@ fn drop_bare_removed_entries(
 }
 
 fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic::error(
-        CHECK_EVOLVE_TARGET,
-        file,
-        span,
-        "evolve target does not name an accepted catalog entry to carry forward",
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckEvolveTarget,
+        DiagnosticAnchor::at(file, span),
+        DiagnosticPayload::EvolveTarget(EvolveTargetFault::UnacceptedCarryForward),
     ));
 }
 
@@ -1858,14 +1855,12 @@ fn report_unresolved_rename_destination(
     rename: &RenameIntent,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    diagnostics.push(CheckDiagnostic::error(
-        CHECK_EVOLVE_TARGET,
-        &rename.file,
-        rename.to_span,
-        format!(
-            "evolve rename target `{}` is not declared by the current source",
-            rename.to_path
-        ),
+    diagnostics.push(CheckDiagnostic::new(
+        Code::CheckEvolveTarget,
+        DiagnosticAnchor::at(&rename.file, rename.to_span),
+        DiagnosticPayload::EvolveTarget(EvolveTargetFault::RenameTargetUndeclared {
+            to_path: rename.to_path.clone(),
+        }),
     ));
 }
 
@@ -2463,6 +2458,18 @@ fn proposed_catalog_entry<E: CatalogIdEntropy>(
 mod tests {
     use super::*;
 
+    /// A real source token span for intent and entry fixtures. Diagnostics anchor at the
+    /// token that raised them, so a fixture stands in for a parsed declaration with a
+    /// placeable span, never the unplaceable `0:0`.
+    fn placed_span() -> SourceSpan {
+        SourceSpan {
+            start_byte: 0,
+            end_byte: 1,
+            line: 1,
+            column: 1,
+        }
+    }
+
     #[test]
     fn a_project_level_catalog_diagnostic_points_at_the_start_of_its_file() {
         let diagnostic = catalog_diagnostic(
@@ -2519,7 +2526,7 @@ mod tests {
         RetireIntent {
             path: path.to_string(),
             file: std::path::PathBuf::from("src/books.mw"),
-            span: SourceSpan::default(),
+            span: placed_span(),
         }
     }
 
@@ -2881,8 +2888,8 @@ mod tests {
             from_path: from_path.to_string(),
             to_path: to_path.to_string(),
             file: std::path::PathBuf::from("src/books.mw"),
-            span: SourceSpan::default(),
-            to_span: SourceSpan::default(),
+            span: placed_span(),
+            to_span: placed_span(),
         }
     }
 
@@ -2943,7 +2950,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|diagnostic| diagnostic.code != CHECK_EVOLVE_TARGET),
+                .all(|diagnostic| diagnostic.code != crate::CHECK_EVOLVE_TARGET),
             "a kept consumed category rename is already recorded, not an evolve-target failure: {diagnostics:#?}"
         );
     }
@@ -2995,7 +3002,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == CHECK_EVOLVE_TARGET),
+                .any(|diagnostic| diagnostic.code == crate::CHECK_EVOLVE_TARGET),
             "a rename naming nothing the seed reconstructs fails closed: {diagnostics:#?}"
         );
     }
@@ -3056,7 +3063,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|diagnostic| diagnostic.code != CHECK_EVOLVE_TARGET),
+                .all(|diagnostic| diagnostic.code != crate::CHECK_EVOLVE_TARGET),
             "a pending category rename resolves against the committed old spelling: {diagnostics:#?}"
         );
         let BindOutcome::Proposal(proposal) = outcome else {
@@ -3159,8 +3166,8 @@ mod tests {
             from_path: from_path.to_string(),
             to_path: to_path.to_string(),
             file: std::path::PathBuf::from("src/app.mw"),
-            span: SourceSpan::default(),
-            to_span: SourceSpan::default(),
+            span: placed_span(),
+            to_span: placed_span(),
         }
     }
 
@@ -3363,7 +3370,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == CHECK_EVOLVE_TARGET),
+                .any(|diagnostic| diagnostic.code == crate::CHECK_EVOLVE_TARGET),
             "a target the accepted catalog never carried fails closed: {diagnostics:#?}"
         );
     }

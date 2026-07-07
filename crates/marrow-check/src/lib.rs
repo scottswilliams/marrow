@@ -76,11 +76,11 @@ pub use diagnostics::{
     CHECK_UNRESOLVED_OPTIONAL, CHECK_UNTYPED_VALUE, CallArgumentFault, CallArgumentSlot,
     CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic, CheckReport,
     ConversionTarget, ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticAnchor,
-    DiagnosticPayload, EnumDiagnostic, IO_READ, IsTypeFault, LayerNotValueReason, MatchScrutinee,
-    PendingRecord, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
-    SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
-    SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
-    UnresolvedCallKind,
+    DiagnosticPayload, EnumDiagnostic, EvolveTargetFault, EvolveTransformFault, IO_READ,
+    IsTypeFault, LayerNotValueReason, MatchScrutinee, PendingRecord, RejectedSurface,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic, SurfaceCollisionNameKind,
+    SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
+    SurfaceRootOrigin, SurfaceTargetDiagnostic, TransformImpurity, UnresolvedCallKind,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,

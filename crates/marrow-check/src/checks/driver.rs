@@ -137,6 +137,10 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::RenderUnsupportedSource { .. }
                 | DiagnosticPayload::ReservedCatalogPathReuse { .. }
                 | DiagnosticPayload::CatalogIntent(_)
+                | DiagnosticPayload::LockCorrupt { .. }
+                | DiagnosticPayload::EvolveTarget(_)
+                | DiagnosticPayload::EvolveDefaultType { .. }
+                | DiagnosticPayload::EvolveTransform(_)
                 | DiagnosticPayload::SuggestedIndex { .. }
                 | DiagnosticPayload::UnresolvedName { .. }
                 | DiagnosticPayload::UnknownField { .. }

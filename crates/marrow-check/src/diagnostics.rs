@@ -994,6 +994,20 @@ pub enum DiagnosticPayload {
     /// catalog/source entity and cannot pick a semantic target, or a source
     /// declaration has no durable identity yet and reports how it is recorded.
     CatalogIntent(CatalogIntentDiagnostic),
+    /// `check.lock_corrupt`: the adopted catalog id whose reissue the committed ledger
+    /// forbids.
+    LockCorrupt { reissued_id: String },
+    /// `check.evolve_target`: why an `evolve` intent's target does not resolve.
+    EvolveTarget(EvolveTargetFault),
+    /// `check.evolve_type`: an `evolve default` value's type does not match its target
+    /// member. `target` is the member expression as written.
+    EvolveDefaultType {
+        value: MarrowType,
+        target: String,
+        member: MarrowType,
+    },
+    /// `check.evolve_transform`: why an `evolve transform` body is rejected.
+    EvolveTransform(EvolveTransformFault),
     /// `check.collection_unsupported`: a lookup names no declared index.
     SuggestedIndex { declaration: String },
     /// `check.unresolved_name`: the bare name that resolved to no binding. Carries the
@@ -1102,6 +1116,42 @@ pub enum CatalogIntentDiagnostic {
         path: String,
         records: PendingRecord,
     },
+}
+
+/// Why a `check.evolve_target` was raised. The forms render distinct prose from one code,
+/// so the form is a stored fact rather than one recovered from the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvolveTargetFault {
+    /// The target names no catalog-addressable entity kind.
+    Unaddressable,
+    /// The target names no accepted entry whose identity a carry-forward could preserve.
+    UnacceptedCarryForward,
+    /// A rename's destination is not declared by the current source.
+    RenameTargetUndeclared { to_path: String },
+}
+
+/// Why an `evolve transform` body is rejected. The forms render distinct prose from one
+/// code, so the form is stored rather than recovered from the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvolveTransformFault {
+    /// The body performs an effect a pure transform may not.
+    Impure { reason: TransformImpurity },
+    /// The target is not a top-level saved resource member.
+    NonTopLevelMember,
+    /// The body reads its own target through `old`.
+    ReadsOwnTarget { field: String },
+    /// The body reads a member the same evolve block also rewrites.
+    ReadsRewrittenMember { field: String },
+}
+
+/// The effect that makes an `evolve transform` body impure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformImpurity {
+    ReadsSavedData,
+    WritesSavedData,
+    HostEffect,
+    Transaction,
+    CallsFunction,
 }
 
 /// A problem found while checking a project, located in a specific file.

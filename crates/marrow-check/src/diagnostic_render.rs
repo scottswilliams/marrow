@@ -8,9 +8,10 @@ use marrow_codes::Code;
 
 use crate::diagnostics::{
     AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, DefaultEntryProblem,
-    DiagnosticPayload, EnumDiagnostic, IsTypeFault, LayerNotValueReason, MatchScrutinee,
-    SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
-    SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic, UnresolvedCallKind,
+    DiagnosticPayload, EnumDiagnostic, EvolveTargetFault, EvolveTransformFault, IsTypeFault,
+    LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
+    SurfaceFieldDiagnostic, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+    TransformImpurity, UnresolvedCallKind,
 };
 use crate::typerules::{marrow_type_name, mismatch_display};
 
@@ -50,6 +51,11 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckUnannotatedAbsent,
     Code::CheckUninitializedVar,
     Code::CheckLossyRoundTrip,
+    Code::CheckDurableStoreRequired,
+    Code::CheckLockCorrupt,
+    Code::CheckEvolveTarget,
+    Code::CheckEvolveType,
+    Code::CheckEvolveTransform,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -156,8 +162,85 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
             "whole saved-record replacement clears keyed child layers omitted from the value"
                 .to_string()
         }
+        (Code::CheckDurableStoreRequired, DiagnosticPayload::None) => {
+            "this program declares durable data, which requires a native store; the configured \
+             store has no durable identity"
+                .to_string()
+        }
+        (Code::CheckLockCorrupt, DiagnosticPayload::LockCorrupt { reissued_id }) => format!(
+            "marrow.lock is corrupt: adopting catalog id `{reissued_id}` would reissue an id its \
+             ledger has retired"
+        ),
+        (Code::CheckEvolveTarget, DiagnosticPayload::EvolveTarget(fault)) => {
+            evolve_target_message(fault)
+        }
+        (
+            Code::CheckEvolveType,
+            DiagnosticPayload::EvolveDefaultType {
+                value,
+                target,
+                member,
+            },
+        ) => format!(
+            "default value is `{}` but `{target}` is `{}`",
+            marrow_type_name(value),
+            marrow_type_name(member)
+        ),
+        (Code::CheckEvolveTransform, DiagnosticPayload::EvolveTransform(fault)) => {
+            evolve_transform_message(fault)
+        }
         (code, payload) => {
             unreachable!("no message template for {code:?} with payload {payload:?}")
+        }
+    }
+}
+
+fn evolve_target_message(fault: &EvolveTargetFault) -> String {
+    match fault {
+        EvolveTargetFault::Unaddressable => "evolve target does not name a catalog-addressable \
+             entity (a resource, a resource member, a saved root, a store index, an enum, or an \
+             enum member)"
+            .to_string(),
+        EvolveTargetFault::UnacceptedCarryForward => {
+            "evolve target does not name an accepted catalog entry to carry forward".to_string()
+        }
+        EvolveTargetFault::RenameTargetUndeclared { to_path } => {
+            format!("evolve rename target `{to_path}` is not declared by the current source")
+        }
+    }
+}
+
+fn evolve_transform_message(fault: &EvolveTransformFault) -> String {
+    match fault {
+        EvolveTransformFault::Impure { reason } => {
+            format!(
+                "an evolve transform body must be pure: {}",
+                transform_impurity_reason(*reason)
+            )
+        }
+        EvolveTransformFault::NonTopLevelMember => {
+            "an evolve transform must target a top-level saved resource member".to_string()
+        }
+        EvolveTransformFault::ReadsOwnTarget { field } => format!(
+            "a transform cannot read its own target `old.{field}`; compute it from other members"
+        ),
+        EvolveTransformFault::ReadsRewrittenMember { field } => format!(
+            "a transform cannot read `old.{field}`, which the same evolve block changes; read a \
+             member no default or transform rewrites"
+        ),
+    }
+}
+
+fn transform_impurity_reason(reason: TransformImpurity) -> &'static str {
+    match reason {
+        TransformImpurity::ReadsSavedData => {
+            "it reads saved data; a transform body may only read `old`"
+        }
+        TransformImpurity::WritesSavedData => "it writes saved data",
+        TransformImpurity::HostEffect => "it performs a host effect",
+        TransformImpurity::Transaction => "it opens a transaction",
+        TransformImpurity::CallsFunction => {
+            "it calls a function; inline the computation over `old`"
         }
     }
 }
@@ -602,9 +685,10 @@ mod tests {
     use crate::diagnostics::{
         AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, CallArgumentSlot,
         ConversionTarget, ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem,
-        DiagnosticPayload, EnumDiagnostic, IsTypeFault, LayerNotValueReason, MatchScrutinee,
-        SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
-        SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+        DiagnosticPayload, EnumDiagnostic, EvolveTargetFault, EvolveTransformFault, IsTypeFault,
+        LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic,
+        SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList,
+        SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic, TransformImpurity,
         UninitializedVarKind, UnresolvedCallKind,
     };
     use crate::program::MarrowType;
@@ -614,6 +698,109 @@ mod tests {
 
     fn primitive(scalar: ScalarType) -> MarrowType {
         MarrowType::Primitive(scalar)
+    }
+
+    /// The catalog-identity and evolution codes render exactly the prose their old
+    /// construction sites built, pinning the wording the renderer now owns.
+    #[test]
+    fn renders_migrated_catalog_and_evolve_prose_byte_identical() {
+        assert_eq!(
+            render_message(Code::CheckDurableStoreRequired, &DiagnosticPayload::None),
+            "this program declares durable data, which requires a native store; the configured \
+             store has no durable identity",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckLockCorrupt,
+                &DiagnosticPayload::LockCorrupt {
+                    reissued_id: "c7".to_string(),
+                },
+            ),
+            "marrow.lock is corrupt: adopting catalog id `c7` would reissue an id its ledger has \
+             retired",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveTarget,
+                &DiagnosticPayload::EvolveTarget(EvolveTargetFault::Unaddressable),
+            ),
+            "evolve target does not name a catalog-addressable entity (a resource, a resource \
+             member, a saved root, a store index, an enum, or an enum member)",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveTarget,
+                &DiagnosticPayload::EvolveTarget(EvolveTargetFault::UnacceptedCarryForward),
+            ),
+            "evolve target does not name an accepted catalog entry to carry forward",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveTarget,
+                &DiagnosticPayload::EvolveTarget(EvolveTargetFault::RenameTargetUndeclared {
+                    to_path: "books::New".to_string(),
+                }),
+            ),
+            "evolve rename target `books::New` is not declared by the current source",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveType,
+                &DiagnosticPayload::EvolveDefaultType {
+                    value: primitive(ScalarType::Str),
+                    target: "Book.priceCents".to_string(),
+                    member: primitive(ScalarType::Int),
+                },
+            ),
+            "default value is `string` but `Book.priceCents` is `int`",
+        );
+        for (reason, text) in [
+            (
+                TransformImpurity::ReadsSavedData,
+                "it reads saved data; a transform body may only read `old`",
+            ),
+            (TransformImpurity::WritesSavedData, "it writes saved data"),
+            (TransformImpurity::HostEffect, "it performs a host effect"),
+            (TransformImpurity::Transaction, "it opens a transaction"),
+            (
+                TransformImpurity::CallsFunction,
+                "it calls a function; inline the computation over `old`",
+            ),
+        ] {
+            assert_eq!(
+                render_message(
+                    Code::CheckEvolveTransform,
+                    &DiagnosticPayload::EvolveTransform(EvolveTransformFault::Impure { reason }),
+                ),
+                format!("an evolve transform body must be pure: {text}"),
+            );
+        }
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveTransform,
+                &DiagnosticPayload::EvolveTransform(EvolveTransformFault::NonTopLevelMember),
+            ),
+            "an evolve transform must target a top-level saved resource member",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveTransform,
+                &DiagnosticPayload::EvolveTransform(EvolveTransformFault::ReadsOwnTarget {
+                    field: "priceCents".to_string(),
+                }),
+            ),
+            "a transform cannot read its own target `old.priceCents`; compute it from other members",
+        );
+        assert_eq!(
+            render_message(
+                Code::CheckEvolveTransform,
+                &DiagnosticPayload::EvolveTransform(EvolveTransformFault::ReadsRewrittenMember {
+                    field: "priceCents".to_string(),
+                }),
+            ),
+            "a transform cannot read `old.priceCents`, which the same evolve block changes; read a \
+             member no default or transform rewrites",
+        );
     }
 
     /// Every migrated `(code, payload)` renders exactly the message its old
@@ -1553,6 +1740,16 @@ mod tests {
         "CHECK_UNINITIALIZED_VAR",
         "Code::CheckLossyRoundTrip",
         "CHECK_LOSSY_ROUND_TRIP",
+        "Code::CheckDurableStoreRequired",
+        "CHECK_DURABLE_STORE_REQUIRED",
+        "Code::CheckLockCorrupt",
+        "CHECK_LOCK_CORRUPT",
+        "Code::CheckEvolveTarget",
+        "CHECK_EVOLVE_TARGET",
+        "Code::CheckEvolveType",
+        "CHECK_EVOLVE_TYPE",
+        "Code::CheckEvolveTransform",
+        "CHECK_EVOLVE_TRANSFORM",
     ];
 
     fn src_root() -> PathBuf {
