@@ -1,195 +1,141 @@
 # Agent Instructions
 
-This repository is Marrow.
+This repository is Marrow: a lightweight, typed `.mw` language whose durable saved data is part of
+the program. Data is scalars or trees; a resource is a typed tree; `^` marks saved data. The same
+compiler that checks source governs what is already in the store, so a schema change is checked
+against existing data before it can activate. Marrow is its own language and database model, not a
+layer on another system.
 
-Marrow is a lightweight, typed `.mw` language with built-in saved data. Data is
-scalars or trees. A resource is a typed tree; the same shape can be local or
-saved, and `^` marks saved data. Marrow is its own language and database model,
-not a layer on another system. Durable data stays under Marrow's language and
-tooling contract regardless of which storage engine holds the bytes.
+`docs/language/` is the canonical source for language behavior; `docs/backend-contract.md` is the
+store byte contract. Parser, checker, runtime, CLI, language-service adapters, examples, and tests
+converge on those. When implementation and a spec page disagree, treat it as implementation work.
 
-`docs/language/` is the canonical source for Marrow language behavior. Parser,
-checker, runtime, CLI, language-service adapters, examples, tests, and other docs converge on that
-directory. When implementation and documentation disagree, treat the
-disagreement as implementation work, not as a competing design.
+Marrow is unreleased. Clean the repository as if the current design had always been here: delete a
+stale name, format, or example rather than carry it. Migrate or delete any test or fixture that
+depends on outdated behavior so it asserts the v0.1 contract. Keep code free of agentic slop and
+documentation sediment.
 
-Implementation and tooling references live in concise `docs/` pages such as
-the backend and tooling references. Keep them simple, current, and organized
-like a real language/database reference. The code itself should be
-self-documenting where possible.
+## Working rules
 
-Marrow is unreleased. Do not preserve stale names, old design formats,
-obsolete examples, or transition shims for their own sake. When the design
-changes, clean the repository as if the new design had been here from the
-beginning: simple, direct, and inspectable.
+- Read `docs/language/` before changing `.mw` syntax, typing, resources, builtins, saved-data
+  behavior, or user-facing terminology.
+- Keep docs in the voice of a real language reference: precise, current, useful.
+- Fold surviving content from a deleted file into the smallest durable reference page.
+- Work with the changes already in the worktree; keep every edit scoped to the request.
+- Prove each change with fresh command output before claiming it done.
 
-Green tests or compile success are not reasons to keep legacy prototype paths.
-If a test or fixture depends on outdated behavior, update or delete it so it
-asserts the v0.1 contract. Runtime or CLI callers must migrate unless durable
-reference docs name a live production bridge with its caller, isolation
-boundary, absence test, and removal owner, or the surface is explicitly
-debug/admin-only and excluded from production semantics. Do not keep fallback
-branches, mode flags, compatibility shims, test-only production entry points,
-or duplicate semantic models just to preserve old behavior.
+## Engineering rules
 
-Avoid agentic slop and documentation sediment at all costs, including in code.
+1. Think first. State assumptions, surface tradeoffs, prefer the simpler approach, ask when a guess
+   would risk the work.
+2. Write the minimum code that solves the problem. Skip speculative features, single-use
+   abstractions, and unrequested configurability.
+3. Make surgical changes. Touch only what the request requires; match the surrounding style; let
+   every changed line trace to the request.
+4. Drive from a failing check. For a behavior change, write or identify the failing test first, then
+   make it pass, then refactor under green. Exercise the production pipeline, not a replica.
 
-## Working Rules
+## Rust style
 
-- Read `docs/language/` before changing `.mw` syntax, typing, resources,
-  builtins, saved data behavior, or user-facing terminology.
-- Keep documentation in the voice of a real language reference: precise,
-  current, and useful to everyday developers.
-- Prefer deleting stale files over moving them around. If useful content
-  survives, fold it into the smallest durable reference page.
-- Avoid unrelated reverts. The worktree may contain user or agent changes;
-  understand them and work with them.
-- Keep edits scoped and verify what changed. Do not claim completion without
-  fresh command output.
+Write Marrow like a senior language/database engineer. Each rule is checkable and backed by the
+project's own precedent; `clippy -D warnings` and `fmt --check` cover the mechanical layer, so this
+section is the judgment layer above them.
 
-## Engineering Rules
+**Typed identity.** Give a value that carries semantic identity — a key, a catalog id, a type name,
+a diagnostic code — a typed newtype or enum, compared by value. Store the typed form and render the
+string on demand; never store a formatted string and compare it back. Derive a diagnostic's code from
+its typed kind rather than caching both. (Precedent: `marrow-codes::Code`, `marrow-store::CatalogId`,
+`facts.rs` id newtypes.)
 
-1. Think before coding. State assumptions, surface tradeoffs, push back when a
-   simpler approach exists, and ask when guessing would risk the work.
-2. Simplicity first. Write the minimum code that solves the problem. Avoid
-   speculative features, single-use abstractions, and unrequested
-   configurability.
-3. Surgical changes. Touch only what the request requires. Match existing
-   style. Every changed line should trace directly to the user's request.
-4. Goal-driven execution. Turn tasks into verifiable goals. For behavior
-   changes, write or identify the failing check first, then make it pass.
+**Diagnostics.** Emit a typed `Code` plus a typed payload; let `diagnostic_render.rs` own every
+sentence. Branch on the code or payload, never on prose. Register every dotted code in `marrow-codes`
+and let the generated `docs/error-codes.md` gate catch an unregistered one. (Precedent:
+`diagnostic_render.rs`, the `marrow-codes` registry.)
 
-## Worktrees
+**Compute once, own once.** Derive a fact once and thread the value; do not re-lower or re-derive it
+per predicate. One semantic question has one classifier that a cursor query and an all-sites walk both
+reuse. A repeated primitive — a hash step, an escape scan, an atomic write, an arg-parse loop — gets
+one owner and each caller frames its own use. (Precedent: `classify_key_type`, the store navigation
+cursor, `presence/keys.rs`.)
 
-Use an isolated worktree for multi-file changes, Rust changes, or cleanup
-batches. Keep feature worktrees beside the main checkout in the workspace
-directory, named `marrow-<topic>` (i.e. a sibling `../marrow-<topic>`).
+**Dispatch shape.** A match arm that inlines several checks delegates to a named helper. Split a
+`mod.rs` by invariant into sibling modules before it crosses ~1k lines. Route structural recursion
+through the one shared visitor, not a fresh per-pass match. Keep matches over semantic enums
+exhaustive; when a match needs `unreachable!`, narrow the parameter or enum so the case cannot arrive.
+(Precedent: `StatementCheck`, the `catalog/` directory, `CheckedBodyVisitor`.)
 
-Keep harness files, throwaway worktrees, cargo targets, trial artifacts,
-patches, reviews, logs, and leases outside the repository. The tracked repo
-contains source, tests, and durable reference docs only.
+**Typed state over flags.** Replace a behavior-selecting `bool` or ambiguous `Option`/`None` sentinel
+with a typed enum; partition a dispatch by matching the discriminant once. A lowered fact the checker
+owns may ride as a `bool` field, but bundle threaded context into a struct rather than growing a
+9-argument signature. (Precedent: `RunObservation`, `AcceptedAuthority`, `parse_decl/body.rs`.)
 
-## Verification
+**Fallibility.** On a fallible path, return a typed error and fail closed: reach for a typed error
+before `unwrap`, `expect`, or `panic!`, and reserve `unreachable!` for a state the type system has
+proven impossible. (Precedent: `marrow-run`, where a checker-proven-unreachable branch returns a
+typed `RuntimeError` rather than panicking.)
 
-Use focused checks before broad ones:
+**API surface.** `pub` means a cross-crate caller exists; otherwise `pub(crate)`. Every exported type
+derives `Debug`. Enforce an invariant in the constructor, keep the field private, expose a borrowing
+getter, and provide no setter. Take borrowed concrete types (`&str`, `&[T]`, `&Path`, `Option<&T>`)
+at boundaries. (Precedent: `SealedStore`, `DiagnosticAnchor`, `marrow-catalog` constructors.)
 
-1. no-compile checks: `git diff --check`, stale-term scans, link scans,
-   markdown checks, and formatting of touched docs;
-2. focused Rust checks: the smallest package, library, or test target that
-   proves the change;
-3. workspace checks: `cargo build --workspace` and `cargo test --workspace`
-   for broad rename, runtime, or release-surface changes.
+**One crate, one concern.** A DTO crate serializes and deserializes; crypto, code generation, and
+store execution each live in their own purpose-named crate. Engine logic a second front-end could call
+belongs one layer below the binary. (Precedent: `marrow-store`, `marrow-codes`, and `marrow-catalog`
+each own one concern; extracting `marrow-surface` from `marrow-json` is the planned next step.)
 
-Do not run broad Cargo gates in parallel against the same target directory.
-Spell `CARGO_TARGET_DIR` explicitly in every Cargo command, pointing at an
-out-of-tree build root (a sibling `.build/marrow-targets/<topic>`, never the
-in-repo `./target`):
+**Layout and tests.** Open every module with a `//!` sentence naming what it owns. Put public-surface
+behavior tests under `tests/`; reserve inline `#[cfg(test)]` for a module's private internals; split a
+suite by the invariant it pins (~400–500 lines). Page or stream user data; never materialize it
+unbounded. A tamper test rebuilds its witness by calling the production owner, not a copied constant.
+(Precedent: `marrow-store` conformance suite, the bounded-materialization budgets.)
 
-```sh
-CARGO_TARGET_DIR=../.build/marrow-targets/<topic> \
-    cargo test --manifest-path ../marrow-<topic>/Cargo.toml ...
-```
+**Comments.** Explain why — durable rationale, cost, or a soundness invariant — in full sentences. Do
+not narrate edits, cite tickets or roadmap steps, or restate the code. Prefer a better name or a
+smaller helper over a comment that explains what a branch does.
 
-Use a dedicated `../.build/marrow-targets/integration` for broad integration
-gates, one at a time. Delete a worktree's target dir when you retire the
-worktree, so abandoned build outputs do not accumulate.
+## Repository shape
 
-## Review And Integration
+- `docs/language/` is the language reference; `docs/backend-contract.md` is the store contract.
+- `docs/implementation/` is the code-truth architecture map — a thin, progressive-disclosure guide to
+  what each crate and module does and where to read the real code. Start at
+  `docs/implementation/README.md`; every crate carries an `AGENTS.md` naming its page.
+- Durable language, database, backend, and tooling docs live under `docs/`, nowhere else.
+- Keep an example only when it matches `docs/language/` and the implementation; otherwise move its
+  coverage into a test.
 
-Agents do not merge feature branches directly into `main` without review. Use
-short-lived branches, small commits, focused verification, and a read-only
-high-reasoning review before integration.
+On any high-level change to the code — a module, type, pass, invariant, or data flow added, removed,
+renamed, or reshaped — update its `docs/implementation/` page IN PLACE in the same change: rewrite the
+stale lines, delete what no longer holds. A page is a thin map, not a changelog; if an edit makes it
+longer without making it truer, cut instead. State a count once, in the table that enumerates it,
+never a second time in prose.
 
-Review prompt:
+## Coding invariants
 
-```text
-Review this branch against main. Findings first. Focus on correctness,
-simplicity, minimality, and whether every changed line belongs. Treat
-docs/language/ as the source of truth for language behavior.
-```
+- Typed IDs and small enums over strings or booleans when a value carries identity or state.
+- Import the names a module uses; no crate-root glob preludes, no production `use super::*`.
+- One semantic owner per concept — move the boundary rather than duplicate a classifier across parser,
+  checker, runtime, tools, or tests.
+- A change that establishes an invariant lands, in the same change, the mechanism that makes the old
+  pattern unrepresentable or loudly detectable: a visibility change, a typed owner, an absence test,
+  or a generated-artifact drift gate. A single-site fix without its sibling sweep is not review-ready.
+- Storage behavior stays behind the backend contract; a backend is a store target, not the owner of
+  Marrow semantics. Keep saved data inspectable through Marrow tools.
+- Native `.mw` is the only default surface. No `unsafe`. Apache-2.0 only.
+- `marrow-lsp` is downstream: add the analysis/check/schema API in Marrow first, then adapt the LSP.
 
-Integrate only from the primary `main` checkout, never a feature worktree.
-Prefer `git cherry-pick -x <reviewed-sha>` over merging a whole branch. If a
-conflict is not an obvious mechanical rename/import conflict, abort and send the
-branch back to the owner.
+## Verification and integration
 
-Before pushing `main`, run the verification ladder through the workspace checks
-using the dedicated `../.build/marrow-targets/integration`, then ask for
-a final read-only review of the assembled diff:
+Run focused checks before broad ones: no-compile checks (`git diff --check`, stale-term and link
+scans, formatting of touched docs) first, then the smallest package or test target that proves the
+change, then `cargo build --workspace` / `cargo test --workspace` for broad changes. Spell
+`CARGO_TARGET_DIR` explicitly at an out-of-tree build root; never run broad gates in parallel against
+one target dir. Build-isolation paths and worktree layout are machine-local; follow your environment's
+process notes.
 
-```text
-Review the integration diff before main is pushed. Findings first. Focus on
-correctness, simplicity, minimality, and whether the cherry-picked commits
-belong together.
-```
-
-## Repository Shape
-
-- `docs/language/` is the language reference.
-- `docs/implementation/` is the code-truth architecture map: a thin,
-  progressive-disclosure guide to what each crate and module does and where to
-  read the real code. It mirrors the source pipeline and is the entry point for
-  understanding the codebase. Start at `docs/implementation/README.md`; each
-  crate carries a short `AGENTS.md` pointing to its page.
-- `docs/backend-contract.md` is the store contract; `docs/language/` is the
-  language law. The map links to them and does not restate them.
-- Other durable language, database, implementation, backend, and tooling docs
-  belong under `docs/`, not scattered elsewhere.
-- Public examples and demos exist only when they match `docs/language/` and
-  the implementation. Otherwise remove them and keep coverage in tests or
-  fixtures.
-
-On any high-level change to the code — a module, type, pass, invariant, or data
-flow added, removed, renamed, or reshaped — you MUST review its
-`docs/implementation/` page and update it IN PLACE in the same change, as
-concisely as possible: rewrite the stale lines and delete what no longer holds.
-It is imperative this map never accrues agentic sediment: never append notes,
-history, or migration narration, and never let a page drift out of step with the
-code. A page is a thin map, not a changelog; if an edit makes it longer without
-making it truer, cut instead. Each crate's `AGENTS.md` names its page.
-
-## Coding Expectations
-
-- Prefer simple Rust and narrow abstractions.
-- Prefer typed IDs and small enums over strings or booleans when values carry
-  semantic identity or state.
-- Avoid crate-root glob preludes and production `use super::*`; import the names
-  a module uses.
-- Do not duplicate semantic classifiers across parser, checker, runtime, tools,
-  or tests. Move the ownership boundary instead.
-- Delete obsolete prototype paths instead of wrapping them in compatibility
-  shims.
-- Keep code concise and self-documenting. Prioritize readability and
-  maintainability.
-- Write comments as a human engineer would: explain *why*, in plain prose. Do not
-  cite docs by filename or line, reference tickets, reviews, planning steps, or
-  batch names, narrate edits ("previously", "now changed to"), or restate what
-  the code already says. State the rationale directly and trust the reader to
-  find the rest in `docs/`.
-- Follow the 80/20 rule: avoid large changes without proportionate impact.
-- Add tests near the behavior being changed.
-- A change that establishes or restores an invariant must land, in the same
-  change, the mechanism that makes the old pattern unrepresentable or loudly
-  detectable: a visibility change that removes the bypass, a typed owner, an
-  absence test, or a generated-artifact drift gate. A single-site fix whose
-  sibling sweep is missing is not review-ready.
-- Keep storage behavior behind the backend contract; a backend is a store target,
-  not the owner of Marrow semantics.
-- Keep saved data inspectable through Marrow tools.
-- Keep the repository Apache-2.0 only.
-- Keep native `.mw` as the only default language surface.
-- Do not add legacy language modes or code paths, transition layers, or
-  alternate default product surfaces.
-- Do not bundle external database adapters in the first release.
-- Do not introduce `unsafe` Rust.
-- Look for opportunities to dogfood with `.mw` where it makes sense.
-
-Before committing substantial code changes, spawn a high-reasoning read-only
-review of the staged and unstaged changes with a prompt like:
-
-```text
-Review the staged and unstaged changes. Findings first with file and line
-references. Focus on minimal, simple, self-documenting code, and whether every
-changed line belongs. Would a senior programming language developer sign off on
-this code? Is this the best, simplest solution?
-```
+Do not merge feature work into `main` without a read-only, high-reasoning review. Use short-lived
+branches, small commits, and prefer `git cherry-pick -x <reviewed-sha>` over merging a branch; if a
+conflict is not an obvious mechanical one, send the branch back. Gate the push on a green full suite,
+then a final review of the assembled diff. Before committing substantial code, spawn a read-only
+review asking whether every changed line belongs and whether a senior language engineer would sign off
+on the simplest solution.

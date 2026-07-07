@@ -1,13 +1,14 @@
 # marrow-run — Agent Notes
 
-The runtime: evaluates the checked program, plans managed writes, reads and
-iterates saved data, applies data evolution, and hosts the stdlib boundary.
-Map: [docs/implementation/runtime/](../../docs/implementation/runtime/README.md).
+A tree-walking interpreter over the checked program: evaluates entries, plans managed writes, reads
+and iterates saved data, applies data evolution, and hosts the project surface sessions and stdlib
+boundary.
 
-**You MUST keep this map current.** On any high-level change here — a module,
-type, pass, or invariant added, removed, renamed, or reshaped — review the
-matching page under `docs/implementation/runtime/` and update it IN PLACE in the
-same change, as concisely as possible: rewrite the affected lines and delete
-what went stale. It is imperative the map never accrues agentic sediment — no
-appended notes, history, or duplicate lines; it is a thin map, not a changelog.
-Trivial edits that change nothing at the map's altitude need no update.
+Never re-resolve names or re-parse op strings — the checker stamps every call target, capability, and
+conversion kind, so each path branches on a typed kind, not source spelling. Writes are
+plan-then-commit: build a full typed `WritePlan`, then commit atomically. Meter and page every read
+(the materialization budgets are the model, not a violation). A checker-proven-unreachable branch
+returns a typed `RuntimeError` and fails closed, not `panic!`/`unreachable!`. `Value` is the single
+owner of scalar conversion to and from store form.
+
+Map: [docs/implementation/runtime/](../../docs/implementation/runtime/README.md).

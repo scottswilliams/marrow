@@ -17,6 +17,8 @@ Rules for this directory:
   edit makes it longer without making it truer, cut instead.
 - Keep it a map, not a tutorial: reference files by repo-relative path and
   symbols by name, no line numbers, no slop.
+- State a count once, in the table or list that enumerates it; never repeat the
+  number in a heading or prose, where it drifts out of step with what it counts.
 - Design and contract law lives elsewhere: `docs/language/` for the language,
   `docs/backend-contract.md` for the store contract. Link to them; do not
   restate them here.

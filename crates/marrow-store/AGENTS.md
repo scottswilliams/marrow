@@ -1,14 +1,14 @@
 # marrow-store — Agent Notes
 
-The storage layer: backend trait, redb and memory backends, tree-cell keys and
-values, backup streaming, conformance. The byte contract below the language.
-Map: [docs/implementation/store.md](../../docs/implementation/store.md).
-Contract: [docs/backend-contract.md](../../docs/backend-contract.md).
+The byte contract below the language: the backend trait, redb and memory engines, tree-cell keys and
+values, backup streaming, and a backend-agnostic conformance suite. Knows no `.mw`.
 
-**You MUST keep this map current.** On any high-level change here — a module,
-type, codec, or invariant added, removed, renamed, or reshaped — review
-store.md and update it IN PLACE in the same change, as concisely as possible:
-rewrite the affected lines and delete what went stale. It is imperative the map
-never accrues agentic sediment — no appended notes, history, or duplicate lines;
-it is a thin map, not a changelog. Trivial edits that change nothing at the
-map's altitude need no update.
+Identity is typed everywhere (`CatalogId`, `StoreUid`, `SavedKey`, `SequencePosition`) — no stringly
+keys. `StoreError` is render-only with a typed `code()`. `SealedStore` is the sole mint of a durable
+`TreeStore` handle, so a handle cannot be created around the integrity ladder — that is the crate's
+enforcement artifact. Every store-wide walk pages and resumes with a fail-closed non-advancing-cursor
+guard; never materialize unbounded. State a durable invariant in an assertion message, not the history
+that added it. Precedent: redb / BurntSushi.
+
+Contract: [docs/backend-contract.md](../../docs/backend-contract.md).
+Map: [docs/implementation/store.md](../../docs/implementation/store.md).

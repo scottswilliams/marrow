@@ -1,12 +1,13 @@
 # marrow-syntax — Agent Notes
 
-The front end: source text to AST, plus the formatter and parse diagnostics.
-Map: [docs/implementation/syntax.md](../../docs/implementation/syntax.md).
+Source text to AST, plus the formatter and parse diagnostics. A leaf crate: its only dependency is
+marrow-codes, and no edge points up into check/run/catalog/store — keep it that way.
 
-**You MUST keep this map current.** On any high-level change here — a module,
-type, pass, or invariant added, removed, renamed, or reshaped — review
-syntax.md and update it IN PLACE in the same change, as concisely as possible:
-rewrite the affected lines and delete what went stale. It is imperative the map
-never accrues agentic sediment — no appended notes, history, or duplicate lines;
-it is a thin map, not a changelog. Trivial edits that change nothing at the
-map's altitude need no update.
+Parsing is total. `parse_source` returns `ParsedSource { file, diagnostics }`, never a `Result`; a
+failure rides as an `Expression::Error` / `Statement::Error` node beside a `Vec<Diagnostic>`, and AST
+accessors return `Option` for absent children. `literal.rs` owns string/bytes escapes and `parse_type`
+owns type spelling — decode each grammar once so no downstream crate re-reads it. Prefer typed frame
+inputs over boolean flags (`parse_decl/body.rs` `DocComments` / `StrayBlock`). Precedent: the
+rust-analyzer `syntax` crate.
+
+Map: [docs/implementation/syntax.md](../../docs/implementation/syntax.md).

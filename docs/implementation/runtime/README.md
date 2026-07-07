@@ -17,7 +17,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 - Entry execution then enters `eval_call` (`call.rs`) and `eval_statement` / `eval_expr` (`statement.rs`, `expr.rs`), where saved reads stream through the read bridge, saved writes build and commit plans, and stdlib calls branch on the checker-stamped `Capability`.
 - Evolution admission for `run` lives in `project_session.rs`: the session freezes a pending baseline, fences on `(source_digest, accepted_epoch, engine_profile)`, auto-applies zero-record-mutation drift through the production apply path, and refuses unstamped populated stores before invocation.
 
-## The seven areas
+## Runtime areas
 
 | Area | Spine | One-line responsibility |
 | --- | --- | --- |

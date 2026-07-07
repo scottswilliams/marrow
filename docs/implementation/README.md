@@ -13,8 +13,10 @@ describes the code that implements them.
 
 ## The kernel
 
-Nine crates stacked in dependency order, lowest first:
+Ten crates stacked in dependency order, lowest first:
 
+- **codes** — the diagnostic-code registry: one `Code` per dotted error code, owner of every code
+  string, generating `docs/error-codes.md`. Every crate above depends on it.
 - **catalog** — the accepted-catalog snapshot model: the committed record of
   durable identity (epoch, digest, entries), its validation invariants, and
   structural-signature decode. Both store and check read it.

@@ -1,13 +1,14 @@
 # marrow — Agent Notes
 
-The CLI binary: command dispatch, check/run/test/fmt, data, evolve, and
-backup/restore.
-Map: [docs/implementation/cli.md](../../docs/implementation/cli.md).
+The operator binary: command dispatch, check/run/test/fmt, data, evolve, and backup/restore. Each
+command parses arguments into a typed args struct, calls the operation, and renders the result.
 
-**You MUST keep these maps current.** On any high-level change here — a command,
-module, type, or invariant added, removed, renamed, or reshaped — review the
-matching page (cli.md) and update it IN PLACE in the same change, as concisely
-as possible: rewrite the affected lines and delete what went stale. It is
-imperative the maps never accrue agentic sediment — no
-appended notes, history, or duplicate lines; they are thin maps, not changelogs.
-Trivial edits that change nothing at the map's altitude need no update.
+One format-aware render owner routes text / json / jsonl for every diagnostic surface, and every exit
+path of a `--format`-aware command goes through it — a json consumer never scrapes a bare stderr
+string. `term_style` is the single painting owner. Prefer a typed state enum over a `bool`
+(`RunObservation`, `ServeMode`, `LockStrictness`). A named usage-exit owner replaces bare
+`ExitCode::from(2)`. Engine logic a second front-end could call belongs one layer down, not in a
+command file. As a binary, this crate is not held to `deny(missing_docs)`, but non-trivial modules
+still open with a `//!`.
+
+Map: [docs/implementation/cli.md](../../docs/implementation/cli.md).
