@@ -16,7 +16,7 @@ use crate::typerules::{
     unary_symbol, unresolved_optional, unresolved_optional_diagnostic,
 };
 use crate::{
-    CHECK_CONDITION_TYPE, CHECK_THROW_TYPE, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram,
+    CHECK_THROW_TYPE, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram, ConditionTypeFault,
     DiagnosticAnchor, DiagnosticPayload, MarrowType,
 };
 
@@ -60,14 +60,16 @@ pub(crate) fn check_condition(
         diagnostics.push(unresolved_optional_diagnostic(file, span));
         return;
     }
+    let not_bool = |found: MarrowType| {
+        CheckDiagnostic::new(
+            Code::CheckConditionType,
+            DiagnosticAnchor::at(file, span),
+            DiagnosticPayload::ConditionType(ConditionTypeFault::NotBool { found }),
+        )
+    };
     match as_primitive(&condition_type) {
         Some(primitive) if primitive != ScalarType::Bool => {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_CONDITION_TYPE,
-                file,
-                span,
-                format!("condition must be `bool`, found `{}`", primitive.name()),
-            ))
+            diagnostics.push(not_bool(condition_type))
         }
         // An unresolved condition is untyped rather than a wrong type, since strict
         // typing cannot show it to be `bool`.
@@ -82,22 +84,11 @@ pub(crate) fn check_condition(
         // `Error` and other concrete non-scalars are known types, not unknown ones,
         // so they are flagged like a wrong scalar rather than swallowed.
         None if matches!(condition_type, MarrowType::Error) => {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_CONDITION_TYPE,
-                file,
-                span,
-                "condition must be `bool`, found `Error`",
-            ))
+            diagnostics.push(not_bool(condition_type))
         }
-        None if is_concrete_nonscalar(&condition_type) => diagnostics.push(CheckDiagnostic::error(
-            CHECK_CONDITION_TYPE,
-            file,
-            span,
-            format!(
-                "condition must be `bool`, found `{}`",
-                marrow_type_name(&condition_type)
-            ),
-        )),
+        None if is_concrete_nonscalar(&condition_type) => {
+            diagnostics.push(not_bool(condition_type))
+        }
         _ => {}
     }
 }

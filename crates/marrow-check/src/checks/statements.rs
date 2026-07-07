@@ -21,8 +21,8 @@ use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::is_optional_value;
 use crate::{
-    CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
-    CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
+    CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_TYPE, CHECK_UNRESOLVED_NAME,
+    CheckDiagnostic, CheckedProgram, ConditionTypeFault, DiagnosticPayload, MarrowType,
 };
 
 use super::calls::is_by_value_collection_slot;
@@ -1463,12 +1463,10 @@ impl StatementCheck<'_> {
         // The subject is maybe-present even when a key carries an effect, so `if const`
         // must refuse to run that effect rather than bind on it.
         if crate::presence::guard_subject_key_effect(self.program, value, self.scope, self.file) {
-            self.diagnostics.push(CheckDiagnostic::error(
-                CHECK_CONDITION_TYPE,
-                self.file,
-                value.span(),
-                "`if const` cannot guard a read with an effect in a key; \
-                 bind the key to a local first",
+            self.diagnostics.push(CheckDiagnostic::new(
+                Code::CheckConditionType,
+                DiagnosticAnchor::at(self.file, value.span()),
+                DiagnosticPayload::ConditionType(ConditionTypeFault::IfConstEffectInKey),
             ));
         }
         // `if const` binds the present arm of the maybe-present subject: one optional
@@ -1529,11 +1527,10 @@ impl StatementCheck<'_> {
         if is_optional_value(value_type) || matches!(value_type, MarrowType::Invalid) {
             return;
         }
-        self.diagnostics.push(CheckDiagnostic::error(
-            CHECK_CONDITION_TYPE,
-            self.file,
-            value.span(),
-            "`if const` requires a maybe-present value to bind, such as a sparse field, a positional or keyed read, a neighbor, a local `T?` binding, or a `T?` call",
+        self.diagnostics.push(CheckDiagnostic::new(
+            Code::CheckConditionType,
+            DiagnosticAnchor::at(self.file, value.span()),
+            DiagnosticPayload::ConditionType(ConditionTypeFault::IfConstRequiresBindable),
         ));
     }
 

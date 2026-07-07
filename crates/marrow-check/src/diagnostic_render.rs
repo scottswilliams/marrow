@@ -7,11 +7,12 @@
 use marrow_codes::Code;
 
 use crate::diagnostics::{
-    AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, DefaultEntryProblem,
-    DiagnosticPayload, EnumDiagnostic, EvolveTargetFault, EvolveTransformFault, IsTypeFault,
-    LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic,
-    SurfaceFieldDiagnostic, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
-    TransformImpurity, UnresolvedCallKind,
+    AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, ConditionTypeFault,
+    DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, EvolveTargetFault,
+    EvolveTransformFault, IsTypeFault, LayerNotValueReason, MatchScrutinee,
+    SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+    SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic, TransformImpurity,
+    UnresolvedCallKind,
 };
 use crate::typerules::{marrow_type_name, mismatch_display};
 
@@ -56,6 +57,7 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
     Code::CheckEvolveTarget,
     Code::CheckEvolveType,
     Code::CheckEvolveTransform,
+    Code::CheckConditionType,
 ];
 
 /// Render the human message for a migrated `(code, payload)` pair. Total over
@@ -145,6 +147,9 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
         }
         (Code::CheckUnknownRoot, DiagnosticPayload::UnknownRoot { root }) => {
             format!("`^{root}` names no declared store")
+        }
+        (Code::CheckConditionType, DiagnosticPayload::ConditionType(fault)) => {
+            condition_type_message(fault)
         }
         (Code::CheckUnannotatedAbsent, DiagnosticPayload::None) => {
             "a bare `absent` has no element type to infer; annotate the binding's optional type \
@@ -466,6 +471,23 @@ fn enum_message(diagnostic: &EnumDiagnostic) -> String {
     }
 }
 
+fn condition_type_message(fault: &ConditionTypeFault) -> String {
+    match fault {
+        ConditionTypeFault::NotBool { found } => {
+            format!("condition must be `bool`, found `{}`", marrow_type_name(found))
+        }
+        ConditionTypeFault::IfConstEffectInKey => {
+            "`if const` cannot guard a read with an effect in a key; \
+             bind the key to a local first"
+                .to_string()
+        }
+        ConditionTypeFault::IfConstRequiresBindable => {
+            "`if const` requires a maybe-present value to bind, such as a sparse field, a positional or keyed read, a neighbor, a local `T?` binding, or a `T?` call"
+                .to_string()
+        }
+    }
+}
+
 fn layer_not_value_message(field: &str, reason: LayerNotValueReason) -> String {
     match reason {
         LayerNotValueReason::MaterializedValue => format!(
@@ -684,12 +706,12 @@ mod tests {
     use super::{MIGRATED_CODES, render_message};
     use crate::diagnostics::{
         AmbiguousMemberForm, AppendTargetDiagnostic, CallArgumentFault, CallArgumentSlot,
-        ConversionTarget, ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem,
-        DiagnosticPayload, EnumDiagnostic, EvolveTargetFault, EvolveTransformFault, IsTypeFault,
-        LayerNotValueReason, MatchScrutinee, SurfaceActionDiagnostic,
-        SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic, SurfaceFieldList,
-        SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic, TransformImpurity,
-        UninitializedVarKind, UnresolvedCallKind,
+        ConditionTypeFault, ConversionTarget, ConversionUnsupportedSourceDiagnostic,
+        DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic, EvolveTargetFault,
+        EvolveTransformFault, IsTypeFault, LayerNotValueReason, MatchScrutinee,
+        SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+        SurfaceFieldList, SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic,
+        TransformImpurity, UninitializedVarKind, UnresolvedCallKind,
     };
     use crate::program::MarrowType;
     use marrow_codes::Code;
@@ -858,6 +880,48 @@ mod tests {
             render_message(Code::CheckMultipleScripts, &DiagnosticPayload::None),
             "a project may have at most one file without a `module` declaration \
              (its single-file script); declare a `module` for this file",
+        );
+    }
+
+    /// The condition-type family renders exactly the message its old construction
+    /// sites built, across all three shapes: the `if`/`while` non-bool condition
+    /// (scalar, `Error`, and concrete non-scalar found types all route through
+    /// `marrow_type_name`) and the two `if const` guard faults. Pins the prose the
+    /// renderer now owns for `check.condition_type`.
+    #[test]
+    fn renders_condition_type_prose_byte_identical() {
+        let condition = |fault| {
+            render_message(
+                Code::CheckConditionType,
+                &DiagnosticPayload::ConditionType(fault),
+            )
+        };
+        assert_eq!(
+            condition(ConditionTypeFault::NotBool {
+                found: primitive(ScalarType::Int),
+            }),
+            "condition must be `bool`, found `int`",
+        );
+        assert_eq!(
+            condition(ConditionTypeFault::NotBool {
+                found: MarrowType::Error,
+            }),
+            "condition must be `bool`, found `Error`",
+        );
+        assert_eq!(
+            condition(ConditionTypeFault::NotBool {
+                found: MarrowType::Identity("books".into()),
+            }),
+            "condition must be `bool`, found `Id(^books)`",
+        );
+        assert_eq!(
+            condition(ConditionTypeFault::IfConstEffectInKey),
+            "`if const` cannot guard a read with an effect in a key; \
+             bind the key to a local first",
+        );
+        assert_eq!(
+            condition(ConditionTypeFault::IfConstRequiresBindable),
+            "`if const` requires a maybe-present value to bind, such as a sparse field, a positional or keyed read, a neighbor, a local `T?` binding, or a `T?` call",
         );
     }
 
@@ -1750,6 +1814,8 @@ mod tests {
         "CHECK_EVOLVE_TYPE",
         "Code::CheckEvolveTransform",
         "CHECK_EVOLVE_TRANSFORM",
+        "Code::CheckConditionType",
+        "CHECK_CONDITION_TYPE",
     ];
 
     fn src_root() -> PathBuf {

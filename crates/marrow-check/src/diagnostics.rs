@@ -689,6 +689,21 @@ pub enum LayerNotValueReason {
     PartialKeyValue,
 }
 
+/// Why a `check.condition_type` was raised. The three shapes render distinct prose
+/// from one code, so the shape is a stored fact rather than one recovered from the
+/// rendered message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConditionTypeFault {
+    /// An `if`/`while` condition has a known concrete type that is not `bool`.
+    NotBool { found: MarrowType },
+    /// An `if const` guard reads through a key that carries an effect, so it cannot
+    /// bind without running that effect.
+    IfConstEffectInKey,
+    /// An `if const` subject is not a maybe-present value, so there is nothing to
+    /// presence-bind.
+    IfConstRequiresBindable,
+}
+
 /// The source of a name that participates in a `check.surface_collision`
 /// diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1037,6 +1052,9 @@ pub enum DiagnosticPayload {
     },
     /// `check.unknown_root`: a `^root` that names no declared store.
     UnknownRoot { root: String },
+    /// `check.condition_type`: an `if`/`while` condition is not `bool`, or an
+    /// `if const` guard is not a bindable saved read.
+    ConditionType(ConditionTypeFault),
     /// `check.uninitialized_var`: a `var` of a no-default type (an enum or a store
     /// identity) declared without an initializer, and the annotation as written.
     UninitializedVar {

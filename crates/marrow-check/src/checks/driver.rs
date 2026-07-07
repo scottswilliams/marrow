@@ -149,6 +149,7 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::LayerNotValue { .. }
                 | DiagnosticPayload::UnknownRoot { .. }
                 | DiagnosticPayload::UninitializedVar { .. }
+                | DiagnosticPayload::ConditionType(_)
                 | DiagnosticPayload::None => true,
             });
     }

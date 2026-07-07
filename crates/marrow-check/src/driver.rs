@@ -447,6 +447,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::LayerNotValue { .. }
             | DiagnosticPayload::UnknownRoot { .. }
             | DiagnosticPayload::UninitializedVar { .. }
+            | DiagnosticPayload::ConditionType(_)
             | DiagnosticPayload::None => false,
         }
     }
