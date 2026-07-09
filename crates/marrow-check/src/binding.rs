@@ -1561,7 +1561,11 @@ impl UseWalker<'_, '_> {
             self.aliases,
             self.file,
         ) {
-            MarrowType::Enum { module, name } => Some((module, name)),
+            MarrowType::Enum(id) => self
+                .builder
+                .program
+                .enum_by_id(id)
+                .map(|(module, name)| (module.to_string(), name.to_string())),
             _ => None,
         }
     }

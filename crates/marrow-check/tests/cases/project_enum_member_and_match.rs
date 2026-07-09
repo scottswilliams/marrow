@@ -3,7 +3,8 @@ use crate::support_enum;
 use marrow_check::{DiagnosticPayload, EnumDiagnostic, MarrowType, check_project};
 
 use support::{
-    assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
+    assert_clean, check_module, check_module_program, check_module_report, config, temp_project,
+    with_code, write,
 };
 use support_enum::assert_enum_payload;
 
@@ -401,7 +402,7 @@ fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
 #[test]
 fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error() {
     // The const-annotation place is an enum; the initializer is a different enum.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "enum-const-cross",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
@@ -413,14 +414,8 @@ fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error()
     assert_eq!(
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
-            expected: MarrowType::Enum {
-                module: "m".into(),
-                name: "Status".into(),
-            },
-            found: MarrowType::Enum {
-                module: "m".into(),
-                name: "Color".into(),
-            },
+            expected: MarrowType::Enum(support::enum_id(&program, "m", "Status")),
+            found: MarrowType::Enum(support::enum_id(&program, "m", "Color")),
         },
         "{found:#?}"
     );
@@ -428,7 +423,7 @@ fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error()
 
 #[test]
 fn a_module_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error() {
-    let found = check_module(
+    let (found, program) = check_module_program(
         "module-enum-const-cross",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
@@ -440,14 +435,8 @@ fn a_module_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_
     assert_eq!(
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
-            expected: MarrowType::Enum {
-                module: "m".into(),
-                name: "Status".into(),
-            },
-            found: MarrowType::Enum {
-                module: "m".into(),
-                name: "Color".into(),
-            },
+            expected: MarrowType::Enum(support::enum_id(&program, "m", "Status")),
+            found: MarrowType::Enum(support::enum_id(&program, "m", "Color")),
         },
         "{found:#?}"
     );

@@ -108,9 +108,10 @@ fn expected_enum_from_type<'a>(
     ty: &MarrowType,
     context: ExpectedEnumContext,
 ) -> Option<ExpectedEnum<'a>> {
-    let MarrowType::Enum { module, name } = ty else {
+    let MarrowType::Enum(id) = ty else {
         return None;
     };
+    let (module, name) = program.enum_by_id(*id)?;
     let schema = enum_schema_in(program, module, name)?;
     if !enum_visible_from_file(program, file, module, name) {
         return None;
@@ -493,14 +494,15 @@ fn enum_value_prefix_for_type(
     source_file: &SourceFile,
     ty: &MarrowType,
 ) -> Option<String> {
-    let MarrowType::Enum { module, name } = ty else {
+    let MarrowType::Enum(id) = ty else {
         return None;
     };
-    if current_module(program, file).is_some_and(|current| current.name == *module) {
-        return Some(name.clone());
+    let (module, name) = program.enum_by_id(*id)?;
+    if current_module(program, file).is_some_and(|current| current.name == module) {
+        return Some(name.to_string());
     }
     if bare_enum_path_resolves_to(program, file, source_file, module, name) {
-        return Some(name.clone());
+        return Some(name.to_string());
     }
     crate::unique_import_alias_for_module(source_file, module)
         .ok()

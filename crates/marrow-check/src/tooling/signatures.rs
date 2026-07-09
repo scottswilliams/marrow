@@ -6,7 +6,7 @@ use stdlib::{ParamType, ReturnType};
 use crate::analysis::AnalysisSnapshot;
 use crate::diagnostics::ConversionTarget;
 use crate::executable::{CheckedBuiltinCall, CheckedBuiltinReturnShape, CheckedBuiltinValueShape};
-use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType, TypeNames};
+use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind};
 use marrow_syntax::{
     Declaration, FunctionDecl, LexedSource, ParsedSource, ResourceDecl, ResourceMember, SourceFile,
@@ -699,10 +699,7 @@ fn error_field_shape(field: &marrow_schema::error::ErrorField) -> CallableValueS
     if field.name == marrow_schema::error::CODE {
         return CallableValueShape::ErrorCode;
     }
-    CallableValueShape::Type(MarrowType::from_resolved(
-        field.ty.clone(),
-        TypeNames::default(),
-    ))
+    CallableValueShape::Type(MarrowType::from_resolved(field.ty.clone()))
 }
 
 fn std_param_shape(param: &ParamType) -> CallableValueShape {

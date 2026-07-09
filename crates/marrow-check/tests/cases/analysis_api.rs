@@ -796,10 +796,11 @@ fn resource_constructor_signature_resolves_imported_qualified_resource_fields() 
             ResourceConstructorField {
                 name: "status".to_string(),
                 required: false,
-                ty: MarrowType::Enum {
-                    module: "library::books".to_string(),
-                    name: "Status".to_string(),
-                },
+                ty: MarrowType::Enum(support::enum_id(
+                    &snapshot.program,
+                    "library::books",
+                    "Status",
+                )),
                 docs: vec!["Lifecycle state.".to_string()],
             },
         ]

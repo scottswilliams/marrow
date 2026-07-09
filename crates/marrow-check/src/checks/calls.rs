@@ -23,7 +23,7 @@ use crate::{
     CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_UNTYPED_VALUE,
     CallArgumentFault, CallArgumentSlot, CheckDiagnostic, CheckedModule, CheckedProgram,
     ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def, DefItem, DiagnosticAnchor,
-    DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, UnresolvedCallKind,
+    DiagnosticPayload, MarrowType, Resolution, ResolvableKind, UnresolvedCallKind,
     builtin_return_type, conversion_return_type, identity_type_for_store, is_builtin_call,
     is_unknown_std_operation, module_of_file, resolve, std_call_params, std_call_return_type,
 };
@@ -837,12 +837,7 @@ fn check_error_constructor_args(
         },
         fields,
         |field| field.name,
-        |index| {
-            Some(MarrowType::from_resolved(
-                fields[index].ty.clone(),
-                TypeNames::default(),
-            ))
-        },
+        |index| Some(MarrowType::from_resolved(fields[index].ty.clone())),
         |field| field.required,
     );
     check_error_constructor_code_literal(names, args, file, diagnostics);

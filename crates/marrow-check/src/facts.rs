@@ -1059,10 +1059,7 @@ impl CheckedFacts {
                 })
             }
             MarrowType::Identity(root) => self.store_for_root(root).map(CheckedType::Identity),
-            MarrowType::Enum { module, name } => {
-                let module = self.module_id(module)?;
-                self.enum_id(module, name).map(CheckedType::Enum)
-            }
+            MarrowType::Enum(id) => Some(CheckedType::Enum(*id)),
             MarrowType::Sequence(element) => self
                 .checked_type(module_id, element)
                 .map(|element| CheckedType::Sequence(Box::new(element))),

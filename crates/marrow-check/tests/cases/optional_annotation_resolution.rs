@@ -49,11 +49,10 @@ fn book_optional(program: &CheckedProgram) -> MarrowType {
     ))))
 }
 
-fn status_optional() -> MarrowType {
-    MarrowType::Optional(Box::new(MarrowType::Enum {
-        module: "m".into(),
-        name: "Status".into(),
-    }))
+fn status_optional(program: &CheckedProgram) -> MarrowType {
+    MarrowType::Optional(Box::new(MarrowType::Enum(support::enum_id(
+        program, "m", "Status",
+    ))))
 }
 
 /// `b?.subtitle` reads through a maybe-present record to a sparse field, so it types
@@ -171,7 +170,7 @@ fn an_optional_resource_annotation_never_types_as_unknown() {
     assert_eq!(
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
-            expected: status_optional(),
+            expected: status_optional(&program),
             found: book_optional(&program),
         },
         "{found:#?}"
@@ -193,7 +192,7 @@ fn an_optional_enum_annotation_never_types_as_unknown() {
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
             expected: book_optional(&program),
-            found: status_optional(),
+            found: status_optional(&program),
         },
         "{found:#?}"
     );

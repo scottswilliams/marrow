@@ -22,7 +22,6 @@ use crate::checks::{
 };
 use crate::infer::infer_type;
 use crate::model::decls::DeclIds;
-use crate::program::TypeNames;
 use crate::typerules::type_compatible;
 use crate::walk::for_each_child_expr;
 use crate::{
@@ -521,11 +520,28 @@ impl TypeContext<'_> {
         let (_, member_chain) = member_chain(target)?;
         let chain: Vec<&str> = member_chain.iter().map(String::as_str).collect();
         let field = resource.field_type(&chain)?;
-        let names = TypeNames {
-            module: self.module,
-            enums: &enum_names(module),
-        };
-        Some(MarrowType::from_resolved(field.clone(), names))
+        Some(self.lower_member_type(module, field))
+    }
+
+    /// Lower a resource member's declared type, interning a bare enum name against
+    /// its owning module so `old.<member>` reads carry the enum's nominal identity.
+    /// A member type is a scalar, enum, identity, or a sequence or optional of one;
+    /// any other name has no member meaning and stays `Unknown`.
+    fn lower_member_type(&self, module: &CheckedModule, ty: &marrow_schema::Type) -> MarrowType {
+        match ty {
+            marrow_schema::Type::Sequence(element) => {
+                MarrowType::Sequence(Box::new(self.lower_member_type(module, element)))
+            }
+            marrow_schema::Type::Optional(inner) => {
+                MarrowType::optional(self.lower_member_type(module, inner))
+            }
+            marrow_schema::Type::Named(name) if module.enums.iter().any(|e| e.name == *name) => {
+                self.program
+                    .enum_leaf_id(&module.name, name)
+                    .map_or(MarrowType::Unknown, MarrowType::Enum)
+            }
+            other => MarrowType::from_resolved(other.clone()),
+        }
     }
 }
 
@@ -536,14 +552,6 @@ fn module_name(parsed: &ParsedSource) -> &str {
         .as_ref()
         .map(|module| module.name.as_str())
         .unwrap_or_default()
-}
-
-fn enum_names(module: &CheckedModule) -> Vec<String> {
-    module
-        .enums
-        .iter()
-        .map(|enum_schema| enum_schema.name.clone())
-        .collect()
 }
 
 /// The `(resource, member chain)` a target names, when it is a dotted member path

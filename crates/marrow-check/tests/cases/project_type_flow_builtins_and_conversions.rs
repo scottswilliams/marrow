@@ -272,7 +272,7 @@ fn bytes_conversion_accepts_string_bytes_and_unknown_sources() {
 fn conversion_calls_reject_known_unsupported_sources() {
     // `string(enum)` is an accepted source (it renders the member name), so only the
     // genuinely-unsupported conversions are rejected — `int(enum)` among them.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "conv-known-bad-sources",
         "module m\n\
          enum Color\n    red\n    green\n\n\
@@ -284,10 +284,7 @@ fn conversion_calls_reject_known_unsupported_sources() {
         "check.call_argument",
     );
     assert_eq!(found.len(), 5, "{found:#?}");
-    let color = MarrowType::Enum {
-        module: "m".into(),
-        name: "Color".into(),
-    };
+    let color = MarrowType::Enum(support::enum_id(&program, "m", "Color"));
     assert_eq!(
         found
             .iter()

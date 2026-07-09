@@ -1,6 +1,5 @@
 use marrow_schema::{Node, NodeKind, ScalarType, Type};
 
-use crate::facts::ModuleId;
 use crate::program::{CheckedModule, CheckedProgram, MarrowType};
 use crate::resolve::resolve_store_by_root;
 
@@ -132,26 +131,24 @@ pub(crate) fn checked_runtime_value_type(
                 .map(|store| store.store.identity_keys.clone()),
             root,
         },
-        MarrowType::Enum { module, name } => {
-            let enum_id = program
-                .module_index_by_name(&module)
-                .and_then(|index| program.facts.enum_id(ModuleId(index as u32), &name));
+        MarrowType::Enum(enum_id) => {
+            let (module, name) = program
+                .enum_by_id(enum_id)
+                .map_or_else(Default::default, |(module, name)| {
+                    (module.to_string(), name.to_string())
+                });
             CheckedRuntimeValueType::Enum {
-                enum_id,
-                allowed_members: enum_id
-                    .map(|enum_id| {
-                        program
-                            .facts
-                            .enum_members()
-                            .iter()
-                            .filter(|member| {
-                                member.enum_id == enum_id
-                                    && program.facts.enum_member_is_selectable(member.id)
-                            })
-                            .map(|member| member.id)
-                            .collect()
+                enum_id: Some(enum_id),
+                allowed_members: program
+                    .facts
+                    .enum_members()
+                    .iter()
+                    .filter(|member| {
+                        member.enum_id == enum_id
+                            && program.facts.enum_member_is_selectable(member.id)
                     })
-                    .unwrap_or_default(),
+                    .map(|member| member.id)
+                    .collect(),
                 module,
                 name,
             }

@@ -33,7 +33,7 @@ fn an_optional_chain_to_a_qualified_enum_field_types_as_that_enum() {
              const n: int = (^books(id)?.binding?.state ?? kinds::Status::active)\n",
         );
     });
-    let (report, _) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
 
     let found = with_code(&report, "check.assignment_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
@@ -41,10 +41,7 @@ fn an_optional_chain_to_a_qualified_enum_field_types_as_that_enum() {
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
             expected: MarrowType::Primitive(marrow_schema::ScalarType::Int),
-            found: MarrowType::Enum {
-                module: "kinds".into(),
-                name: "Status".into(),
-            },
+            found: MarrowType::Enum(support::enum_id(&program, "kinds", "Status")),
         },
         "{found:#?}"
     );

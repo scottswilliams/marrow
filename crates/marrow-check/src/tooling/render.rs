@@ -71,8 +71,11 @@ pub fn render_marrow_type(names: &DeclIds<'_>, ty: &MarrowType) -> String {
         MarrowType::Resource(id) => names.resource_display(*id),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
         MarrowType::Identity(root) => format!("Id(^{root})"),
-        MarrowType::Enum { module, name } if module.is_empty() => name.clone(),
-        MarrowType::Enum { module, name } => format!("{module}::{name}"),
+        MarrowType::Enum(id) => match names.enum_owner_and_name(*id) {
+            Some(("", name)) => name.to_string(),
+            Some((module, name)) => format!("{module}::{name}"),
+            None => "unknown".to_string(),
+        },
         MarrowType::Sequence(element) => {
             format!("sequence[{}]", render_marrow_type(names, element))
         }

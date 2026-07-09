@@ -20,7 +20,7 @@ use crate::typerules::{
 };
 use crate::{
     CallArgumentFault, CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam,
-    CheckedSavedPlace, CheckedSavedTerminal, MarrowType, TypeNames, identity_type_for_store,
+    CheckedSavedPlace, CheckedSavedTerminal, MarrowType, identity_type_for_store,
 };
 
 use super::calls::call_argument;
@@ -432,7 +432,7 @@ pub(crate) fn saved_root_args_address_record(
         .iter()
         .zip(arg_types)
         .all(|(key, arg_type)| {
-            let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+            let expected = MarrowType::from_resolved(key.ty.clone());
             saved_key_arg_matches(&expected, arg_type)
         })
 }
@@ -720,7 +720,7 @@ pub(crate) fn check_keys_against(
         return;
     }
     for (key, arg_type) in keys.iter().zip(arg_types) {
-        let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+        let expected = MarrowType::from_resolved(key.ty.clone());
         if reject_optional_key_arg(arg_type, span, file, diagnostics) {
             continue;
         }

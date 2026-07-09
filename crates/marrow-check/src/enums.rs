@@ -17,8 +17,8 @@ use crate::resolve::resolve_store_by_root;
 use crate::{
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram, Def,
     DefItem, DiagnosticAnchor, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution,
-    ResolvableKind, TypeNames, build_alias_map, expand_alias, expand_module_alias, module_of_file,
-    resolve, split_type_path,
+    ResolvableKind, build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
+    split_type_path,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -310,11 +310,10 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
     );
     check_match_arm_bodies(&mut env, arms);
 
-    let MarrowType::Enum {
-        module: enum_module,
-        name: enum_name,
-    } = &scrutinee_type
-    else {
+    let Some((enum_module, enum_name)) = (match &scrutinee_type {
+        MarrowType::Enum(id) => program.enum_by_id(*id),
+        _ => None,
+    }) else {
         report_non_enum_match(&mut env, &scrutinee_type, span);
         return;
     };
@@ -859,11 +858,11 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
     } = input;
     let bool_type = MarrowType::Primitive(ScalarType::Bool);
     let names = program.decl_ids();
-    let MarrowType::Enum {
-        module: left_module,
-        name: left_name,
-    } = left_type
-    else {
+    let left_enum = match left_type {
+        MarrowType::Enum(id) => program.enum_by_id(*id),
+        _ => None,
+    };
+    let Some((left_module, left_name)) = left_enum else {
         // An untyped or already-errored left operand defers, like the equality path:
         // `Unknown` is an unchecked dynamic value and `Invalid` is poison from a
         // diagnostic that already fired, so neither cascades a second error naming the
@@ -917,7 +916,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
     }
     // Both sides must name the same enum, by owning module and name, so two
     // same-named enums in different modules never alias.
-    if &resolved.module != left_module || &resolved.enum_name != left_name {
+    if resolved.module != left_module || resolved.enum_name != left_name {
         diagnostics.push(CheckDiagnostic::new(
             Code::CheckIsType,
             DiagnosticAnchor::at(file, right_span),
@@ -1020,13 +1019,7 @@ pub(crate) fn resolve_type(
         EnumAnnotationResolution::Visible(resolved) => resolved.ty,
         EnumAnnotationResolution::Private(_) => MarrowType::Invalid,
         EnumAnnotationResolution::AmbiguousBareForeign(_) => MarrowType::Unknown,
-        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::resolve(
-            ty,
-            TypeNames {
-                module: module_of_file(program, file).unwrap_or_default(),
-                enums: &[],
-            },
-        ),
+        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::resolve(ty),
     }
 }
 
@@ -1096,13 +1089,7 @@ pub(crate) fn resolve_schema_type_for_module(
         EnumAnnotationResolution::Visible(resolved) => resolved.ty,
         EnumAnnotationResolution::Private(_) => MarrowType::Invalid,
         EnumAnnotationResolution::AmbiguousBareForeign(_) => MarrowType::Unknown,
-        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::from_resolved(
-            ty.clone(),
-            TypeNames {
-                module: &module.name,
-                enums: &[],
-            },
-        ),
+        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::from_resolved(ty.clone()),
     }
 }
 
@@ -1313,14 +1300,12 @@ fn resolve_named_enum_annotation_in_program(
     match resolve_named_enum_owner_in_program(name, program, aliases, referencing) {
         EnumOwnerResolution::Found(owner) => match owner.private {
             Some(private) => EnumAnnotationResolution::Private(private),
-            None => visible_enum_annotation(
-                owner.module.clone(),
-                owner.name.clone(),
-                MarrowType::Enum {
-                    module: owner.module,
-                    name: owner.name,
-                },
-            ),
+            None => {
+                let ty = program
+                    .enum_leaf_id(&owner.module, &owner.name)
+                    .map_or(MarrowType::Unknown, MarrowType::Enum);
+                visible_enum_annotation(owner.module, owner.name, ty)
+            }
         },
         EnumOwnerResolution::AmbiguousBareForeign { name, .. } => {
             EnumAnnotationResolution::AmbiguousBareForeign(name)

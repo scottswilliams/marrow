@@ -511,7 +511,7 @@ fn infer_match_enum(
     context: &CheckedExecutableContext<'_>,
     scope: &[HashMap<String, MarrowType>],
 ) -> Option<(String, String)> {
-    let MarrowType::Enum { module, name } = crate::infer::infer_only(
+    let MarrowType::Enum(id) = crate::infer::infer_only(
         context.program,
         scrutinee?,
         scope,
@@ -520,7 +520,10 @@ fn infer_match_enum(
     ) else {
         return None;
     };
-    Some((module, name))
+    context
+        .program
+        .enum_by_id(id)
+        .map(|(module, name)| (module.to_string(), name.to_string()))
 }
 
 fn resolves_resource_type(program: &CheckedProgram, from_module: &str, name: &str) -> bool {

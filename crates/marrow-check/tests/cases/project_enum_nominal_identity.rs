@@ -1,20 +1,18 @@
 use crate::support;
 use crate::support_enum;
 use marrow_check::{
-    CallArgumentFault, CheckedCallTarget, CheckedExpr, CheckedRuntimeValueType, CheckedStmt,
-    DiagnosticPayload, EnumDiagnostic, MarrowType, ScalarType, check_project,
+    CallArgumentFault, CheckedCallTarget, CheckedExpr, CheckedProgram, CheckedRuntimeValueType,
+    CheckedStmt, DiagnosticPayload, EnumDiagnostic, MarrowType, ScalarType, check_project,
 };
 
 use support::{
-    analyze_overlay, assert_clean, check_module, config, temp_project, with_code, write,
+    analyze_overlay, assert_clean, check_module, check_module_program, config, temp_project,
+    with_code, write,
 };
 use support_enum::assert_enum_payload;
 
-fn enum_type(module: &str, name: &str) -> MarrowType {
-    MarrowType::Enum {
-        module: module.into(),
-        name: name.into(),
-    }
+fn enum_type(program: &CheckedProgram, module: &str, name: &str) -> MarrowType {
+    MarrowType::Enum(support::enum_id(program, module, name))
 }
 
 /// Assert that the lone diagnostic names the concrete `expected`/`found` operands,
@@ -76,7 +74,7 @@ fn passing_one_enum_where_a_different_enum_is_expected_is_a_check_error() {
     // `classify(s: Status)` is called with a `Color` value. Nominal identity:
     // enum `Color` is not enum `Status`, so the argument is a real mismatch, not
     // silently accepted.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "enum-arg-cross",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
@@ -89,8 +87,8 @@ fn passing_one_enum_where_a_different_enum_is_expected_is_a_check_error() {
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("m", "Status"),
-        enum_type("m", "Color"),
+        enum_type(&program, "m", "Status"),
+        enum_type(&program, "m", "Color"),
     );
 }
 
@@ -98,7 +96,7 @@ fn passing_one_enum_where_a_different_enum_is_expected_is_a_check_error() {
 fn passing_a_scalar_where_an_enum_is_expected_is_a_check_error() {
     // A raw scalar into an enum parameter is a mismatch: the parameter is `Status`,
     // the argument is `int`.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "enum-arg-scalar",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
@@ -110,14 +108,14 @@ fn passing_a_scalar_where_an_enum_is_expected_is_a_check_error() {
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("m", "Status"),
+        enum_type(&program, "m", "Status"),
         MarrowType::Primitive(ScalarType::Int),
     );
 }
 
 #[test]
 fn returning_a_different_enum_than_declared_is_a_check_error() {
-    let found = check_module(
+    let (found, program) = check_module_program(
         "enum-return-cross",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
@@ -128,14 +126,14 @@ fn returning_a_different_enum_than_declared_is_a_check_error() {
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("m", "Status"),
-        enum_type("m", "Color"),
+        enum_type(&program, "m", "Status"),
+        enum_type(&program, "m", "Color"),
     );
 }
 
 #[test]
 fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
-    let found = check_module(
+    let (found, program) = check_module_program(
         "enum-assign-cross",
         "module m\n\
          enum Status\n    active\n    archived\n\n\
@@ -146,8 +144,8 @@ fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("m", "Status"),
-        enum_type("m", "Color"),
+        enum_type(&program, "m", "Status"),
+        enum_type(&program, "m", "Color"),
     );
 }
 
@@ -163,13 +161,13 @@ fn assignment_between_same_named_enums_reports_qualified_payload() {
              fn f()\n    var c: a::Color = a::Color::red\n    c = b::Color::blue\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.assignment_type");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("a", "Color"),
-        enum_type("b", "Color"),
+        enum_type(&program, "a", "Color"),
+        enum_type(&program, "b", "Color"),
     );
 }
 
@@ -187,7 +185,7 @@ fn return_between_same_named_enums_qualifies_each_side() {
              fn pick(s: a::Status): b::Status\n    return s\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.return_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
     assert!(
@@ -199,8 +197,8 @@ fn return_between_same_named_enums_qualifies_each_side() {
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
-        enum_type("a", "Status"),
+        enum_type(&program, "b", "Status"),
+        enum_type(&program, "a", "Status"),
     );
 }
 
@@ -260,13 +258,13 @@ fn passing_a_third_modules_enum_to_a_qualified_parameter_is_a_check_error() {
              fn run(): int\n    return b::classify(a::Status::active)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
-        enum_type("a", "Status"),
+        enum_type(&program, "b", "Status"),
+        enum_type(&program, "a", "Status"),
     );
 }
 
@@ -334,13 +332,13 @@ fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
              fn run(): int\n    return b::dispatch(a::Color::green)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
-        enum_type("a", "Color"),
+        enum_type(&program, "b", "Status"),
+        enum_type(&program, "a", "Color"),
     );
 }
 
@@ -365,13 +363,13 @@ fn resource_constructor_field_with_a_foreign_enum_enforces_nominal_identity() {
              fn run()\n    var p = Paint(color: other::Shade::dark)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("kinds", "Color"),
-        enum_type("other", "Shade"),
+        enum_type(&program, "kinds", "Color"),
+        enum_type(&program, "other", "Shade"),
     );
 }
 
@@ -451,13 +449,13 @@ fn saved_field_with_a_bare_unique_foreign_enum_preserves_nominal_identity() {
              const n: int = (^paints(id).color ?? kinds::Color::red)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.assignment_type");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
         MarrowType::Primitive(ScalarType::Int),
-        enum_type("kinds", "Color"),
+        enum_type(&program, "kinds", "Color"),
     );
 }
 
@@ -559,7 +557,7 @@ fn keyed_leaf_with_a_bare_unique_foreign_enum_rejects_resource_value() {
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        MarrowType::Optional(Box::new(enum_type("kinds", "Status"))),
+        MarrowType::Optional(Box::new(enum_type(&program, "kinds", "Status"))),
         MarrowType::Resource(support::resource_id(&program, "app", "Post")),
     );
 }
@@ -584,12 +582,12 @@ fn passing_a_raw_scalar_to_a_qualified_enum_parameter_is_a_check_error() {
              fn run(): int\n    return b::dispatch(1)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
+        enum_type(&program, "b", "Status"),
         MarrowType::Primitive(ScalarType::Int),
     );
 }
@@ -631,13 +629,13 @@ fn a_wrong_enum_through_a_relay_chain_to_a_qualified_parameter_is_a_check_error(
              fn run(): int\n    return mid::relay(a::Color::green)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
-        enum_type("a", "Color"),
+        enum_type(&program, "b", "Status"),
+        enum_type(&program, "a", "Color"),
     );
 }
 
@@ -666,13 +664,13 @@ fn a_wrong_enum_to_a_qualified_parameter_in_an_equality_body_is_a_check_error() 
              fn run(): bool\n    return b::isActive(a::Color::red)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
-        enum_type("a", "Color"),
+        enum_type(&program, "b", "Status"),
+        enum_type(&program, "a", "Color"),
     );
 }
 
@@ -700,13 +698,13 @@ fn a_wrong_enum_to_a_qualified_parameter_inside_a_loop_is_a_check_error() {
              fn run()\n    for i in 1..3\n        b::dispatch(a::Color::green)\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("b", "Status"),
-        enum_type("a", "Color"),
+        enum_type(&program, "b", "Status"),
+        enum_type(&program, "a", "Color"),
     );
 }
 

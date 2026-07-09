@@ -353,7 +353,9 @@ pub(crate) fn marrow_type_name(names: &DeclIds<'_>, ty: &MarrowType) -> String {
         MarrowType::Identity(root) => format!("Id(^{root})"),
         MarrowType::Resource(resource) => names.resource_display(*resource),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
-        MarrowType::Enum { name, .. } => name.clone(),
+        MarrowType::Enum(id) => names
+            .enum_owner_and_name(*id)
+            .map_or_else(|| "unknown".to_string(), |(_, name)| name.to_string()),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(names, element)),
         MarrowType::LocalTree { value, .. } => format!("tree[{}]", marrow_type_name(names, value)),
         MarrowType::Optional(inner) => format!("{}?", marrow_type_name(names, inner)),
@@ -405,16 +407,9 @@ pub(crate) fn mismatch_display(
     left: &MarrowType,
     right: &MarrowType,
 ) -> (String, String) {
-    if let (
-        MarrowType::Enum {
-            module: left_module,
-            name: left_name,
-        },
-        MarrowType::Enum {
-            module: right_module,
-            name: right_name,
-        },
-    ) = (left, right)
+    if let (MarrowType::Enum(left_id), MarrowType::Enum(right_id)) = (left, right)
+        && let Some((left_module, left_name)) = names.enum_owner_and_name(*left_id)
+        && let Some((right_module, right_name)) = names.enum_owner_and_name(*right_id)
         && left_name == right_name
         && left_module != right_module
     {

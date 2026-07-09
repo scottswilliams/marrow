@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_check::{
-    AnalysisSnapshot, CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload,
+    AnalysisSnapshot, CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload, EnumId,
     ProjectSources, ResourceId, analyze_project, check_project, check_project_with_catalog,
 };
 use marrow_project::{ProjectConfig, parse_config};
@@ -166,6 +166,20 @@ pub fn resource_id(program: &CheckedProgram, module: &str, resource: &str) -> Re
         .facts
         .resource_id(module_id, resource)
         .unwrap_or_else(|| panic!("no resource `{resource}` in `{module}`"))
+}
+
+/// The interned id of the enum named `enum_name` in module `module` (empty for a
+/// module-less script), for building an expected `MarrowType::Enum` without
+/// hardcoding an arena index. First-wins, matching the checker's aliasing.
+pub fn enum_id(program: &CheckedProgram, module: &str, enum_name: &str) -> EnumId {
+    let module_id = program
+        .facts
+        .module_id(module)
+        .unwrap_or_else(|| panic!("no module `{module}`"));
+    program
+        .facts
+        .enum_id(module_id, enum_name)
+        .unwrap_or_else(|| panic!("no enum `{enum_name}` in `{module}`"))
 }
 
 /// Check a single library module and return its whole report, for tests that assert a

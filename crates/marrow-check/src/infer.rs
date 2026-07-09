@@ -21,7 +21,6 @@ use crate::executable::{
     SavedPlaceResolver, lower_expr_for_file,
 };
 use crate::model::decls::DeclIds;
-use crate::program::TypeNames;
 use crate::typerules::{
     LiteralSign, check_literal_range, is_optional_value, marrow_type_name, negated_integer_literal,
     type_compatible, type_renderable_at_runtime, unresolved_optional_diagnostic,
@@ -1540,10 +1539,9 @@ fn enum_member_value_type(
             ));
             MarrowType::Invalid
         }
-        MemberPathResolution::Found(_) => MarrowType::Enum {
-            module: resolved.module,
-            name: enum_name.clone(),
-        },
+        MemberPathResolution::Found(_) => program
+            .enum_leaf_id(&resolved.module, enum_name)
+            .map_or(MarrowType::Unknown, MarrowType::Enum),
         MemberPathResolution::Ambiguous(matches) => {
             diagnostics.push(ambiguous_member_value_diagnostic(
                 DiagnosticAnchor::at(file, span),
@@ -1876,10 +1874,7 @@ fn resource_field_resolution(
 
 fn error_field_type(field: &str) -> Option<MarrowType> {
     let descriptor = marrow_schema::error::field(field)?;
-    Some(MarrowType::from_resolved(
-        descriptor.ty.clone(),
-        TypeNames::default(),
-    ))
+    Some(MarrowType::from_resolved(descriptor.ty.clone()))
 }
 
 /// Whether `field` read off a materialized value of `base_type` is a sparse
@@ -1986,7 +1981,7 @@ pub(crate) fn lift_member_type(
     if let Some(module) = program.module_by_name(owning_module) {
         return crate::enums::resolve_schema_type_for_module(&ty, program, module);
     }
-    MarrowType::from_resolved(ty, TypeNames::default())
+    MarrowType::from_resolved(ty)
 }
 
 /// Look up a name's binding, innermost frame first; `None` when unbound. A bound

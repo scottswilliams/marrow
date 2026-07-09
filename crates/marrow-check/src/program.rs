@@ -29,7 +29,7 @@ use crate::executable::{
 };
 use crate::facts::{
     CheckedFacts, EffectClosureFacts, EntryCostShapeFact, EntryFootprintFact, EntryRunFacts,
-    EntryStoreOpenMode, FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId,
+    EntryStoreOpenMode, EnumId, FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId,
     WorkShapeClass,
 };
 use crate::model::decls::{DeclIds, StoreRootArena};
@@ -393,6 +393,24 @@ impl CheckedProgram {
             .iter()
             .find(|resource| resource.name == fact.name)?;
         Some((schema, module.name.as_str()))
+    }
+
+    /// The interned id of the enum a module owns under `enum_name`, first-wins so a
+    /// reference to a duplicate same-name enum aliases to the first declaration,
+    /// matching the pre-interning module-qualified identity. The single place that
+    /// turns a resolved owning-module/name pair into an enum leaf's id.
+    pub(crate) fn enum_leaf_id(&self, module_name: &str, enum_name: &str) -> Option<EnumId> {
+        let module = self.facts.module_id(module_name)?;
+        self.facts.enum_id(module, enum_name)
+    }
+
+    /// The owning-module and bare name an interned enum id names, for the checks
+    /// that resolve an enum's schema or visibility by name rather than re-deriving
+    /// the id from a stored spelling.
+    pub(crate) fn enum_by_id(&self, id: EnumId) -> Option<(&str, &str)> {
+        let fact = self.facts.enum_(id)?;
+        let module = self.facts.modules().get(fact.module.0 as usize)?;
+        Some((module.name.as_str(), fact.name.as_str()))
     }
 
     /// The source file the given file id names, or `None` if the id is out of
@@ -1830,15 +1848,12 @@ pub enum MarrowType {
     },
     /// A store identity such as `Id(^books)`, carrying the store root.
     Identity(String),
-    /// An enum, identified by its owning module and bare name. Identity is
+    /// An enum, identified by its interned declaration id. Identity is
     /// module-qualified: a bare `Status` referenced in module `b` resolves to
     /// `b::Status` (same-module first), and two same-named enums in different
-    /// modules never alias. Nominal: an enum value equals only a value of the
-    /// same enum.
-    Enum {
-        module: String,
-        name: String,
-    },
+    /// modules never alias. Nominal: an enum value equals only a value of the same
+    /// enum. The owning module and name a mismatch renders are recovered by id.
+    Enum(EnumId),
     Sequence(Box<MarrowType>),
     LocalTree {
         keys: Vec<MarrowType>,
@@ -1862,24 +1877,14 @@ pub enum MarrowType {
     Unknown,
 }
 
-/// The module's enum names, used while resolving annotations with module-owned
-/// enum identity. Resource names resolve through the checked module-aware
-/// resolver instead.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TypeNames<'a> {
-    /// The qualified name of the module these names belong to, so a bare enum
-    /// annotation resolves to that module's enum (`module::name` identity). Empty
-    /// for a module-less script, whose enums are project-unique by construction.
-    pub module: &'a str,
-    pub enums: &'a [String],
-}
-
 impl MarrowType {
-    /// Resolve a [`TypeExpr`] against the named types declared in the same module.
-    /// Best-effort and total: it never errors, falling back to
-    /// [`MarrowType::Unknown`] for anything it cannot place.
-    pub(crate) fn resolve(ty: &TypeExpr, names: TypeNames<'_>) -> Self {
-        Self::from_resolved(Type::resolve(ty), names)
+    /// Resolve a [`TypeExpr`] to its structural checker type. Best-effort and
+    /// total: it never errors, falling back to [`MarrowType::Unknown`] for a
+    /// nominal name it cannot place. A bare enum name is left `Unknown` here —
+    /// nominal enum identity is interned through the module-aware resolver, which
+    /// owns the facts a leaf's id comes from.
+    pub(crate) fn resolve(ty: &TypeExpr) -> Self {
+        Self::from_resolved(Type::resolve(ty))
     }
 
     /// The one optional constructor: wrap `inner` as `T?`, flattening so an
@@ -1920,27 +1925,21 @@ impl MarrowType {
         }
     }
 
-    /// Promote a schema-resolved [`Type`] to the checker's lattice using the
-    /// module's enum names. The structure (scalar, sequence, identity, `unknown`)
-    /// is already decided; this layer only places a bare [`Type::Named`] as an enum
-    /// reference, the checker-only `Error` type, or `Unknown`.
-    pub(crate) fn from_resolved(ty: Type, names: TypeNames<'_>) -> Self {
+    /// Promote a schema-resolved [`Type`] to the checker's lattice. The structure
+    /// (scalar, sequence, identity, `unknown`) is already decided; this layer only
+    /// recognizes the checker-only `Error` type and leaves every other bare
+    /// [`Type::Named`] `Unknown`. A nominal enum reference is interned elsewhere,
+    /// where the owning-module facts that supply its id are in reach.
+    pub(crate) fn from_resolved(ty: Type) -> Self {
         match ty {
             Type::Scalar(scalar) => Self::Primitive(scalar),
-            Type::Sequence(element) => {
-                Self::Sequence(Box::new(Self::from_resolved(*element, names)))
-            }
-            Type::Optional(inner) => Self::optional(Self::from_resolved(*inner, names)),
+            Type::Sequence(element) => Self::Sequence(Box::new(Self::from_resolved(*element))),
+            Type::Optional(inner) => Self::optional(Self::from_resolved(*inner)),
             Type::Identity(root) => Self::Identity(root),
             Type::Unknown => Self::Unknown,
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
             Type::Named(name) if name == "Error" => Self::Error,
-            // A bare enum annotation names the owning module's enum.
-            Type::Named(name) if names.enums.contains(&name) => Self::Enum {
-                module: names.module.to_string(),
-                name,
-            },
             Type::Named(_) => Self::Unknown,
         }
     }

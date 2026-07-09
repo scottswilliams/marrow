@@ -106,7 +106,7 @@ fn reading_a_foreign_enum_keyed_leaf_value_into_a_scalar_place_carries_the_forei
              const n: int = (^books(id).shades(\"a\") ?? kinds::Color::red)\n",
         );
     });
-    let (report, _) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
 
     let found = with_code(&report, "check.assignment_type");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
@@ -114,10 +114,7 @@ fn reading_a_foreign_enum_keyed_leaf_value_into_a_scalar_place_carries_the_forei
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
             expected: MarrowType::Primitive(marrow_schema::ScalarType::Int),
-            found: MarrowType::Enum {
-                module: "kinds".into(),
-                name: "Color".into(),
-            },
+            found: MarrowType::Enum(support::enum_id(&program, "kinds", "Color")),
         },
         "{found:#?}"
     );
@@ -152,7 +149,7 @@ fn writing_the_keyed_leaf_value_enforces_the_foreign_enum_nominal_identity() {
              fn bad(id: Id(^books))\n    ^books(id).shades(\"a\") = other::Shade::dark\n",
         );
     });
-    let (report, _) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
 
     let found = with_code(&report, "check.assignment_type");
     assert_eq!(
@@ -165,14 +162,10 @@ fn writing_the_keyed_leaf_value_enforces_the_foreign_enum_nominal_identity() {
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
             // The keyed-leaf write target is clearable, so it presents `kinds::Color?`.
-            expected: MarrowType::Optional(Box::new(MarrowType::Enum {
-                module: "kinds".into(),
-                name: "Color".into(),
-            })),
-            found: MarrowType::Enum {
-                module: "other".into(),
-                name: "Shade".into(),
-            },
+            expected: MarrowType::Optional(Box::new(MarrowType::Enum(support::enum_id(
+                &program, "kinds", "Color"
+            )))),
+            found: MarrowType::Enum(support::enum_id(&program, "other", "Shade")),
         },
         "{found:#?}"
     );

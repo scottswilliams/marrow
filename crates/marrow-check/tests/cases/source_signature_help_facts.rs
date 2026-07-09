@@ -172,10 +172,11 @@ pub fn run(): books::Review
                 label: "status".to_string(),
                 required: false,
                 repeat: false,
-                ty: Some(MarrowType::Enum {
-                    module: "shelf::books".to_string(),
-                    name: "Status".to_string(),
-                }),
+                ty: Some(MarrowType::Enum(support::enum_id(
+                    &snapshot.program,
+                    "shelf::books",
+                    "Status",
+                ))),
                 shape: None,
                 docs: vec!["Review state.".to_string()],
             }],
@@ -232,10 +233,11 @@ pub fn run()
                 label: "state".to_string(),
                 required: true,
                 repeat: false,
-                ty: Some(MarrowType::Enum {
-                    module: "shelf::books".to_string(),
-                    name: "Status".to_string(),
-                }),
+                ty: Some(MarrowType::Enum(support::enum_id(
+                    &snapshot.program,
+                    "shelf::books",
+                    "Status",
+                ))),
                 shape: None,
                 docs: Vec::new(),
             }],

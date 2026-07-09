@@ -548,18 +548,7 @@ impl<'a> SavedPlaceResolver<'a> {
             StoreLeafKind::Identity { store_root, .. } => {
                 Some(MarrowType::Identity(store_root.clone()))
             }
-            StoreLeafKind::Enum { enum_id } => {
-                let enum_fact = self.program.facts.enum_(*enum_id)?;
-                let module = self
-                    .program
-                    .facts
-                    .modules()
-                    .get(enum_fact.module.0 as usize)?;
-                Some(MarrowType::Enum {
-                    module: module.name.clone(),
-                    name: enum_fact.name.clone(),
-                })
-            }
+            StoreLeafKind::Enum { enum_id } => Some(MarrowType::Enum(*enum_id)),
         }
     }
 
@@ -567,23 +556,7 @@ impl<'a> SavedPlaceResolver<'a> {
         match &key.value_meaning {
             StoredValueMeaning::Scalar(scalar) => MarrowType::Primitive(*scalar),
             StoredValueMeaning::Identity { root, .. } => MarrowType::Identity(root.clone()),
-            StoredValueMeaning::Enum { enum_id, .. } => {
-                let Some(enum_fact) = self.program.facts.enum_(*enum_id) else {
-                    return MarrowType::Unknown;
-                };
-                let Some(module) = self
-                    .program
-                    .facts
-                    .modules()
-                    .get(enum_fact.module.0 as usize)
-                else {
-                    return MarrowType::Unknown;
-                };
-                MarrowType::Enum {
-                    module: module.name.clone(),
-                    name: enum_fact.name.clone(),
-                }
-            }
+            StoredValueMeaning::Enum { enum_id, .. } => MarrowType::Enum(*enum_id),
         }
     }
 
@@ -1312,16 +1285,10 @@ fn checked_enum_leaf_kind(
     module: &crate::CheckedModule,
     ty: &Type,
 ) -> Option<crate::StoreLeafKind> {
-    let MarrowType::Enum {
-        module: module_name,
-        name: enum_name,
-    } = crate::enums::resolve_schema_type_for_module(ty, program, module)
+    let MarrowType::Enum(enum_id) =
+        crate::enums::resolve_schema_type_for_module(ty, program, module)
     else {
         return None;
     };
-    let module_index = program.module_index_by_name(&module_name)?;
-    let enum_id = program
-        .facts
-        .enum_id(ModuleId(module_index as u32), &enum_name)?;
     Some(crate::StoreLeafKind::Enum { enum_id })
 }
