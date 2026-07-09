@@ -6,6 +6,7 @@ use std::path::Path;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
+use crate::model::decls::DeclIds;
 use crate::{CHECK_LITERAL_RANGE, CHECK_UNRESOLVED_OPTIONAL, CheckDiagnostic, MarrowType};
 
 /// The decimal envelope, mirroring `marrow_store::decimal`: at most 34
@@ -345,7 +346,11 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
 /// The source spelling of a type for a diagnostic message. The poison `Invalid`
 /// type has no surface spelling and renders as `value`; it normally suppresses the
 /// cascades that would surface it.
-pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
+// The recovery view reaches every leaf arm but is read only once a nominal leaf
+// carries an interned id instead of its spelling; until each leaf is migrated it
+// flows through the recursive arms alone.
+#[allow(clippy::only_used_in_recursion)]
+pub(crate) fn marrow_type_name(names: &DeclIds<'_>, ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
@@ -353,9 +358,9 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
         MarrowType::Resource(resource) => resource.clone(),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
         MarrowType::Enum { name, .. } => name.clone(),
-        MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
-        MarrowType::LocalTree { value, .. } => format!("tree[{}]", marrow_type_name(value)),
-        MarrowType::Optional(inner) => format!("{}?", marrow_type_name(inner)),
+        MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(names, element)),
+        MarrowType::LocalTree { value, .. } => format!("tree[{}]", marrow_type_name(names, value)),
+        MarrowType::Optional(inner) => format!("{}?", marrow_type_name(names, inner)),
         MarrowType::Absent => "absent".to_string(),
         MarrowType::Invalid => "value".to_string(),
         MarrowType::Unknown => "unknown".to_string(),
@@ -399,7 +404,11 @@ pub(crate) fn unresolved_optional(
 /// Display names for two mismatched types, qualifying each enum as `module::Name`
 /// only when both sides are same-named enums from different modules — otherwise the
 /// bare names would read "expects `Status`, but found `Status`".
-pub(crate) fn mismatch_display(left: &MarrowType, right: &MarrowType) -> (String, String) {
+pub(crate) fn mismatch_display(
+    names: &DeclIds<'_>,
+    left: &MarrowType,
+    right: &MarrowType,
+) -> (String, String) {
     if let (
         MarrowType::Enum {
             module: left_module,
@@ -418,5 +427,8 @@ pub(crate) fn mismatch_display(left: &MarrowType, right: &MarrowType) -> (String
             format!("{right_module}::{right_name}"),
         );
     }
-    (marrow_type_name(left), marrow_type_name(right))
+    (
+        marrow_type_name(names, left),
+        marrow_type_name(names, right),
+    )
 }

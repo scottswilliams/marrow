@@ -32,7 +32,7 @@ use crate::facts::{
     EntryStoreOpenMode, FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId,
     WorkShapeClass,
 };
-use crate::model::decls::StoreRootArena;
+use crate::model::decls::{DeclIds, StoreRootArena};
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -357,6 +357,12 @@ impl CheckedProgram {
         // set, so declared roots keep the project's stable leading slots and any
         // test-module annotation roots append after them.
         self.decl_roots = StoreRootArena::build(&self.facts, &sources);
+    }
+
+    /// The recovery view a diagnostic renders type-leaf identities through, over
+    /// this program's current facts and interned identity roots.
+    pub(crate) fn decl_ids(&self) -> DeclIds<'_> {
+        DeclIds::new(&self.facts, &self.decl_roots)
     }
 
     /// The source file the given file id names, or `None` if the id is out of

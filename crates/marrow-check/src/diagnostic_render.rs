@@ -14,6 +14,7 @@ use crate::diagnostics::{
     SurfaceFieldProblem, SurfaceRootOrigin, SurfaceTargetDiagnostic, TransformImpurity,
     UnresolvedCallKind,
 };
+use crate::model::decls::DeclIds;
 use crate::typerules::{marrow_type_name, mismatch_display};
 
 /// The codes whose prose is owned by [`render_message`]. Their construction sites
@@ -65,18 +66,22 @@ pub(crate) const MIGRATED_CODES: &[Code] = &[
 /// Render the human message for a migrated `(code, payload)` pair. Total over
 /// [`MIGRATED_CODES`] with their emitted payloads, which is every pair
 /// [`CheckDiagnostic::new`](crate::CheckDiagnostic::new) can reach.
-pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String {
+pub(crate) fn render_message(
+    code: Code,
+    payload: &DiagnosticPayload,
+    names: &DeclIds<'_>,
+) -> String {
     debug_assert!(
         MIGRATED_CODES.contains(&code),
         "render_message reached for {code:?}, which CheckDiagnostic::new does not own yet",
     );
     match (code, payload) {
         (Code::CheckReturnType, DiagnosticPayload::TypeMismatch { expected, found }) => {
-            let (expected, found) = mismatch_display(expected, found);
+            let (expected, found) = mismatch_display(names, expected, found);
             format!("function returns `{expected}`, but this value is `{found}`")
         }
         (Code::CheckAssignmentType, DiagnosticPayload::TypeMismatch { expected, found }) => {
-            let (expected, found) = mismatch_display(expected, found);
+            let (expected, found) = mismatch_display(names, expected, found);
             format!("expected `{expected}`, but the value is `{found}`")
         }
         (Code::CheckDefaultEntry, DiagnosticPayload::DefaultEntry { entry, problem }) => {
@@ -113,7 +118,7 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
             | Code::CheckIsType
             | Code::CheckCategoryNotSelectable,
             DiagnosticPayload::Enum(diagnostic),
-        ) => enum_message(diagnostic),
+        ) => enum_message(names, diagnostic),
         (Code::CheckUnresolvedName, DiagnosticPayload::UnresolvedName { name }) => {
             format!("`{name}` is not defined")
         }
@@ -127,7 +132,7 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
             layer_not_value_message(field, *reason)
         }
         (Code::CheckCallArgument, DiagnosticPayload::CallArgument(fault)) => {
-            call_argument_message(fault)
+            call_argument_message(names, fault)
         }
         (Code::CheckUnresolvedCall, DiagnosticPayload::UnresolvedCall { name, kind }) => match kind
         {
@@ -151,7 +156,7 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
             format!("`^{root}` names no declared store")
         }
         (Code::CheckConditionType, DiagnosticPayload::ConditionType(fault)) => {
-            condition_type_message(fault)
+            condition_type_message(names, fault)
         }
         (
             Code::CheckLoopHeadArity,
@@ -204,8 +209,8 @@ pub(crate) fn render_message(code: Code, payload: &DiagnosticPayload) -> String 
             },
         ) => format!(
             "default value is `{}` but `{target}` is `{}`",
-            marrow_type_name(value),
-            marrow_type_name(member)
+            marrow_type_name(names, value),
+            marrow_type_name(names, member)
         ),
         (Code::CheckEvolveTransform, DiagnosticPayload::EvolveTransform(fault)) => {
             evolve_transform_message(fault)
@@ -266,7 +271,7 @@ fn transform_impurity_reason(reason: TransformImpurity) -> &'static str {
     }
 }
 
-fn call_argument_message(fault: &CallArgumentFault) -> String {
+fn call_argument_message(names: &DeclIds<'_>, fault: &CallArgumentFault) -> String {
     match fault {
         CallArgumentFault::Arity {
             label,
@@ -283,12 +288,12 @@ fn call_argument_message(fault: &CallArgumentFault) -> String {
             first,
             second,
         } => {
-            let (expected, found) = mismatch_display(first, second);
+            let (expected, found) = mismatch_display(names, first, second);
             format!("argument to `{label}` expects `{expected}`, but found `{found}`")
         }
         CallArgumentFault::AssertEqualNonScalar { label, found } => format!(
             "argument to `{label}` expects a scalar, but found `{}`",
-            marrow_type_name(found)
+            marrow_type_name(names, found)
         ),
         CallArgumentFault::UnknownParameter { callee, parameter } => {
             format!("function `{callee}` has no parameter `{parameter}`")
@@ -314,21 +319,21 @@ fn call_argument_message(fault: &CallArgumentFault) -> String {
             expected,
             found,
         } => {
-            let (expected, found) = mismatch_display(expected, found);
+            let (expected, found) = mismatch_display(names, expected, found);
             format!(
                 "{} to `{label}` expects `{expected}`, but found `{found}`",
                 slot.describe()
             )
         }
         CallArgumentFault::AppendValue { expected, found } => {
-            let (expected, found) = mismatch_display(expected, found);
+            let (expected, found) = mismatch_display(names, expected, found);
             format!("`append` value expects `{expected}`, but found `{found}`")
         }
-        CallArgumentFault::AppendTarget(target) => append_target_message(target),
+        CallArgumentFault::AppendTarget(target) => append_target_message(names, target),
         CallArgumentFault::ConversionUnsupportedSource(diagnostic) => format!(
             "`{}` cannot convert `{}`; supported sources are {}",
             diagnostic.target.spelling(),
-            marrow_type_name(&diagnostic.source),
+            marrow_type_name(names, &diagnostic.source),
             diagnostic.target.supported_sources_message(),
         ),
         CallArgumentFault::ConversionArgumentNamed { label, name } => {
@@ -337,7 +342,7 @@ fn call_argument_message(fault: &CallArgumentFault) -> String {
         CallArgumentFault::SavedCollectionByValue { label, parameter } => format!(
             "argument to `{label}` is a saved collection, which is iterated in place, not passed \
              by value into `{}`; iterate it or build a local collection",
-            marrow_type_name(parameter)
+            marrow_type_name(names, parameter)
         ),
         CallArgumentFault::AssertAbsentRequiresOptional => {
             "`std::assert::isAbsent` expects an optional value".to_string()
@@ -366,11 +371,11 @@ fn call_argument_message(fault: &CallArgumentFault) -> String {
         }
         CallArgumentFault::NextIdRequiresRoot { found } => format!(
             "`nextId` requires a keyed store root (`^store`), but this argument is `{}`",
-            marrow_type_name(found)
+            marrow_type_name(names, found)
         ),
         CallArgumentFault::KeyRequiresIdentity { found } => format!(
             "`key` requires a store identity (`Id(^store)`), but this argument is `{}`",
-            marrow_type_name(found)
+            marrow_type_name(names, found)
         ),
         CallArgumentFault::SavedKeyArgumentsPositional => {
             "saved key arguments must be positional".to_string()
@@ -378,7 +383,7 @@ fn call_argument_message(fault: &CallArgumentFault) -> String {
     }
 }
 
-fn append_target_message(target: &AppendTargetDiagnostic) -> String {
+fn append_target_message(names: &DeclIds<'_>, target: &AppendTargetDiagnostic) -> String {
     match target {
         AppendTargetDiagnostic::GroupLayer => {
             "`append` target must be a keyed leaf layer, but this path names a group layer"
@@ -391,12 +396,12 @@ fn append_target_message(target: &AppendTargetDiagnostic) -> String {
         }
         AppendTargetDiagnostic::NonIntKeyedLayer { key_type } => format!(
             "`append` requires an int-keyed layer, but this layer is keyed by `{}`",
-            marrow_type_name(key_type)
+            marrow_type_name(names, key_type)
         ),
     }
 }
 
-fn enum_message(diagnostic: &EnumDiagnostic) -> String {
+fn enum_message(names: &DeclIds<'_>, diagnostic: &EnumDiagnostic) -> String {
     match diagnostic {
         EnumDiagnostic::UnknownMember {
             enum_name,
@@ -461,12 +466,12 @@ fn enum_message(diagnostic: &EnumDiagnostic) -> String {
             ),
             MatchScrutinee::NonEnum { found } => format!(
                 "`match` requires an enum value, but the scrutinee is `{}`",
-                marrow_type_name(found)
+                marrow_type_name(names, found)
             ),
         },
         EnumDiagnostic::IsRequiresEnum { found } => format!(
             "operator `is` requires an enum value on the left, but found `{}`",
-            marrow_type_name(found)
+            marrow_type_name(names, found)
         ),
         EnumDiagnostic::IsType(fault) => match fault {
             IsTypeFault::RequiresMember { left_name } => {
@@ -487,10 +492,13 @@ fn enum_message(diagnostic: &EnumDiagnostic) -> String {
     }
 }
 
-fn condition_type_message(fault: &ConditionTypeFault) -> String {
+fn condition_type_message(names: &DeclIds<'_>, fault: &ConditionTypeFault) -> String {
     match fault {
         ConditionTypeFault::NotBool { found } => {
-            format!("condition must be `bool`, found `{}`", marrow_type_name(found))
+            format!(
+                "condition must be `bool`, found `{}`",
+                marrow_type_name(names, found)
+            )
         }
         ConditionTypeFault::IfConstEffectInKey => {
             "`if const` cannot guard a read with an effect in a key; \
@@ -738,17 +746,31 @@ mod tests {
         MarrowType::Primitive(scalar)
     }
 
+    /// Render a `(code, payload)` through the production renderer with an empty
+    /// recovery view. These goldens pin prose whose leaves carry their own spelling
+    /// (scalars, names already in the payload), so no facts-backed recovery is
+    /// exercised; the shared empty view keeps every assertion a pure prose check.
+    fn render(code: Code, payload: &DiagnosticPayload) -> String {
+        let facts = crate::facts::CheckedFacts::default();
+        let roots = crate::model::decls::StoreRootArena::default();
+        render_message(
+            code,
+            payload,
+            &crate::model::decls::DeclIds::new(&facts, &roots),
+        )
+    }
+
     /// The catalog-identity and evolution codes render exactly the prose their old
     /// construction sites built, pinning the wording the renderer now owns.
     #[test]
     fn renders_migrated_catalog_and_evolve_prose_byte_identical() {
         assert_eq!(
-            render_message(Code::CheckDurableStoreRequired, &DiagnosticPayload::None),
+            render(Code::CheckDurableStoreRequired, &DiagnosticPayload::None),
             "this program declares durable data, which requires a native store; the configured \
              store has no durable identity",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckLockCorrupt,
                 &DiagnosticPayload::LockCorrupt {
                     reissued_id: "c7".to_string(),
@@ -758,7 +780,7 @@ mod tests {
              retired",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveTarget,
                 &DiagnosticPayload::EvolveTarget(EvolveTargetFault::Unaddressable),
             ),
@@ -766,14 +788,14 @@ mod tests {
              member, a saved root, a store index, an enum, or an enum member)",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveTarget,
                 &DiagnosticPayload::EvolveTarget(EvolveTargetFault::UnacceptedCarryForward),
             ),
             "evolve target does not name an accepted catalog entry to carry forward",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveTarget,
                 &DiagnosticPayload::EvolveTarget(EvolveTargetFault::RenameTargetUndeclared {
                     to_path: "books::New".to_string(),
@@ -782,7 +804,7 @@ mod tests {
             "evolve rename target `books::New` is not declared by the current source",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveType,
                 &DiagnosticPayload::EvolveDefaultType {
                     value: primitive(ScalarType::Str),
@@ -806,7 +828,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                render_message(
+                render(
                     Code::CheckEvolveTransform,
                     &DiagnosticPayload::EvolveTransform(EvolveTransformFault::Impure { reason }),
                 ),
@@ -814,14 +836,14 @@ mod tests {
             );
         }
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveTransform,
                 &DiagnosticPayload::EvolveTransform(EvolveTransformFault::NonTopLevelMember),
             ),
             "an evolve transform must target a top-level saved resource member",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveTransform,
                 &DiagnosticPayload::EvolveTransform(EvolveTransformFault::ReadsOwnTarget {
                     field: "priceCents".to_string(),
@@ -830,7 +852,7 @@ mod tests {
             "a transform cannot read its own target `old.priceCents`; compute it from other members",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckEvolveTransform,
                 &DiagnosticPayload::EvolveTransform(EvolveTransformFault::ReadsRewrittenMember {
                     field: "priceCents".to_string(),
@@ -847,7 +869,7 @@ mod tests {
     #[test]
     fn renders_migrated_prose_byte_identical() {
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckReturnType,
                 &DiagnosticPayload::TypeMismatch {
                     expected: primitive(ScalarType::Int),
@@ -857,7 +879,7 @@ mod tests {
             "function returns `int`, but this value is `string`",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckAssignmentType,
                 &DiagnosticPayload::TypeMismatch {
                     expected: primitive(ScalarType::Bool),
@@ -882,7 +904,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                render_message(
+                render(
                     Code::CheckDefaultEntry,
                     &DiagnosticPayload::DefaultEntry {
                         entry: "main".to_string(),
@@ -893,7 +915,7 @@ mod tests {
             );
         }
         assert_eq!(
-            render_message(Code::CheckMultipleScripts, &DiagnosticPayload::None),
+            render(Code::CheckMultipleScripts, &DiagnosticPayload::None),
             "a project may have at most one file without a `module` declaration \
              (its single-file script); declare a `module` for this file",
         );
@@ -907,7 +929,7 @@ mod tests {
     #[test]
     fn renders_condition_type_prose_byte_identical() {
         let condition = |fault| {
-            render_message(
+            render(
                 Code::CheckConditionType,
                 &DiagnosticPayload::ConditionType(fault),
             )
@@ -947,7 +969,7 @@ mod tests {
     #[test]
     fn renders_surface_prose_byte_identical() {
         let target = |t| {
-            render_message(
+            render(
                 Code::CheckSurfaceTarget,
                 &DiagnosticPayload::SurfaceTarget(t),
             )
@@ -1076,7 +1098,7 @@ mod tests {
         );
 
         let field = |problem, list| {
-            render_message(
+            render(
                 Code::CheckSurfaceField,
                 &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
                     list,
@@ -1120,7 +1142,7 @@ mod tests {
         );
 
         let action = |a| {
-            render_message(
+            render(
                 Code::CheckSurfaceAction,
                 &DiagnosticPayload::SurfaceAction(a),
             )
@@ -1158,7 +1180,7 @@ mod tests {
         );
 
         let read = |r| {
-            render_message(
+            render(
                 Code::CheckSurfaceComputedRead,
                 &DiagnosticPayload::SurfaceComputedRead(r),
             )
@@ -1232,8 +1254,7 @@ mod tests {
     /// discriminant. Pins the prose the renderer now owns for the enum codes.
     #[test]
     fn renders_enum_prose_byte_identical() {
-        let enum_msg =
-            |code, diagnostic| render_message(code, &DiagnosticPayload::Enum(diagnostic));
+        let enum_msg = |code, diagnostic| render(code, &DiagnosticPayload::Enum(diagnostic));
 
         assert_eq!(
             enum_msg(
@@ -1398,7 +1419,7 @@ mod tests {
     #[test]
     fn renders_resolution_prose_byte_identical() {
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUnresolvedName,
                 &DiagnosticPayload::UnresolvedName {
                     name: "total".into(),
@@ -1407,14 +1428,14 @@ mod tests {
             "`total` is not defined",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUnresolvedImport,
                 &DiagnosticPayload::UnresolvedImport("app::missing".into()),
             ),
             "cannot resolve import `app::missing`",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUnknownField,
                 &DiagnosticPayload::UnknownField {
                     field: "title".into(),
@@ -1424,7 +1445,7 @@ mod tests {
         );
 
         let layer = |reason| {
-            render_message(
+            render(
                 Code::CheckLayerNotValue,
                 &DiagnosticPayload::LayerNotValue {
                     field: "cells".into(),
@@ -1446,7 +1467,7 @@ mod tests {
         );
 
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckCategoryNotSelectable,
                 &DiagnosticPayload::Enum(EnumDiagnostic::CategoryNotSelectable {
                     path: "Animal::mammal".into(),
@@ -1464,7 +1485,7 @@ mod tests {
     #[test]
     fn renders_call_argument_prose_byte_identical() {
         let call = |fault| {
-            render_message(
+            render(
                 Code::CheckCallArgument,
                 &DiagnosticPayload::CallArgument(fault),
             )
@@ -1668,7 +1689,7 @@ mod tests {
         );
 
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUnresolvedCall,
                 &DiagnosticPayload::UnresolvedCall {
                     name: "missing".into(),
@@ -1678,7 +1699,7 @@ mod tests {
             "function `missing` is not defined",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUnresolvedCall,
                 &DiagnosticPayload::UnresolvedCall {
                     name: "std::math::bogus".into(),
@@ -1688,14 +1709,14 @@ mod tests {
             "`std::math::bogus` is not a standard-library operation",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckPrivateFunction,
                 &DiagnosticPayload::PrivateFunction("shelf::add".into()),
             ),
             "function `shelf::add` is private to its module; mark it `pub` to call it from another module",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckAmbiguousCall,
                 &DiagnosticPayload::AmbiguousCall {
                     leaf: "add".into(),
@@ -1714,7 +1735,7 @@ mod tests {
     #[test]
     fn renders_statement_prose_byte_identical() {
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUnknownRoot,
                 &DiagnosticPayload::UnknownRoot {
                     root: "books".into(),
@@ -1723,12 +1744,12 @@ mod tests {
             "`^books` names no declared store",
         );
         assert_eq!(
-            render_message(Code::CheckUnannotatedAbsent, &DiagnosticPayload::None),
+            render(Code::CheckUnannotatedAbsent, &DiagnosticPayload::None),
             "a bare `absent` has no element type to infer; annotate the binding's optional type \
              (for example `: string?`)",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUninitializedVar,
                 &DiagnosticPayload::UninitializedVar {
                     kind: UninitializedVarKind::Enum,
@@ -1739,7 +1760,7 @@ mod tests {
              to start from",
         );
         assert_eq!(
-            render_message(
+            render(
                 Code::CheckUninitializedVar,
                 &DiagnosticPayload::UninitializedVar {
                     kind: UninitializedVarKind::Identity,
@@ -1750,7 +1771,7 @@ mod tests {
              has no default to start from",
         );
         assert_eq!(
-            render_message(Code::CheckLossyRoundTrip, &DiagnosticPayload::None),
+            render(Code::CheckLossyRoundTrip, &DiagnosticPayload::None),
             "whole saved-record replacement clears keyed child layers omitted from the value",
         );
     }

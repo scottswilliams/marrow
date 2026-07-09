@@ -804,6 +804,7 @@ pub(crate) fn analyze_source_project(
                 Code::CheckMultipleScripts,
                 DiagnosticAnchor::whole_file(&script.source_file),
                 DiagnosticPayload::None,
+                &program.decl_ids(),
             ));
         }
     }
@@ -860,6 +861,7 @@ pub(crate) fn analyze_source_project(
                 .map(|source| (file.path.as_path(), source.as_str(), parsed))
         }),
         &mut report.diagnostics,
+        &program.decl_ids(),
     );
     crate::catalog::bind_catalog(
         accepted,
@@ -983,6 +985,7 @@ fn check_default_entry(
             entry: entry.to_string(),
             problem,
         },
+        &program.decl_ids(),
     ));
 }
 

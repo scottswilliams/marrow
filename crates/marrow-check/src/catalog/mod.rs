@@ -13,6 +13,7 @@ use marrow_syntax::{Declaration, EnumMember, ParsedSource, SourceSpan};
 use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
 use crate::facts::{StoreIndexFact, StoreIndexKeySource, StoredValueMeaning};
+use crate::model::decls::DeclIds;
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
     CHECK_CATALOG_INTENT, CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate,
@@ -142,6 +143,7 @@ pub(crate) fn require_durable_store(
         Code::CheckDurableStoreRequired,
         DiagnosticAnchor::at(&anchor.file, anchor.span),
         DiagnosticPayload::None,
+        &program.decl_ids(),
     ));
 }
 
@@ -772,18 +774,20 @@ fn bind(
     let accepted_catalog = authority.accepted_catalog()?;
     let accepted_index = AcceptedCatalog::new(&accepted_catalog);
     let source_catalog = SourceCatalog::new(&source.entries);
+    let names = program.decl_ids();
     let mut renames = if authority.has_accepted_reference() {
         resolve_renames(
             &accepted_index,
             &source_catalog,
             &evolve.renames,
+            &names,
             diagnostics,
         )
     } else {
         // A first run carries no accepted identity, so every rename relocates nothing; report each
         // at its own target token and resolve to an empty map.
         for rename in &evolve.renames {
-            report_unresolved_intent(&rename.file, rename.span, diagnostics);
+            report_unresolved_intent(&rename.file, rename.span, &names, diagnostics);
         }
         HashMap::new()
     };
@@ -799,12 +803,13 @@ fn bind(
         authority.reports_pending_identity(),
         diagnostics,
     )?;
-    report_unresolved_renames(&renames, diagnostics);
+    report_unresolved_renames(&renames, &names, diagnostics);
     if apply_retires(
         &mut proposal_entries,
         &evolve.retires,
         &accepted_index,
         &source_catalog,
+        &names,
         diagnostics,
     ) {
         changed = true;
@@ -829,7 +834,7 @@ fn bind(
     // ids, so under a valid lock this cannot fire — it is the defense that keeps a torn or
     // hand-edited ledger from resurrecting a retired identity rather than a routine branch.
     if let Some(reissued) = tombstone_reissue(&proposal_entries, authority.ledger()) {
-        diagnostics.push(lock_corrupt_diagnostic(&source.entries, reissued));
+        diagnostics.push(lock_corrupt_diagnostic(&source.entries, reissued, &names));
         return Ok(BindOutcome::Refused);
     }
     if authority.adopts_source_unchanged(changed, source, &proposal_entries) {
@@ -962,11 +967,12 @@ fn bind_source_entries<E: CatalogIdEntropy>(
 /// intent must not vanish silently.
 fn report_unresolved_renames(
     renames: &HashMap<String, ResolvedRename>,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for rename in renames.values() {
         if let Some((file, span)) = &rename.origin {
-            report_unresolved_intent(file, *span, diagnostics);
+            report_unresolved_intent(file, *span, names, diagnostics);
         }
     }
 }
@@ -1087,6 +1093,7 @@ fn tombstone_reissue<'a>(
 fn lock_corrupt_diagnostic(
     source_entries: &[SourceCatalogEntry],
     reissued_id: &str,
+    names: &DeclIds<'_>,
 ) -> CheckDiagnostic {
     CheckDiagnostic::new(
         Code::CheckLockCorrupt,
@@ -1094,6 +1101,7 @@ fn lock_corrupt_diagnostic(
         DiagnosticPayload::LockCorrupt {
             reissued_id: reissued_id.to_string(),
         },
+        names,
     )
 }
 
@@ -1305,6 +1313,7 @@ fn resolve_renames(
     accepted: &AcceptedCatalog<'_>,
     source_catalog: &SourceCatalog<'_>,
     renames: &[RenameIntent],
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> HashMap<String, ResolvedRename> {
     let mut resolved: HashMap<String, ResolvedRename> = HashMap::new();
@@ -1318,7 +1327,7 @@ fn resolve_renames(
                 // one current identity. That block only describes work already applied, so it stays
                 // inert exactly as deleting it would, rather than failing as an unresolved intent.
                 if !rename_consumed(accepted, rename) {
-                    report_unresolved_rename_destination(rename, diagnostics);
+                    report_unresolved_rename_destination(rename, names, diagnostics);
                 }
                 continue;
             }
@@ -1392,7 +1401,7 @@ fn resolve_renames(
             continue;
         }
         if accepted.active_entry(kind, &rename.from_path).is_none() {
-            report_unresolved_intent(&rename.file, rename.span, diagnostics);
+            report_unresolved_intent(&rename.file, rename.span, names, diagnostics);
             continue;
         }
         if let Some(descendant_kind) = cascade_descendant_kind(kind) {
@@ -1691,11 +1700,19 @@ fn apply_retires(
     retires: &[RetireIntent],
     accepted: &AcceptedCatalog<'_>,
     source_catalog: &SourceCatalog<'_>,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> bool {
     let mut changed = false;
     for retire in retires {
-        match retire_target(entries, accepted, source_catalog, retire, diagnostics) {
+        match retire_target(
+            entries,
+            accepted,
+            source_catalog,
+            retire,
+            names,
+            diagnostics,
+        ) {
             RetireTarget::Active(index) => {
                 entries[index].lifecycle = CatalogLifecycle::Reserved;
                 changed = true;
@@ -1717,6 +1734,7 @@ fn retire_target(
     accepted: &AcceptedCatalog<'_>,
     source_catalog: &SourceCatalog<'_>,
     retire: &RetireIntent,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> RetireTarget {
     let active = entry_indexes_with_lifecycle(entries, CatalogLifecycle::Active, &retire.path);
@@ -1764,7 +1782,7 @@ fn retire_target(
             if declared_kinds.is_empty() {
                 match reserved.as_slice() {
                     [] => {
-                        report_unresolved_intent(&retire.file, retire.span, diagnostics);
+                        report_unresolved_intent(&retire.file, retire.span, names, diagnostics);
                         RetireTarget::Rejected
                     }
                     [_] => RetireTarget::Consumed,
@@ -1840,11 +1858,17 @@ fn drop_bare_removed_entries(
     entries.len() != before
 }
 
-fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
+fn report_unresolved_intent(
+    file: &Path,
+    span: SourceSpan,
+    names: &DeclIds<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
     diagnostics.push(CheckDiagnostic::new(
         Code::CheckEvolveTarget,
         DiagnosticAnchor::at(file, span),
         DiagnosticPayload::EvolveTarget(EvolveTargetFault::UnacceptedCarryForward),
+        names,
     ));
 }
 
@@ -1853,6 +1877,7 @@ fn report_unresolved_intent(file: &Path, span: SourceSpan, diagnostics: &mut Vec
 /// resolved from-path; the destination leg names the undeclared to-path and anchors at its token.
 fn report_unresolved_rename_destination(
     rename: &RenameIntent,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1861,6 +1886,7 @@ fn report_unresolved_rename_destination(
         DiagnosticPayload::EvolveTarget(EvolveTargetFault::RenameTargetUndeclared {
             to_path: rename.to_path.clone(),
         }),
+        names,
     ));
 }
 
@@ -2530,6 +2556,20 @@ mod tests {
         }
     }
 
+    /// The empty recovery view these catalog fixtures render through. Catalog
+    /// diagnostics carry catalog paths, never an interned type leaf, so the view is
+    /// never read; the owned backing is returned so a `DeclIds` borrowing it outlives
+    /// the call.
+    fn empty_decl_backing() -> (
+        crate::facts::CheckedFacts,
+        crate::model::decls::StoreRootArena,
+    ) {
+        (
+            crate::facts::CheckedFacts::default(),
+            crate::model::decls::StoreRootArena::default(),
+        )
+    }
+
     /// A `cat_<32 hex>` id from a single distinguishing byte, for fixtures that pin a
     /// specific committed or tombstoned id.
     fn fixed_id(byte: u8) -> String {
@@ -3131,11 +3171,13 @@ mod tests {
         ];
         let mut diagnostics = Vec::new();
 
+        let (facts, roots) = empty_decl_backing();
         let changed = apply_retires(
             &mut entries,
             &[retire(path)],
             &AcceptedCatalog::new(&accepted),
             &SourceCatalog::new(&source),
+            &DeclIds::new(&facts, &roots),
             &mut diagnostics,
         );
 
@@ -3204,10 +3246,12 @@ mod tests {
         ];
         let mut diagnostics = Vec::new();
 
+        let (facts, roots) = empty_decl_backing();
         let resolved = resolve_renames(
             &AcceptedCatalog::new(&accepted),
             &SourceCatalog::new(&source),
             &[rename_intent("app::Pet::mammal", "app::Pet::beast")],
+            &DeclIds::new(&facts, &roots),
             &mut diagnostics,
         );
 
@@ -3262,10 +3306,12 @@ mod tests {
         ];
         let mut diagnostics = Vec::new();
 
+        let (facts, roots) = empty_decl_backing();
         let resolved = resolve_renames(
             &AcceptedCatalog::new(&accepted),
             &SourceCatalog::new(&source),
             &[rename_intent("app::Book", "app::Volume")],
+            &DeclIds::new(&facts, &roots),
             &mut diagnostics,
         );
 
@@ -3317,6 +3363,7 @@ mod tests {
         )];
         let mut diagnostics = Vec::new();
 
+        let (facts, roots) = empty_decl_backing();
         let resolved = resolve_renames(
             &AcceptedCatalog::new(&accepted),
             &SourceCatalog::new(&source),
@@ -3324,6 +3371,7 @@ mod tests {
                 rename_intent("books::Book::title", "books::Book::label"),
                 rename_intent("books::Book::label", "books::Book::name"),
             ],
+            &DeclIds::new(&facts, &roots),
             &mut diagnostics,
         );
 
@@ -3360,10 +3408,12 @@ mod tests {
         )];
         let mut diagnostics = Vec::new();
 
+        let (facts, roots) = empty_decl_backing();
         resolve_renames(
             &AcceptedCatalog::new(&accepted),
             &SourceCatalog::new(&source),
             &[rename_intent("books::Book::ghost", "books::Book::phantom")],
+            &DeclIds::new(&facts, &roots),
             &mut diagnostics,
         );
 

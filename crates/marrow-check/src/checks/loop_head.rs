@@ -14,6 +14,7 @@ use marrow_syntax::LoopOrder;
 
 use crate::executable::SavedPlaceResolver;
 use crate::infer::infer_type;
+use crate::model::decls::DeclIds;
 use crate::{
     BuiltinView, CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedProgram, DiagnosticAnchor,
     DiagnosticPayload, MarrowType,
@@ -242,6 +243,7 @@ pub(crate) fn check_for_head(
             Code::CheckLoopHeadViewCall,
             DiagnosticAnchor::at(file, iterable.span()),
             DiagnosticPayload::LoopHeadViewCall(builtin),
+            &program.decl_ids(),
         ));
         return;
     }
@@ -257,19 +259,19 @@ pub(crate) fn check_for_head(
                     "spell a descending range with its endpoints and `by`, not `reversed`",
                 ));
             }
-            check_arity(file, span, given, 1, diagnostics);
+            check_arity(&program.decl_ids(), file, span, given, 1, diagnostics);
         }
         LoopIterable::SavedLayer { key_columns, .. } => {
             let columns = key_columns.len();
             if given != 1 && given != columns + 1 {
-                diagnostics.push(arity_error(file, span, columns, given));
+                diagnostics.push(arity_error(&program.decl_ids(), file, span, columns, given));
             }
         }
         LoopIterable::IndexBranch { .. }
         | LoopIterable::LocalTree { .. }
         | LoopIterable::Sequence { .. } => {
             if given != 1 && given != 2 {
-                diagnostics.push(arity_error(file, span, 1, given));
+                diagnostics.push(arity_error(&program.decl_ids(), file, span, 1, given));
             }
         }
         LoopIterable::UniqueIndexPartial {
@@ -304,6 +306,7 @@ pub(crate) fn check_for_head(
 }
 
 fn check_arity(
+    names: &DeclIds<'_>,
     file: &Path,
     span: marrow_syntax::SourceSpan,
     given: usize,
@@ -311,11 +314,12 @@ fn check_arity(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if given != column_count {
-        diagnostics.push(arity_error(file, span, column_count, given));
+        diagnostics.push(arity_error(names, file, span, column_count, given));
     }
 }
 
 fn arity_error(
+    names: &DeclIds<'_>,
     file: &Path,
     span: marrow_syntax::SourceSpan,
     column_count: usize,
@@ -328,6 +332,7 @@ fn arity_error(
             column_count,
             given,
         },
+        names,
     )
 }
 

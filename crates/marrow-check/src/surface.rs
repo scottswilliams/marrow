@@ -26,6 +26,7 @@ use crate::facts::{
     SurfaceIndexRangeCollection, SurfaceReadFootprint, SurfaceReadOperationFact,
     SurfaceReadOperationKind,
 };
+use crate::model::decls::DeclIds;
 use crate::presence::transitive_unindexed_lookup_span;
 use crate::surface_abi::surface_read_operation_tag;
 use crate::{
@@ -114,7 +115,8 @@ pub(crate) fn check_computed_read_effects(
                 rejected = true;
                 if let Some(file) = file.as_deref() {
                     let span = computed_read_effect_span(program, read, &payload);
-                    push_surface_computed_read_diagnostic(file, span, payload, diagnostics);
+                    let names = program.decl_ids();
+                    push_surface_computed_read_diagnostic(file, span, payload, &names, diagnostics);
                 }
             }
         }
@@ -431,7 +433,13 @@ fn resolve_action(
                 path: target.path.clone(),
             },
         };
-        push_surface_action_diagnostic(context.file, target_span, payload, diagnostics);
+        push_surface_action_diagnostic(
+            context.file,
+            target_span,
+            payload,
+            &context.program.decl_ids(),
+            diagnostics,
+        );
         return None;
     }
 
@@ -476,7 +484,13 @@ fn resolve_computed_read(
                 }
             }
         };
-        push_surface_computed_read_diagnostic(context.file, target_span, payload, diagnostics);
+        push_surface_computed_read_diagnostic(
+            context.file,
+            target_span,
+            payload,
+            &context.program.decl_ids(),
+            diagnostics,
+        );
         return None;
     }
 
@@ -517,6 +531,7 @@ fn resolve_surface_function(
                     context.file,
                     span,
                     SurfaceFunctionTargetDiagnostic::Private { path: path.clone() },
+                    &context.program.decl_ids(),
                     diagnostics,
                 );
                 return None;
@@ -534,6 +549,7 @@ fn resolve_surface_function(
                 context.file,
                 span,
                 SurfaceFunctionTargetDiagnostic::Private { path: name.clone() },
+                &context.program.decl_ids(),
                 diagnostics,
             );
             None
@@ -544,6 +560,7 @@ fn resolve_surface_function(
                 context.file,
                 span,
                 SurfaceFunctionTargetDiagnostic::Ambiguous { path },
+                &context.program.decl_ids(),
                 diagnostics,
             );
             None
@@ -558,6 +575,7 @@ fn resolve_surface_function(
                 context.file,
                 span,
                 SurfaceFunctionTargetDiagnostic::Unknown { path },
+                &context.program.decl_ids(),
                 diagnostics,
             );
             None
@@ -576,6 +594,7 @@ fn push_surface_function_diagnostic(
     file: &Path,
     span: SourceSpan,
     issue: SurfaceFunctionTargetDiagnostic,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     match profile {
@@ -591,7 +610,7 @@ fn push_surface_function_diagnostic(
                     SurfaceActionDiagnostic::UnknownFunction { path }
                 }
             };
-            push_surface_action_diagnostic(file, span, payload, diagnostics);
+            push_surface_action_diagnostic(file, span, payload, names, diagnostics);
         }
         SurfaceFunctionProfile::ComputedRead => {
             let payload = match issue {
@@ -605,7 +624,7 @@ fn push_surface_function_diagnostic(
                     SurfaceComputedReadDiagnostic::UnknownFunction { path }
                 }
             };
-            push_surface_computed_read_diagnostic(file, span, payload, diagnostics);
+            push_surface_computed_read_diagnostic(file, span, payload, names, diagnostics);
         }
     }
 }
@@ -685,12 +704,14 @@ fn push_surface_action_diagnostic(
     file: &Path,
     span: SourceSpan,
     payload: SurfaceActionDiagnostic,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
         Code::CheckSurfaceAction,
         DiagnosticAnchor::at(file, span),
         DiagnosticPayload::SurfaceAction(payload),
+        names,
     ));
 }
 
@@ -698,12 +719,14 @@ fn push_surface_computed_read_diagnostic(
     file: &Path,
     span: SourceSpan,
     payload: SurfaceComputedReadDiagnostic,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
         Code::CheckSurfaceComputedRead,
         DiagnosticAnchor::at(file, span),
         DiagnosticPayload::SurfaceComputedRead(payload),
+        names,
     ));
 }
 
@@ -908,18 +931,39 @@ fn resolve_surface_store_root<'p>(
     match resolve_unique_store_root(program, root) {
         StoreRootResolution::Unique(store) => {
             if backing_validity.store_has_duplicate_root(store) {
-                push_ambiguous_store_root_diagnostic(file, span, origin, root, diagnostics);
+                push_ambiguous_store_root_diagnostic(
+                    file,
+                    span,
+                    origin,
+                    root,
+                    &program.decl_ids(),
+                    diagnostics,
+                );
                 None
             } else {
                 Some(store)
             }
         }
         StoreRootResolution::Missing => {
-            push_unknown_store_root_diagnostic(file, span, origin, root, diagnostics);
+            push_unknown_store_root_diagnostic(
+                file,
+                span,
+                origin,
+                root,
+                &program.decl_ids(),
+                diagnostics,
+            );
             None
         }
         StoreRootResolution::Ambiguous => {
-            push_ambiguous_store_root_diagnostic(file, span, origin, root, diagnostics);
+            push_ambiguous_store_root_diagnostic(
+                file,
+                span,
+                origin,
+                root,
+                &program.decl_ids(),
+                diagnostics,
+            );
             None
         }
     }
@@ -930,6 +974,7 @@ fn push_unknown_store_root_diagnostic(
     span: SourceSpan,
     origin: SurfaceRootOrigin,
     root: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -939,6 +984,7 @@ fn push_unknown_store_root_diagnostic(
             origin,
             root: root.to_string(),
         }),
+        names,
     ));
 }
 
@@ -947,6 +993,7 @@ fn push_ambiguous_store_root_diagnostic(
     span: SourceSpan,
     origin: SurfaceRootOrigin,
     root: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -956,6 +1003,7 @@ fn push_ambiguous_store_root_diagnostic(
             origin,
             root: root.to_string(),
         }),
+        names,
     ));
 }
 
@@ -984,6 +1032,7 @@ fn resolve_backing_store<'p>(
             surface.store.span,
             &surface.name,
             &surface.store.root,
+            &program.decl_ids(),
             diagnostics,
         );
         return None;
@@ -999,6 +1048,7 @@ fn resolve_backing_store<'p>(
                 root: surface.store.root.clone(),
                 resource: resource.name.clone(),
             }),
+            &program.decl_ids(),
         ));
         None
     } else {
@@ -1022,6 +1072,7 @@ fn push_invalid_store_diagnostic(
     span: SourceSpan,
     surface_name: &str,
     root: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1031,6 +1082,7 @@ fn push_invalid_store_diagnostic(
             surface: surface_name.to_string(),
             root: root.to_string(),
         }),
+        names,
     ));
 }
 
@@ -1051,6 +1103,7 @@ fn push_invalid_store_resource_diagnostic(
             root: store.root.clone(),
             resource: resource.name.clone(),
         }),
+        &program.decl_ids(),
     ));
 }
 
@@ -1140,6 +1193,7 @@ fn validate_create_completeness(
                 SurfaceFieldList::Create,
                 &member.name,
                 SurfaceFieldProblem::RequiredNotCreateAddressable,
+                &context.program.decl_ids(),
                 diagnostics,
             );
             continue;
@@ -1152,6 +1206,7 @@ fn validate_create_completeness(
                 SurfaceFieldList::Create,
                 &name,
                 SurfaceFieldProblem::RequiredNotCreateAddressable,
+                &context.program.decl_ids(),
                 diagnostics,
             );
         }
@@ -1205,6 +1260,7 @@ fn resolve_input_field_list(
                 list,
                 &field.name,
                 SurfaceFieldProblem::NotProjected,
+                &context.program.decl_ids(),
                 diagnostics,
             );
             false
@@ -1226,7 +1282,15 @@ fn resolve_surface_field(
             span,
         }),
         Err(problem) => {
-            push_field_diagnostic(context.file, span, list, name, problem, diagnostics);
+            push_field_diagnostic(
+                context.file,
+                span,
+                list,
+                name,
+                problem,
+                &context.program.decl_ids(),
+                diagnostics,
+            );
             None
         }
     }
@@ -1382,7 +1446,7 @@ fn resolve_root_collection(
         return None;
     }
     if store.identity_keys.is_empty() {
-        push_keyless_collection_root_diagnostic(file, span, root, diagnostics);
+        push_keyless_collection_root_diagnostic(file, span, root, &program.decl_ids(), diagnostics);
         return None;
     }
     Some(SurfaceCollectionTarget::StoreRoot(store.id))
@@ -1415,10 +1479,10 @@ fn resolve_index_range_collection(
 ) -> Option<SurfaceCollectionTarget> {
     let index_id = resolve_collection_index_id(&mut context, root, index, span)?;
     let index_fact = context.program.facts.store_index(index_id);
+    let names = context.program.decl_ids();
     let range = range_collection_shape(context.store, index_fact).map_err(|problem| {
         push_invalid_range_collection_index_diagnostic(
-            context.file,
-            span,
+            DiagnosticAnchor::at(context.file, span),
             root,
             index,
             index_fact
@@ -1426,6 +1490,7 @@ fn resolve_index_range_collection(
                 .get(problem.key_index())
                 .map(|key| key.name.as_str()),
             problem,
+            &names,
             context.diagnostics,
         );
     });
@@ -1456,21 +1521,25 @@ fn resolve_collection_index_id(
     let index_id = match unique_store_index(context.program, context.store, index) {
         StoreIndexResolution::Unique(index_id) => index_id,
         StoreIndexResolution::Missing => {
+            let names = context.program.decl_ids();
             push_unknown_collection_index_diagnostic(
                 context.file,
                 span,
                 root,
                 index,
+                &names,
                 context.diagnostics,
             );
             return None;
         }
         StoreIndexResolution::Ambiguous => {
+            let names = context.program.decl_ids();
             push_ambiguous_collection_index_diagnostic(
                 context.file,
                 span,
                 root,
                 index,
+                &names,
                 context.diagnostics,
             );
             return None;
@@ -1490,11 +1559,13 @@ fn validate_collection_index_backing(
         .backing_validity
         .index_is_invalid(context.program, index_id)
     {
+        let names = context.program.decl_ids();
         push_invalid_collection_index_diagnostic(
             context.file,
             span,
             root,
             index,
+            &names,
             context.diagnostics,
         );
         return None;
@@ -1581,6 +1652,7 @@ fn push_unknown_collection_index_diagnostic(
     span: SourceSpan,
     root: &str,
     index: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1590,6 +1662,7 @@ fn push_unknown_collection_index_diagnostic(
             root: root.to_string(),
             index: index.to_string(),
         }),
+        names,
     ));
 }
 
@@ -1598,6 +1671,7 @@ fn push_ambiguous_collection_index_diagnostic(
     span: SourceSpan,
     root: &str,
     index: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1607,6 +1681,7 @@ fn push_ambiguous_collection_index_diagnostic(
             root: root.to_string(),
             index: index.to_string(),
         }),
+        names,
     ));
 }
 
@@ -1615,6 +1690,7 @@ fn push_invalid_collection_index_diagnostic(
     span: SourceSpan,
     root: &str,
     index: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1624,16 +1700,17 @@ fn push_invalid_collection_index_diagnostic(
             root: root.to_string(),
             index: index.to_string(),
         }),
+        names,
     ));
 }
 
 fn push_invalid_range_collection_index_diagnostic(
-    file: &Path,
-    span: SourceSpan,
+    anchor: DiagnosticAnchor,
     root: &str,
     index: &str,
     key: Option<&str>,
     problem: RangeCollectionIndexProblem,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let payload = match problem {
@@ -1665,8 +1742,9 @@ fn push_invalid_range_collection_index_diagnostic(
     };
     diagnostics.push(CheckDiagnostic::new(
         Code::CheckSurfaceTarget,
-        DiagnosticAnchor::at(file, span),
+        anchor,
         DiagnosticPayload::SurfaceTarget(payload),
+        names,
     ));
 }
 
@@ -1674,6 +1752,7 @@ fn push_keyless_collection_root_diagnostic(
     file: &Path,
     span: SourceSpan,
     root: &str,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1682,6 +1761,7 @@ fn push_keyless_collection_root_diagnostic(
         DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::KeylessCollectionRoot {
             root: root.to_string(),
         }),
+        names,
     ));
 }
 
@@ -1712,6 +1792,7 @@ fn push_foreign_unknown_or_ambiguous_root(
                 surface_root: surface_root.to_string(),
                 target_root: target_root.to_string(),
             }),
+            &program.decl_ids(),
         ));
     }
 }
@@ -1722,6 +1803,7 @@ fn push_field_diagnostic(
     list: SurfaceFieldList,
     name: &str,
     problem: SurfaceFieldProblem,
+    names: &DeclIds<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     diagnostics.push(CheckDiagnostic::new(
@@ -1732,6 +1814,7 @@ fn push_field_diagnostic(
             name: name.to_string(),
             problem,
         }),
+        names,
     ));
 }
 

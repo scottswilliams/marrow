@@ -21,6 +21,7 @@ use crate::checks::{
     FilePrelude, TransformBlockTypeCheck, check_transform_block_types, file_prelude,
 };
 use crate::infer::infer_type;
+use crate::model::decls::DeclIds;
 use crate::program::TypeNames;
 use crate::typerules::type_compatible;
 use crate::walk::for_each_child_expr;
@@ -101,6 +102,7 @@ pub(crate) struct EvolveIntents {
 pub(crate) fn collect_evolve_intents<'a, I>(
     parsed_files: I,
     diagnostics: &mut Vec<CheckDiagnostic>,
+    names: &DeclIds<'_>,
 ) -> EvolveIntents
 where
     I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
@@ -125,7 +127,7 @@ where
                                     to_span: target_span(to, *span),
                                 });
                             }
-                            _ => report_target(file, target_span(from, *span), diagnostics),
+                            _ => report_target(file, target_span(from, *span), diagnostics, names),
                         }
                     }
                     EvolveStep::Retire { target, span } => match target_path(module, target) {
@@ -134,7 +136,7 @@ where
                             file: file.to_path_buf(),
                             span: target_span(target, *span),
                         }),
-                        None => report_target(file, target_span(target, *span), diagnostics),
+                        None => report_target(file, target_span(target, *span), diagnostics, names),
                     },
                     EvolveStep::Default { target, value, .. } => {
                         if let Some(path) = target_path(module, target) {
@@ -236,10 +238,12 @@ pub(crate) fn check_transform_effects(
             continue;
         };
         if let Some(reason) = impurity_reason(program, body) {
+            let names = program.decl_ids();
             diagnostics.push(CheckDiagnostic::new(
                 Code::CheckEvolveTransform,
                 DiagnosticAnchor::at(&transform.file, transform.body_span),
                 DiagnosticPayload::EvolveTransform(EvolveTransformFault::Impure { reason }),
+                &names,
             ));
         }
     }
@@ -321,7 +325,8 @@ impl TypeContext<'_> {
         diagnostics: &mut Vec<CheckDiagnostic>,
     ) {
         if !self.resolves_in_source(target) {
-            report_target(self.file, target_span(target, span), diagnostics);
+            let names = self.program.decl_ids();
+            report_target(self.file, target_span(target, span), diagnostics, &names);
             return;
         }
         // Only a populated member target has a leaf type to check the value
@@ -339,6 +344,7 @@ impl TypeContext<'_> {
             diagnostics,
         );
         if type_compatible(&member_type, &actual) == Some(false) {
+            let names = self.program.decl_ids();
             diagnostics.push(CheckDiagnostic::new(
                 Code::CheckEvolveType,
                 DiagnosticAnchor::at(self.file, value.span()),
@@ -347,6 +353,7 @@ impl TypeContext<'_> {
                     target: marrow_syntax::format_expression(target),
                     member: member_type,
                 },
+                &names,
             ));
         }
     }
@@ -359,7 +366,8 @@ impl TypeContext<'_> {
         diagnostics: &mut Vec<CheckDiagnostic>,
     ) {
         if !self.resolves_in_source(target) {
-            report_target(self.file, target_span(target, span), diagnostics);
+            let names = self.program.decl_ids();
+            report_target(self.file, target_span(target, span), diagnostics, &names);
             return;
         }
         // A transform must target a top-level saved resource member: only a member has a
@@ -448,10 +456,12 @@ impl TypeContext<'_> {
     }
 
     fn transform_error(&self, span: SourceSpan, fault: EvolveTransformFault) -> CheckDiagnostic {
+        let names = self.program.decl_ids();
         CheckDiagnostic::new(
             Code::CheckEvolveTransform,
             DiagnosticAnchor::at(self.file, span),
             DiagnosticPayload::EvolveTransform(fault),
+            &names,
         )
     }
 
@@ -781,11 +791,17 @@ fn target_span(target: &Expression, step: SourceSpan) -> SourceSpan {
     }
 }
 
-fn report_target(file: &Path, span: SourceSpan, diagnostics: &mut Vec<CheckDiagnostic>) {
+fn report_target(
+    file: &Path,
+    span: SourceSpan,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    names: &DeclIds<'_>,
+) {
     diagnostics.push(CheckDiagnostic::new(
         Code::CheckEvolveTarget,
         DiagnosticAnchor::at(file, span),
         DiagnosticPayload::EvolveTarget(EvolveTargetFault::Unaddressable),
+        names,
     ));
 }
 

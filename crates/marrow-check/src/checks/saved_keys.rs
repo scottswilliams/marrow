@@ -13,6 +13,7 @@ use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
     SavedKeyParamTarget, SavedPlaceResolver, is_single_int_sequence, lower_expr_for_file,
 };
+use crate::model::decls::DeclIds;
 use crate::typerules::{
     is_optional_value, is_ordered, marrow_type_name, type_compatible,
     unresolved_optional_diagnostic,
@@ -224,10 +225,12 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
     let Some(target) = SavedPlaceResolver::new(check.program).saved_key_params(&callee) else {
         return;
     };
-    check_saved_key_argument_names(check.args, check.file, check.diagnostics);
+    let names = check.program.decl_ids();
+    check_saved_key_argument_names(&names, check.args, check.file, check.diagnostics);
     match target {
         SavedKeyParamTarget::Root(place) => {
             check_root_args_against(
+                &names,
                 place,
                 check.args,
                 check.arg_types,
@@ -249,6 +252,7 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
         }
         SavedKeyParamTarget::Layer(layer) => {
             check_layer_key_args(
+                &names,
                 &layer.key_params,
                 check.args,
                 check.arg_types,
@@ -267,6 +271,7 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
 /// matching is shared with [`check_checked_key_args`]; only the arity policy and
 /// this no-trailing-column range guard differ.
 fn check_layer_key_args(
+    names: &DeclIds<'_>,
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
@@ -294,7 +299,7 @@ fn check_layer_key_args(
         ));
         return;
     }
-    check_supplied_layer_keys(keys, args, arg_types, span, file, diagnostics);
+    check_supplied_layer_keys(names, keys, args, arg_types, span, file, diagnostics);
 }
 
 /// Match each supplied key argument against the column it fills. A range argument,
@@ -302,6 +307,7 @@ fn check_layer_key_args(
 /// other argument is checked nominally. Shared by the exact-arity full-address
 /// caller and the partial-prefix layer caller, which screen arity beforehand.
 fn check_supplied_layer_keys(
+    names: &DeclIds<'_>,
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
@@ -324,6 +330,7 @@ fn check_supplied_layer_keys(
         let expected = SavedPlaceResolver::saved_key_param_type(key);
         if range_arg == Some(position) {
             check_range_key_arg(
+                names,
                 RangeKeyArg {
                     expected: &expected,
                     actual: arg_type,
@@ -347,8 +354,8 @@ fn check_supplied_layer_keys(
                 format!(
                     "key `{}` expects `{}`, but this value is `{}`",
                     key.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
+                    marrow_type_name(names, &expected),
+                    marrow_type_name(names, arg_type),
                 ),
             ));
         }
@@ -356,6 +363,7 @@ fn check_supplied_layer_keys(
 }
 
 fn check_root_args_against(
+    names: &DeclIds<'_>,
     place: &CheckedSavedPlace,
     args: &[Argument],
     arg_types: &[MarrowType],
@@ -365,6 +373,7 @@ fn check_root_args_against(
 ) {
     if range_arg_position(args).is_some() {
         check_checked_key_args(
+            names,
             &place.identity_keys,
             args,
             arg_types,
@@ -383,14 +392,15 @@ fn check_root_args_against(
                 format!(
                     "`^{}` is addressed by `{}`, but this value is `{}`",
                     place.root,
-                    marrow_type_name(&expected),
-                    marrow_type_name(&arg_types[0]),
+                    marrow_type_name(names, &expected),
+                    marrow_type_name(names, &arg_types[0]),
                 ),
             ));
         }
         return;
     }
     check_checked_key_args(
+        names,
         &place.identity_keys,
         args,
         arg_types,
@@ -428,6 +438,7 @@ pub(crate) fn saved_root_args_address_record(
 }
 
 fn check_saved_key_argument_names(
+    names: &DeclIds<'_>,
     args: &[Argument],
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -435,6 +446,7 @@ fn check_saved_key_argument_names(
     for arg in args {
         if arg.name.is_some() {
             diagnostics.push(call_argument(
+                names,
                 file,
                 arg.value.span(),
                 CallArgumentFault::SavedKeyArgumentsPositional,
@@ -514,15 +526,20 @@ fn check_index_args_against(
         }
     }
 
+    let names = program.decl_ids();
     let resolver = SavedPlaceResolver::new(program);
     for (position, (component, arg_type)) in keys.iter().zip(arg_types).enumerate() {
         let expected = resolver.saved_index_key_type(component);
         if range_arg == Some(position) {
-            check_index_range_arg(
-                &expected,
-                arg_type,
-                &component.name,
-                &args[position].value,
+            check_range_key_arg(
+                &names,
+                RangeKeyArg {
+                    expected: &expected,
+                    actual: arg_type,
+                    component: format!("index component `{}`", component.name),
+                    arg: &args[position].value,
+                    allow_enum: true,
+                },
                 span,
                 file,
                 diagnostics,
@@ -539,8 +556,8 @@ fn check_index_args_against(
                 format!(
                     "index component `{}` expects `{}`, but this value is `{}`",
                     component.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
+                    marrow_type_name(&names, &expected),
+                    marrow_type_name(&names, arg_type),
                 ),
             ));
         }
@@ -567,6 +584,7 @@ fn checked_index_target(
 /// a full address fills every key column. The per-key matching is shared with
 /// [`check_layer_key_args`] through [`check_supplied_layer_keys`].
 fn check_checked_key_args(
+    names: &DeclIds<'_>,
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
@@ -586,30 +604,7 @@ fn check_checked_key_args(
         ));
         return;
     }
-    check_supplied_layer_keys(keys, args, arg_types, span, file, diagnostics);
-}
-
-fn check_index_range_arg(
-    expected: &MarrowType,
-    actual: &MarrowType,
-    component: &str,
-    arg: &marrow_syntax::Expression,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    check_range_key_arg(
-        RangeKeyArg {
-            expected,
-            actual,
-            component: format!("index component `{component}`"),
-            arg,
-            allow_enum: true,
-        },
-        span,
-        file,
-        diagnostics,
-    );
+    check_supplied_layer_keys(names, keys, args, arg_types, span, file, diagnostics);
 }
 
 struct RangeKeyArg<'a> {
@@ -621,6 +616,7 @@ struct RangeKeyArg<'a> {
 }
 
 fn check_range_key_arg(
+    names: &DeclIds<'_>,
     check: RangeKeyArg<'_>,
     span: SourceSpan,
     file: &Path,
@@ -660,7 +656,7 @@ fn check_range_key_arg(
             format!(
                 "{} expects `{}`, which cannot be ranged",
                 check.component,
-                marrow_type_name(check.expected),
+                marrow_type_name(names, check.expected),
             ),
         ));
         return;
@@ -672,8 +668,8 @@ fn check_range_key_arg(
             format!(
                 "{} expects `{}`, but this range bound is `{}`",
                 check.component,
-                marrow_type_name(check.expected),
-                marrow_type_name(check.actual),
+                marrow_type_name(names, check.expected),
+                marrow_type_name(names, check.actual),
             ),
         ));
     }
@@ -704,6 +700,7 @@ fn range_arg_position(args: &[Argument]) -> Option<usize> {
 /// keyspaces are nominal identity boundaries, so dynamic reentry must convert to
 /// the declared key type instead of acting as `any`.
 pub(crate) fn check_keys_against(
+    names: &DeclIds<'_>,
     keys: &[marrow_schema::KeyDef],
     arg_types: &[MarrowType],
     span: SourceSpan,
@@ -734,8 +731,8 @@ pub(crate) fn check_keys_against(
                 format!(
                     "key `{}` expects `{}`, but this value is `{}`",
                     key.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
+                    marrow_type_name(names, &expected),
+                    marrow_type_name(names, arg_type),
                 ),
             ));
         }

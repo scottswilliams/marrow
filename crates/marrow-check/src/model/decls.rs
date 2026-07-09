@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use marrow_syntax::{IdentityTypeExpr, ParsedSource, TypeExpr};
 
 use crate::annotation_refs::{TypeAnnotationBodies, walk_declaration_type_refs};
-use crate::facts::{CheckedFacts, StoreId};
+use crate::driver::resource_type_name;
+use crate::facts::{CheckedFacts, EnumId, ResourceId, StoreId};
 
 /// A saved-store root as it appears in an identity type, interned first-wins. A
 /// root that names a declared store also has a [`StoreId`]; an undeclared root has
@@ -87,6 +88,59 @@ impl StoreRootArena {
     /// store. Declared-ness is this lookup off the id, not a second leaf shape.
     pub fn declared_store(&self, id: StoreRootId) -> Option<StoreId> {
         self.declared.get(id.0 as usize).copied().flatten()
+    }
+}
+
+/// The id-to-spelling recovery a diagnostic renders type-leaf identities through:
+/// the interned facts for every declaration, plus the identity-root arena. It
+/// borrows both, holding no spelling of its own beyond the arena, so the facts stay
+/// the one owner of a resource's or enum's name. Constructed at each emit site from
+/// the program's current facts, so it always reflects the latest rebuild.
+#[derive(Debug, Clone, Copy)]
+pub struct DeclIds<'a> {
+    facts: &'a CheckedFacts,
+    roots: &'a StoreRootArena,
+}
+
+impl<'a> DeclIds<'a> {
+    pub(crate) fn new(facts: &'a CheckedFacts, roots: &'a StoreRootArena) -> Self {
+        Self { facts, roots }
+    }
+
+    /// A resource's module-qualified spelling, or its bare name in a module-less
+    /// script, reusing the one owner of that format so the rendered bytes cannot
+    /// fork from the name a resource type stored before interning.
+    pub fn resource_display(&self, id: ResourceId) -> String {
+        let resource = self.facts.resource(id);
+        let module = &self.facts.modules()[resource.module.0 as usize];
+        resource_type_name(&module.name, &resource.name)
+    }
+
+    /// An enum's owning-module name and bare name. A mismatch qualifies the two
+    /// sides by comparing these, so the pair is returned rather than a formatted
+    /// string.
+    pub fn enum_owner_and_name(&self, id: EnumId) -> Option<(&'a str, &'a str)> {
+        let enum_fact = self.facts.enum_(id)?;
+        let module = self.facts.modules().get(enum_fact.module.0 as usize)?;
+        Some((module.name.as_str(), enum_fact.name.as_str()))
+    }
+
+    /// The bare `^root` spelling of an identity root, declared or not, for the
+    /// `Id(^root)` mismatch form.
+    pub fn root_spelling(&self, id: StoreRootId) -> Option<&'a str> {
+        self.roots.spelling(id)
+    }
+
+    /// The store a declared identity root names, or `None` when the root names no
+    /// declared store.
+    pub fn declared_store(&self, id: StoreRootId) -> Option<StoreId> {
+        self.roots.declared_store(id)
+    }
+
+    /// The arena id a root spelling interns to. Every identity leaf's root is
+    /// interned at facts-rebuild time, so a live leaf always resolves.
+    pub fn root_id(&self, spelling: &str) -> Option<StoreRootId> {
+        self.roots.id(spelling)
     }
 }
 

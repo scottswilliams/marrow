@@ -12,6 +12,7 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
+use crate::model::decls::DeclIds;
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
     as_primitive, expects_conversion, is_optional_value, marrow_type_name, type_compatible,
@@ -40,6 +41,7 @@ use super::saved_paths::{
 /// or argument span. The one construction path for the code's many argument-fault
 /// shapes; its prose lives in the diagnostic renderer.
 pub(super) fn call_argument(
+    names: &DeclIds<'_>,
     file: &Path,
     span: SourceSpan,
     fault: CallArgumentFault,
@@ -48,6 +50,7 @@ pub(super) fn call_argument(
         Code::CheckCallArgument,
         DiagnosticAnchor::at(file, span),
         DiagnosticPayload::CallArgument(fault),
+        names,
     )
 }
 
@@ -74,6 +77,16 @@ struct CallEnv<'a> {
     file: &'a Path,
     read_scope: crate::presence::ReadScope<'a>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
+}
+
+/// The recovery view and owning file an argument-check diagnostic renders through.
+/// They travel together to every emitter in the argument loops while each argument's
+/// span varies, so bundling them keeps the per-argument helpers to a single context
+/// rather than a pair of parallel parameters.
+#[derive(Clone, Copy)]
+pub(crate) struct ArgEmit<'a> {
+    names: &'a DeclIds<'a>,
+    file: &'a Path,
 }
 
 /// Validate a call and return its declared return type when known. Dispatch is
@@ -116,6 +129,7 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         && let Some(builtin) = crate::executable::CheckedBuiltinCall::from_name(name)
     {
         check_arity(
+            &env.program.decl_ids(),
             name,
             builtin.arity(),
             args,
@@ -222,7 +236,14 @@ fn check_builtin_call(
 ) -> MarrowType {
     let label = segments.join("::");
     if segments == ["Error"] {
-        check_error_constructor_args(args, arg_types, env.span, env.file, env.diagnostics);
+        check_error_constructor_args(
+            &env.program.decl_ids(),
+            args,
+            arg_types,
+            env.span,
+            env.file,
+            env.diagnostics,
+        );
         return MarrowType::Error;
     }
     if check_builtin_call_args(env, segments, args, arg_types) {
@@ -232,19 +253,30 @@ fn check_builtin_call(
         return MarrowType::Invalid;
     }
     if segments == ["std", "assert", "equal"] {
-        check_assert_equal_args(&label, arg_types, env.span, env.file, env.diagnostics);
+        check_assert_equal_args(
+            &env.program.decl_ids(),
+            &label,
+            arg_types,
+            env.span,
+            env.file,
+            env.diagnostics,
+        );
         return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
     }
     if let Some(params) = std_call_params(segments) {
         check_std_call_args(env, segments, args, arg_types);
         check_std_collection_args(env, &label, args, &params);
+        let names = env.program.decl_ids();
         check_args_against(
+            ArgEmit {
+                names: &names,
+                file: env.file,
+            },
             &label,
             &params,
             args,
             arg_types,
             env.span,
-            env.file,
             env.diagnostics,
         );
     }
@@ -255,6 +287,7 @@ fn check_builtin_call(
 }
 
 fn check_assert_equal_args(
+    names: &DeclIds<'_>,
     label: &str,
     arg_types: &[MarrowType],
     span: SourceSpan,
@@ -263,6 +296,7 @@ fn check_assert_equal_args(
 ) {
     if arg_types.len() != 2 {
         diagnostics.push(call_argument(
+            names,
             file,
             span,
             CallArgumentFault::Arity {
@@ -277,6 +311,7 @@ fn check_assert_equal_args(
         (MarrowType::Primitive(actual), MarrowType::Primitive(expected)) if actual == expected => {}
         (MarrowType::Primitive(_), MarrowType::Primitive(_)) => {
             diagnostics.push(call_argument(
+                names,
                 file,
                 span,
                 CallArgumentFault::AssertEqualMismatch {
@@ -294,6 +329,7 @@ fn check_assert_equal_args(
                 actual
             };
             diagnostics.push(call_argument(
+                names,
                 file,
                 span,
                 CallArgumentFault::AssertEqualNonScalar {
@@ -314,6 +350,7 @@ fn check_unknown_std_operation(env: &mut CallEnv<'_>, segments: &[String]) {
             name: label,
             kind: UnresolvedCallKind::StdOperation,
         },
+        &env.program.decl_ids(),
     ));
 }
 
@@ -367,6 +404,7 @@ fn check_user_function_call(
                     Code::CheckPrivateFunction,
                     DiagnosticAnchor::at(env.file, env.span),
                     DiagnosticPayload::PrivateFunction(name),
+                    &env.program.decl_ids(),
                 ));
             }
             return MarrowType::Unknown;
@@ -380,6 +418,7 @@ fn check_user_function_call(
                         leaf: segments.join("::"),
                         candidates,
                     },
+                    &env.program.decl_ids(),
                 ));
             }
             return MarrowType::Unknown;
@@ -393,6 +432,7 @@ fn check_user_function_call(
                         name: segments.join("::"),
                         kind: UnresolvedCallKind::Function,
                     },
+                    &env.program.decl_ids(),
                 ));
             }
             return MarrowType::Unknown;
@@ -412,6 +452,7 @@ fn check_user_function_call(
                 if param_index.is_none() {
                     named_argument_fault = true;
                     env.diagnostics.push(call_argument(
+                        &env.program.decl_ids(),
                         env.file,
                         env.span,
                         CallArgumentFault::UnknownParameter {
@@ -429,6 +470,7 @@ fn check_user_function_call(
             if supplied[param_index] {
                 named_argument_fault = true;
                 env.diagnostics.push(call_argument(
+                    &env.program.decl_ids(),
                     env.file,
                     env.span,
                     CallArgumentFault::DuplicateParameter {
@@ -450,19 +492,24 @@ fn check_user_function_call(
             ) {
                 continue;
             }
+            let names = env.program.decl_ids();
             check_one_arg(
+                ArgEmit {
+                    names: &names,
+                    file: env.file,
+                },
                 &callee,
                 &ArgParam::Named(&param.name),
                 &param.ty,
                 arg_type,
                 arg.value.span(),
-                env.file,
                 env.diagnostics,
             );
         }
     }
     if args.len() != function.params.len() && !named_argument_fault {
         env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
             env.file,
             env.span,
             CallArgumentFault::FunctionArity {
@@ -499,10 +546,18 @@ fn check_builtin_call_args(
         return check_collection_combinator_args(env, "count", args, arg_types);
     }
     if let Some(target) = ConversionTarget::from_name(name) {
-        check_conversion_call_shape(target, args, env.span, env.file, env.diagnostics);
-        check_conversion_arg(target, arg_types, env.span, env.file, env.diagnostics);
+        let names = env.program.decl_ids();
+        check_conversion_call_shape(&names, target, args, env.span, env.file, env.diagnostics);
+        check_conversion_arg(
+            &names,
+            target,
+            arg_types,
+            env.span,
+            env.file,
+            env.diagnostics,
+        );
         if target == ConversionTarget::ErrorCode {
-            check_error_code_conversion_literal(args, env.file, env.diagnostics);
+            check_error_code_conversion_literal(&names, args, env.file, env.diagnostics);
         }
     }
     false
@@ -560,6 +615,7 @@ fn check_assert_absent_args(
         return;
     }
     env.diagnostics.push(call_argument(
+        &env.program.decl_ids(),
         env.file,
         env.span,
         CallArgumentFault::AssertAbsentRequiresOptional,
@@ -597,6 +653,7 @@ fn check_exists_args(
     let [arg] = args else { return };
     if crate::presence::guard_subject_key_effect(env.program, &arg.value, env.scope, env.file) {
         env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
             env.file,
             env.span,
             CallArgumentFault::ExistsEffectInKey,
@@ -611,6 +668,7 @@ fn check_exists_args(
     // now accepts local optionals too. A non-value argument is not a testable place.
     if arg_types.first().is_some_and(is_always_present_value) {
         env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
             env.file,
             env.span,
             CallArgumentFault::ExistsAlwaysPresent,
@@ -618,6 +676,7 @@ fn check_exists_args(
         return;
     }
     env.diagnostics.push(call_argument(
+        &env.program.decl_ids(),
         env.file,
         env.span,
         CallArgumentFault::ExistsRequiresSavedPath,
@@ -656,6 +715,7 @@ fn exists_target_arg_resolves(env: &CallEnv<'_>, expr: &marrow_syntax::Expressio
 /// `label` used in diagnostics, the supplied `args` and their `arg_types`, the
 /// call `span`, the source `file`, and the diagnostic sink.
 struct NamedFieldArgs<'a> {
+    names: &'a DeclIds<'a>,
     label: &'a str,
     args: &'a [marrow_syntax::Argument],
     arg_types: &'a [MarrowType],
@@ -678,6 +738,7 @@ fn check_named_field_args<F>(
     is_required: impl Fn(&F) -> bool,
 ) {
     let NamedFieldArgs {
+        names,
         label,
         args,
         arg_types,
@@ -694,6 +755,7 @@ fn check_named_field_args<F>(
             if !reported_positional {
                 reported_positional = true;
                 diagnostics.push(call_argument(
+                    names,
                     file,
                     arg.value.span(),
                     CallArgumentFault::ConstructorNeedsNamedFields {
@@ -705,6 +767,7 @@ fn check_named_field_args<F>(
         };
         let Some(index) = fields.iter().position(|field| field_name(field) == name) else {
             diagnostics.push(call_argument(
+                names,
                 file,
                 span,
                 CallArgumentFault::UnknownField {
@@ -716,6 +779,7 @@ fn check_named_field_args<F>(
         };
         if supplied[index] {
             diagnostics.push(call_argument(
+                names,
                 file,
                 span,
                 CallArgumentFault::DuplicateField { name: name.clone() },
@@ -725,12 +789,12 @@ fn check_named_field_args<F>(
         supplied[index] = true;
         if let Some(expected) = expected_type(index) {
             check_one_arg(
+                ArgEmit { names, file },
                 label,
                 &ArgParam::Named(name),
                 &expected,
                 arg_type,
                 arg.value.span(),
-                file,
                 diagnostics,
             );
         }
@@ -739,6 +803,7 @@ fn check_named_field_args<F>(
     for (field, supplied) in fields.iter().zip(supplied) {
         if is_required(field) && !supplied {
             diagnostics.push(call_argument(
+                names,
                 file,
                 span,
                 CallArgumentFault::RequiredField {
@@ -754,6 +819,7 @@ fn check_named_field_args<F>(
 /// `marrow_schema::error`; every required field must be supplied. The field set
 /// lives in the schema so the checker and runtime validate one definition.
 fn check_error_constructor_args(
+    names: &DeclIds<'_>,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
@@ -763,6 +829,7 @@ fn check_error_constructor_args(
     let fields = marrow_schema::error::fields();
     check_named_field_args(
         NamedFieldArgs {
+            names,
             label: "Error",
             args,
             arg_types,
@@ -780,28 +847,30 @@ fn check_error_constructor_args(
         },
         |field| field.required,
     );
-    check_error_constructor_code_literal(args, file, diagnostics);
+    check_error_constructor_code_literal(names, args, file, diagnostics);
 }
 
 fn check_error_constructor_code_literal(
+    names: &DeclIds<'_>,
     args: &[marrow_syntax::Argument],
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for arg in args {
         if arg.name.as_deref() == Some(marrow_schema::error::CODE) {
-            check_error_code_literal(&arg.value, "`Error.code`", file, diagnostics);
+            check_error_code_literal(names, &arg.value, "`Error.code`", file, diagnostics);
         }
     }
 }
 
 fn check_error_code_conversion_literal(
+    names: &DeclIds<'_>,
     args: &[marrow_syntax::Argument],
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [arg] = args else { return };
-    check_error_code_literal(&arg.value, "`ErrorCode(...)`", file, diagnostics);
+    check_error_code_literal(names, &arg.value, "`ErrorCode(...)`", file, diagnostics);
 }
 
 /// Reject a string literal that does not satisfy the dotted-lowercase error-code
@@ -810,6 +879,7 @@ fn check_error_code_conversion_literal(
 /// and a literal coerced into an `ErrorCode`-typed place. A non-literal value is
 /// left to its run-time coercion.
 pub(crate) fn check_error_code_literal(
+    names: &DeclIds<'_>,
     expr: &marrow_syntax::Expression,
     label: &str,
     file: &Path,
@@ -828,6 +898,7 @@ pub(crate) fn check_error_code_literal(
     };
     if !marrow_schema::error::is_error_code_text(&text) {
         diagnostics.push(call_argument(
+            names,
             file,
             *span,
             CallArgumentFault::ErrorCodeLiteral {
@@ -838,6 +909,7 @@ pub(crate) fn check_error_code_literal(
 }
 
 fn check_conversion_call_shape(
+    names: &DeclIds<'_>,
     target: ConversionTarget,
     args: &[marrow_syntax::Argument],
     span: SourceSpan,
@@ -849,6 +921,7 @@ fn check_conversion_call_shape(
         && let Some(name) = &arg.name
     {
         diagnostics.push(call_argument(
+            names,
             file,
             span,
             CallArgumentFault::ConversionArgumentNamed {
@@ -946,6 +1019,7 @@ fn check_append_args(
         return;
     }
     env.diagnostics.push(call_argument(
+        &env.program.decl_ids(),
         env.file,
         env.span,
         CallArgumentFault::AppendTarget(AppendTargetDiagnostic::GroupLayer),
@@ -976,6 +1050,7 @@ fn check_append_value(
     }
     if matches!(type_compatible(&element, value_type), Some(false)) {
         env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
             env.file,
             span,
             CallArgumentFault::AppendValue {
@@ -1051,6 +1126,7 @@ fn check_append_error_code_literal(env: &mut CallEnv<'_>, args: &[marrow_syntax:
         .is_some_and(|layer| layer.error_code);
     if appends_error_code {
         check_error_code_literal(
+            &env.program.decl_ids(),
             &value.value,
             "an `ErrorCode` sequence",
             env.file,
@@ -1060,6 +1136,7 @@ fn check_append_error_code_literal(env: &mut CallEnv<'_>, args: &[marrow_syntax:
 }
 
 fn check_conversion_arg(
+    names: &DeclIds<'_>,
     target: ConversionTarget,
     arg_types: &[MarrowType],
     span: SourceSpan,
@@ -1078,6 +1155,7 @@ fn check_conversion_arg(
         return;
     }
     diagnostics.push(call_argument(
+        names,
         file,
         span,
         CallArgumentFault::ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic {
@@ -1117,8 +1195,10 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
         .iter()
         .filter(|node| node.is_plain_field())
         .collect();
+    let names = program.decl_ids();
     check_named_field_args(
         NamedFieldArgs {
+            names: &names,
             label,
             args,
             arg_types,
@@ -1140,13 +1220,14 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
             )
         },
     );
-    check_constructor_error_code_literals(label, &fields, args, file, diagnostics);
+    check_constructor_error_code_literals(&names, label, &fields, args, file, diagnostics);
 }
 
 /// Reject a string literal supplied for an `ErrorCode` field of a resource
 /// constructor, the same gate the constructor's own `ErrorCode(...)` applies. A
 /// dynamic value is validated at the write boundary.
 fn check_constructor_error_code_literals(
+    names: &DeclIds<'_>,
     label: &str,
     fields: &[&marrow_schema::Node],
     args: &[marrow_syntax::Argument],
@@ -1159,7 +1240,13 @@ fn check_constructor_error_code_literals(
             .iter()
             .any(|field| field.name == *name && field.is_error_code())
         {
-            check_error_code_literal(&arg.value, &format!("`{label}.{name}`"), file, diagnostics);
+            check_error_code_literal(
+                names,
+                &arg.value,
+                &format!("`{label}.{name}`"),
+                file,
+                diagnostics,
+            );
         }
     }
 }
@@ -1204,18 +1291,18 @@ impl ArgParam<'_> {
 /// the failing parameter or position, and `span` locates the argument expression so
 /// the diagnostic points at the offending argument rather than the call token.
 pub(crate) fn check_one_arg(
+    emit: ArgEmit<'_>,
     label: &str,
     param: &ArgParam<'_>,
     parameter: &MarrowType,
     arg_type: &MarrowType,
     span: SourceSpan,
-    file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     // A maybe-present (`T?`) argument into a definite parameter is the one rule; route it
     // through the shared helper before the generic mismatch so the message names the four
     // resolution forms.
-    if let Some(diagnostic) = unresolved_optional(parameter, arg_type, span, file) {
+    if let Some(diagnostic) = unresolved_optional(parameter, arg_type, span, emit.file) {
         diagnostics.push(diagnostic);
         return;
     }
@@ -1223,7 +1310,8 @@ pub(crate) fn check_one_arg(
         Some(true) => {}
         Some(false) => {
             diagnostics.push(call_argument(
-                file,
+                emit.names,
+                emit.file,
                 span,
                 CallArgumentFault::ArgumentType {
                     label: label.to_string(),
@@ -1238,12 +1326,12 @@ pub(crate) fn check_one_arg(
         None if matches!(arg_type, MarrowType::Unknown) && expects_conversion(parameter) => {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
-                file,
+                emit.file,
                 span,
                 format!(
                     "{} to `{label}` has no known type, but `{}` is expected; convert it first",
                     param.describe(),
-                    marrow_type_name(parameter),
+                    marrow_type_name(emit.names, parameter),
                 ),
             ));
         }
@@ -1306,6 +1394,7 @@ fn reject_saved_collection_by_value(
         return false;
     }
     diagnostics.push(call_argument(
+        &program.decl_ids(),
         file,
         arg.span(),
         CallArgumentFault::SavedCollectionByValue {
@@ -1322,17 +1411,18 @@ fn reject_saved_collection_by_value(
 /// A `None` parameter slot (e.g. a path argument) is left alone. Std helpers are
 /// positional-only — named-argument matching stays user-function-only.
 pub(crate) fn check_args_against(
+    emit: ArgEmit<'_>,
     label: &str,
     params: &[Option<MarrowType>],
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
-    file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if arg_types.len() != params.len() {
         diagnostics.push(call_argument(
-            file,
+            emit.names,
+            emit.file,
             span,
             CallArgumentFault::Arity {
                 label: label.to_string(),
@@ -1347,12 +1437,12 @@ pub(crate) fn check_args_against(
             // falls back to the call token when this slot has no argument.
             let arg_span = args.get(index).map_or(span, |arg| arg.value.span());
             check_one_arg(
+                emit,
                 label,
                 &ArgParam::Position(index),
                 parameter,
                 arg_type,
                 arg_span,
-                file,
                 diagnostics,
             );
         }
@@ -1371,9 +1461,11 @@ fn check_identity_constructor(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
+    let names = program.decl_ids();
     for arg in args {
         if arg.name.is_some() {
             diagnostics.push(call_argument(
+                &names,
                 file,
                 arg.value.span(),
                 CallArgumentFault::IdArgumentsPositional,
@@ -1381,11 +1473,17 @@ fn check_identity_constructor(
         }
     }
     let Some(root_arg) = args.first() else {
-        diagnostics.push(call_argument(file, span, CallArgumentFault::IdExpectsRoot));
+        diagnostics.push(call_argument(
+            &names,
+            file,
+            span,
+            CallArgumentFault::IdExpectsRoot,
+        ));
         return MarrowType::Unknown;
     };
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &root_arg.value else {
         diagnostics.push(call_argument(
+            &names,
             file,
             root_arg.value.span(),
             CallArgumentFault::IdExpectsRootFirst,
@@ -1410,6 +1508,7 @@ fn check_identity_constructor(
     }
     let key_args = args.get(1..).unwrap_or(&[]);
     check_keys_against(
+        &names,
         &store.store.identity_keys,
         arg_types.get(1..).unwrap_or(&[]),
         span,
@@ -1448,6 +1547,7 @@ pub(crate) fn check_next_id(
         // an `unknown`-typed non-saved value defers to a cross-module result.
         if crate::rules::is_saved_path(&arg.value) {
             diagnostics.push(call_argument(
+                &program.decl_ids(),
                 file,
                 span,
                 CallArgumentFault::NextIdRequiresBareRoot,
@@ -1457,6 +1557,7 @@ pub(crate) fn check_next_id(
             .filter(|ty| !matches!(ty, MarrowType::Unknown))
         {
             diagnostics.push(call_argument(
+                &program.decl_ids(),
                 file,
                 span,
                 CallArgumentFault::NextIdRequiresRoot {
@@ -1575,6 +1676,7 @@ fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
             .filter(|ty| !matches!(ty, MarrowType::Unknown))
         {
             env.diagnostics.push(call_argument(
+                &env.program.decl_ids(),
                 env.file,
                 env.span,
                 CallArgumentFault::KeyRequiresIdentity {
@@ -1623,6 +1725,7 @@ fn check_append(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     // per-column int check, whose inner-column key type would otherwise admit it.
     if saved_append_target_is_composite(env.program, &target.value, env.scope, env.file) {
         env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
             env.file,
             env.span,
             CallArgumentFault::AppendTarget(AppendTargetDiagnostic::CompositeLayer),
@@ -1635,6 +1738,7 @@ fn check_append(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     };
     if !matches!(as_primitive(&key_type), Some(ScalarType::Int)) {
         env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
             env.file,
             env.span,
             CallArgumentFault::AppendTarget(AppendTargetDiagnostic::NonIntKeyedLayer { key_type }),
@@ -1693,6 +1797,7 @@ fn neighbor_unsupported_bare_identity(
 /// Report a `check.call_argument` arity diagnostic when a fixed-arity builtin is
 /// called with the wrong number of arguments.
 pub(crate) fn check_arity(
+    names: &DeclIds<'_>,
     name: &str,
     arity: usize,
     args: &[marrow_syntax::Argument],
@@ -1702,6 +1807,7 @@ pub(crate) fn check_arity(
 ) {
     if args.len() != arity {
         diagnostics.push(call_argument(
+            names,
             file,
             span,
             CallArgumentFault::Arity {

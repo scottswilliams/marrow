@@ -60,6 +60,7 @@ pub(crate) fn check_resolved_files(
                     Code::CheckUnresolvedImport,
                     DiagnosticAnchor::at(&file.path, use_decl.span),
                     DiagnosticPayload::UnresolvedImport(use_decl.name.clone()),
+                    &program.decl_ids(),
                 ));
             }
         }
@@ -290,7 +291,14 @@ fn build_file_prelude(
                 &value_type,
                 diagnostics.as_deref_mut(),
             ) {
-                check_assignment(file, value.span(), expected, found, diagnostics);
+                check_assignment(
+                    &program.decl_ids(),
+                    file,
+                    value.span(),
+                    expected,
+                    found,
+                    diagnostics,
+                );
             }
             let ty = match (annotation_type, value_type) {
                 (Some(ty), _) => ty,

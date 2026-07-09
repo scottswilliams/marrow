@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use marrow_syntax::{Severity, SourceSpan};
 
 use crate::ScalarType;
+use crate::model::decls::DeclIds;
 use crate::program::MarrowType;
 use crate::{CatalogEntryKind, CatalogLifecycle};
 
@@ -1272,13 +1273,18 @@ impl CheckDiagnostic {
     /// wire string and severity), a typed [`DiagnosticAnchor`], and a typed payload.
     /// The human message is derived from `(code, payload)` by the single renderer, so
     /// no prose is built at the construction site.
-    pub fn new(code: Code, anchor: DiagnosticAnchor, payload: DiagnosticPayload) -> Self {
+    pub fn new(
+        code: Code,
+        anchor: DiagnosticAnchor,
+        payload: DiagnosticPayload,
+        names: &DeclIds<'_>,
+    ) -> Self {
         let (file, span) = anchor.resolve();
         Self {
             code: code.as_str(),
             severity: severity_of(code),
             file,
-            message: crate::diagnostic_render::render_message(code, &payload),
+            message: crate::diagnostic_render::render_message(code, &payload, names),
             span,
             payload,
         }

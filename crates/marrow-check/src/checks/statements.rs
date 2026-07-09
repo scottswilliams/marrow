@@ -256,6 +256,7 @@ fn reject_undeclared_roots_in_expr(
                 DiagnosticPayload::UnknownRoot {
                     root: root.to_string(),
                 },
+                &program.decl_ids(),
             ));
         }
     });
@@ -718,6 +719,7 @@ impl StatementCheck<'_> {
         };
         if let (Some(annotation), Some(value)) = (annotation, value) {
             check_assignment(
+                &self.program.decl_ids(),
                 self.file,
                 value.span(),
                 &resolve_diagnosed_annotation_type(
@@ -731,6 +733,7 @@ impl StatementCheck<'_> {
             );
             if marrow_schema::is_error_code_annotation(annotation) {
                 super::calls::check_error_code_literal(
+                    &self.program.decl_ids(),
                     value,
                     "an `ErrorCode` binding",
                     self.file,
@@ -742,10 +745,12 @@ impl StatementCheck<'_> {
             && matches!(value_type, MarrowType::Absent)
             && let Some(value) = value
         {
+            let names = self.program.decl_ids();
             self.diagnostics.push(CheckDiagnostic::new(
                 Code::CheckUnannotatedAbsent,
                 DiagnosticAnchor::at(self.file, value.span()),
                 DiagnosticPayload::None,
+                &names,
             ));
         }
         if value.is_none() {
@@ -784,6 +789,7 @@ impl StatementCheck<'_> {
             MarrowType::Identity(_) => UninitializedVarKind::Identity,
             _ => return,
         };
+        let names = self.program.decl_ids();
         self.diagnostics.push(CheckDiagnostic::new(
             Code::CheckUninitializedVar,
             DiagnosticAnchor::at(self.file, *span),
@@ -791,6 +797,7 @@ impl StatementCheck<'_> {
                 kind,
                 annotation: annotation.to_string(),
             },
+            &names,
         ));
     }
 
@@ -1081,6 +1088,7 @@ impl StatementCheck<'_> {
         }
         self.check_lossy_round_trip_warning(target, value);
         check_assignment(
+            &self.program.decl_ids(),
             self.file,
             value.span(),
             &target_type,
@@ -1096,6 +1104,7 @@ impl StatementCheck<'_> {
             ReadScope::new(self.transform_old, self.narrowing.current()),
         ) {
             super::calls::check_error_code_literal(
+                &self.program.decl_ids(),
                 value,
                 "an `ErrorCode` field",
                 self.file,
@@ -1157,6 +1166,7 @@ impl StatementCheck<'_> {
             return;
         }
         let computed_type = check_binary(
+            &self.program.decl_ids(),
             op.binary(),
             &left_type,
             &right_type,
@@ -1165,6 +1175,7 @@ impl StatementCheck<'_> {
             self.diagnostics,
         );
         check_assignment(
+            &self.program.decl_ids(),
             self.file,
             op_span,
             &target_type,
@@ -1249,10 +1260,12 @@ impl StatementCheck<'_> {
         {
             return;
         }
+        let names = self.program.decl_ids();
         self.diagnostics.push(CheckDiagnostic::new(
             Code::CheckLossyRoundTrip,
             DiagnosticAnchor::at(self.file, target.span()),
             DiagnosticPayload::None,
+            &names,
         ));
     }
 
@@ -1383,6 +1396,7 @@ impl StatementCheck<'_> {
                 self.reject_saved_collection_materialization(value);
             }
             check_return_type(
+                &self.program.decl_ids(),
                 self.file,
                 value.span(),
                 self.return_type,
@@ -1396,7 +1410,13 @@ impl StatementCheck<'_> {
     fn check_throw(&mut self, value: &marrow_syntax::Expression) {
         let value_type = self.infer(value);
         self.check_range_value(value);
-        check_throw_type(self.file, value.span(), &value_type, self.diagnostics);
+        check_throw_type(
+            &self.program.decl_ids(),
+            self.file,
+            value.span(),
+            &value_type,
+            self.diagnostics,
+        );
         self.narrow_invalidate_if_writes_saved(value);
     }
 
@@ -1462,10 +1482,12 @@ impl StatementCheck<'_> {
         // The subject is maybe-present even when a key carries an effect, so `if const`
         // must refuse to run that effect rather than bind on it.
         if crate::presence::guard_subject_key_effect(self.program, value, self.scope, self.file) {
+            let names = self.program.decl_ids();
             self.diagnostics.push(CheckDiagnostic::new(
                 Code::CheckConditionType,
                 DiagnosticAnchor::at(self.file, value.span()),
                 DiagnosticPayload::ConditionType(ConditionTypeFault::IfConstEffectInKey),
+                &names,
             ));
         }
         // `if const` binds the present arm of the maybe-present subject: one optional
@@ -1483,6 +1505,7 @@ impl StatementCheck<'_> {
                     self.file,
                 );
                 check_assignment(
+                    &self.program.decl_ids(),
                     self.file,
                     value.span(),
                     &annotated_type,
@@ -1526,10 +1549,12 @@ impl StatementCheck<'_> {
         if is_optional_value(value_type) || matches!(value_type, MarrowType::Invalid) {
             return;
         }
+        let names = self.program.decl_ids();
         self.diagnostics.push(CheckDiagnostic::new(
             Code::CheckConditionType,
             DiagnosticAnchor::at(self.file, value.span()),
             DiagnosticPayload::ConditionType(ConditionTypeFault::IfConstRequiresBindable),
+            &names,
         ));
     }
 

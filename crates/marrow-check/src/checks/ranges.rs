@@ -153,8 +153,8 @@ pub(crate) fn check_range_header(
                 iterable.span(),
                 format!(
                     "a range needs endpoints of one steppable type (`int`, `date`, or `instant`), not `{}` and `{}`",
-                    marrow_type_name(&left_type),
-                    marrow_type_name(&right_type),
+                    marrow_type_name(&program.decl_ids(), &left_type),
+                    marrow_type_name(&program.decl_ids(), &right_type),
                 ),
             ));
             return;

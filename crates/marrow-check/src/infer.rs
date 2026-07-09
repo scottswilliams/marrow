@@ -20,6 +20,7 @@ use crate::executable::{
     CheckedBuiltinCall, CheckedBuiltinValueShape, CheckedLiteralKind, SavedAccessRejection,
     SavedPlaceResolver, lower_expr_for_file,
 };
+use crate::model::decls::DeclIds;
 use crate::program::TypeNames;
 use crate::typerules::{
     LiteralSign, check_literal_range, is_optional_value, marrow_type_name, negated_integer_literal,
@@ -387,6 +388,7 @@ fn infer_value(
                             diagnostics.push(saved_collection_render_diagnostic(file, expr.span()));
                         } else if type_renderable_at_runtime(&ty) == Some(false) {
                             diagnostics.push(render_unsupported_source_diagnostic(
+                                &program.decl_ids(),
                                 file,
                                 expr.span(),
                                 ty,
@@ -404,6 +406,7 @@ fn infer_value(
                     Code::CheckUnresolvedName,
                     DiagnosticAnchor::at(file, *span),
                     DiagnosticPayload::UnresolvedName { name: name.clone() },
+                    &program.decl_ids(),
                 ));
                 MarrowType::Unknown
             })
@@ -435,7 +438,7 @@ fn infer_value(
                     read_scope,
                 )
             };
-            check_unary(*op, &operand, *span, file, diagnostics)
+            check_unary(&program.decl_ids(), *op, &operand, *span, file, diagnostics)
         }
         Expression::Binary {
             op,
@@ -510,7 +513,9 @@ fn infer_value(
                     ));
                     return left_type.without_optional();
                 }
+                let names = program.decl_ids();
                 return check_coalesce(CoalesceCheck {
+                    names: &names,
                     left_type: &left_type,
                     right_type: &right_type,
                     span: *span,
@@ -518,7 +523,15 @@ fn infer_value(
                     diagnostics,
                 });
             }
-            check_binary(*op, &left_type, &right_type, *span, file, diagnostics)
+            check_binary(
+                &program.decl_ids(),
+                *op,
+                &left_type,
+                &right_type,
+                *span,
+                file,
+                diagnostics,
+            )
         }
         Expression::Range {
             start,
@@ -565,6 +578,7 @@ fn infer_value(
             }
             match (start_type, end_type) {
                 (Some(start), Some(end)) => check_binary(
+                    &program.decl_ids(),
                     marrow_syntax::BinaryOp::RangeExclusive,
                     &start,
                     &end,
@@ -628,13 +642,17 @@ fn infer_value(
                 file,
                 diagnostics,
             );
+            let names = program.decl_ids();
             if let Some(ty) = local_collection_access_type(
+                KeyAccessEmit {
+                    names: &names,
+                    file,
+                },
                 callee,
                 args,
                 &arg_types,
                 scope,
                 *span,
-                file,
                 diagnostics,
             ) {
                 // A positional or keyed local-collection read is maybe-present (the
@@ -837,6 +855,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     // the descent on the field span before resolving its type.
     if descends_off_partial_key_layer(input.program, input.base, input.scope, input.file) {
         input.diagnostics.push(layer_not_value_diagnostic(
+            &input.program.decl_ids(),
             input.file,
             input.span,
             input.name,
@@ -935,6 +954,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         // is. An intermediate navigated base stays silent for the dedicated rules to own.
         FieldResolution::UnknownField if input.context != FieldAccessContext::AssignmentBase => {
             input.diagnostics.push(unknown_field_diagnostic(
+                &input.program.decl_ids(),
                 input.file,
                 input.name_span,
                 input.name,
@@ -943,6 +963,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         }
         FieldResolution::NoFields if input.context == FieldAccessContext::Read => {
             input.diagnostics.push(unknown_field_diagnostic(
+                &input.program.decl_ids(),
                 input.file,
                 input.name_span,
                 input.name,
@@ -964,6 +985,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
                 ) =>
         {
             input.diagnostics.push(layer_not_value_diagnostic(
+                &input.program.decl_ids(),
                 input.file,
                 input.span,
                 input.name,
@@ -1238,6 +1260,7 @@ fn check_print_argument_renderable(
     }
     if type_renderable_at_runtime(ty) == Some(false) {
         diagnostics.push(render_unsupported_source_diagnostic(
+            &program.decl_ids(),
             file,
             arg.value.span(),
             ty.clone(),
@@ -1282,13 +1305,14 @@ fn saved_collection_render_diagnostic(file: &Path, span: SourceSpan) -> CheckDia
 /// for a value type that has no direct text form. The two surfaces accept and
 /// reject the same set, so they share one diagnostic.
 fn render_unsupported_source_diagnostic(
+    names: &DeclIds<'_>,
     file: &Path,
     span: SourceSpan,
     source: MarrowType,
 ) -> CheckDiagnostic {
     let message = format!(
         "cannot render `{}`; convert it explicitly",
-        marrow_type_name(&source)
+        marrow_type_name(names, &source)
     );
     CheckDiagnostic::error(CHECK_OPERATOR_TYPE, file, span, message)
         .with_payload(DiagnosticPayload::RenderUnsupportedSource { source })
@@ -1455,6 +1479,7 @@ fn bare_saved_value_type(
         && let Some(layer) = SavedPlaceResolver::new(program).partial_key_layer_name(&checked)
     {
         diagnostics.push(layer_not_value_diagnostic(
+            &program.decl_ids(),
             file,
             span,
             layer,
@@ -1483,7 +1508,7 @@ fn enum_member_value_type(
     let resolved = match resolve_enum_member_path(program, expr, aliases, file) {
         EnumMemberPathResolution::Resolved(resolved) => resolved,
         EnumMemberPathResolution::AmbiguousBareForeignOwner(ambiguous) => {
-            diagnostics.push(ambiguous.diagnostic(file, span));
+            diagnostics.push(ambiguous.diagnostic(file, span, &program.decl_ids()));
             return MarrowType::Invalid;
         }
         EnumMemberPathResolution::MissingOrNonEnum => return MarrowType::Unknown,
@@ -1511,6 +1536,7 @@ fn enum_member_value_type(
                 DiagnosticPayload::Enum(EnumDiagnostic::CategoryNotSelectable {
                     path: segments.join("::"),
                 }),
+                &program.decl_ids(),
             ));
             MarrowType::Invalid
         }
@@ -1520,13 +1546,13 @@ fn enum_member_value_type(
         },
         MemberPathResolution::Ambiguous(matches) => {
             diagnostics.push(ambiguous_member_value_diagnostic(
-                file,
-                span,
+                DiagnosticAnchor::at(file, span),
                 enum_name,
                 resolved.member_label,
                 resolved.schema,
                 &matches,
                 true,
+                &program.decl_ids(),
             ));
             MarrowType::Invalid
         }
@@ -1538,6 +1564,7 @@ fn enum_member_value_type(
                 segment_span,
                 segments,
                 index,
+                &program.decl_ids(),
             ));
             MarrowType::Invalid
         }
@@ -1553,15 +1580,26 @@ fn name_segment_span(expr: &marrow_syntax::Expression, index: usize) -> Option<S
     segment_spans.get(index).copied()
 }
 
+/// The recovery view and owning file a local-collection key diagnostic renders
+/// through. Both flow to every emitter in this check while the key span varies, so
+/// they travel as one context rather than a pair of parallel parameters.
+#[derive(Clone, Copy)]
+struct KeyAccessEmit<'a> {
+    names: &'a DeclIds<'a>,
+    file: &'a Path,
+}
+
 fn local_collection_access_type(
+    emit: KeyAccessEmit<'_>,
     callee: &marrow_syntax::Expression,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
     scope: &[HashMap<String, MarrowType>],
     span: SourceSpan,
-    file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<MarrowType> {
+    let names = emit.names;
+    let file = emit.file;
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
         return None;
     };
@@ -1588,7 +1626,7 @@ fn local_collection_access_type(
                         span,
                         format!(
                             "key `pos` expects `int`, but this value is `{}`",
-                            marrow_type_name(arg_type)
+                            marrow_type_name(names, arg_type)
                         ),
                     ));
                 }
@@ -1622,8 +1660,8 @@ fn local_collection_access_type(
                         format!(
                             "key {} expects `{}`, but this value is `{}`",
                             index + 1,
-                            marrow_type_name(expected),
-                            marrow_type_name(actual)
+                            marrow_type_name(names, expected),
+                            marrow_type_name(names, actual)
                         ),
                     ));
                 }
@@ -1903,17 +1941,24 @@ fn resource_member_sparse(resource: &marrow_schema::ResourceSchema, chain: &[&st
     })
 }
 
-fn unknown_field_diagnostic(file: &Path, span: SourceSpan, field: &str) -> CheckDiagnostic {
+fn unknown_field_diagnostic(
+    names: &DeclIds<'_>,
+    file: &Path,
+    span: SourceSpan,
+    field: &str,
+) -> CheckDiagnostic {
     CheckDiagnostic::new(
         Code::CheckUnknownField,
         DiagnosticAnchor::at(file, span),
         DiagnosticPayload::UnknownField {
             field: field.to_string(),
         },
+        names,
     )
 }
 
 fn layer_not_value_diagnostic(
+    names: &DeclIds<'_>,
     file: &Path,
     span: SourceSpan,
     field: &str,
@@ -1926,6 +1971,7 @@ fn layer_not_value_diagnostic(
             field: field.to_string(),
             reason,
         },
+        names,
     )
 }
 

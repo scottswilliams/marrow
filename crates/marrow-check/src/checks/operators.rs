@@ -10,6 +10,7 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::infer::infer_type_with_read_scope;
+use crate::model::decls::DeclIds;
 use crate::typerules::{
     as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric,
     is_optional_value, is_ordered, marrow_type_name, mismatch_display, type_compatible,
@@ -65,6 +66,7 @@ pub(crate) fn check_condition(
             Code::CheckConditionType,
             DiagnosticAnchor::at(file, span),
             DiagnosticPayload::ConditionType(ConditionTypeFault::NotBool { found }),
+            &program.decl_ids(),
         )
     };
     match as_primitive(&condition_type) {
@@ -97,6 +99,7 @@ pub(crate) fn check_condition(
 /// Unknown operands are left to the runtime backstop, as with other unresolved
 /// values in this pass.
 pub(crate) fn check_throw_type(
+    names: &DeclIds<'_>,
     file: &Path,
     span: SourceSpan,
     value_type: &MarrowType,
@@ -116,7 +119,7 @@ pub(crate) fn check_throw_type(
             span,
             format!(
                 "`throw` requires an `Error` value, found `{}`",
-                marrow_type_name(value_type)
+                marrow_type_name(names, value_type)
             ),
         )),
     }
@@ -127,6 +130,7 @@ pub(crate) fn check_throw_type(
 /// unresolved returned value is left alone. Value presence is checked separately
 /// by `check.return_value`.
 pub(crate) fn check_return_type(
+    names: &DeclIds<'_>,
     file: &Path,
     span: SourceSpan,
     return_type: &MarrowType,
@@ -147,6 +151,7 @@ pub(crate) fn check_return_type(
                     expected: return_type.clone(),
                     found: value_type.clone(),
                 },
+                names,
             ));
         }
         // Strict typing: an untyped value returned where a convertible type is
@@ -159,7 +164,7 @@ pub(crate) fn check_return_type(
                 span,
                 format!(
                     "this `return` value has no known type, but the function returns `{}`; convert it first",
-                    marrow_type_name(return_type),
+                    marrow_type_name(names, return_type),
                 ),
             ));
         }
@@ -174,6 +179,7 @@ pub(crate) fn check_return_type(
 /// owning resource type, since the runtime writes matching fields from that value
 /// into the addressed entry.
 pub(crate) fn check_assignment(
+    names: &DeclIds<'_>,
     file: &Path,
     span: SourceSpan,
     place: &MarrowType,
@@ -200,6 +206,7 @@ pub(crate) fn check_assignment(
                     expected: place.clone(),
                     found: value.clone(),
                 },
+                names,
             ));
         }
         // An untyped value stored into a place with a conversion boundary.
@@ -210,7 +217,7 @@ pub(crate) fn check_assignment(
                 span,
                 format!(
                     "the value stored into `{}` has no known type; convert it before typed use",
-                    marrow_type_name(place),
+                    marrow_type_name(names, place),
                 ),
             ));
         }
@@ -223,6 +230,7 @@ pub(crate) fn check_assignment(
 /// [`MarrowType::Invalid`] when the operator is misused (which records a diagnostic),
 /// so a reported fault poisons the result rather than cascading an untyped-value error.
 pub(crate) fn check_unary(
+    names: &DeclIds<'_>,
     op: marrow_syntax::UnaryOp,
     operand: &MarrowType,
     span: SourceSpan,
@@ -250,7 +258,7 @@ pub(crate) fn check_unary(
             format!(
                 "operator `{}` cannot be applied to `{}`",
                 unary_symbol(op),
-                marrow_type_name(operand),
+                marrow_type_name(names, operand),
             ),
         ));
         return MarrowType::Invalid;
@@ -282,6 +290,7 @@ pub(crate) fn check_unary(
 /// [`MarrowType::Invalid`] when the operator is misused (which records a diagnostic),
 /// so a reported fault poisons the result rather than cascading an untyped-value error.
 pub(crate) fn check_binary(
+    names: &DeclIds<'_>,
     op: marrow_syntax::BinaryOp,
     left: &MarrowType,
     right: &MarrowType,
@@ -328,7 +337,7 @@ pub(crate) fn check_binary(
     // Equality over concrete non-scalars is decided before the `as_primitive` gate;
     // an `Unknown` operand defers to the scalar path.
     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
-        && let Some(result) = check_equality(op, left, right, span, file, diagnostics)
+        && let Some(result) = check_equality(names, op, left, right, span, file, diagnostics)
     {
         return result;
     }
@@ -341,8 +350,8 @@ pub(crate) fn check_binary(
             format!(
                 "operator `{}` cannot be applied to `{}` and `{}`",
                 binary_symbol(op),
-                marrow_type_name(left),
-                marrow_type_name(right),
+                marrow_type_name(names, left),
+                marrow_type_name(names, right),
             ),
         ));
         return MarrowType::Invalid;
@@ -432,6 +441,7 @@ pub(crate) fn check_binary(
 /// once a verdict is reached and `None` to defer to the scalar path. A rejected
 /// pairing still yields `bool`, the natural result type of a comparison.
 fn check_equality(
+    names: &DeclIds<'_>,
     op: marrow_syntax::BinaryOp,
     left: &MarrowType,
     right: &MarrowType,
@@ -440,7 +450,7 @@ fn check_equality(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<MarrowType> {
     let reject = |diagnostics: &mut Vec<CheckDiagnostic>| {
-        let (left_name, right_name) = mismatch_display(left, right);
+        let (left_name, right_name) = mismatch_display(names, left, right);
         diagnostics.push(operator_diagnostic(
             file,
             span,
@@ -511,6 +521,7 @@ fn check_equality(
 /// is rejected. The result follows the **right** operand's presence, so chains type:
 /// `T? ?? T = T`, `T? ?? T? = T?`. The right's base must be compatible with `T`.
 pub(crate) struct CoalesceCheck<'a> {
+    pub(crate) names: &'a DeclIds<'a>,
     pub(crate) left_type: &'a MarrowType,
     pub(crate) right_type: &'a MarrowType,
     pub(crate) span: SourceSpan,
@@ -520,6 +531,7 @@ pub(crate) struct CoalesceCheck<'a> {
 
 pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
     let CoalesceCheck {
+        names,
         left_type,
         right_type,
         span,
@@ -562,7 +574,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
         // `absent ?? default` has no left element type to satisfy; the result is the
         // default's present arm.
         None => default_base.clone(),
-        Some(inner) => match coalesce_base(inner, default_base, span, file, diagnostics) {
+        Some(inner) => match coalesce_base(names, inner, default_base, span, file, diagnostics) {
             Some(ty) => ty,
             None => return MarrowType::Invalid,
         },
@@ -578,6 +590,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
 /// concrete non-scalar defaults only with the same nominal type; two scalars must
 /// match; an untyped side defers. `None` signals a reported mismatch.
 fn coalesce_base(
+    names: &DeclIds<'_>,
     inner: &MarrowType,
     default_base: &MarrowType,
     span: SourceSpan,
@@ -593,8 +606,8 @@ fn coalesce_base(
                     span,
                     format!(
                         "operator `??` cannot default `{}` with `{}`",
-                        marrow_type_name(inner),
-                        marrow_type_name(default_base),
+                        marrow_type_name(names, inner),
+                        marrow_type_name(names, default_base),
                     ),
                 ));
                 None
