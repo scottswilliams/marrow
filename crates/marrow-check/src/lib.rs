@@ -26,6 +26,7 @@ pub mod facts;
 mod hex;
 mod infer;
 mod keyed_entries;
+pub mod model;
 mod presence;
 pub mod program;
 mod project_io;

@@ -19,35 +19,10 @@ use crate::executable::CheckedFunctionRef;
 use crate::program::{CheckedModule, CheckedProgram, MarrowType};
 use crate::{build_alias_map, expand_alias, split_type_path};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ModuleId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FunctionId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResourceId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StoreId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StoreIndexId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SurfaceId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResourceMemberId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumMemberId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LocalId(pub u32);
+pub use crate::model::ids::{
+    EnumId, EnumMemberId, FunctionId, LocalId, ModuleId, ResourceId, ResourceMemberId, StoreId,
+    StoreIndexId, SurfaceId,
+};
 
 /// The resource a store's index-fact collection reads, resolved once per store and threaded
 /// in so the collector does not re-resolve it.
@@ -90,6 +65,11 @@ pub struct CheckedFacts {
     function_id_by_name: HashMap<(ModuleId, String), FunctionId>,
     resource_id_by_name: HashMap<(ModuleId, String), ResourceId>,
     store_id_by_name: HashMap<(ModuleId, String), StoreId>,
+    /// Each store index keyed by its owning store and its declared name, so
+    /// resolving a `(store, index-name)` reference is O(1) rather than a scan
+    /// over every store index. Index names are unique within a store, so
+    /// first-binding-wins matches the linear scan it replaces.
+    store_index_id_by_name: HashMap<(StoreId, String), StoreIndexId>,
     /// Each enum member keyed by its enum and its source-order ordinal within that
     /// enum, so resolving the ordinal-th member of an enum is O(1). Member-path
     /// resolution hits this on every enum-value reference, so the whole-program member
@@ -169,6 +149,9 @@ impl CheckedFacts {
         for &(module_id, module, parsed) in &bindings {
             facts.collect_store_index_facts_for_module(program, module_id, module, parsed);
         }
+        facts.store_index_id_by_name = index_first_wins(&facts.store_indexes, |fact| {
+            ((fact.store, fact.name.clone()), fact.id)
+        });
         for &(module_id, module, parsed) in &bindings {
             // The checked functions are built one per function declaration in
             // source order, so the declaration carrying a function's annotations
