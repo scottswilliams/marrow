@@ -32,6 +32,7 @@ use crate::facts::{
     EntryStoreOpenMode, FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId,
     WorkShapeClass,
 };
+use crate::model::decls::StoreRootArena;
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -154,6 +155,11 @@ pub struct RuntimeStopPoint {
 pub struct CheckedProgram {
     pub modules: Vec<CheckedModule>,
     pub facts: CheckedFacts,
+    /// The interned identity-root spellings the facts cannot supply — an undeclared
+    /// `Id(^root)` names no store. Rebuilt beside `facts` on every facts rebuild so
+    /// a [`DeclIds`] view over the two never reads a stale root, and never cached
+    /// across the test-module join, where an appended module could leave it short.
+    pub decl_roots: StoreRootArena,
     pub catalog: ProgramCatalog,
     debug_source_identity: Option<DebugSourceIdentity>,
     /// A lazily built index from a module's qualified name and its source file to the
@@ -237,6 +243,7 @@ impl CheckedProgram {
         let mut program = Self {
             modules,
             facts: CheckedFacts::default(),
+            decl_roots: StoreRootArena::default(),
             catalog: ProgramCatalog::default(),
             debug_source_identity: None,
             module_index: ModuleLookupIndex::default(),
@@ -318,8 +325,9 @@ impl CheckedProgram {
 
     #[cfg(feature = "test-support")]
     fn rebuild_facts(&mut self) {
-        let facts = CheckedFacts::from_program(self, &HashMap::new());
-        self.facts = facts;
+        let sources = HashMap::new();
+        self.facts = CheckedFacts::from_program(self, &sources);
+        self.decl_roots = StoreRootArena::build(&self.facts, &sources);
     }
 
     pub(crate) fn rebuild_facts_with_sources<'a, I>(&mut self, sources: I)
@@ -330,17 +338,25 @@ impl CheckedProgram {
             .into_iter()
             .map(|(path, parsed)| (path.to_path_buf(), parsed))
             .collect();
-        let facts = CheckedFacts::from_program(self, &sources);
-        self.facts = facts;
+        self.facts = CheckedFacts::from_program(self, &sources);
+        self.decl_roots = StoreRootArena::build(&self.facts, &sources);
     }
 
     pub(crate) fn rebuild_facts_with_sources_preserving_current_prefix<'a, I>(&mut self, sources: I)
     where
         I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
     {
+        let sources: HashMap<PathBuf, &ParsedSource> = sources
+            .into_iter()
+            .map(|(path, parsed)| (path.to_path_buf(), parsed))
+            .collect();
         let prefix = std::mem::take(&mut self.facts);
-        self.rebuild_facts_with_sources(sources);
+        self.facts = CheckedFacts::from_program(self, &sources);
         self.facts.overwrite_prefix_from(&prefix);
+        // Rebuild the root arena from the prefix-stitched facts and the full source
+        // set, so declared roots keep the project's stable leading slots and any
+        // test-module annotation roots append after them.
+        self.decl_roots = StoreRootArena::build(&self.facts, &sources);
     }
 
     /// The source file the given file id names, or `None` if the id is out of
