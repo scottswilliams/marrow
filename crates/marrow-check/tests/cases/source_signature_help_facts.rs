@@ -179,7 +179,11 @@ pub fn run(): books::Review
                 shape: None,
                 docs: vec!["Review state.".to_string()],
             }],
-            return_type: MarrowType::Resource("shelf::books::Review".to_string()),
+            return_type: MarrowType::Resource(support::resource_id(
+                &snapshot.program,
+                "shelf::books",
+                "Review"
+            )),
         }
     );
 }
@@ -235,7 +239,10 @@ pub fn run()
                 shape: None,
                 docs: Vec::new(),
             }],
-            return_type: MarrowType::Resource("shelf::app::Local".to_string()),
+            // `Local` is declared only in the current buffer, not the committed
+            // program, so its constructor result type has no interned identity; the
+            // resolved field list above is what a caller consumes here.
+            return_type: MarrowType::Unknown,
         }
     );
 }

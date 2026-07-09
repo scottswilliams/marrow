@@ -346,16 +346,12 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
 /// The source spelling of a type for a diagnostic message. The poison `Invalid`
 /// type has no surface spelling and renders as `value`; it normally suppresses the
 /// cascades that would surface it.
-// The recovery view reaches every leaf arm but is read only once a nominal leaf
-// carries an interned id instead of its spelling; until each leaf is migrated it
-// flows through the recursive arms alone.
-#[allow(clippy::only_used_in_recursion)]
 pub(crate) fn marrow_type_name(names: &DeclIds<'_>, ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
         MarrowType::Identity(root) => format!("Id(^{root})"),
-        MarrowType::Resource(resource) => resource.clone(),
+        MarrowType::Resource(resource) => names.resource_display(*resource),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
         MarrowType::Enum { name, .. } => name.clone(),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(names, element)),

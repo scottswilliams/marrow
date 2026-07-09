@@ -5,7 +5,9 @@ use marrow_check::{
     DiagnosticPayload, MarrowType, ScalarType, UnresolvedCallKind,
 };
 
-use support::{assert_clean, check_module, check_module_report, with_code};
+use support::{
+    assert_clean, check_module, check_module_program, check_module_report, resource_id, with_code,
+};
 use support_conversion::conversion_source_payload;
 
 #[test]
@@ -421,7 +423,7 @@ fn print_and_interpolation_render_sequences_when_elements_render() {
 fn print_rejects_non_renderable_values_at_check() {
     // A sequence only renders when its element type renders, so resource-shaped
     // values still fail at check before a runtime unsupported fault can surface.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "output-non-renderable",
         "module m\n\
          resource Book\n    required title: string\n\
@@ -431,11 +433,9 @@ fn print_rejects_non_renderable_values_at_check() {
          \x20   print(book)\n",
         "check.operator_type",
     );
+    let book = MarrowType::Resource(resource_id(&program, "m", "Book"));
     assert_eq!(found.len(), 2, "{found:#?}");
-    for source in [
-        MarrowType::Sequence(Box::new(MarrowType::Resource("m::Book".into()))),
-        MarrowType::Resource("m::Book".into()),
-    ] {
+    for source in [MarrowType::Sequence(Box::new(book.clone())), book.clone()] {
         assert!(
             found.iter().any(|diagnostic| diagnostic.payload
                 == DiagnosticPayload::RenderUnsupportedSource {

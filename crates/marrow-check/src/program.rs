@@ -365,6 +365,36 @@ impl CheckedProgram {
         DeclIds::new(&self.facts, &self.decl_roots)
     }
 
+    /// The interned id of a resource named by its owning module and bare name, as
+    /// produced when a resource type leaf is minted from an already-resolved
+    /// declaration. A resolved resource is always in the facts, so this is the
+    /// single place that turns the owning-module/name pair into the leaf's id.
+    pub(crate) fn resource_leaf_id(
+        &self,
+        module_name: &str,
+        resource_name: &str,
+    ) -> Option<ResourceId> {
+        let module = self.facts.module_id(module_name)?;
+        self.facts.resource_id(module, resource_name)
+    }
+
+    /// The resource schema and owning-module name an interned resource id names,
+    /// the id-keyed counterpart of the qualified-name resolver. A field read, a
+    /// sparseness query, and a nested-write check recover the schema through here
+    /// rather than re-splitting a stored qualified name.
+    pub(crate) fn resource_by_id(
+        &self,
+        id: ResourceId,
+    ) -> Option<(&marrow_schema::ResourceSchema, &str)> {
+        let fact = self.facts.resources().get(id.0 as usize)?;
+        let module = self.modules.get(fact.module.0 as usize)?;
+        let schema = module
+            .resources
+            .iter()
+            .find(|resource| resource.name == fact.name)?;
+        Some((schema, module.name.as_str()))
+    }
+
     /// The source file the given file id names, or `None` if the id is out of
     /// range (an id from a different program, or a fault with no project file).
     pub fn file_path(&self, id: FileId) -> Option<&Path> {
@@ -1185,15 +1215,18 @@ fn lower_transform_body(
         .iter()
         .position(|module| module.name == owning)?;
     let module = &snapshot.modules[module_index];
+    let bare_name = transform
+        .resource
+        .strip_prefix(owning)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .unwrap_or(&transform.resource);
+    let resource_id = snapshot.resource_leaf_id(owning, bare_name)?;
     let parsed = sources.get(&transform.file).copied()?;
     let body =
         crate::evolution::transform_body_in_source(parsed, &module.name, &transform.target_path)?;
     let constants = module_constant_map(module);
     let context = CheckedExecutableContext::new(snapshot, module_index);
-    let old_scope = HashMap::from([(
-        "old".to_string(),
-        MarrowType::Resource(transform.resource.clone()),
-    )]);
+    let old_scope = HashMap::from([("old".to_string(), MarrowType::Resource(resource_id))]);
     CheckedBody::lower(body, &context, vec![constants, old_scope])
 }
 
@@ -1785,9 +1818,10 @@ pub enum MarrowType {
     /// The checker-only type of a caught or thrown error value (`catch e: Error`,
     /// `throw Error(...)`). It has no storage form and never resolves to a scalar.
     Error,
-    /// A resource by canonical module-qualified name, or bare name for a
-    /// module-less script.
-    Resource(String),
+    /// A resource, identified by its interned declaration id. The
+    /// module-qualified spelling a mismatch renders is recovered by id through
+    /// the facts, not stored here.
+    Resource(ResourceId),
     /// A saved keyed-group entry, identified by its owning resource and group
     /// layer chain.
     GroupEntry {

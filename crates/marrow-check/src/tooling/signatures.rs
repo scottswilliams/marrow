@@ -254,7 +254,7 @@ fn resource_constructor_signature_from_module(
         return None;
     };
 
-    let ty = MarrowType::Resource(crate::resource_type_name(&module.name, &resource.name));
+    let ty = MarrowType::Resource(program.resource_leaf_id(&module.name, &resource.name)?);
     let fields = resource
         .members
         .iter()
@@ -340,7 +340,12 @@ fn source_file_resource_constructor_signature(
     let resource = unique_source_resource(source_file, resource_name)?;
     let module_name = &source_file.module.as_ref()?.name;
     let prelude = crate::checks::file_prelude(program, file, parsed);
-    let ty = MarrowType::Resource(crate::resource_type_name(module_name, &resource.name));
+    // A resource declared only in the current buffer has no committed declaration
+    // id yet, so its constructor result type has no nominal identity to name; the
+    // field list a caller fills in is still fully resolved below.
+    let ty = program
+        .resource_leaf_id(module_name, &resource.name)
+        .map_or(MarrowType::Unknown, MarrowType::Resource);
     let fields = resource
         .members
         .iter()

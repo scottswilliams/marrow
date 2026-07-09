@@ -14,6 +14,7 @@ use super::expected::{ExpectedEnum, ExpectedEnumContext, expected_enum_at};
 use super::render::{render_callable_signature, render_marrow_type};
 use super::signatures::{CallableSignature, active_callable_context, intrinsic_callable_signature};
 use crate::analysis::{ScopeCompletionBindingKind, scope_completion_bindings_at};
+use crate::model::decls::DeclIds;
 use crate::{
     CheckedFunction, CheckedModule, CheckedProgram, CheckedSavedKeyParam, CheckedSavedPlace,
     MarrowType, ResourceMemberId, ScalarType, StoreId, StoreLeafKind,
@@ -578,14 +579,15 @@ fn namespace_completion_items(
     offset: usize,
     qualifier: &[String],
 ) -> Vec<SourceCompletionItem> {
+    let names = program.decl_ids();
     match source_namespace_completion_fact_at(program, file, parsed, offset, qualifier) {
-        Some(SourceNamespaceCompletionFact::Module(fact)) => module_namespace_items(&fact),
+        Some(SourceNamespaceCompletionFact::Module(fact)) => module_namespace_items(&names, &fact),
         Some(SourceNamespaceCompletionFact::Enum(fact)) => enum_member_items(&fact),
         Some(SourceNamespaceCompletionFact::StandardLibraryRoot(fact)) => {
             standard_library_root_items(&fact)
         }
         Some(SourceNamespaceCompletionFact::StandardLibraryModule(fact)) => {
-            standard_library_module_items(&fact)
+            standard_library_module_items(&names, &fact)
         }
         None => Vec::new(),
     }
@@ -604,19 +606,23 @@ fn standard_library_root_items(
 }
 
 fn standard_library_module_items(
+    names: &DeclIds<'_>,
     fact: &SourceStandardLibraryModuleNamespaceCompletionFact,
 ) -> Vec<SourceCompletionItem> {
     fact.operations
         .iter()
         .map(|operation| {
             source_completion_item(&operation.name, SourceCompletionItemKind::Function)
-                .detail(render_callable_signature(&operation.signature))
+                .detail(render_callable_signature(names, &operation.signature))
                 .docs_from(&operation.signature.docs)
         })
         .collect()
 }
 
-fn module_namespace_items(fact: &SourceModuleNamespaceCompletionFact) -> Vec<SourceCompletionItem> {
+fn module_namespace_items(
+    names: &DeclIds<'_>,
+    fact: &SourceModuleNamespaceCompletionFact,
+) -> Vec<SourceCompletionItem> {
     let mut items = Vec::new();
     items.extend(fact.resources.iter().map(|resource| {
         source_completion_item(&resource.name, SourceCompletionItemKind::Resource)
@@ -630,7 +636,7 @@ fn module_namespace_items(fact: &SourceModuleNamespaceCompletionFact) -> Vec<Sou
     }));
     items.extend(fact.functions.iter().map(|function| {
         source_completion_item(&function.name, SourceCompletionItemKind::Function)
-            .detail(source_function_signature(function))
+            .detail(source_function_signature(names, function))
             .docs_from(&function.docs)
     }));
     dedup_completion_items(items)
@@ -647,18 +653,21 @@ fn enum_member_items(fact: &SourceEnumNamespaceCompletionFact) -> Vec<SourceComp
         .collect()
 }
 
-fn source_function_signature(function: &SourceNamespaceFunctionCompletion) -> String {
+fn source_function_signature(
+    names: &DeclIds<'_>,
+    function: &SourceNamespaceFunctionCompletion,
+) -> String {
     let params = function
         .params
         .iter()
-        .map(|param| format!("{}: {}", param.name, render_marrow_type(&param.ty)))
+        .map(|param| format!("{}: {}", param.name, render_marrow_type(names, &param.ty)))
         .collect::<Vec<_>>()
         .join(", ");
     match &function.return_type {
         Some(return_type) => format!(
             "fn {}({params}): {}",
             function.name,
-            render_marrow_type(return_type)
+            render_marrow_type(names, return_type)
         ),
         None => format!("fn {}({params})", function.name),
     }
@@ -716,12 +725,13 @@ fn bare_completion_items(
     offset: usize,
 ) -> Vec<SourceCompletionItem> {
     let mut items = Vec::new();
+    let names = program.decl_ids();
     let scope_bindings = scope_completion_bindings_at(program, file, parsed, offset);
     for binding in &scope_bindings {
         if let ScopeCompletionBindingKind::Value { ty } = &binding.kind {
             items.push(
                 source_completion_item(&binding.name, SourceCompletionItemKind::Local)
-                    .detail(render_marrow_type(ty)),
+                    .detail(render_marrow_type(&names, ty)),
             );
         }
     }
@@ -737,7 +747,12 @@ fn bare_completion_items(
             ScopeCompletionBindingKind::Value { .. } => {}
         }
     }
-    items.extend(current_module_bare_items(program, file, &parsed.file));
+    items.extend(current_module_bare_items(
+        &names,
+        program,
+        file,
+        &parsed.file,
+    ));
     for keyword in KEYWORDS {
         items.push(source_completion_item(
             keyword,
@@ -748,7 +763,7 @@ fn bare_completion_items(
         let label = callable.path.join("::");
         items.push(
             source_completion_item(&label, SourceCompletionItemKind::Function)
-                .detail(render_callable_signature(&callable))
+                .detail(render_callable_signature(&names, &callable))
                 .docs_from(&callable.docs),
         );
     }
@@ -759,6 +774,7 @@ fn bare_completion_items(
 }
 
 fn current_module_bare_items(
+    names: &DeclIds<'_>,
     program: &CheckedProgram,
     file: &Path,
     source_file: &SourceFile,
@@ -782,7 +798,7 @@ fn current_module_bare_items(
             .into_iter()
             .map(|function| {
                 source_completion_item(&function.name, SourceCompletionItemKind::Function)
-                    .detail(source_function_signature(&function))
+                    .detail(source_function_signature(names, &function))
                     .docs_from(&function.docs)
             }),
     );

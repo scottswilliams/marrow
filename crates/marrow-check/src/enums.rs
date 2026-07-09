@@ -18,7 +18,7 @@ use crate::{
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram, Def,
     DefItem, DiagnosticAnchor, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution,
     ResolvableKind, TypeNames, build_alias_map, expand_alias, expand_module_alias, module_of_file,
-    resolve, resource_type_name, split_type_path,
+    resolve, split_type_path,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -1146,11 +1146,12 @@ fn resolve_resource_type_ref_in_module(
         }
         Type::Identity(store_root) => resolve_store_by_root(program, store_root)
             .map(|_| MarrowType::Identity(store_root.clone())),
-        Type::Named(_) => {
-            resolve_resource_annotation_type(ty, program, aliases, module_name).map(|resolved| {
-                MarrowType::Resource(resource_type_name(&resolved.module, &resolved.name))
-            })
-        }
+        Type::Named(_) => resolve_resource_annotation_type(ty, program, aliases, module_name)
+            .and_then(|resolved| {
+                program
+                    .resource_leaf_id(&resolved.module, &resolved.name)
+                    .map(MarrowType::Resource)
+            }),
         _ => None,
     }
 }

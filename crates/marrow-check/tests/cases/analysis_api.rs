@@ -777,7 +777,11 @@ fn resource_constructor_signature_resolves_imported_qualified_resource_fields() 
     assert_eq!(signature.name, "Book");
     assert_eq!(
         signature.ty,
-        MarrowType::Resource("library::books::Book".to_string())
+        MarrowType::Resource(support::resource_id(
+            &snapshot.program,
+            "library::books",
+            "Book"
+        ))
     );
     assert_eq!(signature.docs, ["Book records."]);
     assert_eq!(

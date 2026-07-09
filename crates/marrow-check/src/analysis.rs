@@ -809,6 +809,16 @@ pub(crate) fn analyze_source_project(
         }
     }
 
+    // Assemble the declaration facts once the whole program is known, so the id
+    // tables a nominal signature slot interns against exist before the bind pass
+    // reads them. Ids are a function of declaration order, so this assembly and
+    // every later rebuild agree by construction.
+    program.rebuild_facts_with_sources(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
+
     // Bind each named-type signature slot to its true owner, now that the whole
     // program is known, before any pass reads parameter types. Module build left
     // these slots `Unknown`; this is their only writer.

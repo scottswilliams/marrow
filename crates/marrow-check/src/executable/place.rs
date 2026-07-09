@@ -144,10 +144,10 @@ impl<'a> SavedPlaceResolver<'a> {
     /// whether the root itself is addressed — unlike [`Self::value_type`], which
     /// reports a value only for an addressed place.
     pub(crate) fn record_root_element_type(&self, place: &CheckedSavedPlace) -> MarrowType {
-        MarrowType::Resource(crate::resource_type_name(
-            &self.store_module_name(place),
-            &place.resource_name,
-        ))
+        self.program
+            .resource_leaf_id(&self.store_module_name(place), &place.resource_name)
+            .map(MarrowType::Resource)
+            .unwrap_or(MarrowType::Unknown)
     }
 
     pub(crate) fn key_type(&self, expr: &CheckedExpr) -> Option<MarrowType> {
@@ -444,12 +444,13 @@ impl<'a> SavedPlaceResolver<'a> {
                     }
                     return None;
                 }
-                (place.identity_keys.is_empty() || !place.identity_args.is_empty()).then(|| {
-                    MarrowType::Resource(crate::resource_type_name(
-                        &self.store_module_name(place),
-                        &place.resource_name,
-                    ))
-                })
+                (place.identity_keys.is_empty() || !place.identity_args.is_empty())
+                    .then(|| {
+                        self.program
+                            .resource_leaf_id(&self.store_module_name(place), &place.resource_name)
+                            .map(MarrowType::Resource)
+                    })
+                    .flatten()
             }
             CheckedSavedTerminal::Field { leaf, .. } => self.leaf_type(leaf.as_ref()?),
             CheckedSavedTerminal::Index { unique, .. } => {

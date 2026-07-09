@@ -2,7 +2,10 @@ use crate::support;
 use marrow_check::{CallArgumentFault, DiagnosticPayload, MarrowType, check_project};
 use marrow_schema::ScalarType;
 
-use support::{check_module, check_module_report, config, temp_project, with_code, write};
+use support::{
+    check_module, check_module_program, check_module_report, config, resource_id, temp_project,
+    with_code, write,
+};
 
 #[test]
 fn rejects_a_wrong_argument_count_in_a_qualified_cross_module_call() {
@@ -225,7 +228,7 @@ fn passing_a_bare_saved_root_to_a_sequence_parameter_is_a_check_error() {
 fn passing_a_bare_saved_root_to_a_keyed_tree_parameter_is_a_check_error() {
     // The same rejection covers a keyed-tree parameter `scores(id: int): Player`: a
     // saved root cannot fill a by-value keyed map.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "saved-root-to-keyed-tree",
         "module m\n\
          resource Player\n    name: string\n\
@@ -241,7 +244,7 @@ fn passing_a_bare_saved_root_to_a_keyed_tree_parameter_is_a_check_error() {
             label: "take".into(),
             parameter: MarrowType::LocalTree {
                 keys: vec![MarrowType::Primitive(ScalarType::Int)],
-                value: Box::new(MarrowType::Resource("m::Player".into())),
+                value: Box::new(MarrowType::Resource(resource_id(&program, "m", "Player"))),
             },
         }),
         "{found:#?}"

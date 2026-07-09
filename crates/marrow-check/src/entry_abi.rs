@@ -4,7 +4,7 @@ use marrow_store::value::ScalarType;
 use crate::executable::checked_runtime_value_type;
 use crate::{
     CheckedEntryFunction, CheckedFunctionRef, CheckedProgram, CheckedRuntimeFunction,
-    CheckedRuntimeModule, CheckedRuntimeProgram, CheckedRuntimeValueType, MarrowType,
+    CheckedRuntimeModule, CheckedRuntimeProgram, CheckedRuntimeValueType, MarrowType, ResourceId,
     ResourceMemberKind, StoredValueMeaning,
 };
 
@@ -627,7 +627,7 @@ fn surface_value_shape(
 ) -> Option<EntrySurfaceValueShape> {
     match present_arm(ty) {
         MarrowType::Resource(resource) if profile == EntrySurfaceProfile::ComputedRead => {
-            resource_result_shape(program, resource)
+            resource_result_shape(program, *resource)
         }
         MarrowType::Resource(_) => None,
         ty => {
@@ -700,9 +700,9 @@ fn argument_shape_to_surface_value(shape: EntryArgumentShape) -> Option<EntrySur
 
 fn resource_result_shape(
     program: &CheckedProgram,
-    resource_name: &str,
+    resource_id: ResourceId,
 ) -> Option<EntrySurfaceValueShape> {
-    let resource = resource_by_type_name(program, resource_name)?;
+    let resource = program.facts.resources().get(resource_id.0 as usize)?;
     let resource_catalog_id =
         checked_accepted_catalog_id_value(program, resource.catalog_id.as_deref())?;
     let mut fields = program
@@ -727,7 +727,7 @@ fn resource_result_shape(
         .collect::<Option<Vec<_>>>()?;
     fields.sort_by(|left, right| left.member_catalog_id.cmp(&right.member_catalog_id));
     Some(EntrySurfaceValueShape::Resource {
-        render_label: resource_name.to_string(),
+        render_label: program.decl_ids().resource_display(resource_id),
         resource_catalog_id,
         fields,
     })
@@ -736,7 +736,7 @@ fn resource_result_shape(
 fn computed_read_type_has_accepted_catalog_ids(program: &CheckedProgram, ty: &MarrowType) -> bool {
     match present_arm(ty) {
         MarrowType::Resource(resource) => {
-            computed_read_resource_type_has_accepted_catalog_ids(program, resource)
+            computed_read_resource_type_has_accepted_catalog_ids(program, *resource)
         }
         ty => {
             let runtime_ty = checked_runtime_value_type(program, ty.clone());
@@ -747,9 +747,9 @@ fn computed_read_type_has_accepted_catalog_ids(program: &CheckedProgram, ty: &Ma
 
 fn computed_read_resource_type_has_accepted_catalog_ids(
     program: &CheckedProgram,
-    resource_name: &str,
+    resource_id: ResourceId,
 ) -> bool {
-    let Some(resource) = resource_by_type_name(program, resource_name) else {
+    let Some(resource) = program.facts.resources().get(resource_id.0 as usize) else {
         return false;
     };
     checked_accepted_catalog_id(program, resource.catalog_id.as_deref()).is_some()
@@ -770,7 +770,7 @@ fn computed_read_resource_type_has_accepted_catalog_ids(
 fn computed_read_type_has_surface_shape(program: &CheckedProgram, ty: &MarrowType) -> bool {
     match present_arm(ty) {
         MarrowType::Resource(resource) => {
-            computed_read_resource_type_has_surface_shape(program, resource)
+            computed_read_resource_type_has_surface_shape(program, *resource)
         }
         ty => {
             let runtime_ty = checked_runtime_value_type(program, ty.clone());
@@ -781,9 +781,9 @@ fn computed_read_type_has_surface_shape(program: &CheckedProgram, ty: &MarrowTyp
 
 fn computed_read_resource_type_has_surface_shape(
     program: &CheckedProgram,
-    resource_name: &str,
+    resource_id: ResourceId,
 ) -> bool {
-    let Some(resource) = resource_by_type_name(program, resource_name) else {
+    let Some(resource) = program.facts.resources().get(resource_id.0 as usize) else {
         return false;
     };
     program
@@ -848,26 +848,6 @@ fn stored_value_meaning_has_accepted_catalog_ids(
                 })
         }
     }
-}
-
-fn resource_by_type_name<'a>(
-    program: &'a CheckedProgram,
-    resource_name: &str,
-) -> Option<&'a crate::ResourceFact> {
-    program.facts.resources().iter().find(|resource| {
-        let module = program.facts.modules().get(resource.module.0 as usize);
-        let qualified = module.map_or_else(
-            || resource.name.clone(),
-            |module| {
-                if module.name.is_empty() {
-                    resource.name.clone()
-                } else {
-                    format!("{}::{}", module.name, resource.name)
-                }
-            },
-        );
-        qualified == resource_name
-    })
 }
 
 fn stored_value_shape(

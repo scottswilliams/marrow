@@ -1049,9 +1049,7 @@ impl CheckedFacts {
         match ty {
             MarrowType::Primitive(scalar) => Some(CheckedType::Primitive(*scalar)),
             MarrowType::Error => Some(CheckedType::Error),
-            MarrowType::Resource(name) => self
-                .resolve_resource_type(module_id, name)
-                .map(CheckedType::Resource),
+            MarrowType::Resource(id) => Some(CheckedType::Resource(*id)),
             MarrowType::GroupEntry { resource, layers } => {
                 let resource = self.resolve_resource_type(module_id, resource)?;
                 let names: Vec<&str> = layers.iter().map(String::as_str).collect();

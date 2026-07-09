@@ -400,11 +400,12 @@ impl TypeContext<'_> {
         // resource type makes `old.<member>` reads type against the current schema, and
         // the target member type as the return type makes the result type-check.
         crate::rules::check_transform_body(self.file, body, diagnostics);
+        let old_type = resolved
+            .and_then(|(module, schema)| self.program.resource_leaf_id(&module.name, &schema.name))
+            .map(MarrowType::Resource)
+            .unwrap_or(MarrowType::Unknown);
         let mut scope = vec![self.prelude.module_constants.clone()];
-        scope.push(HashMap::from([(
-            "old".to_string(),
-            MarrowType::Resource(resource.clone()),
-        )]));
+        scope.push(HashMap::from([("old".to_string(), old_type)]));
         check_transform_block_types(TransformBlockTypeCheck {
             program: self.program,
             file: self.file,

@@ -192,7 +192,7 @@ pub(crate) fn check_assignment(
     }
     let compatible = match (place, value) {
         (MarrowType::GroupEntry { resource, .. }, MarrowType::Resource(value_resource)) => {
-            Some(resource == value_resource)
+            Some(*resource == names.resource_display(*value_resource))
         }
         _ => type_compatible(place, value),
     };

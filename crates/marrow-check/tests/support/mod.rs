@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_check::{
-    AnalysisSnapshot, CheckDiagnostic, CheckReport, DiagnosticPayload, ProjectSources,
-    analyze_project, check_project, check_project_with_catalog,
+    AnalysisSnapshot, CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload,
+    ProjectSources, ResourceId, analyze_project, check_project, check_project_with_catalog,
 };
 use marrow_project::{ProjectConfig, parse_config};
 use marrow_schema::SchemaErrorKind;
@@ -129,6 +129,43 @@ pub fn check_module(name: &str, src: &str, code: &str) -> Vec<CheckDiagnostic> {
         .into_iter()
         .cloned()
         .collect()
+}
+
+/// Check a single library module and return the diagnostics whose code is `code`
+/// alongside the checked program, so a test can recover an interned id (a resource
+/// leaf carries its declaration id, not a spelling) from the program's facts.
+pub fn check_module_program(
+    name: &str,
+    src: &str,
+    code: &str,
+) -> (Vec<CheckDiagnostic>, CheckedProgram) {
+    check_program_at(name, "src/m.mw", src, code)
+}
+
+fn check_program_at(
+    name: &str,
+    relative: &str,
+    src: &str,
+    code: &str,
+) -> (Vec<CheckDiagnostic>, CheckedProgram) {
+    let root = temp_project(name, |root| write(root, relative, src));
+    let (report, program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, code).into_iter().cloned().collect();
+    (found, program)
+}
+
+/// The interned id of the resource named `resource` in module `module` (empty for a
+/// module-less script), for building an expected `MarrowType::Resource` without
+/// hardcoding an arena index.
+pub fn resource_id(program: &CheckedProgram, module: &str, resource: &str) -> ResourceId {
+    let module_id = program
+        .facts
+        .module_id(module)
+        .unwrap_or_else(|| panic!("no module `{module}`"));
+    program
+        .facts
+        .resource_id(module_id, resource)
+        .unwrap_or_else(|| panic!("no resource `{resource}` in `{module}`"))
 }
 
 /// Check a single library module and return its whole report, for tests that assert a

@@ -131,10 +131,9 @@ pub(crate) fn resolve_resource_schema_type(
                     module,
                     item: DefItem::Resource(resource),
                     ..
-                }) => Some(MarrowType::Resource(resource_type_name(
-                    &module.name,
-                    &resource.name,
-                ))),
+                }) => program
+                    .resource_leaf_id(&module.name, &resource.name)
+                    .map(MarrowType::Resource),
                 _ => None,
             }
         }

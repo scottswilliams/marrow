@@ -25,8 +25,7 @@ use crate::{
     ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def, DefItem, DiagnosticAnchor,
     DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, UnresolvedCallKind,
     builtin_return_type, conversion_return_type, identity_type_for_store, is_builtin_call,
-    is_unknown_std_operation, module_of_file, resolve, resource_type_name, std_call_params,
-    std_call_return_type,
+    is_unknown_std_operation, module_of_file, resolve, std_call_params, std_call_return_type,
 };
 
 use super::diagnostics::key_type_diagnostic;
@@ -380,10 +379,9 @@ fn check_resource_constructor_call(
         file: env.file,
         diagnostics: env.diagnostics,
     });
-    Some(MarrowType::Resource(resource_type_name(
-        &module.name,
-        &resource.name,
-    )))
+    env.program
+        .resource_leaf_id(&module.name, &resource.name)
+        .map(MarrowType::Resource)
 }
 
 fn check_user_function_call(

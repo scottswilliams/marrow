@@ -6,7 +6,7 @@ use marrow_schema::{Node, NodeKind, ResourceSchema};
 use crate::resolve::StoreResource;
 use crate::{
     CHECK_REQUIRED_ABSENT, CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
-    resolve_resource_type, resource_type_name,
+    resource_type_name,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,16 +166,16 @@ fn mark_assigned_field(missing: &mut BTreeSet<String>, field_path: &str) {
 }
 
 fn tracked_resource(program: &CheckedProgram, ty: &MarrowType) -> Option<LocalResourceState> {
-    let MarrowType::Resource(resource) = ty else {
+    let MarrowType::Resource(id) = ty else {
         return None;
     };
-    let (schema, _) = resolve_resource_type(program, resource)?;
+    let (schema, module) = program.resource_by_id(*id)?;
     let missing = required_plain_field_paths(schema);
     if missing.is_empty() {
         return None;
     }
     Some(LocalResourceState::Tracked {
-        resource: resource.clone(),
+        resource: resource_type_name(module, &schema.name),
         missing,
     })
 }

@@ -1763,19 +1763,18 @@ fn resolved_field_node<'a>(
     base_type: &MarrowType,
     field: &str,
 ) -> Option<&'a marrow_schema::Node> {
-    let (name, chain): (&str, Vec<&str>) = match base_type {
-        MarrowType::Resource(name) => (name, vec![field]),
+    let (resource, chain): (&marrow_schema::ResourceSchema, Vec<&str>) = match base_type {
+        MarrowType::Resource(id) => (program.resource_by_id(*id)?.0, vec![field]),
         MarrowType::GroupEntry {
             resource: name,
             layers,
         } => {
             let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
             chain.push(field);
-            (name, chain)
+            (resolve_resource_type(program, name)?.0, chain)
         }
         _ => return None,
     };
-    let (resource, _) = resolve_resource_type(program, name)?;
     resource.node_at(&chain)
 }
 
@@ -1787,11 +1786,12 @@ fn local_field_resolution(
     field: &str,
 ) -> FieldResolution {
     match base_type {
-        MarrowType::Resource(name) => {
-            let Some((resource, module)) = resolve_resource_type(program, name) else {
+        MarrowType::Resource(id) => {
+            let Some((resource, module)) = program.resource_by_id(*id) else {
                 return FieldResolution::UnresolvedBase;
             };
-            resource_field_resolution(program, resource, name, module, &[field], &[])
+            let name = crate::resource_type_name(module, &resource.name);
+            resource_field_resolution(program, resource, &name, module, &[field], &[])
         }
         MarrowType::GroupEntry {
             resource: name,
@@ -1889,7 +1889,8 @@ fn error_field_type(field: &str) -> Option<MarrowType> {
 /// presence guard only widens to fields that can genuinely be absent at runtime.
 pub(crate) fn sparse_member(program: &CheckedProgram, base_type: &MarrowType, field: &str) -> bool {
     match base_type {
-        MarrowType::Resource(name) => resolve_resource_type(program, name)
+        MarrowType::Resource(id) => program
+            .resource_by_id(*id)
             .is_some_and(|(resource, _)| resource_member_sparse(resource, &[field])),
         MarrowType::GroupEntry {
             resource: name,

@@ -552,7 +552,7 @@ fn keyed_leaf_with_a_bare_unique_foreign_enum_rejects_resource_value() {
              fn write()\n    ^posts(1).statuses(\"x\") = Post()\n",
         );
     });
-    let (report, _program) = check_project(&root, &config()).expect("check");
+    let (report, program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.assignment_type");
     // A keyed-leaf write target is clearable (present-or-clear), so it presents
     // `Status?`; the write enforces the same nominal enum identity through it.
@@ -560,7 +560,7 @@ fn keyed_leaf_with_a_bare_unique_foreign_enum_rejects_resource_value() {
         &found,
         |d| &d.payload,
         MarrowType::Optional(Box::new(enum_type("kinds", "Status"))),
-        MarrowType::Resource("app::Post".into()),
+        MarrowType::Resource(support::resource_id(&program, "app", "Post")),
     );
 }
 

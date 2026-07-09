@@ -1299,12 +1299,13 @@ impl StatementCheck<'_> {
         let Some((root, members)) = local_field_write_path(target) else {
             return false;
         };
-        let Some(MarrowType::Resource(name)) =
+        let Some(MarrowType::Resource(id)) =
             self.scope.iter().rev().find_map(|frame| frame.get(root))
         else {
             return false;
         };
-        crate::driver::resolve_resource_type(self.program, name)
+        self.program
+            .resource_by_id(*id)
             .is_some_and(|(resource, _)| descent_leaves_local_resource(resource, &members))
     }
 

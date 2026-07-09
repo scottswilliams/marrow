@@ -13,10 +13,10 @@
 use crate::support;
 use marrow_check::{
     CHECK_ASSIGNMENT_TYPE, CHECK_OPERATOR_TYPE, CHECK_UNKNOWN_FIELD, CHECK_UNRESOLVED_OPTIONAL,
-    CheckReport, DiagnosticPayload, MarrowType,
+    CheckReport, CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
-use support::{check_module_report, with_code};
+use support::{check_module_program, check_module_report, resource_id, with_code};
 
 const STORE: &str = "module m\n\
      enum Status\n\
@@ -43,8 +43,10 @@ fn assert_one_rule(report: &CheckReport) {
     );
 }
 
-fn book_optional() -> MarrowType {
-    MarrowType::Optional(Box::new(MarrowType::Resource("m::Book".into())))
+fn book_optional(program: &CheckedProgram) -> MarrowType {
+    MarrowType::Optional(Box::new(MarrowType::Resource(resource_id(
+        program, "m", "Book",
+    ))))
 }
 
 fn status_optional() -> MarrowType {
@@ -160,17 +162,17 @@ fn a_present_bound_enum_rejects_a_cross_type_comparison() {
 /// `Unknown` recursion defer, emitting no diagnostic at all.
 #[test]
 fn an_optional_resource_annotation_never_types_as_unknown() {
-    let report = report(
+    let (found, program) = check_module_program(
         "resource-optional-never-unknown",
-        "fn f(b: Book?)\n    const x: Status? = b\n",
+        &format!("{STORE}fn f(b: Book?)\n    const x: Status? = b\n"),
+        CHECK_ASSIGNMENT_TYPE,
     );
-    let found = with_code(&report, CHECK_ASSIGNMENT_TYPE);
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
             expected: status_optional(),
-            found: book_optional(),
+            found: book_optional(&program),
         },
         "{found:#?}"
     );
@@ -181,16 +183,16 @@ fn an_optional_resource_annotation_never_types_as_unknown() {
 /// proving the `Status?` annotation kept its nominal enum identity.
 #[test]
 fn an_optional_enum_annotation_never_types_as_unknown() {
-    let report = report(
+    let (found, program) = check_module_program(
         "enum-optional-never-unknown",
-        "fn f(s: Status?)\n    const x: Book? = s\n",
+        &format!("{STORE}fn f(s: Status?)\n    const x: Book? = s\n"),
+        CHECK_ASSIGNMENT_TYPE,
     );
-    let found = with_code(&report, CHECK_ASSIGNMENT_TYPE);
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found.len(), 1, "{found:#?}");
     assert_eq!(
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
-            expected: book_optional(),
+            expected: book_optional(&program),
             found: status_optional(),
         },
         "{found:#?}"
