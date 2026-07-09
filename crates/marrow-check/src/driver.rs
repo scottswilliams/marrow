@@ -21,9 +21,7 @@ use crate::diagnostics::{
     ConversionTarget, DiagnosticPayload, IO_READ, SurfaceCollisionNameKind,
 };
 use crate::enums;
-use crate::program::{
-    CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram, TypeNames,
-};
+use crate::program::{CheckedConst, CheckedFunction, CheckedModule, CheckedParam, CheckedProgram};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::rules;
 use crate::{MarrowType, ScalarType};
@@ -598,7 +596,7 @@ pub(crate) fn check_tests_with_sources_analysis(
     // true owner — resolved against the combined program — before the type pass
     // reads them. The project modules carry the project's own normalized
     // signatures already.
-    enums::normalize_program_named_types(project, &parsed_files);
+    enums::bind_signature_types(project, &parsed_files);
     crate::keyed_entries::normalize_resource_layers(
         project,
         &parsed_files,
@@ -849,29 +847,12 @@ pub(crate) fn check_file_source(
         diagnostics,
     );
 
-    let mut module_enums: Vec<String> = Vec::new();
     let mut module_stored_resources: HashSet<String> = HashSet::new();
     for declaration in &parsed.file.declarations {
-        match declaration {
-            marrow_syntax::Declaration::Enum(decl) => module_enums.push(decl.name.clone()),
-            marrow_syntax::Declaration::Store(store) => {
-                module_stored_resources.insert(store.resource.clone());
-            }
-            _ => {}
+        if let marrow_syntax::Declaration::Store(store) = declaration {
+            module_stored_resources.insert(store.resource.clone());
         }
     }
-    // A bare enum annotation in a signature names this module's enum, so the
-    // resolved type carries the module's qualified name as the enum's owner. A
-    // module-less script has no declared name (its enums are project-unique).
-    let module_name = parsed
-        .file
-        .module
-        .as_ref()
-        .map_or("", |module| module.name.as_str());
-    let names = TypeNames {
-        module: module_name,
-        enums: &module_enums,
-    };
     let resources = checked_resources(
         file_path,
         &parsed,
@@ -899,7 +880,7 @@ pub(crate) fn check_file_source(
             marrow_syntax::Declaration::Function(function) => {
                 rules::check_function_body(file_path, function, &module_const_names, diagnostics);
                 check_local_key_types(file_path, function, diagnostics);
-                functions.push(checked_function(function, names));
+                functions.push(checked_function(function));
             }
             marrow_syntax::Declaration::Resource(_) => {}
             marrow_syntax::Declaration::Surface(_) => {}
@@ -958,10 +939,7 @@ pub(crate) fn check_file_source(
                 }
                 constants.push(CheckedConst {
                     name: constant.name.clone(),
-                    ty: constant
-                        .ty
-                        .as_ref()
-                        .map(|ty| MarrowType::resolve(ty, names)),
+                    ty: constant.ty.as_ref().map(|_| MarrowType::Unknown),
                     value: value.cloned(),
                     span: constant.span,
                 });
@@ -1181,10 +1159,7 @@ fn schema_diagnostic(file_path: &Path, error: marrow_schema::SchemaError) -> Che
 
 /// Resolve a function declaration for the checked-program artifact: its
 /// signature plus the checked executable body runtime evaluates.
-fn checked_function(
-    function: &marrow_syntax::FunctionDecl,
-    names: TypeNames<'_>,
-) -> CheckedFunction {
+fn checked_function(function: &marrow_syntax::FunctionDecl) -> CheckedFunction {
     CheckedFunction {
         name: function.name.clone(),
         public: function.public,
@@ -1194,18 +1169,12 @@ fn checked_function(
             .map(|param| CheckedParam {
                 name: param.name.clone(),
                 ty: MarrowType::keyed(
-                    param
-                        .keys
-                        .iter()
-                        .map(|key| MarrowType::resolve(&key.ty, names)),
-                    MarrowType::resolve(&param.ty, names),
+                    param.keys.iter().map(|_| MarrowType::Unknown),
+                    MarrowType::Unknown,
                 ),
             })
             .collect(),
-        return_type: function
-            .return_type
-            .as_ref()
-            .map(|ty| MarrowType::resolve(ty, names)),
+        return_type: function.return_type.as_ref().map(|_| MarrowType::Unknown),
         span: function.span,
         runtime_body: None,
     }

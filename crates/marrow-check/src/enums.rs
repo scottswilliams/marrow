@@ -29,7 +29,12 @@ use crate::{
 /// another module. This pass revisits those slots with the full program in hand —
 /// the same `resolve_type` the in-body checks use — so cross-module enum and
 /// resource annotations compare like for like at calls, returns, and constants.
-pub(crate) fn normalize_program_named_types(
+/// The single writer of every named signature slot. Module build leaves each
+/// param, return, and constant annotation `Unknown`; this pass, running once the
+/// whole program is assembled, resolves each against the full program so a
+/// cross-module named type binds to its true owner. Not a repair pass: no earlier
+/// stage resolves these slots.
+pub(crate) fn bind_signature_types(
     program: &mut CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
 ) {

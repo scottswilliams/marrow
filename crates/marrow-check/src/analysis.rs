@@ -11,7 +11,7 @@ use marrow_project::{DiscoverError, ProjectConfig, Sha256Digest, StoreBackend, d
 use marrow_syntax::SourceSpan;
 
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
-use crate::enums::normalize_program_named_types;
+use crate::enums::bind_signature_types;
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_READ_ONLY_EXPRESSION_CONTEXT, CheckDiagnostic, CheckReport,
     CheckedDebugExpression, CheckedFile, CheckedModule, CheckedProgram, DebugSourceIdentity,
@@ -808,9 +808,10 @@ pub(crate) fn analyze_source_project(
         }
     }
 
-    // Stamp each cross-module named-type signature slot with its true owner, now
-    // that the whole program is known, before any pass reads parameter types.
-    normalize_program_named_types(&mut program, &parsed_files);
+    // Bind each named-type signature slot to its true owner, now that the whole
+    // program is known, before any pass reads parameter types. Module build left
+    // these slots `Unknown`; this is their only writer.
+    bind_signature_types(&mut program, &parsed_files);
     crate::keyed_entries::normalize_resource_layers(
         &mut program,
         &parsed_files,

@@ -14,9 +14,9 @@
 //! the same bare name.
 
 use crate::support;
+use marrow_check::check_project;
 
 use support::{check_module, check_script, config, temp_project, with_code, write};
-use marrow_check::check_project;
 
 /// The lone message of the first diagnostic with `code`, panicking if the count is
 /// not exactly one so a golden never silently pins the wrong diagnostic.
