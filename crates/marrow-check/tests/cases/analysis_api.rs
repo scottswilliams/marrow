@@ -1675,7 +1675,10 @@ fn checked_debug_expression_reuses_read_only_effect_diagnostics() {
 
 #[test]
 fn direct_read_only_and_debug_ranges_receive_the_range_value_diagnostic() {
-    let source = "module m\nfn f()\n    print(1)\n";
+    let source = "module m\n\
+        resource Post\n    published: int\n\
+        store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+        fn f()\n    print(1)\n";
     let (snapshot, paths) =
         analyze_overlay("debug-expression-range-value", &[("src/m.mw", source)]);
     support::assert_clean(&snapshot.report);
@@ -1705,6 +1708,18 @@ fn direct_read_only_and_debug_ranges_receive_the_range_value_diagnostic() {
         [CHECK_RANGE_VALUE],
         "{debug:#?}"
     );
+
+    snapshot
+        .program
+        .checked_read_only_expression("m", "count(^posts.byDate(1..10))")
+        .expect("a saved index range remains a valid count argument");
+    snapshot
+        .checked_debug_expression(
+            &path,
+            stop_span(source, "print(1)"),
+            "count(^posts.byDate(1..10))",
+        )
+        .expect("debug evaluation preserves the saved index range exception");
 }
 
 #[test]

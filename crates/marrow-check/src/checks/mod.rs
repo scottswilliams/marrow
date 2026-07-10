@@ -34,7 +34,7 @@ pub(crate) use driver::{
 };
 pub(crate) use loop_head::for_frame;
 pub(crate) use operators::{CoalesceCheck, check_binary, check_coalesce, check_unary};
-pub(crate) use ranges::check_range_value;
+pub(crate) use ranges::{check_range_value, check_range_value_in_scope};
 pub(crate) use saved_keys::{
     SavedKeyArgCheck, check_saved_key_args, saved_root_args_address_record,
 };

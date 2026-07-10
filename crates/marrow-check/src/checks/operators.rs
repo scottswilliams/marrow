@@ -409,10 +409,23 @@ pub(crate) fn check_binary(
         ));
         return MarrowType::Invalid;
     }
-    // A concrete non-scalar can never participate in a non-equality operator,
-    // even when its sibling is dynamic or unresolved recovery.
-    if !matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
-        && (is_concrete_nonscalar(left) || is_concrete_nonscalar(right))
+    let left_deferred = matches!(
+        disposition(left),
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    );
+    let right_deferred = matches!(
+        disposition(right),
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    );
+    // Deferral is sound only when each known sibling can participate in some
+    // valid instance of this operator. A dynamic peer cannot make `true` valid
+    // for `+`, or make a sequence equatable.
+    if (left_deferred
+        && !right_deferred
+        && !binary_known_operand_may_participate(op, right, BinaryOperandSide::Right))
+        || (right_deferred
+            && !left_deferred
+            && !binary_known_operand_may_participate(op, left, BinaryOperandSide::Left))
     {
         diagnostics.push(operator_diagnostic(
             file,
@@ -426,13 +439,7 @@ pub(crate) fn check_binary(
         ));
         return MarrowType::Invalid;
     }
-    if matches!(
-        disposition(left),
-        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    ) || matches!(
-        disposition(right),
-        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    ) {
+    if left_deferred || right_deferred {
         return MarrowType::Unknown;
     }
     // Equality over concrete non-scalars is decided before the `as_primitive` gate;
@@ -536,6 +543,56 @@ pub(crate) fn check_binary(
         return MarrowType::Invalid;
     }
     result
+}
+
+#[derive(Clone, Copy)]
+enum BinaryOperandSide {
+    Left,
+    Right,
+}
+
+/// Whether one known operand could participate in at least one valid instance
+/// of `op` if its sibling's deferred type were later resolved. This is a local
+/// existential check, not result typing: it rejects only universally invalid
+/// siblings before Dynamic/Recovery deferral.
+fn binary_known_operand_may_participate(
+    op: marrow_syntax::BinaryOp,
+    operand: &MarrowType,
+    side: BinaryOperandSide,
+) -> bool {
+    use marrow_syntax::BinaryOp;
+    if let Some(scalar) = as_primitive(operand) {
+        return match op {
+            BinaryOp::Add => match side {
+                BinaryOperandSide::Left => {
+                    is_numeric(scalar)
+                        || matches!(
+                            scalar,
+                            ScalarType::Str | ScalarType::Instant | ScalarType::Duration
+                        )
+                }
+                BinaryOperandSide::Right => {
+                    is_numeric(scalar) || matches!(scalar, ScalarType::Str | ScalarType::Duration)
+                }
+            },
+            BinaryOp::Subtract => {
+                is_numeric(scalar) || matches!(scalar, ScalarType::Instant | ScalarType::Duration)
+            }
+            BinaryOp::Multiply | BinaryOp::Divide => is_numeric(scalar),
+            BinaryOp::Remainder => scalar == ScalarType::Int,
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                is_ordered(scalar)
+            }
+            BinaryOp::Equal | BinaryOp::NotEqual => true,
+            BinaryOp::And | BinaryOp::Or => scalar == ScalarType::Bool,
+            BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => true,
+            BinaryOp::Coalesce | BinaryOp::Is => {
+                unreachable!("`??` and `is` do not reach binary sibling admission")
+            }
+        };
+    }
+    matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+        && matches!(operand, MarrowType::Identity(_) | MarrowType::Enum(_))
 }
 
 /// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`

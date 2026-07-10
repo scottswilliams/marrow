@@ -1071,7 +1071,13 @@ impl CheckedProgram {
         };
 
         let aliases = crate::build_alias_map(&module.imports);
-        crate::checks::check_range_value(&module.source_file, &parsed, &mut diagnostics);
+        crate::checks::check_range_value_in_scope(
+            self,
+            &module.source_file,
+            &parsed,
+            scope,
+            &mut diagnostics,
+        );
         let ty = crate::infer::infer_type(
             self,
             &parsed,

@@ -15,6 +15,7 @@ use crate::enums::{
     resolve_type, same_module_private_enum,
 };
 use crate::infer::infer_type;
+use crate::typerules::{Admission, InferredBindingFault, admit_inferred_binding};
 use crate::{
     CHECK_EXPOSED_PRIVATE_ENUM, CHECK_MISSING_RETURN, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE,
     CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticAnchor, DiagnosticPayload, MarrowType,
@@ -302,7 +303,10 @@ fn build_file_prelude(
             }
             let ty = match (annotation_type, value_type) {
                 (Some(ty), _) => ty,
-                (None, Some(value_type)) => value_type,
+                (None, Some(value_type)) => match admit_inferred_binding(&value_type) {
+                    Admission::Rejected(InferredBindingFault::NoValue) => MarrowType::Invalid,
+                    Admission::Accepted | Admission::Poisoned => value_type,
+                },
                 // The value did not parse; the parser already reported the error.
                 (None, None) => MarrowType::Unknown,
             };

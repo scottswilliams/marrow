@@ -11,7 +11,7 @@ use std::path::Path;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::infer_only;
+use crate::infer::{infer_only, infer_type};
 use crate::typerules::{
     TypeDisposition, as_primitive, disposition, is_steppable, marrow_type_name,
 };
@@ -19,6 +19,7 @@ use crate::walk::for_each_child_expr;
 use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, MarrowType};
 
 use super::diagnostics::range_diagnostic;
+use super::saved_paths::is_saved_key_range_path;
 
 /// The endpoint scalar type of a range iterable when both endpoints are the same
 /// steppable type, or `None` for any other iterable or a mismatched/non-steppable
@@ -83,6 +84,51 @@ pub(crate) fn check_range_value_guarded(
     });
 }
 
+/// Apply the range-as-value rule in a checked expression scope, preserving the
+/// one legitimate value-position range: an index key range passed directly to
+/// `exists` or `count`.
+pub(crate) fn check_range_value_in_scope(
+    program: &CheckedProgram,
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    check_range_value_guarded(
+        file,
+        expr,
+        &|candidate| allowed_saved_key_range_value_context(program, candidate, scope, file),
+        diagnostics,
+    );
+}
+
+fn allowed_saved_key_range_value_context(
+    program: &CheckedProgram,
+    value: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    let marrow_syntax::Expression::Call { callee, args, .. } = value else {
+        return false;
+    };
+    let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
+        return false;
+    };
+    let [name] = segments.as_slice() else {
+        return false;
+    };
+    let [arg] = args.as_slice() else {
+        return false;
+    };
+    if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value, scope, file) {
+        return false;
+    }
+    // A saved key-range argument to a cardinality or presence call is a
+    // traversal shape. Its own argument checker decides which saved shapes the
+    // operation supports.
+    matches!(name.as_str(), "exists" | "count")
+}
+
 pub(super) fn check_range_iterable_value_parts(
     file: &Path,
     iterable: &marrow_syntax::Expression,
@@ -137,7 +183,26 @@ pub(crate) fn check_range_header(
     };
     let left_type = infer_only(program, left, scope, aliases, file);
     let right_type = infer_only(program, right, scope, aliases, file);
-    let step_type = step.map(|step| infer_only(program, step, scope, aliases, file));
+    let mut step_inference_diagnostics = Vec::new();
+    let step_type = step.map(|step| {
+        infer_type(
+            program,
+            step,
+            scope,
+            aliases,
+            file,
+            &mut step_inference_diagnostics,
+        )
+    });
+    // Unary inference deliberately does not model a negative duration literal,
+    // because durations are non-negative values. Range-step checking owns that
+    // syntax and validates its direction below, so retain the historical
+    // deferral only for that one shape. Every other diagnosed step expression is
+    // an independent error that a deferred endpoint must not hide.
+    if !step_inference_diagnostics.is_empty() && !step.is_some_and(is_negated_duration_literal) {
+        diagnostics.extend(step_inference_diagnostics);
+        return;
+    }
     if step_type
         .as_ref()
         .is_some_and(|step_type| disposition(step_type) == TypeDisposition::NoValue)
@@ -167,13 +232,30 @@ pub(crate) fn check_range_header(
         ));
         return;
     }
-    if matches!(
+    let endpoint_deferred = matches!(
         left_state,
         TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
     ) || matches!(
         right_state,
         TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    ) {
+    );
+    if endpoint_deferred {
+        if let (Some(step), Some(step_type)) = (step, step_type.as_ref())
+            && disposition(step_type) == TypeDisposition::Concrete
+            && !matches!(
+                as_primitive(step_type),
+                Some(ScalarType::Int | ScalarType::Duration)
+            )
+        {
+            diagnostics.push(range_diagnostic(
+                file,
+                step.span(),
+                format!(
+                    "a range step must be `int` or `duration`, not `{}`",
+                    marrow_type_name(&program.decl_ids(), step_type),
+                ),
+            ));
+        }
         return;
     }
     // The endpoint scalar drives the step, direction, and dead-loop rules. Route the
@@ -296,6 +378,16 @@ fn literal_duration_seconds(expr: &marrow_syntax::Expression) -> Option<i64> {
         } => literal_duration_seconds(operand),
         _ => None,
     }
+}
+
+fn is_negated_duration_literal(expr: &marrow_syntax::Expression) -> bool {
+    matches!(
+        expr,
+        marrow_syntax::Expression::Unary {
+            op: marrow_syntax::UnaryOp::Neg,
+            ..
+        }
+    ) && literal_duration_seconds(expr).is_some()
 }
 
 /// The step-type rule: `int` endpoints step by `int`; date/instant endpoints

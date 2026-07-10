@@ -626,6 +626,65 @@ fn clean_recovery_destination_preserves_the_existing_assignment_deferral() {
 }
 
 #[test]
+fn recovery_does_not_hide_unconditionally_invalid_operator_or_range_step_siblings() {
+    let mut failures = Vec::new();
+    for (name, source, expected) in [
+        (
+            "dynamic-add-bool",
+            "module m\nfn f(value: unknown)\n    print(value + true)\n",
+            &["check.operator_type"][..],
+        ),
+        (
+            "recovery-add-bool",
+            "module m\nfn f(xs: sequence[int])\n    print(keys(xs) + true)\n",
+            &["check.operator_type"][..],
+        ),
+        (
+            "dynamic-equals-sequence",
+            "module m\nfn f(value: unknown, xs: sequence[int])\n    print(value == xs)\n",
+            &["check.operator_type"][..],
+        ),
+        (
+            "recovery-equals-sequence",
+            "module m\nfn f(xs: sequence[int], ys: sequence[int])\n    print(keys(xs) == ys)\n",
+            &["check.operator_type"][..],
+        ),
+        (
+            "dynamic-string-step",
+            "module m\nfn f(start: unknown)\n    for x in start..10 by \"bad\"\n        print(x)\n",
+            &["check.range"][..],
+        ),
+        (
+            "recovery-string-step",
+            "module m\nfn f(xs: sequence[int])\n    for x in keys(xs)..10 by \"bad\"\n        print(x)\n",
+            &["check.range"][..],
+        ),
+        (
+            "diagnosed-step-expression",
+            "module m\nfn f()\n    for x in 1..10 by 1 + true\n        print(x)\n",
+            &["check.operator_type"][..],
+        ),
+    ] {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-invalid-sibling-{name}"),
+            source,
+            expected,
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn rejected_unannotated_module_constant_propagates_poison() {
+    assert_codes(
+        "typed-admission-module-const-no-value-poison",
+        "module m\nconst BAD = print(\"x\")\n\nfn f(): int\n    return BAD\n",
+        &["check.non_constant_const"],
+    );
+}
+
+#[test]
 fn no_value_is_rejected_by_value_operators_predicates_ranges_and_accesses() {
     let mut failures = Vec::new();
     let operator_cases = [

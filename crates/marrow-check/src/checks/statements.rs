@@ -37,7 +37,7 @@ use super::operators::{
     check_assignment, check_binary, check_condition, check_return_type, check_throw_type,
 };
 use super::ranges::{
-    check_range_header, check_range_iterable_value_parts, check_range_value_guarded,
+    check_range_header, check_range_iterable_value_parts, check_range_value_in_scope,
 };
 use super::required_fields::RequiredFieldAssignments;
 use super::returns::check_return_values;
@@ -1776,12 +1776,7 @@ impl StatementCheck<'_> {
 
     fn check_range_value(&mut self, value: &marrow_syntax::Expression) {
         let (program, scope, file) = (self.program, &*self.scope, self.file);
-        check_range_value_guarded(
-            file,
-            value,
-            &|expr| allowed_saved_key_range_value_context(program, expr, scope, file),
-            self.diagnostics,
-        );
+        check_range_value_in_scope(program, file, value, scope, self.diagnostics);
     }
 }
 
@@ -1842,34 +1837,6 @@ fn statement_prevents_fallthrough(statement: &marrow_syntax::Statement) -> bool 
         | Statement::For { .. }
         | Statement::Error { .. } => false,
     }
-}
-
-fn allowed_saved_key_range_value_context(
-    program: &CheckedProgram,
-    value: &marrow_syntax::Expression,
-    scope: &[HashMap<String, MarrowType>],
-    file: &Path,
-) -> bool {
-    let marrow_syntax::Expression::Call { callee, args, .. } = value else {
-        return false;
-    };
-    let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
-        return false;
-    };
-    let [name] = segments.as_slice() else {
-        return false;
-    };
-    let [arg] = args.as_slice() else {
-        return false;
-    };
-    if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value, scope, file) {
-        return false;
-    }
-    // A saved key-range argument to a cardinality or presence call is a legitimate
-    // traversal shape, not a range used outside a `for`. Whether the specific shape is
-    // supported (a store-root or keyed-layer range counts as neither) is owned by the
-    // call's own argument rule, which reports an accurate message there.
-    matches!(name.as_str(), "exists" | "count")
 }
 
 /// The local root and ordered member chain of a field write, e.g.

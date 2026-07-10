@@ -420,9 +420,9 @@ fn maybe_return_absence_forms_are_checked_against_the_signature() {
     // `falls_through` never returns (`check.missing_return`). `plain_return`
     // returns void from a `T?` function and `absent_from_void` returns a value from
     // a void function (both `check.return_value`). The empty optional reaches a
-    // non-optional slot in both `absent_from_plain` (`int`) and `absent_from_void`
-    // (void's `unknown` slot), and the one rule's arm precedes the `unknown`
-    // deferral, so each raises `check.unresolved_optional`.
+    // non-optional `int` slot in `absent_from_plain`, so the one rule raises
+    // `check.unresolved_optional`. Return presence is the sole owner for a void
+    // function, so `absent_from_void` does not add a dependent type diagnostic.
     assert_eq!(
         with_code(&report, "check.missing_return").len(),
         1,
@@ -437,7 +437,7 @@ fn maybe_return_absence_forms_are_checked_against_the_signature() {
     );
     assert_eq!(
         with_code(&report, "check.unresolved_optional").len(),
-        2,
+        1,
         "{:#?}",
         report.diagnostics
     );

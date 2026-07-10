@@ -234,6 +234,8 @@ fn no_value_value_boundaries_use_typed_state_dispatch() {
     let root = repo_root();
     let infer =
         std::fs::read_to_string(root.join("crates/marrow-check/src/infer.rs")).expect("read infer");
+    let driver = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/driver.rs"))
+        .expect("read checker driver");
     let diagnostics = std::fs::read_to_string(root.join("crates/marrow-check/src/diagnostics.rs"))
         .expect("read diagnostics");
     let operators =
@@ -300,6 +302,18 @@ fn no_value_value_boundaries_use_typed_state_dispatch() {
         ),
         (
             &infer,
+            "fn binding_type(",
+            "/// Record `name`'s type",
+            "admit_inferred_binding(",
+        ),
+        (
+            &driver,
+            "fn checked_file_prelude(",
+            "fn infer_module_const_value(",
+            "admit_inferred_binding(",
+        ),
+        (
+            &infer,
             "Expression::Interpolation { parts, .. } => {",
             "Expression::Name { segments, span, .. }",
             "ErrorCheckpoint",
@@ -309,6 +323,12 @@ fn no_value_value_boundaries_use_typed_state_dispatch() {
             "fn infer_field_access(",
             "fn reject_saved_access(",
             "disposition(",
+        ),
+        (
+            &statements,
+            "fn check_binding_statement(",
+            "fn check_uninitialized_binding(",
+            "admit_inferred_binding(",
         ),
         (
             &statements,

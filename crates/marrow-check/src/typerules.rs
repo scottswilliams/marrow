@@ -460,25 +460,12 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
             MarrowType::LocalTree {
                 keys: other_keys,
                 value: other_value,
-            } if keys.len() == other_keys.len() => {
-                let (has_unknown, has_mismatch) = keys.iter().zip(other_keys).fold(
-                    (false, false),
-                    |(has_unknown, has_mismatch), (expected, actual)| match type_compatible(
-                        expected, actual,
-                    ) {
-                        Some(true) => (has_unknown, has_mismatch),
-                        Some(false) => (has_unknown, true),
-                        None => (true, has_mismatch),
-                    },
-                );
-                if has_unknown {
-                    None
-                } else if has_mismatch {
-                    Some(false)
-                } else {
-                    type_compatible(value, other_value)
-                }
-            }
+            } if keys.len() == other_keys.len() => keys
+                .iter()
+                .zip(other_keys)
+                .map(|(expected, actual)| type_compatible(expected, actual))
+                .chain(std::iter::once(type_compatible(value, other_value)))
+                .fold(Some(true), merge_compatibility),
             MarrowType::LocalTree { .. } => Some(false),
             _ => Some(false),
         },
@@ -489,6 +476,18 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
         MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => {
             None
         }
+    }
+}
+
+/// Conjoin two compatibility facts. A definite mismatch dominates recovery,
+/// recovery dominates agreement, and only complete agreement is `Some(true)`.
+/// This prevents one indeterminate structural member from hiding a known-bad
+/// sibling while preserving deferral when no mismatch is established.
+fn merge_compatibility(left: Option<bool>, right: Option<bool>) -> Option<bool> {
+    match (left, right) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (None, _) | (_, None) => None,
+        (Some(true), Some(true)) => Some(true),
     }
 }
 
@@ -817,6 +816,22 @@ mod admission_tests {
                 &MarrowType::Sequence(Box::new(int_type())),
             ),
             Admission::Accepted,
+        );
+    }
+
+    #[test]
+    fn strict_value_admission_rejects_a_known_structural_mismatch_beside_recovery() {
+        let expected = MarrowType::LocalTree {
+            keys: vec![MarrowType::Unknown, int_type()],
+            value: Box::new(int_type()),
+        };
+        let actual = MarrowType::LocalTree {
+            keys: vec![int_type(), MarrowType::Primitive(crate::ScalarType::Str)],
+            value: Box::new(int_type()),
+        };
+        assert_eq!(
+            admit_strict_value(&expected, &actual),
+            Admission::Rejected(StrictValueFault::Mismatch),
         );
     }
 
