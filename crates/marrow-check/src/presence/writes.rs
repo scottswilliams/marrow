@@ -7,31 +7,53 @@ use crate::{
 
 use super::util::extend_unique;
 use crate::executable::accepted_saved_place;
-use crate::facts::{DirectEffectFacts, EffectClosureFacts, StoreId};
+use crate::facts::{CheckedFacts, DirectEffectFacts, EffectClosureFacts, StoreId};
 
+/// The transitive effect closure of a function, read from the built phase-2 table.
+/// The Close phase computes every function's closure once (a monotone-union fixpoint
+/// over the call graph, sharing one closure across a mutual-recursion SCC), so this
+/// is a table lookup rather than a demand-driven re-walk.
 pub(crate) fn effect_closure(
     program: &CheckedProgram,
     function_ref: CheckedFunctionRef,
 ) -> Option<EffectClosureFacts> {
-    program.facts.function_for_ref(function_ref)?;
-    let mut closure = EffectClosureFacts::default();
-    collect_function_closure(program, function_ref, &mut closure, &mut Vec::new());
-    set_write_reachability(&mut closure);
-    Some(closure)
+    let function_id = program.facts.function_id_for_ref(function_ref)?;
+    program.facts.effect_closure_for(function_id).cloned()
 }
 
+/// The transitive closure of an ad-hoc direct-effect set that is not a stored
+/// function body (a debug expression). Its own atoms union with each named callee's
+/// built closure, so the shared fixpoint is reused rather than re-walked.
 pub(crate) fn effect_closure_for_direct(
     program: &CheckedProgram,
     direct: &DirectEffectFacts,
 ) -> EffectClosureFacts {
     let mut closure = EffectClosureFacts::default();
     extend_closure(&mut closure, direct);
-    let mut visited = Vec::new();
     for callee in &direct.user_function_calls {
-        collect_function_closure(program, *callee, &mut closure, &mut visited);
+        if let Some(callee_id) = program.facts.function_id_for_ref(*callee)
+            && let Some(callee_closure) = program.facts.effect_closure_for(callee_id)
+        {
+            union_closure(&mut closure, callee_closure);
+        }
     }
     set_write_reachability(&mut closure);
     closure
+}
+
+/// Build one function's transitive closure directly from the direct-effect summaries
+/// on the facts. This is the phase-2 fixpoint's per-function transfer: it visits every
+/// transitively reachable callee once (cycle-guarded), so a mutual-recursion SCC's
+/// members each accumulate the whole SCC's effects.
+pub(crate) fn build_function_closure(
+    facts: &CheckedFacts,
+    function_ref: CheckedFunctionRef,
+) -> Option<EffectClosureFacts> {
+    facts.function_for_ref(function_ref)?;
+    let mut closure = EffectClosureFacts::default();
+    collect_function_closure(facts, function_ref, &mut closure, &mut Vec::new());
+    set_write_reachability(&mut closure);
+    Some(closure)
 }
 
 /// The stores a user-function call actually writes a saved record or index entry to. A
@@ -94,7 +116,7 @@ fn call_writes_saved_data(
 }
 
 fn collect_function_closure(
-    program: &CheckedProgram,
+    facts: &CheckedFacts,
     function_ref: CheckedFunctionRef,
     closure: &mut EffectClosureFacts,
     visited: &mut Vec<CheckedFunctionRef>,
@@ -102,14 +124,14 @@ fn collect_function_closure(
     if visited.contains(&function_ref) {
         return;
     }
-    let Some(function) = program.facts.function_for_ref(function_ref) else {
+    let Some(function) = facts.function_for_ref(function_ref) else {
         return;
     };
     visited.push(function_ref);
     let direct = function.direct_effects.clone();
     extend_closure(closure, &direct);
     for callee in direct.user_function_calls {
-        collect_function_closure(program, callee, closure, visited);
+        collect_function_closure(facts, callee, closure, visited);
     }
 }
 
@@ -176,6 +198,30 @@ fn extend_closure(closure: &mut EffectClosureFacts, direct: &DirectEffectFacts) 
     extend_unique(&mut closure.host_calls, direct.host_calls.clone());
     closure.unindexed_collection_reads |= direct.unindexed_collection_reads;
     closure.throws |= direct.throws;
+}
+
+/// Union an already-built closure's atoms into `closure`. Used by the ad-hoc
+/// debug-expression path to fold in a named callee's phase-2 closure without
+/// re-walking the call graph. `write_effects_reachable` is recomputed by the caller
+/// after every union, so it is not merged here.
+fn union_closure(closure: &mut EffectClosureFacts, other: &EffectClosureFacts) {
+    extend_unique(&mut closure.saved_reads, other.saved_reads.clone());
+    extend_unique(&mut closure.stores_read, other.stores_read.clone());
+    extend_unique(
+        &mut closure.saved_index_reads,
+        other.saved_index_reads.clone(),
+    );
+    extend_unique(&mut closure.saved_writes, other.saved_writes.clone());
+    extend_unique(&mut closure.stores_written, other.stores_written.clone());
+    extend_unique(
+        &mut closure.saved_index_writes,
+        other.saved_index_writes.clone(),
+    );
+    extend_unique(&mut closure.indexes_touched, other.indexes_touched.clone());
+    closure.transactions |= other.transactions;
+    extend_unique(&mut closure.host_calls, other.host_calls.clone());
+    closure.unindexed_collection_reads |= other.unindexed_collection_reads;
+    closure.throws |= other.throws;
 }
 
 fn set_write_reachability(closure: &mut EffectClosureFacts) {

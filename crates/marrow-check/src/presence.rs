@@ -21,7 +21,7 @@ pub(crate) use read_only::{
 pub(crate) use target::{
     ReadTarget, exists_target_in_type_scope, read_value_resolves_in_type_scope,
 };
-pub(crate) use writes::{effect_closure, effect_closure_for_direct};
+pub(crate) use writes::{build_function_closure, effect_closure, effect_closure_for_direct};
 
 #[derive(Clone, Copy)]
 pub(crate) struct TransformOldReadScope<'a> {

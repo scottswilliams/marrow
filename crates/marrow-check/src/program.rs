@@ -1024,6 +1024,7 @@ impl CheckedProgram {
             transform.runtime_body = body;
         }
         self.facts.refresh_direct_effects(&self.modules);
+        self.facts.refresh_effect_closures();
     }
 }
 

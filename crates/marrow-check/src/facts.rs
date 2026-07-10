@@ -36,6 +36,11 @@ struct StoreIndexBinding<'a> {
 pub struct CheckedFacts {
     modules: Vec<ModuleFact>,
     functions: Vec<FunctionFact>,
+    /// Each function's transitive effect closure, indexed by `FunctionId`. Built by the
+    /// phase-2 Close (`refresh_effect_closures`) once the phase-1 direct effects are in
+    /// place, so every cross-body effect read is a table lookup rather than a
+    /// demand-driven re-walk of the call graph.
+    effect_closures: Vec<EffectClosureFacts>,
     locals: Vec<LocalFact>,
     resources: Vec<ResourceFact>,
     stores: Vec<StoreFact>,
@@ -506,6 +511,32 @@ impl CheckedFacts {
         for (function, effects) in self.functions.iter_mut().zip(effects) {
             function.direct_effects = effects;
         }
+    }
+
+    /// Phase-2 Close: build every function's transitive effect closure from the
+    /// phase-1 direct summaries. The lattice is a finite union of effect atoms and the
+    /// transfer is monotone, so the per-function fixpoint terminates; a mutual-recursion
+    /// SCC's members each accumulate the whole SCC's effects. Must run after
+    /// [`Self::refresh_direct_effects`], whose output it reads.
+    pub(crate) fn refresh_effect_closures(&mut self) {
+        self.effect_closures = self
+            .functions
+            .iter()
+            .map(|fact| {
+                let function_ref = CheckedFunctionRef {
+                    module: fact.module.0,
+                    function: fact.source_index,
+                };
+                crate::presence::build_function_closure(self, function_ref).unwrap_or_default()
+            })
+            .collect();
+    }
+
+    /// A function's transitive effect closure from the built phase-2 table. `None` when
+    /// the table has not been built (before the first lowering) or the id is out of
+    /// range.
+    pub fn effect_closure_for(&self, id: FunctionId) -> Option<&EffectClosureFacts> {
+        self.effect_closures.get(id.0 as usize)
     }
 
     pub(crate) fn overwrite_prefix_from(&mut self, prefix: &Self) {

@@ -309,6 +309,78 @@ fn pending_catalog_proposal_keeps_read_only_entry_write_capable() {
     );
 }
 
+/// The built per-function closure table (phase-2 Close) must reproduce the
+/// demand-driven `effect_closure` walk exactly for every function, including a
+/// mutual-recursion SCC where `write` and `readThenWrite` call each other. The
+/// monotone-union fixpoint over the call graph shares one closure across an SCC,
+/// so both members report the same reachable write set no matter the declaration
+/// order. Asserting equality against the on-demand walk pins that the table is a
+/// faithful batching of the same computation, not a divergent second owner.
+fn assert_built_closures_match_demand(source: &str) {
+    let root = temp_project("effect-closure-built-table", |root| {
+        write(root, "src/books.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    for fact in program.facts.functions() {
+        let function_ref = CheckedFunctionRef {
+            module: fact.module.0,
+            function: fact.source_index,
+        };
+        let demand = program
+            .effect_closure(function_ref)
+            .expect("demand-driven closure");
+        let built = program
+            .facts
+            .effect_closure_for(fact.id)
+            .expect("built closure table entry");
+        assert_eq!(
+            *built, demand,
+            "built closure table must reproduce the demand-driven walk for {}",
+            fact.name
+        );
+    }
+}
+
+#[test]
+fn built_closure_table_reproduces_demand_driven_walk_writer_first() {
+    assert_built_closures_match_demand(
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         store ^books(id: int): Book\n\
+         fn write(id: int, shelf: string)\n\
+         \x20   ^books(id).shelf = shelf\n\
+         \x20   readThenWrite(id, shelf)\n\
+         fn readThenWrite(id: int, shelf: string)\n\
+         \x20   const current = ^books(id).shelf ?? \"\"\n\
+         \x20   write(id, current)\n\
+         pub fn save(id: int, shelf: string)\n\
+         \x20   write(id, shelf)\n",
+    );
+}
+
+#[test]
+fn built_closure_table_reproduces_demand_driven_walk_reader_first() {
+    assert_built_closures_match_demand(
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         store ^books(id: int): Book\n\
+         fn readThenWrite(id: int, shelf: string)\n\
+         \x20   const current = ^books(id).shelf ?? \"\"\n\
+         \x20   write(id, current)\n\
+         fn write(id: int, shelf: string)\n\
+         \x20   ^books(id).shelf = shelf\n\
+         \x20   readThenWrite(id, shelf)\n\
+         pub fn save(id: int, shelf: string)\n\
+         \x20   write(id, shelf)\n",
+    );
+}
+
 #[test]
 fn closure_uses_source_index_specific_function_facts() {
     let root = temp_project("effect-closure-duplicate-source-index", |root| {
