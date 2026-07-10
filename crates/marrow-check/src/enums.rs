@@ -899,8 +899,9 @@ fn check_is_unpoisoned(input: IsCheck<'_>) -> MarrowType {
         _ => None,
     };
     let Some((left_module, left_name)) = left_enum else {
-        // Dynamic, non-value, unresolved, and already-errored operands defer to
-        // their owning gates instead of cascading a second enum error.
+        // Dynamic and unresolved operands defer to their owning gates. NoValue is
+        // a resolved absence of a value and is rejected here with other concrete
+        // non-enum operands.
         match disposition(left_type) {
             TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic => {}
             TypeDisposition::NoValue | TypeDisposition::Concrete => {

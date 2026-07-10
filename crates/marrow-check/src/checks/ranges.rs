@@ -137,6 +137,19 @@ pub(crate) fn check_range_header(
     };
     let left_type = infer_only(program, left, scope, aliases, file);
     let right_type = infer_only(program, right, scope, aliases, file);
+    let step_type = step.map(|step| infer_only(program, step, scope, aliases, file));
+    if step_type
+        .as_ref()
+        .is_some_and(|step_type| disposition(step_type) == TypeDisposition::NoValue)
+    {
+        diagnostics.push(range_diagnostic(
+            file,
+            step.expect("a step type exists only for a written step")
+                .span(),
+            "a range `by` step must produce a value".to_string(),
+        ));
+        return;
+    }
     let left_state = disposition(&left_type);
     let right_state = disposition(&right_type);
     if left_state == TypeDisposition::Poisoned || right_state == TypeDisposition::Poisoned {
@@ -184,7 +197,6 @@ pub(crate) fn check_range_header(
             return;
         }
     };
-    let step_type = step.map(|step| infer_only(program, step, scope, aliases, file));
     // `infer_only` discards diagnostics, so its top-level `Invalid` is not proof of
     // diagnosed poison here: for example, unary inference rejects a negated duration
     // before the range-specific temporal rule interprets it. An `Invalid` nested in a
@@ -192,18 +204,6 @@ pub(crate) fn check_range_header(
     if step_type.as_ref().is_some_and(|step_type| {
         step_type.contains_invalid() && !matches!(step_type, MarrowType::Invalid)
     }) {
-        return;
-    }
-    if step_type
-        .as_ref()
-        .is_some_and(|step_type| disposition(step_type) == TypeDisposition::NoValue)
-    {
-        diagnostics.push(range_diagnostic(
-            file,
-            step.expect("a step type exists only for a written step")
-                .span(),
-            "a range `by` step must produce a value".to_string(),
-        ));
         return;
     }
     let step_type = step_type.as_ref().map(as_primitive);

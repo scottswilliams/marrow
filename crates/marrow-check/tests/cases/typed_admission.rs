@@ -526,6 +526,106 @@ fn no_value_is_rejected_at_strict_slots_coalesce_conversion_and_loops() {
 }
 
 #[test]
+fn no_value_cannot_be_inferred_as_a_local_and_void_return_presence_owns_its_error() {
+    let mut failures = Vec::new();
+    for (name, statement) in [
+        ("const", "const value = print(\"x\")"),
+        ("var", "var value = print(\"x\")"),
+        ("keyed-var", "var value(key: int) = print(\"x\")"),
+    ] {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-no-value-unannotated-{name}"),
+            &format!("module m\nfn f()\n    {statement}\n"),
+            &["check.untyped_value"],
+        );
+    }
+    record_code_failure(
+        &mut failures,
+        "typed-admission-void-return-presence-owner",
+        "module m\nfn f()\n    return 1\n",
+        &["check.return_value"],
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn dynamic_or_recovery_operands_do_not_hide_a_statically_invalid_binary_sibling() {
+    let mut failures = Vec::new();
+    let cases = [
+        (
+            "dynamic-sequence",
+            "module m\nfn f(value: unknown, xs: sequence[int])\n    print(value + xs)\n",
+        ),
+        (
+            "recovery-sequence",
+            "module m\nfn f(xs: sequence[int], ys: sequence[int])\n    print(keys(xs) + ys)\n",
+        ),
+        (
+            "dynamic-error",
+            "module m\nfn f(value: unknown)\n    print(value + Error(code: \"a.b\", message: \"m\"))\n",
+        ),
+        (
+            "recovery-error",
+            "module m\nfn f(xs: sequence[int])\n    print(keys(xs) + Error(code: \"a.b\", message: \"m\"))\n",
+        ),
+    ];
+    for (name, source) in cases {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-mixed-binary-{name}"),
+            source,
+            &["check.operator_type"],
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn no_value_step_and_rejected_results_cannot_be_laundered_by_recovery() {
+    let mut failures = Vec::new();
+    for (name, source) in [
+        (
+            "dynamic-range-step",
+            "module m\nfn f(start: unknown)\n    for x in start..10 by print(\"step\")\n        print(x)\n",
+        ),
+        (
+            "recovery-range-step",
+            "module m\nfn f(xs: sequence[int])\n    for x in keys(xs)..10 by print(\"step\")\n        print(x)\n",
+        ),
+    ] {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-{name}"),
+            source,
+            &["check.range"],
+        );
+    }
+    record_code_failure(
+        &mut failures,
+        "typed-admission-rejected-print-result",
+        "module m\nfn f(): int\n    return print(print(\"x\"))\n",
+        &["check.operator_type"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-rejected-if-const-subject",
+        "module m\nfn f()\n    if const x: int = print(\"x\")\n        print(x)\n",
+        &["check.condition_type"],
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn clean_recovery_destination_preserves_the_existing_assignment_deferral() {
+    assert_codes(
+        "typed-admission-recovery-destination",
+        "module m\nfn f(xs: sequence[int])\n    var values = keys(xs)\n    values = 1\n",
+        &[],
+    );
+}
+
+#[test]
 fn no_value_is_rejected_by_value_operators_predicates_ranges_and_accesses() {
     let mut failures = Vec::new();
     let operator_cases = [

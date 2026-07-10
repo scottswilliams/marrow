@@ -149,6 +149,9 @@ pub(crate) fn check_return_type(
     if return_type.contains_invalid() || value_type.contains_invalid() {
         return;
     }
+    if disposition(return_type) == TypeDisposition::NoValue {
+        return;
+    }
     if let Some(diagnostic) = unresolved_optional(return_type, value_type, span, file) {
         diagnostics.push(diagnostic);
         return;
@@ -392,17 +395,9 @@ pub(crate) fn check_binary(
         ));
         return MarrowType::Invalid;
     }
-    if matches!(
-        disposition(left),
-        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    ) || matches!(
-        disposition(right),
-        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    ) {
-        return MarrowType::Unknown;
-    }
     // `Error` is a concrete type with no binary operator. Flag it before the
-    // `as_primitive` gate, which would otherwise drop it to `Unknown`.
+    // dynamic/recovery and scalar gates: the operator is invalid regardless of
+    // the other operand's eventual type.
     if matches!(left, MarrowType::Error) || matches!(right, MarrowType::Error) {
         diagnostics.push(operator_diagnostic(
             file,
@@ -414,6 +409,32 @@ pub(crate) fn check_binary(
         ));
         return MarrowType::Invalid;
     }
+    // A concrete non-scalar can never participate in a non-equality operator,
+    // even when its sibling is dynamic or unresolved recovery.
+    if !matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+        && (is_concrete_nonscalar(left) || is_concrete_nonscalar(right))
+    {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!(
+                "operator `{}` cannot be applied to `{}` and `{}`",
+                binary_symbol(op),
+                marrow_type_name(names, left),
+                marrow_type_name(names, right),
+            ),
+        ));
+        return MarrowType::Invalid;
+    }
+    if matches!(
+        disposition(left),
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    ) || matches!(
+        disposition(right),
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    ) {
+        return MarrowType::Unknown;
+    }
     // Equality over concrete non-scalars is decided before the `as_primitive` gate;
     // an `Unknown` operand defers to the scalar path.
     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
@@ -421,8 +442,8 @@ pub(crate) fn check_binary(
     {
         return result;
     }
-    // No non-equality operator applies to a concrete non-scalar operand. Flag it
-    // before the scalar gate; an `Unknown` operand still defers there.
+    // Equality dispatch above owns its concrete non-scalar combinations. Reaching
+    // this guard is defensive for any future operator added before scalar lowering.
     if is_concrete_nonscalar(left) || is_concrete_nonscalar(right) {
         diagnostics.push(operator_diagnostic(
             file,

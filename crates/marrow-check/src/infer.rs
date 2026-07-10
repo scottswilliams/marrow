@@ -22,10 +22,10 @@ use crate::executable::{
 };
 use crate::model::decls::DeclIds;
 use crate::typerules::{
-    Admission, KeyAdmission, KeyFault, KeyPolicy, LiteralSign, RangeTypeAggregate, TypeDisposition,
-    admit_key, check_literal_range, disposition, is_optional_value, marrow_type_name,
-    merge_key_admission, negated_integer_literal, type_renderable_at_runtime,
-    unresolved_optional_diagnostic,
+    Admission, InferredBindingFault, KeyAdmission, KeyFault, KeyPolicy, LiteralSign,
+    RangeTypeAggregate, TypeDisposition, admit_inferred_binding, admit_key, check_literal_range,
+    disposition, is_optional_value, marrow_type_name, merge_key_admission, negated_integer_literal,
+    type_renderable_at_runtime, unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CheckDiagnostic,
@@ -62,7 +62,10 @@ fn binding_type(
 ) -> MarrowType {
     match annotation {
         Some(ty) => resolve_diagnosed_annotation_type(ty, program, aliases, file),
-        None => value_type,
+        None => match admit_inferred_binding(&value_type) {
+            Admission::Rejected(InferredBindingFault::NoValue) => MarrowType::Invalid,
+            Admission::Accepted | Admission::Poisoned => value_type,
+        },
     }
 }
 
@@ -656,6 +659,7 @@ fn infer_value(
                 arg_types.push(inferred.ty);
                 saved_range_types.push(inferred.saved_range);
             }
+            let render_checkpoint = ErrorCheckpoint::new(diagnostics);
             check_print_argument_renderable(
                 program,
                 callee,
@@ -665,6 +669,9 @@ fn infer_value(
                 file,
                 diagnostics,
             );
+            if render_checkpoint.has_new_error(diagnostics) {
+                return MarrowType::Invalid;
+            }
             let names = program.decl_ids();
             if let Some(ty) = local_collection_access_type(
                 KeyAccessEmit {

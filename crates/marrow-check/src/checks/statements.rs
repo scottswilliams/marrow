@@ -20,16 +20,18 @@ use crate::infer::{
 use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
-    Admission, CollectionFault, TypeDisposition, admit_collection_operand, disposition,
-    is_optional_value,
+    Admission, CollectionFault, InferredBindingFault, TypeDisposition, admit_collection_operand,
+    admit_inferred_binding, disposition, is_optional_value,
 };
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_TYPE, CHECK_UNRESOLVED_NAME,
-    CheckDiagnostic, CheckedProgram, ConditionTypeFault, DiagnosticPayload, MarrowType,
+    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram, ConditionTypeFault, DiagnosticPayload,
+    MarrowType,
 };
 
 use super::calls::is_by_value_collection_slot;
 use super::const_int::{ConstIntScope, fold_const_int};
+use super::diagnostics::ErrorCheckpoint;
 use super::loop_head::{LoopHeadScope, check_for_head, for_frame};
 use super::operators::{
     check_assignment, check_binary, check_condition, check_return_type, check_throw_type,
@@ -743,6 +745,20 @@ impl StatementCheck<'_> {
                     self.diagnostics,
                 );
             }
+        }
+        if annotation.is_none()
+            && let Some(value) = value
+            && matches!(
+                admit_inferred_binding(&value_type),
+                Admission::Rejected(InferredBindingFault::NoValue)
+            )
+        {
+            self.diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                self.file,
+                value.span(),
+                "a binding initializer must produce a value",
+            ));
         }
         if annotation.is_none()
             && matches!(value_type, MarrowType::Absent)
@@ -1480,6 +1496,7 @@ impl StatementCheck<'_> {
         };
         let annotation = annotation.as_ref();
         let else_block = else_block.as_ref();
+        let subject_checkpoint = ErrorCheckpoint::new(self.diagnostics);
         let value_type = self.infer(value);
         self.check_range_value(value);
         self.require_optional_if_const_subject(value, &value_type);
@@ -1496,7 +1513,11 @@ impl StatementCheck<'_> {
         }
         // `if const` binds the present arm of the maybe-present subject: one optional
         // layer is stripped, so the then-block sees `T` for a subject typed `T?`.
-        let present_type = value_type.without_optional();
+        let present_type = if subject_checkpoint.has_new_error(self.diagnostics) {
+            MarrowType::Invalid
+        } else {
+            value_type.without_optional()
+        };
         // A written annotation names the bound (present) type, like the type on a
         // `const`/`var`: an unresolvable name is a `check.unknown_type` and a
         // disagreeing type a `check.assignment_type`, and it then types the binding.

@@ -49,6 +49,21 @@ pub(crate) enum CollectionFault {
     NoValue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InferredBindingFault {
+    NoValue,
+}
+
+pub(crate) fn admit_inferred_binding(ty: &MarrowType) -> Admission<InferredBindingFault> {
+    match disposition(ty) {
+        TypeDisposition::Poisoned => Admission::Poisoned,
+        TypeDisposition::NoValue => Admission::Rejected(InferredBindingFault::NoValue),
+        TypeDisposition::Recovery
+        | TypeDisposition::ExplicitDynamic
+        | TypeDisposition::Concrete => Admission::Accepted,
+    }
+}
+
 pub(crate) fn admit_collection_operand(ty: &MarrowType) -> Admission<CollectionFault> {
     match disposition(ty) {
         TypeDisposition::Poisoned => Admission::Poisoned,
@@ -206,7 +221,8 @@ pub(crate) fn admit_strict_value(
         TypeDisposition::Concrete if expected == actual => Admission::Accepted,
         TypeDisposition::Concrete => match type_compatible(expected, actual) {
             Some(true) => Admission::Accepted,
-            Some(false) | None => Admission::Rejected(StrictValueFault::Mismatch),
+            Some(false) => Admission::Rejected(StrictValueFault::Mismatch),
+            None => Admission::Accepted,
         },
     }
 }
@@ -685,9 +701,9 @@ mod admission_tests {
     use marrow_syntax::SourceSpan;
 
     use super::{
-        Admission, CollectionFault, KeyFault, KeyPolicy, RangeTypeAggregate, StrictValueFault,
-        TypeDisposition, admit_collection_operand, admit_key, admit_strict_value, disposition,
-        merge_key_admission, unresolved_optional,
+        Admission, CollectionFault, InferredBindingFault, KeyFault, KeyPolicy, RangeTypeAggregate,
+        StrictValueFault, TypeDisposition, admit_collection_operand, admit_inferred_binding,
+        admit_key, admit_strict_value, disposition, merge_key_admission, unresolved_optional,
     };
     use crate::MarrowType;
 
@@ -787,6 +803,36 @@ mod admission_tests {
         let ty = MarrowType::Sequence(Box::new(MarrowType::Dynamic));
 
         assert_eq!(admit_strict_value(&ty, &ty), Admission::Accepted);
+    }
+
+    #[test]
+    fn strict_value_admission_defers_indeterminate_expected_shapes() {
+        assert_eq!(
+            admit_strict_value(&MarrowType::Unknown, &int_type()),
+            Admission::Accepted,
+        );
+        assert_eq!(
+            admit_strict_value(
+                &MarrowType::Sequence(Box::new(MarrowType::Unknown)),
+                &MarrowType::Sequence(Box::new(int_type())),
+            ),
+            Admission::Accepted,
+        );
+    }
+
+    #[test]
+    fn inferred_binding_admission_rejects_only_no_value_and_propagates_poison() {
+        assert_eq!(
+            admit_inferred_binding(&MarrowType::NoValue),
+            Admission::Rejected(InferredBindingFault::NoValue),
+        );
+        assert_eq!(
+            admit_inferred_binding(&MarrowType::Invalid),
+            Admission::Poisoned,
+        );
+        for ty in [MarrowType::Unknown, MarrowType::Dynamic, int_type()] {
+            assert_eq!(admit_inferred_binding(&ty), Admission::Accepted, "{ty:?}");
+        }
     }
 
     #[test]

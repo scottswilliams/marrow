@@ -1071,6 +1071,7 @@ impl CheckedProgram {
         };
 
         let aliases = crate::build_alias_map(&module.imports);
+        crate::checks::check_range_value(&module.source_file, &parsed, &mut diagnostics);
         let ty = crate::infer::infer_type(
             self,
             &parsed,

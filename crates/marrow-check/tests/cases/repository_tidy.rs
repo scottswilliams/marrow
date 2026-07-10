@@ -337,11 +337,17 @@ fn no_value_value_boundaries_use_typed_state_dispatch() {
     ];
     let grouped = [
         "MarrowType::Dynamic | MarrowType::NoValue",
+        "MarrowType::NoValue | MarrowType::Dynamic",
         "MarrowType::Invalid | MarrowType::NoValue",
+        "MarrowType::NoValue | MarrowType::Invalid",
         "MarrowType::NoValue | MarrowType::Unknown",
+        "MarrowType::Unknown | MarrowType::NoValue",
         "TypeDisposition::Recovery | TypeDisposition::NoValue",
+        "TypeDisposition::NoValue | TypeDisposition::Recovery",
         "TypeDisposition::ExplicitDynamic | TypeDisposition::NoValue",
+        "TypeDisposition::NoValue | TypeDisposition::ExplicitDynamic",
         "TypeDisposition::Poisoned | TypeDisposition::NoValue",
+        "TypeDisposition::NoValue | TypeDisposition::Poisoned",
     ];
     let mut violations = Vec::new();
     for (source, start, end, owner) in boundaries {

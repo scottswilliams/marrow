@@ -22,12 +22,12 @@ use marrow_check::tooling::{
     stamped_saved_data_child_views, stamped_saved_data_root_views_in_store,
 };
 use marrow_check::{
-    CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
-    CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CatalogLifecycle, CheckedProgram,
-    DebugExpressionDataAccess, DiagnosticPayload, EntryStoreOpenMode, ProjectSources,
-    StoreLeafKind, SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceReadFootprint,
-    SurfaceReadOperationKind, UseSiteKind, WorkShapeClass, analyze_project, check_project,
-    scope_at, type_at,
+    CHECK_RANGE_VALUE, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
+    CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE,
+    CatalogEntryKind, CatalogLifecycle, CheckedProgram, DebugExpressionDataAccess,
+    DiagnosticPayload, EntryStoreOpenMode, ProjectSources, StoreLeafKind, SurfaceCatalogBlocker,
+    SurfaceCatalogStatus, SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind,
+    WorkShapeClass, analyze_project, check_project, scope_at, type_at,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType, Type};
@@ -1670,6 +1670,40 @@ fn checked_debug_expression_reuses_read_only_effect_diagnostics() {
             .iter()
             .any(|diagnostic| diagnostic.code == CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP),
         "{unindexed:#?}"
+    );
+}
+
+#[test]
+fn direct_read_only_and_debug_ranges_receive_the_range_value_diagnostic() {
+    let source = "module m\nfn f()\n    print(1)\n";
+    let (snapshot, paths) =
+        analyze_overlay("debug-expression-range-value", &[("src/m.mw", source)]);
+    support::assert_clean(&snapshot.report);
+    let path = paths.into_iter().next().expect("source path");
+
+    let read_only = snapshot
+        .program
+        .checked_read_only_expression("m", "1..10")
+        .expect_err("a range is not a read-only expression value");
+    assert_eq!(
+        read_only
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [CHECK_RANGE_VALUE],
+        "{read_only:#?}"
+    );
+
+    let debug = snapshot
+        .checked_debug_expression(&path, stop_span(source, "print(1)"), "1..10")
+        .expect_err("a range is not a debug expression value");
+    assert_eq!(
+        debug
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [CHECK_RANGE_VALUE],
+        "{debug:#?}"
     );
 }
 
