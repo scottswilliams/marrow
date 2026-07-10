@@ -70,7 +70,9 @@ pub fn render_marrow_type(names: &DeclIds<'_>, ty: &MarrowType) -> String {
         MarrowType::Error => "Error".to_string(),
         MarrowType::Resource(id) => names.resource_display(*id),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
-        MarrowType::Identity(root) => format!("Id(^{root})"),
+        MarrowType::Identity(root) => {
+            format!("Id(^{})", names.root_spelling(*root).unwrap_or("?"))
+        }
         MarrowType::Enum(id) => match names.enum_owner_and_name(*id) {
             Some(("", name)) => name.to_string(),
             Some((module, name)) => format!("{module}::{name}"),

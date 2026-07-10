@@ -61,6 +61,19 @@ impl StoreRootArena {
         arena
     }
 
+    /// Build an arena that interns the given declared roots in order, for tests that
+    /// render an identity leaf without a full program. Each root is aligned with a
+    /// [`StoreId`] at its position, matching how [`Self::build`] lays declared roots
+    /// out first.
+    #[cfg(test)]
+    pub(crate) fn from_declared_roots(roots: &[&str]) -> Self {
+        let mut arena = Self::default();
+        for (index, root) in roots.iter().enumerate() {
+            arena.intern(root.to_string(), Some(StoreId(index as u32)));
+        }
+        arena
+    }
+
     fn intern(&mut self, spelling: String, declared: Option<StoreId>) -> StoreRootId {
         if let Some(id) = self.by_spelling.get(&spelling) {
             return *id;

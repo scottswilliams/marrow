@@ -154,6 +154,14 @@ fn check_program_at(
     (found, program)
 }
 
+/// Check a single library module and return its whole report alongside the checked
+/// program, for a test that asserts across several codes and recovers an interned
+/// id from the program's facts.
+pub fn check_module_report_program(name: &str, src: &str) -> (CheckReport, CheckedProgram) {
+    let root = temp_project(name, |root| write(root, "src/m.mw", src));
+    check_project(&root, &config()).expect("check")
+}
+
 /// The interned id of the resource named `resource` in module `module` (empty for a
 /// module-less script), for building an expected `MarrowType::Resource` without
 /// hardcoding an arena index.
@@ -180,6 +188,18 @@ pub fn enum_id(program: &CheckedProgram, module: &str, enum_name: &str) -> EnumI
         .facts
         .enum_id(module_id, enum_name)
         .unwrap_or_else(|| panic!("no enum `{enum_name}` in `{module}`"))
+}
+
+/// The interned id of a declared store root, for building an expected
+/// `MarrowType::Identity` without hardcoding an arena index.
+pub fn identity_root_id(
+    program: &CheckedProgram,
+    root: &str,
+) -> marrow_check::model::decls::StoreRootId {
+    program
+        .decl_roots
+        .id(root)
+        .unwrap_or_else(|| panic!("no store root `{root}`"))
 }
 
 /// Check a single library module and return its whole report, for tests that assert a

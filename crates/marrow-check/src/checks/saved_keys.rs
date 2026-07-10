@@ -384,7 +384,9 @@ fn check_root_args_against(
         return;
     }
     if let [MarrowType::Identity(_)] = arg_types {
-        let expected = MarrowType::Identity(place.root.clone());
+        let expected = names
+            .root_id(&place.root)
+            .map_or(MarrowType::Unknown, MarrowType::Identity);
         if type_compatible(&expected, &arg_types[0]) == Some(false) {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -411,6 +413,7 @@ fn check_root_args_against(
 }
 
 pub(crate) fn saved_root_args_address_record(
+    program: &CheckedProgram,
     store: &StoreSchema,
     args: &[Argument],
     arg_types: &[MarrowType],
@@ -422,7 +425,8 @@ pub(crate) fn saved_root_args_address_record(
         return false;
     }
     if let [MarrowType::Identity(_)] = arg_types {
-        return type_compatible(&identity_type_for_store(store), &arg_types[0]) != Some(false);
+        return type_compatible(&identity_type_for_store(program, store), &arg_types[0])
+            != Some(false);
     }
     if args.len() != store.identity_keys.len() {
         return false;

@@ -760,6 +760,26 @@ mod tests {
         )
     }
 
+    /// The interned id of a declared root in a test arena that holds only `roots`,
+    /// paired with a render helper over that arena, so an identity-leaf prose golden
+    /// recovers its `^root` spelling by id.
+    fn identity_root(roots: &crate::model::decls::StoreRootArena, root: &str) -> MarrowType {
+        MarrowType::Identity(roots.id(root).expect("root interned"))
+    }
+
+    fn render_with_roots(
+        code: Code,
+        payload: &DiagnosticPayload,
+        roots: &crate::model::decls::StoreRootArena,
+    ) -> String {
+        let facts = crate::facts::CheckedFacts::default();
+        render_message(
+            code,
+            payload,
+            &crate::model::decls::DeclIds::new(&facts, roots),
+        )
+    }
+
     /// The catalog-identity and evolution codes render exactly the prose their old
     /// construction sites built, pinning the wording the renderer now owns.
     #[test]
@@ -946,10 +966,15 @@ mod tests {
             }),
             "condition must be `bool`, found `Error`",
         );
+        let roots = crate::model::decls::StoreRootArena::from_declared_roots(&["books"]);
         assert_eq!(
-            condition(ConditionTypeFault::NotBool {
-                found: MarrowType::Identity("books".into()),
-            }),
+            render_with_roots(
+                Code::CheckConditionType,
+                &DiagnosticPayload::ConditionType(ConditionTypeFault::NotBool {
+                    found: identity_root(&roots, "books"),
+                }),
+                &roots,
+            ),
             "condition must be `bool`, found `Id(^books)`",
         );
         assert_eq!(
@@ -1515,11 +1540,16 @@ mod tests {
             }),
             "argument to `std::assert::equal` expects `int`, but found `string`",
         );
+        let roots = crate::model::decls::StoreRootArena::from_declared_roots(&["books"]);
         assert_eq!(
-            call(CallArgumentFault::AssertEqualNonScalar {
-                label: "std::assert::equal".into(),
-                found: MarrowType::Identity("books".into()),
-            }),
+            render_with_roots(
+                Code::CheckCallArgument,
+                &DiagnosticPayload::CallArgument(CallArgumentFault::AssertEqualNonScalar {
+                    label: "std::assert::equal".into(),
+                    found: identity_root(&roots, "books"),
+                }),
+                &roots,
+            ),
             "argument to `std::assert::equal` expects a scalar, but found `Id(^books)`",
         );
         assert_eq!(

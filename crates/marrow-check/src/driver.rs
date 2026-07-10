@@ -100,8 +100,13 @@ pub fn check_project_with_catalog(
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 
-pub(crate) fn identity_type_for_store(store: &marrow_schema::StoreSchema) -> MarrowType {
-    MarrowType::Identity(store.root.clone())
+pub(crate) fn identity_type_for_store(
+    program: &CheckedProgram,
+    store: &marrow_schema::StoreSchema,
+) -> MarrowType {
+    program
+        .identity_leaf_id(&store.root)
+        .map_or(MarrowType::Unknown, MarrowType::Identity)
 }
 
 pub(crate) fn resource_type_name(module: &str, resource: &str) -> String {

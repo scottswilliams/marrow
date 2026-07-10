@@ -200,6 +200,7 @@ impl Narrowing {
             return;
         };
         let scope = ctx.name_scope();
+        let names = ctx.program.decl_ids();
         // A saved-path write addresses one node, so it invalidates only the
         // member-precise written target, which already covers same-field
         // alias-possible keys. A saved path merely *uses* its key bindings to
@@ -208,12 +209,12 @@ impl Narrowing {
         // local reassignment — a bare name or a record field a narrowed key reads —
         // instead rebinds that key, so every narrowing keyed on it must drop.
         if checked.saved_place().is_none() {
-            let assigned = assigned_bindings(&checked, &scope);
+            let assigned = assigned_bindings(&names, &checked, &scope);
             let by_binding = targets_invalidated_by_key_bindings(&self.narrowed, &assigned);
             self.invalidate(by_binding);
         }
         if let Some(written) = read_target_with_scope(ctx.program, &checked, &scope) {
-            let by_write = targets_invalidated_by_written_target(&self.narrowed, &written);
+            let by_write = targets_invalidated_by_written_target(&names, &self.narrowed, &written);
             self.invalidate(by_write);
         }
     }

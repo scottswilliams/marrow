@@ -1131,8 +1131,13 @@ fn resolve_resource_type_ref_in_module(
             resolve_resource_type_ref_in_module(element, program, aliases, module_name)
                 .map(|element_type| MarrowType::Sequence(Box::new(element_type)))
         }
-        Type::Identity(store_root) => resolve_store_by_root(program, store_root)
-            .map(|_| MarrowType::Identity(store_root.clone())),
+        // An identity annotation names a store root whether or not that root is
+        // declared: an undeclared `Id(^missing)` stays a live identity leaf that a
+        // later mismatch spells, matching a declared root's treatment. The root
+        // arena interns both, so the leaf's id comes from there.
+        Type::Identity(store_root) => program
+            .identity_leaf_id(store_root)
+            .map(MarrowType::Identity),
         Type::Named(_) => resolve_resource_annotation_type(ty, program, aliases, module_name)
             .and_then(|resolved| {
                 program

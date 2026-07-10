@@ -1509,7 +1509,7 @@ fn check_identity_constructor(
         diagnostics,
     );
     check_identity_sequence_position(store.store, key_args, const_ints, span, file, diagnostics);
-    identity_type_for_store(store.store)
+    identity_type_for_store(program, store.store)
 }
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root, which types to
@@ -1564,7 +1564,7 @@ pub(crate) fn check_next_id(
         return MarrowType::Unknown;
     };
     if store.store.single_int_root() {
-        return identity_type_for_store(store.store);
+        return identity_type_for_store(program, store.store);
     }
     diagnostics.push(CheckDiagnostic::error(
         CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
@@ -1596,8 +1596,14 @@ fn check_neighbor(
         return MarrowType::Unknown;
     };
     let Some(checked) = lower_expr_for_file(env.program, env.file, &arg.value, env.scope) else {
-        if let Some(MarrowType::Identity(root)) = arg_types.first() {
-            return neighbor_unsupported_bare_identity(env, which, root);
+        if let Some(MarrowType::Identity(root)) = arg_types.first()
+            && let Some(root) = env
+                .program
+                .decl_ids()
+                .root_spelling(*root)
+                .map(str::to_string)
+        {
+            return neighbor_unsupported_bare_identity(env, which, &root);
         }
         return MarrowType::Unknown;
     };
@@ -1648,7 +1654,15 @@ fn check_neighbor(
             .unwrap_or(MarrowType::Unknown),
         _ => match arg_types.first() {
             Some(MarrowType::Identity(root)) => {
-                neighbor_unsupported_bare_identity(env, which, root)
+                match env
+                    .program
+                    .decl_ids()
+                    .root_spelling(*root)
+                    .map(str::to_string)
+                {
+                    Some(root) => neighbor_unsupported_bare_identity(env, which, &root),
+                    None => MarrowType::Unknown,
+                }
             }
             _ => MarrowType::Unknown,
         },
@@ -1679,7 +1693,15 @@ fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
         }
         return MarrowType::Unknown;
     };
-    let Some(store) = resolve_store_by_root(env.program, root) else {
+    let Some(root) = env
+        .program
+        .decl_ids()
+        .root_spelling(*root)
+        .map(str::to_string)
+    else {
+        return MarrowType::Unknown;
+    };
+    let Some(store) = resolve_store_by_root(env.program, &root) else {
         return MarrowType::Unknown;
     };
     let [single_key] = store.store.identity_keys.as_slice() else {

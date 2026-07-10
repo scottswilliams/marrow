@@ -39,6 +39,11 @@ pub struct CheckedFacts {
     locals: Vec<LocalFact>,
     resources: Vec<ResourceFact>,
     stores: Vec<StoreFact>,
+    /// The store each interned identity root names, indexed by `StoreRootId`: the
+    /// distinct store roots first-wins in store order, matching how the root arena
+    /// lays declared roots out. An identity type leaf resolves to its store through
+    /// this, which is duplicate-root safe unlike positional store indexing.
+    identity_root_stores: Vec<Option<StoreId>>,
     store_indexes: Vec<StoreIndexFact>,
     surfaces: Vec<SurfaceFact>,
     resource_members: Vec<ResourceMemberFact>,
@@ -142,6 +147,7 @@ impl CheckedFacts {
         });
         facts.store_id_by_root =
             index_first_wins(&facts.stores, |fact| (fact.root.clone(), fact.id));
+        facts.identity_root_stores = distinct_root_store_ids(&facts.stores);
         for &(module_id, module, parsed) in &bindings {
             facts.collect_resource_member_facts_for_module(program, module_id, module, parsed);
         }
@@ -513,6 +519,9 @@ impl CheckedFacts {
         overwrite_prefix(&mut self.resource_members, &prefix.resource_members);
         overwrite_prefix(&mut self.enums, &prefix.enums);
         overwrite_prefix(&mut self.enum_members, &prefix.enum_members);
+        // The identity-root store table is derived from the stitched stores, so
+        // rebuild it here to stay aligned with the arena the caller rebuilds next.
+        self.identity_root_stores = distinct_root_store_ids(&self.stores);
     }
 
     pub fn module_id(&self, name: &str) -> Option<ModuleId> {
@@ -1058,7 +1067,15 @@ impl CheckedFacts {
                     members: self.member_path_ids(resource, &names)?,
                 })
             }
-            MarrowType::Identity(root) => self.store_for_root(root).map(CheckedType::Identity),
+            // The distinct-root store table interns roots first-wins in the same
+            // order the identity-root arena does, so the leaf's id names its store
+            // even when two stores share a root; an undeclared root has no store.
+            MarrowType::Identity(root) => self
+                .identity_root_stores
+                .get(root.0 as usize)
+                .copied()
+                .flatten()
+                .map(CheckedType::Identity),
             MarrowType::Enum(id) => Some(CheckedType::Enum(*id)),
             MarrowType::Sequence(element) => self
                 .checked_type(module_id, element)
@@ -1816,6 +1833,21 @@ where
         index.entry(key).or_insert(value);
     }
     index
+}
+
+/// The store each distinct root spelling names, first-wins in store order — the
+/// declared-root layout the identity-root arena interns. A duplicated root
+/// contributes one slot naming its first store, so a `StoreRootId` maps to a store
+/// without assuming one store per root.
+fn distinct_root_store_ids(stores: &[StoreFact]) -> Vec<Option<StoreId>> {
+    let mut seen: HashMap<&str, ()> = HashMap::new();
+    let mut ids = Vec::new();
+    for store in stores {
+        if seen.insert(store.root.as_str(), ()).is_none() {
+            ids.push(Some(store.id));
+        }
+    }
+    ids
 }
 
 /// Key each enum member by its enum and its source-order ordinal within that enum,

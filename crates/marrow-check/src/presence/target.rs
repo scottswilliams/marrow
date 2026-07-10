@@ -205,7 +205,7 @@ pub(super) fn read_target_with_scope(
         {
             return None;
         }
-        let key = expression_key(callee, scope);
+        let key = expression_key(&program.decl_ids(), callee, scope);
         target.keys.insert(0, key.text);
         target.key_types.insert(0, key.ty);
         target.read = read;
@@ -233,7 +233,7 @@ fn local_keyed_target(
     if !local_maybe_present_read(program, expr, scope) {
         return None;
     }
-    let key = expression_key(expr, scope);
+    let key = expression_key(&program.decl_ids(), expr, scope);
     Some(ReadTarget {
         place: ReadPlace::LocalKeyed { key: key.text },
         keys: Vec::new(),
@@ -345,7 +345,7 @@ fn saved_place_target(
     scope: &NameScope,
 ) -> Option<ReadTarget> {
     let place = accepted_saved_place(expr)?;
-    let path = saved_place_key(expr, scope)?;
+    let path = saved_place_key(&program.decl_ids(), expr, scope)?;
     if let Some(index) = checked_saved_index_read(place) {
         let root = path.root;
         let value = store_index_value(place);

@@ -126,11 +126,18 @@ pub(crate) fn checked_runtime_value_type(
         MarrowType::Error => CheckedRuntimeValueType::Error,
         MarrowType::Resource(_) => CheckedRuntimeValueType::Resource,
         MarrowType::GroupEntry { .. } => CheckedRuntimeValueType::GroupEntry,
-        MarrowType::Identity(root) => CheckedRuntimeValueType::Identity {
-            keys: resolve_store_by_root(program, &root)
-                .map(|store| store.store.identity_keys.clone()),
-            root,
-        },
+        MarrowType::Identity(root_id) => {
+            let root = program
+                .decl_ids()
+                .root_spelling(root_id)
+                .unwrap_or_default()
+                .to_string();
+            CheckedRuntimeValueType::Identity {
+                keys: resolve_store_by_root(program, &root)
+                    .map(|store| store.store.identity_keys.clone()),
+                root,
+            }
+        }
         MarrowType::Enum(enum_id) => {
             let (module, name) = program
                 .enum_by_id(enum_id)

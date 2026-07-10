@@ -107,7 +107,7 @@ pub(crate) fn declared_source_receiver_data_children_fact(
     {
         return None;
     }
-    if !saved_root_args_address_record(store.store, args, &arg_types) {
+    if !saved_root_args_address_record(program, store.store, args, &arg_types) {
         return None;
     }
 

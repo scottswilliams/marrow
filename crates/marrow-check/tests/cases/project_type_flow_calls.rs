@@ -201,7 +201,7 @@ fn passing_a_bare_saved_root_to_a_sequence_parameter_is_a_check_error() {
     // by-value `sequence[Id(^players)]` parameter would materialize the whole store.
     // It is a clean `check.call_argument` naming the by-value parameter, not a
     // deferred runtime fault.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "saved-root-to-sequence",
         "module m\n\
          resource Player\n    name: string\n\
@@ -215,7 +215,9 @@ fn passing_a_bare_saved_root_to_a_sequence_parameter_is_a_check_error() {
         found[0].payload,
         DiagnosticPayload::CallArgument(CallArgumentFault::SavedCollectionByValue {
             label: "take".into(),
-            parameter: MarrowType::Sequence(Box::new(MarrowType::Identity("players".into()))),
+            parameter: MarrowType::Sequence(Box::new(MarrowType::Identity(
+                support::identity_root_id(&program, "players"),
+            ))),
         }),
         "{found:#?}"
     );
@@ -256,7 +258,7 @@ fn passing_a_saved_index_branch_to_a_sequence_parameter_is_a_check_error() {
     // An index branch streams identities in place; passing it to a by-value
     // `sequence[Id(^players)]` parameter is the same saved-collection rejection a
     // store root gets — it is not a local value to copy.
-    let found = check_module(
+    let (found, program) = check_module_program(
         "saved-index-branch-to-sequence",
         "module m\n\
          resource Player\n    name: string\n    shelf: string\n\
@@ -270,7 +272,9 @@ fn passing_a_saved_index_branch_to_a_sequence_parameter_is_a_check_error() {
         found[0].payload,
         DiagnosticPayload::CallArgument(CallArgumentFault::SavedCollectionByValue {
             label: "take".into(),
-            parameter: MarrowType::Sequence(Box::new(MarrowType::Identity("players".into()))),
+            parameter: MarrowType::Sequence(Box::new(MarrowType::Identity(
+                support::identity_root_id(&program, "players"),
+            ))),
         }),
         "{found:#?}"
     );

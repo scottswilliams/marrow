@@ -1986,7 +1986,7 @@ fn saved_root_replacement<'p>(
             };
             let store = resolve_store_by_root(check.program, name)?;
             let arg_types = target_arg_types(&check, args);
-            if saved_root_args_address_record(store.store, args, &arg_types) {
+            if saved_root_args_address_record(check.program, store.store, args, &arg_types) {
                 return Some(store);
             }
             None

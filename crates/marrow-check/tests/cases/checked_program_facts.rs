@@ -621,3 +621,43 @@ fn enum_member_selectability_matches_schema_owner() {
         ]
     );
 }
+
+#[test]
+fn identity_fact_of_a_store_after_a_duplicate_root_names_its_own_store() {
+    // Two stores share the root `^shelf` (a diagnosed duplicate), so the identity
+    // root arena interns `^shelf` once and `^log` next — the arena slot of `^log`
+    // no longer equals its store position. An inferred `Id(^log)` return type must
+    // still resolve to the `^log` store, not the store that shares the shifted slot.
+    let root = temp_project("program-fact-duplicate-root-identity", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\n\
+             resource Book\n    required title: string\n\
+             resource Entry\n    required at: string\n\
+             store ^shelf(id: int): Book\n\
+             store ^shelf(id: int): Book\n\
+             store ^log(id: int): Entry\n\n\
+             fn latest(): Id(^log)\n    return nextId(^log)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    // The duplicate root is rejected, but the identity fact must still be correct.
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema.duplicate_root_owner"),
+        "{:#?}",
+        report.diagnostics
+    );
+    let facts = &program.facts;
+    let module = facts.module_id("m").expect("module m");
+    let log = facts.store_id(module, "log").expect("store ^log");
+    let latest = facts.function(facts.function_id(module, "latest").expect("fn latest"));
+    assert_eq!(
+        latest.return_type,
+        Some(CheckedType::Identity(log)),
+        "the `Id(^log)` return must name the `^log` store, not the duplicate-root neighbor",
+    );
+}

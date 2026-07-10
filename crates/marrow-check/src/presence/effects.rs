@@ -4,6 +4,7 @@ use super::target::{ReadPlace, ReadTarget, ReadTargetValue, read_target_with_sco
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
 use crate::facts::{ReadKind, SavedPlaceEffect};
+use crate::model::decls::{DeclIds, StoreRootId};
 use crate::{
     CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedForBinding,
     CheckedProgram, CheckedSavedPlace, CheckedSavedTerminal, CheckedUnaryOp,
@@ -218,12 +219,13 @@ pub(super) fn targets_invalidated_by_key_bindings(
 }
 
 pub(super) fn targets_invalidated_by_written_target(
+    names: &DeclIds<'_>,
     targets: &[ReadTarget],
     written: &ReadTarget,
 ) -> Vec<ReadTarget> {
     targets
         .iter()
-        .filter(|target| written_target_invalidates(written, target))
+        .filter(|target| written_target_invalidates(names, written, target))
         .cloned()
         .collect()
 }
@@ -241,7 +243,11 @@ pub(super) fn saved_targets(targets: &[ReadTarget]) -> Vec<ReadTarget> {
         .collect()
 }
 
-fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool {
+fn written_target_invalidates(
+    names: &DeclIds<'_>,
+    written: &ReadTarget,
+    target: &ReadTarget,
+) -> bool {
     match (&written.place, &target.place) {
         (
             ReadPlace::Saved {
@@ -256,7 +262,7 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
             },
         ) => {
             written_root == target_root
-                && saved_keys_may_overlap(written_root, written, target)
+                && saved_keys_may_overlap(names, written_root, written, target)
                 && related_prefix(written_members, target_members)
         }
         (
@@ -294,8 +300,14 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
     }
 }
 
-fn saved_keys_may_overlap(root: &str, written: &ReadTarget, target: &ReadTarget) -> bool {
-    if identity_splice_key(root, written) || identity_splice_key(root, target) {
+fn saved_keys_may_overlap(
+    names: &DeclIds<'_>,
+    root: &str,
+    written: &ReadTarget,
+    target: &ReadTarget,
+) -> bool {
+    let root_id = names.root_id(root);
+    if identity_splice_key(root_id, written) || identity_splice_key(root_id, target) {
         return true;
     }
     written
@@ -338,19 +350,15 @@ fn distinct_identity_key_types(
     left != right
 }
 
-fn identity_type_root(ty: Option<&Option<crate::MarrowType>>) -> Option<&str> {
+fn identity_type_root(ty: Option<&Option<crate::MarrowType>>) -> Option<StoreRootId> {
     match ty {
-        Some(Some(crate::MarrowType::Identity(root))) => Some(root.as_str()),
+        Some(Some(crate::MarrowType::Identity(root))) => Some(*root),
         _ => None,
     }
 }
 
-fn identity_splice_key(root: &str, target: &ReadTarget) -> bool {
-    target.keys.len() == 1
-        && matches!(
-            target.key_types.first(),
-            Some(Some(crate::MarrowType::Identity(identity_root))) if identity_root == root
-        )
+fn identity_splice_key(root: Option<StoreRootId>, target: &ReadTarget) -> bool {
+    target.keys.len() == 1 && identity_type_root(target.key_types.first()) == root
 }
 
 fn slice_prefix<T: PartialEq>(prefix: &[T], full: &[T]) -> bool {

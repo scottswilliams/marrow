@@ -13,6 +13,7 @@
 
 use super::scope::NameScope;
 use super::util::extend_unique;
+use crate::model::decls::DeclIds;
 use crate::{
     CheckedArg, CheckedCallTarget, CheckedExpr, CheckedInterpolationPart, CheckedSavedTerminal,
     MarrowType,
@@ -37,7 +38,11 @@ pub(super) struct ExprKey {
     pub(super) bindings: Vec<u32>,
 }
 
-pub(super) fn saved_place_key(expr: &CheckedExpr, scope: &NameScope) -> Option<SavedPlaceKey> {
+pub(super) fn saved_place_key(
+    names: &DeclIds<'_>,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Option<SavedPlaceKey> {
     let place = expr.saved_place()?;
     let mut path = SavedPlaceKey {
         root: place.root.clone(),
@@ -56,19 +61,24 @@ pub(super) fn saved_place_key(expr: &CheckedExpr, scope: &NameScope) -> Option<S
             path.members.push(name.clone());
         }
     }
-    append_args_to_key(&mut path, &place.identity_args, scope);
+    append_args_to_key(names, &mut path, &place.identity_args, scope);
     for layer in &place.layers {
-        append_args_to_key(&mut path, &layer.args, scope);
+        append_args_to_key(names, &mut path, &layer.args, scope);
     }
     if let CheckedSavedTerminal::Index { args, .. } = &place.terminal {
-        append_args_to_key(&mut path, args, scope);
+        append_args_to_key(names, &mut path, args, scope);
     }
     Some(path)
 }
 
-fn append_args_to_key(path: &mut SavedPlaceKey, args: &[CheckedArg], scope: &NameScope) {
+fn append_args_to_key(
+    names: &DeclIds<'_>,
+    path: &mut SavedPlaceKey,
+    args: &[CheckedArg],
+    scope: &NameScope,
+) {
     for arg in args {
-        let key = argument_key(arg, scope);
+        let key = argument_key(names, arg, scope);
         path.keys.push(key.text);
         path.key_types.push(key.ty);
         extend_unique(&mut path.key_bindings, key.bindings);
@@ -84,17 +94,21 @@ pub(super) fn binding_key(name: &str, scope: &NameScope) -> Option<ExprKey> {
     })
 }
 
-pub(super) fn assigned_bindings(expr: &CheckedExpr, scope: &NameScope) -> Vec<u32> {
-    expression_key(expr, scope).bindings
+pub(super) fn assigned_bindings(
+    names: &DeclIds<'_>,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Vec<u32> {
+    expression_key(names, expr, scope).bindings
 }
 
-pub(super) fn argument_key(arg: &CheckedArg, scope: &NameScope) -> ExprKey {
+pub(super) fn argument_key(names: &DeclIds<'_>, arg: &CheckedArg, scope: &NameScope) -> ExprKey {
     let mut text = String::new();
     if let Some(name) = &arg.name {
         text.push_str(name);
         text.push('=');
     }
-    let value = expression_key(&arg.value, scope);
+    let value = expression_key(names, &arg.value, scope);
     text.push_str(&value.text);
     ExprKey {
         text,
@@ -103,7 +117,11 @@ pub(super) fn argument_key(arg: &CheckedArg, scope: &NameScope) -> ExprKey {
     }
 }
 
-pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
+pub(super) fn expression_key(
+    names: &DeclIds<'_>,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> ExprKey {
     match expr {
         CheckedExpr::Literal { kind, text, .. } => ExprKey {
             text: format!("lit:{kind:?}:{text}"),
@@ -134,17 +152,17 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             target,
             ..
         } => {
-            let callee = expression_key(callee, scope);
+            let callee = expression_key(names, callee, scope);
             let mut bindings = callee.bindings;
             let mut args_text = Vec::new();
             for arg in args {
-                let arg = argument_key(arg, scope);
+                let arg = argument_key(names, arg, scope);
                 args_text.push(arg.text);
                 extend_unique(&mut bindings, arg.bindings);
             }
             let ty = match target {
                 CheckedCallTarget::IdentityConstructor(constructor) => {
-                    Some(MarrowType::Identity(constructor.root.clone()))
+                    names.root_id(&constructor.root).map(MarrowType::Identity)
                 }
                 _ => None,
             };
@@ -157,7 +175,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
         CheckedExpr::Field {
             base, name, quoted, ..
         } => {
-            let base = expression_key(base, scope);
+            let base = expression_key(names, base, scope);
             ExprKey {
                 text: format!("field:{}:{quoted}:{name}", base.text),
                 ty: None,
@@ -167,7 +185,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
         CheckedExpr::OptionalField {
             base, name, quoted, ..
         } => {
-            let base = expression_key(base, scope);
+            let base = expression_key(names, base, scope);
             ExprKey {
                 text: format!("optional:{}:{quoted}:{name}", base.text),
                 ty: None,
@@ -175,7 +193,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             }
         }
         CheckedExpr::Unary { op, operand, .. } => {
-            let operand = expression_key(operand, scope);
+            let operand = expression_key(names, operand, scope);
             ExprKey {
                 text: format!("unary:{op:?}:{}", operand.text),
                 ty: None,
@@ -185,8 +203,8 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
         CheckedExpr::Binary {
             op, left, right, ..
         } => {
-            let left = expression_key(left, scope);
-            let right = expression_key(right, scope);
+            let left = expression_key(names, left, scope);
+            let right = expression_key(names, right, scope);
             let mut bindings = left.bindings;
             extend_unique(&mut bindings, right.bindings);
             ExprKey {
@@ -206,7 +224,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
             let mut parts = Vec::new();
             for part in [start.as_deref(), end.as_deref(), step.as_deref()] {
                 if let Some(part) = part {
-                    let key = expression_key(part, scope);
+                    let key = expression_key(names, part, scope);
                     extend_unique(&mut bindings, key.bindings);
                     parts.push(key.text);
                 } else {
@@ -226,7 +244,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 .map(|part| match part {
                     CheckedInterpolationPart::Text { text, .. } => format!("text:{text}"),
                     CheckedInterpolationPart::Expr(expr) => {
-                        let expr = expression_key(expr, scope);
+                        let expr = expression_key(names, expr, scope);
                         extend_unique(&mut bindings, expr.bindings);
                         expr.text
                     }
@@ -285,28 +303,36 @@ mod tests {
 
     #[test]
     fn field_expression_keys_preserve_the_quoted_bit() {
+        // A field key never carries an identity leaf, so an empty recovery view
+        // suffices.
+        let facts = crate::facts::CheckedFacts::default();
+        let roots = crate::model::decls::StoreRootArena::default();
+        let names = DeclIds::new(&facts, &roots);
         let scope = NameScope::default();
 
         assert_eq!(
-            expression_key(&field_expr(false), &scope).text,
+            expression_key(&names, &field_expr(false), &scope).text,
             "field:root:books:false:title"
         );
         assert_eq!(
-            expression_key(&field_expr(true), &scope).text,
+            expression_key(&names, &field_expr(true), &scope).text,
             "field:root:books:true:title"
         );
     }
 
     #[test]
     fn optional_field_expression_keys_preserve_the_quoted_bit() {
+        let facts = crate::facts::CheckedFacts::default();
+        let roots = crate::model::decls::StoreRootArena::default();
+        let names = DeclIds::new(&facts, &roots);
         let scope = NameScope::default();
 
         assert_eq!(
-            expression_key(&optional_field_expr(false), &scope).text,
+            expression_key(&names, &optional_field_expr(false), &scope).text,
             "optional:root:books:false:title"
         );
         assert_eq!(
-            expression_key(&optional_field_expr(true), &scope).text,
+            expression_key(&names, &optional_field_expr(true), &scope).text,
             "optional:root:books:true:title"
         );
     }

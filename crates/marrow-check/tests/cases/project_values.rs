@@ -2,8 +2,8 @@ use crate::support;
 use marrow_check::{DiagnosticPayload, MarrowType, check_project};
 
 use support::{
-    assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
-    write,
+    assert_clean, check_module, check_module_report, check_module_report_program, check_script,
+    config, temp_project, with_code, write,
 };
 
 #[test]
@@ -377,7 +377,7 @@ fn nextid_into_an_identity_field_is_not_an_untyped_value() {
 
 #[test]
 fn multiple_stores_over_one_resource_keep_distinct_identities() {
-    let report = check_module_report(
+    let (report, program) = check_module_report_program(
         "two-stores-one-resource",
         "module m\n\
          resource Book\n    title: string\n\
@@ -392,8 +392,8 @@ fn multiple_stores_over_one_resource_keep_distinct_identities() {
     assert_eq!(
         return_type[0].payload,
         DiagnosticPayload::TypeMismatch {
-            expected: MarrowType::Identity("books".into()),
-            found: MarrowType::Identity("archivedBooks".into()),
+            expected: MarrowType::Identity(support::identity_root_id(&program, "books")),
+            found: MarrowType::Identity(support::identity_root_id(&program, "archivedBooks")),
         },
         "{return_type:#?}"
     );

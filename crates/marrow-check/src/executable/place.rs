@@ -454,7 +454,7 @@ impl<'a> SavedPlaceResolver<'a> {
             }
             CheckedSavedTerminal::Field { leaf, .. } => self.leaf_type(leaf.as_ref()?),
             CheckedSavedTerminal::Index { unique, .. } => {
-                unique.then(|| MarrowType::Identity(place.root.clone()))
+                unique.then(|| self.identity_type(place)).flatten()
             }
         }
     }
@@ -482,7 +482,9 @@ impl<'a> SavedPlaceResolver<'a> {
                     .and_then(checked_key_param_type)
             }
             CheckedSavedTerminal::Record if place.identity_args.is_empty() => {
-                (!place.identity_keys.is_empty()).then(|| MarrowType::Identity(place.root.clone()))
+                (!place.identity_keys.is_empty())
+                    .then(|| self.identity_type(place))
+                    .flatten()
             }
             CheckedSavedTerminal::Record => {
                 let position = range_arg_position_in(&place.identity_args)?;
@@ -494,7 +496,7 @@ impl<'a> SavedPlaceResolver<'a> {
             // A non-unique index branch streams the store identity stored in
             // that branch regardless of how many leading components were pinned,
             // so a single-name loop over any partial prefix binds an identity.
-            CheckedSavedTerminal::Index { .. } => Some(MarrowType::Identity(place.root.clone())),
+            CheckedSavedTerminal::Index { .. } => self.identity_type(place),
             CheckedSavedTerminal::Field { .. } => None,
         }
     }
@@ -542,12 +544,23 @@ impl<'a> SavedPlaceResolver<'a> {
         args.iter().position(|arg| checked_range_expr(&arg.value))
     }
 
+    /// The interned identity type a place's declared store root names. A place's
+    /// root is always a declared store, so its spelling is interned; an unresolved
+    /// root yields no identity type.
+    fn identity_type(&self, place: &CheckedSavedPlace) -> Option<MarrowType> {
+        self.program
+            .identity_leaf_id(&place.root)
+            .map(MarrowType::Identity)
+    }
+
     fn leaf_type(&self, leaf: &StoreLeafKind) -> Option<MarrowType> {
         match leaf {
             StoreLeafKind::Scalar(scalar) => Some(MarrowType::Primitive(*scalar)),
-            StoreLeafKind::Identity { store_root, .. } => {
-                Some(MarrowType::Identity(store_root.clone()))
-            }
+            StoreLeafKind::Identity { store_root, .. } => Some(
+                self.program
+                    .identity_leaf_id(store_root)
+                    .map_or(MarrowType::Unknown, MarrowType::Identity),
+            ),
             StoreLeafKind::Enum { enum_id } => Some(MarrowType::Enum(*enum_id)),
         }
     }
@@ -555,7 +568,10 @@ impl<'a> SavedPlaceResolver<'a> {
     fn index_key_type(&self, key: &CheckedSavedIndexKey) -> MarrowType {
         match &key.value_meaning {
             StoredValueMeaning::Scalar(scalar) => MarrowType::Primitive(*scalar),
-            StoredValueMeaning::Identity { root, .. } => MarrowType::Identity(root.clone()),
+            StoredValueMeaning::Identity { root, .. } => self
+                .program
+                .identity_leaf_id(root)
+                .map_or(MarrowType::Unknown, MarrowType::Identity),
             StoredValueMeaning::Enum { enum_id, .. } => MarrowType::Enum(*enum_id),
         }
     }

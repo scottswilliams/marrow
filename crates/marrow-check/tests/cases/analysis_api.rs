@@ -1347,7 +1347,9 @@ fn type_at_an_identity_annotation_binding_is_the_identity_type() {
     let ty = type_at(&program, &path, &parsed, offset);
     assert_eq!(
         ty,
-        Some(MarrowType::Identity("books".to_string())),
+        Some(MarrowType::Identity(support::identity_root_id(
+            &program, "books"
+        ))),
         "{ty:?}"
     );
 }

@@ -350,7 +350,9 @@ pub(crate) fn marrow_type_name(names: &DeclIds<'_>, ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
-        MarrowType::Identity(root) => format!("Id(^{root})"),
+        MarrowType::Identity(root) => {
+            format!("Id(^{})", names.root_spelling(*root).unwrap_or("?"))
+        }
         MarrowType::Resource(resource) => names.resource_display(*resource),
         MarrowType::GroupEntry { resource, .. } => resource.clone(),
         MarrowType::Enum(id) => names

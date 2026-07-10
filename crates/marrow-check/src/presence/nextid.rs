@@ -304,7 +304,7 @@ impl<'a> Guard<'a> {
             return;
         };
         let store = place.store_id;
-        if let Some(key) = saved_place_key(target, scope) {
+        if let Some(key) = saved_place_key(&self.program.decl_ids(), target, scope) {
             let file = scope.source_file().to_path_buf();
             self.flag_key_bindings(store, &key.key_bindings, target, &file);
         }

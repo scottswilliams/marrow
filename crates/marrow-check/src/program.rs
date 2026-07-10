@@ -32,7 +32,7 @@ use crate::facts::{
     EntryStoreOpenMode, EnumId, FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId,
     WorkShapeClass,
 };
-use crate::model::decls::{DeclIds, StoreRootArena};
+use crate::model::decls::{DeclIds, StoreRootArena, StoreRootId};
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
 /// that came from it. A program's modules are 1:1 with their files, so the index
@@ -411,6 +411,13 @@ impl CheckedProgram {
         let fact = self.facts.enum_(id)?;
         let module = self.facts.modules().get(fact.module.0 as usize)?;
         Some((module.name.as_str(), fact.name.as_str()))
+    }
+
+    /// The interned id of a store root spelling, as an identity type leaf carries
+    /// it. A live identity leaf always names a declared store root, and the root
+    /// arena interns every declared root, so a resolved root always resolves here.
+    pub(crate) fn identity_leaf_id(&self, root: &str) -> Option<StoreRootId> {
+        self.decl_roots.id(root)
     }
 
     /// The source file the given file id names, or `None` if the id is out of
@@ -1846,8 +1853,10 @@ pub enum MarrowType {
         resource: String,
         layers: Vec<String>,
     },
-    /// A store identity such as `Id(^books)`, carrying the store root.
-    Identity(String),
+    /// A store identity such as `Id(^books)`, carrying the interned root id. A live
+    /// identity leaf always names a declared store root; the `^root` spelling a
+    /// mismatch renders is recovered by id.
+    Identity(StoreRootId),
     /// An enum, identified by its interned declaration id. Identity is
     /// module-qualified: a bare `Status` referenced in module `b` resolves to
     /// `b::Status` (same-module first), and two same-named enums in different
@@ -1925,22 +1934,22 @@ impl MarrowType {
         }
     }
 
-    /// Promote a schema-resolved [`Type`] to the checker's lattice. The structure
-    /// (scalar, sequence, identity, `unknown`) is already decided; this layer only
-    /// recognizes the checker-only `Error` type and leaves every other bare
-    /// [`Type::Named`] `Unknown`. A nominal enum reference is interned elsewhere,
-    /// where the owning-module facts that supply its id are in reach.
+    /// Promote a schema-resolved [`Type`] to the checker's lattice without any
+    /// nominal facts. The scalar, sequence, and `unknown` structure is decided here;
+    /// the checker-only `Error` type is recognized; every nominal reference — a bare
+    /// enum name or a store identity root — is left `Unknown`, because its interned
+    /// id comes from the facts, which this layer does not hold. A caller with the
+    /// facts interns those leaves through [`CheckedProgram`].
     pub(crate) fn from_resolved(ty: Type) -> Self {
         match ty {
             Type::Scalar(scalar) => Self::Primitive(scalar),
             Type::Sequence(element) => Self::Sequence(Box::new(Self::from_resolved(*element))),
             Type::Optional(inner) => Self::optional(Self::from_resolved(*inner)),
-            Type::Identity(root) => Self::Identity(root),
             Type::Unknown => Self::Unknown,
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
             Type::Named(name) if name == "Error" => Self::Error,
-            Type::Named(_) => Self::Unknown,
+            Type::Named(_) | Type::Identity(_) => Self::Unknown,
         }
     }
 }
