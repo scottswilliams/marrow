@@ -1,0 +1,160 @@
+# Control Flow
+
+Marrow control flow consists of block statements. Conditions are `bool`;
+assignment and branching are not expressions.
+
+## Conditional Statements
+
+`if` selects a branch:
+
+```text
+if condition
+    statements
+else if other
+    statements
+else
+    statements
+```
+
+`if const` evaluates an optional expression once. The then branch receives a
+bare binding when the result is present; the else branch runs for `absent`.
+
+```mw
+module docs::conditional
+
+fn maybeName(enabled: bool): string?
+    if enabled
+        return "Marrow"
+    return absent
+
+pub fn display(enabled: bool)
+    if const name = maybeName(enabled)
+        print(name)
+    else
+        print("(none)")
+```
+
+The subject may be any `T?`, including a local optional, a local collection
+read, a durable read, a user-function result, or an optional standard-library
+result.
+
+## Boolean Evaluation
+
+Expressions evaluate operands and call arguments from left to right. `and`
+evaluates its right operand only when the left is true. `or` evaluates its right
+operand only when the left is false. `optional ?? fallback` evaluates the
+fallback only when the left value is absent.
+
+These rules apply even when the skipped expression would call a function or
+raise an error.
+
+## `while`
+
+```text
+while condition
+    statements
+```
+
+The condition is evaluated before every iteration. `while` has no iteration
+limit and may run indefinitely when the program does not make progress.
+
+## `for`
+
+`for` traverses an integer or temporal range, a local collection, or a durable
+collection:
+
+```text
+for name [, name ...] in [reversed] iterable [by step]
+    statements
+```
+
+The binding arity and key-first behavior are defined in
+[Traversal and indexes](traversal-and-indexes.md). Loop variables are immutable
+and scoped to the loop body.
+
+## Loop Exits
+
+`continue` begins the next iteration of the innermost loop. `break` exits the
+innermost loop. Neither form accepts a label or value. `return` exits the
+current function, so a helper function is the direct way to leave several
+nested loops with a result.
+
+```mw
+module docs::nested_exit
+
+resource Book
+    required title: string
+    tags(pos: int): string
+
+store ^books(id: int): Book
+
+fn findWanted(wanted: string): Id(^books)?
+    for id in ^books
+        for pos, tag in ^books(id).tags
+            if tag == wanted
+                return id
+    return absent
+
+pub fn show(wanted: string)
+    if const id = findWanted(wanted)
+        print(id)
+```
+
+When these exits leave a transaction normally, the transaction commits before
+control transfers. An escaping error instead rolls it back.
+
+## Enum Matching
+
+An enum is a nominal set of declared members:
+
+```mw
+module docs::matching
+
+pub enum Status
+    active
+    archived
+    banned
+
+fn label(status: Status): string
+    match status
+        active
+            return "active"
+        archived
+            return "archived"
+        banned
+            return "banned"
+
+pub fn show(status: Status)
+    print(label(status))
+```
+
+An arm names a member relative to the scrutinee enum. A `match` must cover every
+selectable member exactly once; there is no wildcard arm.
+
+Enum members may form a hierarchy. A parent with children is declared
+`category` and is not itself a selectable value:
+
+```text
+enum Animal
+    category cat
+        tiger
+        housecat
+    dog
+```
+
+An arm naming a category covers all selectable descendants. A qualified arm
+such as `cat::tiger` selects one descendant. The `is` operator tests membership
+in a member subtree:
+
+```text
+if animal is Animal::cat
+    print("cat")
+```
+
+`==` remains exact enum-member equality.
+
+## `try` And `transaction`
+
+`try`/`catch` transfers `Error` values. `transaction` groups durable effects.
+Their exit rules are defined together in
+[Errors and transactions](errors-and-transactions.md).

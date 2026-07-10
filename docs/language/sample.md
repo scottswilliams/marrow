@@ -1,7 +1,7 @@
 # Reference Sample
 
-This small shelf project exercises the main Marrow language/database surface in
-one runnable module.
+This shelf module combines resources, durable paths, typed identities,
+transactions, keyed children, sequences, and index traversal.
 
 ```mw
 module shelf::sample
@@ -86,16 +86,11 @@ pub fn main()
     printShelf("fiction")
 ```
 
-The sample covers:
+The `add` function obtains an integer identity candidate with `nextId` and
+writes the entry in the same transaction. `nextId` does not reserve its result;
+the durable write is what makes that key present.
 
-- a runnable public entrypoint;
-- identity allocation with `nextId`;
-- required fields and sparse fields;
-- keyed child layers such as `notes(noteId)`;
-- sequence append with `append`;
-- child key values that cannot collide with declared index names;
-- explicit history entry creation;
-- transaction-built history entries with required fields;
-- managed assignment and `delete`;
-- declared index traversal through `^books.byShelf(...)`;
-- a transaction that changes primary data and generated index entries.
+The example also shows required and sparse fields, keyed resource children,
+1-based sequence append, explicit history entries, exact path deletion, and
+ordered traversal through `^books.byShelf(...)`. Each write that changes
+`shelf` updates the declared index as part of the same durable operation.

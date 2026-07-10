@@ -21,4 +21,4 @@ render owner. Call targets, IDs, path effects, and spans are typed and compared
 by value. Say “checked” or “witnessed,” not “proved,” unless a formal result is
 published.
 
-Map: [docs/implementation/check/](../../docs/implementation/check/README.md).
+Map: [docs/implementation/compiler.md](../../docs/implementation/compiler.md).

@@ -14,4 +14,4 @@ them with entry identities or store UIDs, or use source paths, catalog paths,
 or lock spellings as public URI identity, authorization scope, physical key
 identity, or the future semantic-path model.
 
-Map: [docs/implementation/check/](../../docs/implementation/check/README.md).
+Map: [docs/implementation/lifecycle.md](../../docs/implementation/lifecycle.md).

@@ -16,4 +16,4 @@ state. The binary owns no language, semantic path, public URI, or authorization
 meaning. Embedded and served profiles must consume the same compiler-owned
 semantics.
 
-Map: [docs/implementation/cli.md](../../docs/implementation/cli.md).
+Map: [docs/implementation/tooling.md](../../docs/implementation/tooling.md).

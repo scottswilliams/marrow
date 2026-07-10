@@ -1,147 +1,105 @@
-# Project Status
+# Project status
 
-Marrow is experimental, unreleased software. This page separates current
-implementation from architectural direction. It is descriptive; exact current
-language behavior remains in the [Language Reference](language/).
+Marrow is experimental and unreleased. This page describes the repository at
+the same Git revision and separates reachable behavior from direction.
 
-On the main branch, “current” means the implementation at the same Git revision
-as this page. A release snapshot must identify its release and source revision.
-
-## Status Categories
-
-| Category | Meaning |
+| State | Meaning |
 |---|---|
-| Current | Implemented and part of the supported repository behavior |
-| Legacy | Implemented, but not part of the intended architecture |
-| Designed | Recorded direction whose detailed contract is not yet current |
-| Accepted target | Explicitly approved unimplemented contract in `docs/design/` |
-| Research | An open question, not an accepted contract |
+| Current | Implemented behavior documented by the current reference and tests. |
+| Legacy | Implemented behavior that is intentionally excluded from the target architecture and should not be expanded. |
+| Future | Unimplemented direction recorded under `docs/future/`; it is not a current contract. |
 
 ## Current
 
-### Language and checking
+### Language
 
-- Native `.mw` parser and formatter.
-- Static types for scalars, resources, enums, sequences, keyed trees, and entry
-  identities.
-- Modules, functions, control flow, structured errors, presence checking, and
-  host-capability boundaries.
-- Local values and durable places reuse resource member types and path syntax;
-  durable places add presence, keyed-child, transaction, and storage rules.
-- Direct durable reads, assignments, deletion, and key iteration.
-- Lexical transactions with atomic durable commit and rollback.
-- Declared indexes maintained with managed writes.
+- Native parser and formatter for `.mw` source.
+- Static scalar, resource, enum, sequence, local-tree, optional, and nominal
+  store-identity types.
+- Modules, functions, lexical bindings, control flow, structured errors,
+  presence narrowing, and host-effect checks.
+- Direct durable reads, assignments, deletion, ordered keyed iteration,
+  managed indexes, and lexical transactions.
+- Source declarations for supported changes to populated data.
 
-### Execution and storage
+### Execution and durable state
 
-- A checked executable representation consumed by a tree-walking interpreter.
-- Memory and redb-backed implementations of the current ordered-tree contract.
-- One owning write-capable process or session for the native store; the current
-  native profile excludes read-only opens while a writer is open.
-- Typed backup and restore, data inspection, integrity checking, and recovery
+- A checked executable representation interpreted by a tree-walking runtime.
+- Memory and redb implementations of the current ordered-tree substrate.
+- One owning write-capable native-store process or session.
+- Managed writes that maintain declared indexes and commit transactionally.
+- Accepted declaration identities and a state-bound preview/apply workflow for
+  supported data evolution.
+- Typed inspection, integrity checking, backup, restore, and physical recovery
   commands.
-- Linux and macOS source builds.
 
-### Durable identity and evolution
+### Developer tools
 
-- Accepted declaration identities distinct from current source spelling and
-  represented by current catalog metadata; that representation is not the final
-  path-graph contract.
-- Detection of supported declaration changes against accepted declaration
-  identities.
-- Preview, state-bound witness, and apply workflows for supported evolutions.
-- Index rebuild and selected data transforms as part of managed evolution.
+- `init`, `check`, `fmt`, `run`, `test`, `doctor`, `data`, `evolve`, `backup`,
+  and `restore` command families.
+- Text, JSON, and selected JSONL diagnostic/report forms.
+- A downstream language-server repository using Marrow compiler APIs.
+- Linux and macOS source builds with the pinned Rust toolchain.
 
-Current evolution preview and apply are narrower than the designed generalized
-program-image admission and activation contract.
+### Known implementation limitations
 
-### Tooling
+- Argument labels are not rejected consistently on standard-library and some
+  language-intrinsic or local-collection calls. A mislabeled call may check
+  without producing an executable function body, or fail only at evaluation.
+- `ErrorCode` validation is not preserved through every annotated boundary;
+  parameters, returns, bare-local reassignment, local collections, keys,
+  optional or uninitialized locals, and module constants can erase the
+  refinement to `string`.
 
-- `check`, `run`, `test`, `fmt`, `data`, `evolve`, `backup`, `restore`, and
-  related project commands.
-- Typed diagnostic codes and machine-readable output.
-- An implementation map for the Rust workspace.
-- A downstream language-server repository consuming Marrow compiler APIs.
+## Legacy
 
-## Legacy Architecture Under Reconsideration
-
-The following mechanisms exist in the repository and remain documented where
-needed to describe current behavior. They are not long-term design commitments:
+The following mechanisms are reachable but rejected as foundations for v1:
 
 - `surface` declarations that repeat selected store fields and operations;
-- generated create, update, delete, collection, read, and action operation
-  families;
-- opaque operation-tag HTTP routes and their current TypeScript client;
-- the user-facing storage cost model and hidden-scan terminology;
-- application sessions built directly around the current surface model.
+- generated collection/read/create/update/delete/action families;
+- operation-tag HTTP routes and the current generated TypeScript client;
+- `marrow serve`, `marrow client typescript`, and `init --client` as currently
+  implemented;
+- the user-facing storage-cost model and hidden-scan terminology; and
+- application sessions centered on the surface model and current catalog
+  lifecycle.
 
-New work should not expand or stabilize these concepts. Removing their
-reference pages must occur with the implementation replacement so the current
-documentation does not become false.
+They are summarized in [Legacy mechanisms](legacy.md) so the current repository
+remains understandable, but they are absent from the main learning path and
+language manual. Bearer authentication in the experimental server is not
+compiler-integrated path authorization.
 
-The repository also contains an experimental remote HTTP profile. Bearer
-authentication is not compiler-integrated path authorization. The profile is
-not a basis for a production security claim.
+## Future
 
-Earlier unimplemented proposals for per-operation and record-shaped
-authorization are retired rather than designed direction. They remain in the
-repository only until the documentation inventory classifies and removes or
-rewrites them.
+The intended architecture includes:
 
-## Designed Direction
+- reproducible compiled and verified program images;
+- stable compiler-owned semantic path identities;
+- a neutral logical tree beneath one authorized path kernel;
+- read-only store admission and explicit atomic activation;
+- a source-defined portable standard library above minimal host intrinsics;
+- ordinary exported functions and generated local UI bindings;
+- explicit public path projections and typed path capabilities; and
+- a served profile that preserves embedded program semantics.
 
-- A versioned immutable compiled program image with an explicitly documented
-  execution target, plus a store-held active-image binding changed only by
-  activation.
-- Read-only store admission followed, when a transition is required, by atomic
-  activation of data, accepted schema state, and the active-image binding.
-- One compiler-owned semantic path graph with distinct schema path identities,
-  entry-identity types, store UIDs, source spellings, concrete addresses carrying
-  typed entry-key values, URI and authority projections, graph-version
-  relations, and physical encodings.
-- Module ownership and transitive effects over durable paths.
-- A single authorized path kernel as the only logical durable access seam, with
-  physical substrate recovery isolated beneath it as a named trusted component.
-- Explicitly published URI address spaces and ordinary function bindings.
-- Typed principals and path capabilities whose construction and delegation are
-  restricted to named trusted runtime components.
-- Embedded and served runtime profiles implementing one reference transition
-  semantics and a declared isolation contract.
-- Store-admission reports for consequential changes to schema identity,
-  populated data, public paths, authority, and bindings.
-- Official generated UI bindings and a local application development profile.
+The [future index](future/) describes this direction without defining current
+syntax or blocking implementation on speculative contracts.
 
-These items are direction, not current `.mw` syntax or supported runtime
-behavior. See [Vision](vision.md).
+## Not current
 
-## Accepted Target Contracts
+Marrow does not currently provide bytecode or native code generation,
+compiler-integrated path authorization, path-native URI publication, a
+supported packaged desktop host, concurrent multi-writer service deployment,
+replication, high availability, signed releases, or institutional protocol
+conformance.
 
-There are no accepted target contracts after the documentation reset. The
-[target-contract lifecycle](design/) defines how an exact unimplemented rule may
-be approved without entering the current language reference.
-
-## Not Implemented
-
-- Bytecode, JIT, or native-code generation.
-- Signed prebuilt releases or a one-line installer.
-- A supported Electron or desktop application package.
-- Compiler-integrated, runtime-enforced path authorization.
-- A path-native public URI boundary.
-- Multiple production storage substrates with one conformance claim.
-- Concurrent multi-writer or high-availability service deployment.
-- Replication, failover, or rolling mixed-version activation.
-- FHIR or other institutional protocol conformance.
-
-## Current Trust Boundaries
+## Trust boundaries
 
 - Filesystem permissions and the host process protect local store files.
-- Checksums detect selected accidental corruption; they are not authentication
-  or tamper protection.
-- Encryption at rest is delegated to the filesystem or storage substrate.
-- Authentication, TLS, identity-provider behavior, operator credentials, and
-  hardware durability remain operational assumptions.
-- Static checking does not establish application intent, correct policy design,
+- Checksums and structural verification detect selected corruption; they do
+  not authenticate hostile storage.
+- Encryption at rest is delegated to the filesystem or substrate.
+- TLS, authentication, identity providers, operator credentials, and hardware
+  durability are deployment responsibilities.
+- Static checking cannot establish application intent, correct policy design,
   regulatory compliance, or freedom from external side channels.
-
-See [Stability Contract](stability.md), [Operations](operations.md), and
-[Backend Contract](backend-contract.md) for current detailed behavior.

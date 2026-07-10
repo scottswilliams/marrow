@@ -1,90 +1,71 @@
-# Marrow Documentation
+# Marrow documentation
 
-The documentation is divided by authority and implementation status.
+Marrow is an experimental statically typed language for programs that work
+directly with durable hierarchical state. These documents describe the source
+tree at the same revision; Marrow has not made a stable release.
 
-- [Language Reference](language/) defines current `.mw` behavior.
-- [Implementation Map](implementation/) describes the code that exists.
-- [Project Status](status.md) separates implemented, legacy, designed, accepted
-  target, and research work.
-- [Vision](vision.md) describes long-term direction without making it part of
-  the current language.
-- [Target Design Contracts](design/) contain only explicitly approved,
-  unimplemented contracts named by the work plan. The directory is currently
-  empty apart from its governance page.
+## Start here
 
-When these sources disagree, the language reference states the intended current
-contract and the implementation map states what the repository actually does.
-The disagreement is implementation or documentation work; a plan or decision
-record does not silently override either source.
+- [Install Marrow](install.md) from the source tree.
+- [Quickstart](quickstart.md) creates, checks, runs, tests, and inspects a
+  durable program.
+- [Language tour](language/) introduces the programming model in one page.
+- [Project status](status.md) separates current behavior, legacy code, and
+  future direction.
 
-## Start Here
+## Language reference
 
-- [Quickstart](quickstart.md) — create, check, run, test, and inspect a small
-  durable project.
-- [Install](install.md) — supported platforms, source installation, and data
-  directories.
-- [Project Status](status.md) — current capabilities and limitations.
-- [Stability Contract](stability.md) — the current pre-release compatibility
-  boundary.
+The [language reference](language/) defines current `.mw` syntax and semantics.
+It is organized for lookup rather than sequential reading:
 
-## Language And Data
+- [Source and syntax](language/source-and-syntax.md)
+- [Types and values](language/types-and-values.md)
+- [Modules and functions](language/modules-and-functions.md)
+- [Resources](language/resources.md)
+- [Durable places](language/durable-places.md)
+- [Traversal and indexes](language/traversal-and-indexes.md)
+- [Control flow](language/control-flow.md)
+- [Errors and transactions](language/errors-and-transactions.md)
+- [Evolution declarations](language/evolution.md)
+- [Builtins](language/builtins.md) and the
+  [standard library](language/standard-library.md)
+- [Execution limits](language/execution-limits.md) and the
+  [grammar](language/grammar.md)
 
-- [Language Reference](language/) — syntax and semantics of `.mw`.
-- [Data Modeling](data-modeling.md) — resources, durable roots, keyed child
-  layers, identities, indexes, and history.
-- [Data Evolution](data-evolution.md) — previewing and applying supported
-  changes over populated data.
+## Tools and operations
 
-Guides may explain a task in a more convenient order, but defer to the language
-reference for exact behavior.
+- [Tool reference](tools/) covers the project file, CLI, data inspection,
+  evolution, backup, restore, and diagnostics.
+- [Operations](operations/) covers native-store ownership and recovery.
+- [Error codes](error-codes.md) is generated from the compiler registry.
+- [Compatibility](compatibility.md) states what an unreleased revision does
+  and does not promise.
+- [Security policy](../SECURITY.md) gives the private reporting channel and
+  current support boundary.
 
-## Tools And Operations
+## Project and implementation
 
-- [CLI Reference](cli.md) — commands, arguments, output, and exit behavior.
-- [Project Configuration](project-config.md) — `marrow.json` fields and
-  validation.
-- [Data Tools](data-tools.md) — inspection, integrity checking, and recovery.
-- [Operations](operations.md) — native-store ownership, deployment, backup, and
-  restore.
-- [Error Codes](error-codes.md) — dotted codes and machine-readable
-  diagnostics.
+- [Vision](vision.md) explains the product and architectural direction.
+- [Implementation guide](implementation/) maps current crates, owners, and
+  code paths for contributors.
+- [Contributing](../CONTRIBUTING.md) gives focused and workspace verification
+  commands.
+- [Legacy mechanisms](legacy.md) records implemented behavior that is being
+  removed and is intentionally absent from the main manual.
+- [Future direction](future/) collects unimplemented ideas. Future pages are
+  neither current behavior nor implementation prerequisites.
 
-## Implementation
+## Documentation authority
 
-- [Implementation Map](implementation/) — source pipeline, crate ownership, and
-  code-navigation links.
-- [Backend Contract](backend-contract.md) — current ordered tree and transaction
-  requirements beneath durable paths.
-- [Testing Architecture](testing-architecture.md) — test tiers, fixtures, and
-  accepted oracles.
+The current reference, tests, and implementation change together. One page
+owns each public rule; guides link to it instead of copying it. Implementation
+pages describe code rather than redefining language behavior. Future pages do
+not override either.
 
-Implementation pages are descriptive rather than normative. They name the
-actual interpreter, storage implementation, and legacy components while those
-components exist.
+Plans, research reports, issue discussions, and old proposals are not language
+authority. When documentation and reachable behavior disagree, that mismatch
+is a defect to resolve in the reference, tests, or code.
 
-## Direction
-
-- [Vision](vision.md) — purpose, architectural principles, scope, and the
-  embedded-to-served development path.
-- [Project Status](status.md) — claim-by-claim implementation status.
-- [Target Design Contracts](design/) — the lifecycle for an exact unimplemented
-  rule approved for implementation.
-
-Detailed unimplemented syntax and protocols do not belong in the active
-reference. A language rule becomes current only when the canonical reference
-and implementation change together.
-
-## Documentation Conventions
-
-- Examples use current syntax unless explicitly marked illustrative.
-- Current behavior and architectural direction appear separately.
-- Use the complete [status vocabulary](status.md#status-categories): Current,
-  Legacy, Designed, Accepted target, and Research.
-- Claims state whether they are implemented, enforced, tested, measured, or
-  designed.
-- One page owns each concept and one term names it.
-- Public descriptions use technical language rather than superlatives.
-- Limitations and counterexamples are part of the reference.
-- Obsolete material is removed instead of retained as a second design.
-- Decision records preserve rationale; the canonical reference owns current
-  behavior.
+Every `mw` code fence in current documentation is a complete module checked by
+the production compiler. Short syntax fragments use `text` or `ebnf` fences so
+they cannot be mistaken for verified programs.

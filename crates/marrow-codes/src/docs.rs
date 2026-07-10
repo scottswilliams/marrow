@@ -7,15 +7,11 @@
 //! page, so the registry is the single source of both code identity and documented
 //! meaning; a coverage test asserts every registered code appears in its section.
 
-use crate::{Code, Family, Lifecycle};
+use crate::{Code, Lifecycle};
 
 /// The heading that opens the internal-codes section. `generate` emits it and the
 /// coverage test splits the page on it, so the two cannot disagree.
 pub(crate) const INTERNAL_HEADING: &str = "### Internal Fail-Closed Codes";
-
-/// The heading that opens the reserved-codes section. `generate` emits it and the
-/// coverage test splits the page on it, so the two cannot disagree.
-pub(crate) const RESERVED_HEADING: &str = "### Reserved And Future Codes";
 
 fn rows(codes: &[Code]) -> String {
     codes
@@ -23,15 +19,6 @@ fn rows(codes: &[Code]) -> String {
         .map(|c| format!("| `{}` | {} |", c.as_str(), c.meaning()))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// The reserved codes of one family, in registry order.
-fn reserved(family: Family) -> Vec<Code> {
-    Code::ALL
-        .iter()
-        .copied()
-        .filter(|c| c.lifecycle() == Lifecycle::Reserved && c.family() == family)
-        .collect()
 }
 
 /// The internal fail-closed codes, in registry order, across every family.
@@ -48,12 +35,14 @@ pub fn generate() -> String {
     let parts: Vec<String> = vec![
         r#"# Errors
 
-Marrow errors are part of the product surface. A good error says what
-happened, where it happened, and what to try next when Marrow knows.
+Marrow diagnostics use typed dotted codes. Human-readable messages explain
+what happened, where it happened, and what to try next when Marrow knows.
 
 Language-level error behavior is described in
-[`language/control-flow-and-effects.md`](language/control-flow-and-effects.md).
-This page describes the CLI and tooling contract.
+[`language/errors-and-transactions.md`](language/errors-and-transactions.md).
+Tool invocation and output formats are described in
+[`tools/diagnostics.md`](tools/diagnostics.md). This page is generated from the
+code registry and lists every current code.
 
 ## CLI Exit Codes
 
@@ -65,7 +54,8 @@ This page describes the CLI and tooling contract.
 
 ## Error Envelope
 
-Machine-readable surfaces use a stable envelope:
+Machine-readable commands use this envelope where their selected format calls
+for a single diagnostic object:
 
 ```json
 {
@@ -88,7 +78,7 @@ the running program.
 
 Common fields:
 
-- `code`: stable machine code;
+- `code`: typed machine code;
 - `kind`: broad category such as `parse`, `check`, `runtime`, `storage`,
   `surface`, `io`, `usage`, or `tooling`;
 - `message`: short human summary;
@@ -96,11 +86,9 @@ Common fields:
 - `source_span`: optional source location;
 - `data`: optional structured facts for tools.
 
-Marrow error codes use stable lowercase dotted text such as `parse.syntax` or
+Marrow error codes use lowercase dotted text such as `parse.syntax` or
 `book.already_loaned`. Segments use lowercase letters, digits, and
 underscores.
-
-Marrow surfaces use dotted Marrow error codes and typed error values.
 
 Storage errors include the failed operation and the capability or limit
 involved. Machine-readable facts belong in `data`; clients do not parse
@@ -138,8 +126,7 @@ names an exact next command or manual remedy.
 
 ## How `kind` Is Assigned
 
-Tools derive `kind` from the first dotted segment of `code`, so the kind of a
-code is stable and predictable:
+Tools derive `kind` from the first dotted segment of `code`:
 
 | First segment | `kind` |
 |---|---|
@@ -153,12 +140,9 @@ code is stable and predictable:
 
 ## Code Reference
 
-The main family sections below list codes emitted by the current build. The
-Application Surfaces section marks which surface codes are active in the
-transport-neutral runtime API and which remain reserved. Codes are grouped by
-family, and each family description names where a developer first meets the
-code: a project `check`/`run`/`test`, a managed write inside a running program,
-the store, or a `data` maintenance command.
+The family sections below list codes emitted by the current build. Legacy
+surface codes are isolated near the end. Internal codes are separate from
+ordinary user-facing diagnostics.
 
 ### `parse.*` — kind `parse`
 
@@ -350,28 +334,18 @@ original code in the message, while JSON run envelopes carry it in
 run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/such/file`: No such file or directory (os error 2)
 ```
 
-## Application Surfaces
+## Legacy Surface Codes
 
-`marrow data diff` and `marrow data load` are not implemented. Restore replace
-is part of the current CLI surface; restore merge/repair and cross-engine
-restore are also not implemented. No command-output code family is reserved for
-an unimplemented command.
-
-The `surface.*` family belongs to the application surface runtime and its
-[Surface ABI](surface-abi.md). The transport-neutral `marrow-run`
-node-read, collection-read, computed-read, generated create/update/delete, and
-action APIs can emit the active codes below. `marrow serve` emits
-sanitized code/message envelopes for HTTP serving in both default read-only mode
-and `--write` mode, and adds `surface.auth` for remote HTTP authorization and
-mode denial before request-body decoding.
-Remote cursor-token mode maps opaque cursor strings onto the same active typed
-runtime continuation value at the HTTP boundary.
+The implemented surface/client/server stack is legacy and intentionally absent
+from the main language and tool references. Its reachable runtime paths emit
+the codes below until the stack is deleted. They are current implementation
+facts, not a v1 protocol commitment or compiler-integrated authorization model.
 
 ### `surface.*` — kind `surface`
 
 | Code | Meaning |
 |---|---|"#.to_string(),
-        rows(&[Code::SurfaceRequest, Code::SurfaceAuth, Code::SurfaceAbsent, Code::SurfaceCursor, Code::SurfaceStaleCursor, Code::SurfaceAbiMismatch, Code::SurfaceInvalidData, Code::SurfaceLimit, Code::SurfaceConflict, Code::SurfaceWrite, Code::SurfaceAction, Code::SurfaceComputed, Code::SurfaceIntegrity, Code::SurfaceStore]),
+        rows(&[Code::SurfaceRequest, Code::SurfaceAuth, Code::SurfaceAbsent, Code::SurfaceCursor, Code::SurfaceStaleCursor, Code::SurfaceAbiMismatch, Code::SurfaceInvalidData, Code::SurfaceLimit, Code::SurfaceConflict, Code::SurfaceWrite, Code::SurfaceAction, Code::SurfaceComputed, Code::SurfaceStore]),
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),
         r#"
@@ -383,23 +357,6 @@ It stands as an independent gate rather than a user-facing diagnostic.
 | Code | Meaning |
 |---|---|"#.to_string(),
         rows(&internal()),
-        r#""#.to_string(),
-        RESERVED_HEADING.to_string(),
-        r#"
-The remaining `check.surface_*` names are reserved for future surface checker
-diagnostics, including stable ABI export checks. They do not appear in v0.1
-command output until those checks ship.
-
-| Code | Reserved meaning |
-|---|---|"#.to_string(),
-        rows(&reserved(Family::Check)),
-        r#"
-The `decode.*` family is reserved for future checked decode and repair reports.
-These codes do not appear in v0.1 command output.
-
-| Code | Reserved meaning |
-|---|---|"#.to_string(),
-        rows(&reserved(Family::Decode)),
         r#""#.to_string(),
     ];
     parts.join("\n")

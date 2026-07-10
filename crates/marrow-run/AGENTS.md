@@ -12,15 +12,13 @@ form. Build one complete typed `WritePlan` before atomic commit, return typed
 errors, and page or stream potentially unbounded internal work.
 
 Project surface sessions and operation-tag admission are legacy. Do not expand
-them. The target invariant is one typed data-session/path kernel through which
-every logical tree access—including embedded, served, evolution, inspection,
-logical repair, and logical backup or restore—must pass. Embedded execution
-supplies explicit root authority rather than bypassing enforcement. Physical
-substrate recovery belongs to a separately typed trusted component in
-`marrow-store`; application principals cannot reach it, and a recovered store
-cannot return to service until complete validation and admission succeed.
+them. New durable-access work belongs behind a typed runtime boundary shared by
+ordinary execution and trusted tools; do not create a side path that evades
+compiler facts or later authorization. Physical substrate recovery remains a
+separate trusted component in `marrow-store` and does not establish application
+validity by itself.
 
 Internal resource limits protect the process; they are not a user-facing cost,
 query, or planning model.
 
-Map: [docs/implementation/runtime/](../../docs/implementation/runtime/README.md).
+Map: [docs/implementation/runtime.md](../../docs/implementation/runtime.md).

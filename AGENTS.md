@@ -18,28 +18,26 @@ Use one authority for each question:
 | Purpose and long-term direction | `docs/vision.md` |
 | Current implementation status | `docs/status.md` and the code |
 | Current `.mw` behavior | `docs/language/` |
-| Approved unimplemented target | an explicitly accepted contract in `docs/design/` |
+| Unimplemented direction | `docs/future/` |
 | Current code structure | `docs/implementation/` |
-| Current storage implementation contract | `docs/backend-contract.md` |
+| Current storage implementation | `docs/implementation/storage.md` and the code |
 
-Plans, reports, old ADRs, and decision logs are not specifications. A language
-or durable-state target requires explicit approval from the human project
-maintainer responsible for Marrow's direction, followed by a contract in
-`docs/design/`, before implementation. Agents, lane owners, reviewers, tests,
-and prototypes cannot grant that approval. When behavior becomes current,
-update the canonical reference and delete the target contract. A later decision
-record may explain rationale but cannot become a second source of law.
+Plans, reports, old ADRs, decision logs, and future notes are not authorities.
+Current behavior is carried by the concise reference, readable code, and tests
+together. A behavior change updates those owners in the same change. Raise an
+irreducible product choice to the human maintainer when it is encountered; do
+not create a parallel queue of speculative decisions.
 
 The current `surface` machinery, operation tags, generated CRUD-style
 operations, and user-facing cost model are legacy. The tree-walking interpreter,
 catalog layout, and redb backend are current but non-constitutional. Do not
 promote either group into architectural requirements or expand a legacy
-mechanism without an accepted replacement contract.
+mechanism while replacing it.
 
 ## Product And Design Direction
 
-These constraints guide proposals. Unimplemented details are not current law
-until an accepted target contract names them.
+These constraints guide implementation. Unimplemented details remain future
+direction until code, tests, and the canonical reference make them current.
 
 - Local and durable values share one typed tree model; `^` marks a durable
   place.
@@ -55,14 +53,10 @@ until an accepted target contract names them.
   path facts and one total runtime enforcement seam.
 - A local owner receives an explicit root capability; local execution does not
   bypass the security model.
-- Source compilation is reproducible without a user store. Read-only store
-  admission is separate. It returns an already-active verdict when no transition
-  is needed, an exact state-bound witness for every permitted transition
-  (including binding-only transitions), or a rejection. Activation consumes an
-  exact valid witness; it atomically commits data changes, accepted schema state,
-  and the store's active-image binding, then issues a receipt only after commit.
-  The immutable image artifact remains outside the store transaction. These
-  mechanisms supplement rather than replace human review.
+- Source compilation must not depend on a user store. Store compatibility checks
+  are read-only; a consequential transition is explicit and atomic. Introduce
+  those properties incrementally, keeping the current reference and tests aligned
+  with the behavior that actually exists.
 - MUMPS is design evidence, not a compatibility target. Do not inherit syntax
   or behavior merely because it is historical.
 - Marrow is not a database-engine, web-framework, or general-purpose-language
@@ -128,12 +122,9 @@ URI, authority, evolution, and editor information must derive from those facts;
 no adapter or renderer re-parses source strings.
 
 **Runtime boundary.** The runtime consumes checked facts and fails closed with
-typed errors. Every logical tree access must converge on one typed
-data-session/path kernel as that architecture is introduced. Physical
-substrate recovery remains a separately typed, private store component beneath
-the kernel; it cannot return a store to service until complete program-image,
-schema, and store validation plus a fresh already-active admission verdict
-succeed.
+typed errors. Logical tree access should converge on one typed path boundary as
+that architecture is introduced. Physical recovery remains a separate private
+store operation and does not by itself establish application-level validity.
 
 **Storage boundary.** The store owns bytes, ordered operations, transactions,
 durability, and recovery. It does not own `.mw` semantics, public paths,
@@ -159,9 +150,8 @@ Page or stream potentially unbounded user data.
 **Comments.** Explain durable rationale, representation, performance, or
 soundness. Do not narrate edits, cite roadmaps, or restate control flow.
 
-No `unsafe`. Do not add dependencies without explicit approval in the current
-canonical work plan and a license-compatibility review. Repository source
-remains Apache-2.0.
+No `unsafe`. Do not add dependencies without maintainer approval and a
+license-compatibility review. Repository source remains Apache-2.0.
 
 ## Testing
 

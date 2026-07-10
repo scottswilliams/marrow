@@ -1,69 +1,48 @@
-# Installing Marrow
+# Install From Source
 
-Marrow v0.1.0 is distributed as a tagged source release. Install from source.
+Marrow is experimental, unreleased software. The repository does not currently
+publish a tagged release, a crates.io package, or prebuilt binaries. Build the
+revision that contains the documentation you are reading.
 
-## Supported Platforms
+## Requirements
 
-Marrow v0.1 supports Unix targets only: Linux and macOS. Non-Unix builds are
-outside the v0.1 contract; the stable-id entropy backstop may panic there rather
-than report a Marrow diagnostic.
-
-## From Source
-
-Requirements:
-
-- Rust stable 1.89 or newer;
+- Linux or macOS;
+- Rust 1.89;
 - Git.
+
+Other operating systems are not supported by the current source build. On a
+platform without an approved operating-system entropy source, operations that
+need to allocate durable identities return an unsupported-I/O error; they do not
+provide a fallback identity source.
+
+## Install The Command
 
 ```sh
 git clone https://github.com/scottswilliams/marrow
 cd marrow
-git checkout v0.1.0
 cargo install --locked --path crates/marrow
 marrow --version
 ```
 
-The installed command is `marrow`. The v0.1.0 version output includes the
-current engine profile:
+The package version printed by `marrow --version` describes the current binary;
+it does not identify a released compatibility contract. The same output includes
+the storage engine profile used to reject incompatible durable data.
 
-```console
-$ marrow --version
-marrow 0.1.0 engine-profile=(key=v0, layout-epoch=0, digest=77944eb86c08b665)
-```
-
-## Build Without Installing
+To build without installing:
 
 ```sh
-cargo build --release -p marrow --locked
+cargo build --release --locked --manifest-path crates/marrow/Cargo.toml
 ./target/release/marrow --version
 ```
 
-Prebuilt binaries and crates.io publication are post-v0.1 fast-follow channels,
-not v0.1 release channels.
+## Project Data
 
-## Data Directories
+Installing Marrow does not start a service, alter the shell profile, or create a
+data directory. A project selects its source roots and storage in `marrow.json`.
+The native store creates files only when a write-capable project command needs
+them.
 
-Marrow uses explicit project configuration for persistent data. Installing or
-running Marrow does not start a background service, modify the shell profile,
-or create hidden data directories.
-
-The project file is `marrow.json`. Its `store` field selects the storage
-backend and data directory for commands that need saved data; there are no
-command-line storage overrides.
-
-```json
-{
-  "sourceRoots": ["src"],
-  "run": { "defaultEntry": "shelf::sample::main" },
-  "store": { "backend": "native", "dataDir": ".marrow/data" }
-}
-```
-
-## Storage Engines
-
-The native store is the default persistent project store and the only storage
-engine required for the first release.
-
-Other storage engines can exist as separate packages when they implement the
-same backend contract described in [`backend-contract.md`](backend-contract.md).
-They are not part of the default install path.
+Continue with the [Quickstart](quickstart.md). See the
+[`marrow.json` reference](tools/project-file.md) for project paths and
+[Native Store Operations](operations/native-store.md) for storage ownership and
+filesystem assumptions.

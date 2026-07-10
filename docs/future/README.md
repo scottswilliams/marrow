@@ -1,20 +1,21 @@
-# Retired design notes
+# Future direction
 
-The files below this directory are earlier proposals. They are not current
-language contracts, accepted decisions, or a schedule. Some describe mechanisms
-that the present vision rejects; others may contain useful constraints that have
-not yet been re-evaluated.
+This directory describes unimplemented directions that follow from Marrow's
+vision. It is neither current behavior nor an execution schedule. Current
+behavior is defined by the main reference, code, and tests.
 
-Do not add new normative material here. Product direction belongs in
-[`../vision.md`](../vision.md), the implementation boundary in
-[`../status.md`](../status.md), and current semantics in
-[`../language/`](../language/). The documentation refounding plan will classify
-each existing page as one of the following:
+- [Compiled programs](compiled-programs.md)
+- [Semantic paths](semantic-paths.md)
+- [Admission and activation](admission-and-activation.md)
+- [Source-defined standard library](source-standard-library.md)
+- [Local applications](local-applications.md)
+- [Public paths and authority](public-paths-and-authority.md)
+- [Served execution](served-execution.md)
 
-- move verified current behavior into the reference;
-- restate an open question as research;
-- replace it after an accepted target contract; or
-- delete it.
+Future pages record the goal, the forces acting on the design, and questions
+that remain open. They avoid proposed syntax and wire formats before
+implementation work can validate them.
 
-Current documentation must not link into this directory. A retired page may link
-out to its current replacement or status page while it awaits deletion.
+When a feature becomes current, its public behavior moves into the canonical
+reference and the corresponding future material is removed or reduced to the
+remaining unimplemented portion. Git history preserves abandoned proposals.

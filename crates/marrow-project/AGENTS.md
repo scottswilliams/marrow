@@ -13,4 +13,4 @@ The current configuration format is implementation state, not permanent
 language law. Embedded and served profile semantics must originate in the
 compiler/runtime design rather than ad hoc configuration branches.
 
-Map: [docs/implementation/cli.md](../../docs/implementation/cli.md).
+Map: [docs/implementation/tooling.md](../../docs/implementation/tooling.md).

@@ -12,8 +12,8 @@ consumers branch on typed codes and fields.
 Resource-schema DTOs are current compiler-derived facts consumed by tooling;
 keep them exhaustive and independent of transport semantics. Surface-request
 DTOs, route manifests, and serving helpers describe the legacy application
-boundary. Do not extend or stabilize that model. New boundary work must consume
-compiler-owned semantic path and authority facts after its target contract is
-accepted.
+boundary. Do not extend or stabilize that model. New boundary work consumes
+compiler-owned semantic path and authority facts and updates its canonical
+reference alongside the implementation.
 
-Map: [docs/implementation/json.md](../../docs/implementation/json.md).
+Map: [docs/implementation/tooling.md](../../docs/implementation/tooling.md).

@@ -1,143 +1,43 @@
 # Standard Library
 
-Marrow syntax stays small. Most everyday functionality belongs in `std::`
-modules with typed signatures.
+Standard-library functions use `std::module::function` paths. The checker has a
+closed table of names and concrete signatures; an unknown module or function is
+an error. Arguments bind by position. Parameter names in the signatures explain
+the slots; they are not call-site labels. The current checker may accept a label
+on one of these calls, after which lowering leaves the containing function
+without an executable body. Do not label standard-library arguments.
 
-Builtins such as `exists`, `keys`, `print`, and conversions are documented in
-[Builtins](builtins.md). This page describes importable libraries.
-
-## Design Rules
-
-The standard library is part of the language surface, but it is not a second
-runtime platform:
-
-- `std::` modules do not add syntax.
-- Pure helpers are deterministic.
-- Host helpers depend on explicit host capabilities.
-- Saved data still goes through `^`, builtins, and managed writes.
-- Functions have concrete signatures; Marrow does not use overloading to make
-  library calls work.
-
-The Marrow language does not require every host module. Pure helpers are
-available in normal CLI runs. Host functions in `std::clock`, `std::context`,
-`std::io`, `std::env`, and `std::log` depend on the command or embedding host;
-a call made without the matching capability is a typed capability error. The
-capability is per function, not per module: within `std::clock` only `now()`
-and `today()` need the host clock, while the parse and format helpers are pure.
-
-The descriptor table is closed for every known `std` module. A call to an
-operation the table does not define is a check error, whether the module is pure
-or host-capable. Host capability only affects recognized descriptor rows such as
-`std::clock::now()` or `std::io::readText(...)`.
-
-## Import Style
+Pure functions are deterministic. Host functions require the corresponding
+capability from the run environment. Capability is per function: for example,
+`std::clock::now()` needs a clock, while `std::clock::parseDate()` is pure.
 
 ```mw
-use std::clock
+module docs::standard_library
 
-const now: instant = clock::now()
+pub fn normalizedTitle(title: string): string
+    const clean = std::text::trim(title)
+    return std::text::toLower(clean)
+
+pub fn day(text: string): date
+    return std::clock::parseDate(text)
 ```
 
-Fully qualified calls are always valid:
+`use std::clock` binds `clock`, so `clock::today()` is equivalent to the fully
+qualified form.
 
-```mw
-const now: instant = std::clock::now()
-```
+## Host Capabilities
 
-## `std::clock`
+- `clock`: `std::clock::now`, `std::clock::today`.
+- `context`: `std::context::actor`, `std::context::idempotencyKey`,
+  `std::context::requestId`.
+- `environment`: `std::env::exists`, `std::env::get`, `std::env::require`.
+- `filesystem`: `std::io::readBytes`, `std::io::readText`,
+  `std::io::writeBytes`, `std::io::writeText`.
+- `log`: `std::log::error`, `std::log::info`, `std::log::warn`.
 
-Clock value types are part of the language surface:
+## Text And Bytes
 
-- `date`
-- `instant`
-- `duration`
-
-Basic helpers:
-
-```mw
-std::clock::now(): instant
-std::clock::today(): date
-std::clock::parseInstant(text: string): instant
-std::clock::parseDate(text: string): date
-std::clock::parseDuration(text: string): duration
-std::clock::formatInstant(value: instant): string
-std::clock::formatDate(value: date): string
-std::clock::formatDuration(value: duration): string
-std::clock::addDays(value: date, days: int): date
-std::clock::daysBetween(start: date, end: date): int
-std::clock::year(value: date): int
-std::clock::month(value: date): int
-std::clock::day(value: date): int
-```
-
-Linear instant/duration arithmetic uses operators:
-
-```mw
-const later = t + 1.hour
-const elapsed = finished - started
-```
-
-Date calendar arithmetic stays in named pure helpers. `addDays` moves a `date`
-by whole calendar days and raises `run.temporal_overflow` outside the supported
-0001-9999 calendar range. `daysBetween(start, end)` returns `end - start` in
-days. `year`, `month`, and `day` extract calendar components. These helpers do
-not add date dot-fields, instant or duration overloads, month/year duration
-literals, local time zone or locale behavior, or `addMonths`/`addYears`.
-
-The host clock is captured once at the start of a run, so every `now()` call in
-one run returns the same instant and `today()` the same date.
-
-Saved `instant` values use a canonical UTC representation. `parseInstant` and the
-`instant(text)` constructor accept standard RFC-3339 input — trailing-zero
-fractional seconds and an explicit numeric offset (`Z`, `+00:00`, or any
-`±HH:MM`) — and normalize to the canonical UTC value, so a non-UTC offset is
-shifted to its equivalent UTC instant. `parseDuration` and `duration(text)`
-accept the time-based ISO-8601 subset `PnDTnHnMnS`: optional days, then `T` and
-optional hours, minutes, and seconds, with a fraction allowed only on the seconds
-component. Each unit is an exact fixed span (`1D` = 86400s, `1H` = 3600s,
-`1M` = 60s), summed and normalized to canonical `PT<seconds>S`. A Marrow duration
-is pure signed nanoseconds with no calendar or DST arithmetic, so nominal year and
-month components (`P1Y`, or a date-position `M`) are rejected as
-calendar-ambiguous — use days, hours, minutes, and seconds, matching `addDays`
-without `addMonths`/`addYears`. Output always uses the canonical trimmed text;
-`today()` returns the current UTC calendar date, not a host-local date. Local time
-zone presentation and localized formatting belong in host libraries, not in the
-language/database kernel.
-
-## `std::io`
-
-Marrow `print` covers simple script output. `std::io` owns file access and
-byte/text boundaries:
-
-```mw
-std::io::readText(path: string): string
-std::io::writeText(path: string, text: string)
-
-std::io::readBytes(path: string): bytes
-std::io::writeBytes(path: string, data: bytes)
-```
-
-IO errors raise typed `Error` values. `writeText` and `writeBytes` replace the
-whole file and are not atomic. The host grants or withholds filesystem access
-as a whole; Marrow does not sandbox paths.
-
-## `std::env`
-
-Environment and configuration access is explicit:
-
-```mw
-std::env::exists(name: string): bool
-std::env::get(name: string, default: string): string
-std::env::require(name: string): string
-```
-
-## `std::text` And `std::bytes`
-
-`string` is UTF-8 text. `bytes` may contain arbitrary bytes.
-
-Basic helpers:
-
-```mw
+```text
 std::text::length(value: string): int
 std::text::trim(value: string): string
 std::text::contains(value: string, needle: string): bool
@@ -162,48 +62,32 @@ std::bytes::hexEncode(data: bytes): string
 std::bytes::hexDecode(text: string): bytes
 ```
 
-`std::text::length` counts Unicode scalar values. It does not count terminal
-columns or locale-specific grapheme clusters. `std::text::slice` uses the same
-zero-based scalar indexes with an exclusive `end`. `std::text::indexOf` returns
-the zero-based scalar index of the first match, and types as `int?`: use `??`
-or `if const` to handle no match. There is no `-1` sentinel.
+Text length and slicing count Unicode scalar values; slice indexes are
+zero-based and the end is excluded. `indexOf` returns absence rather than `-1`.
+Byte length counts bytes. Decode functions reject malformed input rather than
+substituting data. Case conversion uses simple one-code-point Unicode mappings;
+a character whose mapping expands to several code points remains unchanged.
+URL encoding preserves RFC 3986 unreserved bytes, uses uppercase percent escapes,
+and treats `+` literally. Base64 decoding requires canonical RFC 4648 padding.
 
-Case conversion uses simple Unicode case mapping without locale-specific rules:
-each input scalar maps to at most one output scalar, so mappings such as
-`ß` to `SS` or `İ` to `i` plus a combining mark are not used.
-`std::bytes::length` counts bytes.
+## Hash And Identity Text
 
-`urlEncode` is RFC 3986 percent-encoding of the UTF-8 bytes: it keeps `A-Z`,
-`a-z`, `0-9`, `-`, `.`, `_`, and `~` literal and writes every other byte as `%`
-plus two uppercase hex digits, so a space becomes `%20`, never `+`. `urlDecode`
-accepts either hex case, treats `+` as a literal plus, and raises `run.type` on a
-malformed escape or on decoded bytes that are not valid UTF-8.
-
-`fromText` and `toText` cross the UTF-8 boundary; `toText` raises `run.type` on
-invalid UTF-8 rather than replacing bytes. `hexEncode` emits lowercase hex;
-`hexDecode` accepts either case and raises `run.type` on odd length or any
-non-hex character.
-
-## `std::hash`
-
-Cryptographic digests over `bytes`, returning `bytes`:
-
-```mw
+```text
 std::hash::sha256(data: bytes): bytes
 std::hash::sha512(data: bytes): bytes
 std::hash::hmacSha256(key: bytes, message: bytes): bytes
+
+std::id::slug(text: string): string
+std::id::stableUuid(seed: string): string
 ```
 
-`sha256` and `sha512` return the 32- and 64-byte digests. `hmacSha256` is
-HMAC-SHA256 per RFC 2104 over the 64-byte block: a key longer than the block is
-first replaced by its SHA-256 digest. Pair these with `std::bytes::hexEncode` or
-`std::bytes::base64Encode` to render a digest as text.
+Hash functions return raw digest bytes. `slug` produces lowercase ASCII slug
+text. `stableUuid` is deterministic for a seed and returns UUID text; it does
+not construct `Id(^root)`.
 
-## `std::math`
+## Mathematics
 
-Numeric helpers that stay out of syntax:
-
-```mw
+```text
 std::math::absInt(value: int): int
 std::math::absDecimal(value: decimal): decimal
 std::math::floor(value: decimal): int
@@ -223,38 +107,37 @@ std::math::clampInt(value: int, min: int, max: int): int
 std::math::clampDecimal(value: decimal, min: decimal, max: decimal): decimal
 ```
 
-The `%` operator is remainder, and `/` always yields a decimal, so integer
-division is a named helper rather than an operator. `/` rounds an inexact
-quotient half-to-even into the 34-digit decimal envelope; only a quotient whose
-magnitude leaves the envelope raises `run.decimal_overflow`. `quotient` truncates toward
-zero and pairs with `remainder` (and `%`): for nonzero `b`,
-`a == quotient(a, b) * b + remainder(a, b)`. `divFloor` floors toward minus
-infinity and pairs with `modulo`: `a == divFloor(a, b) * b + modulo(a, b)`. The
-two diverge only on operands of opposite sign that do not divide evenly, where
-`divFloor` rounds one further toward minus infinity (for example
-`quotient(-7, 2)` is `-3` while `divFloor(-7, 2)` is `-4`). Both raise
-`run.divide_by_zero` when `b` is zero and the existing integer overflow fault
-for the lone non-representable result `quotient(-9223372036854775808, -1)`.
+`remainder` and `quotient` truncate toward zero. `modulo` and `divFloor` use a
+flooring quotient. Rounding is half-to-even. `roundDecimal` accepts scales from
+`0` through `34`, and `powInt` requires a non-negative exponent. Invalid bounds,
+division by zero, and numeric overflow raise runtime errors.
 
-Named functions make negative-number behavior explicit in code that needs
-clarity. Separate integer and decimal names avoid a numeric overloading rule in
-the language. `round` uses half-to-even. `powInt` requires a non-negative
-exponent and raises the existing integer overflow fault when the result does not
-fit in `int`.
+## Clock
 
-`roundDecimal(value, scale)` uses half-to-even rounding to the requested
-fractional precision, then returns the canonical decimal value. `scale` must be
-in `0..=34`; values outside that range raise `run.type`. The result is still
-canonical decimal data, so trailing zeroes are not preserved for presentation.
-`clampInt` and `clampDecimal` require `min <= max` and return the nearest bound
-when `value` is outside the inclusive range.
+```text
+std::clock::now(): instant
+std::clock::today(): date
+std::clock::parseInstant(text: string): instant
+std::clock::parseDate(text: string): date
+std::clock::parseDuration(text: string): duration
+std::clock::formatInstant(value: instant): string
+std::clock::formatDate(value: date): string
+std::clock::formatDuration(value: duration): string
+std::clock::addDays(value: date, days: int): date
+std::clock::daysBetween(start: date, end: date): int
+std::clock::year(value: date): int
+std::clock::month(value: date): int
+std::clock::day(value: date): int
+```
 
-## `std::json`
+`now` and `today` require the host clock and are captured consistently for one
+run. The parse, format, arithmetic, and component functions are pure. Instants
+normalize to UTC. Durations are fixed elapsed spans; calendar months and years
+are not duration units.
 
-JSON helpers are scalar readers over JSON text. They do not expose a JSON value
-type and do not map JSON objects to Marrow resources:
+## JSON And CSV
 
-```mw
+```text
 std::json::valid(text: string): bool
 std::json::string(text: string, pointer: string): string?
 std::json::int(text: string, pointer: string): int?
@@ -263,32 +146,7 @@ std::json::bool(text: string, pointer: string): bool?
 std::json::count(text: string, pointer: string): int?
 std::json::stringLit(value: string): string
 std::json::stringArray(items: sequence[string]): string
-```
 
-`stringLit` renders one correctly escaped JSON string literal, including the
-quotes. `stringArray` renders a JSON array of those literals; an empty sequence
-renders as `[]`.
-
-`pointer` is an RFC 6901 JSON Pointer. The empty string selects the root; other
-pointers start with `/`, split on `/`, and decode `~0` to `~` and `~1` to `/`.
-Missing members, missing indexes, and JSON `null` are absent and compose with
-`??`. Malformed pointers, malformed JSON for scalar reads, wrong scalar kinds,
-duplicate object keys, leading-zero array indexes, and values outside Marrow
-scalar envelopes raise `run.type`.
-
-JSON text is bounded before and after parsing by fixed byte, depth, node, and
-string-size caps. Integers must fit `int` and be JSON integers. The negative
-zero integer spelling `-0` is rejected rather than normalized to `0`. A decimal
-number is ingested leniently and canonicalized, so a trailing-zero fraction or
-leading zero (`9.50`, `9.0`) reads as its one stored value (`9.5`, `9`); it must
-still fit the decimal envelope, and exponent spellings do not become decimal
-values.
-
-## `std::csv`
-
-CSV helpers read a narrow RFC 4180 subset from text and return scalar cells:
-
-```mw
 std::csv::row(cells: sequence[string]): string
 std::csv::rowCount(text: string): int
 std::csv::hasColumn(text: string, column: string): bool
@@ -298,83 +156,18 @@ std::csv::decimal(text: string, row: int, column: string): decimal?
 std::csv::bool(text: string, row: int, column: string): bool?
 ```
 
-`row` renders one RFC 4180 record with no trailing newline, the exact inverse of
-the reader: it quotes a cell containing a comma, double-quote, CR, or LF and
-doubles internal double-quotes. An empty sequence and a one-element sequence
-holding an empty cell both render as an empty string, matching the reader.
+JSON readers use RFC 6901 pointer text and return absence for a missing or null
+selected value. They do not introduce a general JSON value type. CSV requires a
+header row; data-row indexes are zero-based. Missing or null JSON selections and
+missing CSV rows, columns, or empty cells return absence. `std::json::valid`
+returns `false` for malformed or over-limit JSON. Malformed or over-limit
+JSON/CSV text, malformed JSON pointers, negative CSV row indexes, and selected
+values that cannot be represented as the requested scalar raise a runtime
+error. `std::csv::row` is a builder and does not parse CSV input.
 
-The first row is the required header. Data rows are zero-based after the header.
-Missing rows, missing columns, and empty cells are absent. Duplicate or empty
-headers, ragged rows, malformed quotes, CR not followed by LF, and oversized
-input raise `run.type`. Unquoted whitespace is preserved. Quoted fields may
-contain commas, newlines, and escaped quotes as `""`. Like JSON, a decimal cell
-is ingested leniently and canonicalized, so `9.50` reads as `9.5`.
+## Matrix
 
-## `std::id` And `std::random`
-
-ID helpers return ordinary strings:
-
-```mw
-std::id::slug(text: string): string
-std::id::stableUuid(seed: string): string
-```
-
-`slug` is ASCII-only: it lowercases `A-Z`, keeps `a-z` and `0-9`, collapses
-other runs to one `-`, and trims hyphens. `stableUuid` hashes the seed and
-returns a deterministic RFC 4122 version-4 UUID string. It does not create an
-`Id(^store)` and is unrelated to `nextId`.
-
-Deterministic random helpers are pure PRFs over `(seed, step)`:
-
-```mw
-std::random::int(seed: string, step: int, min: int, max: int): int
-std::random::bool(seed: string, step: int): bool
-std::random::decimal(seed: string, step: int): decimal
-```
-
-`step` must be non-negative and `min <= max`. `int` uses rejection sampling over
-a SHA-256-derived `u128`; `decimal` returns an exact canonical decimal in
-`[0, 1)` with up to 18 fractional digits. No helper reads host entropy.
-
-## `std::context`, `std::audit`, And `std::error`
-
-Run context is host-provided request metadata:
-
-```mw
-std::context::actor(): string?
-std::context::requestId(): string?
-std::context::idempotencyKey(): string?
-```
-
-A run without context capability raises `run.capability`. A provided context
-with a missing field returns absence.
-
-Audit helpers are pure compact JSON string builders; they do not write logs or
-saved data:
-
-```mw
-std::audit::event(action: string, actor: string, subject: string): string
-std::audit::change(field: string, before: string, after: string): string
-```
-
-Error helpers read the existing `Error` resource shape:
-
-```mw
-std::error::code(err: Error): string
-std::error::message(err: Error): string
-std::error::hasCode(err: Error, code: string): bool
-```
-
-`Error.code` uses the existing error-code grammar. In the current type lattice
-`ErrorCode` stores as `string`, so these helpers return and compare strings
-without weakening the `Error(...)` and `ErrorCode(...)` validation rules.
-`hasCode` raises `run.type` when `code` is not valid error-code text.
-
-## `std::matrix`
-
-Matrices are canonical strings, not a distinct value type:
-
-```mw
+```text
 std::matrix::parse(text: string): string
 std::matrix::identity(size: int): string
 std::matrix::rows(matrix: string): int
@@ -385,60 +178,80 @@ std::matrix::multiply(a: string, b: string): string
 std::matrix::transpose(matrix: string): string
 ```
 
-Canonical matrix text is bracketed rows separated by `;`, columns separated by
-`,`, and canonical decimal cells, for example `[1,2;3.5,4]`. `parse` accepts
-spaces around cells and separators and returns canonical text. Each decimal cell
-is ingested leniently and canonicalized, so `9.50` reads as `9.5`, consistent
-with `std::json` and `std::csv`. Rows and columns
-are zero-based. Non-rectangular or malformed text, invalid indexes, incompatible
-dimensions, and configured byte/dimension/cell/operation-limit violations raise
-`run.type`. Addition and multiplication use exact Marrow decimal arithmetic and
-raise the existing decimal overflow fault when an arithmetic result leaves the
-decimal envelope.
+Matrices use canonical string values rather than a separate type. Row and
+column indexes are zero-based. Shape, parse, operation, and decimal-overflow
+failures raise runtime errors. Matrix text is a rectangular sequence of decimal
+rows such as `[1,2;3,4]`; input may contain whitespace, while output uses the
+compact canonical form.
 
-## `std::assert` And Testing
+## Deterministic Random Values
 
-Testing helpers work in ordinary `.mw` functions:
-
-```mw
-std::assert::isTrue(condition: bool)
-std::assert::isFalse(condition: bool)
-std::assert::equal(actual: T, expected: T)
-std::assert::isAbsent(path)
-std::assert::fail(message: string)
+```text
+std::random::int(seed: string, step: int, min: int, max: int): int
+std::random::bool(seed: string, step: int): bool
+std::random::decimal(seed: string, step: int): decimal
 ```
 
-`equal` accepts scalar values of the same type and fails with
-`expected X, got Y`. It does not compare sequences, resources, trees,
-identities, enums, or errors. Other boolean and ordering assertions remain
-normal Marrow expressions:
+These functions are deterministic over `seed` and `step`; they do not read host
+entropy. `step` must be non-negative. Integer bounds are inclusive and must be
+ordered. Decimal output is an integer multiple of `10^-18` in `[0, 1)`;
+canonical rendering may omit trailing fractional zeroes.
 
-```mw
-std::assert::isTrue(a < b)
+## Context, Environment, And IO
+
+```text
+std::context::actor(): string?
+std::context::requestId(): string?
+std::context::idempotencyKey(): string?
+
+std::env::exists(name: string): bool
+std::env::get(name: string, default: string): string
+std::env::require(name: string): string
+
+std::io::readText(path: string): string
+std::io::writeText(path: string, text: string)
+std::io::readBytes(path: string): bytes
+std::io::writeBytes(path: string, data: bytes)
 ```
 
-`isAbsent(path)` is the testing counterpart to `exists(path)`: it accepts any
-optional value and asserts it is absent. It does not hide schema or decoding
-errors.
+These functions require host capabilities. Missing optional context fields
+return absence; a missing required environment value or failed file operation
+raises an `Error`. File writes replace the destination. IO write functions are
+forbidden inside transactions; reads are permitted.
 
-`marrow test` runs every `pub fn` with no parameters in a test file as a test;
-other functions are helpers. Test files are selected by the project's `tests`
-paths in `marrow.json`. A test file is named from its `tests`-relative path and
-needs no `module` declaration; if it declares one, the name must match that
-path-derived name, just as a source file's `module` must match its path. Each
-test runs against a fresh in-memory store, so tests are independent and never
-touch saved data. `marrow test` reports failures as typed `Error` values with
-source locations.
+## Audit, Error, And Logging
 
-## `std::log`
+```text
+std::audit::event(action: string, actor: string, subject: string): string
+std::audit::change(field: string, before: string, after: string): string
 
-Logging writes to host-configured sinks:
+std::error::code(err: Error): string
+std::error::message(err: Error): string
+std::error::hasCode(err: Error, code: string): bool
 
-```mw
 std::log::info(message: string)
 std::log::warn(message: string)
 std::log::error(err: Error)
 ```
 
-Application audit data is saved explicitly as resources when it must be
-queryable.
+Audit functions are pure string builders and do not write data or logs.
+`std::error` reads the built-in error shape. Logging requires a host sink and is
+forbidden inside transactions.
+
+## Testing
+
+```text
+std::assert::isTrue(condition: bool)
+std::assert::isFalse(condition: bool)
+std::assert::equal(actual: T, expected: T)
+std::assert::isAbsent(value: T?)
+std::assert::fail(message: string)
+```
+
+Assertions throw on failure. `equal` accepts matching scalar types; it does not
+deep-compare resources or collections.
+
+Each project test function runs with a fresh in-memory saved-data store. A test
+may freely read and write declared durable paths, but it never opens or changes
+the persistent store configured for normal program execution. Tests therefore
+start independent of one another.

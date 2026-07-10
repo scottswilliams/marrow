@@ -1,11 +1,13 @@
 # Errors
 
-Marrow errors are part of the product surface. A good error says what
-happened, where it happened, and what to try next when Marrow knows.
+Marrow diagnostics use typed dotted codes. Human-readable messages explain
+what happened, where it happened, and what to try next when Marrow knows.
 
 Language-level error behavior is described in
-[`language/control-flow-and-effects.md`](language/control-flow-and-effects.md).
-This page describes the CLI and tooling contract.
+[`language/errors-and-transactions.md`](language/errors-and-transactions.md).
+Tool invocation and output formats are described in
+[`tools/diagnostics.md`](tools/diagnostics.md). This page is generated from the
+code registry and lists every current code.
 
 ## CLI Exit Codes
 
@@ -17,7 +19,8 @@ This page describes the CLI and tooling contract.
 
 ## Error Envelope
 
-Machine-readable surfaces use a stable envelope:
+Machine-readable commands use this envelope where their selected format calls
+for a single diagnostic object:
 
 ```json
 {
@@ -40,7 +43,7 @@ the running program.
 
 Common fields:
 
-- `code`: stable machine code;
+- `code`: typed machine code;
 - `kind`: broad category such as `parse`, `check`, `runtime`, `storage`,
   `surface`, `io`, `usage`, or `tooling`;
 - `message`: short human summary;
@@ -48,11 +51,9 @@ Common fields:
 - `source_span`: optional source location;
 - `data`: optional structured facts for tools.
 
-Marrow error codes use stable lowercase dotted text such as `parse.syntax` or
+Marrow error codes use lowercase dotted text such as `parse.syntax` or
 `book.already_loaned`. Segments use lowercase letters, digits, and
 underscores.
-
-Marrow surfaces use dotted Marrow error codes and typed error values.
 
 Storage errors include the failed operation and the capability or limit
 involved. Machine-readable facts belong in `data`; clients do not parse
@@ -90,8 +91,7 @@ names an exact next command or manual remedy.
 
 ## How `kind` Is Assigned
 
-Tools derive `kind` from the first dotted segment of `code`, so the kind of a
-code is stable and predictable:
+Tools derive `kind` from the first dotted segment of `code`:
 
 | First segment | `kind` |
 |---|---|
@@ -105,12 +105,9 @@ code is stable and predictable:
 
 ## Code Reference
 
-The main family sections below list codes emitted by the current build. The
-Application Surfaces section marks which surface codes are active in the
-transport-neutral runtime API and which remain reserved. Codes are grouped by
-family, and each family description names where a developer first meets the
-code: a project `check`/`run`/`test`, a managed write inside a running program,
-the store, or a `data` maintenance command.
+The family sections below list codes emitted by the current build. Legacy
+surface codes are isolated near the end. Internal codes are separate from
+ordinary user-facing diagnostics.
 
 ### `parse.*` — kind `parse`
 
@@ -150,7 +147,7 @@ over every configured source and test file.
 | `check.surface_computed_read` | A surface `read` item targets an unknown, ambiguous, or non-public function, has a parameter or return type outside the active computed-read JSON surface, or its checked effect closure writes saved data, opens a transaction, performs host effects, throws, or uses an unindexed collection read. Bare read targets resolve only in the declaring module; cross-module targets must be qualified and use ordinary import-alias expansion. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
-| `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
+| `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. The current language expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
 | `check.return_value` | A `return` carries a value in a function with no return type, or omits one in a value-returning function. |
 | `check.missing_return` | A value-returning function can reach the end of its body without returning. |
 | `check.operator_type` | An operator is applied to operands whose types it does not accept. |
@@ -174,7 +171,7 @@ over every configured source and test file.
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.next_id_collision` | A warning: two `nextId(^root)` results for the same store are both written as record keys with no write to that store between the two allocations. `nextId` returns `max + 1` and does not advance until a record is written, so both calls return the same value and the second write silently overwrites the first. Interleave the writes (`allocate, write, allocate, write`) for distinct ids. |
-| `check.rejected_surface` | Source uses a parsed construct outside the accepted v0.1 surface, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead. |
+| `check.rejected_surface` | Source uses a parsed construct outside the current language, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead. |
 | `check.catalog_intent` | Binding source against the accepted saved-data identity cannot resolve it soundly: proposed declarations whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration not yet recorded as accepted identity is informational, not an error: it reports that durable identity is not yet frozen. An additive declaration — a sparse field, a new resource, store, enum, or group — is recorded by the next `marrow run` or `marrow evolve apply`; a newly `required` field added over an established store needs `marrow evolve preview` then `marrow evolve apply` to backfill existing records, since a plain run fences `run.schema_drift`. |
 | `check.lock_missing` | A `marrow check --locked` failure for CI: the committed `marrow.lock` is absent over a project that has durable shape to lock — any present native store, whether its accepted catalog reads back cleanly or the store is recovery-required after an unclean shutdown — so the gate fails closed rather than passing a project whose lock was never committed or was deleted. Distinct from `check.stale_lock`, which reports a present-but-behind lock. A legitimate first run, which has no durable store yet, raises no condition: an absent lock there is expected and `--locked` still passes. |
 | `check.stale_lock` | A non-fatal advisory: the committed `marrow.lock` records a different producing source shape than the current source, so the lock is behind the project. `marrow check` is read-only and cannot regenerate it, so it reports the staleness and still passes; a `run` or `evolve apply` regenerates the lock. `marrow check --locked` treats this condition as a failure for CI. |
@@ -205,7 +202,7 @@ over every configured source and test file.
 | `check.key_requires_single_key` | `key(id)` targets a composite multi-key identity, which has no single scalar key to project. A composite identity is reconstructed as a whole value, never exposed as a tuple of raw key components. |
 | `check.range` | A range-for header is ill-formed: an endpoint is missing (`0..`, `..10`, `..`), the endpoints are not the same steppable type, or the `by` step does not match them (an `int` for `int`, a positive duration for `date`/`instant`). `instant` requires an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
-| `check.collection_unsupported` | A collection operation uses a shape v0.1 does not support: a `for` or `count` over a value that is a scalar rather than a collection; a `for` over a saved path that names a single stored value; a `reversed` traversal of a range (spell a descending range with its endpoints and `by`); a unique index lookup used as a stream; a generated index branch as a resource member/call chain; or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy. |
+| `check.collection_unsupported` | A collection operation uses a shape the current language does not support: a `for` or `count` over a value that is a scalar rather than a collection; a `for` over a saved path that names a single stored value; a `reversed` traversal of a range (spell a descending range with its endpoints and `by`); a unique index lookup used as a stream; a generated index branch as a resource member/call chain; or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy. |
 | `check.loop_head_arity` | A `for` head binds the wrong number of names for its iterable. A saved layer with N key columns accepts 1 name (the outer key) or N+1 names (every key column outermost-first plus the leaf value); a range or scalar accepts 1; a local collection or index branch accepts 1 or 2. Any intermediate count is rejected. |
 | `check.loop_head_view_call` | A `for` head iterable is a direct `keys(...)` or `values(...)` call. Iterate the collection directly: `for k in xs` streams the keys and `for k, v in xs` pairs each key with its value; `keys`/`values` are for building a local sequence in value position. |
 | `check.read_only_expression_context` | A checked read-only expression request names a module or program context that does not exist. |
@@ -214,7 +211,7 @@ over every configured source and test file.
 | `check.read_only_expression_unindexed_lookup` | A checked read-only expression would traverse a saved collection without a declared index. |
 | `check.private_enum` | A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not. |
 | `check.exposed_private_enum` | A warning: a `pub fn` names a non-`pub` enum from its own module in a parameter or return type, so the enum's values escape through a public signature even though other modules cannot name the type. Mark the enum `pub`. |
-| `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
+| `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md). |
 | `check.evolve_target` | An `evolve` intent names an entity — a resource, a resource member, a saved root, a store index, an enum, or an enum member — that the current source does not declare (or, for a rename's source side, that the accepted catalog does not record). |
 | `check.evolve_type` | An `evolve default` value does not match its target member's type, or an `evolve transform` body does not type-check. |
 | `check.evolve_transform` | An `evolve transform` body is ill-formed: it is impure, reads its own target or a member another `default`/`transform` rewrites in the same block, or does not compute a top-level member as a pure function of `old`'s other decodable members. |
@@ -263,12 +260,12 @@ regenerates the lock — `doctor` repairs nothing.
 | `doctor.store_locked` | The configured native store exists but a read-only open reported `store.locked`. Close the process holding the store, then rerun the printed `marrow doctor` command. |
 | `doctor.store_recovery_required` | The configured native store needs a write-capable recovery open before read-only inspection. Run the printed `marrow data recover` command. |
 | `doctor.store_unavailable` | A read-only store open or metadata read failed with another `store.*` code such as corruption, format-version mismatch, or I/O failure. The finding data carries the underlying store code. |
-| `doctor.populated_unstamped` | The native store holds saved records but carries no catalog activation stamp, so the run path would fence it. Run the printed `marrow evolve apply` command to activate the accepted shape. |
+| `doctor.populated_unstamped` | The native store holds saved records but carries no catalog commit stamp, so the run path would fence it. Run the printed `marrow evolve apply` command to attach the accepted shape. |
 | `doctor.catalog_collision` | The store and the committed `marrow.lock` record the same epoch but different shape digests, so the lock no longer matches the live store at that epoch. The store wins; regenerate `marrow.lock` by running the project, then commit it. |
 | `doctor.store_lock_epoch_mismatch` | The store's accepted epoch and the committed `marrow.lock` epoch differ. The store wins; the finding data carries both epochs so an operator can confirm the store is current and regenerate the lock. |
 | `doctor.stale_lock` | The committed `marrow.lock` records a different producing source shape digest than the current source, so the lock is stale against the project. The store remains authoritative; regenerate `marrow.lock` by running the project. |
 | `doctor.lock_missing` | The live store carries accepted saved shape but no committed `marrow.lock` is present, so a CI gate would pass a project whose lock was never committed or was deleted. Regenerate `marrow.lock` with a run or `evolve apply`, then commit it. Mirrors `check.lock_missing`. A uid-only store with no accepted catalog, like an absent store, has nothing to lock and is not flagged. |
-| `doctor.fence_mismatch` | The activation fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next. |
+| `doctor.fence_mismatch` | The source/store fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next. |
 | `doctor.integrity_sample_failed` | The bounded saved-data integrity sample found problems or could not complete. Run the printed `marrow data integrity` command for the full read-only report. |
 
 ### `run.*` — kind `runtime`
@@ -307,15 +304,15 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in text messages (e.g. `[io.read]`) and in run JSON envelopes as `diagnostics[0].data.code`. |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
-| `run.depth` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the callee name, budget, and observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
+| `run.depth` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the callee name, budget, and observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
 | `run.durable_store_required` | A command needs a native durable store to establish accepted durable identity, but no native durable store is configured. |
 | `run.dry_run_isolation` | Dry-run execution exhausted attempts to allocate a unique temporary store directory. |
 | `run.store_evolved` | An already-bound program is fenced because the store advanced past the catalog epoch that program accepted: a concurrent run or `marrow evolve apply` stamped a newer epoch under a long-running binding. Recompile or upgrade against the current accepted catalog. A fresh command instead rebinds against the store's current snapshot and reports same-epoch `run.schema_drift`, so this fence surfaces through a linked, long-running runtime rather than a fresh CLI over old source. Fenced before any execution; the store is unchanged. |
-| `run.store_behind` | The store is older than the accepted catalog. On a plain `run`, the store predates this program's catalog: run `marrow evolve apply` to activate the store first. On an `evolve apply`, the local store is behind the committed `marrow.lock` by more than a single catch-up step, so applying would regress the committed lock: reconcile the local store with the team's up-to-date store (pull or rebuild it to match the committed lock) instead of re-running apply. Fenced before any execution; the store is unchanged. |
-| `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it. Fenced before any execution; the store is unchanged. |
+| `run.store_behind` | The store is older than the accepted catalog. On a plain `run`, the store predates this program's catalog: run `marrow evolve apply` first. On an `evolve apply`, the local store is behind the committed `marrow.lock` by more than a single catch-up step, so applying would regress the committed lock: reconcile the local store with the team's up-to-date store (pull or rebuild it to match the committed lock) instead of re-running apply. Fenced before any execution; the store is unchanged. |
+| `run.schema_drift` | The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to commit it. Fenced before any execution; the store is unchanged. |
 | `run.engine_profile` | The store's engine profile does not match this binary's storage layout. Fenced before any execution; the store is unchanged. |
-| `run.store_unstamped` | The store holds saved records but carries no catalog activation stamp. Run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to activate the accepted catalog before running. Fenced before any execution; the store is unchanged. |
+| `run.store_unstamped` | The store holds saved records but carries no catalog commit stamp. Run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to attach the accepted catalog before running. Fenced before any execution; the store is unchanged. |
 
 ### `value.*` — kind `runtime`
 
@@ -351,7 +348,7 @@ one is reported under its own `write.*` code.
 | `write.next_id_unsupported` | `nextId` was asked for a root whose identity shape has no default integer allocation policy. The runtime backstop for `check.next_id_requires_single_int`. |
 | `write.required_field` | Deleting a `required` field on its own is rejected outside maintenance. |
 | `write.requires_maintenance` | A whole managed-root delete (`delete ^books`) was attempted without the maintenance capability. |
-| `write.transaction_too_large` | A `transaction` buffered more than 64 MiB of pending write payload. A transaction holds its whole write set in memory until commit, so this fails closed before the buffer exhausts memory. Located at the write that crossed the budget; the aborted transaction commits nothing. Split the atomic write into smaller transactions. See the [cost model](language/cost-model.md). |
+| `write.transaction_too_large` | A `transaction` buffered more than 64 MiB of pending write payload. A transaction holds its whole write set in memory until commit, so this fails closed before the buffer exhausts memory. Located at the write that crossed the budget; the aborted transaction commits nothing. Split the atomic write into smaller transactions. See [execution limits](language/execution-limits.md). |
 
 ### `store.*` — kind `storage`
 
@@ -496,22 +493,12 @@ original code in the message, while JSON run envelopes carry it in
 run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/such/file`: No such file or directory (os error 2)
 ```
 
-## Application Surfaces
+## Legacy Surface Codes
 
-`marrow data diff` and `marrow data load` are not implemented. Restore replace
-is part of the current CLI surface; restore merge/repair and cross-engine
-restore are also not implemented. No command-output code family is reserved for
-an unimplemented command.
-
-The `surface.*` family belongs to the application surface runtime and its
-[Surface ABI](surface-abi.md). The transport-neutral `marrow-run`
-node-read, collection-read, computed-read, generated create/update/delete, and
-action APIs can emit the active codes below. `marrow serve` emits
-sanitized code/message envelopes for HTTP serving in both default read-only mode
-and `--write` mode, and adds `surface.auth` for remote HTTP authorization and
-mode denial before request-body decoding.
-Remote cursor-token mode maps opaque cursor strings onto the same active typed
-runtime continuation value at the HTTP boundary.
+The implemented surface/client/server stack is legacy and intentionally absent
+from the main language and tool references. Its reachable runtime paths emit
+the codes below until the stack is deleted. They are current implementation
+facts, not a v1 protocol commitment or compiler-integrated authorization model.
 
 ### `surface.*` — kind `surface`
 
@@ -529,7 +516,6 @@ runtime continuation value at the HTTP boundary.
 | `surface.write` | A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults. |
 | `surface.action` | A surface action was admitted by operation tag, but entry execution or return rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Action argument decode failures use `surface.request`. |
 | `surface.computed` | A surface computed read was admitted by operation tag, but entry execution or result rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Computed-read argument decode failures use `surface.request`. |
-| `surface.integrity` | A future renderer profile that actively dereferences identity links or relations found a missing referent. Projection-only reads use `surface.invalid_data` for dangling index rows. |
 | `surface.store` | The store reported a fault while executing a surface operation. |
 
 ### Internal Fail-Closed Codes
@@ -542,25 +528,3 @@ It stands as an independent gate rather than a user-facing diagnostic.
 | Code | Meaning |
 |---|---|
 | `check.lock_corrupt` | A defense-in-depth adoption guard: the committed `marrow.lock` cannot seed first-run identity for a fresh empty store because a source declaration would adopt a stable id the lock's append-only ledger has retired. Adoption fails closed so a retired id is never reissued. The catalog lock decoder rejects every publicly reachable malformed lock as `catalog.lock_corrupt` first, so this checker guard has no public product repro; it stands as an independent fail-closed gate. Restore or regenerate `marrow.lock` from a valid live store. |
-
-### Reserved And Future Codes
-
-The remaining `check.surface_*` names are reserved for future surface checker
-diagnostics, including stable ABI export checks. They do not appear in v0.1
-command output until those checks ship.
-
-| Code | Reserved meaning |
-|---|---|
-| `check.surface_decl` | A parsed surface declaration violates a checker-level declaration rule. Syntax failures remain `parse.syntax`. |
-| `check.surface_catalog_pending` | Accepted catalog IDs are not available for every durable fact needed to export a stable surface ABI. |
-| `check.surface_operation` | A generated surface operation cannot be constructed from the checked store facts. |
-
-The `decode.*` family is reserved for future checked decode and repair reports.
-These codes do not appear in v0.1 command output.
-
-| Code | Reserved meaning |
-|---|---|
-| `decode.shape` | A stored tree shape does not match the checked resource shape. |
-| `decode.unknown_member` | Stored data names a member the checked catalog cannot resolve. |
-| `decode.required_absent` | A required saved member is absent from stored data. |
-| `decode.value` | Stored bytes do not decode as the checked leaf type. |

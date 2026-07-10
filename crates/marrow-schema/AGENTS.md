@@ -14,4 +14,4 @@ Schema shapes feed semantic-path construction. This crate does not own stable
 schema path identity, URI spelling, authorization scope, graph-version
 evolution relations, or physical storage keys.
 
-Map: [docs/implementation/schema.md](../../docs/implementation/schema.md).
+Map: [docs/implementation/compiler.md](../../docs/implementation/compiler.md).

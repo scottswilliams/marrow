@@ -15,12 +15,8 @@ a durable handle around validation. Store-wide internal and administrative
 traversal pages and guards cursor progress rather than materializing unbounded
 data. It must not become a separate source-language access model.
 
-Physical substrate recovery is a private trusted component beneath the future
-logical path kernel, not an application access path. Application principals
-cannot invoke it. Recovery may repair physical representation, but the store
-must remain out of service until a supplied immutable program image matches the
-store's active-image binding and the image, durable schema, and data have passed
-validation and received a fresh already-active verdict from read-only admission.
+Physical substrate recovery is a private trusted component, not an application
+data path. It may repair physical representation, but it does not establish that
+the recovered bytes match the current program or its durable declarations.
 
-Contract: [docs/backend-contract.md](../../docs/backend-contract.md).
-Map: [docs/implementation/store.md](../../docs/implementation/store.md).
+Map: [docs/implementation/storage.md](../../docs/implementation/storage.md).

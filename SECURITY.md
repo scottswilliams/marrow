@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-Marrow is in the v0.1 pre-1.0 release line. Security fixes are handled on the main development line
-and may ship without backports or patch releases unless a maintained release branch is explicitly
-announced.
+Marrow is experimental and unreleased. Security fixes are handled on the main
+development branch. There are no supported release branches, backport promises,
+or patch-release schedules unless one is announced with a future release.
 
 ## Reporting A Vulnerability
 
@@ -17,13 +17,15 @@ Email reports to williamssscott@gmail.com. Include enough detail to reproduce or
 - the expected behavior and the observed behavior;
 - any crash output, diagnostics, logs, or proof-of-concept steps that are safe to share.
 
-Useful reports include compiler, runtime, CLI, storage, backup/restore, and generated-client issues
-that could affect confidentiality, integrity, availability, project isolation, or safe handling of
-untrusted inputs.
+Useful reports include compiler, runtime, CLI, storage, backup/restore, and
+other reachable boundary issues that could affect confidentiality, integrity,
+availability, project isolation, or handling of untrusted inputs. The legacy
+client/server stack remains in scope while it is reachable.
 
 ## Response Expectations
 
-You should receive a human response after the report has been reviewed. Follow-up may ask for a
-smaller reproduction or clarification. Fix timing depends on severity, reproducibility, and the
-pre-release state of the affected surface; no hard response or disclosure SLA is promised for v0.1
-pre-release work.
+You should receive a human response after the report has been reviewed.
+Follow-up may ask for a smaller reproduction or clarification. Fix timing
+depends on severity, reproducibility, and the experimental state of the affected
+code; no hard response or disclosure SLA is promised before a release policy is
+published.

@@ -34,7 +34,6 @@ pub enum Family {
     Backup,
     Restore,
     Surface,
-    Decode,
 }
 
 impl Family {
@@ -60,7 +59,6 @@ impl Family {
             Self::Backup => "backup",
             Self::Restore => "restore",
             Self::Surface => "surface",
-            Self::Decode => "decode",
         }
     }
 
@@ -85,8 +83,7 @@ impl Family {
             | Self::Evolve
             | Self::Test
             | Self::Backup
-            | Self::Restore
-            | Self::Decode => "tooling",
+            | Self::Restore => "tooling",
         }
     }
 }
@@ -123,16 +120,12 @@ pub enum Catchability {
 /// path a developer can reach. An `Internal` code is emitted too, but only as a
 /// defense-in-depth fail-closed guard over an invariant the surrounding layers
 /// already close, so it has no public product repro — a lower layer classifies
-/// every reachable case first. A `Reserved` code is not emitted at all: it
-/// documents a future contract, its name and meaning held in the reference while
-/// a tidy gate proves no production emit site names it. The reference renders
-/// each lifecycle in its own section, so a lifecycle change relocates a code's
-/// row on regeneration.
+/// every reachable case first. The reference renders internal codes separately
+/// from ordinary user-facing diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lifecycle {
     Active,
     Internal,
-    Reserved,
 }
 
 macro_rules! codes {
@@ -148,7 +141,7 @@ macro_rules! codes {
             /// Every registered code, in `docs/error-codes.md` order.
             pub const ALL: &'static [Code] = &[$(Code::$variant),*];
 
-            /// The stable dotted wire string, spelled once here for the whole toolchain.
+            /// The canonical dotted string, spelled once here for the whole toolchain.
             pub const fn as_str(self) -> &'static str {
                 match self { $(Code::$variant => $string),* }
             }
@@ -203,7 +196,7 @@ codes! {
     CheckSurfaceComputedRead => r#"check.surface_computed_read"#, Check, Error, NotApplicable, Active, r#"A surface `read` item targets an unknown, ambiguous, or non-public function, has a parameter or return type outside the active computed-read JSON surface, or its checked effect closure writes saved data, opens a transaction, performs host effects, throws, or uses an unindexed collection read. Bare read targets resolve only in the declaring module; cross-module targets must be qualified and use ordinary import-alias expansion."#;
     CheckUnresolvedImport => r#"check.unresolved_import"#, Check, Error, NotApplicable, Active, r#"A `use` names a module that is neither a project module nor a standard-library module."#;
     CheckUnknownType => r#"check.unknown_type"#, Check, Error, NotApplicable, Active, r#"A type annotation names a type the checker does not recognize."#;
-    CheckRecursiveKeyedEntry => r#"check.recursive_keyed_entry"#, Check, Error, NotApplicable, Active, r#"A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed."#;
+    CheckRecursiveKeyedEntry => r#"check.recursive_keyed_entry"#, Check, Error, NotApplicable, Active, r#"A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. The current language expands typed entries to a finite saved member shape, so recursive entry shapes fail closed."#;
     CheckReturnValue => r#"check.return_value"#, Check, Error, NotApplicable, Active, r#"A `return` carries a value in a function with no return type, or omits one in a value-returning function."#;
     CheckMissingReturn => r#"check.missing_return"#, Check, Error, NotApplicable, Active, r#"A value-returning function can reach the end of its body without returning."#;
     CheckOperatorType => r#"check.operator_type"#, Check, Error, NotApplicable, Active, r#"An operator is applied to operands whose types it does not accept."#;
@@ -227,7 +220,7 @@ codes! {
     CheckAmbiguousCall => r#"check.ambiguous_call"#, Check, Error, NotApplicable, Active, r#"A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`)."#;
     CheckNextIdRequiresSingleInt => r#"check.next_id_requires_single_int"#, Check, Error, NotApplicable, Active, r#"`nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`."#;
     CheckNextIdCollision => r#"check.next_id_collision"#, Check, Warning, NotApplicable, Active, r#"A warning: two `nextId(^root)` results for the same store are both written as record keys with no write to that store between the two allocations. `nextId` returns `max + 1` and does not advance until a record is written, so both calls return the same value and the second write silently overwrites the first. Interleave the writes (`allocate, write, allocate, write`) for distinct ids."#;
-    CheckRejectedSurface => r#"check.rejected_surface"#, Check, Error, NotApplicable, Active, r#"Source uses a parsed construct outside the accepted v0.1 surface, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead."#;
+    CheckRejectedSurface => r#"check.rejected_surface"#, Check, Error, NotApplicable, Active, r#"Source uses a parsed construct outside the current language, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead."#;
     CheckCatalogIntent => r#"check.catalog_intent"#, Check, Error, NotApplicable, Active, r#"Binding source against the accepted saved-data identity cannot resolve it soundly: proposed declarations whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration not yet recorded as accepted identity is informational, not an error: it reports that durable identity is not yet frozen. An additive declaration — a sparse field, a new resource, store, enum, or group — is recorded by the next `marrow run` or `marrow evolve apply`; a newly `required` field added over an established store needs `marrow evolve preview` then `marrow evolve apply` to backfill existing records, since a plain run fences `run.schema_drift`."#;
     CheckLockCorrupt => r#"check.lock_corrupt"#, Check, Error, NotApplicable, Internal, r#"A defense-in-depth adoption guard: the committed `marrow.lock` cannot seed first-run identity for a fresh empty store because a source declaration would adopt a stable id the lock's append-only ledger has retired. Adoption fails closed so a retired id is never reissued. The catalog lock decoder rejects every publicly reachable malformed lock as `catalog.lock_corrupt` first, so this checker guard has no public product repro; it stands as an independent fail-closed gate. Restore or regenerate `marrow.lock` from a valid live store."#;
     CheckLockMissing => r#"check.lock_missing"#, Check, Error, NotApplicable, Active, r#"A `marrow check --locked` failure for CI: the committed `marrow.lock` is absent over a project that has durable shape to lock — any present native store, whether its accepted catalog reads back cleanly or the store is recovery-required after an unclean shutdown — so the gate fails closed rather than passing a project whose lock was never committed or was deleted. Distinct from `check.stale_lock`, which reports a present-but-behind lock. A legitimate first run, which has no durable store yet, raises no condition: an absent lock there is expected and `--locked` still passes."#;
@@ -259,7 +252,7 @@ codes! {
     CheckKeyRequiresSingleKey => r#"check.key_requires_single_key"#, Check, Error, NotApplicable, Active, r#"`key(id)` targets a composite multi-key identity, which has no single scalar key to project. A composite identity is reconstructed as a whole value, never exposed as a tuple of raw key components."#;
     CheckRange => r#"check.range"#, Check, Error, NotApplicable, Active, r#"A range-for header is ill-formed: an endpoint is missing (`0..`, `..10`, `..`), the endpoints are not the same steppable type, or the `by` step does not match them (an `int` for `int`, a positive duration for `date`/`instant`). `instant` requires an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected."#;
     CheckRangeValue => r#"check.range_value"#, Check, Error, NotApplicable, Active, r#"A range expression appears outside a `for` iterable. Ranges are loop shapes, not values."#;
-    CheckCollectionUnsupported => r#"check.collection_unsupported"#, Check, Error, NotApplicable, Active, r#"A collection operation uses a shape v0.1 does not support: a `for` or `count` over a value that is a scalar rather than a collection; a `for` over a saved path that names a single stored value; a `reversed` traversal of a range (spell a descending range with its endpoints and `by`); a unique index lookup used as a stream; a generated index branch as a resource member/call chain; or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy."#;
+    CheckCollectionUnsupported => r#"check.collection_unsupported"#, Check, Error, NotApplicable, Active, r#"A collection operation uses a shape the current language does not support: a `for` or `count` over a value that is a scalar rather than a collection; a `for` over a saved path that names a single stored value; a `reversed` traversal of a range (spell a descending range with its endpoints and `by`); a unique index lookup used as a stream; a generated index branch as a resource member/call chain; or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy."#;
     CheckLoopHeadArity => r#"check.loop_head_arity"#, Check, Error, NotApplicable, Active, r#"A `for` head binds the wrong number of names for its iterable. A saved layer with N key columns accepts 1 name (the outer key) or N+1 names (every key column outermost-first plus the leaf value); a range or scalar accepts 1; a local collection or index branch accepts 1 or 2. Any intermediate count is rejected."#;
     CheckLoopHeadViewCall => r#"check.loop_head_view_call"#, Check, Error, NotApplicable, Active, r#"A `for` head iterable is a direct `keys(...)` or `values(...)` call. Iterate the collection directly: `for k in xs` streams the keys and `for k, v in xs` pairs each key with its value; `keys`/`values` are for building a local sequence in value position."#;
     CheckReadOnlyExpressionContext => r#"check.read_only_expression_context"#, Check, Error, NotApplicable, Active, r#"A checked read-only expression request names a module or program context that does not exist."#;
@@ -268,7 +261,7 @@ codes! {
     CheckReadOnlyExpressionUnindexedLookup => r#"check.read_only_expression_unindexed_lookup"#, Check, Error, NotApplicable, Active, r#"A checked read-only expression would traverse a saved collection without a declared index."#;
     CheckPrivateEnum => r#"check.private_enum"#, Check, Error, NotApplicable, Active, r#"A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not."#;
     CheckExposedPrivateEnum => r#"check.exposed_private_enum"#, Check, Warning, NotApplicable, Active, r#"A warning: a `pub fn` names a non-`pub` enum from its own module in a parameter or return type, so the enum's values escape through a public signature even though other modules cannot name the type. Mark the enum `pub`."#;
-    CheckNestingLimit => r#"check.nesting_limit"#, Check, Error, NotApplicable, Active, r#"Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md)."#;
+    CheckNestingLimit => r#"check.nesting_limit"#, Check, Error, NotApplicable, Active, r#"Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md)."#;
     CheckEvolveTarget => r#"check.evolve_target"#, Check, Error, NotApplicable, Active, r#"An `evolve` intent names an entity — a resource, a resource member, a saved root, a store index, an enum, or an enum member — that the current source does not declare (or, for a rename's source side, that the accepted catalog does not record)."#;
     CheckEvolveType => r#"check.evolve_type"#, Check, Error, NotApplicable, Active, r#"An `evolve default` value does not match its target member's type, or an `evolve transform` body does not type-check."#;
     CheckEvolveTransform => r#"check.evolve_transform"#, Check, Error, NotApplicable, Active, r#"An `evolve transform` body is ill-formed: it is impure, reads its own target or a member another `default`/`transform` rewrites in the same block, or does not compute a top-level member as a pure function of `old`'s other decodable members."#;
@@ -294,12 +287,12 @@ codes! {
     DoctorStoreLocked => r#"doctor.store_locked"#, Doctor, Error, NotApplicable, Active, r#"The configured native store exists but a read-only open reported `store.locked`. Close the process holding the store, then rerun the printed `marrow doctor` command."#;
     DoctorStoreRecoveryRequired => r#"doctor.store_recovery_required"#, Doctor, Error, NotApplicable, Active, r#"The configured native store needs a write-capable recovery open before read-only inspection. Run the printed `marrow data recover` command."#;
     DoctorStoreUnavailable => r#"doctor.store_unavailable"#, Doctor, Error, NotApplicable, Active, r#"A read-only store open or metadata read failed with another `store.*` code such as corruption, format-version mismatch, or I/O failure. The finding data carries the underlying store code."#;
-    DoctorPopulatedUnstamped => r#"doctor.populated_unstamped"#, Doctor, Error, NotApplicable, Active, r#"The native store holds saved records but carries no catalog activation stamp, so the run path would fence it. Run the printed `marrow evolve apply` command to activate the accepted shape."#;
+    DoctorPopulatedUnstamped => r#"doctor.populated_unstamped"#, Doctor, Error, NotApplicable, Active, r#"The native store holds saved records but carries no catalog commit stamp, so the run path would fence it. Run the printed `marrow evolve apply` command to attach the accepted shape."#;
     DoctorCatalogCollision => r#"doctor.catalog_collision"#, Doctor, Error, NotApplicable, Active, r#"The store and the committed `marrow.lock` record the same epoch but different shape digests, so the lock no longer matches the live store at that epoch. The store wins; regenerate `marrow.lock` by running the project, then commit it."#;
     DoctorStoreLockEpochMismatch => r#"doctor.store_lock_epoch_mismatch"#, Doctor, Error, NotApplicable, Active, r#"The store's accepted epoch and the committed `marrow.lock` epoch differ. The store wins; the finding data carries both epochs so an operator can confirm the store is current and regenerate the lock."#;
     DoctorStaleLock => r#"doctor.stale_lock"#, Doctor, Error, NotApplicable, Active, r#"The committed `marrow.lock` records a different producing source shape digest than the current source, so the lock is stale against the project. The store remains authoritative; regenerate `marrow.lock` by running the project."#;
     DoctorLockMissing => r#"doctor.lock_missing"#, Doctor, Error, NotApplicable, Active, r#"The live store carries accepted saved shape but no committed `marrow.lock` is present, so a CI gate would pass a project whose lock was never committed or was deleted. Regenerate `marrow.lock` with a run or `evolve apply`, then commit it. Mirrors `check.lock_missing`. A uid-only store with no accepted catalog, like an absent store, has nothing to lock and is not flagged."#;
-    DoctorFenceMismatch => r#"doctor.fence_mismatch"#, Doctor, Error, NotApplicable, Active, r#"The activation fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next."#;
+    DoctorFenceMismatch => r#"doctor.fence_mismatch"#, Doctor, Error, NotApplicable, Active, r#"The source/store fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next."#;
     DoctorIntegritySampleFailed => r#"doctor.integrity_sample_failed"#, Doctor, Error, NotApplicable, Active, r#"The bounded saved-data integrity sample found problems or could not complete. Run the printed `marrow data integrity` command for the full read-only report."#;
     RunType => r#"run.type"#, Run, Error, Conditional, Active, r#"A value was used where another type was required. Recoverable builtin/evaluator type faults are catchable; unchecked internal type backstops can be fatal."#;
     RunUnboundName => r#"run.unbound_name"#, Run, Error, Fatal, Active, r#"A name was read or assigned that is not bound in scope. Fatal runtime backstop for unchecked programs."#;
@@ -322,15 +315,15 @@ codes! {
     RunAssertion => r#"run.assertion"#, Run, Error, Catchable, Active, r#"A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures."#;
     RunUncaughtError => r#"run.uncaught_error"#, Run, Error, Fatal, Active, r#"An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in text messages (e.g. `[io.read]`) and in run JSON envelopes as `diagnostics[0].data.code`."#;
     RunTraversal => r#"run.traversal"#, Run, Error, Fatal, Active, r#"A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`."#;
-    RunDepth => r#"run.depth"#, Run, Error, Fatal, Active, r#"Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the callee name, budget, and observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md)."#;
+    RunDepth => r#"run.depth"#, Run, Error, Fatal, Active, r#"Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the callee name, budget, and observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md)."#;
     RunNoEntry => r#"run.no_entry"#, Run, Error, Fatal, Active, r#"`marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`."#;
     RunDurableStoreRequired => r#"run.durable_store_required"#, Run, Error, Fatal, Active, r#"A command needs a native durable store to establish accepted durable identity, but no native durable store is configured."#;
     RunDryRunIsolation => r#"run.dry_run_isolation"#, Run, Error, Fatal, Active, r#"Dry-run execution exhausted attempts to allocate a unique temporary store directory."#;
     RunStoreEvolved => r#"run.store_evolved"#, Run, Error, Fatal, Active, r#"An already-bound program is fenced because the store advanced past the catalog epoch that program accepted: a concurrent run or `marrow evolve apply` stamped a newer epoch under a long-running binding. Recompile or upgrade against the current accepted catalog. A fresh command instead rebinds against the store's current snapshot and reports same-epoch `run.schema_drift`, so this fence surfaces through a linked, long-running runtime rather than a fresh CLI over old source. Fenced before any execution; the store is unchanged."#;
-    RunStoreBehind => r#"run.store_behind"#, Run, Error, Fatal, Active, r#"The store is older than the accepted catalog. On a plain `run`, the store predates this program's catalog: run `marrow evolve apply` to activate the store first. On an `evolve apply`, the local store is behind the committed `marrow.lock` by more than a single catch-up step, so applying would regress the committed lock: reconcile the local store with the team's up-to-date store (pull or rebuild it to match the committed lock) instead of re-running apply. Fenced before any execution; the store is unchanged."#;
-    RunSchemaDrift => r#"run.schema_drift"#, Run, Error, Fatal, Active, r#"The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to activate it. Fenced before any execution; the store is unchanged."#;
+    RunStoreBehind => r#"run.store_behind"#, Run, Error, Fatal, Active, r#"The store is older than the accepted catalog. On a plain `run`, the store predates this program's catalog: run `marrow evolve apply` first. On an `evolve apply`, the local store is behind the committed `marrow.lock` by more than a single catch-up step, so applying would regress the committed lock: reconcile the local store with the team's up-to-date store (pull or rebuild it to match the committed lock) instead of re-running apply. Fenced before any execution; the store is unchanged."#;
+    RunSchemaDrift => r#"run.schema_drift"#, Run, Error, Fatal, Active, r#"The store was stamped under a different schema at the same catalog epoch: its recorded source digest does not match the durable shape this binary expects. Run `marrow evolve preview` to inspect the required repair or `marrow evolve apply` to commit it. Fenced before any execution; the store is unchanged."#;
     RunEngineProfile => r#"run.engine_profile"#, Run, Error, Fatal, Active, r#"The store's engine profile does not match this binary's storage layout. Fenced before any execution; the store is unchanged."#;
-    RunStoreUnstamped => r#"run.store_unstamped"#, Run, Error, Fatal, Active, r#"The store holds saved records but carries no catalog activation stamp. Run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to activate the accepted catalog before running. Fenced before any execution; the store is unchanged."#;
+    RunStoreUnstamped => r#"run.store_unstamped"#, Run, Error, Fatal, Active, r#"The store holds saved records but carries no catalog commit stamp. Run `marrow evolve preview` to inspect the required work and `marrow evolve apply` to attach the accepted catalog before running. Fenced before any execution; the store is unchanged."#;
     ValueRange => r#"value.range"#, Value, Error, Catchable, Active, r#"A `date` or `instant` reaching the store codec lies outside Marrow's supported calendar range, years 0001-9999. This is a store-boundary integrity guard, not a source-arithmetic fault: every `.mw` temporal path (the `date`/`instant` constructors, `std::clock` parse and `addDays` helpers, and `+`/`-` arithmetic) shares the same 0001-9999 envelope and already raises `run.temporal_overflow` before an out-of-range value can be produced, so no ordinary checked program reaches this code. It fires only if a value that bypasses those bounds reaches the canonical encoder or key projection."#;
     WriteRequiredAbsent => r#"write.required_absent"#, Write, Error, Catchable, Active, r#"A required field was absent in a whole-resource or whole-entry write."#;
     WriteTypeMismatch => r#"write.type_mismatch"#, Write, Error, Catchable, Active, r#"A field value's type does not match the resource schema."#;
@@ -347,7 +340,7 @@ codes! {
     WriteNextIdUnsupported => r#"write.next_id_unsupported"#, Write, Error, Catchable, Active, r#"`nextId` was asked for a root whose identity shape has no default integer allocation policy. The runtime backstop for `check.next_id_requires_single_int`."#;
     WriteRequiredField => r#"write.required_field"#, Write, Error, Catchable, Active, r#"Deleting a `required` field on its own is rejected outside maintenance."#;
     WriteRequiresMaintenance => r#"write.requires_maintenance"#, Write, Error, Catchable, Active, r#"A whole managed-root delete (`delete ^books`) was attempted without the maintenance capability."#;
-    WriteTransactionTooLarge => r#"write.transaction_too_large"#, Write, Error, Catchable, Active, r#"A `transaction` buffered more than 64 MiB of pending write payload. A transaction holds its whole write set in memory until commit, so this fails closed before the buffer exhausts memory. Located at the write that crossed the budget; the aborted transaction commits nothing. Split the atomic write into smaller transactions. See the [cost model](language/cost-model.md)."#;
+    WriteTransactionTooLarge => r#"write.transaction_too_large"#, Write, Error, Catchable, Active, r#"A `transaction` buffered more than 64 MiB of pending write payload. A transaction holds its whole write set in memory until commit, so this fails closed before the buffer exhausts memory. Located at the write that crossed the budget; the aborted transaction commits nothing. Split the atomic write into smaller transactions. See [execution limits](language/execution-limits.md)."#;
     StoreIo => r#"store.io"#, Store, Error, NotApplicable, Active, r#"An I/O operation on a persistent backend failed."#;
     StorePermissionDenied => r#"store.permission_denied"#, Store, Error, NotApplicable, Active, r#"The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry."#;
     StoreLocked => r#"store.locked"#, Store, Error, NotApplicable, Active, r#"The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry."#;
@@ -411,15 +404,7 @@ codes! {
     SurfaceWrite => r#"surface.write"#, Surface, Error, NotApplicable, Active, r#"A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults."#;
     SurfaceAction => r#"surface.action"#, Surface, Error, NotApplicable, Active, r#"A surface action was admitted by operation tag, but entry execution or return rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Action argument decode failures use `surface.request`."#;
     SurfaceComputed => r#"surface.computed"#, Surface, Error, NotApplicable, Active, r#"A surface computed read was admitted by operation tag, but entry execution or result rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Computed-read argument decode failures use `surface.request`."#;
-    SurfaceIntegrity => r#"surface.integrity"#, Surface, Error, NotApplicable, Active, r#"A future renderer profile that actively dereferences identity links or relations found a missing referent. Projection-only reads use `surface.invalid_data` for dangling index rows."#;
     SurfaceStore => r#"surface.store"#, Surface, Error, NotApplicable, Active, r#"The store reported a fault while executing a surface operation."#;
-    CheckSurfaceDecl => r#"check.surface_decl"#, Check, Error, NotApplicable, Reserved, r#"A parsed surface declaration violates a checker-level declaration rule. Syntax failures remain `parse.syntax`."#;
-    CheckSurfaceCatalogPending => r#"check.surface_catalog_pending"#, Check, Error, NotApplicable, Reserved, r#"Accepted catalog IDs are not available for every durable fact needed to export a stable surface ABI."#;
-    CheckSurfaceOperation => r#"check.surface_operation"#, Check, Error, NotApplicable, Reserved, r#"A generated surface operation cannot be constructed from the checked store facts."#;
-    DecodeShape => r#"decode.shape"#, Decode, Error, NotApplicable, Reserved, r#"A stored tree shape does not match the checked resource shape."#;
-    DecodeUnknownMember => r#"decode.unknown_member"#, Decode, Error, NotApplicable, Reserved, r#"Stored data names a member the checked catalog cannot resolve."#;
-    DecodeRequiredAbsent => r#"decode.required_absent"#, Decode, Error, NotApplicable, Reserved, r#"A required saved member is absent from stored data."#;
-    DecodeValue => r#"decode.value"#, Decode, Error, NotApplicable, Reserved, r#"Stored bytes do not decode as the checked leaf type."#;
 }
 
 impl Code {
@@ -514,27 +499,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reserved_codes_are_the_documented_future_contract() {
-        let reserved: Vec<&str> = Code::ALL
-            .iter()
-            .filter(|c| c.lifecycle() == Lifecycle::Reserved)
-            .map(|c| c.as_str())
-            .collect();
-        assert_eq!(
-            reserved,
-            [
-                "check.surface_decl",
-                "check.surface_catalog_pending",
-                "check.surface_operation",
-                "decode.shape",
-                "decode.unknown_member",
-                "decode.required_absent",
-                "decode.value",
-            ]
-        );
-    }
-
     /// Every registered code renders into the generated reference, in the section
     /// its lifecycle names. Without this, a variant added to the table but dropped
     /// from the generator's layout would vanish from the page while the byte-exact
@@ -542,10 +506,7 @@ mod tests {
     #[test]
     fn generated_reference_covers_every_code_in_its_section() {
         let generated = crate::generate();
-        let (before_reserved, reserved_part) = generated
-            .split_once(crate::docs::RESERVED_HEADING)
-            .expect("generated reference has the reserved-codes section");
-        let (active_part, internal_part) = before_reserved
+        let (active_part, internal_part) = generated
             .split_once(crate::docs::INTERNAL_HEADING)
             .expect("generated reference has the internal-codes section");
         for &code in Code::ALL {
@@ -553,7 +514,6 @@ mod tests {
             let (section, name) = match code.lifecycle() {
                 Lifecycle::Active => (active_part, "active"),
                 Lifecycle::Internal => (internal_part, "internal"),
-                Lifecycle::Reserved => (reserved_part, "reserved"),
             };
             assert!(
                 section.contains(&row_prefix),

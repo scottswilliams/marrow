@@ -3,7 +3,7 @@
 Marrow is an experimental statically typed programming language in which
 hierarchical paths can denote durable application state.
 
-```mw
+```text
 task.status = Status::done
 ^tasks(id).status = Status::done
 ```
@@ -104,7 +104,7 @@ The runtime does not currently emit bytecode or native machine code.
 it is not a claim of native compilation today.
 
 [Project Status](docs/status.md) separates current behavior, legacy mechanisms,
-design direction, accepted targets, and research.
+and future direction.
 
 ## Architectural Direction
 
@@ -181,25 +181,28 @@ not as a production database or institutional application platform.
 - Durable roots are project-wide under the current language.
 - Compiler-integrated, runtime-enforced path authorization is not implemented.
 - Public URI projection and embedded-to-served promotion remain design work.
-- Current surface and storage-accounting mechanisms are under architectural
-  reconsideration and are not the long-term model.
+- Current surface and storage-accounting mechanisms are legacy and are not the
+  long-term model.
 
-See [Project Status](docs/status.md) and the
-[Stability Contract](docs/stability.md) for exact current boundaries.
+See [Project Status](docs/status.md) and
+[Compatibility](docs/compatibility.md) for exact current boundaries.
 
 ## Documentation
 
 - [Documentation Map](docs/) explains authority and status.
 - [Quickstart](docs/quickstart.md) builds and runs a small durable project.
 - [Language Reference](docs/language/) defines current `.mw` behavior.
-- [Data Evolution](docs/data-evolution.md) covers supported changes to
-  populated durable state.
-- [CLI Reference](docs/cli.md) documents commands and structured output.
+- [Tool Reference](docs/tools/) covers commands, project configuration, data
+  evolution, and backup/restore.
+- [Operations](docs/operations/) covers native-store ownership and recovery.
 - [Implementation Map](docs/implementation/) describes the Rust code.
-- [Backend Contract](docs/backend-contract.md) defines the current storage
-  substrate operations.
 - [Vision](docs/vision.md) describes the long-term architecture.
-- [Project Status](docs/status.md) distinguishes implementation from design.
+- [Project Status](docs/status.md) distinguishes current, legacy, and future
+  behavior.
+- [Security Policy](SECURITY.md) explains private vulnerability reporting and
+  the current support boundary.
+- [Contributing](CONTRIBUTING.md) gives the local development and verification
+  workflow.
 
 Start with [Installation](docs/install.md) and the
 [Quickstart](docs/quickstart.md).

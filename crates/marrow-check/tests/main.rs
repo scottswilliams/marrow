@@ -86,6 +86,8 @@ mod effect_footprints;
 mod enum_member_id_stability;
 #[path = "cases/error_cascade_isolation.rs"]
 mod error_cascade_isolation;
+#[path = "cases/error_code_registry_reference.rs"]
+mod error_code_registry_reference;
 #[path = "cases/language_reference_docs.rs"]
 mod language_reference_docs;
 #[path = "cases/local_maybe_present_reads.rs"]
@@ -142,6 +144,8 @@ mod project_type_flow_saved_reads;
 mod project_values;
 #[path = "cases/ranges.rs"]
 mod ranges;
+#[path = "cases/repository_tidy.rs"]
+mod repository_tidy;
 #[path = "cases/required_field_assignment.rs"]
 mod required_field_assignment;
 #[path = "cases/resource_store_contract.rs"]
@@ -184,6 +188,8 @@ mod source_type_annotation_cursor_facts;
 mod source_type_completion_facts;
 #[path = "cases/source_type_hover_facts.rs"]
 mod source_type_hover_facts;
+#[path = "cases/standard_library_docs.rs"]
+mod standard_library_docs;
 #[path = "cases/static_soundness.rs"]
 mod static_soundness;
 #[path = "cases/surface_abi.rs"]

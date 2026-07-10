@@ -14,6 +14,6 @@ that topology is descriptive, not permanent architecture.
   semantics.
 - State counts once in the list that owns them.
 - `docs/language/` owns current language behavior, `docs/vision.md` direction,
-  `docs/design/` accepted unimplemented targets, `docs/status.md` implementation
-  state, and `docs/backend-contract.md` the current storage contract.
+  `docs/future/` unimplemented direction, `docs/status.md` implementation
+  state, and `docs/implementation/storage.md` the current storage map.
 - Plans, reports, and decision records have no normative authority here.
