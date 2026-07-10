@@ -676,6 +676,49 @@ fn recovery_does_not_hide_unconditionally_invalid_operator_or_range_step_sibling
 }
 
 #[test]
+fn range_admission_preserves_known_endpoint_and_step_constraints() {
+    let mut failures = Vec::new();
+    for (name, source) in [
+        (
+            "concrete-sequence-step",
+            "module m\nfn f(xs: sequence[int])\n    for x in 1..10 by xs\n        print(x)\n",
+        ),
+        (
+            "concrete-optional-step",
+            "module m\nfn f(step: int?)\n    for x in 1..10 by step\n        print(x)\n",
+        ),
+        (
+            "deferred-with-nonsteppable-endpoint",
+            "module m\nfn f(start: unknown)\n    for x in start..\"bad\"\n        print(x)\n",
+        ),
+        (
+            "deferred-int-endpoint-duration-step",
+            "module m\nfn f(start: unknown)\n    for x in start..10 by 1.day\n        print(x)\n",
+        ),
+        (
+            "deferred-instant-endpoint-needs-step",
+            "module m\nfn f(start: unknown)\n    for x in start..std::clock::now()\n        print(x)\n",
+        ),
+        (
+            "deferred-negated-duration-step",
+            "module m\nfn f(start: unknown)\n    for x in start..10 by -1.day\n        print(x)\n",
+        ),
+        (
+            "int-negated-duration-step",
+            "module m\nfn f()\n    for x in 10..1 by -1.day\n        print(x)\n",
+        ),
+    ] {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-range-constraint-{name}"),
+            source,
+            &["check.range"],
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn rejected_unannotated_module_constant_propagates_poison() {
     assert_codes(
         "typed-admission-module-const-no-value-poison",

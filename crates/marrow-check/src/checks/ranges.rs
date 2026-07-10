@@ -48,6 +48,66 @@ fn range_endpoints(
     Some((range.start?, range.end?))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RangeEndpointAdmission {
+    Poisoned,
+    NoValue,
+    Deferred,
+    Steppable(ScalarType),
+    InvalidConcrete,
+}
+
+fn admit_range_endpoint(ty: &MarrowType) -> RangeEndpointAdmission {
+    match disposition(ty) {
+        TypeDisposition::Poisoned => RangeEndpointAdmission::Poisoned,
+        TypeDisposition::NoValue => RangeEndpointAdmission::NoValue,
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic => {
+            RangeEndpointAdmission::Deferred
+        }
+        TypeDisposition::Concrete => match as_primitive(ty) {
+            Some(scalar) if is_steppable(scalar) => RangeEndpointAdmission::Steppable(scalar),
+            _ => RangeEndpointAdmission::InvalidConcrete,
+        },
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RangeStepAdmission {
+    Absent,
+    Poisoned,
+    Deferred,
+    NoValue,
+    Int,
+    Duration,
+    InvalidConcrete,
+    NegatedDuration,
+}
+
+fn admit_range_step(
+    step: Option<&marrow_syntax::Expression>,
+    ty: Option<&MarrowType>,
+) -> RangeStepAdmission {
+    let Some(step) = step else {
+        return RangeStepAdmission::Absent;
+    };
+    if is_negated_duration_literal(step) {
+        return RangeStepAdmission::NegatedDuration;
+    }
+    let ty = ty.expect("a written range step has an inferred type");
+    match disposition(ty) {
+        TypeDisposition::Poisoned => RangeStepAdmission::Poisoned,
+        TypeDisposition::NoValue => RangeStepAdmission::NoValue,
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic => {
+            RangeStepAdmission::Deferred
+        }
+        TypeDisposition::Concrete => match as_primitive(ty) {
+            Some(ScalarType::Int) => RangeStepAdmission::Int,
+            Some(ScalarType::Duration) => RangeStepAdmission::Duration,
+            _ => RangeStepAdmission::InvalidConcrete,
+        },
+    }
+}
+
 /// Reject ranges outside `for` iterables. A range is a loop shape, not a value
 /// that can be stored, returned, thrown, passed, or evaluated for its own sake.
 pub(crate) fn check_range_value(
@@ -69,6 +129,14 @@ pub(crate) fn check_range_value_guarded(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if allowed(expr) {
+        let mut skipped_outer_range = false;
+        for_each_child_expr(expr, |child| {
+            check_allowed_range_context_child(file, child, &mut skipped_outer_range, diagnostics)
+        });
+        debug_assert!(
+            skipped_outer_range,
+            "an allowed saved-range context must contain its traversal range",
+        );
         return;
     }
     if let Some(range) = marrow_syntax::range_expr(expr) {
@@ -81,6 +149,32 @@ pub(crate) fn check_range_value_guarded(
     }
     for_each_child_expr(expr, |child| {
         check_range_value_guarded(file, child, allowed, diagnostics)
+    });
+}
+
+/// Walk one allowed `exists`/`count` saved-range call in pre-order, exempting
+/// only its outer traversal range. Ranges nested in either endpoint remain
+/// ordinary range-as-value violations.
+fn check_allowed_range_context_child(
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    skipped_outer_range: &mut bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if let Some(range) = marrow_syntax::range_expr(expr) {
+        if *skipped_outer_range {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_RANGE_VALUE,
+                file,
+                range.span,
+                "a range can only be used as a `for` iterable",
+            ));
+        } else {
+            *skipped_outer_range = true;
+        }
+    }
+    for_each_child_expr(expr, |child| {
+        check_allowed_range_context_child(file, child, skipped_outer_range, diagnostics)
     });
 }
 
@@ -152,6 +246,18 @@ pub(super) fn check_range_iterable_value_parts(
     check_range_value(file, iterable, diagnostics);
 }
 
+pub(super) fn check_range_iterable_nested_values(
+    file: &Path,
+    iterable: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some((left, right)) = range_endpoints(iterable) else {
+        return;
+    };
+    check_range_value(file, left, diagnostics);
+    check_range_value(file, right, diagnostics);
+}
+
 /// Validate a range-for header's endpoint, step, and direction rules: both
 /// endpoints must be the same steppable type; the `by` step must match it (`int`
 /// endpoints step by `int`, temporal endpoints step by `duration`); instant
@@ -195,32 +301,26 @@ pub(crate) fn check_range_header(
         )
     });
     // Unary inference deliberately does not model a negative duration literal,
-    // because durations are non-negative values. Range-step checking owns that
-    // syntax and validates its direction below, so retain the historical
-    // deferral only for that one shape. Every other diagnosed step expression is
-    // an independent error that a deferred endpoint must not hide.
+    // because durations are non-negative values. Range-step admission owns that
+    // syntax below. Every other diagnosed step expression is an independent
+    // error that a deferred endpoint must not hide.
     if !step_inference_diagnostics.is_empty() && !step.is_some_and(is_negated_duration_literal) {
         diagnostics.extend(step_inference_diagnostics);
         return;
     }
-    if step_type
-        .as_ref()
-        .is_some_and(|step_type| disposition(step_type) == TypeDisposition::NoValue)
+    let left_admission = admit_range_endpoint(&left_type);
+    let right_admission = admit_range_endpoint(&right_type);
+    let step_admission = admit_range_step(step, step_type.as_ref());
+
+    if left_admission == RangeEndpointAdmission::Poisoned
+        || right_admission == RangeEndpointAdmission::Poisoned
+        || step_admission == RangeStepAdmission::Poisoned
     {
-        diagnostics.push(range_diagnostic(
-            file,
-            step.expect("a step type exists only for a written step")
-                .span(),
-            "a range `by` step must produce a value".to_string(),
-        ));
         return;
     }
-    let left_state = disposition(&left_type);
-    let right_state = disposition(&right_type);
-    if left_state == TypeDisposition::Poisoned || right_state == TypeDisposition::Poisoned {
-        return;
-    }
-    if left_state == TypeDisposition::NoValue || right_state == TypeDisposition::NoValue {
+    if matches!(left_admission, RangeEndpointAdmission::NoValue)
+        || matches!(right_admission, RangeEndpointAdmission::NoValue)
+    {
         diagnostics.push(range_diagnostic(
             file,
             iterable.span(),
@@ -232,41 +332,32 @@ pub(crate) fn check_range_header(
         ));
         return;
     }
-    let endpoint_deferred = matches!(
-        left_state,
-        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    ) || matches!(
-        right_state,
-        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
-    );
-    if endpoint_deferred {
-        if let (Some(step), Some(step_type)) = (step, step_type.as_ref())
-            && disposition(step_type) == TypeDisposition::Concrete
-            && !matches!(
-                as_primitive(step_type),
-                Some(ScalarType::Int | ScalarType::Duration)
-            )
-        {
-            diagnostics.push(range_diagnostic(
-                file,
-                step.span(),
-                format!(
-                    "a range step must be `int` or `duration`, not `{}`",
-                    marrow_type_name(&program.decl_ids(), step_type),
-                ),
-            ));
-        }
+    if matches!(left_admission, RangeEndpointAdmission::InvalidConcrete)
+        || matches!(right_admission, RangeEndpointAdmission::InvalidConcrete)
+    {
+        diagnostics.push(range_diagnostic(
+            file,
+            iterable.span(),
+            format!(
+                "a range needs endpoints of one steppable type (`int`, `date`, or `instant`), not `{}` and `{}`",
+                marrow_type_name(&program.decl_ids(), &left_type),
+                marrow_type_name(&program.decl_ids(), &right_type),
+            ),
+        ));
         return;
     }
-    // The endpoint scalar drives the step, direction, and dead-loop rules. Route the
-    // steppability classification through its single owner. Past the deferral guard a
-    // `None` result is a mismatched or non-steppable endpoint pair — an enum, an
-    // identity, a resource, or mismatched scalars — which is the range header's
-    // endpoint condition, owned here rather than left to the value-operator check
-    // since `..` is a loop shape, not a value operator.
-    let endpoint = match range_endpoint_type(program, iterable, scope, aliases, file) {
-        Some(MarrowType::Primitive(scalar)) => scalar,
-        _ => {
+    let endpoint = match (left_admission, right_admission) {
+        (RangeEndpointAdmission::Steppable(left), RangeEndpointAdmission::Steppable(right))
+            if left == right =>
+        {
+            Some(left)
+        }
+        (RangeEndpointAdmission::Steppable(endpoint), RangeEndpointAdmission::Deferred)
+        | (RangeEndpointAdmission::Deferred, RangeEndpointAdmission::Steppable(endpoint)) => {
+            Some(endpoint)
+        }
+        (RangeEndpointAdmission::Deferred, RangeEndpointAdmission::Deferred) => None,
+        (RangeEndpointAdmission::Steppable(_), RangeEndpointAdmission::Steppable(_)) => {
             diagnostics.push(range_diagnostic(
                 file,
                 iterable.span(),
@@ -278,53 +369,58 @@ pub(crate) fn check_range_header(
             ));
             return;
         }
+        _ => unreachable!("poison, no-value, and invalid endpoints returned above"),
     };
-    // `infer_only` discards diagnostics, so its top-level `Invalid` is not proof of
-    // diagnosed poison here: for example, unary inference rejects a negated duration
-    // before the range-specific temporal rule interprets it. An `Invalid` nested in a
-    // structural type comes from declared-type poison and remains safe to defer.
-    if step_type.as_ref().is_some_and(|step_type| {
-        step_type.contains_invalid() && !matches!(step_type, MarrowType::Invalid)
-    }) {
-        return;
-    }
-    let step_type = step_type.as_ref().map(as_primitive);
-    check_step_type(
-        file,
-        iterable.span(),
-        endpoint,
-        step,
-        step_type,
-        diagnostics,
-    );
-    check_temporal_step_sign(file, endpoint, step, diagnostics);
-    check_date_step_whole_days(file, endpoint, step, diagnostics);
-    check_dead_loop(file, iterable, left, right, step, diagnostics);
-}
 
-/// Reject a negated duration step on a `date`/`instant` range. A duration is
-/// always non-negative, so a descending temporal range can only fault at runtime;
-/// the check reports that guaranteed fault now. Int ranges still descend by a
-/// negative step.
-fn check_temporal_step_sign(
-    file: &Path,
-    endpoint: ScalarType,
-    step: Option<&marrow_syntax::Expression>,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    if !matches!(endpoint, ScalarType::Date | ScalarType::Instant) {
-        return;
+    match step_admission {
+        RangeStepAdmission::NoValue => {
+            diagnostics.push(range_diagnostic(
+                file,
+                step.expect("NoValue requires a written step").span(),
+                "a range `by` step must produce a value".to_string(),
+            ));
+            return;
+        }
+        RangeStepAdmission::InvalidConcrete => {
+            let step_type = step_type.as_ref().expect("a written step has a type");
+            diagnostics.push(range_diagnostic(
+                file,
+                step.expect("an invalid concrete step is written").span(),
+                format!(
+                    "a range step must be `int` or `duration`, not `{}`",
+                    marrow_type_name(&program.decl_ids(), step_type),
+                ),
+            ));
+            return;
+        }
+        RangeStepAdmission::NegatedDuration => {
+            diagnostics.push(range_diagnostic(
+                file,
+                step.expect("a negated duration step is written").span(),
+                "a range step cannot be a negative duration".to_string(),
+            ));
+            return;
+        }
+        RangeStepAdmission::Absent
+        | RangeStepAdmission::Deferred
+        | RangeStepAdmission::Int
+        | RangeStepAdmission::Duration => {}
+        RangeStepAdmission::Poisoned => unreachable!("poisoned steps returned above"),
     }
-    let Some(step) = step else { return };
-    if matches!(literal_int_sign(step), Some(sign) if sign < 0) {
-        diagnostics.push(range_diagnostic(
+
+    if let Some(endpoint) = endpoint {
+        if !check_step_type(
             file,
-            step.span(),
-            format!(
-                "{} range step must be a positive duration; descending temporal ranges are not yet supported",
-                article_for(endpoint)
-            ),
-        ));
+            iterable.span(),
+            endpoint,
+            step,
+            step_admission,
+            diagnostics,
+        ) {
+            return;
+        }
+        check_date_step_whole_days(file, endpoint, step, diagnostics);
+        check_dead_loop(file, iterable, left, right, step, diagnostics);
     }
 }
 
@@ -392,23 +488,38 @@ fn is_negated_duration_literal(expr: &marrow_syntax::Expression) -> bool {
 
 /// The step-type rule: `int` endpoints step by `int`; date/instant endpoints
 /// step by a duration. Instant has no safe default step, so omitting `by` there
-/// is an error; int defaults to 1 and date to one calendar day. An untyped
-/// (`unknown`) step defers.
+/// is an error; int defaults to 1 and date to one calendar day. A deferred step
+/// remains admissible until runtime.
 fn check_step_type(
     file: &Path,
     range_span: SourceSpan,
     endpoint: ScalarType,
     step: Option<&marrow_syntax::Expression>,
-    step_type: Option<Option<ScalarType>>,
+    admission: RangeStepAdmission,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> bool {
     let expected = match endpoint {
-        ScalarType::Int => endpoint,
+        ScalarType::Int => RangeStepAdmission::Int,
         // date and instant step by a duration span.
-        _ => ScalarType::Duration,
+        _ => RangeStepAdmission::Duration,
     };
-    match (step, step_type) {
-        (Some(step), Some(Some(actual))) if actual != expected => {
+    match (step, admission) {
+        (Some(step), actual)
+            if matches!(
+                actual,
+                RangeStepAdmission::Int | RangeStepAdmission::Duration
+            ) && actual != expected =>
+        {
+            let actual = match actual {
+                RangeStepAdmission::Int => ScalarType::Int,
+                RangeStepAdmission::Duration => ScalarType::Duration,
+                _ => unreachable!("the guard admits only concrete step scalars"),
+            };
+            let expected = match expected {
+                RangeStepAdmission::Int => ScalarType::Int,
+                RangeStepAdmission::Duration => ScalarType::Duration,
+                _ => unreachable!("steppable endpoints require int or duration steps"),
+            };
             diagnostics.push(range_diagnostic(
                 file,
                 step.span(),
@@ -419,10 +530,14 @@ fn check_step_type(
                     actual.name(),
                 ),
             ));
+            false
         }
-        (Some(_), _) => {}
+        (
+            Some(_),
+            RangeStepAdmission::Int | RangeStepAdmission::Duration | RangeStepAdmission::Deferred,
+        ) => true,
         // No `by`: instant requires one; int and date have a default.
-        (None, _) => {
+        (None, RangeStepAdmission::Absent) => {
             if endpoint == ScalarType::Instant {
                 diagnostics.push(range_diagnostic(
                     file,
@@ -432,8 +547,12 @@ fn check_step_type(
                         article_for(endpoint)
                     ),
                 ));
+                false
+            } else {
+                true
             }
         }
+        _ => unreachable!("range step rejection states returned before constraint checking"),
     }
 }
 

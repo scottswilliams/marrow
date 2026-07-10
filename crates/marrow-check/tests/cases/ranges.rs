@@ -68,6 +68,12 @@ fn a_bare_range_expression_statement_is_rejected() {
 }
 
 #[test]
+fn a_nested_range_cannot_be_an_outer_range_endpoint() {
+    let found = codes(&module("    for i in (1..2)..10\n        print(\"x\")\n"));
+    assert_eq!(found, ["check.range_value"], "{found:?}");
+}
+
+#[test]
 fn an_open_ended_range_for_header_is_an_ill_formed_range() {
     // A range used as a `for` iterable that is missing an endpoint is an
     // ill-formed range header (`check.range`), not a range-outside-`for`

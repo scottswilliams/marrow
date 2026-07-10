@@ -37,7 +37,8 @@ use super::operators::{
     check_assignment, check_binary, check_condition, check_return_type, check_throw_type,
 };
 use super::ranges::{
-    check_range_header, check_range_iterable_value_parts, check_range_value_in_scope,
+    check_range_header, check_range_iterable_nested_values, check_range_iterable_value_parts,
+    check_range_value_in_scope,
 };
 use super::required_fields::RequiredFieldAssignments;
 use super::returns::check_return_values;
@@ -1625,6 +1626,9 @@ impl StatementCheck<'_> {
             self.required_fields.invalidate_all();
             return;
         }
+        // Diagnose a range nested inside an outer loop range before subject
+        // inference can poison the iterable and take an early recovery return.
+        check_range_iterable_nested_values(self.file, iterable, self.diagnostics);
         let subject_type = infer_collection_subject_type_with_read_scope(
             self.program,
             iterable,

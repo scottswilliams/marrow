@@ -1720,6 +1720,19 @@ fn direct_read_only_and_debug_ranges_receive_the_range_value_diagnostic() {
             "count(^posts.byDate(1..10))",
         )
         .expect("debug evaluation preserves the saved index range exception");
+
+    let nested = snapshot
+        .program
+        .checked_read_only_expression("m", "count(^posts.byDate((1..2)..10))")
+        .expect_err("a nested range cannot masquerade as one saved-range endpoint");
+    assert_eq!(
+        nested
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [CHECK_RANGE_VALUE],
+        "{nested:#?}",
+    );
 }
 
 #[test]

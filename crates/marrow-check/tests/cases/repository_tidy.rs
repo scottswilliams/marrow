@@ -297,8 +297,8 @@ fn no_value_value_boundaries_use_typed_state_dispatch() {
         (
             &ranges,
             "pub(crate) fn check_range_header(",
-            "fn check_temporal_step_sign(",
-            "disposition(",
+            "fn check_date_step_whole_days(",
+            "admit_range_step(",
         ),
         (
             &infer,
@@ -499,10 +499,10 @@ fn recursive_poison_preflights_cover_dependent_boundary_families() {
     let range = item_between(
         &ranges,
         "pub(crate) fn check_range_header(",
-        "fn check_temporal_step_sign(",
+        "fn check_date_step_whole_days(",
     );
     assert!(
-        range.contains("TypeDisposition::Poisoned") && range.contains("contains_invalid"),
+        range.contains("admit_range_endpoint(") && range.contains("admit_range_step("),
         "range endpoints and step must preflight recursive poison",
     );
 }
