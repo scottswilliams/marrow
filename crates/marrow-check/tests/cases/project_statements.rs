@@ -49,6 +49,19 @@ fn reports_unknown_types_for_parser_migrated_signature_spellings() {
 }
 
 #[test]
+fn reports_unknown_types_nested_inside_optional_annotations() {
+    let found = check_module(
+        "unknown-type-optional-annotations",
+        "module m\n\
+         fn direct(value: Missing?)\n    return\n\
+         fn nested(values: sequence[Missing?])\n    return\n",
+        "check.unknown_type",
+    );
+
+    assert_eq!(found.len(), 2, "{found:#?}");
+}
+
+#[test]
 fn reports_unknown_type_for_parser_migrated_keyed_var_key_annotation() {
     let found = check_script(
         "unknown-type-migrated-keyed-var-key",
@@ -832,16 +845,25 @@ fn accepts_if_const_over_a_complete_unique_index_lookup() {
 }
 
 #[test]
-fn rejects_if_const_over_an_incomplete_unique_index_lookup() {
-    let found = check_module(
+fn an_incomplete_unique_index_lookup_reports_its_key_shape_once() {
+    let report = check_module_report(
         "if-const-incomplete-unique-index",
         "module m\n\
          resource Book\n    isbn: string\n    edition: int\n\
          store ^books(id: int): Book\n    index byIsbn(isbn, edition) unique\n\n\
          fn f()\n    if const id = ^books.byIsbn(\"isbn-1\")\n        return\n",
-        "check.condition_type",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        with_code(&report, "check.key_type").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.condition_type").is_empty(),
+        "the rejected lookup is invalid, so the guard must not re-diagnose it: {:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

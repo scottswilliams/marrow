@@ -3,7 +3,7 @@ use marrow_check::{DiagnosticPayload, MarrowType, check_project};
 
 use support::{
     assert_clean, check_module, check_module_report, check_module_report_program, check_script,
-    config, temp_project, with_code, write,
+    check_script_report, config, temp_project, with_code, write,
 };
 
 #[test]
@@ -235,11 +235,10 @@ fn well_typed_assignments_and_initializers_are_not_flagged() {
 }
 
 #[test]
-fn an_unknown_value_into_a_typed_place_is_flagged() {
-    // Strict typing: `mystery()` does not resolve, so storing it into the concrete
-    // `int` place is a `check.untyped_value` error — convert or define it. It is
-    // not a `check.assignment_type` mismatch, so one analysis must surface the
-    // untyped-value code while leaving the primitive-mismatch code unraised.
+fn an_unresolved_call_into_a_typed_place_is_diagnosed_once_at_the_call() {
+    // `mystery()` owns the unresolved-call error. Its result is invalid, so the
+    // surrounding concrete assignment does not re-report the same fault as an
+    // untyped value or a primitive mismatch.
     let root = temp_project("assign-unknown", |root| {
         write(
             root,
@@ -248,9 +247,9 @@ fn an_unknown_value_into_a_typed_place_is_flagged() {
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert_eq!(
-        with_code(&report, "check.untyped_value").len(),
-        1,
+    assert_eq!(with_code(&report, "check.unresolved_call").len(), 1);
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -262,14 +261,14 @@ fn an_unknown_value_into_a_typed_place_is_flagged() {
 }
 
 #[test]
-fn a_typed_initializer_with_an_unresolved_value_is_flagged() {
-    // A typed `const` initializer whose value has no known type is flagged.
-    let found = check_script(
-        "init-unknown",
-        "fn f()\n    const n: int = mystery()\n",
-        "check.untyped_value",
+fn a_typed_initializer_with_an_unresolved_call_is_diagnosed_once_at_the_call() {
+    let report = check_script_report("init-unknown", "fn f()\n    const n: int = mystery()\n");
+    assert_eq!(with_code(&report, "check.unresolved_call").len(), 1);
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
 }
 
 #[test]
@@ -1192,17 +1191,16 @@ fn correct_returns_are_not_flagged() {
 }
 
 #[test]
-fn a_return_of_an_unresolved_value_into_a_typed_return_is_flagged() {
-    // Strict typing: `mystery()` has no known type, but `f` returns `int`, so the
-    // return is a `check.untyped_value` error, not a `check.return_type` mismatch —
-    // one analysis must raise the untyped-value code and leave the mismatch unraised.
+fn a_typed_return_with_an_unresolved_call_is_diagnosed_once_at_the_call() {
+    // The unresolved call poisons its result, so the typed return does not stack an
+    // untyped-value or return-mismatch diagnostic over the root call error.
     let root = temp_project("ret-unknown", |root| {
         write(root, "src/app.mw", "fn f(): int\n    return mystery()\n");
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
-    assert_eq!(
-        with_code(&report, "check.untyped_value").len(),
-        1,
+    assert_eq!(with_code(&report, "check.unresolved_call").len(), 1);
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
         "{:#?}",
         report.diagnostics
     );

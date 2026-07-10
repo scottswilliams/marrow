@@ -198,7 +198,7 @@ pub fn broken(book: Book): int
 }
 
 #[test]
-fn nested_unresolved_type_has_no_source_type_hover_fact() {
+fn diagnosed_nested_unresolved_type_has_invalid_provenance() {
     let source = "\
 module a
 
@@ -210,11 +210,9 @@ pub fn broken(values: sequence[Missing])
         &[("src/a.mw", source)],
     );
     let index = build_binding_index(&snapshot);
-    let expected = MarrowType::Sequence(Box::new(MarrowType::Unknown));
-
     assert_eq!(
         type_at_needle(&snapshot, &paths[0], source, "values)"),
-        Some(expected),
+        Some(MarrowType::Invalid),
     );
     assert_eq!(
         fact_at(&snapshot, &index, &paths[0], source, "values)"),

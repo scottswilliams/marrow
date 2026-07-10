@@ -46,7 +46,8 @@ pub(crate) fn bind_signature_types(
 pub(crate) fn annotation_type_known(schema_type: &Type, resolved_type: &MarrowType) -> bool {
     match (schema_type, resolved_type) {
         (Type::Unknown, _) => true,
-        (Type::Sequence(schema_element), MarrowType::Sequence(resolved_element)) => {
+        (Type::Sequence(schema_element), MarrowType::Sequence(resolved_element))
+        | (Type::Optional(schema_element), MarrowType::Optional(resolved_element)) => {
             annotation_type_known(schema_element, resolved_element)
         }
         (_, MarrowType::Unknown) => false,

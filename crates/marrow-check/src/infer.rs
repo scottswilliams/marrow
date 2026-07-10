@@ -9,8 +9,8 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::{BytesLiteralError, SourceSpan, StringLiteralError};
 
 use crate::checks::{
-    CallCheck, CoalesceCheck, SavedKeyArgCheck, check_binary, check_call, check_coalesce,
-    check_saved_key_args, check_unary, key_type_diagnostic,
+    CallCheck, CoalesceCheck, SavedKeyArgCheck, SavedKeyArgStatus, check_binary, check_call,
+    check_coalesce, check_saved_key_args, check_unary, key_type_diagnostic,
 };
 use crate::enums::{
     EnumMemberPathResolution, IsCheck, ambiguous_member_value_diagnostic, check_is,
@@ -673,7 +673,7 @@ fn infer_value(
             });
             // A saved access carries key arguments the function-call path does not
             // type; check them against the root identity or layer key parameters.
-            check_saved_key_args(SavedKeyArgCheck {
+            let saved_key_status = check_saved_key_args(SavedKeyArgCheck {
                 program,
                 callee,
                 args,
@@ -691,7 +691,8 @@ fn infer_value(
                 // A saved read whose key argument is maybe-present already reported the
                 // one rule at the key position; poison the read so the outer value slot
                 // does not stack a second one-rule on the same mistake.
-                if arg_types.iter().any(is_optional_value)
+                if matches!(saved_key_status, SavedKeyArgStatus::Rejected)
+                    || arg_types.iter().any(is_optional_value)
                     || arg_types
                         .iter()
                         .any(|arg_type| matches!(arg_type, MarrowType::Invalid))
@@ -1601,6 +1602,12 @@ struct KeyAccessEmit<'a> {
     file: &'a Path,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalKeyStatus {
+    Accepted,
+    Rejected,
+}
+
 fn local_collection_access_type(
     emit: KeyAccessEmit<'_>,
     callee: &marrow_syntax::Expression,
@@ -1620,7 +1627,12 @@ fn local_collection_access_type(
     };
     match lookup_opt(scope, name)? {
         MarrowType::Sequence(element) => {
-            check_local_key_count(name, 1, args.len(), span, file, diagnostics);
+            if matches!(
+                check_local_key_count(name, 1, args.len(), span, file, diagnostics),
+                LocalKeyStatus::Rejected
+            ) {
+                return Some(MarrowType::Invalid);
+            }
             if let [arg_type] = arg_types {
                 if is_optional_value(arg_type) {
                     diagnostics.push(unresolved_optional_diagnostic(
@@ -1635,10 +1647,8 @@ fn local_collection_access_type(
                 if matches!(arg_type, MarrowType::Unknown) {
                     return Some(MarrowType::Unknown);
                 }
-                if !matches!(
-                    type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type),
-                    Some(true) | None
-                ) {
+                if type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type) != Some(true)
+                {
                     diagnostics.push(key_type_diagnostic(
                         file,
                         span,
@@ -1647,14 +1657,17 @@ fn local_collection_access_type(
                             marrow_type_name(names, arg_type)
                         ),
                     ));
+                    return Some(MarrowType::Invalid);
                 }
             }
             Some(*element)
         }
         MarrowType::LocalTree { keys, value } => {
-            check_local_key_count(name, keys.len(), args.len(), span, file, diagnostics);
-            if keys.len() != arg_types.len() {
-                return Some(*value);
+            if matches!(
+                check_local_key_count(name, keys.len(), args.len(), span, file, diagnostics),
+                LocalKeyStatus::Rejected
+            ) {
+                return Some(MarrowType::Invalid);
             }
             // A key must be present to address a node, so a maybe-present key argument is
             // the one rule; report it at the key position and poison the read so the outer
@@ -1682,8 +1695,9 @@ fn local_collection_access_type(
             {
                 return Some(MarrowType::Unknown);
             }
+            let mut status = LocalKeyStatus::Accepted;
             for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
-                if matches!(type_compatible(expected, actual), Some(false)) {
+                if type_compatible(expected, actual) != Some(true) {
                     diagnostics.push(key_type_diagnostic(
                         file,
                         span,
@@ -1694,9 +1708,14 @@ fn local_collection_access_type(
                             marrow_type_name(names, actual)
                         ),
                     ));
+                    status = LocalKeyStatus::Rejected;
                 }
             }
-            Some(*value)
+            Some(if matches!(status, LocalKeyStatus::Rejected) {
+                MarrowType::Invalid
+            } else {
+                *value
+            })
         }
         _ => None,
     }
@@ -1715,7 +1734,7 @@ fn check_local_key_count(
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> LocalKeyStatus {
     if expected != actual {
         diagnostics.push(key_type_diagnostic(
             file,
@@ -1724,6 +1743,9 @@ fn check_local_key_count(
                 "local collection `{name}` expects {expected} key argument(s), but {actual} were given"
             ),
         ));
+        LocalKeyStatus::Rejected
+    } else {
+        LocalKeyStatus::Accepted
     }
 }
 

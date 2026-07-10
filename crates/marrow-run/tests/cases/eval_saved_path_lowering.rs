@@ -89,14 +89,14 @@ fn an_identity_mixed_with_a_raw_key_is_rejected() {
     );
 }
 
-/// Addressing a keyed root without an identity yields an unkeyed, untyped value
-/// that `check.untyped_value` rejects, rather than silently reading a keyless path.
+/// Reading a field from a keyed root without an identity is rejected at the path
+/// boundary, rather than retaining the field type and cascading at the return.
 #[test]
 fn a_keyed_root_without_an_identity_is_a_type_error() {
     checker_rejects(
         "resource Book\n    required title: string\nstore ^books(id: int): Book\n\n\
          pub fn read(): string\n    return ^books.title\n",
-        "check.untyped_value",
+        "check.key_type",
     );
 }
 

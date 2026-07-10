@@ -9,7 +9,7 @@ use std::path::Path;
 use marrow_codes::Code;
 use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
-use marrow_syntax::SourceSpan;
+use marrow_syntax::{Severity, SourceSpan};
 
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::model::decls::DeclIds;
@@ -90,7 +90,8 @@ pub(crate) struct ArgEmit<'a> {
 
 /// Validate a call and return its declared return type when known. Dispatch is
 /// kept in runtime order: special builtins, general builtins, constructors, then
-/// user functions.
+/// user functions. A poisoned argument or an error emitted by this call poisons
+/// the result, so a typed consumer does not diagnose the same rejected call again.
 pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
     let CallCheck {
         program,
@@ -105,6 +106,10 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         read_scope,
         diagnostics,
     } = input;
+    let invalid_argument = arg_types
+        .iter()
+        .any(|arg_type| matches!(arg_type, MarrowType::Invalid));
+    let diagnostics_before = diagnostics.len();
     let mut env = CallEnv {
         program,
         scope,
@@ -115,10 +120,31 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         read_scope,
         diagnostics,
     };
+    let call_type = dispatch_call(&mut env, callee, args, arg_types);
+
+    // Only an error emitted while checking this call poisons its result. Warnings
+    // and future advisory diagnostics must remain composable with the call's
+    // declared type, while a pre-poisoned argument is invalid independently.
+    let emitted_error = env.diagnostics[diagnostics_before..]
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error);
+    if invalid_argument || emitted_error {
+        MarrowType::Invalid
+    } else {
+        call_type
+    }
+}
+
+fn dispatch_call(
+    env: &mut CallEnv<'_>,
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> MarrowType {
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
         return MarrowType::Unknown;
     };
-    let expanded = crate::expand_alias(segments, aliases);
+    let expanded = crate::expand_alias(segments, env.aliases);
     let segments = expanded.as_slice();
 
     // One arity owner for every builtin. A fixed-arity builtin called with the wrong
@@ -138,24 +164,22 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         );
     }
 
-    if let Some(ty) = check_special_single_name_call(&mut env, segments, args, arg_types) {
+    if let Some(ty) = check_special_single_name_call(env, segments, args, arg_types) {
         return ty;
     }
     if is_builtin_call(segments) {
-        return check_builtin_call(&mut env, segments, args, arg_types);
+        return check_builtin_call(env, segments, args, arg_types);
     }
     if is_unknown_std_operation(segments) {
-        check_unknown_std_operation(&mut env, segments);
+        check_unknown_std_operation(env, segments);
         return MarrowType::Unknown;
     }
 
     let from_module = module_of_file(env.program, env.file).unwrap_or_default();
-    if let Some(ty) =
-        check_resource_constructor_call(&mut env, from_module, segments, args, arg_types)
-    {
+    if let Some(ty) = check_resource_constructor_call(env, from_module, segments, args, arg_types) {
         return ty;
     }
-    check_user_function_call(&mut env, from_module, segments, args, arg_types)
+    check_user_function_call(env, from_module, segments, args, arg_types)
 }
 
 fn check_special_single_name_call(
@@ -323,14 +347,8 @@ fn check_assert_equal_args(
                 },
             ));
         }
-        (
-            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown | MarrowType::Invalid,
-            _,
-        )
-        | (
-            _,
-            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown | MarrowType::Invalid,
-        ) => {}
+        (MarrowType::Unknown | MarrowType::Invalid, _)
+        | (_, MarrowType::Unknown | MarrowType::Invalid) => {}
         (actual, expected) => {
             let found = if matches!(actual, MarrowType::Primitive(_)) {
                 expected
@@ -620,7 +638,7 @@ fn check_assert_absent_args(
     // local or parameter, a positional/keyed read, or a stdlib `T?` result are exactly
     // what it asserts. Resolving them first would destroy the absence being tested.
     if arg_types.first().is_some_and(|arg_type| {
-        is_optional_value(arg_type) || matches!(arg_type, MarrowType::Invalid | MarrowType::Unknown)
+        is_optional_value(arg_type) || matches!(arg_type, MarrowType::Invalid)
     }) {
         return;
     }
@@ -673,10 +691,7 @@ fn check_exists_args(
     if exists_target_arg_resolves(env, &arg.value) {
         return;
     }
-    if matches!(
-        arg_types.first(),
-        Some(MarrowType::Invalid | MarrowType::Unknown)
-    ) {
+    if matches!(arg_types.first(), Some(MarrowType::Invalid)) {
         return;
     }
     // A concrete, always-present value has no absence to test — mirror the `??`
@@ -1556,10 +1571,10 @@ fn check_identity_constructor(
 /// `check.next_id_requires_single_int`. The argument must be a bare keyed store
 /// root — the only shape the runtime can allocate against — so `check.call_argument`
 /// rejects a saved path that is not a bare root (an index branch, keyed lookup, or
-/// field) on shape, and a concrete non-saved argument (a literal, an identity value,
-/// or a scalar) on type. An undeclared root is reported by resolution, and an
-/// unresolved or poisoned non-saved argument defers to its owning diagnostic, so
-/// neither is double-reported here.
+/// field) on shape, and any non-saved value other than an unresolved or poisoned
+/// one on type. An undeclared root is reported by resolution, and an unresolved or
+/// poisoned non-saved argument defers to its owning diagnostic, so neither is
+/// double-reported here.
 pub(crate) fn check_next_id(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
@@ -1575,8 +1590,8 @@ pub(crate) fn check_next_id(
         // A saved path that is not a bare `^root` — an index branch, a keyed
         // lookup, a field — is statically the wrong shape regardless of the type
         // it lowers to (an index branch lowers to `unknown`), so reject it on
-        // shape. A non-saved argument is rejected only when its type is concrete;
-        // an unresolved or poisoned non-saved value defers to its owning diagnostic.
+        // shape. An unresolved or poisoned non-saved value defers to its owning
+        // diagnostic; every other value is rejected at this boundary.
         if crate::rules::is_saved_path(&arg.value) {
             diagnostics.push(call_argument(
                 &program.decl_ids(),
@@ -1584,25 +1599,23 @@ pub(crate) fn check_next_id(
                 span,
                 CallArgumentFault::NextIdRequiresBareRoot,
             ));
-        } else if let Some(arg_type) = arg_types.first().filter(|ty| {
-            !matches!(
-                ty,
-                MarrowType::Dynamic
-                    | MarrowType::NoValue
-                    | MarrowType::Unknown
-                    | MarrowType::Invalid
-            )
-        }) {
-            diagnostics.push(call_argument(
-                &program.decl_ids(),
-                file,
-                span,
-                CallArgumentFault::NextIdRequiresRoot {
-                    found: arg_type.clone(),
-                },
-            ));
+            return MarrowType::Invalid;
         }
-        return MarrowType::Unknown;
+        match arg_types.first() {
+            Some(MarrowType::Invalid) => return MarrowType::Invalid,
+            Some(MarrowType::Unknown) | None => return MarrowType::Unknown,
+            Some(arg_type) => {
+                diagnostics.push(call_argument(
+                    &program.decl_ids(),
+                    file,
+                    span,
+                    CallArgumentFault::NextIdRequiresRoot {
+                        found: arg_type.clone(),
+                    },
+                ));
+            }
+        }
+        return MarrowType::Invalid;
     };
     let Some(store) = resolve_store_by_root(program, root) else {
         return MarrowType::Unknown;
@@ -1621,7 +1634,7 @@ pub(crate) fn check_next_id(
             store.store.next_id_shape(),
         ),
     ));
-    MarrowType::Unknown
+    MarrowType::Invalid
 }
 
 /// Type `next(<element>)` / `prev(<element>)`. A keyed root or single-key record
@@ -1720,30 +1733,26 @@ fn check_neighbor(
 /// composite identity has no single key to project — it is reconstructed as a
 /// whole value, never a tuple of raw components — so it reports
 /// `check.key_requires_single_key`. A concrete non-identity argument has no
-/// identity to project, so it is rejected with `check.call_argument`; an
-/// unresolved or poisoned argument defers to its owning diagnostic, and an
-/// unresolved root is reported elsewhere, so neither is double-reported here.
+/// identity to project, so it is rejected with `check.call_argument`; explicit
+/// dynamic and no-value arguments are rejected the same way. An unresolved or
+/// poisoned argument defers to its owning diagnostic, and an unresolved root is
+/// reported elsewhere, so neither is double-reported here.
 fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
-    let Some(MarrowType::Identity(root)) = arg_types.first() else {
-        if let Some(arg_type) = arg_types.first().filter(|ty| {
-            !matches!(
-                ty,
-                MarrowType::Dynamic
-                    | MarrowType::NoValue
-                    | MarrowType::Unknown
-                    | MarrowType::Invalid
-            )
-        }) {
+    let root = match arg_types.first() {
+        Some(MarrowType::Identity(root)) => root,
+        Some(MarrowType::Invalid) => return MarrowType::Invalid,
+        Some(MarrowType::Unknown) | None => return MarrowType::Unknown,
+        Some(arg_type) => {
             env.diagnostics.push(call_argument(
                 &env.program.decl_ids(),
                 env.file,
                 env.span,
                 CallArgumentFault::KeyRequiresIdentity {
-                    found: (*arg_type).clone(),
+                    found: arg_type.clone(),
                 },
             ));
+            return MarrowType::Invalid;
         }
-        return MarrowType::Unknown;
     };
     let Some(root) = env
         .program
@@ -1767,7 +1776,7 @@ fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
                 store.store.next_id_shape(),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     };
     single_key
         .ty

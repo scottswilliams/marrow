@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use marrow_schema::{ScalarType, StoreSchema};
-use marrow_syntax::{Argument, SourceSpan};
+use marrow_syntax::{Argument, Severity, SourceSpan};
 
 use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
@@ -217,13 +217,22 @@ pub(crate) struct SavedKeyArgCheck<'a, 'd> {
     pub(crate) diagnostics: &'d mut Vec<CheckDiagnostic>,
 }
 
-pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SavedKeyArgStatus {
+    Accepted,
+    Rejected,
+}
+
+/// Check the saved-key boundary and report whether it emitted an error. Only error
+/// severity rejects the resulting read; future key warnings remain non-poisoning.
+pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) -> SavedKeyArgStatus {
+    let diagnostics_before = check.diagnostics.len();
     let Some(callee) = lower_expr_for_file(check.program, check.file, check.callee, check.scope)
     else {
-        return;
+        return SavedKeyArgStatus::Accepted;
     };
     let Some(target) = SavedPlaceResolver::new(check.program).saved_key_params(&callee) else {
-        return;
+        return SavedKeyArgStatus::Accepted;
     };
     let names = check.program.decl_ids();
     check_saved_key_argument_names(&names, check.args, check.file, check.diagnostics);
@@ -261,6 +270,14 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
                 check.diagnostics,
             );
         }
+    }
+    if check.diagnostics[diagnostics_before..]
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        SavedKeyArgStatus::Rejected
+    } else {
+        SavedKeyArgStatus::Accepted
     }
 }
 
@@ -745,8 +762,8 @@ pub(crate) fn check_keys_against(
 
 fn saved_key_arg_matches(expected: &MarrowType, actual: &MarrowType) -> bool {
     match actual {
-        MarrowType::Invalid | MarrowType::Unknown => return true,
-        MarrowType::Dynamic | MarrowType::NoValue => return false,
+        MarrowType::Invalid => return true,
+        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => return false,
         _ => {}
     }
     type_compatible(expected, actual) != Some(false)

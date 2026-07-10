@@ -444,7 +444,7 @@ fn a_field_read_off_a_keyed_root_without_an_identity_is_rejected() {
          store ^books(id: int): Book\n\
          pub fn read(): string\n\
          \x20   return ^books.title\n",
-        "check.untyped_value",
+        "check.key_type",
     );
 }
 

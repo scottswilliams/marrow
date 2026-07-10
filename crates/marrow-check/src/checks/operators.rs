@@ -1,7 +1,6 @@
 //! Condition, throw, return, and assignment type checks, and the unary/binary/
-//! equality/coalesce operator rules. Each fires only on a known wrong or untyped
-//! type, deferring dynamic, no-value, and recovery states where the owning gate
-//! handles them.
+//! equality/coalesce operator rules. Each boundary distinguishes explicit dynamic
+//! and no-value operands from unresolved or poisoned recovery states.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -117,11 +116,7 @@ pub(crate) fn check_throw_type(
         return;
     }
     match value_type {
-        MarrowType::Error
-        | MarrowType::Dynamic
-        | MarrowType::NoValue
-        | MarrowType::Unknown
-        | MarrowType::Invalid => {}
+        MarrowType::Error | MarrowType::Unknown | MarrowType::Invalid => {}
         _ => diagnostics.push(CheckDiagnostic::error(
             CHECK_THROW_TYPE,
             file,

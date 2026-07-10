@@ -1,7 +1,16 @@
 use crate::support;
 use support::{check_module_report, config, temp_project, with_code, write};
 
-use marrow_check::check_project;
+use marrow_check::{CheckReport, check_project};
+
+fn assert_diagnostic_codes(report: &CheckReport, expected: &[&str]) {
+    let actual: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(actual, expected, "{:#?}", report.diagnostics);
+}
 
 /// A single source fault must surface as one diagnostic, not a recovery cascade of
 /// several. A type-checked expression whose own type is wrong is reported once and
@@ -90,6 +99,57 @@ fn an_invalid_throw_value_does_not_cascade_a_throw_type_error() {
         "the rejected operator is the root cause; its invalid result must defer throw checking: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn dynamic_and_no_value_operands_are_rejected_at_value_boundaries() {
+    let cases = [
+        (
+            "dynamic-throw-value",
+            "module m\nfn f(value: unknown)\n    throw value\n",
+            "check.throw_type",
+        ),
+        (
+            "no-value-throw-value",
+            "module m\nfn f()\n    throw print(\"x\")\n",
+            "check.throw_type",
+        ),
+        (
+            "dynamic-assert-equal-value",
+            "module m\nfn f(value: unknown)\n    std::assert::equal(value, 1)\n",
+            "check.call_argument",
+        ),
+        (
+            "no-value-assert-equal-value",
+            "module m\nfn f()\n    std::assert::equal(print(\"x\"), 1)\n",
+            "check.call_argument",
+        ),
+        (
+            "dynamic-next-id-value",
+            "module m\nfn f(value: unknown)\n    nextId(value)\n",
+            "check.call_argument",
+        ),
+        (
+            "no-value-next-id-value",
+            "module m\nfn f()\n    nextId(print(\"x\"))\n",
+            "check.call_argument",
+        ),
+        (
+            "dynamic-key-value",
+            "module m\nfn f(value: unknown)\n    key(value)\n",
+            "check.call_argument",
+        ),
+        (
+            "no-value-key-value",
+            "module m\nfn f()\n    key(print(\"x\"))\n",
+            "check.call_argument",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let report = check_module_report(name, source);
+        assert_diagnostic_codes(&report, &[expected]);
+    }
 }
 
 #[test]
@@ -190,6 +250,31 @@ fn an_unknown_exists_operand_defers_to_its_type_diagnostic() {
         "{:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn clean_structural_unknowns_are_rejected_by_presence_call_boundaries() {
+    const PREFIX: &str = "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn allocate(): Id(^books)\n\
+         \x20   ^books(99).title = \"x\"\n\
+         \x20   return Id(^books, 99)\n\n";
+    let cases = [
+        (
+            "structural-unknown-exists",
+            "fn f(): bool\n    return exists(next(allocate()))\n",
+        ),
+        (
+            "structural-unknown-assert-absent",
+            "fn f()\n    std::assert::isAbsent(next(allocate()))\n",
+        ),
+    ];
+
+    for (name, body) in cases {
+        let report = check_module_report(name, &format!("{PREFIX}{body}"));
+        assert_diagnostic_codes(&report, &["check.call_argument"]);
+    }
 }
 
 #[test]
@@ -324,6 +409,161 @@ fn an_invalid_key_argument_does_not_cascade_a_call_argument_error() {
         "the rejected operator is the root cause; its invalid result must defer key shape checking: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn invalid_or_diagnosed_calls_poison_their_result_under_typed_consumers() {
+    let cases = [
+        (
+            "cascade-invalid-user-call-result",
+            "module m\n\
+             fn make(value: int): string\n    return \"\"\n\
+             fn f(): int\n    return make(1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-invalid-append-result",
+            "module m\n\
+             fn f(values: sequence[int]): string\n    return append(values, 1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-invalid-conversion-result",
+            "module m\nfn f(): string\n    return int(1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-invalid-std-result",
+            "module m\nfn f(): string\n    return std::text::length(1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-invalid-resource-result",
+            "module m\n\
+             resource Entry\n    value: string\n\n\
+             fn f(): int\n    return Entry(value: 1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-builtin-arity-result",
+            "module m\nfn f(): string\n    return int()\n",
+            vec!["check.call_argument"],
+        ),
+        (
+            "cascade-unresolved-call-result",
+            "module m\nfn f(): int\n    return missing()\n",
+            vec!["check.unresolved_call"],
+        ),
+        (
+            "cascade-invalid-next-id-result",
+            "module m\n\
+             resource Book\n    title: string\n\
+             store ^books(id: int): Book\n\n\
+             fn f(): Id(^books)\n    return nextId(1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-invalid-key-result",
+            "module m\nfn f(): int\n    return key(1 + true)\n",
+            vec!["check.operator_type"],
+        ),
+        (
+            "cascade-diagnosed-next-id-result",
+            "module m\nfn f(): string\n    return nextId(1)\n",
+            vec!["check.call_argument"],
+        ),
+        (
+            "cascade-diagnosed-key-result",
+            "module m\nfn f(): string\n    return key(1)\n",
+            vec!["check.call_argument"],
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let report = check_module_report(name, source);
+        assert_diagnostic_codes(&report, &expected);
+    }
+}
+
+#[test]
+fn rejected_saved_keys_poison_the_read_under_typed_consumers() {
+    const STORE: &str = "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n";
+    let cases = [
+        (
+            "cascade-saved-dynamic-key",
+            "fn f(value: unknown): string\n    return ^books(value).title\n",
+        ),
+        (
+            "cascade-saved-no-value-key",
+            "fn f(): string\n    return ^books(print(\"x\")).title\n",
+        ),
+        (
+            "cascade-saved-concrete-key",
+            "fn f(): string\n    return ^books(\"wrong\").title\n",
+        ),
+        (
+            "cascade-saved-key-arity",
+            "fn f(): string\n    return ^books(1, 2).title\n",
+        ),
+        (
+            "cascade-saved-structural-unknown-key",
+            "fn f(): string\n    return ^books(^books).title\n",
+        ),
+        (
+            "cascade-identity-structural-unknown-key",
+            "fn f(): Id(^books)\n    return Id(^books, ^books)\n",
+        ),
+    ];
+
+    for (name, body) in cases {
+        let report = check_module_report(name, &format!("{STORE}{body}"));
+        assert_diagnostic_codes(&report, &["check.key_type"]);
+    }
+}
+
+#[test]
+fn rejected_local_keys_poison_the_read_under_typed_consumers() {
+    let cases = [
+        (
+            "cascade-sequence-dynamic-key",
+            "module m\nfn f(values: sequence[string], key: unknown): string\n    return values(key)\n",
+        ),
+        (
+            "cascade-sequence-no-value-key",
+            "module m\nfn f(values: sequence[string]): string\n    return values(print(\"x\"))\n",
+        ),
+        (
+            "cascade-sequence-concrete-key",
+            "module m\nfn f(values: sequence[string]): string\n    return values(\"wrong\")\n",
+        ),
+        (
+            "cascade-sequence-key-arity",
+            "module m\nfn f(values: sequence[string]): string\n    return values(1, 2)\n",
+        ),
+        (
+            "cascade-tree-dynamic-key",
+            "module m\nfn f(values(key: int): string, key: unknown): string\n    return values(key)\n",
+        ),
+        (
+            "cascade-tree-no-value-key",
+            "module m\nfn f(values(key: int): string): string\n    return values(print(\"x\"))\n",
+        ),
+        (
+            "cascade-tree-concrete-key",
+            "module m\nfn f(values(key: int): string): string\n    return values(\"wrong\")\n",
+        ),
+        (
+            "cascade-tree-key-arity",
+            "module m\nfn f(values(key: int): string): string\n    return values(1, 2)\n",
+        ),
+    ];
+
+    for (name, source) in cases {
+        let report = check_module_report(name, source);
+        assert_diagnostic_codes(&report, &["check.key_type"]);
+    }
 }
 
 #[test]

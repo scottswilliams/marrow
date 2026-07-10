@@ -9,7 +9,7 @@ use std::path::Path;
 use marrow_syntax::SourceSpan;
 
 use crate::checks::{catch_frame, file_prelude, for_frame};
-use crate::enums::resolve_type;
+use crate::enums::resolve_diagnosed_annotation_type;
 use crate::infer::{bind, infer_only, infer_type, local_binding};
 use crate::walk::for_each_child_expr;
 use crate::{CheckedProgram, MarrowType};
@@ -264,8 +264,8 @@ fn function_base_scope(
                 param
                     .keys
                     .iter()
-                    .map(|key| resolve_type(&key.ty, program, aliases, file)),
-                resolve_type(&param.ty, program, aliases, file),
+                    .map(|key| resolve_diagnosed_annotation_type(&key.ty, program, aliases, file)),
+                resolve_diagnosed_annotation_type(&param.ty, program, aliases, file),
             ),
         );
     }
