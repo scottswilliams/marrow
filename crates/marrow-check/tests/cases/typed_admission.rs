@@ -19,6 +19,17 @@ fn assert_codes(name: &str, source: &str, expected: &[&str]) {
     );
 }
 
+fn record_code_failure(failures: &mut Vec<String>, name: &str, source: &str, expected: &[&str]) {
+    let report = check_module_report(name, source);
+    let actual = codes(&report);
+    if actual != expected {
+        failures.push(format!(
+            "{name}: expected {expected:?}, found {actual:?}: {:#?}",
+            report.diagnostics
+        ));
+    }
+}
+
 const BOOKS: &str = "module m\n\
      resource Book\n    title: string\n\
      store ^books(id: int): Book\n\n";
@@ -444,6 +455,288 @@ fn collection_and_append_boundaries_reject_no_value() {
         "module m\nfn f(xs: sequence[unknown])\n    append(xs, 1)\n",
         &[],
     );
+}
+
+#[test]
+fn no_value_is_rejected_at_strict_slots_coalesce_conversion_and_loops() {
+    let mut failures = Vec::new();
+    let strict_slots = [
+        (
+            "return-sequence",
+            "module m\nfn f(): sequence[int]\n    return print(\"x\")\n",
+        ),
+        (
+            "return-resource",
+            "module m\nresource Book\n    title: string\n\nfn f(): Book\n    return print(\"x\")\n",
+        ),
+        (
+            "assignment-sequence",
+            "module m\nfn f()\n    var xs: sequence[int]\n    xs = print(\"x\")\n",
+        ),
+        (
+            "assignment-resource",
+            "module m\nresource Book\n    title: string\n\nfn f()\n    var book: Book\n    book = print(\"x\")\n",
+        ),
+    ];
+    for (name, source) in strict_slots {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-no-value-{name}"),
+            source,
+            &["check.untyped_value"],
+        );
+    }
+
+    let operator_cases = [
+        (
+            "coalesce-left",
+            "module m\nfn f(): string\n    return print(\"x\") ?? \"fallback\"\n",
+        ),
+        (
+            "coalesce-right",
+            "module m\nfn f(value: int?): int\n    return value ?? print(\"x\")\n",
+        ),
+        (
+            "coalesce-diagnosed-result",
+            "module m\nfn f(): string\n    return 1 ?? 2\n",
+        ),
+    ];
+    for (name, source) in operator_cases {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-no-value-{name}"),
+            source,
+            &["check.operator_type"],
+        );
+    }
+
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-conversion",
+        "module m\nfn f(): int\n    return int(print(\"x\"))\n",
+        &["check.call_argument"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-loop-iterable",
+        "module m\nfn f()\n    for value in print(\"x\")\n        print(value)\n",
+        &["check.collection_unsupported"],
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn no_value_is_rejected_by_value_operators_predicates_ranges_and_accesses() {
+    let mut failures = Vec::new();
+    let operator_cases = [
+        (
+            "unary",
+            "module m\nfn f(): string\n    return -print(\"x\")\n",
+        ),
+        (
+            "binary",
+            "module m\nfn f(): string\n    return print(\"x\") + 1\n",
+        ),
+        (
+            "equality",
+            "module m\nfn f(): int\n    return print(\"x\") == 1\n",
+        ),
+    ];
+    for (name, source) in operator_cases {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-no-value-{name}"),
+            source,
+            &["check.operator_type"],
+        );
+    }
+
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-match",
+        "module m\nfn f()\n    match print(\"x\")\n        active\n            return\n",
+        &["check.match_requires_enum"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-is",
+        "module m\nenum Status\n    active\n\nfn f(): int\n    return print(\"x\") is Status::active\n",
+        &["check.is_requires_enum"],
+    );
+
+    let range_cases = [
+        (
+            "range-left",
+            "module m\nfn f()\n    for value in print(\"x\")..1\n        print(value)\n",
+        ),
+        (
+            "range-right",
+            "module m\nfn f()\n    for value in 1..print(\"x\")\n        print(value)\n",
+        ),
+        (
+            "range-step",
+            "module m\nfn f()\n    for value in 1..10 by print(\"x\")\n        print(value)\n",
+        ),
+    ];
+    for (name, source) in range_cases {
+        record_code_failure(
+            &mut failures,
+            &format!("typed-admission-no-value-{name}"),
+            source,
+            &["check.range"],
+        );
+    }
+    record_code_failure(
+        &mut failures,
+        "typed-admission-range-value-result",
+        "module m\nfn f(): string\n    return 1..10\n",
+        &["check.range_value"],
+    );
+
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-field",
+        "module m\nfn f(): int\n    return print(\"x\").missing\n",
+        &["check.unknown_field"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-print",
+        "module m\nfn f()\n    print(print(\"x\"))\n",
+        &["check.operator_type"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-interpolation",
+        "module m\nfn f(): int\n    return $\"{print(\\\"x\\\")}\"\n",
+        &["check.operator_type"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-no-value-delete",
+        "module m\nfn f()\n    delete print(\"x\")\n",
+        &["check.invalid_assign_target"],
+    );
+    record_code_failure(
+        &mut failures,
+        "typed-admission-recursive-poison-interpolation",
+        "module m\nfn f(): int\n    var values(k: int): Missing\n    return $\"{values}\"\n",
+        &["check.unknown_type"],
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn explicit_dynamic_and_clean_recovery_keep_their_existing_value_boundary_behavior() {
+    let cases = [
+        (
+            "return-sequence-dynamic",
+            "module m\nfn f(value: unknown): sequence[int]\n    return value\n",
+        ),
+        (
+            "return-sequence-recovery",
+            "module m\nfn f(xs: sequence[int]): sequence[int]\n    return keys(xs)\n",
+        ),
+        (
+            "assignment-sequence-dynamic",
+            "module m\nfn f(value: unknown)\n    var xs: sequence[int]\n    xs = value\n",
+        ),
+        (
+            "assignment-sequence-recovery",
+            "module m\nfn f(source: sequence[int])\n    var xs: sequence[int]\n    xs = keys(source)\n",
+        ),
+        (
+            "unary-dynamic",
+            "module m\nfn f(value: unknown)\n    print(-value)\n",
+        ),
+        (
+            "unary-recovery",
+            "module m\nfn f(xs: sequence[int])\n    print(-keys(xs))\n",
+        ),
+        (
+            "binary-dynamic",
+            "module m\nfn f(value: unknown)\n    print(value + 1)\n",
+        ),
+        (
+            "binary-recovery",
+            "module m\nfn f(xs: sequence[int])\n    print(keys(xs) + 1)\n",
+        ),
+        (
+            "equality-dynamic",
+            "module m\nfn f(value: unknown)\n    print(value == 1)\n",
+        ),
+        (
+            "equality-recovery",
+            "module m\nfn f(xs: sequence[int])\n    print(keys(xs) == 1)\n",
+        ),
+        (
+            "coalesce-dynamic",
+            "module m\nfn f(value: unknown): int\n    return value ?? 1\n",
+        ),
+        (
+            "coalesce-recovery",
+            "module m\nfn f(xs: sequence[int]): int\n    return keys(xs) ?? 1\n",
+        ),
+        (
+            "match-dynamic",
+            "module m\nfn f(value: unknown)\n    match value\n        active\n            return\n",
+        ),
+        (
+            "match-recovery",
+            "module m\nfn f(xs: sequence[int])\n    match keys(xs)\n        active\n            return\n",
+        ),
+        (
+            "is-dynamic",
+            "module m\nenum Status\n    active\n\nfn f(value: unknown): bool\n    return value is Status::active\n",
+        ),
+        (
+            "is-recovery",
+            "module m\nenum Status\n    active\n\nfn f(xs: sequence[int]): bool\n    return keys(xs) is Status::active\n",
+        ),
+        (
+            "range-dynamic",
+            "module m\nfn f(value: unknown)\n    for item in value..1 by value\n        print(item)\n",
+        ),
+        (
+            "range-recovery",
+            "module m\nfn f(xs: sequence[int])\n    for item in keys(xs)..1 by keys(xs)\n        print(item)\n",
+        ),
+        (
+            "field-dynamic",
+            "module m\nfn f(value: unknown)\n    print(value.missing)\n",
+        ),
+        (
+            "field-recovery",
+            "module m\nfn f(xs: sequence[int])\n    print(keys(xs).missing)\n",
+        ),
+        (
+            "render-dynamic",
+            "module m\nfn f(value: unknown)\n    print(value)\n    print($\"{value}\")\n",
+        ),
+        (
+            "render-recovery",
+            "module m\nfn f(xs: sequence[int])\n    print(keys(xs))\n    print($\"{keys(xs)}\")\n",
+        ),
+        (
+            "loop-dynamic",
+            "module m\nfn f(value: unknown)\n    for item in value\n        print(item)\n",
+        ),
+        (
+            "loop-recovery",
+            "module m\nfn f(xs: sequence[int])\n    const values = keys(xs)\n    for item in values\n        print(item)\n",
+        ),
+        (
+            "delete-dynamic",
+            "module m\nfn f(value: unknown)\n    delete value\n",
+        ),
+        (
+            "delete-recovery",
+            "module m\nfn f(xs: sequence[int])\n    const values = keys(xs)\n    delete values\n",
+        ),
+    ];
+    for (name, source) in cases {
+        assert_codes(&format!("typed-admission-preserve-{name}"), source, &[]);
+    }
 }
 
 #[test]

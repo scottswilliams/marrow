@@ -230,6 +230,139 @@ fn migrated_admission_boundaries_have_no_legacy_status_or_raw_state_catch_all() 
 }
 
 #[test]
+fn no_value_value_boundaries_use_typed_state_dispatch() {
+    let root = repo_root();
+    let infer =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/infer.rs")).expect("read infer");
+    let diagnostics = std::fs::read_to_string(root.join("crates/marrow-check/src/diagnostics.rs"))
+        .expect("read diagnostics");
+    let operators =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/operators.rs"))
+            .expect("read operators");
+    let ranges = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/ranges.rs"))
+        .expect("read ranges");
+    let statements =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/statements.rs"))
+            .expect("read statements");
+    let enums =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/enums.rs")).expect("read enums");
+    let typerules = std::fs::read_to_string(root.join("crates/marrow-check/src/typerules.rs"))
+        .expect("read typerules");
+
+    let boundaries = [
+        (
+            &operators,
+            "pub(crate) fn check_return_type(",
+            "pub(crate) fn check_assignment(",
+            "admit_strict_value(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_assignment(",
+            "pub(crate) fn check_unary(",
+            "admit_strict_value(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_unary(",
+            "pub(crate) fn check_binary(",
+            "disposition(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_binary(",
+            "fn check_equality(",
+            "disposition(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_coalesce(",
+            "fn coalesce_base(",
+            "disposition(",
+        ),
+        (
+            &enums,
+            "fn report_non_enum_match(",
+            "fn check_match_coverage(",
+            "disposition(",
+        ),
+        (
+            &enums,
+            "pub(crate) fn check_is(",
+            "fn enum_visible_in_program(",
+            "disposition(",
+        ),
+        (
+            &ranges,
+            "pub(crate) fn check_range_header(",
+            "fn check_temporal_step_sign(",
+            "disposition(",
+        ),
+        (
+            &infer,
+            "Expression::Interpolation { parts, .. } => {",
+            "Expression::Name { segments, span, .. }",
+            "ErrorCheckpoint",
+        ),
+        (
+            &infer,
+            "fn infer_field_access(",
+            "fn reject_saved_access(",
+            "disposition(",
+        ),
+        (
+            &statements,
+            "fn check_for(",
+            "fn check_try(",
+            "admit_collection_operand(",
+        ),
+        (
+            &statements,
+            "fn target_already_blamed(",
+            "fn span_contains(",
+            "disposition(",
+        ),
+        (
+            &diagnostics,
+            "pub(crate) fn accepts(self, source: &MarrowType)",
+            "fn join_or_list(",
+            "disposition(",
+        ),
+        (
+            &typerules,
+            "pub(crate) fn type_renderable_at_runtime(",
+            "pub(crate) fn is_ordered(",
+            "disposition(",
+        ),
+    ];
+    let grouped = [
+        "MarrowType::Dynamic | MarrowType::NoValue",
+        "MarrowType::Invalid | MarrowType::NoValue",
+        "MarrowType::NoValue | MarrowType::Unknown",
+        "TypeDisposition::Recovery | TypeDisposition::NoValue",
+        "TypeDisposition::ExplicitDynamic | TypeDisposition::NoValue",
+        "TypeDisposition::Poisoned | TypeDisposition::NoValue",
+    ];
+    let mut violations = Vec::new();
+    for (source, start, end, owner) in boundaries {
+        let item = item_between(source, start, end);
+        if !item.contains(owner) {
+            violations.push(format!("`{start}` does not use `{owner}`"));
+        }
+        let compact = item.split_whitespace().collect::<Vec<_>>().join(" ");
+        for pattern in grouped {
+            if compact.contains(pattern) {
+                violations.push(format!("`{start}` groups `{pattern}`"));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "NoValue value boundaries must use typed, separate state dispatch: {violations:#?}",
+    );
+}
+
+#[test]
 fn recursive_poison_preflights_cover_dependent_boundary_families() {
     let root = repo_root();
     let infer =
@@ -298,8 +431,11 @@ fn recursive_poison_preflights_cover_dependent_boundary_families() {
             "fn check_match_coverage(",
         ),
     ] {
+        let item = item_between(source, start, end);
         assert!(
-            item_between(source, start, end).contains("contains_invalid"),
+            item.contains("contains_invalid")
+                || item.contains("disposition(")
+                || item.contains("admit_collection_operand("),
             "dependent boundary `{start}` must preflight recursive poison",
         );
     }

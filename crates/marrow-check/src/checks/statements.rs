@@ -19,7 +19,10 @@ use crate::infer::{
 };
 use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
-use crate::typerules::is_optional_value;
+use crate::typerules::{
+    Admission, CollectionFault, TypeDisposition, admit_collection_operand, disposition,
+    is_optional_value,
+};
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_TYPE, CHECK_UNRESOLVED_NAME,
     CheckDiagnostic, CheckedProgram, ConditionTypeFault, DiagnosticPayload, MarrowType,
@@ -1611,18 +1614,40 @@ impl StatementCheck<'_> {
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
         );
-        if subject_type.contains_invalid() {
-            let frame = for_frame(
-                self.program,
-                binding,
-                iterable,
-                self.scope,
-                self.aliases,
-                self.file,
-            );
-            self.check_block_under_frame(frame, body);
-            self.required_fields.invalidate_all();
-            return;
+        match admit_collection_operand(&subject_type) {
+            Admission::Accepted => {}
+            Admission::Poisoned => {
+                let frame = for_frame(
+                    self.program,
+                    binding,
+                    iterable,
+                    self.scope,
+                    self.aliases,
+                    self.file,
+                );
+                self.check_block_under_frame(frame, body);
+                self.required_fields.invalidate_all();
+                return;
+            }
+            Admission::Rejected(CollectionFault::NoValue) => {
+                self.diagnostics.push(CheckDiagnostic::error(
+                    CHECK_COLLECTION_UNSUPPORTED,
+                    self.file,
+                    iterable.span(),
+                    "a `for` iterable must produce a collection value",
+                ));
+                let frame = for_frame(
+                    self.program,
+                    binding,
+                    iterable,
+                    self.scope,
+                    self.aliases,
+                    self.file,
+                );
+                self.check_block_under_frame(frame, body);
+                self.required_fields.invalidate_all();
+                return;
+            }
         }
         // A maybe-present collection (`sequence[T]?`) must be resolved before it is
         // iterated; the one rule owns it before the iterable-shape gates so the message
@@ -2113,11 +2138,10 @@ fn target_has_saved_address_diagnostic(
 /// once, not twice. A resolved, well-formed but non-saved target keeps a concrete
 /// type and still earns the single addressability error.
 fn target_already_blamed(subject_type: &MarrowType) -> bool {
-    subject_type.contains_invalid()
-        || matches!(
-            subject_type,
-            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
-        )
+    matches!(
+        disposition(subject_type),
+        TypeDisposition::Poisoned | TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    )
 }
 
 fn span_contains(outer: SourceSpan, inner: SourceSpan) -> bool {

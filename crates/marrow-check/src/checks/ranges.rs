@@ -137,20 +137,29 @@ pub(crate) fn check_range_header(
     };
     let left_type = infer_only(program, left, scope, aliases, file);
     let right_type = infer_only(program, right, scope, aliases, file);
-    // A genuinely untyped or already-poisoned endpoint has faulted elsewhere;
-    // defer rather than double-report against a type nothing can trust.
+    let left_state = disposition(&left_type);
+    let right_state = disposition(&right_type);
+    if left_state == TypeDisposition::Poisoned || right_state == TypeDisposition::Poisoned {
+        return;
+    }
+    if left_state == TypeDisposition::NoValue || right_state == TypeDisposition::NoValue {
+        diagnostics.push(range_diagnostic(
+            file,
+            iterable.span(),
+            format!(
+                "a range needs value endpoints, not `{}` and `{}`",
+                marrow_type_name(&program.decl_ids(), &left_type),
+                marrow_type_name(&program.decl_ids(), &right_type),
+            ),
+        ));
+        return;
+    }
     if matches!(
-        disposition(&left_type),
-        TypeDisposition::Poisoned
-            | TypeDisposition::Recovery
-            | TypeDisposition::ExplicitDynamic
-            | TypeDisposition::NoValue
+        left_state,
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
     ) || matches!(
-        disposition(&right_type),
-        TypeDisposition::Poisoned
-            | TypeDisposition::Recovery
-            | TypeDisposition::ExplicitDynamic
-            | TypeDisposition::NoValue
+        right_state,
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
     ) {
         return;
     }
@@ -183,6 +192,18 @@ pub(crate) fn check_range_header(
     if step_type.as_ref().is_some_and(|step_type| {
         step_type.contains_invalid() && !matches!(step_type, MarrowType::Invalid)
     }) {
+        return;
+    }
+    if step_type
+        .as_ref()
+        .is_some_and(|step_type| disposition(step_type) == TypeDisposition::NoValue)
+    {
+        diagnostics.push(range_diagnostic(
+            file,
+            step.expect("a step type exists only for a written step")
+                .span(),
+            "a range `by` step must produce a value".to_string(),
+        ));
         return;
     }
     let step_type = step_type.as_ref().map(as_primitive);

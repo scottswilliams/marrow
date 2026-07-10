@@ -9,8 +9,8 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::{BytesLiteralError, SourceSpan, StringLiteralError};
 
 use crate::checks::{
-    CallCheck, CoalesceCheck, SavedKeyArgCheck, check_binary, check_call, check_coalesce,
-    check_saved_key_args, check_unary, key_type_diagnostic,
+    CallCheck, CoalesceCheck, ErrorCheckpoint, SavedKeyArgCheck, check_binary, check_call,
+    check_coalesce, check_saved_key_args, check_unary, key_type_diagnostic,
 };
 use crate::enums::{
     EnumMemberPathResolution, IsCheck, ambiguous_member_value_diagnostic, check_is,
@@ -22,9 +22,10 @@ use crate::executable::{
 };
 use crate::model::decls::DeclIds;
 use crate::typerules::{
-    Admission, KeyAdmission, KeyFault, KeyPolicy, LiteralSign, RangeTypeAggregate, admit_key,
-    check_literal_range, is_optional_value, marrow_type_name, merge_key_admission,
-    negated_integer_literal, type_renderable_at_runtime, unresolved_optional_diagnostic,
+    Admission, KeyAdmission, KeyFault, KeyPolicy, LiteralSign, RangeTypeAggregate, TypeDisposition,
+    admit_key, check_literal_range, disposition, is_optional_value, marrow_type_name,
+    merge_key_admission, negated_integer_literal, type_renderable_at_runtime,
+    unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CheckDiagnostic,
@@ -358,6 +359,8 @@ fn infer_value(
             literal_type(*kind)
         }
         Expression::Interpolation { parts, .. } => {
+            let checkpoint = ErrorCheckpoint::new(diagnostics);
+            let mut result_type = MarrowType::Primitive(ScalarType::Str);
             for part in parts {
                 match part {
                     marrow_syntax::InterpolationPart::Text { text, span } => {
@@ -375,7 +378,8 @@ fn infer_value(
                             const_ints,
                             read_scope,
                         );
-                        if ty.contains_invalid() {
+                        if disposition(&ty) == TypeDisposition::Poisoned {
+                            result_type = MarrowType::Invalid;
                             continue;
                         } else if is_optional_value(&ty) {
                             diagnostics.push(unresolved_optional_diagnostic(file, expr.span()));
@@ -399,7 +403,11 @@ fn infer_value(
                     }
                 }
             }
-            MarrowType::Primitive(ScalarType::Str)
+            if checkpoint.has_new_error(diagnostics) {
+                MarrowType::Invalid
+            } else {
+                result_type
+            }
         }
         Expression::Name { segments, span, .. } if segments.len() == 1 => {
             let name = &segments[0];
@@ -499,6 +507,13 @@ fn infer_value(
                 const_ints,
                 read_scope,
             );
+            if matches!(
+                op,
+                marrow_syntax::BinaryOp::RangeExclusive | marrow_syntax::BinaryOp::RangeInclusive
+            ) && position == ValuePosition::Value
+            {
+                return MarrowType::Invalid;
+            }
             // `??` defaults an optional left value with the right; a present
             // (non-optional) left has nothing to default. The result follows the
             // right operand's presence.
@@ -513,7 +528,7 @@ fn infer_value(
                         "operator `??` cannot guard a read with an effect in a key; \
                          bind the key to a local first",
                     ));
-                    return left_type.without_optional();
+                    return MarrowType::Invalid;
                 }
                 let names = program.decl_ids();
                 return check_coalesce(CoalesceCheck {
@@ -577,6 +592,9 @@ fn infer_value(
                     const_ints,
                     read_scope,
                 );
+            }
+            if position == ValuePosition::Value {
+                return MarrowType::Invalid;
             }
             match (start_type, end_type) {
                 (Some(start), Some(end)) => check_binary(
@@ -899,8 +917,20 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     // A poisoned base already reported its fault — an optional key, a rejected read —
     // so a field off it defers rather than resolving through the saved shape (value or
     // collection-subject) and stacking a second diagnostic on the same mistake.
-    if base_type.contains_invalid() {
-        return MarrowType::Invalid;
+    match disposition(&base_type) {
+        TypeDisposition::Poisoned => return MarrowType::Invalid,
+        TypeDisposition::NoValue => {
+            input.diagnostics.push(unknown_field_diagnostic(
+                &input.program.decl_ids(),
+                input.file,
+                input.name_span,
+                input.name,
+            ));
+            return MarrowType::Invalid;
+        }
+        TypeDisposition::Recovery
+        | TypeDisposition::ExplicitDynamic
+        | TypeDisposition::Concrete => {}
     }
     // A bare-key field access in a value position is itself a value-read entry, like the
     // call and saved-root arms. A partially keyed composite layer there — `^grids(1).cells`,
@@ -1883,9 +1913,10 @@ fn local_field_resolution(
         },
         // The empty optional has no inner record, while dynamic, no-value, and
         // unresolved bases defer to their owning gates.
-        MarrowType::Absent | MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {
+        MarrowType::Absent | MarrowType::Dynamic | MarrowType::Unknown => {
             FieldResolution::UnresolvedBase
         }
+        MarrowType::NoValue => FieldResolution::UnresolvedBase,
     }
 }
 

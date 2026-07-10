@@ -12,10 +12,10 @@ use marrow_syntax::SourceSpan;
 use crate::infer::infer_type_with_read_scope;
 use crate::model::decls::DeclIds;
 use crate::typerules::{
-    Admission, StrictValueFault, admit_strict_value, as_primitive, binary_symbol,
-    expects_conversion, is_concrete_nonscalar, is_numeric, is_optional_value, is_ordered,
-    marrow_type_name, mismatch_display, type_compatible, unary_symbol, unresolved_optional,
-    unresolved_optional_diagnostic,
+    Admission, StrictValueFault, TypeDisposition, admit_strict_value, as_primitive, binary_symbol,
+    disposition, expects_conversion, is_concrete_nonscalar, is_numeric, is_optional_value,
+    is_ordered, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
+    unresolved_optional, unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_THROW_TYPE, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram, ConditionTypeFault,
@@ -153,9 +153,12 @@ pub(crate) fn check_return_type(
         diagnostics.push(diagnostic);
         return;
     }
-    match type_compatible(return_type, value_type) {
-        Some(true) => {}
-        Some(false) => {
+    match admit_strict_value(return_type, value_type) {
+        Admission::Accepted | Admission::Poisoned => {}
+        Admission::Rejected(StrictValueFault::Optional) => {
+            diagnostics.push(unresolved_optional_diagnostic(file, span));
+        }
+        Admission::Rejected(StrictValueFault::Mismatch) => {
             diagnostics.push(CheckDiagnostic::new(
                 Code::CheckReturnType,
                 DiagnosticAnchor::at(file, span),
@@ -166,14 +169,7 @@ pub(crate) fn check_return_type(
                 names,
             ));
         }
-        // Strict typing: an untyped value returned where a convertible type is
-        // declared must be converted first. A return type with no conversion boundary
-        // (void, a whole resource, a sequence) places no such constraint.
-        None if matches!(
-            value_type,
-            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
-        ) && expects_conversion(return_type) =>
-        {
+        Admission::Rejected(StrictValueFault::NoValue) => {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
                 file,
@@ -184,7 +180,20 @@ pub(crate) fn check_return_type(
                 ),
             ));
         }
-        None => {}
+        Admission::Rejected(
+            StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic,
+        ) if expects_conversion(return_type) => diagnostics.push(CheckDiagnostic::error(
+            CHECK_UNTYPED_VALUE,
+            file,
+            span,
+            format!(
+                "this `return` value has no known type, but the function returns `{}`; convert it first",
+                marrow_type_name(names, return_type),
+            ),
+        )),
+        Admission::Rejected(
+            StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic,
+        ) => {}
     }
 }
 
@@ -209,15 +218,22 @@ pub(crate) fn check_assignment(
         diagnostics.push(diagnostic);
         return;
     }
-    let compatible = match (place, value) {
+    let admission = match (place, value) {
         (MarrowType::GroupEntry { resource, .. }, MarrowType::Resource(value_resource)) => {
-            Some(resource == value_resource)
+            if resource == value_resource {
+                Admission::Accepted
+            } else {
+                Admission::Rejected(StrictValueFault::Mismatch)
+            }
         }
-        _ => type_compatible(place, value),
+        _ => admit_strict_value(place, value),
     };
-    match compatible {
-        Some(true) => {}
-        Some(false) => {
+    match admission {
+        Admission::Accepted | Admission::Poisoned => {}
+        Admission::Rejected(StrictValueFault::Optional) => {
+            diagnostics.push(unresolved_optional_diagnostic(file, span));
+        }
+        Admission::Rejected(StrictValueFault::Mismatch) => {
             diagnostics.push(CheckDiagnostic::new(
                 Code::CheckAssignmentType,
                 DiagnosticAnchor::at(file, span),
@@ -228,12 +244,7 @@ pub(crate) fn check_assignment(
                 names,
             ));
         }
-        // An untyped value stored into a place with a conversion boundary.
-        None if matches!(
-            value,
-            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
-        ) && expects_conversion(place) =>
-        {
+        Admission::Rejected(StrictValueFault::NoValue) => {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
                 file,
@@ -244,7 +255,20 @@ pub(crate) fn check_assignment(
                 ),
             ));
         }
-        None => {}
+        Admission::Rejected(StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic)
+            if expects_conversion(place) =>
+        {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                file,
+                span,
+                format!(
+                    "the value stored into `{}` has no known type; convert it before typed use",
+                    marrow_type_name(names, place),
+                ),
+            ))
+        }
+        Admission::Rejected(StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic) => {}
     }
 }
 
@@ -261,8 +285,20 @@ pub(crate) fn check_unary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::UnaryOp;
-    if operand.contains_invalid() {
-        return MarrowType::Invalid;
+    match disposition(operand) {
+        TypeDisposition::Poisoned => return MarrowType::Invalid,
+        TypeDisposition::NoValue => {
+            diagnostics.push(operator_diagnostic(
+                file,
+                span,
+                format!("operator `{}` requires a value", unary_symbol(op),),
+            ));
+            return MarrowType::Invalid;
+        }
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic => {
+            return MarrowType::Unknown;
+        }
+        TypeDisposition::Concrete => {}
     }
     // A maybe-present operand must be resolved before any operator; the one rule
     // owns it before the generic mismatch so the message names the four resolution
@@ -322,7 +358,9 @@ pub(crate) fn check_binary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::BinaryOp;
-    if left.contains_invalid() || right.contains_invalid() {
+    if disposition(left) == TypeDisposition::Poisoned
+        || disposition(right) == TypeDisposition::Poisoned
+    {
         return MarrowType::Invalid;
     }
     // A maybe-present operand must be resolved before any operator — equality,
@@ -343,6 +381,25 @@ pub(crate) fn check_binary(
         return as_primitive(left)
             .map(MarrowType::Primitive)
             .unwrap_or(MarrowType::Unknown);
+    }
+    if disposition(left) == TypeDisposition::NoValue
+        || disposition(right) == TypeDisposition::NoValue
+    {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            format!("operator `{}` requires value operands", binary_symbol(op)),
+        ));
+        return MarrowType::Invalid;
+    }
+    if matches!(
+        disposition(left),
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    ) || matches!(
+        disposition(right),
+        TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic
+    ) {
+        return MarrowType::Unknown;
     }
     // `Error` is a concrete type with no binary operator. Flag it before the
     // `as_primitive` gate, which would otherwise drop it to `Unknown`.
@@ -492,9 +549,14 @@ fn check_equality(
         | (_, MarrowType::Optional(_) | MarrowType::Absent) => {
             unreachable!("an optional operand is resolved by the one rule before check_equality")
         }
-        // Dynamic values and non-value/recovery states defer to their owning gates.
-        (MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown, _)
-        | (_, MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown) => None,
+        // Dynamic and recovery values are handled before equality dispatch.
+        (MarrowType::Dynamic | MarrowType::Unknown, _)
+        | (_, MarrowType::Dynamic | MarrowType::Unknown) => {
+            unreachable!("dynamic and recovery operands defer before check_equality")
+        }
+        (MarrowType::NoValue, _) | (_, MarrowType::NoValue) => {
+            unreachable!("no-value operands are rejected before check_equality")
+        }
         // Whole records and sequences have no equality at all.
         (
             MarrowType::Resource(_)
@@ -562,7 +624,19 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
         file,
         diagnostics,
     } = check;
-    if left_type.contains_invalid() || right_type.contains_invalid() {
+    if disposition(left_type) == TypeDisposition::Poisoned
+        || disposition(right_type) == TypeDisposition::Poisoned
+    {
+        return MarrowType::Invalid;
+    }
+    if disposition(left_type) == TypeDisposition::NoValue
+        || disposition(right_type) == TypeDisposition::NoValue
+    {
+        diagnostics.push(operator_diagnostic(
+            file,
+            span,
+            "operator `??` requires value operands".to_string(),
+        ));
         return MarrowType::Invalid;
     }
     // The left's present-arm type, or `None` for the empty `absent` (which carries no
@@ -573,7 +647,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
         // An untyped left may be an unresolved maybe-present read; defer to the
         // default's type rather than assert it is always present, so a cross-module
         // unknown read is not turned into operator noise.
-        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {
+        MarrowType::Dynamic | MarrowType::Unknown => {
             return right_type.clone();
         }
         _ => {
@@ -583,10 +657,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
                 "operator `??` applies only to an optional value; this value is always present"
                     .to_string(),
             ));
-            // The left is already present, so recover to its type: a consumer slot then
-            // reads the value it would have, and no second `check.untyped_value` stacks
-            // on the one always-present error.
-            return left_type.clone();
+            return MarrowType::Invalid;
         }
     };
     // The default may itself be optional (`a ?? b ?? c`); compare against its present

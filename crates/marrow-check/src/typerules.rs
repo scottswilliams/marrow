@@ -203,6 +203,7 @@ pub(crate) fn admit_strict_value(
         {
             Admission::Rejected(StrictValueFault::Optional)
         }
+        TypeDisposition::Concrete if expected == actual => Admission::Accepted,
         TypeDisposition::Concrete => match type_compatible(expected, actual) {
             Some(true) => Admission::Accepted,
             Some(false) | None => Admission::Rejected(StrictValueFault::Mismatch),
@@ -524,12 +525,16 @@ pub(crate) fn is_steppable(scalar: ScalarType) -> bool {
 /// at check. `None` defers dynamic and recovery states to their runtime/backstop
 /// owners.
 pub(crate) fn type_renderable_at_runtime(ty: &MarrowType) -> Option<bool> {
+    match disposition(ty) {
+        TypeDisposition::Poisoned
+        | TypeDisposition::Recovery
+        | TypeDisposition::ExplicitDynamic => return None,
+        TypeDisposition::NoValue => return Some(false),
+        TypeDisposition::Concrete => {}
+    }
     match ty {
         MarrowType::Primitive(_) | MarrowType::Identity(_) | MarrowType::Enum(_) => Some(true),
         MarrowType::Sequence(element) => type_renderable_at_runtime(element),
-        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => {
-            None
-        }
         // An optional must be resolved before it renders (the one rule), so it is a
         // concrete non-renderable value here rather than a deferral.
         MarrowType::Optional(_)
@@ -538,6 +543,10 @@ pub(crate) fn type_renderable_at_runtime(ty: &MarrowType) -> Option<bool> {
         | MarrowType::Resource(_)
         | MarrowType::GroupEntry { .. }
         | MarrowType::LocalTree { .. } => Some(false),
+        MarrowType::Dynamic => unreachable!("dynamic values are handled by disposition"),
+        MarrowType::Invalid => unreachable!("poisoned values are handled by disposition"),
+        MarrowType::NoValue => unreachable!("no-value results are handled by disposition"),
+        MarrowType::Unknown => unreachable!("recovery values are handled by disposition"),
     }
 }
 
@@ -771,6 +780,13 @@ mod admission_tests {
             admit_strict_value(&MarrowType::Dynamic, &int_type()),
             Admission::Accepted,
         );
+    }
+
+    #[test]
+    fn strict_value_admission_accepts_identical_structural_dynamic_types() {
+        let ty = MarrowType::Sequence(Box::new(MarrowType::Dynamic));
+
+        assert_eq!(admit_strict_value(&ty, &ty), Admission::Accepted);
     }
 
     #[test]

@@ -353,23 +353,21 @@ fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchAr
 }
 
 fn report_non_enum_match(env: &mut MatchEnv<'_>, scrutinee_type: &MarrowType, span: SourceSpan) {
-    if scrutinee_type.contains_invalid() {
-        return;
+    match disposition(scrutinee_type) {
+        TypeDisposition::Poisoned
+        | TypeDisposition::Recovery
+        | TypeDisposition::ExplicitDynamic => return,
+        TypeDisposition::NoValue | TypeDisposition::Concrete => {}
     }
-    if !matches!(
-        scrutinee_type,
-        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
-    ) {
-        let names = env.program.decl_ids();
-        env.diagnostics.push(CheckDiagnostic::new(
-            Code::CheckMatchRequiresEnum,
-            DiagnosticAnchor::at(env.file, span),
-            DiagnosticPayload::Enum(EnumDiagnostic::MatchRequiresEnum(MatchScrutinee::NonEnum {
-                found: scrutinee_type.clone(),
-            })),
-            &names,
-        ));
-    }
+    let names = env.program.decl_ids();
+    env.diagnostics.push(CheckDiagnostic::new(
+        Code::CheckMatchRequiresEnum,
+        DiagnosticAnchor::at(env.file, span),
+        DiagnosticPayload::Enum(EnumDiagnostic::MatchRequiresEnum(MatchScrutinee::NonEnum {
+            found: scrutinee_type.clone(),
+        })),
+        &names,
+    ));
 }
 
 fn check_match_coverage(
@@ -904,17 +902,17 @@ fn check_is_unpoisoned(input: IsCheck<'_>) -> MarrowType {
         // Dynamic, non-value, unresolved, and already-errored operands defer to
         // their owning gates instead of cascading a second enum error.
         match disposition(left_type) {
-            TypeDisposition::Recovery
-            | TypeDisposition::ExplicitDynamic
-            | TypeDisposition::NoValue => {}
-            TypeDisposition::Concrete => diagnostics.push(CheckDiagnostic::new(
-                Code::CheckIsRequiresEnum,
-                DiagnosticAnchor::at(file, span),
-                DiagnosticPayload::Enum(EnumDiagnostic::IsRequiresEnum {
-                    found: left_type.clone(),
-                }),
-                &names,
-            )),
+            TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic => {}
+            TypeDisposition::NoValue | TypeDisposition::Concrete => {
+                diagnostics.push(CheckDiagnostic::new(
+                    Code::CheckIsRequiresEnum,
+                    DiagnosticAnchor::at(file, span),
+                    DiagnosticPayload::Enum(EnumDiagnostic::IsRequiresEnum {
+                        found: left_type.clone(),
+                    }),
+                    &names,
+                ))
+            }
             TypeDisposition::Poisoned => {
                 unreachable!("recursive poison is handled before enum predicate checking")
             }

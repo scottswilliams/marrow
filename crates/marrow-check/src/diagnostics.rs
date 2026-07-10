@@ -10,6 +10,7 @@ use marrow_syntax::{Severity, SourceSpan};
 use crate::ScalarType;
 use crate::model::decls::DeclIds;
 use crate::program::MarrowType;
+use crate::typerules::{TypeDisposition, disposition};
 use crate::{CatalogEntryKind, CatalogLifecycle};
 
 /// A library or test file declares a module name that does not match its
@@ -437,13 +438,14 @@ impl ConversionTarget {
     }
 
     pub(crate) fn accepts(self, source: &MarrowType) -> bool {
+        match disposition(source) {
+            TypeDisposition::Poisoned
+            | TypeDisposition::Recovery
+            | TypeDisposition::ExplicitDynamic => return true,
+            TypeDisposition::NoValue => return false,
+            TypeDisposition::Concrete => {}
+        }
         match source {
-            // Explicit dynamic is the supported conversion boundary. The remaining
-            // states defer only to avoid cascading from a missing value or prior fault.
-            MarrowType::Dynamic
-            | MarrowType::Invalid
-            | MarrowType::NoValue
-            | MarrowType::Unknown => true,
             MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
             MarrowType::Enum(_) => self.accepts_enum(),
             MarrowType::Optional(_)
@@ -454,6 +456,10 @@ impl ConversionTarget {
             | MarrowType::LocalTree { .. }
             | MarrowType::Resource(_)
             | MarrowType::Sequence(_) => false,
+            MarrowType::Dynamic => unreachable!("dynamic sources are handled by disposition"),
+            MarrowType::Invalid => unreachable!("poisoned sources are handled by disposition"),
+            MarrowType::NoValue => unreachable!("no-value sources are handled by disposition"),
+            MarrowType::Unknown => unreachable!("recovery sources are handled by disposition"),
         }
     }
 }
