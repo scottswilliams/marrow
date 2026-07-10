@@ -527,10 +527,6 @@ fn rejected_saved_keys_poison_the_read_under_typed_consumers() {
 fn rejected_local_keys_poison_the_read_under_typed_consumers() {
     let cases = [
         (
-            "cascade-sequence-dynamic-key",
-            "module m\nfn f(values: sequence[string], key: unknown): string\n    return values(key)\n",
-        ),
-        (
             "cascade-sequence-no-value-key",
             "module m\nfn f(values: sequence[string]): string\n    return values(print(\"x\"))\n",
         ),
@@ -541,10 +537,6 @@ fn rejected_local_keys_poison_the_read_under_typed_consumers() {
         (
             "cascade-sequence-key-arity",
             "module m\nfn f(values: sequence[string]): string\n    return values(1, 2)\n",
-        ),
-        (
-            "cascade-tree-dynamic-key",
-            "module m\nfn f(values(key: int): string, key: unknown): string\n    return values(key)\n",
         ),
         (
             "cascade-tree-no-value-key",
@@ -563,6 +555,25 @@ fn rejected_local_keys_poison_the_read_under_typed_consumers() {
     for (name, source) in cases {
         let report = check_module_report(name, source);
         assert_diagnostic_codes(&report, &["check.key_type"]);
+    }
+}
+
+#[test]
+fn explicit_dynamic_local_keys_keep_their_existing_runtime_checked_behavior() {
+    let cases = [
+        (
+            "cascade-sequence-dynamic-key",
+            "module m\nfn f(values: sequence[string], key: unknown): string\n    return values(key) ?? \"\"\n",
+        ),
+        (
+            "cascade-tree-dynamic-key",
+            "module m\nfn f(values(key: int): string, key: unknown): string\n    return values(key) ?? \"\"\n",
+        ),
+    ];
+
+    for (name, source) in cases {
+        let report = check_module_report(name, source);
+        assert_diagnostic_codes(&report, &[]);
     }
 }
 

@@ -13,6 +13,229 @@ use crate::{CHECK_LITERAL_RANGE, CHECK_UNRESOLVED_OPTIONAL, CheckDiagnostic, Mar
 /// significant digits and 34 fractional places.
 pub(crate) const DECIMAL_MAX_DIGITS: usize = 34;
 
+/// The top-level value state a boundary must decide before consulting structural
+/// compatibility. Diagnosed poison is recursive; the remaining dispositions are
+/// top-level so containers retain their own shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeDisposition {
+    Poisoned,
+    Recovery,
+    ExplicitDynamic,
+    NoValue,
+    Concrete,
+}
+
+/// A typed boundary verdict. Poison is an already-diagnosed dependency, while a
+/// rejection carries the boundary-specific reason that owns any new diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Admission<F> {
+    Accepted,
+    Poisoned,
+    Rejected(F),
+}
+
+/// Why a concrete strict value slot rejected its actual type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StrictValueFault {
+    Recovery,
+    ExplicitDynamic,
+    NoValue,
+    Optional,
+    Mismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollectionFault {
+    NoValue,
+}
+
+pub(crate) fn admit_collection_operand(ty: &MarrowType) -> Admission<CollectionFault> {
+    match disposition(ty) {
+        TypeDisposition::Poisoned => Admission::Poisoned,
+        TypeDisposition::NoValue => Admission::Rejected(CollectionFault::NoValue),
+        TypeDisposition::Recovery
+        | TypeDisposition::ExplicitDynamic
+        | TypeDisposition::Concrete => Admission::Accepted,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyPolicy {
+    Saved,
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyFault {
+    Recovery,
+    ExplicitDynamic,
+    NoValue,
+    Optional,
+    Mismatch,
+    Arity,
+    Named,
+    Range,
+}
+
+pub(crate) type KeyAdmission = Admission<KeyFault>;
+
+pub(crate) fn merge_key_admission(left: KeyAdmission, right: KeyAdmission) -> KeyAdmission {
+    match (left, right) {
+        (Admission::Poisoned, _) | (_, Admission::Poisoned) => Admission::Poisoned,
+        (Admission::Rejected(fault), _) | (_, Admission::Rejected(fault)) => {
+            Admission::Rejected(fault)
+        }
+        (Admission::Accepted, Admission::Accepted) => Admission::Accepted,
+    }
+}
+
+/// The independently inferred parts of a saved range key. Keeping endpoints and
+/// `by` separate prevents a concrete sibling from laundering poison or another
+/// non-value state before the declared key policy sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RangeTypeAggregate {
+    start: Option<MarrowType>,
+    end: Option<MarrowType>,
+    step: Option<MarrowType>,
+}
+
+impl RangeTypeAggregate {
+    pub(crate) fn new(
+        start: Option<MarrowType>,
+        end: Option<MarrowType>,
+        step: Option<MarrowType>,
+    ) -> Self {
+        Self { start, end, step }
+    }
+
+    pub(crate) fn admit_saved(&self, expected: &MarrowType) -> KeyAdmission {
+        self.components()
+            .fold(Admission::Accepted, |admission, actual| {
+                merge_key_admission(admission, admit_key(KeyPolicy::Saved, expected, actual))
+            })
+    }
+
+    pub(crate) fn representative_type(&self) -> MarrowType {
+        if self.components().any(MarrowType::contains_invalid) {
+            return MarrowType::Invalid;
+        }
+        for disposition in [
+            TypeDisposition::NoValue,
+            TypeDisposition::Recovery,
+            TypeDisposition::ExplicitDynamic,
+        ] {
+            if let Some(component) = self
+                .components()
+                .find(|component| crate::typerules::disposition(component) == disposition)
+            {
+                return component.clone();
+            }
+        }
+        if let Some(optional) = self
+            .components()
+            .find(|component| is_optional_value(component))
+        {
+            return optional.clone();
+        }
+        self.start
+            .as_ref()
+            .or(self.end.as_ref())
+            .cloned()
+            .unwrap_or(MarrowType::Unknown)
+    }
+
+    fn components(&self) -> impl Iterator<Item = &MarrowType> {
+        [self.start.as_ref(), self.end.as_ref(), self.step.as_ref()]
+            .into_iter()
+            .flatten()
+    }
+}
+
+pub(crate) fn disposition(ty: &MarrowType) -> TypeDisposition {
+    if ty.contains_invalid() {
+        return TypeDisposition::Poisoned;
+    }
+    match ty {
+        MarrowType::Unknown => TypeDisposition::Recovery,
+        MarrowType::Dynamic => TypeDisposition::ExplicitDynamic,
+        MarrowType::NoValue => TypeDisposition::NoValue,
+        MarrowType::Primitive(_)
+        | MarrowType::Error
+        | MarrowType::Resource(_)
+        | MarrowType::GroupEntry { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::Enum(_)
+        | MarrowType::Sequence(_)
+        | MarrowType::LocalTree { .. }
+        | MarrowType::Optional(_)
+        | MarrowType::Absent => TypeDisposition::Concrete,
+        MarrowType::Invalid => TypeDisposition::Poisoned,
+    }
+}
+
+/// Admit `actual` to a strict typed value slot. State policy is decided before
+/// the unchanged compatibility lattice is consulted.
+pub(crate) fn admit_strict_value(
+    expected: &MarrowType,
+    actual: &MarrowType,
+) -> Admission<StrictValueFault> {
+    if disposition(expected) == TypeDisposition::Poisoned
+        || disposition(actual) == TypeDisposition::Poisoned
+    {
+        return Admission::Poisoned;
+    }
+    if disposition(expected) == TypeDisposition::ExplicitDynamic {
+        return match disposition(actual) {
+            TypeDisposition::Poisoned => Admission::Poisoned,
+            TypeDisposition::NoValue => Admission::Rejected(StrictValueFault::NoValue),
+            TypeDisposition::Recovery
+            | TypeDisposition::ExplicitDynamic
+            | TypeDisposition::Concrete => Admission::Accepted,
+        };
+    }
+    match disposition(actual) {
+        TypeDisposition::Poisoned => Admission::Poisoned,
+        TypeDisposition::Recovery => Admission::Rejected(StrictValueFault::Recovery),
+        TypeDisposition::ExplicitDynamic => Admission::Rejected(StrictValueFault::ExplicitDynamic),
+        TypeDisposition::NoValue => Admission::Rejected(StrictValueFault::NoValue),
+        TypeDisposition::Concrete
+            if is_optional_value(actual) && !matches!(expected, MarrowType::Optional(_)) =>
+        {
+            Admission::Rejected(StrictValueFault::Optional)
+        }
+        TypeDisposition::Concrete => match type_compatible(expected, actual) {
+            Some(true) => Admission::Accepted,
+            Some(false) | None => Admission::Rejected(StrictValueFault::Mismatch),
+        },
+    }
+}
+
+pub(crate) fn admit_key(
+    policy: KeyPolicy,
+    expected: &MarrowType,
+    actual: &MarrowType,
+) -> KeyAdmission {
+    if disposition(expected) == TypeDisposition::Poisoned
+        || disposition(actual) == TypeDisposition::Poisoned
+    {
+        return Admission::Poisoned;
+    }
+    match disposition(actual) {
+        TypeDisposition::Poisoned => Admission::Poisoned,
+        TypeDisposition::Recovery => Admission::Rejected(KeyFault::Recovery),
+        TypeDisposition::ExplicitDynamic if policy == KeyPolicy::Local => Admission::Accepted,
+        TypeDisposition::ExplicitDynamic => Admission::Rejected(KeyFault::ExplicitDynamic),
+        TypeDisposition::NoValue => Admission::Rejected(KeyFault::NoValue),
+        TypeDisposition::Concrete if is_optional_value(actual) => {
+            Admission::Rejected(KeyFault::Optional)
+        }
+        TypeDisposition::Concrete => match type_compatible(expected, actual) {
+            Some(true) => Admission::Accepted,
+            Some(false) | None => Admission::Rejected(KeyFault::Mismatch),
+        },
+    }
+}
+
 /// Whether an integer literal carries a leading unary minus. The lexer tokenizes a
 /// bare magnitude with the sign as a separate unary operator, but the negation
 /// shifts the representable bound: `9223372036854775808` is `i64::MAX + 1` and out
@@ -415,7 +638,7 @@ pub(crate) fn unresolved_optional(
     file: &Path,
 ) -> Option<CheckDiagnostic> {
     let optional_expected = matches!(expected, MarrowType::Optional(_));
-    let poisoned = matches!(expected, MarrowType::Invalid) || matches!(actual, MarrowType::Invalid);
+    let poisoned = expected.contains_invalid() || actual.contains_invalid();
     (is_optional_value(actual) && !optional_expected && !poisoned)
         .then(|| unresolved_optional_diagnostic(file, span))
 }
@@ -443,4 +666,248 @@ pub(crate) fn mismatch_display(
         marrow_type_name(names, left),
         marrow_type_name(names, right),
     )
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use std::path::Path;
+
+    use marrow_store::value::ScalarType;
+    use marrow_syntax::SourceSpan;
+
+    use super::{
+        Admission, CollectionFault, KeyFault, KeyPolicy, RangeTypeAggregate, StrictValueFault,
+        TypeDisposition, admit_collection_operand, admit_key, admit_strict_value, disposition,
+        merge_key_admission, unresolved_optional,
+    };
+    use crate::MarrowType;
+
+    fn int_type() -> MarrowType {
+        MarrowType::Primitive(ScalarType::Int)
+    }
+
+    #[test]
+    fn disposition_distinguishes_top_level_states_after_recursive_poison() {
+        assert_eq!(
+            disposition(&MarrowType::Sequence(Box::new(MarrowType::Invalid))),
+            TypeDisposition::Poisoned,
+        );
+        assert_eq!(disposition(&MarrowType::Unknown), TypeDisposition::Recovery,);
+        assert_eq!(
+            disposition(&MarrowType::Dynamic),
+            TypeDisposition::ExplicitDynamic,
+        );
+        assert_eq!(disposition(&MarrowType::NoValue), TypeDisposition::NoValue,);
+        assert_eq!(disposition(&int_type()), TypeDisposition::Concrete);
+    }
+
+    #[test]
+    fn disposition_keeps_non_poison_structural_states_top_level_concrete() {
+        for ty in [
+            MarrowType::Sequence(Box::new(MarrowType::Dynamic)),
+            MarrowType::Optional(Box::new(MarrowType::Unknown)),
+            MarrowType::LocalTree {
+                keys: vec![MarrowType::NoValue],
+                value: Box::new(int_type()),
+            },
+        ] {
+            assert_eq!(disposition(&ty), TypeDisposition::Concrete, "{ty:?}");
+        }
+    }
+
+    #[test]
+    fn strict_value_admission_preserves_every_state_and_compatibility_fault() {
+        let expected = int_type();
+        let cases = [
+            (MarrowType::Invalid, Admission::Poisoned),
+            (
+                MarrowType::Sequence(Box::new(MarrowType::Invalid)),
+                Admission::Poisoned,
+            ),
+            (
+                MarrowType::Unknown,
+                Admission::Rejected(StrictValueFault::Recovery),
+            ),
+            (
+                MarrowType::Dynamic,
+                Admission::Rejected(StrictValueFault::ExplicitDynamic),
+            ),
+            (
+                MarrowType::NoValue,
+                Admission::Rejected(StrictValueFault::NoValue),
+            ),
+            (
+                MarrowType::Optional(Box::new(int_type())),
+                Admission::Rejected(StrictValueFault::Optional),
+            ),
+            (
+                MarrowType::Primitive(ScalarType::Str),
+                Admission::Rejected(StrictValueFault::Mismatch),
+            ),
+            (int_type(), Admission::Accepted),
+        ];
+
+        for (actual, expected_admission) in cases {
+            assert_eq!(
+                admit_strict_value(&expected, &actual),
+                expected_admission,
+                "{actual:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn strict_value_admission_defers_a_recursively_poisoned_expected_type() {
+        let expected = MarrowType::LocalTree {
+            keys: vec![MarrowType::Invalid],
+            value: Box::new(int_type()),
+        };
+
+        assert_eq!(
+            admit_strict_value(&expected, &int_type()),
+            Admission::Poisoned,
+        );
+        assert_eq!(
+            admit_strict_value(&MarrowType::Dynamic, &int_type()),
+            Admission::Accepted,
+        );
+    }
+
+    #[test]
+    fn key_admission_keeps_saved_and_local_dynamic_policies_distinct() {
+        assert_eq!(
+            admit_key(KeyPolicy::Saved, &int_type(), &MarrowType::Dynamic),
+            Admission::Rejected(KeyFault::ExplicitDynamic),
+        );
+        assert_eq!(
+            admit_key(KeyPolicy::Local, &int_type(), &MarrowType::Dynamic),
+            Admission::Accepted,
+        );
+        for policy in [KeyPolicy::Saved, KeyPolicy::Local] {
+            assert_eq!(
+                admit_key(policy, &int_type(), &MarrowType::Unknown),
+                Admission::Rejected(KeyFault::Recovery),
+            );
+            assert_eq!(
+                admit_key(policy, &int_type(), &MarrowType::NoValue),
+                Admission::Rejected(KeyFault::NoValue),
+            );
+        }
+    }
+
+    #[test]
+    fn key_admission_propagates_recursive_poison_and_types_other_rejections() {
+        let poisoned_tree = MarrowType::LocalTree {
+            keys: vec![MarrowType::Invalid],
+            value: Box::new(int_type()),
+        };
+        assert_eq!(
+            admit_key(KeyPolicy::Saved, &int_type(), &poisoned_tree),
+            Admission::Poisoned,
+        );
+        assert_eq!(
+            admit_key(KeyPolicy::Local, &poisoned_tree, &int_type()),
+            Admission::Poisoned,
+        );
+        assert_eq!(
+            admit_key(
+                KeyPolicy::Saved,
+                &int_type(),
+                &MarrowType::Optional(Box::new(int_type())),
+            ),
+            Admission::Rejected(KeyFault::Optional),
+        );
+        assert_eq!(
+            admit_key(
+                KeyPolicy::Saved,
+                &int_type(),
+                &MarrowType::Primitive(ScalarType::Str),
+            ),
+            Admission::Rejected(KeyFault::Mismatch),
+        );
+    }
+
+    #[test]
+    fn key_admission_merge_preserves_poison_then_rejection() {
+        assert_eq!(
+            merge_key_admission(Admission::Rejected(KeyFault::Mismatch), Admission::Poisoned,),
+            Admission::Poisoned,
+        );
+        assert_eq!(
+            merge_key_admission(Admission::Accepted, Admission::Rejected(KeyFault::Arity),),
+            Admission::Rejected(KeyFault::Arity),
+        );
+    }
+
+    #[test]
+    fn range_type_aggregate_preserves_endpoint_order_and_step_state() {
+        let expected = int_type();
+        for aggregate in [
+            RangeTypeAggregate::new(Some(expected.clone()), Some(MarrowType::Invalid), None),
+            RangeTypeAggregate::new(Some(MarrowType::Invalid), Some(expected.clone()), None),
+            RangeTypeAggregate::new(
+                Some(expected.clone()),
+                Some(expected.clone()),
+                Some(MarrowType::Invalid),
+            ),
+        ] {
+            assert_eq!(aggregate.admit_saved(&expected), Admission::Poisoned);
+            assert_eq!(aggregate.representative_type(), MarrowType::Invalid);
+        }
+    }
+
+    #[test]
+    fn range_type_aggregate_keeps_non_poison_rejections_distinct() {
+        let expected = int_type();
+        for (component, fault) in [
+            (MarrowType::Unknown, KeyFault::Recovery),
+            (MarrowType::Dynamic, KeyFault::ExplicitDynamic),
+            (MarrowType::NoValue, KeyFault::NoValue),
+        ] {
+            let aggregate = RangeTypeAggregate::new(Some(expected.clone()), Some(component), None);
+            assert_eq!(aggregate.admit_saved(&expected), Admission::Rejected(fault),);
+        }
+
+        let compatible =
+            RangeTypeAggregate::new(Some(expected.clone()), Some(expected.clone()), None);
+        assert_eq!(compatible.admit_saved(&expected), Admission::Accepted);
+        assert_eq!(compatible.representative_type(), expected);
+    }
+
+    #[test]
+    fn collection_operand_admission_rejects_only_no_value_and_propagates_poison() {
+        assert_eq!(
+            admit_collection_operand(&MarrowType::NoValue),
+            Admission::Rejected(CollectionFault::NoValue),
+        );
+        assert_eq!(
+            admit_collection_operand(&MarrowType::Sequence(Box::new(MarrowType::Invalid))),
+            Admission::Poisoned,
+        );
+        for accepted in [
+            MarrowType::Unknown,
+            MarrowType::Dynamic,
+            MarrowType::Sequence(Box::new(int_type())),
+        ] {
+            assert_eq!(
+                admit_collection_operand(&accepted),
+                Admission::Accepted,
+                "{accepted:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn optional_boundary_defers_recursive_poison() {
+        let poisoned_optional = MarrowType::Optional(Box::new(MarrowType::Invalid));
+        assert!(
+            unresolved_optional(
+                &int_type(),
+                &poisoned_optional,
+                SourceSpan::default(),
+                Path::new("test.mw"),
+            )
+            .is_none(),
+        );
+    }
 }

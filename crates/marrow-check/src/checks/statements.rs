@@ -1548,7 +1548,7 @@ impl StatementCheck<'_> {
         // exactly what `if const` binds. Anything else — a definite value, a
         // collection, an explicit dynamic boundary, a clean unresolved shape, or a
         // no-value call — has no single maybe-present value to bind.
-        if is_optional_value(value_type) || matches!(value_type, MarrowType::Invalid) {
+        if is_optional_value(value_type) || value_type.contains_invalid() {
             return;
         }
         let names = self.program.decl_ids();
@@ -1611,6 +1611,19 @@ impl StatementCheck<'_> {
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
         );
+        if subject_type.contains_invalid() {
+            let frame = for_frame(
+                self.program,
+                binding,
+                iterable,
+                self.scope,
+                self.aliases,
+                self.file,
+            );
+            self.check_block_under_frame(frame, body);
+            self.required_fields.invalidate_all();
+            return;
+        }
         // A maybe-present collection (`sequence[T]?`) must be resolved before it is
         // iterated; the one rule owns it before the iterable-shape gates so the message
         // names the four resolution forms. The body still checks under the bound frame so
@@ -2100,10 +2113,11 @@ fn target_has_saved_address_diagnostic(
 /// once, not twice. A resolved, well-formed but non-saved target keeps a concrete
 /// type and still earns the single addressability error.
 fn target_already_blamed(subject_type: &MarrowType) -> bool {
-    matches!(
-        subject_type,
-        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
-    )
+    subject_type.contains_invalid()
+        || matches!(
+            subject_type,
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+        )
 }
 
 fn span_contains(outer: SourceSpan, inner: SourceSpan) -> bool {

@@ -9,14 +9,15 @@ use std::path::Path;
 use marrow_codes::Code;
 use marrow_schema::{ResourceSchema, Type};
 use marrow_store::value::ScalarType;
-use marrow_syntax::{Severity, SourceSpan};
+use marrow_syntax::SourceSpan;
 
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::model::decls::DeclIds;
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
-    as_primitive, expects_conversion, is_optional_value, marrow_type_name, type_compatible,
-    unresolved_optional, unresolved_optional_diagnostic,
+    Admission, CollectionFault, StrictValueFault, TypeDisposition, admit_collection_operand,
+    admit_strict_value, as_primitive, disposition, expects_conversion, is_optional_value,
+    marrow_type_name, unresolved_optional_diagnostic,
 };
 use crate::{
     AppendTargetDiagnostic, CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_REQUIRES_SINGLE_KEY,
@@ -28,7 +29,7 @@ use crate::{
     is_unknown_std_operation, module_of_file, resolve, std_call_params, std_call_return_type,
 };
 
-use super::diagnostics::key_type_diagnostic;
+use super::diagnostics::{ErrorCheckpoint, key_type_diagnostic};
 use super::loop_head::is_recognized_collection;
 use super::saved_keys::{check_identity_sequence_position, check_keys_against};
 use super::saved_paths::{
@@ -106,10 +107,11 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         read_scope,
         diagnostics,
     } = input;
-    let invalid_argument = arg_types
-        .iter()
-        .any(|arg_type| matches!(arg_type, MarrowType::Invalid));
-    let diagnostics_before = diagnostics.len();
+    let invalid_argument = arg_types.iter().any(MarrowType::contains_invalid);
+    if invalid_argument {
+        return MarrowType::Invalid;
+    }
+    let checkpoint = ErrorCheckpoint::new(diagnostics);
     let mut env = CallEnv {
         program,
         scope,
@@ -123,12 +125,10 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
     let call_type = dispatch_call(&mut env, callee, args, arg_types);
 
     // Only an error emitted while checking this call poisons its result. Warnings
-    // and future advisory diagnostics must remain composable with the call's
-    // declared type, while a pre-poisoned argument is invalid independently.
-    let emitted_error = env.diagnostics[diagnostics_before..]
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error);
-    if invalid_argument || emitted_error {
+    // and future advisory diagnostics remain composable with the call's declared
+    // type; a pre-poisoned argument returned before dispatch.
+    let emitted_error = checkpoint.has_new_error(env.diagnostics);
+    if emitted_error {
         MarrowType::Invalid
     } else {
         call_type
@@ -275,9 +275,6 @@ fn check_builtin_call(
         // `check.untyped_value` on the one root-cause error.
         return MarrowType::Invalid;
     }
-    if segments == ["count"] && matches!(arg_types.first(), Some(MarrowType::Invalid)) {
-        return MarrowType::Invalid;
-    }
     if segments == ["std", "assert", "equal"] {
         check_assert_equal_args(
             &env.program.decl_ids(),
@@ -333,6 +330,12 @@ fn check_assert_equal_args(
         ));
         return;
     }
+    if arg_types
+        .iter()
+        .any(|arg_type| disposition(arg_type) == TypeDisposition::Poisoned)
+    {
+        return;
+    }
     match (&arg_types[0], &arg_types[1]) {
         (MarrowType::Primitive(actual), MarrowType::Primitive(expected)) if actual == expected => {}
         (MarrowType::Primitive(_), MarrowType::Primitive(_)) => {
@@ -347,8 +350,6 @@ fn check_assert_equal_args(
                 },
             ));
         }
-        (MarrowType::Unknown | MarrowType::Invalid, _)
-        | (_, MarrowType::Unknown | MarrowType::Invalid) => {}
         (actual, expected) => {
             let found = if matches!(actual, MarrowType::Primitive(_)) {
                 expected
@@ -637,9 +638,7 @@ fn check_assert_absent_args(
     // `isAbsent` tests any optional value for absence, mirroring `exists`: an optional
     // local or parameter, a positional/keyed read, or a stdlib `T?` result are exactly
     // what it asserts. Resolving them first would destroy the absence being tested.
-    if arg_types.first().is_some_and(|arg_type| {
-        is_optional_value(arg_type) || matches!(arg_type, MarrowType::Invalid)
-    }) {
+    if arg_types.first().is_some_and(is_optional_value) {
         return;
     }
     env.diagnostics.push(call_argument(
@@ -689,9 +688,6 @@ fn check_exists_args(
         return;
     }
     if exists_target_arg_resolves(env, &arg.value) {
-        return;
-    }
-    if matches!(arg_types.first(), Some(MarrowType::Invalid)) {
         return;
     }
     // A concrete, always-present value has no absence to test — mirror the `??`
@@ -984,6 +980,19 @@ fn check_collection_combinator_args(
     if arg.name.is_some() {
         return false;
     }
+    match admit_collection_operand(arg_type) {
+        Admission::Accepted => {}
+        Admission::Poisoned => return false,
+        Admission::Rejected(CollectionFault::NoValue) => {
+            env.diagnostics.push(CheckDiagnostic::error(
+                CHECK_COLLECTION_UNSUPPORTED,
+                env.file,
+                arg.value.span(),
+                format!("`{name}` needs a collection value"),
+            ));
+            return true;
+        }
+    }
     // A maybe-present collection (`sequence[T]?`) must be resolved before it is counted
     // or streamed; the one rule owns it before the scalar/saved gates so the message
     // names the four resolution forms.
@@ -1030,6 +1039,24 @@ fn check_append_args(
     let ([target, value], [target_type, value_type]) = (args, arg_types) else {
         return;
     };
+    match admit_collection_operand(target_type) {
+        Admission::Accepted => {}
+        Admission::Poisoned => return,
+        Admission::Rejected(CollectionFault::NoValue) => {
+            env.diagnostics.push(call_argument(
+                &env.program.decl_ids(),
+                env.file,
+                target.value.span(),
+                CallArgumentFault::ArgumentType {
+                    label: "append".to_string(),
+                    slot: CallArgumentSlot::Position(0),
+                    expected: MarrowType::Sequence(Box::new(MarrowType::Dynamic)),
+                    found: target_type.clone(),
+                },
+            ));
+            return;
+        }
+    }
     // A maybe-present collection (`sequence[T]?`) target must be resolved before it is
     // appended to; the one rule owns it before the layer-shape gates so the message
     // names the four resolution forms.
@@ -1075,20 +1102,24 @@ fn check_append_value(
         return;
     }
     let span = value.value.span();
-    if let Some(diagnostic) = unresolved_optional(&element, value_type, span, env.file) {
-        env.diagnostics.push(diagnostic);
-        return;
-    }
-    if matches!(type_compatible(&element, value_type), Some(false)) {
-        env.diagnostics.push(call_argument(
-            &env.program.decl_ids(),
-            env.file,
-            span,
-            CallArgumentFault::AppendValue {
-                expected: element,
-                found: value_type.clone(),
-            },
-        ));
+    match admit_strict_value(&element, value_type) {
+        Admission::Accepted | Admission::Poisoned => {}
+        Admission::Rejected(StrictValueFault::Optional) => {
+            env.diagnostics
+                .push(unresolved_optional_diagnostic(env.file, span));
+        }
+        Admission::Rejected(StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic) => {}
+        Admission::Rejected(StrictValueFault::NoValue | StrictValueFault::Mismatch) => {
+            env.diagnostics.push(call_argument(
+                &env.program.decl_ids(),
+                env.file,
+                span,
+                CallArgumentFault::AppendValue {
+                    expected: element,
+                    found: value_type.clone(),
+                },
+            ));
+        }
     }
 }
 
@@ -1331,16 +1362,12 @@ pub(crate) fn check_one_arg(
     span: SourceSpan,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // A maybe-present (`T?`) argument into a definite parameter is the one rule; route it
-    // through the shared helper before the generic mismatch so the message names the four
-    // resolution forms.
-    if let Some(diagnostic) = unresolved_optional(parameter, arg_type, span, emit.file) {
-        diagnostics.push(diagnostic);
-        return;
-    }
-    match type_compatible(parameter, arg_type) {
-        Some(true) => {}
-        Some(false) => {
+    match admit_strict_value(parameter, arg_type) {
+        Admission::Accepted | Admission::Poisoned => {}
+        Admission::Rejected(StrictValueFault::Optional) => {
+            diagnostics.push(unresolved_optional_diagnostic(emit.file, span));
+        }
+        Admission::Rejected(StrictValueFault::Mismatch) => {
             diagnostics.push(call_argument(
                 emit.names,
                 emit.file,
@@ -1353,12 +1380,8 @@ pub(crate) fn check_one_arg(
                 },
             ));
         }
-        // Strict typing: an untyped argument against a convertible parameter must be
-        // converted first.
-        None if matches!(
-            arg_type,
-            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
-        ) && expects_conversion(parameter) =>
+        Admission::Rejected(StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic)
+            if expects_conversion(parameter) =>
         {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
@@ -1371,7 +1394,19 @@ pub(crate) fn check_one_arg(
                 ),
             ));
         }
-        None => {}
+        Admission::Rejected(StrictValueFault::NoValue) => {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNTYPED_VALUE,
+                emit.file,
+                span,
+                format!(
+                    "{} to `{label}` has no known type, but `{}` is expected; convert it first",
+                    param.describe(),
+                    marrow_type_name(emit.names, parameter),
+                ),
+            ));
+        }
+        Admission::Rejected(StrictValueFault::Recovery | StrictValueFault::ExplicitDynamic) => {}
     }
 }
 
@@ -1520,11 +1555,6 @@ fn check_identity_constructor(
         return MarrowType::Invalid;
     };
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &root_arg.value else {
-        match arg_types.first() {
-            Some(MarrowType::Invalid) => return MarrowType::Invalid,
-            Some(MarrowType::Unknown) => return MarrowType::Unknown,
-            _ => {}
-        }
         diagnostics.push(call_argument(
             &names,
             file,
@@ -1571,10 +1601,9 @@ fn check_identity_constructor(
 /// `check.next_id_requires_single_int`. The argument must be a bare keyed store
 /// root — the only shape the runtime can allocate against — so `check.call_argument`
 /// rejects a saved path that is not a bare root (an index branch, keyed lookup, or
-/// field) on shape, and any non-saved value other than an unresolved or poisoned
-/// one on type. An undeclared root is reported by resolution, and an unresolved or
-/// poisoned non-saved argument defers to its owning diagnostic, so neither is
-/// double-reported here.
+/// field) on shape, and any non-saved value on type. A recursively poisoned
+/// argument returns before call dispatch; Recovery, explicit Dynamic, and NoValue
+/// are rejected here. An undeclared root is reported by resolution.
 pub(crate) fn check_next_id(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
@@ -1590,8 +1619,8 @@ pub(crate) fn check_next_id(
         // A saved path that is not a bare `^root` — an index branch, a keyed
         // lookup, a field — is statically the wrong shape regardless of the type
         // it lowers to (an index branch lowers to `unknown`), so reject it on
-        // shape. An unresolved or poisoned non-saved value defers to its owning
-        // diagnostic; every other value is rejected at this boundary.
+        // shape. Poisoned arguments returned before dispatch; every remaining
+        // non-root value is rejected at this boundary.
         if crate::rules::is_saved_path(&arg.value) {
             diagnostics.push(call_argument(
                 &program.decl_ids(),
@@ -1601,20 +1630,17 @@ pub(crate) fn check_next_id(
             ));
             return MarrowType::Invalid;
         }
-        match arg_types.first() {
-            Some(MarrowType::Invalid) => return MarrowType::Invalid,
-            Some(MarrowType::Unknown) | None => return MarrowType::Unknown,
-            Some(arg_type) => {
-                diagnostics.push(call_argument(
-                    &program.decl_ids(),
-                    file,
-                    span,
-                    CallArgumentFault::NextIdRequiresRoot {
-                        found: arg_type.clone(),
-                    },
-                ));
-            }
-        }
+        let Some(arg_type) = arg_types.first() else {
+            return MarrowType::Unknown;
+        };
+        diagnostics.push(call_argument(
+            &program.decl_ids(),
+            file,
+            span,
+            CallArgumentFault::NextIdRequiresRoot {
+                found: arg_type.clone(),
+            },
+        ));
         return MarrowType::Invalid;
     };
     let Some(store) = resolve_store_by_root(program, root) else {
@@ -1652,9 +1678,6 @@ fn check_neighbor(
     let [arg] = args else {
         return MarrowType::Unknown;
     };
-    if matches!(arg_types.first(), Some(MarrowType::Invalid)) {
-        return MarrowType::Invalid;
-    }
     let Some(checked) = lower_expr_for_file(env.program, env.file, &arg.value, env.scope) else {
         if let Some(MarrowType::Identity(root)) = arg_types.first()
             && let Some(root) = env
@@ -1734,25 +1757,23 @@ fn check_neighbor(
 /// whole value, never a tuple of raw components — so it reports
 /// `check.key_requires_single_key`. A concrete non-identity argument has no
 /// identity to project, so it is rejected with `check.call_argument`; explicit
-/// dynamic and no-value arguments are rejected the same way. An unresolved or
-/// poisoned argument defers to its owning diagnostic, and an unresolved root is
-/// reported elsewhere, so neither is double-reported here.
+/// Dynamic, Recovery, and NoValue arguments are rejected the same way. Poisoned
+/// arguments return before call dispatch, and an unresolved root is reported
+/// elsewhere.
 fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
-    let root = match arg_types.first() {
-        Some(MarrowType::Identity(root)) => root,
-        Some(MarrowType::Invalid) => return MarrowType::Invalid,
-        Some(MarrowType::Unknown) | None => return MarrowType::Unknown,
-        Some(arg_type) => {
-            env.diagnostics.push(call_argument(
-                &env.program.decl_ids(),
-                env.file,
-                env.span,
-                CallArgumentFault::KeyRequiresIdentity {
-                    found: arg_type.clone(),
-                },
-            ));
-            return MarrowType::Invalid;
-        }
+    let Some(arg_type) = arg_types.first() else {
+        return MarrowType::Unknown;
+    };
+    let MarrowType::Identity(root) = arg_type else {
+        env.diagnostics.push(call_argument(
+            &env.program.decl_ids(),
+            env.file,
+            env.span,
+            CallArgumentFault::KeyRequiresIdentity {
+                found: arg_type.clone(),
+            },
+        ));
+        return MarrowType::Invalid;
     };
     let Some(root) = env
         .program

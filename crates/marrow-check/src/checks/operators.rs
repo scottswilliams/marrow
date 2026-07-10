@@ -12,9 +12,10 @@ use marrow_syntax::SourceSpan;
 use crate::infer::infer_type_with_read_scope;
 use crate::model::decls::DeclIds;
 use crate::typerules::{
-    as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric,
-    is_optional_value, is_ordered, marrow_type_name, mismatch_display, type_compatible,
-    unary_symbol, unresolved_optional, unresolved_optional_diagnostic,
+    Admission, StrictValueFault, admit_strict_value, as_primitive, binary_symbol,
+    expects_conversion, is_concrete_nonscalar, is_numeric, is_optional_value, is_ordered,
+    marrow_type_name, mismatch_display, type_compatible, unary_symbol, unresolved_optional,
+    unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_THROW_TYPE, CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedProgram, ConditionTypeFault,
@@ -55,6 +56,9 @@ pub(crate) fn check_condition(
         read_scope,
     );
     let span = condition.span();
+    if condition_type.contains_invalid() {
+        return;
+    }
     // A maybe-present value is not a `bool` until it is resolved; the one rule owns
     // it before the scalar gate so the message names the four resolution forms.
     if is_optional_value(&condition_type) {
@@ -99,9 +103,8 @@ pub(crate) fn check_condition(
     }
 }
 
-/// Flag a `throw` whose operand is known to be something other than `Error`.
-/// Unknown operands are left to the runtime backstop, while invalid operands defer
-/// to the diagnostic that poisoned them.
+/// Flag a `throw` whose operand is not an `Error`. Diagnosed poison defers to its
+/// originating diagnostic; every other non-`Error` state is rejected here.
 pub(crate) fn check_throw_type(
     names: &DeclIds<'_>,
     file: &Path,
@@ -109,15 +112,17 @@ pub(crate) fn check_throw_type(
     value_type: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    // A maybe-present value is not an `Error` until it is resolved; the one rule owns
-    // it before the type mismatch so the message names the four resolution forms.
-    if is_optional_value(value_type) {
-        diagnostics.push(unresolved_optional_diagnostic(file, span));
-        return;
-    }
-    match value_type {
-        MarrowType::Error | MarrowType::Unknown | MarrowType::Invalid => {}
-        _ => diagnostics.push(CheckDiagnostic::error(
+    match admit_strict_value(&MarrowType::Error, value_type) {
+        Admission::Accepted | Admission::Poisoned => {}
+        Admission::Rejected(StrictValueFault::Optional) => {
+            diagnostics.push(unresolved_optional_diagnostic(file, span));
+        }
+        Admission::Rejected(
+            StrictValueFault::Recovery
+            | StrictValueFault::ExplicitDynamic
+            | StrictValueFault::NoValue
+            | StrictValueFault::Mismatch,
+        ) => diagnostics.push(CheckDiagnostic::error(
             CHECK_THROW_TYPE,
             file,
             span,
@@ -141,6 +146,9 @@ pub(crate) fn check_return_type(
     value_type: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if return_type.contains_invalid() || value_type.contains_invalid() {
+        return;
+    }
     if let Some(diagnostic) = unresolved_optional(return_type, value_type, span, file) {
         diagnostics.push(diagnostic);
         return;
@@ -194,6 +202,9 @@ pub(crate) fn check_assignment(
     value: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if place.contains_invalid() || value.contains_invalid() {
+        return;
+    }
     if let Some(diagnostic) = unresolved_optional(place, value, span, file) {
         diagnostics.push(diagnostic);
         return;
@@ -250,7 +261,7 @@ pub(crate) fn check_unary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::UnaryOp;
-    if matches!(operand, MarrowType::Invalid) {
+    if operand.contains_invalid() {
         return MarrowType::Invalid;
     }
     // A maybe-present operand must be resolved before any operator; the one rule
@@ -311,7 +322,7 @@ pub(crate) fn check_binary(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     use marrow_syntax::BinaryOp;
-    if matches!(left, MarrowType::Invalid) || matches!(right, MarrowType::Invalid) {
+    if left.contains_invalid() || right.contains_invalid() {
         return MarrowType::Invalid;
     }
     // A maybe-present operand must be resolved before any operator — equality,
@@ -451,7 +462,7 @@ pub(crate) fn check_binary(
 
 /// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`
 /// once a verdict is reached and `None` to defer to the scalar path. A rejected
-/// pairing still yields `bool`, the natural result type of a comparison.
+/// pairing yields poison so an enclosing boundary does not diagnose the same fault.
 fn check_equality(
     names: &DeclIds<'_>,
     op: marrow_syntax::BinaryOp,
@@ -471,7 +482,7 @@ fn check_equality(
                 binary_symbol(op),
             ),
         ));
-        Some(MarrowType::Primitive(ScalarType::Bool))
+        Some(MarrowType::Invalid)
     };
     match (left, right) {
         (MarrowType::Invalid, _) | (_, MarrowType::Invalid) => None,
@@ -551,7 +562,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
         file,
         diagnostics,
     } = check;
-    if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
+    if left_type.contains_invalid() || right_type.contains_invalid() {
         return MarrowType::Invalid;
     }
     // The left's present-arm type, or `None` for the empty `absent` (which carries no

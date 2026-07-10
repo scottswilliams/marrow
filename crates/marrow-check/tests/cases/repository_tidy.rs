@@ -95,3 +95,252 @@ fn stray_root_scratch_fixtures_are_absent() {
         "stray scratch fixtures must stay deleted, found: {found:#?}"
     );
 }
+
+#[test]
+fn diagnostic_error_slice_scans_have_one_checkpoint_owner() {
+    let root = repo_root();
+    let source_root = root.join("crates/marrow-check/src");
+    let owner = Path::new("crates/marrow-check/src/checks/diagnostics.rs");
+    let mut files = Vec::new();
+    tracked_files(&source_root, &root, &mut files);
+
+    let mut violations = Vec::new();
+    for relative in files {
+        if relative == owner || relative.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(root.join(&relative)).expect("read Rust source");
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains("Severity::Error") {
+                continue;
+            }
+            let start = index.saturating_sub(4);
+            if lines[start..=index]
+                .iter()
+                .any(|candidate| candidate.contains("diagnostics["))
+            {
+                violations.push(format!("{}:{}", relative.display(), index + 1));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "direct diagnostic severity-slice scans must use ErrorCheckpoint: {violations:#?}",
+    );
+}
+
+fn item_between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    let start = source
+        .find(start)
+        .unwrap_or_else(|| panic!("missing `{start}`"));
+    let tail = &source[start..];
+    let end = tail.find(end).unwrap_or_else(|| panic!("missing `{end}`"));
+    &tail[..end]
+}
+
+#[test]
+fn migrated_admission_boundaries_have_no_legacy_status_or_raw_state_catch_all() {
+    let root = repo_root();
+    let infer =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/infer.rs")).expect("read infer");
+    let calls = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/calls.rs"))
+        .expect("read calls");
+    let saved = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/saved_keys.rs"))
+        .expect("read saved keys");
+    let operators =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/operators.rs"))
+            .expect("read operators");
+    let enums =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/enums.rs")).expect("read enums");
+
+    for legacy in ["SavedKeyArgStatus", "LocalKeyStatus"] {
+        assert!(
+            !infer.contains(legacy) && !saved.contains(legacy),
+            "legacy boundary status `{legacy}` must stay deleted",
+        );
+    }
+
+    for (source, start, end) in [
+        (
+            &calls,
+            "fn check_assert_equal_args(",
+            "fn check_unknown_std_operation(",
+        ),
+        (
+            &calls,
+            "fn check_identity_constructor(",
+            "pub(crate) fn check_next_id(",
+        ),
+        (&calls, "pub(crate) fn check_next_id(", "fn check_neighbor("),
+        (&calls, "fn check_key(", "fn check_append("),
+        (
+            &operators,
+            "pub(crate) fn check_throw_type(",
+            "pub(crate) fn check_return_type(",
+        ),
+        (
+            &saved,
+            "pub(crate) fn check_saved_key_args(",
+            "fn check_layer_key_args(",
+        ),
+        (
+            &infer,
+            "fn local_collection_access_type(",
+            "fn key_arg_span(",
+        ),
+        (
+            &enums,
+            "pub(crate) fn check_is(",
+            "fn enum_visible_in_program(",
+        ),
+    ] {
+        let item = item_between(source, start, end);
+        let raw_catch_all = [
+            "MarrowType::Dynamic",
+            "MarrowType::Invalid",
+            "MarrowType::NoValue",
+            "MarrowType::Unknown",
+        ]
+        .iter()
+        .all(|variant| item.contains(variant));
+        assert!(
+            !raw_catch_all,
+            "migrated boundary `{start}` must dispatch through typed admission",
+        );
+    }
+
+    for (path, source) in [("infer.rs", &infer), ("checks/saved_keys.rs", &saved)] {
+        let lines: Vec<&str> = source.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
+            if !line.contains("!= Some(") {
+                continue;
+            }
+            let start = index.saturating_sub(2);
+            assert!(
+                !lines[start..=index]
+                    .iter()
+                    .any(|candidate| candidate.contains("type_compatible")),
+                "{path}:{} uses raw compatibility as boundary policy",
+                index + 1,
+            );
+        }
+    }
+}
+
+#[test]
+fn recursive_poison_preflights_cover_dependent_boundary_families() {
+    let root = repo_root();
+    let infer =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/infer.rs")).expect("read infer");
+    let calls = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/calls.rs"))
+        .expect("read calls");
+    let saved = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/saved_keys.rs"))
+        .expect("read saved keys");
+    let operators =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/operators.rs"))
+            .expect("read operators");
+    let ranges = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/ranges.rs"))
+        .expect("read ranges");
+    let statements =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/statements.rs"))
+            .expect("read statements");
+    let enums =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/enums.rs")).expect("read enums");
+
+    for (source, start, end) in [
+        (
+            &operators,
+            "pub(crate) fn check_condition(",
+            "pub(crate) fn check_throw_type(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_return_type(",
+            "pub(crate) fn check_assignment(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_assignment(",
+            "pub(crate) fn check_unary(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_unary(",
+            "pub(crate) fn check_binary(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_binary(",
+            "fn check_equality(",
+        ),
+        (
+            &operators,
+            "pub(crate) fn check_coalesce(",
+            "fn coalesce_base(",
+        ),
+        (&infer, "fn infer_field_access(", "fn reject_saved_access("),
+        (
+            &infer,
+            "fn local_collection_access_type(",
+            "fn key_arg_span(",
+        ),
+        (
+            &statements,
+            "fn require_optional_if_const_subject(",
+            "fn check_while(",
+        ),
+        (&statements, "fn check_for(", "fn check_try("),
+        (
+            &enums,
+            "fn report_non_enum_match(",
+            "fn check_match_coverage(",
+        ),
+    ] {
+        assert!(
+            item_between(source, start, end).contains("contains_invalid"),
+            "dependent boundary `{start}` must preflight recursive poison",
+        );
+    }
+
+    let call = item_between(&calls, "pub(crate) fn check_call(", "fn dispatch_call(");
+    let call_preflight = call
+        .find("arg_types.iter().any(MarrowType::contains_invalid)")
+        .expect("call recursive poison preflight");
+    let call_dispatch = call.find("dispatch_call").expect("call dispatch");
+    assert!(
+        call_preflight < call_dispatch,
+        "recursive call poison must return before dispatch",
+    );
+    assert!(
+        !calls.contains("Some(MarrowType::Invalid)"),
+        "call-specific top-level poison guards must not bypass the recursive preflight",
+    );
+
+    let saved = item_between(
+        &saved,
+        "pub(crate) fn check_saved_key_args(",
+        "fn check_layer_key_args(",
+    );
+    let saved_preflight = saved
+        .find("check.arg_types.iter().any(MarrowType::contains_invalid)")
+        .expect("saved-key recursive poison preflight");
+    let saved_lowering = saved
+        .find("lower_expr_for_file")
+        .expect("saved-key target lowering");
+    assert!(
+        saved_preflight < saved_lowering,
+        "saved-key poison must precede name and shape checks",
+    );
+
+    let range = item_between(
+        &ranges,
+        "pub(crate) fn check_range_header(",
+        "fn check_temporal_step_sign(",
+    );
+    assert!(
+        range.contains("TypeDisposition::Poisoned") && range.contains("contains_invalid"),
+        "range endpoints and step must preflight recursive poison",
+    );
+}

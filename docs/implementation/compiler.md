@@ -48,7 +48,11 @@ The main driver is in `driver.rs`; focused passes live under `checks/`,
 successful calls with no return value (`NoValue`), unresolved recovery
 (`Unknown`), and diagnosed poison (`Invalid`). Source type hover facts are
 available for concrete types and explicit dynamic values. No fact is produced
-for no-value, unresolved, or invalid states.
+for no-value, unresolved, or invalid states. Poison inspection is recursive
+through sequences, optionals, and local keyed-collection keys and values. Strict
+value, key, predicate, range, and collection boundaries classify those states
+before consulting structural type compatibility, so a dependent expression
+propagates diagnosed poison without adding another diagnostic.
 
 ## Current durable identity
 

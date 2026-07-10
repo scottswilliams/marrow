@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use marrow_schema::{ScalarType, StoreSchema};
-use marrow_syntax::{Argument, Severity, SourceSpan};
+use marrow_syntax::{Argument, SourceSpan};
 
 use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
@@ -15,8 +15,8 @@ use crate::executable::{
 };
 use crate::model::decls::DeclIds;
 use crate::typerules::{
-    is_optional_value, is_ordered, marrow_type_name, type_compatible,
-    unresolved_optional_diagnostic,
+    Admission, KeyAdmission, KeyFault, KeyPolicy, RangeTypeAggregate, admit_key, is_ordered,
+    marrow_type_name, merge_key_admission, unresolved_optional_diagnostic,
 };
 use crate::{
     CallArgumentFault, CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam,
@@ -211,74 +211,68 @@ pub(crate) struct SavedKeyArgCheck<'a, 'd> {
     pub(crate) callee: &'a marrow_syntax::Expression,
     pub(crate) args: &'a [Argument],
     pub(crate) arg_types: &'a [MarrowType],
+    pub(crate) saved_range_types: &'a [Option<RangeTypeAggregate>],
     pub(crate) scope: &'a [HashMap<String, MarrowType>],
     pub(crate) span: SourceSpan,
     pub(crate) file: &'a Path,
     pub(crate) diagnostics: &'d mut Vec<CheckDiagnostic>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SavedKeyArgStatus {
-    Accepted,
-    Rejected,
+struct KeyDiagnostics<'a, 'd> {
+    span: SourceSpan,
+    file: &'a Path,
+    diagnostics: &'d mut Vec<CheckDiagnostic>,
 }
 
-/// Check the saved-key boundary and report whether it emitted an error. Only error
-/// severity rejects the resulting read; future key warnings remain non-poisoning.
-pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) -> SavedKeyArgStatus {
-    let diagnostics_before = check.diagnostics.len();
+/// Check the saved-key boundary and return its typed aggregate admission. Poison
+/// defers to the originating diagnostic, while a rejected argument invalidates the
+/// resulting read independently of diagnostic rendering.
+pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) -> KeyAdmission {
+    if check.arg_types.iter().any(MarrowType::contains_invalid) {
+        return Admission::Poisoned;
+    }
     let Some(callee) = lower_expr_for_file(check.program, check.file, check.callee, check.scope)
     else {
-        return SavedKeyArgStatus::Accepted;
+        return Admission::Accepted;
     };
     let Some(target) = SavedPlaceResolver::new(check.program).saved_key_params(&callee) else {
-        return SavedKeyArgStatus::Accepted;
+        return Admission::Accepted;
     };
     let names = check.program.decl_ids();
-    check_saved_key_argument_names(&names, check.args, check.file, check.diagnostics);
-    match target {
-        SavedKeyParamTarget::Root(place) => {
-            check_root_args_against(
-                &names,
-                place,
-                check.args,
-                check.arg_types,
-                check.span,
-                check.file,
-                check.diagnostics,
-            );
-        }
-        SavedKeyParamTarget::Index(place) => {
-            check_index_args_against(
-                check.program,
-                place,
-                check.args,
-                check.arg_types,
-                check.span,
-                check.file,
-                check.diagnostics,
-            );
-        }
-        SavedKeyParamTarget::Layer(layer) => {
-            check_layer_key_args(
-                &names,
-                &layer.key_params,
-                check.args,
-                check.arg_types,
-                check.span,
-                check.file,
-                check.diagnostics,
-            );
-        }
-    }
-    if check.diagnostics[diagnostics_before..]
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-    {
-        SavedKeyArgStatus::Rejected
-    } else {
-        SavedKeyArgStatus::Accepted
-    }
+    let names_admission =
+        check_saved_key_argument_names(&names, check.args, check.file, check.diagnostics);
+    let mut diagnostic_context = KeyDiagnostics {
+        span: check.span,
+        file: check.file,
+        diagnostics: check.diagnostics,
+    };
+    let key_admission = match target {
+        SavedKeyParamTarget::Root(place) => check_root_args_against(
+            &names,
+            place,
+            check.args,
+            check.arg_types,
+            check.saved_range_types,
+            &mut diagnostic_context,
+        ),
+        SavedKeyParamTarget::Index(place) => check_index_args_against(
+            check.program,
+            place,
+            check.args,
+            check.arg_types,
+            check.saved_range_types,
+            &mut diagnostic_context,
+        ),
+        SavedKeyParamTarget::Layer(layer) => check_layer_key_args(
+            &names,
+            &layer.key_params,
+            check.args,
+            check.arg_types,
+            check.saved_range_types,
+            &mut diagnostic_context,
+        ),
+    };
+    merge_key_admission(names_admission, key_admission)
 }
 
 /// Check the key arguments of a keyed layer. A composite layer is a chain of
@@ -292,31 +286,40 @@ fn check_layer_key_args(
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+    saved_range_types: &[Option<RangeTypeAggregate>],
+    diagnostic_context: &mut KeyDiagnostics<'_, '_>,
+) -> KeyAdmission {
+    if saved_key_params_contain_invalid(keys) {
+        return Admission::Poisoned;
+    }
     if arg_types.len() > keys.len() {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
+        diagnostic_context.diagnostics.push(key_type_diagnostic(
+            diagnostic_context.file,
+            diagnostic_context.span,
             format!(
                 "this keyed access expects at most {} key argument(s), but {} were given",
                 keys.len(),
                 arg_types.len(),
             ),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Arity);
     }
     if range_arg_position(args).is_some() && args.len() != keys.len() {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
+        diagnostic_context.diagnostics.push(key_type_diagnostic(
+            diagnostic_context.file,
+            diagnostic_context.span,
             "a ranged key argument must leave no further key columns".to_string(),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
-    check_supplied_layer_keys(names, keys, args, arg_types, span, file, diagnostics);
+    check_supplied_layer_keys(
+        names,
+        keys,
+        args,
+        arg_types,
+        saved_range_types,
+        diagnostic_context,
+    )
 }
 
 /// Match each supplied key argument against the column it fills. A range argument,
@@ -328,55 +331,74 @@ fn check_supplied_layer_keys(
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+    saved_range_types: &[Option<RangeTypeAggregate>],
+    diagnostic_context: &mut KeyDiagnostics<'_, '_>,
+) -> KeyAdmission {
     let range_arg = range_arg_position(args);
     if let Some(range_arg) = range_arg
         && range_arg + 1 != args.len()
     {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
+        diagnostic_context.diagnostics.push(key_type_diagnostic(
+            diagnostic_context.file,
+            diagnostic_context.span,
             "a key range argument must be the final key argument".to_string(),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
+    let mut admission = Admission::Accepted;
     for (position, (key, arg_type)) in keys.iter().zip(arg_types).enumerate() {
         let expected = SavedPlaceResolver::saved_key_param_type(key);
         if range_arg == Some(position) {
-            check_range_key_arg(
+            let current = check_range_key_arg(
                 names,
                 RangeKeyArg {
                     expected: &expected,
                     actual: arg_type,
+                    types: saved_range_types.get(position).and_then(Option::as_ref),
                     component: format!("key `{}`", key.name),
                     arg: &args[position].value,
                     allow_enum: false,
                 },
-                span,
-                file,
-                diagnostics,
+                diagnostic_context.span,
+                diagnostic_context.file,
+                diagnostic_context.diagnostics,
             );
+            admission = merge_key_admission(admission, current);
             continue;
         }
-        if reject_optional_key_arg(arg_type, span, file, diagnostics) {
-            continue;
-        }
-        if !saved_key_arg_matches(&expected, arg_type) {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
+        let current = admit_key(KeyPolicy::Saved, &expected, arg_type);
+        match &current {
+            Admission::Accepted | Admission::Poisoned => {}
+            Admission::Rejected(KeyFault::Optional) => {
+                diagnostic_context
+                    .diagnostics
+                    .push(unresolved_optional_diagnostic(
+                        diagnostic_context.file,
+                        diagnostic_context.span,
+                    ));
+            }
+            Admission::Rejected(
+                KeyFault::Recovery
+                | KeyFault::ExplicitDynamic
+                | KeyFault::NoValue
+                | KeyFault::Mismatch,
+            ) => diagnostic_context.diagnostics.push(key_type_diagnostic(
+                diagnostic_context.file,
+                diagnostic_context.span,
                 format!(
                     "key `{}` expects `{}`, but this value is `{}`",
                     key.name,
                     marrow_type_name(names, &expected),
                     marrow_type_name(names, arg_type),
                 ),
-            ));
+            )),
+            Admission::Rejected(KeyFault::Arity | KeyFault::Named | KeyFault::Range) => {
+                unreachable!("scalar key admission does not produce shape faults")
+            }
         }
+        admission = merge_key_admission(admission, current);
     }
+    admission
 }
 
 fn check_root_args_against(
@@ -384,30 +406,31 @@ fn check_root_args_against(
     place: &CheckedSavedPlace,
     args: &[Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+    saved_range_types: &[Option<RangeTypeAggregate>],
+    diagnostic_context: &mut KeyDiagnostics<'_, '_>,
+) -> KeyAdmission {
+    if saved_key_params_contain_invalid(&place.identity_keys) {
+        return Admission::Poisoned;
+    }
     if range_arg_position(args).is_some() {
-        check_checked_key_args(
+        return check_checked_key_args(
             names,
             &place.identity_keys,
             args,
             arg_types,
-            span,
-            file,
-            diagnostics,
+            saved_range_types,
+            diagnostic_context,
         );
-        return;
     }
     if let [MarrowType::Identity(_)] = arg_types {
         let expected = names
             .root_id(&place.root)
             .map_or(MarrowType::Unknown, MarrowType::Identity);
-        if type_compatible(&expected, &arg_types[0]) == Some(false) {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
+        let admission = admit_key(KeyPolicy::Saved, &expected, &arg_types[0]);
+        if let Admission::Rejected(_) = admission {
+            diagnostic_context.diagnostics.push(key_type_diagnostic(
+                diagnostic_context.file,
+                diagnostic_context.span,
                 format!(
                     "`^{}` is addressed by `{}`, but this value is `{}`",
                     place.root,
@@ -416,17 +439,16 @@ fn check_root_args_against(
                 ),
             ));
         }
-        return;
+        return admission;
     }
     check_checked_key_args(
         names,
         &place.identity_keys,
         args,
         arg_types,
-        span,
-        file,
-        diagnostics,
-    );
+        saved_range_types,
+        diagnostic_context,
+    )
 }
 
 pub(crate) fn saved_root_args_address_record(
@@ -442,8 +464,14 @@ pub(crate) fn saved_root_args_address_record(
         return false;
     }
     if let [MarrowType::Identity(_)] = arg_types {
-        return type_compatible(&identity_type_for_store(program, store), &arg_types[0])
-            != Some(false);
+        return matches!(
+            admit_key(
+                KeyPolicy::Saved,
+                &identity_type_for_store(program, store),
+                &arg_types[0],
+            ),
+            Admission::Accepted,
+        );
     }
     if args.len() != store.identity_keys.len() {
         return false;
@@ -454,7 +482,10 @@ pub(crate) fn saved_root_args_address_record(
         .zip(arg_types)
         .all(|(key, arg_type)| {
             let expected = MarrowType::from_resolved(key.ty.clone());
-            saved_key_arg_matches(&expected, arg_type)
+            matches!(
+                admit_key(KeyPolicy::Saved, &expected, arg_type),
+                Admission::Accepted,
+            )
         })
 }
 
@@ -463,9 +494,11 @@ fn check_saved_key_argument_names(
     args: &[Argument],
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> KeyAdmission {
+    let mut admission = Admission::Accepted;
     for arg in args {
         if arg.name.is_some() {
+            admission = merge_key_admission(admission, Admission::Rejected(KeyFault::Named));
             diagnostics.push(call_argument(
                 names,
                 file,
@@ -474,6 +507,7 @@ fn check_saved_key_argument_names(
             ));
         }
     }
+    admission
 }
 
 fn check_index_args_against(
@@ -481,19 +515,27 @@ fn check_index_args_against(
     place: &CheckedSavedPlace,
     args: &[Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+    saved_range_types: &[Option<RangeTypeAggregate>],
+    diagnostic_context: &mut KeyDiagnostics<'_, '_>,
+) -> KeyAdmission {
     let Some((name, unique, expected_len, keys)) = checked_index_target(place) else {
-        return;
+        return Admission::Accepted;
     };
+    let names = program.decl_ids();
+    let resolver = SavedPlaceResolver::new(program);
+    if keys
+        .iter()
+        .map(|component| resolver.saved_index_key_type(component))
+        .any(|expected| expected.contains_invalid())
+    {
+        return Admission::Poisoned;
+    }
     let range_arg = range_arg_position(args);
     if unique {
         if expected_len != arg_types.len() {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
+            diagnostic_context.diagnostics.push(key_type_diagnostic(
+                diagnostic_context.file,
+                diagnostic_context.span,
                 format!(
                     "unique index `{}` expects {} key argument(s), but {} were given",
                     name,
@@ -501,20 +543,20 @@ fn check_index_args_against(
                     arg_types.len(),
                 ),
             ));
-            return;
+            return Admission::Rejected(KeyFault::Arity);
         }
         if range_arg.is_some() {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
+            diagnostic_context.diagnostics.push(key_type_diagnostic(
+                diagnostic_context.file,
+                diagnostic_context.span,
                 format!("unique index `{}` does not accept range arguments", name),
             ));
-            return;
+            return Admission::Rejected(KeyFault::Range);
         }
     } else if arg_types.len() > expected_len {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
+        diagnostic_context.diagnostics.push(key_type_diagnostic(
+            diagnostic_context.file,
+            diagnostic_context.span,
             format!(
                 "index `{}` accepts at most {} key argument(s), but {} were given",
                 name,
@@ -522,67 +564,85 @@ fn check_index_args_against(
                 arg_types.len(),
             ),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Arity);
     }
 
     if let Some(index) = range_arg
         && index + 1 != args.len()
     {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
+        diagnostic_context.diagnostics.push(key_type_diagnostic(
+            diagnostic_context.file,
+            diagnostic_context.span,
             "an index range argument must be the final key argument".to_string(),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
     if let Some(index) = range_arg {
         let identity_start = expected_len.saturating_sub(place.identity_keys.len());
         if index + 1 < identity_start {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
+            diagnostic_context.diagnostics.push(key_type_diagnostic(
+                diagnostic_context.file,
+                diagnostic_context.span,
                 "an index range argument must leave only identity components after it".to_string(),
             ));
-            return;
+            return Admission::Rejected(KeyFault::Range);
         }
     }
 
-    let names = program.decl_ids();
-    let resolver = SavedPlaceResolver::new(program);
+    let mut admission = Admission::Accepted;
     for (position, (component, arg_type)) in keys.iter().zip(arg_types).enumerate() {
         let expected = resolver.saved_index_key_type(component);
         if range_arg == Some(position) {
-            check_range_key_arg(
+            let current = check_range_key_arg(
                 &names,
                 RangeKeyArg {
                     expected: &expected,
                     actual: arg_type,
+                    types: saved_range_types.get(position).and_then(Option::as_ref),
                     component: format!("index component `{}`", component.name),
                     arg: &args[position].value,
                     allow_enum: true,
                 },
-                span,
-                file,
-                diagnostics,
+                diagnostic_context.span,
+                diagnostic_context.file,
+                diagnostic_context.diagnostics,
             );
+            admission = merge_key_admission(admission, current);
             continue;
         }
-        if reject_optional_key_arg(arg_type, span, file, diagnostics) {
-            continue;
-        }
-        if !saved_key_arg_matches(&expected, arg_type) {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
+        let current = admit_key(KeyPolicy::Saved, &expected, arg_type);
+        match &current {
+            Admission::Accepted | Admission::Poisoned => {}
+            Admission::Rejected(KeyFault::Optional) => {
+                diagnostic_context
+                    .diagnostics
+                    .push(unresolved_optional_diagnostic(
+                        diagnostic_context.file,
+                        diagnostic_context.span,
+                    ));
+            }
+            Admission::Rejected(
+                KeyFault::Recovery
+                | KeyFault::ExplicitDynamic
+                | KeyFault::NoValue
+                | KeyFault::Mismatch,
+            ) => diagnostic_context.diagnostics.push(key_type_diagnostic(
+                diagnostic_context.file,
+                diagnostic_context.span,
                 format!(
                     "index component `{}` expects `{}`, but this value is `{}`",
                     component.name,
                     marrow_type_name(&names, &expected),
                     marrow_type_name(&names, arg_type),
                 ),
-            ));
+            )),
+            Admission::Rejected(KeyFault::Arity | KeyFault::Named | KeyFault::Range) => {
+                unreachable!("scalar key admission does not produce shape faults")
+            }
         }
+        admission = merge_key_admission(admission, current);
     }
+    admission
 }
 
 fn checked_index_target(
@@ -609,28 +669,44 @@ fn check_checked_key_args(
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+    saved_range_types: &[Option<RangeTypeAggregate>],
+    diagnostic_context: &mut KeyDiagnostics<'_, '_>,
+) -> KeyAdmission {
+    if saved_key_params_contain_invalid(keys) {
+        return Admission::Poisoned;
+    }
     if arg_types.len() != keys.len() {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
+        diagnostic_context.diagnostics.push(key_type_diagnostic(
+            diagnostic_context.file,
+            diagnostic_context.span,
             format!(
                 "this keyed access expects {} key argument(s), but {} were given",
                 keys.len(),
                 arg_types.len(),
             ),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Arity);
     }
-    check_supplied_layer_keys(names, keys, args, arg_types, span, file, diagnostics);
+    check_supplied_layer_keys(
+        names,
+        keys,
+        args,
+        arg_types,
+        saved_range_types,
+        diagnostic_context,
+    )
+}
+
+fn saved_key_params_contain_invalid(keys: &[CheckedSavedKeyParam]) -> bool {
+    keys.iter()
+        .map(SavedPlaceResolver::saved_key_param_type)
+        .any(|expected| expected.contains_invalid())
 }
 
 struct RangeKeyArg<'a> {
     expected: &'a MarrowType,
     actual: &'a MarrowType,
+    types: Option<&'a RangeTypeAggregate>,
     component: String,
     arg: &'a marrow_syntax::Expression,
     allow_enum: bool,
@@ -642,17 +718,49 @@ fn check_range_key_arg(
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> KeyAdmission {
     let Some(range) = marrow_syntax::range_expr(check.arg) else {
-        return;
+        return Admission::Accepted;
     };
+    let admission = check.types.map_or_else(
+        || admit_key(KeyPolicy::Saved, check.expected, check.actual),
+        |types| types.admit_saved(check.expected),
+    );
+    if matches!(admission, Admission::Poisoned) {
+        return admission;
+    }
+    match &admission {
+        Admission::Accepted | Admission::Poisoned => {}
+        Admission::Rejected(KeyFault::Optional) => {
+            diagnostics.push(unresolved_optional_diagnostic(file, span));
+            return admission;
+        }
+        Admission::Rejected(
+            KeyFault::Recovery | KeyFault::ExplicitDynamic | KeyFault::NoValue | KeyFault::Mismatch,
+        ) => {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "{} expects `{}`, but this range bound is `{}`",
+                    check.component,
+                    marrow_type_name(names, check.expected),
+                    marrow_type_name(names, check.actual),
+                ),
+            ));
+            return admission;
+        }
+        Admission::Rejected(KeyFault::Arity | KeyFault::Named | KeyFault::Range) => {
+            unreachable!("range component admission does not produce shape faults")
+        }
+    }
     if range.start.is_none() && range.end.is_none() {
         diagnostics.push(key_type_diagnostic(
             file,
             span,
             "a bare range is not a valid key argument".to_string(),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
     if range.inclusive_end && range.end.is_none() {
         diagnostics.push(key_type_diagnostic(
@@ -660,7 +768,7 @@ fn check_range_key_arg(
             span,
             "an inclusive range key argument must have an upper bound".to_string(),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
     if range.step.is_some() {
         diagnostics.push(key_type_diagnostic(
@@ -668,7 +776,7 @@ fn check_range_key_arg(
             span,
             "key range arguments do not accept `by` steps".to_string(),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
     if !ordered_range_component(check.expected, check.allow_enum) {
         diagnostics.push(key_type_diagnostic(
@@ -680,20 +788,9 @@ fn check_range_key_arg(
                 marrow_type_name(names, check.expected),
             ),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Range);
     }
-    if !saved_key_arg_matches(check.expected, check.actual) {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
-            format!(
-                "{} expects `{}`, but this range bound is `{}`",
-                check.component,
-                marrow_type_name(names, check.expected),
-                marrow_type_name(names, check.actual),
-            ),
-        ));
-    }
+    admission
 }
 
 /// Whether a key or index component can carry a range bound. Saved keys are
@@ -727,7 +824,15 @@ pub(crate) fn check_keys_against(
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> KeyAdmission {
+    if keys
+        .iter()
+        .map(|key| MarrowType::from_resolved(key.ty.clone()))
+        .any(|expected| expected.contains_invalid())
+        || arg_types.iter().any(MarrowType::contains_invalid)
+    {
+        return Admission::Poisoned;
+    }
     if keys.len() != arg_types.len() {
         diagnostics.push(key_type_diagnostic(
             file,
@@ -738,15 +843,23 @@ pub(crate) fn check_keys_against(
                 arg_types.len(),
             ),
         ));
-        return;
+        return Admission::Rejected(KeyFault::Arity);
     }
+    let mut admission = Admission::Accepted;
     for (key, arg_type) in keys.iter().zip(arg_types) {
         let expected = MarrowType::from_resolved(key.ty.clone());
-        if reject_optional_key_arg(arg_type, span, file, diagnostics) {
-            continue;
-        }
-        if !saved_key_arg_matches(&expected, arg_type) {
-            diagnostics.push(key_type_diagnostic(
+        let current = admit_key(KeyPolicy::Saved, &expected, arg_type);
+        match &current {
+            Admission::Accepted | Admission::Poisoned => {}
+            Admission::Rejected(KeyFault::Optional) => {
+                diagnostics.push(unresolved_optional_diagnostic(file, span));
+            }
+            Admission::Rejected(
+                KeyFault::Recovery
+                | KeyFault::ExplicitDynamic
+                | KeyFault::NoValue
+                | KeyFault::Mismatch,
+            ) => diagnostics.push(key_type_diagnostic(
                 file,
                 span,
                 format!(
@@ -755,33 +868,12 @@ pub(crate) fn check_keys_against(
                     marrow_type_name(names, &expected),
                     marrow_type_name(names, arg_type),
                 ),
-            ));
+            )),
+            Admission::Rejected(KeyFault::Arity | KeyFault::Named | KeyFault::Range) => {
+                unreachable!("scalar key admission does not produce shape faults")
+            }
         }
+        admission = merge_key_admission(admission, current);
     }
-}
-
-fn saved_key_arg_matches(expected: &MarrowType, actual: &MarrowType) -> bool {
-    match actual {
-        MarrowType::Invalid => return true,
-        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => return false,
-        _ => {}
-    }
-    type_compatible(expected, actual) != Some(false)
-}
-
-/// A key must be present to address a node, so a maybe-present (`T?`) key argument is the
-/// one rule. Routing it through the shared helper before the generic key-type mismatch
-/// names the four resolution forms, consistent with the value slot sites. Returns whether
-/// the argument was rejected as optional.
-fn reject_optional_key_arg(
-    arg_type: &MarrowType,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) -> bool {
-    if is_optional_value(arg_type) {
-        diagnostics.push(unresolved_optional_diagnostic(file, span));
-        return true;
-    }
-    false
+    admission
 }

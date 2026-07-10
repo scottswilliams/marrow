@@ -9,11 +9,12 @@ use marrow_schema::{MemberPathResolution, ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::checks::{ConstIntScope, check_block_types};
+use crate::checks::{ConstIntScope, ErrorCheckpoint, check_block_types};
 use crate::diagnostics::{AmbiguousMemberForm, IsTypeFault, MatchScrutinee};
 use crate::infer::infer_type_with_read_scope;
 use crate::model::decls::DeclIds;
 use crate::resolve::resolve_store_by_root;
+use crate::typerules::{TypeDisposition, disposition};
 use crate::{
     CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram, Def,
     DefItem, DiagnosticAnchor, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution,
@@ -352,9 +353,12 @@ fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchAr
 }
 
 fn report_non_enum_match(env: &mut MatchEnv<'_>, scrutinee_type: &MarrowType, span: SourceSpan) {
+    if scrutinee_type.contains_invalid() {
+        return;
+    }
     if !matches!(
         scrutinee_type,
-        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
     ) {
         let names = env.program.decl_ids();
         env.diagnostics.push(CheckDiagnostic::new(
@@ -860,6 +864,36 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         file,
         diagnostics,
     } = input;
+    if left_type.contains_invalid() {
+        return MarrowType::Invalid;
+    }
+    let checkpoint = ErrorCheckpoint::new(diagnostics);
+    let result = check_is_unpoisoned(IsCheck {
+        program,
+        left_type,
+        right,
+        aliases,
+        span,
+        file,
+        diagnostics: &mut *diagnostics,
+    });
+    if checkpoint.has_new_error(diagnostics) {
+        MarrowType::Invalid
+    } else {
+        result
+    }
+}
+
+fn check_is_unpoisoned(input: IsCheck<'_>) -> MarrowType {
+    let IsCheck {
+        program,
+        left_type,
+        right,
+        aliases,
+        span,
+        file,
+        diagnostics,
+    } = input;
     let bool_type = MarrowType::Primitive(ScalarType::Bool);
     let names = program.decl_ids();
     let left_enum = match left_type {
@@ -869,18 +903,21 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
     let Some((left_module, left_name)) = left_enum else {
         // Dynamic, non-value, unresolved, and already-errored operands defer to
         // their owning gates instead of cascading a second enum error.
-        if !matches!(
-            left_type,
-            MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
-        ) {
-            diagnostics.push(CheckDiagnostic::new(
+        match disposition(left_type) {
+            TypeDisposition::Recovery
+            | TypeDisposition::ExplicitDynamic
+            | TypeDisposition::NoValue => {}
+            TypeDisposition::Concrete => diagnostics.push(CheckDiagnostic::new(
                 Code::CheckIsRequiresEnum,
                 DiagnosticAnchor::at(file, span),
                 DiagnosticPayload::Enum(EnumDiagnostic::IsRequiresEnum {
                     found: left_type.clone(),
                 }),
                 &names,
-            ));
+            )),
+            TypeDisposition::Poisoned => {
+                unreachable!("recursive poison is handled before enum predicate checking")
+            }
         }
         return bool_type;
     };

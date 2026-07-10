@@ -124,3 +124,18 @@ pub fn run(value: MissingType): MissingType
     assert_eq!(span_text(source, &return_type), "MissingType");
     assert_eq!(return_type.text, "MissingType");
 }
+
+#[test]
+fn nested_invalid_and_dynamic_annotations_preserve_cursor_facts() {
+    let source = "\
+module a
+
+pub fn run(invalid: sequence[Missing], dynamic: sequence[unknown])
+    return
+";
+    let (snapshot, file) = analyze("source-type-annotation-cursor-nested-states", source);
+
+    for expected in ["sequence[Missing]", "sequence[unknown]"] {
+        assert_type_fact_at(source, &snapshot, &file, offset(source, expected), expected);
+    }
+}

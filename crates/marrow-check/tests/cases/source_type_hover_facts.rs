@@ -120,6 +120,30 @@ pub fn passthrough(input: unknown): unknown
 }
 
 #[test]
+fn nested_explicit_dynamic_preserves_its_structural_hover_type() {
+    let source = "\
+module a
+
+pub fn passthrough(values: sequence[unknown]): sequence[unknown]
+    return values
+";
+    let (snapshot, index, file) = analyze("source-type-hover-nested-dynamic", source);
+    let expected = MarrowType::Sequence(Box::new(MarrowType::Dynamic));
+
+    assert_eq!(
+        type_at_needle(&snapshot, &file, source, "values\n"),
+        Some(expected.clone()),
+    );
+    assert_eq!(
+        fact_at(&snapshot, &index, &file, source, "values\n"),
+        Some(SourceTypeHoverFact {
+            ty: expected,
+            docs: Vec::new(),
+        }),
+    );
+}
+
+#[test]
 fn unresolved_name_has_no_source_type_hover_fact() {
     let source = "\
 module a

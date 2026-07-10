@@ -202,5 +202,7 @@ mod total_parser_soundness;
 mod type_leaf_identity_architecture;
 #[path = "cases/type_leaf_rendering.rs"]
 mod type_leaf_rendering;
+#[path = "cases/typed_admission.rs"]
+mod typed_admission;
 #[path = "cases/v01_fixtures.rs"]
 mod v01_fixtures;

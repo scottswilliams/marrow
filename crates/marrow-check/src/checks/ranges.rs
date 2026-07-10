@@ -12,7 +12,9 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::infer::infer_only;
-use crate::typerules::{as_primitive, is_steppable, marrow_type_name};
+use crate::typerules::{
+    TypeDisposition, as_primitive, disposition, is_steppable, marrow_type_name,
+};
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, MarrowType};
 
@@ -120,6 +122,9 @@ pub(crate) fn check_range_header(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let Some((left, right)) = range_endpoints(iterable) else {
+        if infer_only(program, iterable, scope, aliases, file).contains_invalid() {
+            return;
+        }
         // A step is only meaningful on a range; reject `by` on any other iterable.
         if let Some(step) = step {
             diagnostics.push(range_diagnostic(
@@ -135,11 +140,17 @@ pub(crate) fn check_range_header(
     // A genuinely untyped or already-poisoned endpoint has faulted elsewhere;
     // defer rather than double-report against a type nothing can trust.
     if matches!(
-        left_type,
-        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+        disposition(&left_type),
+        TypeDisposition::Poisoned
+            | TypeDisposition::Recovery
+            | TypeDisposition::ExplicitDynamic
+            | TypeDisposition::NoValue
     ) || matches!(
-        right_type,
-        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+        disposition(&right_type),
+        TypeDisposition::Poisoned
+            | TypeDisposition::Recovery
+            | TypeDisposition::ExplicitDynamic
+            | TypeDisposition::NoValue
     ) {
         return;
     }
@@ -164,7 +175,17 @@ pub(crate) fn check_range_header(
             return;
         }
     };
-    let step_type = step.map(|step| as_primitive(&infer_only(program, step, scope, aliases, file)));
+    let step_type = step.map(|step| infer_only(program, step, scope, aliases, file));
+    // `infer_only` discards diagnostics, so its top-level `Invalid` is not proof of
+    // diagnosed poison here: for example, unary inference rejects a negated duration
+    // before the range-specific temporal rule interprets it. An `Invalid` nested in a
+    // structural type comes from declared-type poison and remains safe to defer.
+    if step_type.as_ref().is_some_and(|step_type| {
+        step_type.contains_invalid() && !matches!(step_type, MarrowType::Invalid)
+    }) {
+        return;
+    }
+    let step_type = step_type.as_ref().map(as_primitive);
     check_step_type(
         file,
         iterable.span(),

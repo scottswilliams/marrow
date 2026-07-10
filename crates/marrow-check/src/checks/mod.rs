@@ -28,7 +28,7 @@ pub(crate) use calls::{
     CallCheck, check_call, composite_identity, materializes_saved_collection_by_value,
 };
 pub(crate) use const_int::{ConstIntScope, check_const_int_overflow, module_const_int_scope};
-pub(crate) use diagnostics::key_type_diagnostic;
+pub(crate) use diagnostics::{ErrorCheckpoint, key_type_diagnostic};
 pub(crate) use driver::{
     FilePrelude, ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude,
 };
@@ -36,7 +36,7 @@ pub(crate) use loop_head::for_frame;
 pub(crate) use operators::{CoalesceCheck, check_binary, check_coalesce, check_unary};
 pub(crate) use ranges::check_range_value;
 pub(crate) use saved_keys::{
-    SavedKeyArgCheck, SavedKeyArgStatus, check_saved_key_args, saved_root_args_address_record,
+    SavedKeyArgCheck, check_saved_key_args, saved_root_args_address_record,
 };
 pub(crate) use statements::{
     TransformBlockTypeCheck, catch_frame, check_block_types, check_transform_block_types,

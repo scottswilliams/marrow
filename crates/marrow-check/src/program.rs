@@ -1918,6 +1918,31 @@ pub enum MarrowType {
 }
 
 impl MarrowType {
+    /// Whether this type contains diagnosed poison at any structural depth.
+    /// Containers retain their own top-level disposition; this inspection only
+    /// answers whether a dependent expression must propagate an existing fault.
+    pub(crate) fn contains_invalid(&self) -> bool {
+        match self {
+            MarrowType::Invalid => true,
+            MarrowType::Sequence(element) | MarrowType::Optional(element) => {
+                element.contains_invalid()
+            }
+            MarrowType::LocalTree { keys, value } => {
+                keys.iter().any(MarrowType::contains_invalid) || value.contains_invalid()
+            }
+            MarrowType::Primitive(_)
+            | MarrowType::Error
+            | MarrowType::Resource(_)
+            | MarrowType::GroupEntry { .. }
+            | MarrowType::Identity(_)
+            | MarrowType::Enum(_)
+            | MarrowType::Absent
+            | MarrowType::Dynamic
+            | MarrowType::NoValue
+            | MarrowType::Unknown => false,
+        }
+    }
+
     /// Resolve a [`TypeExpr`] to its structural checker type. Best-effort and
     /// total: it never errors, falling back to [`MarrowType::Unknown`] for a
     /// nominal name it cannot place. A bare enum name is left `Unknown` here —
@@ -1981,6 +2006,54 @@ impl MarrowType {
             // never resolves to a scalar; recognize it here.
             Type::Named(name) if name == "Error" => Self::Error,
             Type::Named(_) | Type::Identity(_) => Self::Unknown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod recursive_poison_tests {
+    use marrow_store::value::ScalarType;
+
+    use super::MarrowType;
+
+    fn int_type() -> MarrowType {
+        MarrowType::Primitive(ScalarType::Int)
+    }
+
+    #[test]
+    fn recursive_poison_finds_direct_and_structural_invalid() {
+        let cases = [
+            MarrowType::Invalid,
+            MarrowType::Sequence(Box::new(MarrowType::Invalid)),
+            MarrowType::Optional(Box::new(MarrowType::Invalid)),
+            MarrowType::LocalTree {
+                keys: vec![MarrowType::Invalid],
+                value: Box::new(int_type()),
+            },
+            MarrowType::LocalTree {
+                keys: vec![int_type()],
+                value: Box::new(MarrowType::Invalid),
+            },
+        ];
+
+        for ty in cases {
+            assert!(ty.contains_invalid(), "{ty:?}");
+        }
+    }
+
+    #[test]
+    fn recursive_poison_does_not_reclassify_nested_non_poison_states() {
+        let cases = [
+            MarrowType::Sequence(Box::new(MarrowType::Dynamic)),
+            MarrowType::Optional(Box::new(MarrowType::Unknown)),
+            MarrowType::LocalTree {
+                keys: vec![MarrowType::NoValue],
+                value: Box::new(MarrowType::Dynamic),
+            },
+        ];
+
+        for ty in cases {
+            assert!(!ty.contains_invalid(), "{ty:?}");
         }
     }
 }

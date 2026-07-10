@@ -9,8 +9,8 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::{BytesLiteralError, SourceSpan, StringLiteralError};
 
 use crate::checks::{
-    CallCheck, CoalesceCheck, SavedKeyArgCheck, SavedKeyArgStatus, check_binary, check_call,
-    check_coalesce, check_saved_key_args, check_unary, key_type_diagnostic,
+    CallCheck, CoalesceCheck, SavedKeyArgCheck, check_binary, check_call, check_coalesce,
+    check_saved_key_args, check_unary, key_type_diagnostic,
 };
 use crate::enums::{
     EnumMemberPathResolution, IsCheck, ambiguous_member_value_diagnostic, check_is,
@@ -22,8 +22,9 @@ use crate::executable::{
 };
 use crate::model::decls::DeclIds;
 use crate::typerules::{
-    LiteralSign, check_literal_range, is_optional_value, marrow_type_name, negated_integer_literal,
-    type_compatible, type_renderable_at_runtime, unresolved_optional_diagnostic,
+    Admission, KeyAdmission, KeyFault, KeyPolicy, LiteralSign, RangeTypeAggregate, admit_key,
+    check_literal_range, is_optional_value, marrow_type_name, merge_key_admission,
+    negated_integer_literal, type_renderable_at_runtime, unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CheckDiagnostic,
@@ -374,7 +375,9 @@ fn infer_value(
                             const_ints,
                             read_scope,
                         );
-                        if is_optional_value(&ty) {
+                        if ty.contains_invalid() {
+                            continue;
+                        } else if is_optional_value(&ty) {
                             diagnostics.push(unresolved_optional_diagnostic(file, expr.span()));
                         } else if saved_collection_render_unowned(
                             program,
@@ -612,13 +615,14 @@ fn infer_value(
                     diagnostics,
                     read_scope,
                 );
-                if matches!(callee_type, MarrowType::Invalid) {
+                if callee_type.contains_invalid() {
                     return MarrowType::Invalid;
                 }
             }
             let mut arg_types = Vec::with_capacity(args.len());
+            let mut saved_range_types = Vec::with_capacity(args.len());
             for (index, arg) in args.iter().enumerate() {
-                arg_types.push(infer_call_arg_type(CallArgInfer {
+                let inferred = infer_call_arg_type(CallArgInfer {
                     program,
                     callee,
                     arg_index: index,
@@ -630,7 +634,9 @@ fn infer_value(
                     file,
                     diagnostics,
                     read_scope,
-                }));
+                });
+                arg_types.push(inferred.ty);
+                saved_range_types.push(inferred.saved_range);
             }
             check_print_argument_renderable(
                 program,
@@ -673,11 +679,12 @@ fn infer_value(
             });
             // A saved access carries key arguments the function-call path does not
             // type; check them against the root identity or layer key parameters.
-            let saved_key_status = check_saved_key_args(SavedKeyArgCheck {
+            let saved_key_admission = check_saved_key_args(SavedKeyArgCheck {
                 program,
                 callee,
                 args,
                 arg_types: &arg_types,
+                saved_range_types: &saved_range_types,
                 scope,
                 span: *span,
                 file,
@@ -688,23 +695,9 @@ fn infer_value(
             if matches!(call_type, MarrowType::Unknown) {
                 let saved =
                     bare_saved_value_type(program, expr, *span, position, scope, file, diagnostics);
-                // A saved read whose key argument is maybe-present already reported the
-                // one rule at the key position; poison the read so the outer value slot
-                // does not stack a second one-rule on the same mistake.
-                if matches!(saved_key_status, SavedKeyArgStatus::Rejected)
-                    || arg_types.iter().any(is_optional_value)
-                    || arg_types
-                        .iter()
-                        .any(|arg_type| matches!(arg_type, MarrowType::Invalid))
-                {
-                    MarrowType::Invalid
-                } else if arg_types
-                    .iter()
-                    .any(|arg_type| matches!(arg_type, MarrowType::Unknown))
-                {
-                    MarrowType::Unknown
-                } else {
-                    saved
+                match saved_key_admission {
+                    Admission::Accepted => saved,
+                    Admission::Poisoned | Admission::Rejected(_) => MarrowType::Invalid,
                 }
             } else {
                 call_type
@@ -906,7 +899,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     // A poisoned base already reported its fault — an optional key, a rejected read —
     // so a field off it defers rather than resolving through the saved shape (value or
     // collection-subject) and stacking a second diagnostic on the same mistake.
-    if matches!(base_type, MarrowType::Invalid) {
+    if base_type.contains_invalid() {
         return MarrowType::Invalid;
     }
     // A bare-key field access in a value position is itself a value-read entry, like the
@@ -1094,7 +1087,21 @@ struct CallArgInfer<'a, 'd> {
     read_scope: crate::presence::ReadScope<'a>,
 }
 
-fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
+struct InferredCallArg {
+    ty: MarrowType,
+    saved_range: Option<RangeTypeAggregate>,
+}
+
+impl InferredCallArg {
+    fn plain(ty: MarrowType) -> Self {
+        Self {
+            ty,
+            saved_range: None,
+        }
+    }
+}
+
+fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> InferredCallArg {
     if input.arg_name.is_none()
         && callee_accepts_missing_index_suggestion(input.callee)
         && reject_saved_access_with_suggested_index(
@@ -1105,11 +1112,11 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.diagnostics,
         )
     {
-        return MarrowType::Invalid;
+        return InferredCallArg::plain(MarrowType::Invalid);
     }
     if checked_expr(input.program, input.callee, input.scope, input.file)
         .is_some_and(|callee| SavedPlaceResolver::new(input.program).is_saved_path_callee(&callee))
-        && let Some(ty) = infer_saved_key_range_arg_type(
+        && let Some(saved_range) = infer_saved_key_range_types(
             input.program,
             input.arg,
             input.scope,
@@ -1120,11 +1127,15 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.read_scope,
         )
     {
-        return ty;
+        let ty = saved_range.representative_type();
+        return InferredCallArg {
+            ty,
+            saved_range: Some(saved_range),
+        };
     }
     if input.arg_name.is_none() && callee_streams_collection_argument(input.callee, input.arg_index)
     {
-        return infer_collection_subject_type_with_read_scope(
+        return InferredCallArg::plain(infer_collection_subject_type_with_read_scope(
             input.program,
             input.arg,
             input.scope,
@@ -1133,9 +1144,9 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.file,
             input.diagnostics,
             input.read_scope,
-        );
+        ));
     }
-    infer_type_with_read_scope(
+    InferredCallArg::plain(infer_type_with_read_scope(
         input.program,
         input.arg,
         input.scope,
@@ -1144,7 +1155,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
         input.diagnostics,
         input.const_ints,
         input.read_scope,
-    )
+    ))
 }
 
 fn callee_accepts_missing_index_suggestion(callee: &marrow_syntax::Expression) -> bool {
@@ -1182,7 +1193,7 @@ fn callee_streams_collection_argument(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn infer_saved_key_range_arg_type(
+fn infer_saved_key_range_types(
     program: &CheckedProgram,
     arg: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
@@ -1191,9 +1202,9 @@ fn infer_saved_key_range_arg_type(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'_>,
-) -> Option<MarrowType> {
+) -> Option<RangeTypeAggregate> {
     let range = marrow_syntax::range_expr(arg)?;
-    if let Some(step) = range.step {
+    let step = range.step.map(|step| {
         infer_type_with_read_scope(
             program,
             step,
@@ -1203,8 +1214,8 @@ fn infer_saved_key_range_arg_type(
             diagnostics,
             const_ints,
             read_scope,
-        );
-    }
+        )
+    });
     let start = range.start.map(|expr| {
         infer_type_with_read_scope(
             program,
@@ -1229,12 +1240,7 @@ fn infer_saved_key_range_arg_type(
             read_scope,
         )
     });
-    Some(match (start, end) {
-        (Some(start), Some(end)) if type_compatible(&start, &end) != Some(false) => start,
-        (Some(_), Some(_)) => MarrowType::Unknown,
-        (Some(ty), None) | (None, Some(ty)) => ty,
-        (None, None) => MarrowType::Unknown,
-    })
+    Some(RangeTypeAggregate::new(start, end, step))
 }
 
 /// Reject a `print` argument whose type has no direct text form, the same set
@@ -1259,6 +1265,9 @@ fn check_print_argument_renderable(
     let ([arg], [ty]) = (args, arg_types) else {
         return;
     };
+    if ty.contains_invalid() {
+        return;
+    }
     // A maybe-present value has no text form until it is resolved; the one rule owns
     // it before the render gate so the message names the four resolution forms.
     if is_optional_value(ty) {
@@ -1602,12 +1611,6 @@ struct KeyAccessEmit<'a> {
     file: &'a Path,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalKeyStatus {
-    Accepted,
-    Rejected,
-}
-
 fn local_collection_access_type(
     emit: KeyAccessEmit<'_>,
     callee: &marrow_syntax::Expression,
@@ -1625,80 +1628,78 @@ fn local_collection_access_type(
     let [name] = segments.as_slice() else {
         return None;
     };
-    match lookup_opt(scope, name)? {
+    let collection_type = lookup_opt(scope, name)?;
+    if collection_type.contains_invalid() || arg_types.iter().any(MarrowType::contains_invalid) {
+        return Some(MarrowType::Invalid);
+    }
+    match collection_type {
         MarrowType::Sequence(element) => {
-            if matches!(
+            if !matches!(
                 check_local_key_count(name, 1, args.len(), span, file, diagnostics),
-                LocalKeyStatus::Rejected
+                Admission::Accepted,
             ) {
                 return Some(MarrowType::Invalid);
             }
             if let [arg_type] = arg_types {
-                if is_optional_value(arg_type) {
-                    diagnostics.push(unresolved_optional_diagnostic(
-                        file,
-                        key_arg_span(args, 0, span),
-                    ));
-                    return Some(MarrowType::Invalid);
-                }
-                if matches!(arg_type, MarrowType::Invalid) {
-                    return Some(MarrowType::Invalid);
-                }
-                if matches!(arg_type, MarrowType::Unknown) {
-                    return Some(MarrowType::Unknown);
-                }
-                if type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type) != Some(true)
-                {
-                    diagnostics.push(key_type_diagnostic(
+                let admission = admit_key(
+                    KeyPolicy::Local,
+                    &MarrowType::Primitive(ScalarType::Int),
+                    arg_type,
+                );
+                match admission {
+                    Admission::Accepted => return Some(*element),
+                    Admission::Poisoned => return Some(MarrowType::Invalid),
+                    Admission::Rejected(KeyFault::Optional) => {
+                        diagnostics.push(unresolved_optional_diagnostic(
+                            file,
+                            key_arg_span(args, 0, span),
+                        ));
+                    }
+                    Admission::Rejected(
+                        KeyFault::Recovery
+                        | KeyFault::ExplicitDynamic
+                        | KeyFault::NoValue
+                        | KeyFault::Mismatch,
+                    ) => diagnostics.push(key_type_diagnostic(
                         file,
                         span,
                         format!(
                             "key `pos` expects `int`, but this value is `{}`",
                             marrow_type_name(names, arg_type)
                         ),
-                    ));
-                    return Some(MarrowType::Invalid);
+                    )),
+                    Admission::Rejected(KeyFault::Arity | KeyFault::Named | KeyFault::Range) => {
+                        unreachable!("scalar key admission does not produce shape faults")
+                    }
                 }
+                return Some(MarrowType::Invalid);
             }
             Some(*element)
         }
         MarrowType::LocalTree { keys, value } => {
-            if matches!(
+            if !matches!(
                 check_local_key_count(name, keys.len(), args.len(), span, file, diagnostics),
-                LocalKeyStatus::Rejected
+                Admission::Accepted,
             ) {
                 return Some(MarrowType::Invalid);
             }
-            // A key must be present to address a node, so a maybe-present key argument is
-            // the one rule; report it at the key position and poison the read so the outer
-            // value slot does not stack a second one-rule on the same mistake.
-            if arg_types.iter().any(is_optional_value) {
-                for (index, actual) in arg_types.iter().enumerate() {
-                    if is_optional_value(actual) {
+            let mut admission = Admission::Accepted;
+            for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
+                let current = admit_key(KeyPolicy::Local, expected, actual);
+                match &current {
+                    Admission::Accepted | Admission::Poisoned => {}
+                    Admission::Rejected(KeyFault::Optional) => {
                         diagnostics.push(unresolved_optional_diagnostic(
                             file,
                             key_arg_span(args, index, span),
                         ));
                     }
-                }
-                return Some(MarrowType::Invalid);
-            }
-            if arg_types
-                .iter()
-                .any(|actual| matches!(actual, MarrowType::Invalid))
-            {
-                return Some(MarrowType::Invalid);
-            }
-            if arg_types
-                .iter()
-                .any(|actual| matches!(actual, MarrowType::Unknown))
-            {
-                return Some(MarrowType::Unknown);
-            }
-            let mut status = LocalKeyStatus::Accepted;
-            for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
-                if type_compatible(expected, actual) != Some(true) {
-                    diagnostics.push(key_type_diagnostic(
+                    Admission::Rejected(
+                        KeyFault::Recovery
+                        | KeyFault::ExplicitDynamic
+                        | KeyFault::NoValue
+                        | KeyFault::Mismatch,
+                    ) => diagnostics.push(key_type_diagnostic(
                         file,
                         span,
                         format!(
@@ -1707,14 +1708,16 @@ fn local_collection_access_type(
                             marrow_type_name(names, expected),
                             marrow_type_name(names, actual)
                         ),
-                    ));
-                    status = LocalKeyStatus::Rejected;
+                    )),
+                    Admission::Rejected(KeyFault::Arity | KeyFault::Named | KeyFault::Range) => {
+                        unreachable!("scalar key admission does not produce shape faults")
+                    }
                 }
+                admission = merge_key_admission(admission, current);
             }
-            Some(if matches!(status, LocalKeyStatus::Rejected) {
-                MarrowType::Invalid
-            } else {
-                *value
+            Some(match admission {
+                Admission::Accepted => *value,
+                Admission::Poisoned | Admission::Rejected(_) => MarrowType::Invalid,
             })
         }
         _ => None,
@@ -1734,7 +1737,7 @@ fn check_local_key_count(
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> LocalKeyStatus {
+) -> KeyAdmission {
     if expected != actual {
         diagnostics.push(key_type_diagnostic(
             file,
@@ -1743,9 +1746,9 @@ fn check_local_key_count(
                 "local collection `{name}` expects {expected} key argument(s), but {actual} were given"
             ),
         ));
-        LocalKeyStatus::Rejected
+        Admission::Rejected(KeyFault::Arity)
     } else {
-        LocalKeyStatus::Accepted
+        Admission::Accepted
     }
 }
 
