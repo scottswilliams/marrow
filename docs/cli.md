@@ -847,8 +847,7 @@ See [data-tools.md](data-tools.md) for full output shapes and the path syntax.
 These commands are not production app APIs and not a production backup/restore
 format.
 
-`data diff` and `data load` are deferred — see
-[future/data-tools.md](future/data-tools.md).
+`data diff` and `data load` are not implemented.
 
 All `data` commands exit `2` on a usage error (missing directory, bad flag, an
 unparseable `<path>` for `get`), and `1` on a config or store error. `roots`,

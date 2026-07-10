@@ -77,8 +77,8 @@ resource Patient
 store ^patients(id: string): Patient
 ```
 
-Saved data carries its own durable identity, so a field's identity is never
-declared in source.
+Saved declarations carry accepted declaration identities, so a field's
+declaration identity is never written in source.
 
 Fields are sparse by default. Add `required` when a resource is invalid
 without a populated field:
@@ -146,7 +146,7 @@ that have no default. A stable non-empty `update` declares a sparse-update
 operation. `delete` declares a reject-absent full-subtree delete operation.
 `collection` names either the same backing root or one index declared on that
 backing store. A ranged `collection ^root.index range as alias` requires a
-non-unique index whose final components are the complete store identity suffix
+non-unique index whose final components are the complete entry identity suffix
 and whose ranged component immediately before that suffix is scalar. `read`
 names a public read-only function; it is rejected if its
 checked effect closure writes saved data, opens a transaction, performs host
@@ -451,7 +451,7 @@ const err = Error(
 )
 ```
 
-Store identity values are produced by allocation or by wrapping checked key
+Entry identity values are produced by allocation or by wrapping checked key
 components explicitly:
 
 ```mw
@@ -489,7 +489,7 @@ resources, fields, functions, and user module segments must not be spelled as a
 parser-reserved word; doing so is a parse error. The standard-library import
 `use std::bytes` is an explicit descriptor-path exception.
 
-The reserved word `Id` remains the current identity type and constructor
+The reserved word `Id` remains the current entry identity type and constructor
 spelling in `Id(^store)` and `Id(^store, key...)`. Outside those grammar
 positions, it is not an identifier.
 
@@ -501,11 +501,10 @@ through user declarations.
 have no accepted statement form or formatter round trip in v0.1; the parser
 reports them as reserved when they are used as statement keywords.
 
-The parser also recognizes some unsupported future-shaped forms, including
-bracket collection literals, `finally`, loop labels, parameter defaults and
-modes, quoted field segments, type aliases, and user-defined generics. They are
-parse errors in v0.1; see
-[future/language/syntax.md](../future/language/syntax.md).
+The parser also recognizes several unsupported forms, including bracket
+collection literals, `finally`, loop labels, parameter defaults and modes,
+quoted field segments, type aliases, and user-defined generics. They are parse
+errors in v0.1; recognizing their shape only permits a more specific diagnostic.
 
 The `evolve` step words `rename`, `default`, `retire`, and `transform` are
 contextual: they lead a step only inside an `evolve` block, so they remain valid

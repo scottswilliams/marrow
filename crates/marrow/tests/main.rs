@@ -33,6 +33,8 @@ mod data_cli_inventory;
 mod data_cli_value_rendering;
 #[path = "cases/data_orphan_cli.rs"]
 mod data_orphan_cli;
+#[path = "cases/docs_entrypoints.rs"]
+mod docs_entrypoints;
 #[path = "cases/doctor_cli.rs"]
 mod doctor_cli;
 #[path = "cases/dry_run_cli.rs"]

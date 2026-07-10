@@ -1,24 +1,19 @@
-# docs/implementation/ — Agent Notes
+# Implementation Documentation Instructions
 
-This is the code-truth architecture map of Marrow: a thin, high-level guide that
-says what each part does and where to read the real code. It mirrors the
-pipeline (syntax to schema to check to runtime to store) so an agent can drill
-from [README.md](README.md) down to one subsystem page.
+This directory maps the actual Marrow code. It helps contributors and tools
+navigate the current syntax-to-schema-to-check-to-runtime-to-store topology;
+that topology is descriptive, not permanent architecture.
 
-Rules for this directory:
-- It documents the ACTUAL code, not intended design. When code and a page
-  disagree, the page is wrong — fix it.
-- **You MUST update a page IN PLACE in the same change that makes a high-level
-  change to the code it describes** — a module, type, pass, invariant, or data
-  flow added, removed, renamed, or reshaped. Rewrite the stale lines and delete
-  what no longer holds; make the smallest edit that makes the map true again.
-- It is imperative these pages never accrue agentic sediment. Never append stale
-  narration, duplicate lines, or changelog prose. A page is a thin map; if an
-  edit makes it longer without making it truer, cut instead.
-- Keep it a map, not a tutorial: reference files by repo-relative path and
-  symbols by name, no line numbers, no slop.
-- State a count once, in the table or list that enumerates it; never repeat the
-  number in a heading or prose, where it drifts out of step with what it counts.
-- Design and contract law lives elsewhere: `docs/language/` for the language,
-  `docs/backend-contract.md` for the store contract. Link to them; do not
-  restate them here.
+- Update a page in the same change that adds, removes, renames, or reshapes a
+  high-level module, pass, invariant, or data flow.
+- Rewrite stale lines in place. Do not append changelog narrative or preserve a
+  prototype as historical context.
+- Label legacy mechanisms plainly while they exist; do not normalize them as
+  future design.
+- Keep pages as maps to files and symbols, without line numbers or copied
+  semantics.
+- State counts once in the list that owns them.
+- `docs/language/` owns current language behavior, `docs/vision.md` direction,
+  `docs/design/` accepted unimplemented targets, `docs/status.md` implementation
+  state, and `docs/backend-contract.md` the current storage contract.
+- Plans, reports, and decision records have no normative authority here.

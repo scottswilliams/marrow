@@ -140,8 +140,7 @@ data:
 
 Do not merge native store files between branches. Source merges happen in Git;
 stored data moves through backup and restore. `marrow data diff`, `marrow data
-load`, restore merge modes, and cross-branch data merge are deferred; see
-[future/data-tools.md](future/data-tools.md).
+load`, restore merge modes, and cross-branch data merge are not implemented.
 
 ## Security
 

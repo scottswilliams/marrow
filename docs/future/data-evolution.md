@@ -1,5 +1,9 @@
 # Data Evolution
 
+> **Status: retired proposal.** This page is non-authoritative and may conflict
+> with the current vision. Do not implement it without an accepted target
+> contract; see [Retired design notes](README.md).
+
 Future counterpart of [`../data-evolution.md`](../data-evolution.md).
 
 Current evolution changes one accepted catalog to the next through checked

@@ -498,11 +498,10 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 
 ## Application Surfaces
 
-`marrow data diff`/`data load` are deferred — see
-[future/data-tools.md](future/data-tools.md). Restore replace is part of the
-current CLI surface; restore merge/repair and cross-engine restore remain
-deferred. No active command-output code family appears for a deferred surface
-until that surface ships.
+`marrow data diff` and `marrow data load` are not implemented. Restore replace
+is part of the current CLI surface; restore merge/repair and cross-engine
+restore are also not implemented. No command-output code family is reserved for
+an unimplemented command.
 
 The `surface.*` family belongs to the application surface runtime and its
 [Surface ABI](surface-abi.md). The transport-neutral `marrow-run`

@@ -1,13 +1,17 @@
-# marrow-schema — Agent Notes
+# marrow-schema Contributor Notes
 
-Compiles one resource, store, or enum declaration into the typed tree/store/enum shape downstream code
-pattern-matches instead of re-parsing. Distinct from the parser (AST) and the checker (project-wide
-resolution).
+This crate lowers one resource, store, or enum declaration into the current
+typed shape used by checker and runtime code. It is distinct from the syntax
+AST and project-wide semantic resolution.
 
-Keep one owner per concept: `classify_key_type` is the single orderable-key verdict shared by identity
-keys, key params, index args, and local keys; `Type::optional` is the one flattening constructor;
-`NodeKind::Slot` is the one durable-leaf choke-point with a fail-closed `debug_assert`. Derive a
-diagnostic's code from its typed kind; validate at the boundary so an illegal shape is unrepresentable
-(C-VALIDATE). Every module carries a `//!` header — hold that.
+`classify_key_type` is the single orderable-key verdict. `Type::optional` is the
+one optionality-flattening constructor, and `NodeKind::Slot` is the durable-leaf
+choke point. Reject illegal shapes at construction so downstream code can
+pattern-match typed states. Every module retains its ownership-level `//!`
+documentation.
+
+Schema shapes feed semantic-path construction. This crate does not own stable
+schema path identity, URI spelling, authorization scope, graph-version
+evolution relations, or physical storage keys.
 
 Map: [docs/implementation/schema.md](../../docs/implementation/schema.md).

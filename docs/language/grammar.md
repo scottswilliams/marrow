@@ -128,9 +128,8 @@ group_keying    = key_params ;
 
 Keyed layer members are `keyed_field_decl` and keyed `group_decl`. v0.1 has no
 keyed-layer clauses after the member name; spellings such as `retain`,
-`unique`, or `counted` in that position are rejected. Future keyed-layer clauses
-are tracked in
-[Resources And Saved Data](../future/language/resources-and-storage.md#keyed-layer-clauses).
+`unique`, or `counted` in that position are rejected. No additional keyed-layer
+clause is part of the current language.
 
 index_decl      =
     "index" identifier "(" index_arg_list ")" unique_marker? NEWLINE ;
@@ -311,10 +310,10 @@ Keyed tree shapes are not written as type annotations; they arise from
 `key_params` on the declaration itself — a keyed `var`, parameter, field, group,
 or store root.
 
-`qualified_name` includes normal imported types. Store identity types use the
+`qualified_name` includes normal imported types. Entry identity types use the
 source form `Id(^root)`, for example `Id(^books)`. In expression position,
-`Id(^root, key...)` is the explicit identity constructor. `Error` is the builtin
-resource-shaped error type.
+`Id(^root, key...)` is the explicit entry identity constructor. `Error` is the
+builtin resource-shaped error type.
 
 The checker restricts where some parsed types are valid. A missing return type
 means the function produces no value. Managed saved fields and keys reject
@@ -609,8 +608,8 @@ These rules are part of the grammar contract:
   `const Bad = int`, is a parse error: a type keyword is not an expression.
 - Reserved words are not identifiers, so a reserved word cannot be used as a
   name for a binding, parameter, resource, field, function, or module segment.
-- Store identity values are typed as `Id(^root)`.
-- A bare `Id(^root, key...)` call is checked as an identity constructor. It is
+- Entry identity values are typed as `Id(^root)`.
+- A bare `Id(^root, key...)` call is checked as an entry identity constructor. It is
   not a resource constructor and does not perform a saved read.
 - Calls to resource types and `Error(...)` are checked as resource constructors;
   calls to functions are checked as calls.
@@ -621,8 +620,8 @@ These rules are part of the grammar contract:
 - Parenthesized suffixes are calls on callable values and key lookups on tree
   values; the checker resolves the value kind.
 - Direct durable collection iteration binds key-first. A single loop name binds
-  the iterated address — store identities for a managed store root, child keys for
-  a sequence or keyed layer, branch identities for a non-unique index branch — and
+  the iterated address — entry identities for a managed store root, child keys for
+  a sequence or keyed layer, entry identities for a non-unique index branch — and
   each further name descends one layer to the value.
 - `keys(...)` and `values(...)` materialize a local sequence of addresses or
   elements in value position over local collections. They are rejected over a
@@ -631,6 +630,6 @@ These rules are part of the grammar contract:
   function declaration, or to the next resource/store element, enum member, or
   parameter.
 
-`~` is reserved for future typed ephemeral roots. v0.1 rejects `~` everywhere
-in source: root forms such as `~scratch`, identity types such as
+`~` is reserved and v0.1 rejects it everywhere in source: root forms such as
+`~scratch`, entry identity types such as
 `Id(~scratch)`, and compound root sigils such as `^~` and `~^`.

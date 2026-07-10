@@ -56,55 +56,57 @@ underscores.
 scalar and it is not a managed saved resource.
 
 Marrow does not include user-defined type aliases in v0.1. Use resources for
-named tree shapes and `Id(^store)` for saved store
-identities.
+named tree shapes and `Id(^store)` for durable entry identities.
 
 An `enum` is a named, fixed set of values — the user-defined generalization of
 `bool`. It is a named scalar-valued type: a value such as `Status::archived`
 compares nominally (it equals only a value of the same enum) and stores as the
-member's stable saved-data identity, decoded back to the current source member, so
-reordering members does not change stored meaning. See [Enums](enums.md).
+member's accepted declaration identity, decoded back to the current source
+member, so reordering members does not change stored meaning. See
+[Enums](enums.md).
 
 ## Saved Types
 
 Saved fields use concrete types. A saved leaf field may use `int`,
 `decimal`, `bool`, `string`, `bytes`, `date`, `instant`, `duration`,
-`ErrorCode`, or a store identity type such as `Id(^books)`.
+`ErrorCode`, or an entry identity type such as `Id(^books)`.
 Nested resources, sequences, and keyed trees are saved by their declared
 shape.
 
 A saved leaf field typed as `Id(^store)` is a typed reference. A field
-`authorId: Id(^authors)` holds an `^authors` identity and only an `^authors`
-identity: assigning an identity from a different store root, or a raw scalar, is
-a check error because identities are nominal by store. A dynamic (`unknown`)
-value is rejected the same way a scalar field rejects one — pass it through a
-checked identity boundary first — so an unchecked value cannot land in a
-reference where it would read back as a foreign or malformed identity. Writing
-the field stores the referenced store identity's canonical key encoding, and
-reading it back yields the same identity value, so a saved reference round-trips.
-A field may reference its own store (`managerId: Id(^people)` on `Person`).
+`authorId: Id(^authors)` holds an `^authors` entry identity and only an
+`^authors` entry identity: assigning an entry identity from a different store
+root, or a raw scalar, is a check error because entry identities are nominal by
+store declaration. A dynamic (`unknown`) value is rejected the same way a
+scalar field rejects one — pass it through a
+checked entry identity boundary first — so an unchecked value cannot land in a
+reference where it would read back as a foreign or malformed entry identity.
+Writing the field stores the referenced entry identity's canonical key encoding,
+and reading it back yields the same entry identity value, so a saved reference
+round-trips. A field may reference its own store (`managerId: Id(^people)` on
+`Person`).
 
 This rule covers every typed saved location, not just one field: an `unknown`
-value must be converted before it is written to a scalar field, an identity field,
-a whole resource (`^books(1) = value`), or a whole group entry. A dynamic record
-could otherwise carry a raw scalar or foreign identity into one of the resource's
-typed fields, so the value must first be made into that resource — a constructor or
-a read of the same resource — before the write.
+value must be converted before it is written to a scalar field, an entry identity
+field, a whole resource (`^books(1) = value`), or a whole group entry. A dynamic
+record could otherwise carry a raw scalar or foreign entry identity into one of
+the resource's typed fields, so the value must first be made into that resource —
+a constructor or a read of the same resource — before the write.
 
-Two identities from the same store root compare with `==`; identities from
-different store roots do not, even when those stores use the same resource shape.
-Comparison is by the referenced keys after the nominal store match, so the same
-reference written twice is equal.
+Two entry identities from the same store root compare with `==`; entry
+identities from different store roots do not, even when those stores use the
+same resource shape. Comparison is by the referenced keys after the nominal
+store match, so the same reference written twice is equal.
 
-Saving an identity in a field does not create a foreign-key constraint, cascade,
-or join: it is a typed value, not an enforced relationship. The field is not an
-unconditional write-time existence check — a reference may name a resource that
-was never written or was later deleted, and a `delete` does not follow stored
-references. Creating a record whose reference points at a missing identity
-succeeds, including through a surface write or a generated client; neither the
-surface nor the client rejects a dangling reference, because the reference is a
-typed value, not a verified link. Applications enforce relationship policy in
-code or model it as resources and indexes.
+Saving an entry identity in a field does not create a foreign-key constraint,
+cascade, or join: it is a typed value, not an enforced relationship. The field
+is not an unconditional write-time existence check — a reference may name a
+resource that was never written or was later deleted, and a `delete` does not
+follow stored references. Creating a record whose reference points at a missing
+entry identity succeeds, including through a surface write or a generated
+client; neither the surface nor the client rejects a dangling reference, because
+the reference is a typed value, not a verified link. Applications enforce
+relationship policy in code or model it as resources and indexes.
 
 Dangling references are still compiler-visible integrity facts. `marrow data
 integrity` reports a `data.dangling_ref` finding for an `Id(^store)` value whose
@@ -112,7 +114,7 @@ referent is absent, naming the storing path so you can repair it; it does not
 turn that finding into an implicit cascade or write rejection. To require that a
 reference resolve, check existence in code before the write (an `exists` guard on
 the referenced record), since the type system guarantees only that the value is
-a well-formed identity for the named store.
+a well-formed entry identity for the named store declaration.
 
 Saved keys are orderable scalar types — every scalar except `decimal`. A key
 may not be `decimal`, an enum or other named type, a whole resource, a
@@ -405,11 +407,12 @@ const gameId: Id(^games) = nextId(^games)
 ^games(gameId).scores(playerId) = 42
 ```
 
-## Identity Types
+## Entry Identity Types
 
-Identity is owned by the store, not derived from the resource. A keyed store
-defines its identity type from the store plus its key; `Id(^store)` is the
-canonical identity type. For a single-key store:
+An entry identity is scoped to its store declaration, not derived from the
+resource. A keyed store defines its entry identity type from the store root plus
+its key; `Id(^store)` is the canonical entry identity type. For a single-key
+store:
 
 ```mw
 resource Book
@@ -420,41 +423,42 @@ store ^books(id: int): Book
 const id: Id(^books) = nextId(^books)
 ```
 
-A singleton store such as `store ^settings: Settings` has no generated identity
-type; the root itself is addressed directly.
+A singleton store such as `store ^settings: Settings` has no generated entry
+identity type; the root itself is addressed directly.
 
 `Id(^books)` is a typed wrapper over the store's key. It prevents ordinary
 integers from being accidentally passed as book identifiers, and it keeps IDs
 from becoming meaningful business counters. Convert explicitly at boundaries
 such as URLs, command arguments, or host IO.
 
-Identity types are nominal: `Id(^books)` and `Id(^magazines)` are distinct even
-when their stored keys share a shape, so an `Id(^magazines)` is rejected wherever
+Entry identity types are nominal: `Id(^books)` and `Id(^magazines)` are distinct
+even when their stored keys share a shape, so an `Id(^magazines)` is rejected wherever
 an `Id(^books)` is expected. Saved key arguments are type-checked statically the same
 way — both a raw scalar of the wrong type (`^books("oops")`) and a foreign
-identity spliced into a keyspace (`^books(magazineId)`) are reported as
+entry identity spliced into a keyspace (`^books(magazineId)`) are reported as
 `check.key_type`.
 
-Each key passed through a store identity boundary must match the referenced
+Each key passed through an entry identity boundary must match the referenced
 store's declared identity key type. A string key for an `int`-keyed `^books`
-store is a `check.key_type`, as is a wrong-typed key of a composite identity.
+store is a `check.key_type`, as is a wrong-typed key of a composite entry
+identity.
 
 At run time the key scalar type, arity, and identity store root are enforced
 before any store write: a key whose scalar kind, count, or nominal store root
 does not match the declared keyspace faults (`run.type`) rather than reaching the
 store, and `marrow data integrity` reports an already-stored key of the wrong
 scalar type as `data.key_type`. Dynamic data that arrives through `unknown` must
-be checked at the identity boundary before it can reenter typed Marrow code or
-managed saved data; same-shaped foreign identities are not accepted merely
+be checked at the entry identity boundary before it can reenter typed Marrow
+code or managed saved data; same-shaped foreign entry identities are not accepted merely
 because their scalar keys match. Raw scalar keys are accepted only as explicit key
 arguments to a saved path; they are not `Id(^store)` values at dynamic, host, or
 unknown boundaries.
 
 Marrow provides default `nextId` allocation for a single `int` identity key.
-Other identity shapes are application-provided and wrapped explicitly with
+Other entry identity shapes are application-provided and wrapped explicitly with
 `Id(^store, key...)`.
 
-A managed saved root is addressed by one identity value:
+A managed saved root is addressed by one entry identity value:
 
 ```mw
 const id: Id(^books) = nextId(^books)
@@ -462,8 +466,8 @@ const title = ^books(id).title ?? ""
 ```
 
 The declaration lists the stored key components; ordinary typed code passes
-the store identity type, not the raw key literal. Allocation or application
-boundary code is responsible for producing checked identities:
+the entry identity type, not the raw key literal. Allocation or application
+boundary code is responsible for producing checked entry identities:
 
 ```mw
 const allocated: Id(^books) = nextId(^books)
@@ -471,10 +475,10 @@ const loaded: Id(^books) = Id(^books, "book-17")
 ```
 
 `Id(^books, "book-17")` performs no lookup and gives no presence proof. It only
-constructs an identity value after the supplied key arguments match the store's
-declared identity key arity and scalar types.
+constructs an entry identity value after the supplied key arguments match the
+store's declared identity key arity and scalar types.
 
-Composite-key stores also define one identity type:
+Composite-key stores also define one entry identity type:
 
 ```mw
 resource Enrollment
@@ -484,7 +488,7 @@ store ^enrollments(studentId: string, courseId: string): Enrollment
 ```
 
 `Id(^enrollments)` represents both keys together. Application code treats it as
-one identity value rather than a general tuple:
+one entry identity value rather than a general tuple:
 
 ```mw
 const id: Id(^enrollments) = Id(^enrollments, "student-1", "course-9")
@@ -492,12 +496,12 @@ const id: Id(^enrollments) = Id(^enrollments, "student-1", "course-9")
 ^enrollments(id).status = "active"
 ```
 
-Identity values are opaque. Do not encode business meaning into them, and do
-not rely on them being gap-free. Failed or rolled-back work may leave unused
+Entry identity values are opaque. Do not encode business meaning into them, and
+do not rely on them being gap-free. Failed or rolled-back work may leave unused
 IDs behind.
 
-`next(^books(id))` and `prev(^books(id))` type to that store's identity
-(`Id(^books)`), so the neighbor is addressed like any identity:
+`next(^books(id))` and `prev(^books(id))` type to that store's entry identity
+(`Id(^books)`), so the neighbor is addressed like any entry identity:
 `const neighbor = next(^books(id)) ?? id` can then feed
 `^books(neighbor).title ?? ""`. Over a keyed child layer, `next` and `prev` type
 to the layer's key. `reversed` before the iterable preserves each binding's type,
@@ -534,7 +538,7 @@ loanCount = loanCount + 1
 
 A `var` may be declared without an initializer when its type has a buildable
 initial form: a scalar starts at its zero value, a resource is built field by
-field, and a sequence or keyed tree starts empty. An enum and a store identity
+field, and a sequence or keyed tree starts empty. An enum and an entry identity
 have neither a default member nor incremental construction, so a `var` of one
 must be given an initial value at its declaration.
 
@@ -602,7 +606,7 @@ decimal only when it is integral; numeric text and `date(...)` text must be
 canonical Marrow spelling. Over its accepted sources `string(...)` is total,
 rendering each with the same scalar and enum text that `print` uses: a temporal
 as its canonical text, `bytes` as `0x`-prefixed lowercase hex, and an enum as its
-`Enum::member` spelling. `string(...)` does not accept a saved identity
+`Enum::member` spelling. `string(...)` does not accept an entry identity
 (`Id(^...)`) or a sequence — those are rejected at check; `print` and
 interpolation render an identity by its key directly and render sequences whose
 element type renders. Decode bytes as UTF-8 text through `std::bytes::toText`,
@@ -665,7 +669,7 @@ the backend:
   most nanosecond precision. Zero is `PT0S`. A duration is an elapsed span, so
   it never uses calendar components.
 - `ErrorCode` saves as stable UTF-8 text.
-- store identities save as canonical encodings of their declared key values.
+- entry identities save as canonical encodings of their declared key values.
 
 The `decimal` envelope is a signed coefficient of up to 34 significant digits,
 with up to 34 of them after the decimal point. A value or arithmetic result that

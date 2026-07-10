@@ -179,21 +179,20 @@ grammar as Marrow values, enum text uses accepted member spellings, and `string`
 receives the raw text after the first `=`. A sequence parameter whose element is
 scalar or enum collects repeated `--arg` values in argv order; `[]` is the empty
 sequence spelling. A single-component `Id(^store)` parameter decodes through the
-same identity-key guards used by saved data. Resource-shaped parameters, local
+same entry-identity key guards used by saved data. Resource-shaped parameters, local
 tree parameters, group entries, unknown or invalid parameter surfaces,
-unsupported sequence element types, and composite identity keys are outside the
-CLI entry surface; composite identity parameters should be wrapped by an entry
-that accepts the scalar key parts and constructs or looks up the identity in
-Marrow code.
+unsupported sequence element types, and composite entry identities are outside
+the CLI entry surface; expose a function that accepts the scalar key parts and
+constructs or looks up the composite entry identity in Marrow code instead.
 Decoding is per invocation: scalar and enum text is parsed once per supplied
-argument, repeated sequence values are appended in argv order, and identity
+argument, repeated sequence values are appended in argv order, and entry identity
 keys run the same key guard used by saved data before the function starts.
 
 Plain text `marrow run` leaves program `print` output on stdout. With
 `--format json`, the CLI captures that output into a result envelope and renders
-the return value only when it has a JSON surface. Identity returns use the same
-JSON identity form as saved-data JSON tooling. Resource-shaped returns are
-excluded from the run JSON surface.
+the return value only when it has a JSON surface. Entry identity returns use the
+same JSON form as saved-data JSON tooling. Resource-shaped returns are excluded
+from the run JSON surface.
 
 ## Parameters
 
@@ -308,9 +307,9 @@ Module-level declarations — functions, constants, enums, resources, and surfac
 `int`. An imported short module name binds the import even when it matches a
 builtin name, shadowing the builtin within the file. Local variables may also
 shadow builtin names. Surface declarations participate here as source names only;
-they are not durable saved-data entities, route declarations, or callable values. Custom
-application behavior remains ordinary `pub fn` code until a future surface
-profile groups checked functions explicitly.
+they are not durable saved-data entities, route declarations, or callable values.
+Custom application behavior remains ordinary `pub fn` code; current surface
+grouping can only refer to already checked functions.
 
 ## Host Boundaries
 

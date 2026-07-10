@@ -1,14 +1,19 @@
-# marrow — Agent Notes
+# marrow CLI Contributor Notes
 
-The operator binary: command dispatch, check/run/test/fmt, data, evolve, and backup/restore. Each
-command parses arguments into a typed args struct, calls the operation, and renders the result.
+This binary hosts current commands for checking, running, testing, formatting,
+data inspection, evolution, serving, backup, and restore. Each command parses
+arguments into typed inputs, calls a lower-level operation, and renders the
+result.
 
-One format-aware render owner routes text / json / jsonl for every diagnostic surface, and every exit
-path of a `--format`-aware command goes through it — a json consumer never scrapes a bare stderr
-string. `term_style` is the single painting owner. Prefer a typed state enum over a `bool`
-(`RunObservation`, `ServeMode`, `LockStrictness`). A named usage-exit owner replaces bare
-`ExitCode::from(2)`. Engine logic a second front-end could call belongs one layer down, not in a
-command file. As a binary, this crate is not held to `deny(missing_docs)`, but non-trivial modules
-still open with a `//!`.
+One format-aware renderer owns text, JSON, and JSONL output for each diagnostic
+boundary. `term_style` is the single painting owner, and one named usage-exit
+owner handles command-line usage failures. Machine-readable consumers never
+scrape stderr prose. Prefer typed state over behavior-selecting booleans and
+keep reusable engine logic below the binary.
+
+The current command set, `ServeMode`, and surface routes are implementation
+state. The binary owns no language, semantic path, public URI, or authorization
+meaning. Embedded and served profiles must consume the same compiler-owned
+semantics.
 
 Map: [docs/implementation/cli.md](../../docs/implementation/cli.md).

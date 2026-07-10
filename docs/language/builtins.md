@@ -58,8 +58,8 @@ counting, and ordered neighbors.
 | `keys(collection)` | A local sequence of a local collection's addresses |
 | `values(collection)` | A local sequence of a local collection's stored values |
 | `count(path)` | Populated immediate children, or path presence |
-| `next(element)` | The nearest stored neighbor identity in key order |
-| `prev(element)` | The nearest stored neighbor identity, the other way |
+| `next(element)` | The nearest stored neighbor address in key order |
+| `prev(element)` | The nearest stored neighbor address, the other way |
 
 `keys(...)` and `values(...)` materialize a local sequence over a local
 collection — a keyed `var`, a keyed parameter, or a sequence value. `keys(...)`
@@ -121,18 +121,19 @@ const after = next(^books(id)) ?? id
 const afterTitle = ^books(after).title ?? ""
 ```
 
-The result is the neighbor's **identity**, addressed like any key, so fields are
-read through it (`^books(next(^books(id))).field`). Neighbors are found for any
-key type — string, date, integer, and so on — through the same order-preserving
-key encoding tree iteration uses.
+For a store root, the result is the neighbor's **entry identity**, so fields are
+read through it (`^books(next(^books(id))).field`). For a keyed child layer, the
+result is that layer's key. Neighbors are found for any key type — string, date,
+integer, and so on — through the same order-preserving key encoding tree
+iteration uses.
 
 `next` and `prev` are scoped to one key level. Applied to a bare layer they return
 its edge entry: `next(^books)` is the first stored record, `prev(^books)` the
 last; `next(^books(id).tags)` is the first stored position in that layer.
 
 Stepping off the edge — `next` of the last entry, or `prev` of the first — has no
-neighbor, so the result types as `Id(^store)?` and must be resolved at the read,
-like any `T?` value. It composes with `??`:
+neighbor, so a store-root result types as `Id(^store)?` and must be resolved at
+the read, like any `T?` value. It composes with `??`:
 
 ```mw
 const following = next(^books(id)) ?? id
@@ -170,13 +171,13 @@ newline to the default output stream:
 print($"saved {id}")
 ```
 
-It renders every scalar, every enum, a saved identity, and any sequence whose
+It renders every scalar, every enum, an entry identity, and any sequence whose
 element type also renders. Scalars render in their canonical form: an `instant`,
 `date`, or `duration` as its canonical text, and `bytes` as `0x`-prefixed
 lowercase hex (matching `data dump`). An enum renders as its `Enum::member`
-source spelling. A single-key identity renders as its key, and a composite
-identity renders as `identity(k1, k2)`. A sequence renders as bracketed elements
-in sequence order:
+source spelling. A single-key entry identity renders as its key, and a
+composite entry identity renders as `identity(k1, k2)`. A sequence renders as
+bracketed elements in sequence order:
 
 ```mw
 print(std::text::split("a,b", ","))
@@ -234,27 +235,27 @@ boundaries.
 `string(...)` renders any scalar plus an enum, using the same scalar and enum
 text that `print` uses: a temporal as its canonical text, `bytes` as
 `0x`-prefixed lowercase hex, and an enum as its `Enum::member` spelling. It does
-not accept a saved identity or a sequence, which `print` and interpolation render
+not accept an entry identity or a sequence, which `print` and interpolation render
 directly when the value is otherwise renderable. UTF-8 decoding of bytes is the
 separate `std::bytes::toText` path; `string(bytes)` never depends on valid UTF-8.
 
 ## IDs
 
-`nextId(root)` returns the next identity value for a keyed store root with the
-default integer identity policy:
+`nextId(root)` returns the next entry identity value for a keyed store root with
+the default integer identity policy:
 
 ```mw
 const id = nextId(^books)
 ```
 
-For a typed store root, `nextId` returns that store's identity type:
+For a typed store root, `nextId` returns that store's entry identity type:
 
 ```mw
 const id: Id(^books) = nextId(^books)
 ```
 
-`nextId(...)` returns the next-available identity — the current maximum plus one.
-It does not advance the allocation until a record is actually written, so two
+`nextId(...)` returns the next-available entry identity — the current maximum
+plus one. It does not advance the allocation until a record is actually written, so two
 `nextId(^root)` calls with no write to that store between them return the *same*
 value. Allocate, write, then allocate again to obtain distinct ids:
 
@@ -269,17 +270,17 @@ Binding two ids and writing both without an intervening write inserts the same
 record twice; the checker warns (`check.next_id_collision`).
 
 Marrow provides a default per-root allocation policy for a store with one `int`
-identity key. Composite identities and non-integer identities are
+identity key. Composite entry identities and non-integer entry identities are
 application-provided; `nextId` is not available for those roots in ordinary
 `.mw`.
 
-IDs are opaque and may have gaps, including gaps left by failed transactions.
+Entry identities are opaque and may have gaps, including gaps left by failed transactions.
 Do not use them as business counters.
 
-After restore, `nextId` must choose an unused identity. It may skip ahead.
+After restore, `nextId` must choose an unused entry identity. It may skip ahead.
 
 If a store uses application-provided identity keys, allocate or validate those
-keys at the application boundary, then wrap them with the explicit identity
+keys at the application boundary, then wrap them with the explicit entry identity
 constructor before writing the resource:
 
 ```mw
@@ -287,11 +288,11 @@ const id: Id(^books) = Id(^books, "book-17")
 ```
 
 `Id(^store, key...)` performs no allocation and no lookup. It only constructs an
-identity value after the key argument count and scalar types match the store's
-declared identity keys. A constructed identity is not a presence proof; the first
-saved read still resolves absence in the ordinary way.
+entry identity value after the key argument count and scalar types match the
+store's declared identity keys. A constructed entry identity is not a presence
+proof; the first saved read still resolves absence in the ordinary way.
 
-`key(id)` projects a store identity back to its scalar key, the inverse of the
+`key(id)` projects an entry identity back to its scalar key, the inverse of the
 single-argument `Id(^store, key)`:
 
 ```mw
@@ -300,9 +301,9 @@ for id in ^tags
 ```
 
 It is defined only for a store with a single identity key, and returns that key's
-type. A composite identity is reconstructed as a whole value, never exposed as a
-tuple of raw key components, so `key` over a composite-identity root is rejected
-at check.
+type. A composite entry identity is reconstructed as a whole value, never
+exposed as a tuple of raw key components, so `key` over a root with a composite
+entry identity is rejected at check.
 
 ## Errors
 

@@ -1,12 +1,17 @@
-# marrow-catalog — Agent Notes
+# marrow-catalog Contributor Notes
 
-The accepted-catalog snapshot model: the committed record of durable identity (epoch, digest,
-entries), its validation invariants, and structural-signature decode. Both store and check read it.
+This crate owns the current durable-identity catalog: accepted epochs, digests,
+entries, lock projection, validation, and structural-signature decoding.
+Checker and storage code consume its validated values.
 
-Enforce invariants in the constructor: `CatalogMetadata`/`CatalogLock` verify the digest and
-self-consistency before a value can exist and fail closed on every corruption class without panicking.
-`StructuralSignature` is the sole reader of the wire grammar (the encode side lives once in
-marrow-check). `StoreRootEntry` derives one key set by construction rather than three hand-kept
-filters. Precedent: rust-analyzer's constructor-enforced invariant.
+Constructors must establish digest and self-consistency invariants before a
+catalog value exists. Corruption returns a typed error and never panics.
+Structural wire grammar has one reader, and filtered key sets derive from one
+typed source rather than parallel string classifiers.
+
+Catalog IDs and epochs are current implementation mechanisms. Do not collapse
+them with entry identities or store UIDs, or use source paths, catalog paths,
+or lock spellings as public URI identity, authorization scope, physical key
+identity, or the future semantic-path model.
 
 Map: [docs/implementation/check/](../../docs/implementation/check/README.md).

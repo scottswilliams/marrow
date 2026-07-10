@@ -1,5 +1,9 @@
 # Resources And Saved Data
 
+> **Status: retired proposal.** This page is non-authoritative and may conflict
+> with the current vision. Do not implement it without an accepted target
+> contract; see [Retired design notes](../README.md).
+
 Future counterpart of
 [`../../language/resources-and-storage.md`](../../language/resources-and-storage.md).
 

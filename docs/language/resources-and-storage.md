@@ -1,7 +1,10 @@
 # Resources And Saved Data
 
 Resources are the center of Marrow `.mw`. A resource is a typed tree shape. The
-same shape can be used for local values, local keyed trees, or saved data.
+same member and key types can be used for local values, local keyed trees, or
+saved data. This type reuse does not make local values and durable places
+observationally identical; the materialization, presence, assignment, and
+transaction differences are defined below.
 
 This page uses "saved data" for data marked with `^`. Saved data persists in
 the project's typed tree store. Local data has no `^` and exists only while code
@@ -55,13 +58,13 @@ resource Book
 store ^books(id: int): Book
 ```
 
-Then `^books(id)` is a saved `Book`, where `id` is the store identity
+Then `^books(id)` is a saved `Book`, where `id` is the entry identity
 canonically modeled as `Id(^books)`.
 
 Saved resources are not hidden blobs. The book above is stored as fields and
 layers under `^books(id)`, so tools can inspect the same tree that code reads.
 
-A store identity can exist with no populated fields. Existence is an explicit
+A store entry can exist with no populated fields. Existence is an explicit
 structural fact: `exists(^books(id))` is true once the node exists, independent of
 any field value or child. There is no need to model a required field just to record
 that a resource exists.
@@ -126,11 +129,11 @@ const id: Id(^books) = nextId(^books)
 ^books(id).title = "Small Gods"
 ```
 
-Identity is owned by the store. The canonical identity type is `Id(^books)`: the
-store plus its key. Ordinary typed code passes the identity value, not the raw
-key.
+An entry identity is scoped to its store declaration. The canonical entry
+identity type is `Id(^books)`: the store declaration plus its key. Ordinary
+typed code passes the entry identity value, not the raw key.
 
-Composite identities work the same way:
+Composite entry identities work the same way:
 
 ```mw
 resource Enrollment
@@ -148,7 +151,7 @@ use separate field names.
 Key names are part of the managed layer namespace. A store keyed by `id`
 does not also declare a field or child layer named `id`.
 
-Ordinary typed code addresses a managed root through the store identity:
+Ordinary typed code addresses a managed root through the entry identity:
 
 ```mw
 const id: Id(^enrollments) = Id(^enrollments, "student-1", "course-9")
@@ -156,19 +159,19 @@ const id: Id(^enrollments) = Id(^enrollments, "student-1", "course-9")
 ^enrollments(id).status = "active"
 ```
 
-The runtime lowers that identity into the declared key segments before it
+The runtime lowers that entry identity into the declared key segments before it
 reaches the backend.
 
-`Id(^store, key...)` constructs an identity from the declared key components. It
-does not read the store, does not allocate a new identity, and does not prove the
-record exists. The checker rejects the wrong number of key arguments, wrong key
-scalar types, and unchecked `unknown` values; convert dynamic input before it
-reenters typed saved data.
+`Id(^store, key...)` constructs an entry identity from the declared key
+components. It does not read the store, does not allocate an entry identity, and
+does not prove the record exists. The checker rejects the wrong number of key
+arguments, wrong key scalar types, and unchecked `unknown` values; convert
+dynamic input before it reenters typed saved data.
 
 Use identity keys when changing a key means "this is a different record."
-Identity keys do not change in place. Changing identity means creating a new
-record and explicitly transforming or deleting any data that should not remain
-under the old identity.
+Identity keys do not change in place. Changing an entry identity means creating
+a new record and explicitly transforming or deleting any data that should not
+remain under the old identity.
 
 ## Field Documentation
 
@@ -191,18 +194,18 @@ value, or the type of the field. In the example above, code still reads and writ
 ^books(id).title = "Small Gods"
 ```
 
-Saved data has a stable identity that does not depend on source spelling. The
-live store is the authority for the identity and shape of accepted saved data;
-the checked `.mw` program is the authority for the shape you want next. `marrow.lock`
-is a generated file: commit it, but never hand-edit it. It seeds the saved-data
-identity of a fresh empty store and reports a stale lock when it no longer matches
-the source, yet a valid store always wins — the lock never overrides or repairs
-live saved data. Saved-data identity is never declared in source.
+Saved declarations have accepted declaration identities that do not depend on
+current source spelling. The live store's active schema is the authority for
+those identities and the accepted shape; the checked `.mw` program describes
+the proposed shape. `marrow.lock` is generated: commit it, but never hand-edit
+it. It seeds the accepted declaration identities of a fresh empty store and
+reports when it no longer matches source, but it never
+overrides or repairs a valid live store.
 
-Because identity belongs to the saved data, not to the name, renaming a field in
-source does not by itself change that field's identity or move stored data. A rename
-is explicit: `evolve rename` (or an alias the store already records) carries identity
-and stored data forward to the new name (see Evolution below).
+Because an accepted declaration identity is distinct from its source name,
+renaming a field does not by itself change that identity or move stored data. An
+explicit `evolve rename`, or an alias the store already records, carries the
+declaration identity and stored data to the new spelling (see Evolution below).
 
 Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code
@@ -211,11 +214,14 @@ generated index tree when matching base data already exists.
 
 ## Application Surfaces
 
-A `surface Name from ^root` declaration is a checked application contract over an
-existing store. It does not declare saved data, establish saved-data identity,
-change the saved shape, or alter backup, restore, or evolution
-obligations. The backing store, projected fields, generated write inputs,
-collection aliases, action aliases, and computed-read aliases resolve to
+This section describes current legacy behavior under replacement. It is not a
+target application-boundary design.
+
+A `surface Name from ^root` declaration is a checked application contract over
+an existing store. It does not declare saved data, establish accepted
+declaration identity, change the saved shape, or alter backup, restore, or
+evolution obligations. The backing store, projected fields, generated write
+inputs, collection aliases, action aliases, and computed-read aliases resolve to
 existing checked facts.
 
 The initial checker contract admits direct store-backed shapes plus declared
@@ -238,7 +244,7 @@ public-function reads:
 - `collection ^root.index as alias` names an index declared on the backing store.
 - `collection ^root.index range as alias` names a ranged page over a non-unique
   index declared on the backing store. The index must end with the complete
-  store identity suffix, must have one scalar non-identity component immediately
+  entry identity suffix, must have one scalar non-identity component immediately
   before that suffix, and must not be unique. Components before the ranged key
   are exact request keys.
 - `action functionName` or `action module::functionName as alias` exposes an
@@ -250,7 +256,7 @@ public-function reads:
   shape, so workflows and CRUD-like operations are authored once as normal
   checked functions rather than repeated in a separate surface language. The
   active action JSON surface accepts scalar values, enums with accepted stable
-  ids, identities whose store and scalar keys have accepted stable ids, and
+  ids, entry identities whose store and scalar keys have accepted stable ids, and
   sequences of scalars or enums. Resource trees, local trees, errors, unknown
   values, and unsupported sequence elements are ordinary function types but are
   not exported as surface action parameters or returns yet.
@@ -259,7 +265,7 @@ public-function reads:
   target resolves only in the declaring module; cross-module targets must be
   qualified, with ordinary import-alias expansion. Omitting `as` uses the
   function leaf as the alias. Computed reads reuse the entry argument JSON shape,
-  require an explicit result value, and may return scalars, enums, identities,
+  require an explicit result value, and may return scalars, enums, entry identities,
   scalar/enum sequences, or a plain resource result whose top-level fields are
   scalar, enum, or identity leaves. A computed read is rejected if its effect
   closure writes saved data, opens a transaction, calls a host-effecting
@@ -284,7 +290,7 @@ surface Posts from ^posts
 The range operation takes `category` as the exact key, ranges over
 `publishedOn`, and uses `id` as the identity suffix. An index such as
 `byDay(day, id)` on `store ^events(day: date, id: int)` is not a valid range
-surface because the full index tuple is the store identity suffix; there is no
+surface because the full index tuple is the entry identity suffix; there is no
 non-identity component to range over.
 
 Generated operation names, collection aliases, action aliases, and computed-read
@@ -293,10 +299,11 @@ or a duplicate collection/action/read alias rejects the surface before facts are
 minted. Field, create, and update payload names keep their existing payload
 namespaces.
 
-The checker records typed surface facts over store, member, and index identities
-and derives read-operation facts over the checked backing-record footprint and
-public projection. It records no surface fact when the backing store, the
-store's normalized resource shape, a referenced field, or a referenced index is
+The checker records typed surface facts over accepted store, member, and index
+declaration identities and derives read-operation facts over the checked
+backing-record footprint and public projection. It records no surface fact when
+the backing store, its normalized resource shape, a referenced field, or a
+referenced index is
 already rejected by schema or checker validation; best-effort schema facts are
 not a public application contract.
 
@@ -339,10 +346,10 @@ that opens an already accepted native store and admits those reads by operation
 tag without creating, freezing, migrating, or repairing data. It also exposes a
 writable project surface session that admits reads, computed reads, creates,
 sparse updates, deletes, and actions by operation tag without exposing the store
-handle. Creates
-require an exact declared field body, use caller-supplied identity for keyed
-stores, reject existing records instead of replacing them, commit through managed
-write/index maintenance, and return the public projection. Sparse updates
+handle. Creates require an exact declared field body, use a caller-supplied entry
+identity for keyed stores, reject existing records instead of replacing them,
+commit through managed write/index maintenance, and return the public
+projection. Sparse updates
 preserve omitted fields, reject absent records instead of upserting, and commit
 atomically through managed write/index maintenance. Deletes reject absent
 records and remove the full backing record subtree plus generated index rows.
@@ -350,8 +357,8 @@ Actions execute the resolved `pub fn` through the same checked entry invocation
 machinery as `marrow run`, so their writes, transactions, host-effect checks,
 and return values are language semantics, not a generated CRUD side channel.
 Surface action JSON results use the surface value DTO with accepted stable ids
-for enums and identities rather than checker-local runtime IDs or source root
-labels.
+for enums and entry identities rather than checker-local runtime IDs or source
+root labels.
 Computed reads execute through the same checked entry invocation machinery in a
 read-only effect profile. Their JSON results carry captured output plus an
 optional computed-read value DTO; resource results carry the accepted resource
@@ -362,16 +369,15 @@ field.
 request-parameter DTOs, create request-body DTOs, sparse update request-body
 DTOs, delete request DTOs, action argument DTOs, and computed-read argument
 DTOs, and renders already-executed read, create, action, and computed-read
-results as DTOs with accepted stable ids
-and typed values. Runtime output uses accepted store and resource-member stable
-ids as semantic identity; enum and identity field values use accepted stable
-ids as well. Source names remain render labels. A stable exported surface
-operation cannot use proposal-only stable ids; until every referenced durable
-fact has an accepted stable id, the facts carry no stable descriptor
-rather than a stable client contract. A pending evolution for the checked
-source is reported as its own blocker, because accepted ids alone do not prove
-the current store, member, or index shape is the shape the store holds. Deferred
-surface profiles are tracked in
+results as DTOs with accepted stable ids and typed values. Runtime output uses
+accepted store and resource-member stable ids as legacy semantic identifiers;
+enum and entry-identity field values use accepted stable ids as well. Source
+names remain render labels. A stable exported surface operation cannot use
+proposal-only stable ids; until every referenced durable fact has an accepted
+stable id, the facts carry no stable descriptor rather than a stable client
+contract. A pending evolution for the checked source is reported as its own
+blocker, because accepted ids alone do not prove the current store, member, or
+index shape is the shape the store holds. Deferred surface profiles are tracked in
 [Surface ABI](../surface-abi.md).
 
 ## Indexes
@@ -394,21 +400,21 @@ the store body.
 Changing `shelf` moves the same book to a different lookup path. It does not
 create a different book. The index remains inspectable saved data, and user
 code uses the declared index instead of writing separate maintenance code.
-Index entries lead back to store identities; the primary resource remains
+Index entries lead back to entry identities; the primary resource remains
 the place to read fields.
 
 Declared indexes require keyed stores. A singleton
-saved root has no store identity for an index entry to point to.
+saved root has no entry identity for an index entry to point to.
 Nested-layer indexing is modeled as a separate resource when it needs a
 first-class lookup path.
 
 Generated index entries are populated paths. Non-unique indexes use generated
-marker values at identity lookup paths. Unique indexes store the store identity
+marker values at entry identity lookup paths. Unique indexes store the entry identity
 at the lookup path.
-Typed code reads non-unique index identities through direct iteration
-(`for id in ^books.byShelf(...)`). It reads a unique index identity from the
-lookup path. Generated marker values are visible only through checked inspection
-tooling.
+Typed code reads non-unique index entry identities through direct iteration
+(`for id in ^books.byShelf(...)`). It reads a unique index entry identity from
+the lookup path. Generated marker values are visible only through checked
+inspection tooling.
 
 Saved keyspace traversal may replace the final provided key argument with an
 ordered range bound. This applies to non-unique index branches, store-root
@@ -431,7 +437,7 @@ only entries under that exact prefix and bounded final component. Store-root
 keyspaces and keyed layers range their final declared key component under exact
 leading components.
 Non-unique indexes may range only a component whose following components are the
-store identity suffix; the ranged traversal therefore yields store identities
+entry identity suffix; the ranged traversal therefore yields entry identities
 and can be used directly in one-name or two-name resource loops. A range that
 would leave another non-identity index component to enumerate is rejected; write
 that component as an exact key first or model a different index order.
@@ -440,19 +446,20 @@ ordered scalar store/layer key components, not identity-typed components, and
 they do not apply to unique indexes. A bare `..`, `start..=`, non-trailing range,
 composite endpoint, or `by` step in a saved key argument is rejected.
 Ranged saved-key calls are traversal shapes, not value reads: use them as loop
-iterables or in supported cardinality/presence calls. A ranged key argument names a span of entries, not
-one entry, so it is also rejected as a write or `delete` address. In v0.1, ranged
+iterables or in supported cardinality/presence calls. A ranged key argument
+names a span of entries, not one entry, so it is also rejected as a write or
+`delete` address. In v0.1, ranged
 `exists(...)` and `count(...)` are supported for non-unique index branches;
 store-root and keyed-layer ranges are traversed rather than tested or counted as
 a single lookup value.
 
 Index arguments may name store keys or top-level fields only. Field components
-may be orderable scalars, enums, or `Id(^store)` typed references; an identity
-field is indexed by a store-id-prefixed canonical identity payload, so
+may be orderable scalars, enums, or `Id(^store)` typed references; an entry
+identity field is indexed by a store-id-prefixed canonical identity payload, so
 references to stores with the same key shape remain distinct. Fields nested
 through unkeyed groups are rejected, whether written as a dotted path or as a
 bare leaf name, and indexes do not walk keyed child layers. A non-unique index
-ends with all store identity keys in declaration order so each entry is
+ends with all entry identity keys in declaration order so each entry is
 distinct:
 
 ```mw
@@ -477,11 +484,11 @@ fn findByIsbn(isbn: string, fallback: Id(^books)): Id(^books)
 ```
 
 A unique index can omit the identity key because each populated lookup path
-points to one store identity. The lookup is maybe-present — no book may carry
+points to one entry identity. The lookup is maybe-present — no book may carry
 that isbn — so the read resolves like any maybe-present place.
 
-For a composite store identity, a non-unique index includes all identity
-key names. Typed traversal reconstructs the store identity value instead
+For a composite entry identity, a non-unique index includes all identity
+key names. Typed traversal reconstructs the entry identity value instead
 of exposing a tuple of raw key components.
 
 An index entry exists only when every indexed value is populated. Sparse
@@ -515,7 +522,7 @@ repair and derived rebuild are explicit data-evolution tooling work.
 
 Marrow reads saved data with paths, traversal, and declared indexes.
 
-Use the primary saved root when identity is known:
+Use the primary saved root when the entry identity is known:
 
 ```mw
 const title = ^books(id).title ?? ""
@@ -553,20 +560,26 @@ for id in ^books
         print(title)
 ```
 
-Materialization stays in the tree model: `for id in ^books` streams identities,
+Materialization stays in the tree model: `for id in ^books` streams entry identities,
 and holding a result means building a local tree — a `sequence` or keyed layer,
-the same shape you would save. There is no flat in-memory list and no
-in-memory-versus-saved distinction; `^` is the only difference between a local
-tree and a saved one. Every traversal is written in source; see
-[Cost Model](cost-model.md) for the hidden-traversal rule.
+using the same member and key types as the durable declaration. That type reuse
+does not make local values and durable places observationally identical. Whole
+durable reads omit keyed children, whole durable assignment has subtree
+replacement rules, and durable places participate in structural presence and
+transactions. The `^` marks the durable address space; the surrounding
+operation determines the additional rules.
+
+Every traversal is written in source. The current checker also applies the
+legacy storage-accounting restrictions in [Cost Model](cost-model.md); those
+rules are current behavior under architectural reconsideration.
 
 Marrow does not add a separate saved-data access language. If code needs a new lookup
 path, add an index to the store and rebuild the generated tree when existing
 data should appear through it.
 
 Value forms are the contract above index representation: code reads declared
-paths, identities, keys, entries, and values, while the generated index tree
-remains a maintained lookup structure.
+paths, entry identities, keys, entries, and values, while the generated index
+tree remains a maintained lookup structure.
 
 ## Managed Writes
 
@@ -839,7 +852,7 @@ Rules:
   keyed root, a keyed child layer without its child key, or a non-unique index
   branch.
 - `delete path` removes the value and child tree at that path. Deleting an
-  already absent sparse path or store identity has no effect.
+  already absent sparse path or entry identity has no effect.
 - `required` fields must be populated for a valid resource.
 - A `required` field inside a keyed layer is required for entries that exist,
   not for every possible key.
@@ -853,12 +866,12 @@ const subtitle: string = ^books(id).subtitle ?? ""
 
 ### Absent Records
 
-An absent store identity is ordinary absence until a checked read proves
+An absent entry identity is ordinary absence until a checked read proves
 otherwise. Code must resolve maybe-present records and fields at the read site,
 so an unchecked absent record is a check error rather than a runtime branch.
 
 Declaring a field `required` does not by itself prove presence for arbitrary
-saved data. A bare read of a required field through an identity, parameter, or
+saved data. A bare read of a required field through an entry identity, parameter, or
 constructed `Id(^store, key...)` still needs read-site resolution unless the
 checker has a concrete narrowing proof. This keeps the source contract honest
 when attached data is absent, stale, or under repair.
@@ -888,34 +901,34 @@ capability.
 `merge` is a reserved word, not a v0.1 statement. To preserve existing data,
 write specific fields rather than a whole-record `=`.
 
-Deleting one store identity is ordinary application work. Deleting a whole
+Deleting one entry identity is ordinary application work. Deleting a whole
 managed root is maintenance work. Ordinary source syntax cannot opt into it;
 tools run with an explicit maintenance capability. The operation may still fail
 with a typed storage limit when the selected store cannot delete that subtree
-safely. Delete does not follow identity values stored in other resources.
+safely. Delete does not follow entry identity values stored in other resources.
 Cascading cleanup is ordinary application or data-evolution code.
 
 ## Backup And Restore
 
 Typed backup and restore are commands (`marrow backup`, `marrow restore`). A
 backup is the portable, full-state path for a project's saved data: it is
-self-describing and carries every saved-data identity and shape it needs to be
-restored under the Marrow storage contract rather than by copying raw bytes. The
-generated indexes are derived data, so a backup omits them and a restore rebuilds
-them from the restored records. Backups are deterministic and portable across
-conforming backends, but byte identity requires the same saved-data identities,
-shape, and stored data. Saved-data identities are stable values fixed when they
-are first accepted, so two projects whose histories diverged may hold distinct
-identities for source that looks equivalent.
+self-describing and carries every accepted declaration identity and shape it
+needs to be restored under the Marrow storage contract rather than by copying
+raw bytes. The generated indexes are derived data, so a backup omits them and a
+restore rebuilds them from the restored records. Backups are deterministic and
+portable across conforming backends, but byte identity requires the same
+accepted declaration identities, shape, and stored data. Declaration identities
+are stable values fixed when first accepted, so two projects whose histories
+diverged may hold distinct identities for source that looks equivalent.
 
 Restore replays a backup into an empty store by default, or into a counted
 replace target with `restore --replace --count N`, and validates the conditions
-required to bring the data back online. Restore re-establishes saved-data identity
-from the backup itself, never from `marrow.lock`. The replay is all-or-nothing:
-any checksum, framing, or verification failure rolls the target back to its prior
-state. Saved data under roots or members the current source does not declare is
-rejected as an integrity failure; restore never treats raw saved paths as the
-production backup contract.
+required to bring the data back online. Restore re-establishes accepted
+declaration identities from the backup itself, never from `marrow.lock`. The
+replay is all-or-nothing: any checksum, framing, or verification failure rolls
+the target back to its prior state. Saved data under roots or members the current
+source does not declare is rejected as an integrity failure; restore never
+treats raw saved paths as the production backup contract.
 
 Backup-backed inspection is not restore. `marrow data ... --backup` and
 `marrow evolve preview --from-backup` validate the same self-describing backup
@@ -1020,7 +1033,7 @@ facts. When in doubt, resolve the read at the use site with `if const` or `??`.
 
 Declaring a field `required` is not a narrowing proof. It states what valid
 populated records must contain; it does not prove that this run's attached data
-currently has the cell at an arbitrary identity. Required data missing during a
+currently has the cell at an arbitrary entry identity. Required data missing during a
 whole-resource materialization is fatal invalid attached data, not a sparse
 absence branch.
 
@@ -1039,12 +1052,13 @@ data-integrity risk.
 
 ## Evolution
 
-Database shape changes state their intent in an `evolve` block. A bare source
+Durable shape changes state their intent in an `evolve` block. A bare source
 diff implies nothing about stored data: renaming a member in the resource alone
-is ambiguous between delete-and-add and identity-preserving rename. The old
-entity and its stored data keep their saved-data identity, and the newly spelled
-member does not inherit them unless source evolution states that intent. The
-`evolve` block names what the change means for saved-data identity:
+is ambiguous between delete-and-add and a declaration-identity-preserving
+rename. The old entity and its stored data keep their accepted declaration
+identity, and the newly spelled member does not inherit them unless source
+evolution states that intent. The `evolve` block names what the change means for
+accepted declaration identity:
 
 ```mw
 evolve
@@ -1054,14 +1068,15 @@ evolve
 ```
 
 `rename old -> new` declares that the entity now spelled `new` is the durable
-entity formerly spelled `old`, so its saved-data identity and stored data carry
-forward and the old path is kept as an alias. A rename over populated saved data
-is rejected unless an `evolve rename` states this intent, or the store already
-records the alias; either way authorizes it, so identity is never silently
-reassigned. `default` gives the value to backfill where a newly populated member
-is absent. `retire` is destructive: it states intent to remove an entity and its
-stored data, reserving its identity so a later entity cannot reuse it. `transform`
-computes the new shape of an entity from the old through a checked body.
+entity formerly spelled `old`, so its accepted declaration identity and stored
+data carry forward and the old path is kept as an alias. A rename over populated
+saved data is rejected unless an `evolve rename` states this intent, or the
+store already records the alias; either form authorizes it, so declaration
+identity is never silently reassigned. `default` gives the value to backfill
+where a newly populated member is absent. `retire` is destructive: it states
+intent to remove an entity and its stored data, reserving its declaration
+identity so a later entity cannot reuse it. `transform` computes the new shape
+of an entity from the old through a checked body.
 
 A `default` value must be a constant the checker can evaluate when the change is
 discharged: a literal such as `"unknown"`, `0`, or `true`. The same fill is written

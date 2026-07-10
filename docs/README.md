@@ -1,79 +1,90 @@
-# Marrow Reference
+# Marrow Documentation
 
-These pages describe the Marrow language, runtime, tools, and implementation
-architecture.
+The documentation is divided by authority and implementation status.
+
+- [Language Reference](language/) defines current `.mw` behavior.
+- [Implementation Map](implementation/) describes the code that exists.
+- [Project Status](status.md) separates implemented, legacy, designed, accepted
+  target, and research work.
+- [Vision](vision.md) describes long-term direction without making it part of
+  the current language.
+- [Target Design Contracts](design/) contain only explicitly approved,
+  unimplemented contracts named by the work plan. The directory is currently
+  empty apart from its governance page.
+
+When these sources disagree, the language reference states the intended current
+contract and the implementation map states what the repository actually does.
+The disagreement is implementation or documentation work; a plan or decision
+record does not silently override either source.
 
 ## Start Here
 
-- [Quickstart](quickstart.md) — create a project, write a resource, run it,
-  inspect the saved data, and run a test.
-- [Install](install.md) — source builds and data directories.
-- [Stability Contract](stability.md) — v0.1 stable surfaces, unstable surfaces,
-  platform support, and distribution channels.
+- [Quickstart](quickstart.md) — create, check, run, test, and inspect a small
+  durable project.
+- [Install](install.md) — supported platforms, source installation, and data
+  directories.
+- [Project Status](status.md) — current capabilities and limitations.
+- [Stability Contract](stability.md) — the current pre-release compatibility
+  boundary.
 
-## Guides
+## Language And Data
 
-Task-oriented pages that show how to put the language and tools together. They
-point at the [language reference](language/) for the exact rules.
+- [Language Reference](language/) — syntax and semantics of `.mw`.
+- [Data Modeling](data-modeling.md) — resources, durable roots, keyed child
+  layers, identities, indexes, and history.
+- [Data Evolution](data-evolution.md) — previewing and applying supported
+  changes over populated data.
 
-- [Data Modeling](data-modeling.md) — roots, child layers, identity keys,
-  sparse and required fields, relationships, history, indexes, and lookup
-  patterns.
-- [Data Evolution And Maintenance](data-evolution.md) — evolving saved data with
-  automatically recorded durable identity, exact witnesses, source-native apply,
-  maintenance repair, backup, and restore.
+Guides may explain a task in a more convenient order, but defer to the language
+reference for exact behavior.
 
-## Language Reference
+## Tools And Operations
 
-- [Language](language/) defines `.mw` syntax, types, resources, saved data,
-  control flow, builtins, standard library contracts, the reference sample,
-  and grammar. This is the language law the guides and tooling pages defer to.
+- [CLI Reference](cli.md) — commands, arguments, output, and exit behavior.
+- [Project Configuration](project-config.md) — `marrow.json` fields and
+  validation.
+- [Data Tools](data-tools.md) — inspection, integrity checking, and recovery.
+- [Operations](operations.md) — native-store ownership, deployment, backup, and
+  restore.
+- [Error Codes](error-codes.md) — dotted codes and machine-readable
+  diagnostics.
 
-## Tooling Reference
+## Implementation
 
-- [CLI Reference](cli.md) — every `marrow` subcommand: syntax, inputs, outputs,
-  exit behavior, and examples.
-- [Project Configuration](project-config.md) — every `marrow.json` field and
-  its validation rules.
-- [Data Inspection And Repair Tools](data-tools.md) — `marrow data` inspection
-  commands and the explicit recover command in depth.
-- [Operations](operations.md) — native-store writer model, deploy choreography,
-  backup/restore repack, branch stores, and security boundaries.
-- [Tooling Surfaces](tooling-surfaces.md) — support levels and boundaries for
-  debug, admin, and production tool surfaces.
-- [Surface ABI](surface-abi.md) — checked application-surface descriptors,
-  operation envelopes, route manifests, local serving, and deferred profiles.
-- [Errors](error-codes.md) — CLI exit codes, the machine-readable error
-  envelope, and the stable dotted error codes.
+- [Implementation Map](implementation/) — source pipeline, crate ownership, and
+  code-navigation links.
+- [Backend Contract](backend-contract.md) — current ordered tree and transaction
+  requirements beneath durable paths.
+- [Testing Architecture](testing-architecture.md) — test tiers, fixtures, and
+  accepted oracles.
 
-## Architecture Reference
+Implementation pages are descriptive rather than normative. They name the
+actual interpreter, storage implementation, and legacy components while those
+components exist.
 
-- [Implementation Map](implementation/) — the code-truth architecture map: what
-  each crate and module does and where to read it, mirroring the source pipeline
-  from syntax through check and runtime to the store.
-- [Backend Contract](backend-contract.md) — the ordered path/value operations,
-  flat transactions, presence states, bounded scans, the conformance suite, and
-  native-store responsibilities a store backend must satisfy.
-- [Testing Architecture](testing-architecture.md) — the test tiers, allowed
-  oracles, and fixture rules the test suite follows.
-- [Future](future/) — selected future surfaces whose designed contracts are not
-  implemented yet.
+## Direction
 
-Marrow v0.1 release promises are named in the
-[Stability Contract](stability.md). If implementation and language references
-disagree, treat the disagreement as implementation work, not as a competing
-design.
+- [Vision](vision.md) — purpose, architectural principles, scope, and the
+  embedded-to-served development path.
+- [Project Status](status.md) — claim-by-claim implementation status.
+- [Target Design Contracts](design/) — the lifecycle for an exact unimplemented
+  rule approved for implementation.
 
-## Scope And Security
+Detailed unimplemented syntax and protocols do not belong in the active
+reference. A language rule becomes current only when the canonical reference
+and implementation change together.
 
-Marrow v0.1 is deliberately bounded. It does not add a second saved-data access
-language, a hidden object store, an ORM layer, a SQL-style migration subsystem,
-implicit async syntax, a required background service, a web framework, a remote
-database product, a built-in users-and-roles system, or backend-specific
-application APIs.
+## Documentation Conventions
 
-There is no database users-and-roles system in `.mw`. The security boundary is
-the host process, the filesystem or backend credentials, and the selected
-transport: local CLI commands use the current user's access to project source
-and data, and remote server transport is out of v0.1. Application authorization
-belongs in application data and code, not in a hidden backend permission layer.
+- Examples use current syntax unless explicitly marked illustrative.
+- Current behavior and architectural direction appear separately.
+- Use the complete [status vocabulary](status.md#status-categories): Current,
+  Legacy, Designed, Accepted target, and Research.
+- Claims state whether they are implemented, enforced, tested, measured, or
+  designed.
+- One page owns each concept and one term names it.
+- Public descriptions use technical language rather than superlatives.
+- Limitations and counterexamples are part of the reference.
+- Obsolete material is removed instead of retained as a second design.
+- Decision records preserve rationale; the canonical reference owns current
+  behavior.

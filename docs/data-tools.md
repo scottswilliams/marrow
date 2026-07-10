@@ -489,10 +489,9 @@ store open/repair completed: ./project/.marrow/data/marrow.redb
 
 ## Deferred: `diff` and `load`
 
-`marrow data diff` and `marrow data load` are not implemented — see
-[future/data-tools.md](future/data-tools.md). Bulk data movement is
-[`marrow backup` and `marrow restore`](cli.md#marrow-backup), not a `data`
-subcommand.
+`marrow data diff` and `marrow data load` are not implemented. Bulk data
+movement is [`marrow backup` and `marrow restore`](cli.md#marrow-backup), not a
+`data` subcommand.
 
 ## See also
 

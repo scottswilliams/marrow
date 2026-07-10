@@ -26,11 +26,12 @@ parameter, return, field, `var`, or `const` accepts only that exact enum: passin
 or assigning a different enum (or a raw scalar) where one enum is expected is a
 compile error, and a `match` is type-checked against the scrutinee's enum.
 
-An enum's identity is its owning module together with its name. A bare `Status`
-resolves to the enclosing module's `Status` first, so two modules may each declare
-a `Status` without colliding; they are distinct enums and never compare equal. To
-name another module's enum, qualify it: `b::Status` as a type and `b::Status::open`
-as a value. If a bare type annotation or member value could name more than one
+An enum's source-level nominal identity is its owning module together with its
+name. A bare `Status` resolves to the enclosing module's `Status` first, so two
+modules may each declare a `Status` without colliding; they are distinct enums
+and never compare equal. To name another module's enum, qualify it: `b::Status`
+as a type and `b::Status::open` as a value. If a bare type annotation or member
+value could name more than one
 visible foreign enum owner, the checker rejects it; qualify the enum name. A
 qualified name always names exactly that module's enum, so an annotation and a
 value spelled the same way denote the same enum. The qualifier may be a
@@ -38,35 +39,39 @@ value spelled the same way denote the same enum. The qualifier may be a
 `b::Status::open` name module `a::b`'s enum, the same way the alias resolves a
 call.
 
-A value stores as the selected member's stable saved-data identity, not its position
-in source. Because an enum carries saved-data identity, declaring one makes a program
-durable: it requires a native store, and a memory/no-store backend is rejected at check.
-Reordering the members in the declaration does not change what stored
-data means: each stored value decodes back to the member it named. At the language
-level a `state: Status` field reads back as its member: a read of `state` is a
-`Status` value, equal to `Status::archived` again. Raw inspection works on the
-stored bytes, so `marrow data get` shows the stored member identity.
+A value stores as the selected member's accepted declaration identity, not its
+position in source. Because an enum carries declaration identity,
+declaring one makes a program durable: it requires a native store, and a
+memory/no-store backend is rejected at check. Reordering the members in the
+declaration does not change what stored data means: each stored value decodes
+back to the member it named. At the language level a `state: Status` field reads
+back as its member: a read of `state` is a `Status` value, equal to
+`Status::archived` again. Raw inspection works on the stored bytes, so
+`marrow data get` shows the member's accepted declaration identity.
 
 `string(Status::archived)`, `print(Status::archived)`, and interpolation all
 render an enum as its `Enum::member` source spelling — `Status::archived` —
 dropping the module prefix.
 
-Because the stored value is a member identity rather than a position, removing a
-selectable member — or marking it `category`, or giving it children, all of which
-make it no longer selectable — is checked against saved data, not assumed safe.
-While saved data still selects such a member, `marrow evolve preview` reports the
-change as repair-required and `marrow evolve apply` refuses it: the stored identity
-names a member the new enum no longer offers as a value. Resolve it by migrating
-the affected records to a current member before removing the old one. Reordering
-members keeps every identity and needs no repair. Renaming a member is
-identity-preserving when declared with `evolve rename`: the member's stable identity
-moves to the new spelling, so stored values stay valid. A bare source rename with no
-`evolve rename` intent is read as the old member removed plus a new one added, so a
-stored value naming the old member fails closed like any other removal. Renaming
-the whole enum with `evolve rename` is identity-preserving the same way: the enum's
-identity moves to the new name and each member's identity cascades with it, so every
-stored value stays valid without a per-member rename. [Data
-Evolution](../data-evolution.md) covers the preview-and-apply flow.
+Because the stored value is the member's accepted declaration identity rather
+than a position, removing a selectable member — or marking it `category`, or
+giving it children, all of which make it no longer selectable — is checked
+against saved data, not assumed safe. While saved data still selects such a
+member, `marrow evolve preview` reports the change as repair-required and
+`marrow evolve apply` refuses it: the stored declaration identity names a member
+the new enum no longer offers as a value. Resolve it by migrating the affected
+records to a current member before removing the old one.
+
+Reordering members preserves every member's accepted declaration identity and
+needs no repair. Renaming a member preserves its accepted declaration identity
+when declared with `evolve rename`: the identity moves to the new spelling, so
+stored values stay valid. A bare source rename with no `evolve rename` intent is
+read as the old member removed plus a new one added, so a stored value naming the
+old member fails closed like any other removal. Renaming the whole enum with
+`evolve rename` preserves the enum's accepted declaration identity and carries
+each member's accepted declaration identity with it, so stored values stay valid
+without a per-member rename. [Data Evolution](../data-evolution.md) covers the
+preview-and-apply flow.
 
 ## Hierarchies
 
@@ -93,10 +98,10 @@ by the bare `Cat::paw`; the compiler rejects it and asks for the qualifying path
 (`Cat::tiger::paw` or `Cat::lion::paw`). The full path always resolves, so a
 duplicate name is fully usable — it just has to be written out.
 
-A value is still a single selected member, stored as its stable member identity
-exactly as a flat enum value is. The hierarchy lives in the schema, not in the
-value, so flat and nested enums share one storage model and existing data needs no
-rewrite.
+A value is still a single selected member, stored under its accepted declaration
+identity exactly as a flat enum value is. The hierarchy lives in the schema, not
+in the value, so flat and nested enums share one storage model and existing data
+needs no rewrite.
 
 A member marked `category` groups its descendants and cannot be selected as a
 value; only its concrete members can. Above, `Cat::tiger` is a category and is

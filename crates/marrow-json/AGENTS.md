@@ -1,14 +1,19 @@
-# marrow-json — Agent Notes
+# marrow-json Contributor Notes
 
-Bounded, machine-readable DTOs: serialize `CheckedProgram` and runtime facts into typed JSON envelopes
-and decode surface requests. It is not a general `Value` codec and does not define HTTP serving.
+This crate owns bounded JSON representations of compiler, runtime, and tooling
+facts. JSON is a boundary encoding; it does not own language types, semantic
+paths, routes, authorization, or execution.
 
-Wire twins mirror their upstream owner through an exhaustive `From`, so a new upstream variant is a
-compile error here, never silent drift. Prose lives only in `Display`; read a typed `code` and typed
-`message`, never string-strip one field out of another's rendered form. Bounded materialization must
-not scan omitted data. `resource_schema.rs` and `serve.rs` are the live query-native analysis API the
-marrow-lsp repo consumes — keep them and add facts here before adapting the LSP. Organize a
-serialization module by verb (define the DTO, convert into it, emit it), and keep the behavioral suite
-under `tests/`, not inline. Precedent: serde's `value/` split; BurntSushi typed errors.
+Wire mirrors convert exhaustively from their upstream typed owners so a new
+variant cannot drift silently. Serialization must not touch or materialize
+durable data omitted from the requested result. Prose belongs in renderers;
+consumers branch on typed codes and fields.
+
+Resource-schema DTOs are current compiler-derived facts consumed by tooling;
+keep them exhaustive and independent of transport semantics. Surface-request
+DTOs, route manifests, and serving helpers describe the legacy application
+boundary. Do not extend or stabilize that model. New boundary work must consume
+compiler-owned semantic path and authority facts after its target contract is
+accepted.
 
 Map: [docs/implementation/json.md](../../docs/implementation/json.md).

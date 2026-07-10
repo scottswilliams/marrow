@@ -1,5 +1,9 @@
 # Syntax
 
+> **Status: retired proposal.** This page is non-authoritative and may conflict
+> with the current vision. Do not implement it without an accepted target
+> contract; see [Retired design notes](../README.md).
+
 Future counterpart of [`../../language/syntax.md`](../../language/syntax.md).
 
 The v0.1 parser reports typed diagnostics for several recognizable but

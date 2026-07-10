@@ -405,12 +405,11 @@ against data it no longer describes. A run advancing the epoch fences other bind
 still on the old epoch (`run.store_evolved`), the same lockout an explicit
 `marrow evolve apply` produces.
 
-## Long-Term Online Activation Direction
+## Online Activation
 
 v0.1 activation is intentionally strict and local: one exact witness, one
-transaction. The designed online path — compiler-owned activation jobs, finite
-compatibility windows, and shadow-decant for large reshapes — is specified in
-[future/data-evolution.md](future/data-evolution.md).
+transaction. Online activation, compatibility windows, and large online
+reshapes have no accepted target contract.
 
 ## Evolve Block Lifecycle
 
@@ -632,8 +631,7 @@ These do not exist yet:
   record). The narrow per-record `evolve transform` — a pure body computing one
   saved member from a record's other, still-decodable members — is implemented; a
   reshape that crosses records is not;
-- `marrow data diff` and `marrow data load` (see
-  [future/data-tools.md](future/data-tools.md));
+- `marrow data diff` and `marrow data load`;
 - restore merge/repair modes and cross-engine restore. Counted
   `restore --replace --count` is implemented for replacing an existing target
   whose live record count matches the supplied count.

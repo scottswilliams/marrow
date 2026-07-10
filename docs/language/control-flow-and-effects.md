@@ -123,10 +123,10 @@ traversal-direction keyword in the head slot; `by` sets a range step. There is n
 wrapper builtin between `in` and the iterable — the head's name count is the whole
 story.
 
-A single loop variable binds the durable key or identity being streamed. For a
-primary store root, it is the store identity. For a keyed child layer, it is the
+A single loop variable binds the durable key or entry identity being streamed. For a
+primary store root, it is the entry identity. For a keyed child layer, it is the
 child key at a populated position. For a non-unique index branch, it is the
-identity stored in that lookup branch:
+entry identity stored in that lookup branch:
 
 ```mw
 for id in ^books
@@ -148,10 +148,10 @@ addresses over saved data is a projection, not a navigation step, so the two-nam
 head is the honest spelling.
 
 A bare non-unique index root — the index named with no lookup key
-(`^books.byShelf`) — streams every stored identity across all its branches in
+(`^books.byShelf`) — streams every stored entry identity across all its branches in
 index order, not the distinct leading key values; with two loop variables it pairs
-each identity with its record. There is no form that enumerates an index's
-distinct leading values; deriving them means streaming the identities and
+each entry identity with its record. There is no form that enumerates an index's
+distinct leading values; deriving them means streaming the entry identities and
 deduplicating the leading key in code.
 
 A second loop variable binds the value reached at each address:
@@ -202,7 +202,7 @@ for pos, tag in reversed ^books(id).tags
 
 Over a saved layer the reversal streams stored keys from high to low — a true
 reverse, not a copy of the forward result flipped after the fact; an early `break`
-stops the scan. A composite identity reverses at every key level. `reversed` is a
+stops the scan. A composite entry identity reverses at every key level. `reversed` is a
 keyword only in this head slot, between `in` and the iterable; everywhere else it
 is an ordinary identifier. A range has no `reversed` form — spell a descending
 range with its endpoints and a negative `by` step (`for i in 10..1 by -1`).
@@ -261,8 +261,8 @@ for pos, id in ids
     delete ^books(id)
 ```
 
-Iterating `^books` streams saved identities lazily and never materializes them as
-a value. The loop above copies each identity into the local `ids`, so the
+Iterating `^books` streams entry identities lazily and never materializes them as
+a value. The loop above copies each entry identity into the local `ids`, so the
 mutation traverses the snapshot rather than the live layer.
 
 ## Exiting Nested Loops

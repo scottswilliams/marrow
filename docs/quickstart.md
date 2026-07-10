@@ -89,7 +89,7 @@ What this declares:
   absent.
 - `index byShelf(shelf, id)` belongs to the store and declares an alternate
   lookup tree. Assigning a `Book` maintains the index in the same managed write.
-- `nextId(^books)` allocates the next identity for the root.
+- `nextId(^books)` allocates the next entry identity for the root.
 - `^books(id) = book` saves the local `book` value under that identity. The `^`
   is what makes data saved rather than local to the run.
 
@@ -240,7 +240,7 @@ here for brevity.
 
 `marrow data` inspection commands are read-only; `marrow data recover` is the
 explicit store-open repair command. The `diff` and `load` subcommands are
-deferred — see [future/data-tools.md](future/data-tools.md).
+not implemented.
 
 ## 5. Inspect And Run The Test
 

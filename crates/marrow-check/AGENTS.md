@@ -1,14 +1,24 @@
-# marrow-check — Agent Notes
+# marrow-check Contributor Notes
 
-The semantic spine: resolution, types, presence/effects, catalog identity, lowering, data-evolution
-proofs, and the analysis API. It produces the `CheckedProgram`; run, the CLI, and tooling never
-re-derive semantics from it.
+This crate is the current semantic owner for resolution, types, presence and
+effects, durable identity, lowering, evolution checks, and analysis facts. It
+produces `CheckedProgram`, the executable artifact used by the current runtime;
+that type is not automatically the final compiled-image architecture.
 
-Diagnostics are a typed `Code` plus a `DiagnosticPayload`, with prose owned only by
-`diagnostic_render.rs`; secondary locations are payload fields, not sentence fragments. Nominal
-identity (types, catalog ids) is typed/interned and compared by value, not by a formatted string. The
-analysis API hands back POD snapshot facts with version semantics — the marrow-lsp repo consumes it, so
-add facts here before adapting the LSP. Exemplars: `facts.rs` id newtypes, `DiagnosticAnchor` (a
-zeroed span is unrepresentable). Decompose a dispatcher by invariant before it grows a second concern.
+Semantic path facts originate here. As the path model is refounded, one typed
+graph must own stable schema path identities. It derives source spellings,
+concrete durable addresses, URI projections, authority regions, graph-version
+evolution facts, and tooling views. Entry identities and store UIDs remain
+distinct. Downstream crates may consume these facts but never recreate them
+from names or formatted paths.
+
+Do not introduce query plans, cost plans, CRUD families, or operation matrices
+as central compiler semantics. Current surface facts are legacy implementation
+and should be contained or removed, not expanded.
+
+Diagnostics consist of a typed `Code` and payload; prose belongs only to the
+render owner. Call targets, IDs, path effects, and spans are typed and compared
+by value. Say “checked” or “witnessed,” not “proved,” unless a formal result is
+published.
 
 Map: [docs/implementation/check/](../../docs/implementation/check/README.md).

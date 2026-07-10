@@ -1,5 +1,13 @@
 # Cost Model
 
+> **Status: current legacy behavior.** This page documents implemented v0.1
+> checker and runtime rules. Its user-facing operation counts, hidden-scan
+> terminology, and minimal-work claims are not part of Marrow's intended
+> architecture. They remain documented only while the implementation enforces
+> them and will be replaced and removed with those checker/runtime rules under
+> an accepted resource-bounded execution contract. See
+> [Project Status](../status.md) and [Vision](../vision.md).
+
 Marrow source names the store, the index, and the fields it reads and writes, so
 the storage work a program does is written in its source. There is no hidden
 access strategy to discover: the access path is the source.

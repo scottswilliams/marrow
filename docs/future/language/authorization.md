@@ -1,9 +1,13 @@
 # Authorization
 
-A designed surface with a normative contract that is not implemented yet.
-Authorization has no counterpart in `docs/language/` today; when it ships, this
-page moves there. The surface below states the intended contract in the same
-neutral terms as the rest of the reference.
+> **Status: retired proposal.** This page is non-authoritative and conflicts
+> with parts of the current path-authority direction. Do not implement it; see
+> [Retired design notes](../README.md) and the current
+> [Vision](../../vision.md).
+
+This page records an earlier, unimplemented authorization proposal. Its policy,
+operation, and cost model has not been accepted under the current path-authority
+direction.
 
 ## Model and scope
 

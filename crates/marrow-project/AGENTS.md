@@ -1,11 +1,16 @@
-# marrow-project — Agent Notes
+# marrow-project Contributor Notes
 
-Project discovery and config: `marrow.json`, source roots, path-to-module resolution, and the project
-digest. Deliberately small so the CLI, editors, and language services agree on one loader.
+This crate owns current project discovery and configuration: `marrow.json`,
+source roots, path-to-module resolution, and project digests. CLI and tooling
+must share this loader.
 
-A closed `ConfigErrorKind` taxonomy carries typed `ConfigPathField`/`ConfigPathViolation` payloads;
-fail-closed path checks (absolute, `..`, glob, NUL) make traversal-escape unrepresentable; every raw
-struct sets `deny_unknown_fields`; src holds zero `unwrap`/`panic`. Every exported type derives
-`Debug`. Precedent: C-VALIDATE, BurntSushi typed config errors.
+Configuration errors use closed typed kinds and typed path payloads. Reject
+absolute paths, traversal, unsupported glob syntax, and NUL at the boundary;
+raw structs deny unknown fields. Source contains no `unwrap` or `panic`, and
+exported types derive `Debug`.
+
+The current configuration format is implementation state, not permanent
+language law. Embedded and served profile semantics must originate in the
+compiler/runtime design rather than ad hoc configuration branches.
 
 Map: [docs/implementation/cli.md](../../docs/implementation/cli.md).

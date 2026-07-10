@@ -1,67 +1,208 @@
 # Marrow
 
-Marrow is a small typed language with built-in saved data.
+Marrow is an experimental statically typed programming language in which
+hierarchical paths can denote durable application state.
+
+```mw
+task.status = Status::done
+^tasks(id).status = Status::done
+```
+
+The first assignment changes a local value. The second changes durable data.
+Both resolve `status` through the same resource member and type; `^` marks the
+durable place. Durable places additionally have presence, keyed-child,
+transaction, and storage rules. Programs use ordinary expressions and control
+flow to address and change tree elements; persistence is not a separate
+source-language API.
+
+## Example
 
 ```mw
 module app::tasks
 
+enum Status
+    open
+    done
+
 resource Task
     required title: string
-    status: string
+    required status: Status
+
 store ^tasks(id: int): Task
+
+pub fn add(title: string): Id(^tasks)
+    var task: Task
+    task.title = title
+    task.status = Status::open
+
+    const id: Id(^tasks) = nextId(^tasks)
+    ^tasks(id) = task
+    return id
 
 pub fn complete(id: Id(^tasks)): bool
     if not exists(^tasks(id))
         return false
 
-    ^tasks(id).status = "done"
+    ^tasks(id).status = Status::done
     return true
 ```
 
-Marrow has one data model: a resource is a typed tree. The same resource shape
-can be local or saved, and `^` marks saved data.
+`resource Task` defines typed tree members. `store ^tasks(id: int): Task`
+attaches those members to a durable keyed root. `Id(^tasks)` is the nominal
+entry identity type for that root and is not interchangeable with an entry
+identity from another root. `nextId(^tasks)` proposes the next entry identity
+from the current tree; the following write, rather than the call itself,
+occupies it.
 
-## References
+Marrow programs read, write, delete, and iterate durable paths with ordinary
+language constructs. A `transaction` block groups several durable changes into
+one atomic unit. Declared indexes are alternate trees maintained with their
+owning store.
 
-- [Language](docs/language/) defines `.mw` syntax, types, resources, saved
-  data, control flow, builtins, standard library contracts, and grammar.
-- [Implementation Map](docs/implementation/) is the code-truth architecture map:
-  what each crate and module does and where to read it, plus the
-  [backend contract](docs/backend-contract.md) the store satisfies.
+## Purpose
 
-## Shape
+Marrow explores a language-first approach to durable operational software.
 
-The first implementation target is deliberately small:
+In a conventional application, the meaning of durable state is often repeated
+across language types, persistence calls, migration files, external interfaces,
+and authorization code. Marrow instead makes the durable tree part of the
+language's type and effect system.
 
-- native `.mw` parser, formatter, checker, and runtime model;
-- resources as typed local and saved trees;
-- native local storage behind a simple ordered-tree backend contract;
-- CLI and language services built from checked program facts;
-- no alternate language modes in the default product;
-- no bundled external database adapters.
+The current implementation applies that model to source checking,
+accepted declaration identities, managed writes, transactions, indexes,
+backup and restore, and supported changes to populated data. The longer-term
+design extends one semantic path graph to public URI representations and path
+authorization.
 
-## Scope And Security
+The intended development path is:
 
-Marrow treats project source, `marrow.json`, `marrow.lock`, native store
-files, backup archives, CLI arguments, and host-provided environment, filesystem,
-clock, log, and output channels as untrusted inputs. The compiler and runtime
-fail closed with typed diagnostics or `run.*` / `store.*` faults; they do not
-claim process sandboxing for code that an embedding chooses to run.
+```text
+embedded local application
+        ↓
+shared transactional service
+```
 
-Store and backup checksums detect accidental corruption, truncation, or a file
-from the wrong project state. They are not authentication, tamper proofing,
-encryption, or an authorization boundary.
+The durable model and ordinary business functions should survive that
+transition. This direction is intended for applications such as scheduling,
+inventory, case management, work orders, and clinical or administrative
+systems whose state is both long-lived and frequently changed.
 
-Host capabilities are the determinism and embedding boundary:
+## Current Implementation
 
-| Capability | Runtime boundary |
+Marrow is early software. The repository currently contains:
+
+| Area | Implementation |
 |---|---|
-| none | deterministic helper or assertion; no host access |
-| `Clock` | caller-supplied run timestamp |
-| `Environment` | caller-supplied environment map |
-| `Log` | caller-supplied log sink |
-| `Filesystem` | real filesystem access through `std::io` |
-| `Maintenance` | explicit repair/admin operations only |
+| Language | Parser, formatter, modules, functions, static checking, resources, enums, presence, keyed layers, entry identities, control flow, and transactions |
+| Durable state | An embedded ordered-tree backend, direct path reads and writes, managed indexes, inspection, backup, and restore |
+| Existing-data changes | Accepted declaration identities, read-only preview, state-bound witnesses, and apply steps for supported changes |
+| Execution | A tree-walking interpreter over a checked executable representation |
+| Tooling | `check`, `run`, `test`, `fmt`, data tools, evolution, backup, restore, and structured diagnostics |
+
+The runtime does not currently emit bytecode or native machine code.
+“Compiler-first” describes where Marrow intends semantic ownership to reside;
+it is not a claim of native compilation today.
+
+[Project Status](docs/status.md) separates current behavior, legacy mechanisms,
+design direction, accepted targets, and research.
+
+## Architectural Direction
+
+The long-term design is organized around compiler-owned semantic paths. A
+stable schema path identifies one node in the program's durable model. A
+concrete durable address follows those nodes with typed key values. Source
+names, public URIs, authority regions, and physical storage are related to that
+address without becoming the same representation.
+
+For example, the following rows could describe one logical place. The URI and
+authority rows are illustrative design, not current Marrow syntax.
+
+| Role | Representation |
+|---|---|
+| Source | `^patients(patientId).visits(visitDate)` |
+| Stable schema path identity | Compiler-owned identities for the `patients` and `visits` nodes |
+| Concrete address | Those nodes instantiated with one patient ID and visit date |
+| Published URI | `/patients/{patientId}/visits/{visitDate}` |
+| Authority region | Permission to observe or change addresses in that patient's visits |
+| Physical key | A private encoding chosen by the storage substrate |
+
+These mappings need not be one-to-one. Evolution relates versions of the path
+graph while preserving or explicitly changing schema path identities.
+
+The design is intended to compile a program image reproducibly, admit that image
+against a particular populated store, report consequential changes before
+activation, enforce authority at every application-level durable access, and
+change storage substrates without exposing backend-specific concepts in `.mw`
+source.
+
+See [Vision](docs/vision.md) for the design principles and
+[Project Status](docs/status.md) for their implementation state.
+
+## Lineage And Scope
+
+The `^` notation and direct use of hierarchical durable state are inspired by
+MUMPS and its descendants. Marrow is not a subset, implementation, or
+compatibility layer for M. It retains that starting idea without treating M
+syntax, dynamic typing, schema-by-convention, or historical tooling constraints
+as requirements.
+
+Marrow targets operational state addressed through typed hierarchical paths and
+explicitly declared indexes. Storage engines implement transactions and ordered
+tree operations beneath the language boundary. Analytical, search, and other
+specialized workloads integrate through typed external boundaries.
+
+## Why A Language?
+
+Many parts of Marrow can be provided by libraries and generated code. A library
+can enforce substantial properties when all durable access remains behind its
+API. Marrow tests whether making durable paths language places, and checking all
+application-level `.mw` access in one compilation, produces a smaller trusted
+boundary and one coherent path-identity and effect model across typing,
+store admission, activation, evolution, tooling, public addressing, and
+authority. Administrative repair, restore, and physical storage remain named
+parts of the trusted runtime boundary.
+
+Hierarchical persistence, orthogonal persistence, effect systems, capability
+systems, and typed routing all have prior art. The project's hypothesis is their
+combination around stable typed path identity, not that any one mechanism is
+new. If that combination does not materially improve guarantees or usability
+over a library, a new language would not be justified.
+
+## Current Limitations
+
+Marrow should presently be treated as an experimental language implementation,
+not as a production database or institutional application platform.
+
+- Installation requires a Rust toolchain and a source build.
+- Linux and macOS are the supported platforms.
+- Execution uses a tree-walking interpreter.
+- The native persistent profile has one owning process or session while open
+  for writing.
+- Durable roots are project-wide under the current language.
+- Compiler-integrated, runtime-enforced path authorization is not implemented.
+- Public URI projection and embedded-to-served promotion remain design work.
+- Current surface and storage-accounting mechanisms are under architectural
+  reconsideration and are not the long-term model.
+
+See [Project Status](docs/status.md) and the
+[Stability Contract](docs/stability.md) for exact current boundaries.
+
+## Documentation
+
+- [Documentation Map](docs/) explains authority and status.
+- [Quickstart](docs/quickstart.md) builds and runs a small durable project.
+- [Language Reference](docs/language/) defines current `.mw` behavior.
+- [Data Evolution](docs/data-evolution.md) covers supported changes to
+  populated durable state.
+- [CLI Reference](docs/cli.md) documents commands and structured output.
+- [Implementation Map](docs/implementation/) describes the Rust code.
+- [Backend Contract](docs/backend-contract.md) defines the current storage
+  substrate operations.
+- [Vision](docs/vision.md) describes the long-term architecture.
+- [Project Status](docs/status.md) distinguishes implementation from design.
+
+Start with [Installation](docs/install.md) and the
+[Quickstart](docs/quickstart.md).
 
 ## License
 

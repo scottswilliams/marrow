@@ -139,7 +139,7 @@ Rules to model around:
   record" — create a new record and explicitly transform or delete any old data
   that should not remain under the old key.
 
-For a single `int` key, `nextId` allocates the next identity:
+For a single `int` key, `nextId` allocates the next entry identity:
 
 ```mw
 const id: Id(^books) = nextId(^books)
@@ -434,9 +434,8 @@ declared).
 
 Some maintenance operations are not yet implemented:
 
-- `marrow data diff` and `marrow data load` are deferred — see
-  [future/data-tools.md](future/data-tools.md). (Typed backup/restore is
-  implemented: `marrow backup` and `marrow restore`.)
+- `marrow data diff` and `marrow data load` are not implemented. Typed
+  backup/restore is implemented through `marrow backup` and `marrow restore`.
 - Restore `--replace --count` is implemented. Restore merge/repair modes and
   cross-engine restore remain deferred.
 - Store-aware identity fields are canonical; relationship behavior remains
