@@ -622,6 +622,90 @@ fn enum_member_selectability_matches_schema_owner() {
     );
 }
 
+/// The catalog-id bridge that carries stable durable identity onto the semantic
+/// model must reach every catalog-bound declaration family. Interning nominal type
+/// leaves by id makes this bridge, not a stored spelling, the one path from a
+/// declaration to its durable identity, so all six families — resources, stores,
+/// store indexes, resource members, enums, enum members — must resolve a catalog id
+/// after binding. A family the bridge forgets would silently render as absent
+/// identity downstream, so this pins that none is missing. The enum is stored as
+/// `Book.status`, giving it durable reachability so it earns a catalog identity.
+#[test]
+fn every_catalog_bound_family_resolves_a_catalog_id() {
+    let root = temp_project("program-fact-six-family-catalog", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\n\
+             enum Status\n\
+             \x20   active\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   shelf: string\n\
+             \x20   status: Status\n\
+             store ^books(id: int): Book\n\
+             \x20   index byShelf(shelf, id)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let facts = &program.facts;
+    let module = facts.module_id("m").expect("module m");
+
+    // Resource, store, store index, and resource member ids resolve their catalog id
+    // through the `CheckedProgram` proposal accessors.
+    let book = facts.resource_id(module, "Book").expect("Book resource");
+    assert!(program.resource_catalog_id(book).is_some(), "resource");
+
+    let store = facts.store_id(module, "books").expect("^books store");
+    assert!(program.store_catalog_id(store).is_some(), "store");
+
+    let index = facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.name == "byShelf")
+        .expect("byShelf index");
+    assert!(
+        program.store_index_catalog_id(index.id).is_some(),
+        "store index",
+    );
+
+    let title = facts
+        .resource_member_id(book, &["title"])
+        .expect("Book.title member");
+    assert!(
+        program.resource_member_catalog_id(title).is_some(),
+        "resource member",
+    );
+
+    // Enums and enum members carry durable identity through the first-run proposal,
+    // the same source the accessors above fall back to; both families propose a
+    // stable id under their catalog path.
+    let proposal = program
+        .catalog
+        .proposal
+        .as_ref()
+        .expect("first-run check proposes catalog ids");
+    let proposes = |kind: marrow_catalog::CatalogEntryKind, path: &str| {
+        proposal
+            .entries
+            .iter()
+            .any(|entry| entry.kind == kind && entry.path == path)
+    };
+    assert!(
+        proposes(marrow_catalog::CatalogEntryKind::Enum, "m::Status"),
+        "enum",
+    );
+    assert!(
+        proposes(
+            marrow_catalog::CatalogEntryKind::EnumMember,
+            "m::Status::active",
+        ),
+        "enum member",
+    );
+}
+
 #[test]
 fn identity_fact_of_a_store_after_a_duplicate_root_names_its_own_store() {
     // Two stores share the root `^shelf` (a diagnosed duplicate), so the identity
