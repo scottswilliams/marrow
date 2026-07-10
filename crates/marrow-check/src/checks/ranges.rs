@@ -20,7 +20,7 @@ use crate::walk::for_each_child_expr;
 use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, MarrowType};
 
 use super::diagnostics::range_diagnostic;
-use super::saved_paths::saved_key_range_argument_span;
+use super::saved_paths::{saved_key_range_argument_span, saved_key_range_consumer_argument_span};
 
 /// The endpoint scalar type of a range iterable when both endpoints are the same
 /// steppable type, or `None` for any other iterable or a mismatched/non-steppable
@@ -152,7 +152,7 @@ fn collect_allowed_saved_range_spans(
     file: &Path,
     exempt_ranges: &mut Vec<SourceSpan>,
 ) {
-    if let Some(span) = allowed_saved_key_range_value_context(program, expr, scope, file)
+    if let Some(span) = saved_key_range_consumer_argument_span(program, expr, scope, file)
         && !exempt_ranges.contains(&span)
     {
         exempt_ranges.push(span);
@@ -172,33 +172,6 @@ pub(crate) fn check_range_value_in_scope(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     check_range_values_in_scope_except(program, file, expr, scope, None, diagnostics);
-}
-
-fn allowed_saved_key_range_value_context(
-    program: &CheckedProgram,
-    value: &marrow_syntax::Expression,
-    scope: &[HashMap<String, MarrowType>],
-    file: &Path,
-) -> Option<SourceSpan> {
-    let marrow_syntax::Expression::Call { callee, args, .. } = value else {
-        return None;
-    };
-    let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
-        return None;
-    };
-    let [name] = segments.as_slice() else {
-        return None;
-    };
-    let [arg] = args.as_slice() else {
-        return None;
-    };
-    if arg.name.is_some() || !matches!(name.as_str(), "exists" | "count") {
-        return None;
-    }
-    // A saved key-range argument to a cardinality or presence call is a
-    // traversal shape. Its own argument checker decides which saved shapes the
-    // operation supports.
-    saved_key_range_argument_span(program, &arg.value, scope, file)
 }
 
 fn check_range_values_in_scope_except(

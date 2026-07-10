@@ -9,7 +9,10 @@ use std::path::Path;
 use marrow_syntax::SourceSpan;
 
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
-use crate::{CheckedExpr, CheckedProgram, CheckedSavedPlace, MarrowType};
+use crate::{
+    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedProgram, CheckedSavedPlace,
+    MarrowType,
+};
 
 pub(crate) fn checked_saved_expr(
     program: &CheckedProgram,
@@ -90,6 +93,39 @@ pub(crate) fn saved_key_range_argument_span(
 ) -> Option<SourceSpan> {
     let expr = checked_saved_expr(program, path, scope, file)?;
     SavedPlaceResolver::new(program).key_range_argument_span(&expr)
+}
+
+/// The exact saved traversal range consumed by a call whose semantic target
+/// accepts one in value position. Call-target resolution, not source spelling,
+/// owns the consumer set so aliases or similarly named user functions cannot
+/// acquire the exemption.
+pub(crate) fn saved_key_range_consumer_argument_span(
+    program: &CheckedProgram,
+    call: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> Option<SourceSpan> {
+    let checked = lower_expr_for_file(program, file, call, scope)?;
+    let CheckedExpr::Call { args, target, .. } = checked else {
+        return None;
+    };
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    if arg.name.is_some() {
+        return None;
+    }
+    let accepts_range = matches!(
+        &target,
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Exists | CheckedBuiltinCall::Count)
+    ) || matches!(
+        &target,
+        CheckedCallTarget::Std(call) if call.module == "assert" && call.op == "isAbsent"
+    );
+    if !accepts_range {
+        return None;
+    }
+    SavedPlaceResolver::new(program).key_range_argument_span(&arg.value)
 }
 
 pub(crate) fn is_saved_path_with_key_range_arg(

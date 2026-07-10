@@ -992,6 +992,30 @@ fn saved_range_exemptions_are_exact_and_compose_through_range_endpoints() {
         "{:#?}",
         nested_loop_range.diagnostics
     );
+
+    let assert_absent = check_module_report(
+        "assert-absent-index-range",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f()\n    std::assert::isAbsent(^posts.byDate(1..2))\n",
+    );
+    assert_clean(&assert_absent);
+
+    let nested_assert_absent = check_module_report(
+        "assert-absent-nested-index-range",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f()\n    std::assert::isAbsent(^posts.byDate((1..2)..10))\n",
+    );
+    let nested_assert_range = with_code(&nested_assert_absent, "check.range_value");
+    assert_eq!(
+        nested_assert_range.len(),
+        1,
+        "{:#?}",
+        nested_assert_absent.diagnostics
+    );
 }
 
 #[test]
