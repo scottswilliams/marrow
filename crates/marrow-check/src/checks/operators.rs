@@ -192,7 +192,7 @@ pub(crate) fn check_assignment(
     }
     let compatible = match (place, value) {
         (MarrowType::GroupEntry { resource, .. }, MarrowType::Resource(value_resource)) => {
-            Some(*resource == names.resource_display(*value_resource))
+            Some(resource == value_resource)
         }
         _ => type_compatible(place, value),
     };
@@ -498,7 +498,7 @@ fn check_equality(
         (MarrowType::Identity(_), _) | (_, MarrowType::Identity(_)) => reject(diagnostics),
         // Enums compare nominally: equatable only against the same enum, by owning
         // module and name, so two same-named enums in different modules are not.
-        (MarrowType::Enum { .. }, MarrowType::Enum { .. }) => {
+        (MarrowType::Enum(_), MarrowType::Enum(_)) => {
             if left == right {
                 Some(MarrowType::Primitive(ScalarType::Bool))
             } else {
@@ -506,7 +506,7 @@ fn check_equality(
             }
         }
         // An enum against a scalar or `Error` is a category error.
-        (MarrowType::Enum { .. }, _) | (_, MarrowType::Enum { .. }) => reject(diagnostics),
+        (MarrowType::Enum(_), _) | (_, MarrowType::Enum(_)) => reject(diagnostics),
         // Two scalars (or `Error`, which the caller already rejected) defer to the
         // ordinary scalar-equality path.
         (

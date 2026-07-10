@@ -515,13 +515,12 @@ impl<'a> SavedPlaceResolver<'a> {
         {
             return Some(resource_type);
         }
+        let resource = self
+            .program
+            .resource_leaf_id(&store.module.name, &store.resource.name)?;
         Some(MarrowType::GroupEntry {
-            resource: crate::resource_type_name(&store.module.name, &store.resource.name),
-            layers: place
-                .layers
-                .iter()
-                .map(|layer| layer.name.clone())
-                .collect(),
+            resource,
+            layers: self.program.group_entry_layers(resource, &layers)?,
         })
     }
 

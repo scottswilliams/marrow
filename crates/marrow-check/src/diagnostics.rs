@@ -440,7 +440,7 @@ impl ConversionTarget {
         match source {
             MarrowType::Unknown | MarrowType::Invalid => true,
             MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
-            MarrowType::Enum { .. } => self.accepts_enum(),
+            MarrowType::Enum(_) => self.accepts_enum(),
             MarrowType::Optional(_)
             | MarrowType::Absent
             | MarrowType::Error

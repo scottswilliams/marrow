@@ -146,33 +146,6 @@ pub(crate) fn resolve_resource_schema_type(
     }
 }
 
-/// Resolve a canonical resource type name (`module::resource`, or a bare
-/// `resource` for the script module) to its declaration and owning module name.
-/// The name was produced by [`resource_type_name`] from an already-resolved
-/// resource, so its module prefix names the owning module exactly: resolving from
-/// that module reaches the resource through the one in-module, visibility-aware
-/// resolver.
-pub(crate) fn resolve_resource_type<'p>(
-    program: &'p CheckedProgram,
-    name: &str,
-) -> Option<(&'p marrow_schema::ResourceSchema, &'p str)> {
-    let (from_module, segments) = match name.rsplit_once("::") {
-        Some((module_name, resource_name)) => (
-            module_name,
-            vec![module_name.to_string(), resource_name.to_string()],
-        ),
-        None => ("", vec![name.to_string()]),
-    };
-    match resolve(program, from_module, &segments, ResolvableKind::Resource) {
-        Resolution::Found(Def {
-            module,
-            item: DefItem::Resource(resource),
-            ..
-        }) => Some((resource, module.name.as_str())),
-        _ => None,
-    }
-}
-
 pub(crate) fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<String, bool> {
     file.declarations
         .iter()

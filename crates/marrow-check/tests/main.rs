@@ -192,6 +192,8 @@ mod surface_abi;
 mod surface_wire_profile_architecture;
 #[path = "cases/total_parser_soundness.rs"]
 mod total_parser_soundness;
+#[path = "cases/type_leaf_identity_architecture.rs"]
+mod type_leaf_identity_architecture;
 #[path = "cases/type_leaf_rendering.rs"]
 mod type_leaf_rendering;
 #[path = "cases/v01_fixtures.rs"]

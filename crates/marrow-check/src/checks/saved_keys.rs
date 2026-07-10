@@ -688,7 +688,7 @@ fn ordered_range_component(expected: &MarrowType, allow_enum: bool) -> bool {
     match expected {
         MarrowType::Primitive(ScalarType::Bool) => true,
         MarrowType::Primitive(scalar) => is_ordered(*scalar),
-        MarrowType::Enum { .. } => allow_enum,
+        MarrowType::Enum(_) => allow_enum,
         _ => false,
     }
 }

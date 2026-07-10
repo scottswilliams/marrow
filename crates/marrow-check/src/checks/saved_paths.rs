@@ -130,6 +130,6 @@ pub(crate) fn is_concrete_scalar_value(expr: &marrow_syntax::Expression, ty: &Ma
     }
     matches!(
         ty,
-        MarrowType::Primitive(_) | MarrowType::Enum { .. } | MarrowType::Identity(_)
+        MarrowType::Primitive(_) | MarrowType::Enum(_) | MarrowType::Identity(_)
     )
 }

@@ -15,7 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_check::{
     AnalysisSnapshot, CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload, EnumId,
-    ProjectSources, ResourceId, analyze_project, check_project, check_project_with_catalog,
+    ProjectSources, ResourceId, ResourceMemberId, analyze_project, check_project,
+    check_project_with_catalog,
 };
 use marrow_project::{ProjectConfig, parse_config};
 use marrow_schema::SchemaErrorKind;
@@ -200,6 +201,22 @@ pub fn identity_root_id(
         .decl_roots
         .id(root)
         .unwrap_or_else(|| panic!("no store root `{root}`"))
+}
+
+/// The interned member ids of a group-entry layer chain under the resource named
+/// `module::resource`, for building an expected `MarrowType::GroupEntry` without
+/// hardcoding arena indices.
+pub fn group_entry_layers(
+    program: &CheckedProgram,
+    module: &str,
+    resource: &str,
+    layers: &[&str],
+) -> Vec<ResourceMemberId> {
+    let id = resource_id(program, module, resource);
+    program
+        .facts
+        .member_path_ids(id, layers)
+        .unwrap_or_else(|| panic!("no member path {layers:?} in `{resource}`"))
 }
 
 /// Check a single library module and return its whole report, for tests that assert a

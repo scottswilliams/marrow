@@ -154,7 +154,7 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
         // gates treat it as concrete rather than silently admitting it.
         | MarrowType::Optional(_)
         | MarrowType::Absent
-        | MarrowType::Enum { .. } => true,
+        | MarrowType::Enum(_) => true,
         MarrowType::Primitive(_)
         | MarrowType::Error
         | MarrowType::Unknown
@@ -206,7 +206,7 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
                 layers: other_layers,
             } if other == resource && other_layers == layers
         )),
-        MarrowType::Enum { .. } => Some(actual == expected),
+        MarrowType::Enum(_) => Some(actual == expected),
         MarrowType::Sequence(element) => match actual {
             MarrowType::Sequence(other) => type_compatible(element, other),
             _ => Some(false),
@@ -250,7 +250,7 @@ pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
     match ty {
         MarrowType::Primitive(_)
         | MarrowType::Error
-        | MarrowType::Enum { .. }
+        | MarrowType::Enum(_)
         | MarrowType::Identity(_)
         | MarrowType::Resource(_)
         | MarrowType::GroupEntry { .. } => true,
@@ -285,7 +285,7 @@ pub(crate) fn is_steppable(scalar: ScalarType) -> bool {
 /// at check. `None` defers the unknown and recovery types to the runtime value.
 pub(crate) fn type_renderable_at_runtime(ty: &MarrowType) -> Option<bool> {
     match ty {
-        MarrowType::Primitive(_) | MarrowType::Identity(_) | MarrowType::Enum { .. } => Some(true),
+        MarrowType::Primitive(_) | MarrowType::Identity(_) | MarrowType::Enum(_) => Some(true),
         MarrowType::Sequence(element) => type_renderable_at_runtime(element),
         MarrowType::Unknown | MarrowType::Invalid => None,
         // An optional must be resolved before it renders (the one rule), so it is a
@@ -354,7 +354,7 @@ pub(crate) fn marrow_type_name(names: &DeclIds<'_>, ty: &MarrowType) -> String {
             format!("Id(^{})", names.root_spelling(*root).unwrap_or("?"))
         }
         MarrowType::Resource(resource) => names.resource_display(*resource),
-        MarrowType::GroupEntry { resource, .. } => resource.clone(),
+        MarrowType::GroupEntry { resource, .. } => names.resource_display(*resource),
         MarrowType::Enum(id) => names
             .enum_owner_and_name(*id)
             .map_or_else(|| "unknown".to_string(), |(_, name)| name.to_string()),

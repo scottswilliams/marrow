@@ -28,7 +28,7 @@ use crate::typerules::{
 use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CheckDiagnostic,
     CheckedProgram, DiagnosticAnchor, DiagnosticPayload, EnumDiagnostic, LayerNotValueReason,
-    MarrowType, resolve_resource_type,
+    MarrowType, ResourceId,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -1761,15 +1761,19 @@ fn resolved_field_node<'a>(
     base_type: &MarrowType,
     field: &str,
 ) -> Option<&'a marrow_schema::Node> {
+    // A group entry's layers are interned member ids; recover their names so the
+    // schema walk below can address the chain by name. Held in a binding that
+    // outlives the borrowed chain.
+    let layer_names = match base_type {
+        MarrowType::GroupEntry { layers, .. } => program.group_entry_layer_names(layers),
+        _ => Vec::new(),
+    };
     let (resource, chain): (&marrow_schema::ResourceSchema, Vec<&str>) = match base_type {
         MarrowType::Resource(id) => (program.resource_by_id(*id)?.0, vec![field]),
-        MarrowType::GroupEntry {
-            resource: name,
-            layers,
-        } => {
-            let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
+        MarrowType::GroupEntry { resource, .. } => {
+            let mut chain: Vec<&str> = layer_names.iter().map(String::as_str).collect();
             chain.push(field);
-            (resolve_resource_type(program, name)?.0, chain)
+            (program.resource_by_id(*resource)?.0, chain)
         }
         _ => return None,
     };
@@ -1788,19 +1792,16 @@ fn local_field_resolution(
             let Some((resource, module)) = program.resource_by_id(*id) else {
                 return FieldResolution::UnresolvedBase;
             };
-            let name = crate::resource_type_name(module, &resource.name);
-            resource_field_resolution(program, resource, &name, module, &[field], &[])
+            resource_field_resolution(program, *id, resource, module, &[field], &[])
         }
-        MarrowType::GroupEntry {
-            resource: name,
-            layers,
-        } => {
-            let Some((resource, module)) = resolve_resource_type(program, name) else {
+        MarrowType::GroupEntry { resource, layers } => {
+            let Some((schema, module)) = program.resource_by_id(*resource) else {
                 return FieldResolution::UnresolvedBase;
             };
-            let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
+            let layer_names = program.group_entry_layer_names(layers);
+            let mut chain: Vec<&str> = layer_names.iter().map(String::as_str).collect();
             chain.push(field);
-            resource_field_resolution(program, resource, name, module, &chain, layers)
+            resource_field_resolution(program, *resource, schema, module, &chain, &layer_names)
         }
         MarrowType::Error => error_field_type(field)
             .map(FieldResolution::Resolved)
@@ -1810,7 +1811,7 @@ fn local_field_resolution(
         // fields, so a field read off it can never resolve. `Unknown` alone defers,
         // keeping cross-module unresolved bases free of false positives.
         MarrowType::Primitive(_)
-        | MarrowType::Enum { .. }
+        | MarrowType::Enum(_)
         | MarrowType::Identity(_)
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. } => FieldResolution::NoFields,
@@ -1846,8 +1847,8 @@ pub(crate) fn member_value_type(
 
 fn resource_field_resolution(
     program: &CheckedProgram,
+    resource_id: ResourceId,
     resource: &marrow_schema::ResourceSchema,
-    resource_name: &str,
     owning_module: &str,
     chain: &[&str],
     layers: &[String],
@@ -1862,12 +1863,15 @@ fn resource_field_resolution(
         return FieldResolution::Resolved(lift_member_type(program, ty.clone(), owning_module));
     }
     if node.key_params.is_empty() && matches!(node.kind, marrow_schema::NodeKind::Group) {
-        let mut nested = layers.to_vec();
-        nested.push((*member).to_string());
-        return FieldResolution::Resolved(MarrowType::GroupEntry {
-            resource: resource_name.to_string(),
-            layers: nested,
-        });
+        let mut nested: Vec<&str> = layers.iter().map(String::as_str).collect();
+        nested.push(member);
+        return match program.group_entry_layers(resource_id, &nested) {
+            Some(layers) => FieldResolution::Resolved(MarrowType::GroupEntry {
+                resource: resource_id,
+                layers,
+            }),
+            None => FieldResolution::UnknownField,
+        };
     }
     FieldResolution::NonValueMember
 }
@@ -1887,21 +1891,21 @@ pub(crate) fn sparse_member(program: &CheckedProgram, base_type: &MarrowType, fi
         MarrowType::Resource(id) => program
             .resource_by_id(*id)
             .is_some_and(|(resource, _)| resource_member_sparse(resource, &[field])),
-        MarrowType::GroupEntry {
-            resource: name,
-            layers,
-        } => resolve_resource_type(program, name).is_some_and(|(resource, _)| {
-            let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
-            chain.push(field);
-            resource_member_sparse(resource, &chain)
-        }),
+        MarrowType::GroupEntry { resource, layers } => program
+            .resource_by_id(*resource)
+            .is_some_and(|(schema, _)| {
+                let layer_names = program.group_entry_layer_names(layers);
+                let mut chain: Vec<&str> = layer_names.iter().map(String::as_str).collect();
+                chain.push(field);
+                resource_member_sparse(schema, &chain)
+            }),
         MarrowType::Error => {
             marrow_schema::error::field(field).is_some_and(|descriptor| !descriptor.required)
         }
         MarrowType::Optional(_)
         | MarrowType::Absent
         | MarrowType::Primitive(_)
-        | MarrowType::Enum { .. }
+        | MarrowType::Enum(_)
         | MarrowType::Identity(_)
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. }

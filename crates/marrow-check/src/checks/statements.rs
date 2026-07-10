@@ -785,7 +785,7 @@ impl StatementCheck<'_> {
         let ty =
             resolve_diagnosed_annotation_type(annotation, self.program, self.aliases, self.file);
         let kind = match ty {
-            MarrowType::Enum { .. } => UninitializedVarKind::Enum,
+            MarrowType::Enum(_) => UninitializedVarKind::Enum,
             MarrowType::Identity(_) => UninitializedVarKind::Identity,
             _ => return,
         };

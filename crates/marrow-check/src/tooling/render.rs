@@ -69,7 +69,7 @@ pub fn render_marrow_type(names: &DeclIds<'_>, ty: &MarrowType) -> String {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
         MarrowType::Resource(id) => names.resource_display(*id),
-        MarrowType::GroupEntry { resource, .. } => resource.clone(),
+        MarrowType::GroupEntry { resource, .. } => names.resource_display(*resource),
         MarrowType::Identity(root) => {
             format!("Id(^{})", names.root_spelling(*root).unwrap_or("?"))
         }

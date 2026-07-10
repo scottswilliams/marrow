@@ -395,6 +395,28 @@ impl CheckedProgram {
         Some((schema, module.name.as_str()))
     }
 
+    /// The interned member ids of a group-entry layer chain named under `resource`,
+    /// or `None` when the chain names no member path. A group-entry leaf carries its
+    /// layers as ids; this is where a layer-name path is interned into them.
+    pub(crate) fn group_entry_layers(
+        &self,
+        resource: ResourceId,
+        layers: &[&str],
+    ) -> Option<Vec<ResourceMemberId>> {
+        self.facts.member_path_ids(resource, layers)
+    }
+
+    /// The layer names a group-entry's interned layer chain spells, for walking the
+    /// resource schema by name. A live leaf's ids always resolve, so a missing name
+    /// only reflects a stale id.
+    pub(crate) fn group_entry_layer_names(&self, layers: &[ResourceMemberId]) -> Vec<String> {
+        layers
+            .iter()
+            .filter_map(|id| self.facts.resource_member(*id))
+            .map(|member| member.name.clone())
+            .collect()
+    }
+
     /// The interned id of the enum a module owns under `enum_name`, first-wins so a
     /// reference to a duplicate same-name enum aliases to the first declaration,
     /// matching the pre-interning module-qualified identity. The single place that
@@ -1847,11 +1869,12 @@ pub enum MarrowType {
     /// module-qualified spelling a mismatch renders is recovered by id through
     /// the facts, not stored here.
     Resource(ResourceId),
-    /// A saved keyed-group entry, identified by its owning resource and group
-    /// layer chain.
+    /// A saved keyed-group entry, identified by its owning resource id and the
+    /// interned member ids of its group layer chain. The resource spelling a
+    /// mismatch renders is recovered by id; the layers carry identity only.
     GroupEntry {
-        resource: String,
-        layers: Vec<String>,
+        resource: ResourceId,
+        layers: Vec<ResourceMemberId>,
     },
     /// A store identity such as `Id(^books)`, carrying the interned root id. A live
     /// identity leaf always names a declared store root; the `^root` spelling a

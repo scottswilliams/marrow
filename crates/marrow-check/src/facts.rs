@@ -1015,7 +1015,7 @@ impl CheckedFacts {
     ) -> Option<CheckedType> {
         annotation
             .and_then(|annotation| self.checked_type_from_type_ref(module_id, annotation, aliases))
-            .or_else(|| self.checked_type(module_id, ty))
+            .or_else(|| self.checked_type(ty))
     }
 
     fn checked_type_from_type_ref(
@@ -1054,19 +1054,15 @@ impl CheckedFacts {
         }
     }
 
-    fn checked_type(&self, module_id: ModuleId, ty: &MarrowType) -> Option<CheckedType> {
+    fn checked_type(&self, ty: &MarrowType) -> Option<CheckedType> {
         match ty {
             MarrowType::Primitive(scalar) => Some(CheckedType::Primitive(*scalar)),
             MarrowType::Error => Some(CheckedType::Error),
             MarrowType::Resource(id) => Some(CheckedType::Resource(*id)),
-            MarrowType::GroupEntry { resource, layers } => {
-                let resource = self.resolve_resource_type(module_id, resource)?;
-                let names: Vec<&str> = layers.iter().map(String::as_str).collect();
-                Some(CheckedType::GroupEntry {
-                    resource,
-                    members: self.member_path_ids(resource, &names)?,
-                })
-            }
+            MarrowType::GroupEntry { resource, layers } => Some(CheckedType::GroupEntry {
+                resource: *resource,
+                members: layers.clone(),
+            }),
             // The distinct-root store table interns roots first-wins in the same
             // order the identity-root arena does, so the leaf's id names its store
             // even when two stores share a root; an undeclared root has no store.
@@ -1078,26 +1074,21 @@ impl CheckedFacts {
                 .map(CheckedType::Identity),
             MarrowType::Enum(id) => Some(CheckedType::Enum(*id)),
             MarrowType::Sequence(element) => self
-                .checked_type(module_id, element)
+                .checked_type(element)
                 .map(|element| CheckedType::Sequence(Box::new(element))),
             MarrowType::LocalTree { keys, value } => {
                 let keys = keys
                     .iter()
-                    .map(|key| self.checked_type(module_id, key))
+                    .map(|key| self.checked_type(key))
                     .collect::<Option<Vec<_>>>()?;
-                let value = Box::new(self.checked_type(module_id, value)?);
+                let value = Box::new(self.checked_type(value)?);
                 Some(CheckedType::LocalTree { keys, value })
             }
             // The fact-level type is the present-arm value type; the empty optional
             // has no fact type of its own.
-            MarrowType::Optional(inner) => self.checked_type(module_id, inner),
+            MarrowType::Optional(inner) => self.checked_type(inner),
             MarrowType::Absent | MarrowType::Invalid | MarrowType::Unknown => None,
         }
-    }
-
-    fn resolve_resource_type(&self, module_id: ModuleId, name: &str) -> Option<ResourceId> {
-        let segments = split_type_path(name);
-        self.resolve_resource_segments(module_id, &segments, &HashMap::new())
     }
 
     fn resolve_resource_segments(
@@ -1264,7 +1255,7 @@ impl CheckedFacts {
         }
     }
 
-    fn member_path_ids(
+    pub fn member_path_ids(
         &self,
         resource: ResourceId,
         path: &[&str],

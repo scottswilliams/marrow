@@ -1075,7 +1075,7 @@ fn is_appendable_element(ty: &MarrowType) -> bool {
     matches!(
         ty,
         MarrowType::Primitive(_)
-            | MarrowType::Enum { .. }
+            | MarrowType::Enum(_)
             | MarrowType::Identity(_)
             | MarrowType::Error
     )

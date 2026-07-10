@@ -1453,8 +1453,8 @@ fn scope_at_includes_a_saved_group_loop_binding_typed_to_the_entry() {
     assert_eq!(
         ty_of("version"),
         Some(&MarrowType::GroupEntry {
-            resource: "m::Book".to_string(),
-            layers: vec!["versions".to_string()],
+            resource: support::resource_id(&program, "m", "Book"),
+            layers: support::group_entry_layers(&program, "m", "Book", &["versions"]),
         }),
         "{bindings:?}"
     );
