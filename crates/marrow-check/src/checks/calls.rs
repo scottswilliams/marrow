@@ -251,6 +251,9 @@ fn check_builtin_call(
         // `check.untyped_value` on the one root-cause error.
         return MarrowType::Invalid;
     }
+    if segments == ["count"] && matches!(arg_types.first(), Some(MarrowType::Invalid)) {
+        return MarrowType::Invalid;
+    }
     if segments == ["std", "assert", "equal"] {
         check_assert_equal_args(
             &env.program.decl_ids(),
@@ -320,8 +323,14 @@ fn check_assert_equal_args(
                 },
             ));
         }
-        (MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown, _)
-        | (_, MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown) => {}
+        (
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown | MarrowType::Invalid,
+            _,
+        )
+        | (
+            _,
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown | MarrowType::Invalid,
+        ) => {}
         (actual, expected) => {
             let found = if matches!(actual, MarrowType::Primitive(_)) {
                 expected
@@ -610,7 +619,9 @@ fn check_assert_absent_args(
     // `isAbsent` tests any optional value for absence, mirroring `exists`: an optional
     // local or parameter, a positional/keyed read, or a stdlib `T?` result are exactly
     // what it asserts. Resolving them first would destroy the absence being tested.
-    if arg_types.first().is_some_and(is_optional_value) {
+    if arg_types.first().is_some_and(|arg_type| {
+        is_optional_value(arg_type) || matches!(arg_type, MarrowType::Invalid | MarrowType::Unknown)
+    }) {
         return;
     }
     env.diagnostics.push(call_argument(
@@ -660,6 +671,12 @@ fn check_exists_args(
         return;
     }
     if exists_target_arg_resolves(env, &arg.value) {
+        return;
+    }
+    if matches!(
+        arg_types.first(),
+        Some(MarrowType::Invalid | MarrowType::Unknown)
+    ) {
         return;
     }
     // A concrete, always-present value has no absence to test — mirror the `??`
@@ -1466,8 +1483,10 @@ fn check_identity_constructor(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
     let names = program.decl_ids();
+    let mut has_named_argument = false;
     for arg in args {
         if arg.name.is_some() {
+            has_named_argument = true;
             diagnostics.push(call_argument(
                 &names,
                 file,
@@ -1483,16 +1502,21 @@ fn check_identity_constructor(
             span,
             CallArgumentFault::IdExpectsRoot,
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     };
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &root_arg.value else {
+        match arg_types.first() {
+            Some(MarrowType::Invalid) => return MarrowType::Invalid,
+            Some(MarrowType::Unknown) => return MarrowType::Unknown,
+            _ => {}
+        }
         diagnostics.push(call_argument(
             &names,
             file,
             root_arg.value.span(),
             CallArgumentFault::IdExpectsRootFirst,
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     };
     let Some(store) = resolve_store_by_root(program, root) else {
         diagnostics.push(key_type_diagnostic(
@@ -1500,7 +1524,7 @@ fn check_identity_constructor(
             root_arg.value.span(),
             format!("identity constructor root `^{root}` is not declared"),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     };
     if store.store.identity_keys.is_empty() {
         diagnostics.push(key_type_diagnostic(
@@ -1508,7 +1532,7 @@ fn check_identity_constructor(
             root_arg.value.span(),
             format!("identity constructor root `^{root}` has no identity keys"),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     let key_args = args.get(1..).unwrap_or(&[]);
     check_keys_against(
@@ -1520,7 +1544,11 @@ fn check_identity_constructor(
         diagnostics,
     );
     check_identity_sequence_position(store.store, key_args, const_ints, span, file, diagnostics);
-    identity_type_for_store(program, store.store)
+    if has_named_argument {
+        MarrowType::Invalid
+    } else {
+        identity_type_for_store(program, store.store)
+    }
 }
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root, which types to
@@ -1530,8 +1558,8 @@ fn check_identity_constructor(
 /// rejects a saved path that is not a bare root (an index branch, keyed lookup, or
 /// field) on shape, and a concrete non-saved argument (a literal, an identity value,
 /// or a scalar) on type. An undeclared root is reported by resolution, and an
-/// `unknown`-typed non-saved argument defers to a cross-module result, so neither is
-/// double-reported here.
+/// unresolved or poisoned non-saved argument defers to its owning diagnostic, so
+/// neither is double-reported here.
 pub(crate) fn check_next_id(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
@@ -1548,7 +1576,7 @@ pub(crate) fn check_next_id(
         // lookup, a field — is statically the wrong shape regardless of the type
         // it lowers to (an index branch lowers to `unknown`), so reject it on
         // shape. A non-saved argument is rejected only when its type is concrete;
-        // an `unknown`-typed non-saved value defers to a cross-module result.
+        // an unresolved or poisoned non-saved value defers to its owning diagnostic.
         if crate::rules::is_saved_path(&arg.value) {
             diagnostics.push(call_argument(
                 &program.decl_ids(),
@@ -1559,7 +1587,10 @@ pub(crate) fn check_next_id(
         } else if let Some(arg_type) = arg_types.first().filter(|ty| {
             !matches!(
                 ty,
-                MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+                MarrowType::Dynamic
+                    | MarrowType::NoValue
+                    | MarrowType::Unknown
+                    | MarrowType::Invalid
             )
         }) {
             diagnostics.push(call_argument(
@@ -1608,6 +1639,9 @@ fn check_neighbor(
     let [arg] = args else {
         return MarrowType::Unknown;
     };
+    if matches!(arg_types.first(), Some(MarrowType::Invalid)) {
+        return MarrowType::Invalid;
+    }
     let Some(checked) = lower_expr_for_file(env.program, env.file, &arg.value, env.scope) else {
         if let Some(MarrowType::Identity(root)) = arg_types.first()
             && let Some(root) = env
@@ -1687,14 +1721,17 @@ fn check_neighbor(
 /// whole value, never a tuple of raw components — so it reports
 /// `check.key_requires_single_key`. A concrete non-identity argument has no
 /// identity to project, so it is rejected with `check.call_argument`; an
-/// `unknown`-typed argument defers to a cross-module result, and an unresolved
-/// root is reported elsewhere, so neither is double-reported here.
+/// unresolved or poisoned argument defers to its owning diagnostic, and an
+/// unresolved root is reported elsewhere, so neither is double-reported here.
 fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
     let Some(MarrowType::Identity(root)) = arg_types.first() else {
         if let Some(arg_type) = arg_types.first().filter(|ty| {
             !matches!(
                 ty,
-                MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+                MarrowType::Dynamic
+                    | MarrowType::NoValue
+                    | MarrowType::Unknown
+                    | MarrowType::Invalid
             )
         }) {
             env.diagnostics.push(call_argument(

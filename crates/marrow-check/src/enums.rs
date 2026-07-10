@@ -1092,8 +1092,57 @@ pub(crate) fn resolve_schema_type_for_module(
     match resolve_enum_annotation_type_for_module(ty, program, module) {
         EnumAnnotationResolution::Visible(resolved) => resolved.ty,
         EnumAnnotationResolution::Private(_) => MarrowType::Invalid,
-        EnumAnnotationResolution::AmbiguousBareForeign(_) => MarrowType::Unknown,
-        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::from_resolved(ty.clone()),
+        EnumAnnotationResolution::AmbiguousBareForeign(_) => MarrowType::Invalid,
+        EnumAnnotationResolution::MissingOrNonEnum => diagnosed_schema_type(ty),
+    }
+}
+
+fn diagnosed_schema_type(ty: &Type) -> MarrowType {
+    match ty {
+        Type::Scalar(scalar) => MarrowType::Primitive(*scalar),
+        Type::Sequence(element) => match diagnosed_schema_type(element) {
+            MarrowType::Invalid => MarrowType::Invalid,
+            element => MarrowType::Sequence(Box::new(element)),
+        },
+        Type::Optional(inner) => match diagnosed_schema_type(inner) {
+            MarrowType::Invalid => MarrowType::Invalid,
+            inner => MarrowType::optional(inner),
+        },
+        Type::Unknown => MarrowType::Dynamic,
+        Type::Named(name) if name == "Error" => MarrowType::Error,
+        Type::Named(_) => MarrowType::Invalid,
+        Type::Identity(_) => MarrowType::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod diagnosed_schema_type_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_nominals_collapse_to_poison_without_reclassifying_other_schema_types() {
+        let missing = Type::Named("Missing".to_string());
+        for ty in [
+            missing.clone(),
+            Type::Sequence(Box::new(missing.clone())),
+            Type::Optional(Box::new(missing)),
+        ] {
+            assert_eq!(diagnosed_schema_type(&ty), MarrowType::Invalid);
+        }
+
+        assert_eq!(
+            diagnosed_schema_type(&Type::Scalar(ScalarType::Int)),
+            MarrowType::Primitive(ScalarType::Int)
+        );
+        assert_eq!(diagnosed_schema_type(&Type::Unknown), MarrowType::Dynamic);
+        assert_eq!(
+            diagnosed_schema_type(&Type::Named("Error".to_string())),
+            MarrowType::Error
+        );
+        assert_eq!(
+            diagnosed_schema_type(&Type::Identity("missing".to_string())),
+            MarrowType::Unknown
+        );
     }
 }
 

@@ -591,22 +591,23 @@ fn bool_conditions_are_not_flagged() {
 }
 
 #[test]
-fn an_unresolved_condition_is_flagged() {
-    // Strict typing: `mystery` is unbound (unknown type), so the condition cannot
-    // be shown to be `bool` — a `check.untyped_value` error (not a
-    // `check.condition_type` non-bool mismatch).
-    let found = check_script(
+fn an_unresolved_condition_does_not_cascade() {
+    // The unresolved-name diagnostic owns the failed condition. Its diagnosed
+    // invalid type defers both the strict untyped and non-bool condition gates.
+    let unresolved = check_script(
         "cond-unknown",
         "fn f()\n    if mystery\n        return\n",
-        "check.untyped_value",
+        "check.unresolved_name",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    let non_bool = check_script(
-        "cond-unknown",
-        "fn f()\n    if mystery\n        return\n",
-        "check.condition_type",
-    );
-    assert!(non_bool.is_empty(), "{non_bool:#?}");
+    assert_eq!(unresolved.len(), 1, "{unresolved:#?}");
+    for secondary in ["check.untyped_value", "check.condition_type"] {
+        let found = check_script(
+            "cond-unknown",
+            "fn f()\n    if mystery\n        return\n",
+            secondary,
+        );
+        assert!(found.is_empty(), "{secondary}: {found:#?}");
+    }
 }
 
 #[test]

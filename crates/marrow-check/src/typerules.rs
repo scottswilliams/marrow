@@ -221,14 +221,22 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
                 keys: other_keys,
                 value: other_value,
             } if keys.len() == other_keys.len() => {
-                let keys_match = keys
-                    .iter()
-                    .zip(other_keys)
-                    .all(|(expected, actual)| type_compatible(expected, actual) == Some(true));
-                if keys_match {
-                    type_compatible(value, other_value)
-                } else {
+                let (has_unknown, has_mismatch) = keys.iter().zip(other_keys).fold(
+                    (false, false),
+                    |(has_unknown, has_mismatch), (expected, actual)| match type_compatible(
+                        expected, actual,
+                    ) {
+                        Some(true) => (has_unknown, has_mismatch),
+                        Some(false) => (has_unknown, true),
+                        None => (true, has_mismatch),
+                    },
+                );
+                if has_unknown {
+                    None
+                } else if has_mismatch {
                     Some(false)
+                } else {
+                    type_compatible(value, other_value)
                 }
             }
             MarrowType::LocalTree { .. } => Some(false),

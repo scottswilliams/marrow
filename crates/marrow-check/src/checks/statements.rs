@@ -1544,9 +1544,10 @@ impl StatementCheck<'_> {
         value: &marrow_syntax::Expression,
         value_type: &MarrowType,
     ) {
-        // A poisoned subject already reported its fault; an optional one is exactly
-        // what `if const` binds. Anything else — a definite value, a collection, an
-        // unresolved name — has no single maybe-present value to bind.
+        // A diagnosed invalid subject already reported its fault; an optional one is
+        // exactly what `if const` binds. Anything else — a definite value, a
+        // collection, an explicit dynamic boundary, a clean unresolved shape, or a
+        // no-value call — has no single maybe-present value to bind.
         if is_optional_value(value_type) || matches!(value_type, MarrowType::Invalid) {
             return;
         }

@@ -2274,17 +2274,26 @@ fn type_surface_optional_group_field_read_preserves_the_leaf_type() {
 }
 
 #[test]
-fn type_surface_optional_keyed_root_chain_is_not_a_typed_leaf() {
-    let found = check_module(
+fn type_surface_optional_keyed_root_chain_reports_only_its_address_fault() {
+    let report = check_module_report(
         "optional-keyed-root-chain",
         "module m\n\
          resource Book\n\
          \x20   binding\n        cover: string\n\
          store ^books(id: int): Book\n\n\
          fn cover(): string\n    return ^books?.binding?.cover\n",
-        "check.untyped_value",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        with_code(&report, "check.key_type").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "the diagnosed invalid address must not cascade: {:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

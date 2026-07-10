@@ -58,10 +58,9 @@ fn rejects_a_named_argument_of_the_wrong_type() {
 }
 
 #[test]
-fn an_unresolved_argument_into_a_typed_parameter_is_flagged() {
-    // Strict typing: `mystery` is unbound (unknown type), but `add`'s parameter is
-    // `int`, so the argument is a `check.untyped_value` error — convert it first.
-    // It is not a `check.call_argument` mismatch.
+fn an_unresolved_argument_into_a_typed_parameter_does_not_cascade() {
+    // The unbound name is diagnosed poison, so its resolution fault owns the
+    // argument and neither typed-argument gate reports it again.
     let report = check_module_report(
         "call-argtype-unknown",
         "module m\n\
@@ -69,13 +68,14 @@ fn an_unresolved_argument_into_a_typed_parameter_is_flagged() {
          fn caller()\n    var x = add(mystery, 2)\n",
     );
     assert_eq!(
-        with_code(&report, "check.untyped_value").len(),
+        with_code(&report, "check.unresolved_name").len(),
         1,
         "{:#?}",
         report.diagnostics
     );
     assert!(
-        with_code(&report, "check.call_argument").is_empty(),
+        with_code(&report, "check.call_argument").is_empty()
+            && with_code(&report, "check.untyped_value").is_empty(),
         "{:#?}",
         report.diagnostics
     );

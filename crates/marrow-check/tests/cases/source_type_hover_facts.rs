@@ -133,11 +133,67 @@ pub fn broken(): int
 
     assert_eq!(
         type_at_needle(&snapshot, &paths[0], source, "missing"),
-        Some(MarrowType::Unknown),
+        Some(MarrowType::Invalid),
     );
     assert_eq!(
         fact_at(&snapshot, &index, &paths[0], source, "missing"),
         None,
+    );
+}
+
+#[test]
+fn diagnosed_saved_access_has_invalid_type_provenance() {
+    let source = "\
+module a
+
+resource Book
+    shelf: string
+
+store ^books(id: int): Book
+
+pub fn broken(): string
+    return ^books.shelf
+";
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-type-hover-invalid-saved-access",
+        &[("src/a.mw", source)],
+    );
+
+    assert_eq!(
+        type_at_needle(&snapshot, &paths[0], source, "shelf\n"),
+        Some(MarrowType::Invalid),
+    );
+}
+
+#[test]
+fn optional_field_access_preserves_invalid_member_type_poison() {
+    let source = "\
+module a
+
+resource Book
+    value: Missing
+
+pub fn broken(book: Book): int
+    return book?.value
+";
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-type-hover-optional-field-unknown",
+        &[("src/a.mw", source)],
+    );
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == paths[0])
+        .expect("analyzed file is present");
+
+    assert_eq!(
+        type_at(
+            &snapshot.program,
+            &paths[0],
+            &analyzed.parsed,
+            source.rfind("value").expect("field access is present"),
+        ),
+        Some(MarrowType::Invalid),
     );
 }
 

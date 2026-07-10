@@ -72,6 +72,478 @@ fn a_rejected_operator_does_not_cascade_an_untyped_value() {
     );
 }
 
+#[test]
+fn an_invalid_throw_value_does_not_cascade_a_throw_type_error() {
+    let report = check_module_report(
+        "cascade-invalid-throw",
+        "module m\nfn f()\n    throw 1 + true\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "the rejected operator is the root cause; its invalid result must defer throw checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_assert_operand_does_not_cascade_a_call_argument_error() {
+    let report = check_module_report(
+        "cascade-invalid-assert",
+        "module m\nfn f()\n    std::assert::equal(1 + true, 1)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "the rejected operator is the root cause; its invalid result must defer assert operand checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_assert_absent_operand_does_not_cascade_a_call_argument_error() {
+    let report = check_module_report(
+        "cascade-invalid-assert-absent",
+        "module m\nfn f()\n    std::assert::isAbsent(1 + true)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "the rejected operator is the root cause; its invalid result must defer absence-assertion checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_exists_operand_does_not_cascade_a_call_argument_error() {
+    let report = check_module_report(
+        "cascade-invalid-exists",
+        "module m\nfn f()\n    exists(1 + true)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "the rejected operator is the root cause; its invalid result must defer existence checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_assert_absent_operand_defers_to_its_type_diagnostic() {
+    let report = check_module_report(
+        "cascade-unknown-assert-absent",
+        "module m\nfn f(value: Missing)\n    std::assert::isAbsent(value)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_exists_operand_defers_to_its_type_diagnostic() {
+    let report = check_module_report(
+        "cascade-unknown-exists",
+        "module m\nfn f(value: Missing)\n    exists(value)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_identity_root_does_not_cascade_a_constructor_error() {
+    let report = check_module_report(
+        "cascade-invalid-identity-root",
+        "module m\nfn f()\n    Id(1 + true, 1)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_identity_root_defers_to_its_type_diagnostic() {
+    let report = check_module_report(
+        "cascade-unknown-identity-root",
+        "module m\nfn f(root: Missing)\n    Id(root, 1)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn diagnosed_identity_constructor_shapes_poison_the_result() {
+    let cases = [
+        (
+            "cascade-identity-no-root",
+            "module m\nfn f(): int\n    return Id()\n",
+            vec!["check.call_argument"],
+        ),
+        (
+            "cascade-identity-non-root",
+            "module m\nfn f(): int\n    return Id(1)\n",
+            vec!["check.call_argument"],
+        ),
+        (
+            "cascade-identity-named",
+            "module m\n\
+             resource Book\n    title: string\n\
+             store ^books(id: int): Book\n\n\
+             fn f(): string\n    return Id(root: ^books, key: 1)\n",
+            vec!["check.call_argument", "check.call_argument"],
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let report = check_module_report(name, source);
+        let codes: Vec<&str> = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect();
+        assert_eq!(codes, expected, "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn an_invalid_neighbor_argument_poison_does_not_cascade() {
+    let report = check_module_report(
+        "cascade-invalid-neighbor",
+        "module m\nfn f()\n    const n: int = next(1 + true)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_next_id_argument_does_not_cascade_a_call_argument_error() {
+    let report = check_module_report(
+        "cascade-invalid-next-id",
+        "module m\nfn f()\n    nextId(1 + true)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "the rejected operator is the root cause; its invalid result must defer nextId shape checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_key_argument_does_not_cascade_a_call_argument_error() {
+    let report = check_module_report(
+        "cascade-invalid-key",
+        "module m\nfn f()\n    key(1 + true)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.operator_type"],
+        "the rejected operator is the root cause; its invalid result must defer key shape checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unresolved_if_const_subject_does_not_cascade_a_condition_type_error() {
+    let report = check_module_report(
+        "cascade-unresolved-if-const",
+        "module m\nfn f()\n    if const value = missing\n        print(value)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unresolved_name"],
+        "the unresolved subject is the root cause; its unknown result must defer if-const bindability checking: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_explicit_dynamic_if_const_subject_remains_rejected() {
+    let report = check_module_report(
+        "if-const-explicit-dynamic",
+        "module m\nfn f(value: unknown)\n    if const present = value\n        print(present)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.condition_type"],
+        "an explicit dynamic boundary has no statically maybe-present value to bind: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_diagnosed_saved_assignment_target_does_not_cascade() {
+    let report = check_module_report(
+        "cascade-invalid-saved-assignment-target",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    ^books.shelf = \"fiction\"\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.key_type"],
+        "the diagnosed target must remain the sole assignment fault: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_diagnosed_count_argument_does_not_cascade_a_return_type_error() {
+    let report = check_module_report(
+        "cascade-invalid-count-argument",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): string\n    return count(^books.byShelf(\"fiction\"))\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.collection_unsupported"],
+        "the rejected count argument must poison the dependent result: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_saved_key_poison_does_not_cascade() {
+    let report = check_module_report(
+        "cascade-invalid-saved-key",
+        "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): string\n    return ^books(missing).title\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unresolved_name"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_saved_key_defers_to_its_type_diagnostic() {
+    let report = check_module_report(
+        "cascade-unknown-saved-key",
+        "module m\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(key: Missing): string\n    return ^books(key).title\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_local_sequence_key_poison_does_not_cascade() {
+    let report = check_module_report(
+        "cascade-invalid-local-sequence-key",
+        "module m\n\
+         enum E\n    present\n\n\
+         fn f(xs: sequence[string]): string\n    return xs(E::missing)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_enum_member"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_local_tree_key_defers_to_its_type_diagnostic() {
+    let report = check_module_report(
+        "cascade-unknown-local-tree-key",
+        "module m\nfn f(values(k: int): string, key: Missing): string\n    return values(key)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_unknown_local_tree_key_type_does_not_collapse_to_a_mismatch() {
+    let report = check_module_report(
+        "cascade-unknown-local-tree-compatibility",
+        "module m\n\
+         fn take(values(k: int): string)\n    return\n\n\
+         fn f()\n    var values(k: Missing): string\n    take(values)\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["schema.nonscalar_key", "check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_optional_field_with_invalid_declared_type_does_not_cascade() {
+    let report = check_module_report(
+        "cascade-optional-field-invalid-type",
+        "module m\n\
+         resource Book\n    value: Missing\n\n\
+         fn f(book: Book): int\n    return book?.value\n",
+    );
+
+    let codes: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["check.unknown_type"],
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 /// An unresolved name used as an assignment target is one fault. `x = 5` for an
 /// undeclared `x` reports exactly one `check.unresolved_name`; the recovery never
 /// re-reports it.

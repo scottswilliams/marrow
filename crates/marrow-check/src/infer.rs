@@ -340,7 +340,7 @@ fn infer_value(
 ) -> MarrowType {
     use marrow_syntax::Expression;
     if reject_saved_access(program, expr, scope, file, diagnostics) {
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     let ty = match expr {
         Expression::Literal { kind, text, span } => {
@@ -407,7 +407,7 @@ fn infer_value(
                     DiagnosticPayload::UnresolvedName { name: name.clone() },
                     &program.decl_ids(),
                 ));
-                MarrowType::Unknown
+                MarrowType::Invalid
             })
         }
         Expression::Unary { op, operand, span } => {
@@ -691,9 +691,17 @@ fn infer_value(
                 // A saved read whose key argument is maybe-present already reported the
                 // one rule at the key position; poison the read so the outer value slot
                 // does not stack a second one-rule on the same mistake.
-                if !matches!(saved, MarrowType::Unknown) && arg_types.iter().any(is_optional_value)
+                if arg_types.iter().any(is_optional_value)
+                    || arg_types
+                        .iter()
+                        .any(|arg_type| matches!(arg_type, MarrowType::Invalid))
                 {
                     MarrowType::Invalid
+                } else if arg_types
+                    .iter()
+                    .any(|arg_type| matches!(arg_type, MarrowType::Unknown))
+                {
+                    MarrowType::Unknown
                 } else {
                     saved
                 }
@@ -850,7 +858,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         input.file,
         input.diagnostics,
     ) {
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     // A `.field` or child-layer descends off a record value. A partially keyed
     // composite layer is an iterable inner sub-layer, not a record, so descending
@@ -949,6 +957,8 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     };
     let wrap_optional = materialized_read && input.optional_access;
     match local_field_resolution(input.program, resolution_base, input.name) {
+        FieldResolution::Resolved(MarrowType::Invalid) => MarrowType::Invalid,
+        FieldResolution::Resolved(MarrowType::Unknown) => MarrowType::Unknown,
         FieldResolution::Resolved(ty) if wrap_optional => MarrowType::optional(ty),
         FieldResolution::Resolved(ty) => ty,
         // An undeclared field on a resolved resource base is invalid whether it is read
@@ -1094,7 +1104,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.diagnostics,
         )
     {
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     if checked_expr(input.program, input.callee, input.scope, input.file)
         .is_some_and(|callee| SavedPlaceResolver::new(input.program).is_saved_path_callee(&callee))
@@ -1619,6 +1629,12 @@ fn local_collection_access_type(
                     ));
                     return Some(MarrowType::Invalid);
                 }
+                if matches!(arg_type, MarrowType::Invalid) {
+                    return Some(MarrowType::Invalid);
+                }
+                if matches!(arg_type, MarrowType::Unknown) {
+                    return Some(MarrowType::Unknown);
+                }
                 if !matches!(
                     type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type),
                     Some(true) | None
@@ -1653,6 +1669,18 @@ fn local_collection_access_type(
                     }
                 }
                 return Some(MarrowType::Invalid);
+            }
+            if arg_types
+                .iter()
+                .any(|actual| matches!(actual, MarrowType::Invalid))
+            {
+                return Some(MarrowType::Invalid);
+            }
+            if arg_types
+                .iter()
+                .any(|actual| matches!(actual, MarrowType::Unknown))
+            {
+                return Some(MarrowType::Unknown);
             }
             for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
                 if matches!(type_compatible(expected, actual), Some(false)) {

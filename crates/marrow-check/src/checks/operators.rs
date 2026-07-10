@@ -101,8 +101,8 @@ pub(crate) fn check_condition(
 }
 
 /// Flag a `throw` whose operand is known to be something other than `Error`.
-/// Unknown operands are left to the runtime backstop, as with other unresolved
-/// values in this pass.
+/// Unknown operands are left to the runtime backstop, while invalid operands defer
+/// to the diagnostic that poisoned them.
 pub(crate) fn check_throw_type(
     names: &DeclIds<'_>,
     file: &Path,
@@ -117,7 +117,11 @@ pub(crate) fn check_throw_type(
         return;
     }
     match value_type {
-        MarrowType::Error | MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {}
+        MarrowType::Error
+        | MarrowType::Dynamic
+        | MarrowType::NoValue
+        | MarrowType::Unknown
+        | MarrowType::Invalid => {}
         _ => diagnostics.push(CheckDiagnostic::error(
             CHECK_THROW_TYPE,
             file,

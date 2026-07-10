@@ -168,18 +168,19 @@ fn scalar_argument_to_error_param_is_a_call_argument_error() {
     );
 }
 
-/// Passing an unbound name (an `Unknown` value) to a `takes(e: Error)` parameter
-/// reports `check.untyped_value`: strict typing still requires a known type for a
-/// concrete slot, even an `Error` one.
+/// An unbound name is diagnosed poison, so its resolution diagnostic owns the
+/// mistake and the concrete `Error` slot does not stack a second type complaint.
 #[test]
-fn untyped_argument_to_error_param_is_an_untyped_value_error() {
+fn unresolved_argument_to_error_param_does_not_cascade() {
     let codes = error_param_call_diagnostic_codes("untyped", "mystery");
     assert!(
-        codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
+        codes.iter().any(|code| code == "check.unresolved_name"),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == CHECK_CALL_ARGUMENT),
+        !codes
+            .iter()
+            .any(|code| code == CHECK_CALL_ARGUMENT || code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -287,11 +288,10 @@ fn scalar_argument_to_std_log_error_is_a_call_argument_error() {
     );
 }
 
-/// An untyped value passed to `std::log::error` reports `check.untyped_value`:
-/// `Unknown` is still untyped (unchanged by the `Error` fix). An unbound name
-/// (`mystery`) has no known type.
+/// An unbound value passed to `std::log::error` reports its resolution fault once;
+/// diagnosed poison does not also become an untyped argument fault.
 #[test]
-fn untyped_argument_to_std_log_error_is_an_untyped_value_error() {
+fn unresolved_argument_to_std_log_error_does_not_cascade() {
     let root = temp_project("program-logerror-untyped", |root| {
         write(
             root,
@@ -307,7 +307,15 @@ fn untyped_argument_to_std_log_error_is_an_untyped_value_error() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_UNTYPED_VALUE),
+            .any(|diagnostic| diagnostic.code == "check.unresolved_name"),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code != CHECK_UNTYPED_VALUE),
         "{:#?}",
         report.diagnostics
     );
