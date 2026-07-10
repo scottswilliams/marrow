@@ -121,11 +121,11 @@ pub(crate) struct TransactionState {
     pub(crate) created_required_paths: Vec<RequiredPath>,
     pub(crate) pending_root_catalog_ids: BTreeSet<CatalogId>,
     pub(crate) pending_index_catalog_ids: BTreeSet<CatalogId>,
-    /// Bytes of staged write payload buffered by the open transaction so far. A
+    /// Estimated buffered footprint accumulated by the open transaction. A
     /// transaction holds its whole write set in memory until commit, so this is
-    /// checked against [`TRANSACTION_WRITE_BYTE_BUDGET`] as each managed write is
-    /// applied, failing closed before the buffer can exhaust memory.
-    pub(crate) staged_write_bytes: usize,
+    /// checked against [`TRANSACTION_WRITE_BYTE_BUDGET`] before each managed write
+    /// is staged.
+    pub(crate) estimated_buffered_bytes: usize,
 }
 
 /// A resource or keyed-group entry whose required fields must be checked before
@@ -518,34 +518,33 @@ impl<'p> Env<'p> {
         let mut transaction = self.transaction.borrow_mut();
         transaction.pending_root_catalog_ids.clear();
         transaction.pending_index_catalog_ids.clear();
-        transaction.staged_write_bytes = 0;
+        transaction.estimated_buffered_bytes = 0;
     }
 
     pub(crate) fn discard_transaction_metadata(&mut self) {
         let mut transaction = self.transaction.borrow_mut();
         transaction.pending_root_catalog_ids.clear();
         transaction.pending_index_catalog_ids.clear();
-        transaction.staged_write_bytes = 0;
+        transaction.estimated_buffered_bytes = 0;
     }
 
-    /// Add this plan's staged write payload to the open transaction's running
-    /// total and fail closed if it crosses the breadth budget. Charged before the
-    /// plan's steps reach the store buffer, so an oversized transaction aborts
-    /// while the buffer is still bounded rather than at commit, when it has already
-    /// grown. The metadata stamp is not counted: it is one small store-internal row
-    /// per transaction, not user write breadth.
+    /// Add this plan's estimated buffered footprint to the open transaction's
+    /// running total and fail closed if it crosses the breadth budget. Charged
+    /// before the plan's steps reach the store buffer. The metadata stamp is not
+    /// counted: it is one small store-internal row per transaction, not user write
+    /// breadth.
     fn charge_transaction_breadth(
         &mut self,
         plan: &WritePlan,
         span: SourceSpan,
     ) -> Result<(), RuntimeError> {
-        let added = plan_staged_bytes(plan);
+        let added = plan_estimated_buffered_bytes(plan);
         let mut transaction = self.transaction.borrow_mut();
-        let total = transaction.staged_write_bytes.saturating_add(added);
+        let total = transaction.estimated_buffered_bytes.saturating_add(added);
         if total > TRANSACTION_WRITE_BYTE_BUDGET {
             return Err(transaction_too_large(total, span));
         }
-        transaction.staged_write_bytes = total;
+        transaction.estimated_buffered_bytes = total;
         Ok(())
     }
 
@@ -885,17 +884,13 @@ fn build_commit_metadata_stamp(
     )))
 }
 
-/// Real buffered memory a plan's steps add to the open transaction. A managed write
-/// pins a per-record base ([`TRANSACTION_WRITE_RECORD_OVERHEAD`]) — its shared subtree
-/// pages, pending-tree branches, and allocator slack — charged once for the plan, then
-/// each staged cell adds its own small per-cell overhead plus its payload bytes and its
-/// variable-length key and path bytes. So a large value or a large composite key is
-/// dominated by its bytes, a flood of tiny records is dominated by the per-record base
-/// rather than a per-cell multiple, and a multi-kilobyte key scales the charge linearly
-/// through every step that carries the identity. A plan with only the store-internal
-/// metadata stamp pins no record, so it is charged nothing.
-fn plan_staged_bytes(plan: &WritePlan) -> usize {
-    let cell_bytes: usize = plan.steps.iter().map(step_staged_bytes).sum();
+/// Estimated buffered footprint a plan adds to the open transaction. A managed
+/// write contributes one per-record base ([`TRANSACTION_WRITE_RECORD_OVERHEAD`]),
+/// then each staged cell contributes per-cell overhead plus its payload, key, and
+/// path bytes. A plan containing only the store-internal metadata stamp contributes
+/// nothing.
+fn plan_estimated_buffered_bytes(plan: &WritePlan) -> usize {
+    let cell_bytes: usize = plan.steps.iter().map(step_estimated_buffered_bytes).sum();
     if plan
         .steps
         .iter()
@@ -906,7 +901,7 @@ fn plan_staged_bytes(plan: &WritePlan) -> usize {
     cell_bytes.saturating_add(TRANSACTION_WRITE_RECORD_OVERHEAD)
 }
 
-fn step_staged_bytes(step: &PlanStep) -> usize {
+fn step_estimated_buffered_bytes(step: &PlanStep) -> usize {
     match step {
         PlanStep::WriteData { address, value } => data_address_bytes(address)
             .saturating_add(value.len())

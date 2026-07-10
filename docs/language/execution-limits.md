@@ -9,16 +9,20 @@ Marrow programs and source files.
 |---|---:|---|
 | Source nesting | 256 levels | Located check diagnostic |
 | Function-call nesting | 256 active calls | Typed runtime depth error |
-| One transaction staged-write budget | 64 MiB | Transaction-too-large error and rollback |
+| One transaction estimated buffered footprint budget | 64 MiB | Transaction-too-large error; rollback if the fault escapes |
 
 Source nesting includes indentation blocks and expression nesting such as
 parentheses, unary expressions, and binary operands. The entry function is call
 depth 1; attempting depth 257 fails before native stack overflow.
 
-The transaction limit meters the estimated buffered write footprint, including
-per-record and per-cell overhead as well as variable path, key, and value bytes.
-It is not a raw serialized-data byte count. Nested transactions share the
-outer transaction and its budget.
+The transaction limit meters the estimated buffered footprint of writes,
+including per-record and per-cell overhead as well as variable path, key, and
+value bytes. It is not a raw serialized-data byte count. Nested transactions
+share the outer transaction and its budget. The write that crosses the budget
+is rejected before it is staged. If the error escapes the transaction block,
+the block's staged durable changes roll back. If code catches the error inside
+the block, the rejected write adds nothing; earlier staged writes remain and
+may commit when the block finishes normally.
 
 ## Library Input Limits
 

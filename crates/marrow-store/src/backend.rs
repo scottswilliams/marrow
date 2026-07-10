@@ -22,7 +22,8 @@ pub enum StoreError {
     /// guaranteed: it reports whether the store opened, and a store damaged beyond
     /// replay surfaces [`Corruption`](Self::Corruption) instead.
     RecoveryRequired,
-    /// A store-owned framing field could not hold a key, value, or metadata length.
+    /// An operation exhausted a fixed representation bound, including framing
+    /// lengths/counts, checked inventory or integrity counts, and commit-ID allocation.
     LimitExceeded { limit: &'static str },
     /// A bounded scan cursor does not belong to the scan being resumed.
     InvalidCursor { message: String },

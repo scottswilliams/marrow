@@ -6,12 +6,12 @@ the same Git revision and separates reachable behavior from direction.
 | State | Meaning |
 |---|---|
 | Current | Implemented behavior documented by the current reference and tests. |
-| Legacy | Implemented behavior that is intentionally excluded from the target architecture and should not be expanded. |
-| Future | Unimplemented direction recorded under `docs/future/`; it is not a current contract. |
+| Legacy | Reachable behavior that is being removed and must not shape replacement architecture. |
+| Future | Unimplemented direction under `docs/future/`; it is not current syntax or a guarantee. |
 
 ## Current
 
-### Language
+### Language and checking
 
 - Native parser and formatter for `.mw` source.
 - Static scalar, resource, enum, sequence, local-tree, optional, and nominal
@@ -20,86 +20,112 @@ the same Git revision and separates reachable behavior from direction.
   presence narrowing, and host-effect checks.
 - Direct durable reads, assignments, deletion, ordered keyed iteration,
   managed indexes, and lexical transactions.
-- Source declarations for supported changes to populated data.
+- Source declarations for selected changes to populated data.
 
 ### Execution and durable state
 
-- A checked executable representation interpreted by a tree-walking runtime.
-- Memory and redb implementations of the current ordered-tree substrate.
+- A checked in-memory executable representation interpreted by a tree-walking
+  runtime; no bytecode or native compiler backend.
+- Memory and redb implementations of the current ordered-tree API.
 - One owning write-capable native-store process or session.
 - Managed writes that maintain declared indexes and commit transactionally.
-- Accepted declaration identities and a state-bound preview/apply workflow for
-  supported data evolution.
-- Typed inspection, integrity checking, backup, restore, and physical recovery
-  commands.
+- Accepted declaration identities and state-bound preview/apply for supported
+  evolution.
+- Typed inspection, integrity, backup, restore, and physical recovery commands.
 
 ### Developer tools
 
 - `init`, `check`, `fmt`, `run`, `test`, `doctor`, `data`, `evolve`, `backup`,
   and `restore` command families.
+- Experimental `serve`, TypeScript client generation, and client scaffolding.
 - Text, JSON, and selected JSONL diagnostic/report forms.
-- A downstream language-server repository using Marrow compiler APIs.
+- A downstream language-server repository using current Marrow semantic APIs.
 - Linux and macOS source builds with the pinned Rust toolchain.
 
-### Known implementation limitations
+### Known implementation defects
 
 - Argument labels are not rejected consistently on standard-library and some
-  language-intrinsic or local-collection calls. A mislabeled call may check
-  without producing an executable function body, or fail only at evaluation.
+  intrinsic/local-collection calls. A mislabeled call may check without an
+  executable body or fail only during interpretation.
 - `ErrorCode` validation is not preserved through every annotated boundary;
-  parameters, returns, bare-local reassignment, local collections, keys,
-  optional or uninitialized locals, and module constants can erase the
-  refinement to `string`.
+  several parameter, return, local, collection, key, optional, and constant
+  paths erase the refinement to `string`.
 
-## Legacy
+These defects are replacement and containment inputs, not beta promises.
 
-The following mechanisms are reachable but rejected as foundations for v1:
+## Legacy and transitional architecture
 
-- `surface` declarations that repeat selected store fields and operations;
+The following behavior remains reachable until its owning deletion lane. It
+must not be expanded or preserved for compatibility.
+
+### Rejected product families
+
+- `surface` declarations and their repeated field/operation model;
 - generated collection/read/create/update/delete/action families;
-- operation-tag HTTP routes and the current generated TypeScript client;
+- operation-tag HTTP routes, Bearer-authenticated experimental serving, and the
+  generated TypeScript client;
 - `marrow serve`, `marrow client typescript`, and `init --client` as currently
-  implemented;
-- the user-facing storage-cost model and hidden-scan terminology; and
-- application sessions centered on the surface model and current catalog
-  lifecycle.
+  implemented; and
+- the user-facing storage-cost model and hidden-scan terminology.
 
-They are summarized in [Legacy mechanisms](legacy.md) so the current repository
-remains understandable, but they are absent from the main learning path and
-language manual. Bearer authentication in the experimental server is not
-compiler-integrated path authorization.
+### Transitional foundations
 
-## Future
+- the tree-walking interpreter and optional executable-body model;
+- the resource/schema split and Rust-table standard library;
+- store-projected catalog identity, current `marrow.lock`, automatic baseline,
+  and current evolution lifecycle;
+- managed indexes and privileged `nextId` allocation;
+- durable writes outside an explicit outer transaction, nested transactions
+  joining an outer transaction, and current host-effect handling in transactions;
+- `ProjectSession` orchestration and the mixed compiler/runtime/store JSON model;
+- redb plus the current recovery wrapper and engine-private file knowledge; and
+- `marrow.json` is the current, transitional project model.
 
-The intended architecture includes:
+These are current facts and remain documented while reachable. The refounding
+will remove their reference pages with their production code rather than keep a
+permanent legacy manual.
 
-- reproducible compiled and verified program images;
-- stable compiler-owned semantic path identities;
-- a neutral logical tree beneath one authorized path kernel;
-- read-only store admission and explicit atomic activation;
-- a source-defined portable standard library above minimal host intrinsics;
-- ordinary exported functions and generated local UI bindings;
-- explicit public path projections and typed path capabilities; and
-- a served profile that preserves embedded program semantics.
+## Future: v0.1 beta
 
-The [future index](future/) describes this direction without defining current
-syntax or blocking implementation on speculative contracts.
+The planned beta direction includes:
+
+- an ordinary storeless language floor with ADTs, exhaustive patterns, real
+  parametric functions/types, closures, generic local collections, modules,
+  packages, source tests, formatting, and editor facts;
+- `marrow.toml`, a complete exact package lock, a separate stable-identity
+  ledger, Git/path dependencies, verified offline cache, and vendoring;
+- one reproducible ProgramImage, independent bounded verifier, and portable VM;
+- ordinary dense types with closed durable/key representation, typed ordered
+  durable trees, explicit transactions, application-owned counters and
+  secondary trees, and bounded traversal;
+- compiler-described effects, exact accepted execution binding, and one
+  authority-checking path kernel;
+- one qualified private native engine with no public backend choice;
+- StoreId, durable-contract and executable-binding generations, read-only
+  admission, crash-recoverable activation, narrow evolution, logical backup,
+  and fresh-store restore; and
+- a terminal-first local application, followed by named exported functions,
+  generated TypeScript bindings, and a supervised sidecar.
+
+[Future direction](future/) records goals and boundaries without defining
+unimplemented syntax or exact formats.
 
 ## Not current
 
-Marrow does not currently provide bytecode or native code generation,
-compiler-integrated path authorization, path-native URI publication, a
-supported packaged desktop host, concurrent multi-writer service deployment,
-replication, high availability, signed releases, or institutional protocol
-conformance.
+Marrow does not currently provide general-purpose language completeness,
+third-party packages, compiled images, an independent verifier or VM,
+compiler-integrated runtime path authority, executable/store binding, a
+supported packaged desktop application, public path publication, a supported
+served profile, concurrent multi-writer deployment, replication, high
+availability, signed releases, or institutional protocol/compliance evidence.
 
-## Trust boundaries
+## Current trust boundaries
 
 - Filesystem permissions and the host process protect local store files.
-- Checksums and structural verification detect selected corruption; they do
-  not authenticate hostile storage.
+- Checksums and structural checks detect selected corruption; they do not
+  authenticate hostile storage or prove full application validity.
 - Encryption at rest is delegated to the filesystem or substrate.
 - TLS, authentication, identity providers, operator credentials, and hardware
   durability are deployment responsibilities.
 - Static checking cannot establish application intent, correct policy design,
-  regulatory compliance, or freedom from external side channels.
+  regulatory compliance, or absence of external side channels.

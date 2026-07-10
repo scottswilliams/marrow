@@ -1,104 +1,119 @@
 # Vision
 
-Marrow is intended to be a statically typed language for durable operational
-software: programs whose state is long-lived, transactional, and central to
-their behavior.
+Marrow is intended to be a general-purpose statically typed compiled language
+whose distinctive capability is direct interaction with durable hierarchical
+data.
 
-The central model is direct. Resource declarations describe tree-shaped
-values. A `^` path addresses durable state. Ordinary functions read, assign,
-delete, and iterate those paths, and a `transaction` block groups durable
-changes atomically. Persistence is part of the language rather than a separate
-query or object-mapping API.
+An ordinary program should be able to define types and functions, transform
+local collections, use packages, call explicit host facilities, and run without
+a store. A durable program should use the same language while making durable
+places, transaction boundaries, potentially large traversal, and authority
+visible. Persistence should require no parallel table/document model,
+serializer, repository layer, or string-keyed database API.
 
-## Compiler-first durable state
+## Language and compiler first
 
-Marrow's product boundary is the language and compiler, not a new database
-engine. Storage substrates provide ordered persistence, transactions,
-durability, and recovery beneath the language. The compiler is intended to own
-the application meaning that otherwise becomes duplicated among types,
-storage calls, migrations, public interfaces, and authorization checks.
+Marrow's product boundary is one canonical language implementation: package
+graph, compiler, immutable program image, independent verifier, portable VM,
+path kernel, lifecycle, tools, and reference. It is not an abstract language
+standard whose usable implementations are left to database vendors.
 
-That ownership includes:
+Storage substrates provide ordered bytes, snapshots, atomic transactions,
+durability, and native recovery behind a private boundary. They do not define
+Marrow types, source paths, effects, authorization, evolution, or public APIs.
+The project should select one qualified private engine for a release rather than
+turn backend choice into a language feature.
 
-- value, presence, and entry-identity types;
-- stable semantic identities for durable paths;
-- direct and transitive path effects of functions;
-- transaction and host-effect requirements;
-- changes to populated durable data;
-- explicit public address projections; and
-- the maximum path authority required by callable code.
+The compiler is intended to own the application meaning that conventional
+systems often repeat across source types, persistence calls, migrations,
+external interfaces, and authorization code. Compilation itself remains
+storeless. A separate lifecycle admits and binds an exact verified image to a
+particular store before durable execution.
 
-The compiler must produce a reproducible program artifact without opening a
-user store. Runtime admission compares that artifact with a particular store;
-execution never infers program meaning from physical keys.
+## Durable data as language data
 
-## One semantic path model
+Working with durable state should resemble working with local data where the
+physics permit it:
 
-A source spelling, stable schema identity, concrete keyed address, public URI,
-authority region, and physical storage key can refer to related places without
-being the same representation.
+- paths and keys are typed rather than assembled as strings;
+- point reads and writes address exact elements;
+- ordinary functions express business behavior;
+- a visible transaction groups atomic durable changes; and
+- application code maintains secondary access trees and allocation policy with
+  the same transaction semantics as primary state.
+
+The language must not hide that durable data can be absent, larger than memory,
+contended, unavailable, or damaged. Ordered traversal is explicit and bounded.
+Writes can fail. A compiler check cannot prove business intent or hardware
+durability.
+
+## One semantic coordinate system
+
+The same durable declaration can participate in several related models without
+collapsing them into one string or identifier:
 
 ```text
-source path
-    -> stable semantic path
+source declaration
+    -> stable semantic identity
         -> concrete address with typed keys
-            -> private logical and physical encodings
+            -> private logical and physical encoding
 ```
 
-Public addressing and authorization should project from the same semantic
-path graph. Publishing an address does not grant permission, and permission
-does not expose physical storage. Evolution relates graph versions while
-preserving or explicitly changing semantic identity.
+Package lineage and snapshots, source spelling, durable representation,
+concrete address, store identity, executable binding, public URI, authority
+region, and physical key have different owners and lifecycles.
 
-## Product profiles
+This separation enables a compiler to report how a package or code change
+affects types, durable representation, callable effects, and a particular
+store. Inferred effects describe demand; they never grant permission. Runtime
+access should be the intersection of verified demand, an exact accepted
+candidate, a separately owned maximum ceiling, and invocation attenuation at
+one path kernel.
 
-The first profile is an embedded local application: a trusted host owns the
-program and store while an untrusted UI receives generated typed callable
-bindings. This targets the space currently served by a desktop web UI plus an
-embedded SQL store, without requiring an application server.
+## Product progression
 
-The later served profile uses the same durable model and ordinary business
-functions with authenticated principals and multiple terminals. Promotion is a
-real architectural test: becoming served should not require rewriting the
-application around transport, CRUD, or a second data model.
+The v0.1 beta should establish two independent acceptance programs:
 
-Target workloads include scheduling, inventory, work orders, case management,
-terminal systems, and clinical or administrative systems. They share sparse
-hierarchical state, direct element access, long histories, and transactions.
-FHIR and institutional compliance remain integration and evidence problems,
-not claims implied by the language design.
+- a useful storeless command-line program exercises the ordinary language,
+  package workflow, compiled image, verifier, VM, formatter, and editor facts;
+- a terminal-first local application exercises durable values, transactions,
+  ordered trees, executable/store binding, recovery, backup, and restore before
+  adding generated TypeScript bindings and a supervised desktop sidecar.
+
+The later served profile should run the same images, durable declarations, and
+ordinary business functions under authenticated principal/client invocations.
+Becoming served must not require a CRUD service layer or a second data model.
+Concurrent execution, principal policy, public paths, online evolution,
+replication, and high availability are separate later problems.
+
+Candidate domains include inventory, scheduling, work orders, case management,
+terminal systems, and clinical or administrative software. Naming those domains
+does not establish production, compliance, or institutional readiness.
 
 ## Boundaries
 
-Marrow should integrate with established components at typed boundaries:
+Marrow does not need a query planner, `EXPLAIN`, ORM, generated record CRUD,
+automatic REST publication, database leaderboard, UI framework, identity
+provider, analytics engine, or replication protocol.
 
-- Electron, browser, terminal, and native UI frameworks;
-- storage and replication systems;
-- HTTP, TLS, identity providers, and enterprise directories;
-- messaging, scheduling, analytics, and search systems; and
-- operating-system and deployment tooling.
+HTTP, TLS, identity providers, Electron or native UI frameworks, messaging,
+search, analytics, and operating-system services should integrate through typed
+host boundaries when needed. A library or application can build a database
+system in Marrow; the core language does not need to become one.
 
-Marrow does not need a query planner, ORM, generated record CRUD, automatic
-REST publication, database leaderboard, UI framework, identity provider,
-analytics engine, or replication protocol.
+## Lineage and evidence
 
-## Lineage
+MUMPS demonstrates that direct hierarchical durable state can support important
+long-lived transactional systems. It is product evidence and inspiration, not a
+compatibility target. Marrow does not inherit M syntax, dynamic typing,
+schema-by-convention, implementation architecture, or historical tooling limits.
 
-MUMPS demonstrates that direct hierarchical durable state is useful in
-long-lived transactional systems. It is product evidence and inspiration, not
-a compatibility target. Marrow does not inherit M syntax, dynamic typing,
-schema-by-convention, tooling limitations, or historical runtime architecture.
+Hierarchical and orthogonal persistence, effect and capability systems,
+content-addressed code, typed routing, language-integrated databases, and local
+application runtimes all have prior art. Marrow's combination must earn its
+complexity through working applications, a smaller trusted boundary, precise
+failure behavior, and reproducible measurements.
 
-Hierarchical persistence, orthogonal persistence, typed effects, capability
-security, and typed routing all have prior art. Marrow's hypothesis is that
-combining them around one compiler-owned path model yields a smaller and more
-coherent application boundary than repeating the same meaning across several
-layers.
-
-## Evidence
-
-The vision is direction, not evidence. Documentation should say whether a
-behavior is current, legacy, or future; whether a guarantee is enforced by the
-compiler or runtime; and whether a claim is tested, measured, or operationally
-assumed. Marrow should not describe itself as safe, scalable, portable, or
-institution-ready without the corresponding evidence.
+This page states direction, not implementation evidence. [Project
+status](status.md) identifies what is current, legacy, and future; the
+[reference](language/) defines only current behavior.

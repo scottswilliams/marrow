@@ -53,12 +53,16 @@ const REQUIRED_DOCUMENTATION: &[&str] = &[
     "docs/implementation/tooling.md",
     "docs/implementation/testing.md",
     "docs/implementation/syntax.md",
+    "docs/future/general-purpose-language.md",
+    "docs/future/packages.md",
     "docs/future/compiled-programs.md",
+    "docs/future/durable-programming.md",
     "docs/future/semantic-paths.md",
+    "docs/future/path-effects-and-authority.md",
     "docs/future/admission-and-activation.md",
     "docs/future/source-standard-library.md",
     "docs/future/local-applications.md",
-    "docs/future/public-paths-and-authority.md",
+    "docs/future/public-paths.md",
     "docs/future/served-execution.md",
 ];
 
@@ -82,6 +86,7 @@ const REMOVED_DOCUMENTATION: &[&str] = &[
     "docs/language/resources-and-storage.md",
     "docs/language/syntax.md",
     "docs/language/types.md",
+    "docs/future/public-paths-and-authority.md",
 ];
 
 fn repo_root() -> PathBuf {
@@ -283,6 +288,10 @@ fn mw_blocks(markdown: &str) -> Vec<String> {
     blocks
 }
 
+fn normalized_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[test]
 fn root_readme_example_checks_through_the_cli() {
     let root = repo_root();
@@ -327,6 +336,193 @@ fn every_current_mw_fence_is_a_complete_checked_module() {
             assert_example_checks(&source, "documentation-module-example");
         }
     }
+}
+
+#[test]
+fn future_pages_contain_no_mw_fences() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    markdown_files(&root.join("docs/future"), &mut files);
+
+    for file in files {
+        let relative = file.strip_prefix(&root).expect("file is in repository");
+        let markdown = fs::read_to_string(&file).expect("read future documentation");
+        assert!(
+            mw_blocks(&markdown).is_empty(),
+            "{} publishes unchecked future Marrow syntax",
+            relative.display()
+        );
+    }
+}
+
+#[test]
+fn direction_docs_separate_current_limits_legacy_surfaces_and_beta_architecture() {
+    let root = repo_root();
+    let readme = fs::read_to_string(root.join("README.md")).expect("read README");
+    let agents = fs::read_to_string(root.join("AGENTS.md")).expect("read AGENTS");
+    let vision = fs::read_to_string(root.join("docs/vision.md")).expect("read vision");
+    let status = fs::read_to_string(root.join("docs/status.md")).expect("read status");
+    let docs_index = fs::read_to_string(root.join("docs/README.md")).expect("read docs index");
+    let compiler = fs::read_to_string(root.join("docs/implementation/compiler.md"))
+        .expect("read compiler implementation guide");
+    let readme_prose = normalized_whitespace(&readme);
+
+    for (name, text) in [
+        ("README", &readme),
+        ("AGENTS", &agents),
+        ("vision", &vision),
+    ] {
+        assert!(
+            text.to_lowercase().contains("general-purpose"),
+            "{name} does not state the intended language category"
+        );
+    }
+    assert!(
+        !agents.contains("not a database-engine, web-framework, or general-purpose-language"),
+        "AGENTS rejects the approved general-purpose category"
+    );
+    assert!(
+        readme_prose.contains("tree-walking interpreter")
+            && readme_prose.contains("does not currently emit bytecode or native machine code"),
+        "README must state the current interpreter and compiler limitation"
+    );
+    assert!(
+        readme_prose.contains("independently verified program images")
+            && readme_prose.contains("portable VM"),
+        "README must distinguish image verification from the portable VM"
+    );
+    assert!(
+        readme_prose.contains("`marrow serve --remote`")
+            && readme_prose.contains("synchronous")
+            && readme_prose.contains("does not provide TLS or compiler-integrated authorization")
+            && readme_prose.contains("unsuitable for untrusted networks"),
+        "README must describe the reachable remote server without presenting it as supported"
+    );
+    assert!(
+        readme.contains("In the target architecture"),
+        "README must distinguish target storage layering from the current implementation"
+    );
+    assert!(
+        status.contains("v0.1 beta"),
+        "status must name the target release"
+    );
+    assert!(
+        status.contains("`marrow.json` is the current, transitional project model"),
+        "status must classify marrow.json as current and transitional"
+    );
+    assert!(
+        docs_index.contains("production checker")
+            && docs_index.contains("current toolchain registry")
+            && !docs_index.contains("production compiler"),
+        "documentation index must name the current checker and error-code owner accurately"
+    );
+    for crate_name in [
+        "`marrow-syntax`",
+        "`marrow-project`",
+        "`marrow-schema`",
+        "`marrow-check`",
+        "`marrow-catalog`",
+        "`marrow-store`",
+    ] {
+        assert!(
+            compiler.contains(crate_name),
+            "compiler implementation guide omits {crate_name}"
+        );
+    }
+    assert!(
+        compiler.contains("transitional") && compiler.contains("scalar type and codec"),
+        "compiler implementation guide must qualify the marrow-store dependency"
+    );
+    let compiler_prose = normalized_whitespace(&compiler);
+    assert!(
+        compiler_prose.contains("`marrow-project` owns configuration and filesystem discovery")
+            && compiler_prose.contains("`marrow-check` orchestrates that discovery")
+            && compiler_prose.contains("source overlays")
+            && compiler_prose.contains("semantic module uniqueness"),
+        "compiler implementation guide must distinguish project discovery from checking"
+    );
+    assert!(
+        !status.contains("typed quarantine"),
+        "status must not promise an undefined beta quarantine facility"
+    );
+}
+
+#[test]
+fn generated_error_reference_keeps_atomicity_and_names_every_store_limit_family() {
+    let reference =
+        fs::read_to_string(repo_root().join("docs/error-codes.md")).expect("read error reference");
+    let reference_prose = normalized_whitespace(&reference);
+
+    assert!(
+        reference.contains("without dividing an invariant that must commit atomically"),
+        "transaction-size guidance must not recommend breaking an atomic invariant"
+    );
+    assert!(
+        reference_prose.contains("If the fault escapes the transaction")
+            && reference_prose.contains("If it is caught inside the transaction")
+            && reference_prose.contains("earlier staged writes remain and may commit"),
+        "transaction-size guidance must distinguish escaping and caught faults"
+    );
+    assert!(
+        !reference.contains("Split the atomic write into smaller transactions"),
+        "transaction-size guidance still recommends splitting an atomic write"
+    );
+    for limit_family in [
+        "store framing length/count",
+        "record/problem/index count",
+        "commit-ID sequence",
+    ] {
+        assert!(
+            reference.contains(limit_family),
+            "store.limit meaning omits {limit_family} exhaustion"
+        );
+    }
+    assert!(
+        reference_prose.contains("Only the dotted `code` is machine-stable")
+            && reference_prose.contains("may appear only in the current human-readable message"),
+        "storage-error introduction must state the actual machine contract"
+    );
+    assert!(
+        !reference.contains("Machine-readable facts belong in `data`; clients do not parse"),
+        "storage-error introduction still promises structured facts not carried by every emitter"
+    );
+}
+
+#[test]
+fn future_direction_keeps_beta_evolution_transactions_and_distribution_narrow() {
+    let root = repo_root();
+    let admission = fs::read_to_string(root.join("docs/future/admission-and-activation.md"))
+        .expect("read admission direction");
+    let durable = fs::read_to_string(root.join("docs/future/durable-programming.md"))
+        .expect("read durable direction");
+    let local = fs::read_to_string(root.join("docs/future/local-applications.md"))
+        .expect("read local-application direction");
+    let admission_prose = normalized_whitespace(&admission);
+    let durable_prose = normalized_whitespace(&durable);
+    let local_prose = normalized_whitespace(&local);
+
+    assert!(
+        admission_prose.contains("exactly one new sparse path")
+            && admission_prose.contains("no stored values")
+            && admission_prose.contains("binding-only activation")
+            && admission_prose.contains("not a data-contract transition"),
+        "admission direction must retain the narrow beta transition vocabulary"
+    );
+    assert!(
+        durable_prose.contains("typed result propagation")
+            && durable_prose.contains("rolls back without poisoning the transaction")
+            && durable_prose.contains("Runtime, validation, and budget faults poison"),
+        "durable direction must distinguish deliberate rollback from poisoning"
+    );
+    assert!(
+        !durable.contains("`?`"),
+        "future direction must not define an unimplemented postfix operator"
+    );
+    assert!(
+        local_prose.contains("release bundle for one qualified beta platform")
+            && !local.contains("certified application bundle"),
+        "local distribution direction must state the qualified beta evidence target"
+    );
 }
 
 #[test]

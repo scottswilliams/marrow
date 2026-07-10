@@ -315,41 +315,32 @@ pub const RUN_DEPTH: &str = Code::RunDepth.as_str();
 /// instead of recursing. Fixed in v0.1, not configurable.
 pub const CALL_DEPTH_BUDGET: usize = 256;
 
-/// A transaction's pending write set grew past [`TRANSACTION_WRITE_BYTE_BUDGET`].
-/// A transaction buffers every staged write until it commits, so an unbounded
-/// write set would exhaust memory; this caps breadth the way [`RUN_DEPTH`] caps
-/// nesting, failing closed before the process is OOM-killed.
+/// A transaction's estimated buffered footprint grew past
+/// [`TRANSACTION_WRITE_BYTE_BUDGET`]. A transaction buffers every staged write
+/// until it commits, so an unbounded write set would exhaust memory; this caps
+/// breadth the way [`RUN_DEPTH`] caps nesting, failing closed before the process
+/// is OOM-killed.
 pub const WRITE_TRANSACTION_TOO_LARGE: &str = Code::WriteTransactionTooLarge.as_str();
 
-/// The most staged write payload one transaction may buffer before raising
-/// [`WRITE_TRANSACTION_TOO_LARGE`]. A transaction holds its whole write set in
-/// memory until commit, so this ceiling bounds that buffer against the metered real
-/// footprint (a per-record base plus per-cell overhead and variable bytes): one
-/// transaction holds on the order of ten thousand small records, well below the point
-/// where the buffer would exhaust host memory. Fixed in v0.1, not configurable.
+/// The largest estimated buffered footprint one transaction may accumulate
+/// before raising [`WRITE_TRANSACTION_TOO_LARGE`]. The estimate combines a
+/// per-record base, per-cell overhead, and variable bytes so the ceiling bounds
+/// the pending write buffer before it can exhaust host memory. Fixed in v0.1,
+/// not configurable.
 pub const TRANSACTION_WRITE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// Fixed real memory one staged record pins regardless of how few bytes its cells
-/// serialize: the record's presence and data-node allocations, the redb leaf/branch
-/// pages its subtree dirties, the pending-tree branch nodes above its cells, and
-/// allocator slack. A record's cells share this structure, so the real footprint is
-/// dominated by a per-record cost with a smaller per-cell increment. The breadth
-/// budget charges this base once per staged managed write, then adds each cell's own
+/// Fixed contribution to the estimated footprint of one staged record, covering
+/// the record's presence and data-node allocations, dirty tree pages, pending-tree
+/// branches, and allocator slack. A record's cells share this structure, so the
+/// estimate charges this base once per staged managed write, then adds each cell's
 /// [`TRANSACTION_WRITE_STEP_OVERHEAD`] plus its variable value, key, path, and
-/// index-key bytes. The meter is deliberately an approximation that tracks measured
-/// peak RSS within a small constant factor: close for records of a few cells,
-/// undershooting by about 2x for very wide records whose real per-cell cost is
-/// roughly double the per-cell charge — so the budget bounds real buffered memory at
-/// low hundreds of megabytes in the worst case. Without the base a flood of tiny
-/// records would buffer gigabytes while staying nominally under the byte ceiling.
+/// index-key bytes. Without the base, a flood of tiny records would remain nominally
+/// under the byte ceiling while its actual buffer grew without a useful bound.
 pub(crate) const TRANSACTION_WRITE_RECORD_OVERHEAD: usize = 4096;
 
-/// The marginal real memory each additional staged cell pins beyond its record's
-/// shared [`TRANSACTION_WRITE_RECORD_OVERHEAD`]: its own pending-tree entry and
-/// allocator slack. Kept well below the per-record base because a record's cells share
-/// the record's pages rather than each pinning a fresh set, so a several-cell record is
-/// charged near a per-record cost rather than a multiple of it. Charged on top of each
-/// cell's variable value, key, path, and index-key bytes.
+/// The estimated marginal footprint of each staged cell beyond its record's shared
+/// [`TRANSACTION_WRITE_RECORD_OVERHEAD`]. Charged on top of each cell's variable
+/// value, key, path, and index-key bytes.
 pub(crate) const TRANSACTION_WRITE_STEP_OVERHEAD: usize = 512;
 
 fn reject_public_depth_code(code: &'static str) {
@@ -620,17 +611,22 @@ pub(crate) fn write_fault(error: WriteError, span: SourceSpan) -> RuntimeError {
     raise_fault(error.code, error.message, span)
 }
 
-/// A `write.transaction_too_large` fault: the open transaction's pending write
-/// set crossed [`TRANSACTION_WRITE_BYTE_BUDGET`]. Catchable, so a surrounding
-/// `try`/`catch` can bind it and the transaction rolls back nothing-committed
-/// rather than the process being OOM-killed.
-pub(crate) fn transaction_too_large(staged_bytes: usize, span: SourceSpan) -> RuntimeError {
+/// A `write.transaction_too_large` fault: the open transaction's estimated
+/// buffered footprint crossed [`TRANSACTION_WRITE_BYTE_BUDGET`]. The rejected
+/// write is not staged. If the catchable fault escapes the transaction, the
+/// transaction rolls back; if it is caught inside, earlier staged writes remain.
+pub(crate) fn transaction_too_large(
+    estimated_buffered_bytes: usize,
+    span: SourceSpan,
+) -> RuntimeError {
     raise_fault(
         WRITE_TRANSACTION_TOO_LARGE,
         format!(
-            "this transaction's pending write set reached {staged_bytes} bytes, past the \
-             {TRANSACTION_WRITE_BYTE_BUDGET}-byte transaction limit; split it into smaller \
-             transactions"
+            "this transaction's estimated buffered footprint reached \
+             {estimated_buffered_bytes} bytes, past the \
+             {TRANSACTION_WRITE_BYTE_BUDGET}-byte transaction limit; reduce the pending write \
+             set or its representation while preserving every invariant that must commit \
+             atomically"
         ),
         span,
     )

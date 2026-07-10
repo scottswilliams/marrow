@@ -1,39 +1,44 @@
 # Local applications
 
-This page is future direction. Marrow does not currently ship a supported
-desktop host or the target callable binding.
+This page is future direction. Marrow does not currently ship a supported local
+sidecar, generated named-function boundary, or distributable application bundle.
 
 ## Goal
 
-A local application should combine a compiled Marrow program, one durable
-store, and a trusted host process. The renderer receives generated typed
-proxies for explicitly exported functions. It does not receive filesystem
-paths, store handles, raw durable addresses, host capabilities, or maintenance
-authority.
+The first durable product profile should be a terminal application using one
+compiled image, one exact bound store, and one process owner. A later local
+sidecar should expose only explicitly exported typed functions to a desktop
+renderer. The renderer receives no filesystem path, store handle, raw durable
+address, transaction object, ceiling, or maintenance authority.
 
-A persistent sidecar owned by the desktop main process is the likely first
-host. Framed local IPC avoids introducing localhost HTTP and native-addon ABI
-requirements before they are useful.
+The intended development loop compiles and verifies a candidate, shows package/
+API/effect/contract/binding consequences, and performs any approved activation
+while the single writer is quiesced. Source changes never silently reset a
+persistent store.
 
-## Developer loop
+## Acceptance applications
 
-The intended loop is short and explicit:
+Graph Report is the storeless acceptance program. Club Locker is an offline
+equipment-lending application with members, assets, unique tags, checkout/return
+history, idempotent commands, application-owned counters and secondary trees,
+bounded pages, restart, backup, and restore.
 
-```text
-edit -> check -> test -> build -> admit -> activate -> run
-                         |                    |
-                         +-> inspect/backup <-+
-```
+Club Locker should work from the terminal before TypeScript generation or UI
+framework work begins. The desktop shell exists to test the host seam, not to
+make Marrow a UI framework.
 
-Development convenience must not silently bypass store admission or destructive
-activation decisions.
+## Distribution
+
+A release bundle for one qualified beta platform should pin the image,
+runtime/sidecar, selected private engine, generated client and renderer assets,
+provisioning policy, and application identity. Install, first provision, start,
+code update, explicit authority expansion, backup, restore, uninstall, and data
+retention need separate tested behavior. End users should not install Rust or a
+database.
 
 ## Evidence target
 
-One populated application should retain real state across code-only changes,
-compatible schema additions, explicit transforms, a destructive decision,
-backup, restore, and recovery. Its business logic and durable model should later
-run in the served profile without being rewritten around transport.
-
-The application is a product test, not a reason to add a UI framework, generic
-record editor, arbitrary schema builder, or search engine to the language.
+One populated application must retain state across supported code and contract
+changes, crashes, backup/restore, terminal and TypeScript calls, and clean-machine
+installation. Its business functions and durable model should later run under a
+served profile without being rewritten around transport or CRUD.

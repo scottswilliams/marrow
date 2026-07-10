@@ -2,14 +2,17 @@
 //! pending write set in memory; without a ceiling a large but legitimate atomic
 //! seed grows the buffer until the process is OOM-killed (an uncatchable
 //! SIGKILL). A typed, catchable cap stops the transaction with
-//! `write.transaction_too_large` before memory exhausts, and the aborted
-//! transaction commits nothing.
+//! `write.transaction_too_large` before memory exhausts. When that fault escapes
+//! the transaction, the transaction commits nothing.
 
 use crate::support;
 use support::*;
 
 use marrow_run::{TRANSACTION_WRITE_BYTE_BUDGET, Value, WRITE_TRANSACTION_TOO_LARGE};
 use marrow_store::tree::TreeStore;
+
+const TRANSACTION_TOO_LARGE_MESSAGE: &str =
+    include_str!("../goldens/write_transaction_too_large.txt");
 
 /// One saved root plus entries that build oversized transactions. `mib(n)`
 /// doubles a one-character string into a field value of about `2^n` bytes, so a
@@ -74,9 +77,9 @@ pub fn hasDoc(id: int): bool
 const RECORDS_OVER_BUDGET: i64 = 256;
 
 /// Single-int records whose serialized payload is a handful of bytes but whose
-/// real buffered footprint (record presence cell, field cell, redb pending-tree
+/// estimated buffered footprint (record presence cell, field cell, redb pending-tree
 /// page overhead, allocator slack) is kilobytes apiece. The breadth cap must
-/// reflect that real footprint, not the logical payload, or a tiny-payload flood
+/// account for that footprint, not only logical payload, or a tiny-payload flood
 /// buffers gigabytes while staying nominally "under" the byte budget.
 const TINY_RECORD_SEED: &str = "\
 resource Num
@@ -108,7 +111,7 @@ pub fn numCount(): int
 
 /// Records whose field value is a single int but whose identity carries a
 /// multi-kilobyte string key. The serialized value is a handful of bytes, yet the
-/// key bytes ride every staged step and the pending-tree key, so the real buffered
+/// key bytes ride every staged step and the pending-tree key, so the estimated buffered
 /// footprint scales with the key. Metering only the value plus a flat per-cell
 /// constant would let a large composite key buffer gigabytes while staying
 /// nominally "under" the byte budget; the cap must charge the key bytes too.
@@ -147,7 +150,7 @@ const KEYED_RECORDS_OVER_BUDGET: i64 = 2_000;
 const LARGE_KEY_DOUBLINGS: i64 = 15;
 
 /// A few thousand records keyed by a ~256-byte string is an ordinary keyed seed
-/// whose real footprint is a small fraction of the budget; it must commit.
+/// whose estimated footprint is a small fraction of the budget; it must commit.
 const KEYED_RECORDS_UNDER_BUDGET: i64 = 3_000;
 
 /// About 256 bytes per string key (`2^8` bytes).
@@ -155,15 +158,15 @@ const MODERATE_KEY_DOUBLINGS: i64 = 8;
 
 /// A single transaction of this many single-int records buffers far past 64 MiB
 /// of real memory while its logical payload is only a few megabytes. The cap must
-/// trip on the real footprint.
+/// trip on the estimated footprint.
 const TINY_RECORDS_OVER_BUDGET: i64 = 30_000;
 
-/// The same total, committed in sub-transactions whose real footprint each stays
+/// The same total, committed in sub-transactions whose estimated footprint each stays
 /// well under the budget, must all succeed.
 const TINY_BATCH_SIZE: i64 = 5_000;
 
 /// Records with several small cells apiece (two short string fields, no index). Their
-/// real buffered footprint is dominated by a per-record cost their cells share, not by a
+/// estimated buffered footprint is dominated by a per-record cost their cells share, not by a
 /// per-cell multiple, so an ordinary atomic seed of several thousand such records stays
 /// well under the budget. A flat per-cell charge overstated the footprint of a
 /// multi-cell record by its cell count and falsely rejected this seed.
@@ -193,8 +196,8 @@ const MULTICELL_ORDINARY_SEED: i64 = 6_500;
 #[test]
 fn an_ordinary_multi_cell_record_seed_commits() {
     // Several thousand records of two short string fields is an ordinary atomic seed whose
-    // real buffered footprint is a small fraction of the budget. Charging a per-record base
-    // rather than a flat per-cell constant meters that real footprint, so the seed commits
+    // estimated buffered footprint is a small fraction of the budget. Charging a per-record
+    // base rather than a flat per-cell constant keeps that estimate proportional, so the seed commits
     // instead of tripping the cap on a fabricated multiple of its cell count.
     let program = checked_program(MULTICELL_SEED);
     let store = TreeStore::memory();
@@ -217,11 +220,11 @@ fn an_ordinary_multi_cell_record_seed_commits() {
 }
 
 #[test]
-fn a_tiny_payload_flood_aborts_on_real_buffered_footprint() {
+fn a_tiny_payload_flood_aborts_on_estimated_buffered_footprint() {
     // Single-int records carry only a few payload bytes each, yet their real
     // buffered footprint is kilobytes apiece. Metering the logical payload would
     // let this transaction buffer gigabytes before the cap noticed; metering the
-    // real footprint stops it while the buffer is still bounded.
+    // estimated footprint stops it while the buffer is still bounded.
     let program = checked_program(TINY_RECORD_SEED);
     let store = TreeStore::memory();
     let result = run_entry(
@@ -291,7 +294,7 @@ fn a_moderate_tiny_payload_transaction_is_unaffected() {
 }
 
 #[test]
-fn a_large_composite_key_transaction_aborts_on_real_buffered_footprint() {
+fn a_large_composite_key_transaction_aborts_on_estimated_buffered_footprint() {
     // Each record's field value is one int, but its identity carries a ~32 KiB
     // string key that rides every staged step and the pending-tree key. Metering
     // only the value plus a flat per-cell constant meters about ten mebibytes for
@@ -323,7 +326,7 @@ fn a_large_composite_key_transaction_aborts_on_real_buffered_footprint() {
 #[test]
 fn a_moderate_composite_key_transaction_is_unaffected() {
     // A few thousand records keyed by a ~256-byte string is an ordinary keyed seed
-    // whose real footprint is a small fraction of the budget; it must commit
+    // whose estimated footprint is a small fraction of the budget; it must commit
     // untouched, so the key-byte charge does not penalize moderate keyed writes.
     let program = checked_program(KEYED_SEED);
     let store = TreeStore::memory();
@@ -366,13 +369,19 @@ fn a_loop_built_oversized_transaction_aborts_with_the_typed_cap() {
 }
 
 #[test]
-fn a_bare_oversized_transaction_aborts_with_the_typed_cap() {
+fn production_emitter_reports_estimated_footprint_without_split_guidance() {
     // The bare form unrolls three ~32 MiB records rather than looping, so the cap
     // must trip on the accumulated write set itself, not on a loop-specific path.
     let program = checked_program(BULK_SEED);
     let store = TreeStore::memory();
-    let result = run_entry(&store, checked_entry!(&program, "test::bulkBare"));
-    assert_run_error(result, WRITE_TRANSACTION_TOO_LARGE);
+    let error = run_entry(&store, checked_entry!(&program, "test::bulkBare"))
+        .expect_err("the production write path emits the transaction cap");
+    assert_eq!(error.code(), WRITE_TRANSACTION_TOO_LARGE);
+    assert_eq!(
+        error.message,
+        TRANSACTION_TOO_LARGE_MESSAGE.trim_end_matches('\n'),
+        "the production diagnostic diverged from its golden render contract"
+    );
 }
 
 #[test]

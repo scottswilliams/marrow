@@ -1,8 +1,22 @@
 # Compiler implementation
 
-The current compiler spans `marrow-schema`, `marrow-check`, and
-`marrow-catalog`. It produces a `CheckedProgram` and a syntax-free
-`CheckedRuntimeProgram`; it does not yet emit a portable program image.
+The current front end and checker span `marrow-syntax`, `marrow-project`,
+`marrow-schema`, `marrow-check`, and `marrow-catalog`. They produce a
+`CheckedProgram` and a syntax-free `CheckedRuntimeProgram` for the interpreter;
+they do not yet emit a portable program image.
+
+## Source and project inputs
+
+`marrow-syntax` owns tokens, the AST, parse diagnostics, and formatting.
+`marrow-project` owns configuration and filesystem discovery: it parses and
+validates `marrow.json`, enumerates configured `.mw` files, and derives each
+expected module name from its path. It does not read source text, apply editor
+overlays, or establish semantic uniqueness.
+
+`marrow-check` orchestrates that discovery. It resolves source overlays before
+disk reads, parses source through `marrow-syntax`, checks declared module paths,
+enforces semantic module uniqueness across the program, and computes the
+checked source digest.
 
 ## Schema shapes
 
@@ -14,7 +28,8 @@ match those shapes rather than interpreting AST spelling repeatedly.
 
 `marrow-check` owns:
 
-- project/module discovery and uniqueness;
+- discovery orchestration, source overlays, module-path validation, and
+  semantic uniqueness;
 - declaration and use-site identity arenas;
 - name and type resolution;
 - expression and statement checking;
@@ -36,6 +51,14 @@ snapshot or committed lock projection. It proposes stable `CatalogId` values,
 rename aliases, retirement, fingerprints, and catalog epochs. This is current
 behavior but not the target semantic-path architecture; see
 [Legacy implementation](legacy.md).
+
+## Transitional store dependency
+
+`marrow-schema` and `marrow-check` depend directly on `marrow-store` for the
+current scalar type and codec. The checker also consumes its saved keys,
+catalog identifiers, read-only tree access for evolution discharge, and data
+tooling. This is transitional compiler/storage coupling; the checker does not
+enable the native redb backend.
 
 ## Analysis API
 

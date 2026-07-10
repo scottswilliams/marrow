@@ -5,32 +5,37 @@ representation with a tree-walking interpreter.
 
 ## Goal
 
-Compilation should produce a reproducible, immutable program image without
-opening a user store. A loader verifies the image before execution, and a
-portable reference VM executes only verified images.
+Compilation should turn one exact locked source graph into a reproducible
+immutable ProgramImage without opening a user store or consulting the network.
+An independent bounded verifier should accept canonical image bytes before a
+portable VM can execute them.
 
-The likely first target is compact bytecode rather than native code or a JIT.
-Bytecode provides a concrete compiled artifact, deterministic portable
-semantics, explicit host imports, source mapping, bounded verification, and a
-tractable reference implementation.
+The image should contain only concrete executable facts: types, functions,
+closure layouts, direct and indirect-call bounds, host imports, exports, source
+maps, and any durable contract used by the program. Source-level generic and
+effect schemes remain compiler analysis; executable authority cannot rest on an
+unverified universal compiler claim.
 
 ## Constraints
 
-- Source validation completes before lowering.
-- The same explicit build inputs produce the same canonical image bytes.
-- Image identity is independent of store location and deployment settings.
-- Malformed, overlarge, or version-incompatible images fail before execution.
-- The image records types, callables, semantic paths, effects, source maps, and
-  required host imports through versioned sections.
-- Optimizations may not change source-observable behavior and are not required
-  for the first target.
-- Compilation remains storeless; a durable compiler cache must not become
-  semantic authority.
+- Source resolution and type/effect checking complete before executable
+  lowering.
+- Every accepted function has one complete lowered body.
+- The same explicit source and toolchain-semantic inputs produce the same
+  canonical image bytes and identity.
+- Malformed, noncanonical, overlarge, or incompatible images fail before VM or
+  host entry.
+- Verification has explicit time, depth, graph, function, and byte limits.
+- VM values, calls, closures, allocation, faults, and evaluation order have
+  deterministic language behavior even if their physical representation changes.
 
-## Open work
+A compact bytecode and reference VM are the chosen direction for the beta.
+Native code generation, a JIT, optimizer program, stable binary package ABI,
+and compiler self-hosting are not required.
 
-Instruction forms, number representation, module initialization, linking,
-debug mappings, loader compatibility, optimization validation, and resource
-budgets must be learned from the compiler and reference-machine implementation.
-They should be documented canonically as they become current rather than
-frozen in a separate speculative format document.
+## Evidence target
+
+Storeless and durable acceptance programs must execute only after canonical
+decode and independent verification. Mutation corpora, deep/wide compiler
+workloads, closure/generic allocation measurements, and clean rebuilds must be
+available before the format receives a compatibility promise.

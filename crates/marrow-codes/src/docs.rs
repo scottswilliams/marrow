@@ -90,15 +90,16 @@ Marrow error codes use lowercase dotted text such as `parse.syntax` or
 `book.already_loaned`. Segments use lowercase letters, digits, and
 underscores.
 
-Storage errors include the failed operation and the capability or limit
-involved. Machine-readable facts belong in `data`; clients do not parse
-`message`. The store reports a `store.*` code:
+Only the dotted `code` is machine-stable for storage errors. Details such as the
+operation, path, limit name, or invalid state may appear only in the current
+human-readable message; their wording is not a machine contract. The store
+reports a `store.*` code:
 `store.io`, `store.permission_denied`, `store.locked`, `store.format_version`,
 `store.corruption`, `store.recovery_required`, `store.limit`, `store.cursor`,
 `store.transaction`, and `store.read_only`.
-Backends enforce no key or value size limit, so `store.limit` is produced only
-when Marrow framing cannot encode a tree-cell metadata or value-codec length
-above a `u32` field.
+`store.limit` reports an exhausted finite representation bound: a store framing
+length/count that does not fit its `u32` field, a record/problem/index count
+overflow, or exhaustion of the `u64` commit-ID sequence.
 
 Managed-root protection raises `write.*` codes when code attempts maintenance
 work without the maintenance capability: `write.requires_maintenance` for a
@@ -339,7 +340,7 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 The implemented surface/client/server stack is legacy and intentionally absent
 from the main language and tool references. Its reachable runtime paths emit
 the codes below until the stack is deleted. They are current implementation
-facts, not a v1 protocol commitment or compiler-integrated authorization model.
+facts, not a v0.1 beta protocol commitment or compiler-integrated authorization model.
 
 ### `surface.*` — kind `surface`
 

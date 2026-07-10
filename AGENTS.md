@@ -1,186 +1,171 @@
-# Marrow Contributor Instructions
+# Marrow contributor instructions
 
-Marrow is a statically typed language in which hierarchical paths may be local
-or durable. Durable paths are ordinary language places. The compiler owns their
-types and stable semantic identities and is being designed to keep storage
-encoding, public URI representation, path authority, and evolution coherent.
+Marrow is an experimental general-purpose statically typed language whose
+distinctive capability is direct interaction with durable hierarchical data.
+Pure programs need no store. Durable programs use typed language places rather
+than a query, ORM, repository, or raw key API.
 
-Storage engines are substrates behind a conformance boundary, not Marrow's
-product or semantic authority. Embedded and served programs must obey the same
-language and transaction semantics.
+The current production path is a parser, checker, tree interpreter, catalog,
+and redb-backed ordered tree. The target is one package-aware compiler,
+canonical image, independent verifier, VM, path kernel, lifecycle, and private
+qualified engine. Do not describe target ownership as implemented today or turn
+prototype topology into a compatibility requirement.
 
-## Documentation Authority
+## Documentation authority
 
-Use one authority for each question:
+Use one owner for each question:
 
 | Question | Authority |
 |---|---|
-| Purpose and long-term direction | `docs/vision.md` |
-| Current implementation status | `docs/status.md` and the code |
+| Purpose and product boundaries | `docs/vision.md` |
+| Current/legacy/future state | `docs/status.md` and reachable code |
 | Current `.mw` behavior | `docs/language/` |
-| Unimplemented direction | `docs/future/` |
+| Current tools and operations | `docs/tools/` and `docs/operations/` |
 | Current code structure | `docs/implementation/` |
-| Current storage implementation | `docs/implementation/storage.md` and the code |
+| Unimplemented direction | `docs/future/` |
 
-Plans, reports, old ADRs, decision logs, and future notes are not authorities.
-Current behavior is carried by the concise reference, readable code, and tests
-together. A behavior change updates those owners in the same change. Raise an
-irreducible product choice to the human maintainer when it is encountered; do
-not create a parallel queue of speculative decisions.
+Current behavior is carried by concise reference pages, maintainable code, and
+production-path tests together. There is no parallel design-specification tier,
+ADR archive, target-contract queue, or agent-owned authority.
+Future pages state goals, constraints, evidence targets, and deferrals; they do
+not publish unchecked proposed syntax or exact formats.
 
-The current `surface` machinery, operation tags, generated CRUD-style
-operations, and user-facing cost model are legacy. The tree-walking interpreter,
-catalog layout, and redb backend are current but non-constitutional. Do not
-promote either group into architectural requirements or expand a legacy
-mechanism while replacing it.
+A semantic lane updates code, tests, and the current reference together. When a
+new implementation makes a future statement current, move the behavior into the
+reference and remove or narrow the future statement. Delete obsolete syntax,
+commands, fixtures, diagnostics, dependencies, and prose in the same lane. Git
+history is the archive.
 
-## Product And Design Direction
+The capability trough is deliberate: after the replacement storeless compiler
+becomes public, prototype durable documentation must disappear with its code,
+even while durable execution is temporarily unavailable. Do not preserve a
+second production path to keep old docs or tests green.
 
-These constraints guide implementation. Unimplemented details remain future
-direction until code, tests, and the canonical reference make them current.
+## Product direction
 
-- Local and durable values share one typed tree model; `^` marks a durable
-  place.
-- Reading, assignment, deletion, and iteration are ordinary language
-  operations, not a separate query language.
-- One semantic path graph owns meaning. Stable schema path identities, entry
-  identities, store UIDs, source spelling, concrete keyed addresses, URI text,
-  authority regions, graph-version evolution, and physical keys remain distinct.
-- Durable-root ownership and authority must be explicit in the future design.
-  Current direct syntax does not settle that design or imply ambient global
-  write authority.
-- Authentication establishes identity. Authorization belongs to compiler-owned
-  path facts and one total runtime enforcement seam.
-- A local owner receives an explicit root capability; local execution does not
-  bypass the security model.
-- Source compilation must not depend on a user store. Store compatibility checks
-  are read-only; a consequential transition is explicit and atomic. Introduce
-  those properties incrementally, keeping the current reference and tests aligned
-  with the behavior that actually exists.
-- MUMPS is design evidence, not a compatibility target. Do not inherit syntax
-  or behavior merely because it is historical.
-- Marrow is not a database-engine, web-framework, or general-purpose-language
-  competition.
+- The language must be useful for ordinary storeless programs. Algebraic data
+  types, real parametric functions and types, closures, generic collections,
+  modules, packages, formatting, tests, and editor support are foundations.
+- A light package system uses Git/path locators, an exact complete lock, a
+  separate stable-identity ledger, verified cache/vendor material, and no
+  dependency build scripts or ambient initialization.
+- Direct durable reads, writes, presence, explicit transactions, and bounded
+  ordered traversal are language operations. There is no user query planner,
+  `EXPLAIN`, ORM, generated CRUD family, or source-level cost model.
+- The compiler describes access demand; it never grants what it infers. Runtime
+  access must intersect verified demand, exact candidate acceptance, a separate
+  maximum ceiling, and invocation attenuation at one path kernel.
+- Source spelling, stable declaration identity, package lineage/snapshot,
+  concrete keyed address, store identity, public URI, authority region, and
+  physical key remain distinct typed concepts.
+- Storage engines are private transactional byte substrates. Marrow competes on
+  language/compiler integration, not engine choice or database benchmarks.
+- MUMPS is product evidence and inspiration, not a syntax, compatibility, or
+  implementation constitution.
+- Local terminal and desktop applications come before served execution. Public
+  HTTP, principals/policy, replication, broad online evolution, and
+  institutional readiness remain future until separately evidenced.
 
-Do not introduce a user-facing query, planner, scan, cost, or explain model; a
-CRUD operation taxonomy; or a second application data model. Internal storage
-traversal and empirical performance measurements remain legitimate
-implementation concerns and must be named precisely.
+The current `surface`, server/client generator, CRUD operation tags, and cost
+projection are rejected product families. The current resource/schema system,
+managed indexes, `nextId`, permissive write/transaction behavior, store-owned
+catalog, interpreter, project session, mixed JSON crate, global diagnostic
+registry, and redb recovery wrapper are transitional. Remove rather than expand
+them as their replacements land.
 
-## Documentation Style
+## Working rules
 
-Write public documentation in a neutral technical-reference voice:
+1. Read the canonical current reference before changing syntax, types, paths,
+   transactions, identity, evolution, authority, or terminology.
+2. State assumptions and tradeoffs. If an implementation reaches a
+   consequential user-visible fork not settled by the approved direction and
+   evidence, ask the maintainer before building that fork; do not create a
+   standing approval queue.
+3. Begin behavior changes with a failing production-pipeline test and observe
+   the intended failure.
+4. Implement one coherent vertical invariant through parser, semantic owner,
+   executable form, runtime, tools, and reference as applicable.
+5. Delete the displaced family. Do not add a fallback, mode flag, compatibility
+   copy, test-only production constructor, or duplicate semantic model.
+6. Preserve unrelated user changes in dirty worktrees.
+7. Verify from fresh output before reporting completion.
 
-- define the mechanism before describing its benefits;
-- use complete checked examples;
-- use present tense only for implemented behavior;
-- label direction and research explicitly;
-- state limitations beside the claims they qualify;
-- avoid superlatives, competitor dismissals, and agent-centric positioning;
-- use “checked,” “enforced,” “witnessed,” or “conformance-tested” rather than
-  “proven” unless a formal result is published;
-- give one concept one term and one prose owner;
-- delete obsolete material rather than appending history or migration notes.
+## Rust architecture
 
-Agents are contributors and consumers of structured compiler facts, not
-Marrow's target category. Documentation must remain readable by developers,
-language implementers, storage engineers, and operators under pressure.
+Write Marrow like a language, compiler, and durable runtime maintained for
+years: typed, direct, bounded, and organized around one semantic owner.
 
-Every high-level code change updates its `docs/implementation/` page in place.
-Implementation pages describe actual code, including legacy mechanisms while
-they exist; they do not turn current topology into future law.
+**Typed identity and state.** Use newtypes and small enums for IDs, provenance,
+operations, diagnostics, lifecycle states, and capabilities. Render strings at
+boundaries. Do not recover meaning by comparing names, paths, prose, or protocol
+text.
 
-## Working Rules
+**One owner.** Parse syntax once and classify each concept once. Do not duplicate
+builtins, values, key eligibility/order, saved paths, effects, evolution
+verdicts, diagnostics, or runtime facts across compiler, VM, kernel, tools, and
+tests.
 
-1. Read the canonical reference before changing syntax, types, durable paths,
-   transactions, identity, evolution, authority, or user terminology.
-2. State assumptions and tradeoffs before implementation. Prefer a smaller
-   semantic core and explicit integration boundary.
-3. Start behavior changes with a failing production-pipeline test.
-4. Make the minimum coherent change and delete the replaced path; do not add a
-   fallback, mode flag, or compatibility copy for green tests.
-5. Preserve unrelated user changes in dirty worktrees.
-6. Verify with fresh output before reporting completion.
+**Current versus target compiler facts.** The current checker owns source
+resolution and type/effect facts. The replacement compiler must own a partial,
+revisioned `AnalysisSnapshot` and a clean storeless image path. LSP and renderers
+consume those facts; they do not parse source strings or diagnostic messages.
 
-## Rust Architecture
+**Runtime boundary.** Only independently validated executable artifacts enter
+the target VM. Every durable instruction names a validated typed effect site;
+application code never receives a database connection, raw physical key, engine
+handle, ceiling owner, maintenance grant, or recovery handle.
 
-Write Marrow as a language/compiler/runtime system: typed, direct, and organized
-around one durable invariant at a time.
+**Storage boundary.** A raw engine owns ordered bytes, snapshots, consuming
+transactions, sync, and native recovery. Language representation, typed paths,
+authority, lifecycle, logical integrity, and backup/restore belong above it.
+Engine-specific names and formats stay out of `.mw` source and public APIs.
 
-**Typed identity.** Use newtypes or small enums for semantic identity, state,
-and diagnostic kinds. Store typed values and render strings at boundaries. Do
-not compare formatted paths, names, diagnostic prose, or protocol text to
-recover meaning.
+**Diagnostics.** A typed variant couples stable code, payload, locations, and
+severity. One renderer produces prose. Semantic tests assert the variant, code,
+payload, span, fact, value, or effect—not sentence fragments.
 
-**One semantic owner.** Parse syntax once, classify each language concept once,
-and thread typed facts through later stages. Do not duplicate definitions of
-durable paths, builtins, identity, values, evolution verdicts, or diagnostics
-across parser, checker, runtime, tools, and tests.
+**API and code shape.** `pub` needs a real cross-crate caller. Keep fields
+private, enforce invariants in constructors, prefer consuming/typed-state APIs,
+split broad dispatchers, and page or stream potentially unbounded user data.
+Comments explain durable rationale, representation, cost, or soundness, not
+history or control flow.
 
-**Compiler facts.** The checker owns source resolution and semantic path facts.
-URI, authority, evolution, and editor information must derive from those facts;
-no adapter or renderer re-parses source strings.
+No `unsafe`. A new dependency needs explicit maintainer approval, license
+review, and a concrete boundary that the standard library or an existing
+dependency cannot satisfy. Repository source remains Apache-2.0.
 
-**Runtime boundary.** The runtime consumes checked facts and fails closed with
-typed errors. Logical tree access should converge on one typed path boundary as
-that architecture is introduced. Physical recovery remains a separate private
-store operation and does not by itself establish application-level validity.
+## Testing and evidence
 
-**Storage boundary.** The store owns bytes, ordered operations, transactions,
-durability, and recovery. It does not own `.mw` semantics, public paths,
-authorization, or evolution meaning. Backend-specific names and formats stay
-out of application source.
+- Exercise source through the production parser/checker or compiler and the
+  production runtime path; do not hand-build semantic replicas.
+- Keep tests beside the invariant. Identity, keys, types, effects, writes,
+  transactions, storage, admission, activation, backup, and recovery require
+  adversarial sibling cases.
+- Every invariant ships its enforcement artifact: type/visibility boundary,
+  absence test, conformance law, or generated drift gate.
+- Complete current `mw` examples must check. Future pages contain no `mw`
+  fences. Generated references and bindings require byte-exact drift tests.
+- Performance and durability claims name workload, platform, toolchain,
+  settings, limits, raw evidence, and regression policy. Do not call a behavior
+  proven, safe, scalable, portable, or institution-ready without the
+  corresponding evidence.
 
-**Diagnostics.** Emit a typed code and typed payload. One render owner produces
-prose. Tests assert codes, spans, facts, and values rather than sentence
-fragments.
-
-**Fallibility.** Return typed errors on fallible paths. Reserve `panic!`,
-`expect`, and `unreachable!` for states made impossible by a narrow type or
-constructor invariant.
-
-**API shape.** `pub` requires a real cross-crate caller. Keep fields private,
-enforce invariants in constructors, expose borrowing accessors, and prefer typed
-state over behavior-selecting booleans.
-
-**Code shape.** Split broad dispatchers by invariant. Prefer focused modules and
-exhaustive matches over comment-heavy branches, generic helpers, or god crates.
-Page or stream potentially unbounded user data.
-
-**Comments.** Explain durable rationale, representation, performance, or
-soundness. Do not narrate edits, cite roadmaps, or restate control flow.
-
-No `unsafe`. Do not add dependencies without maintainer approval and a
-license-compatibility review. Repository source remains Apache-2.0.
-
-## Testing
-
-- Exercise the production pipeline rather than a hand-built semantic replica.
-- Keep tests beside the behavior they establish and split suites by invariant.
-- Storage, identity, write, evolution, and authorization changes require
-  adversarial sibling cases, compatibility fixtures, and recovery coverage.
-- A new invariant ships with an enforcement artifact: a type boundary,
-  visibility restriction, absence test, conformance test, or generated drift
-  gate.
-- Documentation examples should parse and check; generated references require
-  byte-for-byte drift tests.
-
-## Worktrees, Builds, And Integration
+## Worktrees, builds, and integration
 
 Use an isolated worktree for substantial or multi-file changes. Follow the
 machine-level `AGENTS.md` for the mandatory external `CARGO_TARGET_DIR`; never
-create build output inside this repository.
+create build output in this repository. Broad checks sharing one target run
+serially.
 
-Documentation-only changes require fresh link, anchor, terminology, snippet,
-formatting, and generated-drift checks. Every code integration requires the
-smallest affected crate or fixture, workspace build, full workspace tests,
-`fmt --check`, `clippy -D warnings`, and zero `unsafe`. Broad checks sharing a
-target directory run serially.
+Documentation-only changes require fresh inventory, link, anchor, terminology,
+snippet, and generated-drift checks. Code integrations require focused tests,
+workspace build/tests, `fmt --check`, `clippy -D warnings`, zero `unsafe`, and
+dependency/absence scans as applicable.
 
-Do not merge feature work without independent semantic-accuracy and code-shape
-review. Rebase on live main, rerun the relevant gates, integrate deliberately,
+Substantial changes receive independent soundness and code-shape/reference
+review. Rebase on live main immediately before integration, rerun gates, push,
 then retire the worktree and its build output together.
 
-`marrow-lsp` is downstream. Add snapshot-versioned semantic facts to Marrow
-first; editor, debugger, automation, and optional machine transports consume
-those facts without inventing language behavior.
+`marrow-lsp` is downstream. Add canonical snapshot-versioned facts in Marrow
+first; editor, debugger, automation, and optional machine transports must not
+invent language or store behavior downstream.

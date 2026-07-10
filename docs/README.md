@@ -1,8 +1,9 @@
 # Marrow documentation
 
-Marrow is an experimental statically typed language for programs that work
-directly with durable hierarchical state. These documents describe the source
-tree at the same revision; Marrow has not made a stable release.
+Marrow is an experimental statically typed language being developed as a
+general-purpose language with direct durable hierarchical state. These
+documents describe the source tree at the same revision; Marrow has not made a
+stable release.
 
 ## Start here
 
@@ -37,7 +38,7 @@ It is organized for lookup rather than sequential reading:
 - [Tool reference](tools/) covers the project file, CLI, data inspection,
   evolution, backup, restore, and diagnostics.
 - [Operations](operations/) covers native-store ownership and recovery.
-- [Error codes](error-codes.md) is generated from the compiler registry.
+- [Error codes](error-codes.md) is generated from the current toolchain registry.
 - [Compatibility](compatibility.md) states what an unreleased revision does
   and does not promise.
 - [Security policy](../SECURITY.md) gives the private reporting channel and
@@ -67,5 +68,6 @@ authority. When documentation and reachable behavior disagree, that mismatch
 is a defect to resolve in the reference, tests, or code.
 
 Every `mw` code fence in current documentation is a complete module checked by
-the production compiler. Short syntax fragments use `text` or `ebnf` fences so
-they cannot be mistaken for verified programs.
+the production checker. Short syntax fragments use `text` or `ebnf` fences so
+they cannot be mistaken for verified programs. Future pages contain no `mw`
+fences because unimplemented syntax is not a reference.

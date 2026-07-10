@@ -55,15 +55,16 @@ Marrow error codes use lowercase dotted text such as `parse.syntax` or
 `book.already_loaned`. Segments use lowercase letters, digits, and
 underscores.
 
-Storage errors include the failed operation and the capability or limit
-involved. Machine-readable facts belong in `data`; clients do not parse
-`message`. The store reports a `store.*` code:
+Only the dotted `code` is machine-stable for storage errors. Details such as the
+operation, path, limit name, or invalid state may appear only in the current
+human-readable message; their wording is not a machine contract. The store
+reports a `store.*` code:
 `store.io`, `store.permission_denied`, `store.locked`, `store.format_version`,
 `store.corruption`, `store.recovery_required`, `store.limit`, `store.cursor`,
 `store.transaction`, and `store.read_only`.
-Backends enforce no key or value size limit, so `store.limit` is produced only
-when Marrow framing cannot encode a tree-cell metadata or value-codec length
-above a `u32` field.
+`store.limit` reports an exhausted finite representation bound: a store framing
+length/count that does not fit its `u32` field, a record/problem/index count
+overflow, or exhaustion of the `u64` commit-ID sequence.
 
 Managed-root protection raises `write.*` codes when code attempts maintenance
 work without the maintenance capability: `write.requires_maintenance` for a
@@ -348,7 +349,7 @@ one is reported under its own `write.*` code.
 | `write.next_id_unsupported` | `nextId` was asked for a root whose identity shape has no default integer allocation policy. The runtime backstop for `check.next_id_requires_single_int`. |
 | `write.required_field` | Deleting a `required` field on its own is rejected outside maintenance. |
 | `write.requires_maintenance` | A whole managed-root delete (`delete ^books`) was attempted without the maintenance capability. |
-| `write.transaction_too_large` | A `transaction` buffered more than 64 MiB of pending write payload. A transaction holds its whole write set in memory until commit, so this fails closed before the buffer exhausts memory. Located at the write that crossed the budget; the aborted transaction commits nothing. Split the atomic write into smaller transactions. See [execution limits](language/execution-limits.md). |
+| `write.transaction_too_large` | A `transaction` exceeded the 64 MiB budget for estimated buffered footprint. The write that crossed the budget is rejected before it is staged. If the fault escapes the transaction, all of that transaction's staged durable changes roll back. If it is caught inside the transaction, the rejected write adds nothing, while earlier staged writes remain and may commit. Reduce the pending write set or its representation without dividing an invariant that must commit atomically. See [execution limits](language/execution-limits.md). |
 
 ### `store.*` — kind `storage`
 
@@ -370,7 +371,7 @@ directly.
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
 | `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a truncated or torn store body and a catalog snapshot whose recomputed digest does not match its stored header. |
 | `store.recovery_required` | The store was not shut down cleanly, so a read-only open is refused until a write-capable open replays the interrupted commit. Run `marrow data recover` to attempt that open. The recovery is attempted, not guaranteed: the command reports whether the store opened, and a store damaged beyond replay surfaces `store.corruption`. |
-| `store.limit` | A Marrow framing layer could not encode a tree-cell metadata or value-codec length above a `u32` field. Backends enforce no key/value size limit. |
+| `store.limit` | Marrow exhausted a fixed representational bound: a store framing length/count did not fit its `u32` field, a record/problem/index count overflowed, or the `u64` commit-ID sequence was exhausted. |
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
 | `store.read_only` | A write-capability operation was requested through a read-only store handle. |
@@ -498,7 +499,7 @@ run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/
 The implemented surface/client/server stack is legacy and intentionally absent
 from the main language and tool references. Its reachable runtime paths emit
 the codes below until the stack is deleted. They are current implementation
-facts, not a v1 protocol commitment or compiler-integrated authorization model.
+facts, not a v0.1 beta protocol commitment or compiler-integrated authorization model.
 
 ### `surface.*` — kind `surface`
 

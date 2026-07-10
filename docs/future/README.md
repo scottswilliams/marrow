@@ -1,21 +1,26 @@
 # Future direction
 
-This directory describes unimplemented directions that follow from Marrow's
-vision. It is neither current behavior nor an execution schedule. Current
-behavior is defined by the main reference, code, and tests.
+This directory records unimplemented direction that follows from Marrow's
+vision. It is not current behavior, a language specification, an approval
+queue, or an execution schedule.
 
+- [General-purpose language](general-purpose-language.md)
+- [Packages](packages.md)
 - [Compiled programs](compiled-programs.md)
+- [Durable programming](durable-programming.md)
 - [Semantic paths](semantic-paths.md)
+- [Path effects and authority](path-effects-and-authority.md)
 - [Admission and activation](admission-and-activation.md)
-- [Source-defined standard library](source-standard-library.md)
+- [Source standard library](source-standard-library.md)
 - [Local applications](local-applications.md)
-- [Public paths and authority](public-paths-and-authority.md)
+- [Public paths](public-paths.md)
 - [Served execution](served-execution.md)
 
-Future pages record the goal, the forces acting on the design, and questions
-that remain open. They avoid proposed syntax and wire formats before
-implementation work can validate them.
+Future pages state a goal, important constraints, evidence needed to make the
+claim current, and explicit deferrals. They contain no proposed `.mw` syntax,
+manifest field specification, instruction format, protocol schema, or diagnostic
+catalog.
 
-When a feature becomes current, its public behavior moves into the canonical
-reference and the corresponding future material is removed or reduced to the
-remaining unimplemented portion. Git history preserves abandoned proposals.
+When working code makes a behavior current, its concise rule moves into the
+canonical reference and the future page is deleted or reduced to what remains
+unimplemented. Git history preserves abandoned proposals.

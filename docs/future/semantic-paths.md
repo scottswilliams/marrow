@@ -1,35 +1,45 @@
 # Semantic paths
 
-This page is future direction. Current catalog metadata represents accepted
-declaration identity, but it is not the final semantic-path model.
+This page is future direction. Current catalog identity is useful prototype
+behavior but is not the final package-aware semantic-path model.
 
 ## Goal
 
-The compiler should own one versioned graph of durable schema paths. Related
-representations remain distinct:
+The compiler should own one typed graph of durable declarations. Related
+identities remain separate:
 
-| Representation | Role |
+| Identity or representation | Role |
 |---|---|
-| Source spelling | A name in one program version. |
-| Semantic path identity | A stable compiler identity for one declaration node. |
-| Entry identity | Typed keys selecting one concrete entry, such as `Id(^orders)`. |
-| Concrete address | A semantic path instantiated with entry keys. |
-| Public URI | An explicit external projection of selected addresses. |
-| Authority region | A typed set of addresses a principal may access. |
-| Physical key | A private substrate encoding. |
+| Package locator | Where acquisition can request source bytes |
+| Package lineage | Stable nominal origin across ordinary updates and repository moves |
+| Package snapshot | Exact canonical source content |
+| Declaration identity | Stable package-owned identity where compatibility or durable meaning requires it |
+| Source spelling | Name in one source revision |
+| Durable representation | Concrete value/key shape and codec meaning |
+| Semantic path | Stable durable declaration in the program contract |
+| Concrete address | Semantic path instantiated with typed key values |
+| Store identity | One actual durable module instance |
+| Executable binding | Exact code, graph, effects, limits, and accepted authority for a store |
+| Public path | Later external representation of selected behavior or addresses |
+| Physical key | Private kernel/engine encoding |
 
-Evolution relates graph versions. A rename may preserve identity; a split,
-merge, retirement, or incompatible reshape may require an explicit transition.
-Source names, public compatibility, and physical layout therefore cannot be
-collapsed into one string or identifier.
+Private implementation helpers use image-local identity unless they cross a
+public, durable, wire, or accepted-authority boundary. Stable identities are not
+minted during check/build, derived from URLs or source order, or invented by a
+live store.
 
 ## Constraints
 
-- Compilation receives identity provenance as an explicit reproducible input.
-- The live store and ambient entropy do not invent source semantics during
-  compilation.
-- Each representation boundary has one typed converter and one owner.
-- The logical tree and physical substrate do not interpret compiler schema.
-- Removed identities are not silently reused.
-- Public path and authority projections derive from semantic paths without
-  becoming their canonical identity.
+- Stable identity provenance is an explicit reproducible source input.
+- Removed stable IDs are not silently reused.
+- Each conversion boundary has one typed owner.
+- The compiler never emits a physical key; the engine never interprets Marrow
+  source meaning.
+- A rename may preserve one identity while a split, merge, retype, or retirement
+  requires an explicit supported transition or rejection.
+
+## Evidence target
+
+Reorder, rename, package move/update, image rebuild, activation, backup, and
+restore fixtures must demonstrate which identities remain stable and which
+change, without relying on a populated store during compilation.
