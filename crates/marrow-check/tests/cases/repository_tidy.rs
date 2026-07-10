@@ -389,6 +389,74 @@ fn no_value_value_boundaries_use_typed_state_dispatch() {
 }
 
 #[test]
+fn public_tooling_renderers_are_checked_program_bound() {
+    let root = repo_root();
+    let render = std::fs::read_to_string(root.join("crates/marrow-check/src/tooling/render.rs"))
+        .expect("read tooling render");
+
+    for (start, end) in [
+        (
+            "pub fn render_callable_signature(",
+            "pub(crate) fn render_callable_signature_with_names(",
+        ),
+        (
+            "pub fn render_callable_shape(",
+            "pub(crate) fn render_callable_shape_with_names(",
+        ),
+        (
+            "pub fn render_marrow_type(",
+            "pub(crate) fn render_marrow_type_with_names(",
+        ),
+    ] {
+        let item = item_between(&render, start, end);
+        assert!(
+            item.contains("CheckedProgram"),
+            "`{start}` must be snapshot-bound"
+        );
+        assert!(
+            !item.contains("DeclIds"),
+            "`{start}` must not expose the compiler's nominal-id recovery view",
+        );
+    }
+}
+
+#[test]
+fn internal_type_audit_reuses_one_snapshot_aligned_lexical_cache() {
+    let root = repo_root();
+    let audit = std::fs::read_to_string(
+        root.join("crates/marrow-check/src/analysis/internal_type_audit.rs"),
+    )
+    .expect("read internal type audit");
+
+    assert_eq!(
+        audit.matches("lex_source(").count(),
+        1,
+        "the developer audit must tokenize each analyzed file only in its aligned cache",
+    );
+    for owner in [
+        "build_binding_index_from_lexed(",
+        "PrelexedSourceHover::new(",
+        "source_hover_fact_at_prelexed(",
+    ] {
+        assert!(audit.contains(owner), "the audit must reuse `{owner}`");
+    }
+    for duplicate_owner in [
+        "build_binding_index(snapshot)",
+        "source_callable_hover_fact_at(",
+        "source_module_path_hover_fact_at(",
+        "store_root_hover_fact_at(",
+        "source_schema_hover_fact_at(",
+        "saved_place_hover_fact_at(",
+        "source_operator_hover_fact_at(",
+    ] {
+        assert!(
+            !audit.contains(duplicate_owner),
+            "the audit must not invoke re-lexing owner `{duplicate_owner}`",
+        );
+    }
+}
+
+#[test]
 fn recursive_poison_preflights_cover_dependent_boundary_families() {
     let root = repo_root();
     let infer =

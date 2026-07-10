@@ -54,6 +54,28 @@ value, key, predicate, range, and collection boundaries classify those states
 before consulting structural type compatibility, so a dependent expression
 propagates diagnosed poison without adding another diagnostic.
 
+`SourceHoverFact` is the canonical combined hover classifier. It selects facts
+in callable, module-path, store-root, schema, saved-place, operator, then type
+order. Downstream tools consume that fact instead of recreating precedence.
+Canonical Marrow type and callable renderers take a `CheckedProgram`, which owns
+the nominal declaration identities needed to render module-qualified types.
+
+## Compiler-development type audit
+
+`marrow check --compiler-dev <projectdir>` enables an implementation-maintainer
+audit after an otherwise error-free project analysis. It reports
+`compiler.dev.unknown_type` as a non-fatal warning when a representative source
+position has an unresolved-recovery `MarrowType::Unknown` state, either in the
+canonical hover fact or in its type fallback. Explicit source `unknown` values,
+no-return calls, and diagnosed invalid expressions are outside the audit.
+
+The option is intentionally omitted from command help and is not part of the
+ordinary project-check contract. Without it, the audit is not invoked and
+ordinary output is unchanged. The audit tokenizes each analyzed file once and
+shares that cache with binding and hover classification. Snapshots containing
+user errors suppress the audit because recovery types are expected after a
+failed check.
+
 ## Current durable identity
 
 The `catalog/` pass reconciles source declarations with an accepted catalog

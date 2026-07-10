@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use marrow_schema::Type as SchemaType;
 use marrow_syntax::{
-    Block, Declaration, EnumMember, Expression, MatchArm, ParamDecl, ParsedSource, ResourceDecl,
-    ResourceMember, SourceSpan, Statement, StoreDecl, TokenKind, TypeExpr,
+    Block, Declaration, EnumMember, Expression, LexedSource, MatchArm, ParamDecl, ParsedSource,
+    ResourceDecl, ResourceMember, SourceSpan, Statement, StoreDecl, Token, TokenKind, TypeExpr,
 };
 
 use crate::MarrowType;
@@ -220,6 +220,26 @@ pub struct ParameterDefinition {
 /// expression to collect uses, resolving each use to its definition through the
 /// same scope, alias, and schema logic the checker uses.
 pub fn build_binding_index(snapshot: &AnalysisSnapshot) -> BindingIndex {
+    let lexed = snapshot
+        .files
+        .iter()
+        .map(|file| marrow_syntax::lex_source(&file.source))
+        .collect::<Vec<_>>();
+    build_binding_index_from_lexed(snapshot, &lexed)
+}
+
+/// Build the project binding index from a snapshot-aligned lexical cache.
+/// Compiler-maintainer analyses use this seam so binding resolution and hover
+/// classification share the same single tokenization of each file.
+pub(crate) fn build_binding_index_from_lexed(
+    snapshot: &AnalysisSnapshot,
+    lexed: &[LexedSource],
+) -> BindingIndex {
+    assert_eq!(
+        snapshot.files.len(),
+        lexed.len(),
+        "the binding-index lexical cache must align with the analyzed files",
+    );
     let mut builder = IndexBuilder::new(&snapshot.program);
     // Definitions come from the parsed files, which carry source spans the
     // resolved program does not.
@@ -227,8 +247,8 @@ pub fn build_binding_index(snapshot: &AnalysisSnapshot) -> BindingIndex {
         builder.collect_definitions(&file.path, &file.parsed, &file.source);
     }
     // Uses are resolved against the definitions, so collect them in a second pass.
-    for file in &snapshot.files {
-        builder.collect_uses(&file.path, &file.parsed, &file.source);
+    for (file, lexed) in snapshot.files.iter().zip(lexed) {
+        builder.collect_uses(&file.path, &file.parsed, &file.source, &lexed.tokens);
     }
     builder.finish()
 }
@@ -802,10 +822,9 @@ impl<'p> IndexBuilder<'p> {
     /// Collect the uses in a file: the `use` alias references, the saved-path reads
     /// in every function body, and the bare-name/call uses resolved against
     /// reconstructed lexical scope.
-    fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource, source: &str) {
+    fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource, source: &str, tokens: &[Token]) {
         let module = Self::module_name(parsed);
         let prelude = file_prelude(self.program, file, parsed);
-        let tokens = marrow_syntax::lex_source(source).tokens;
 
         let mut function_source_index = 0u32;
         for declaration in &parsed.file.declarations {
@@ -817,7 +836,7 @@ impl<'p> IndexBuilder<'p> {
                 let mut type_scope: Vec<HashMap<String, MarrowType>> =
                     vec![prelude.module_constants.clone()];
                 for (param_index, param) in function.params.iter().enumerate() {
-                    let Some(span) = param_name_span(source, &tokens, function.span, param) else {
+                    let Some(span) = param_name_span(source, tokens, function.span, param) else {
                         continue;
                     };
                     let parameter = self.parameter_definition(function_id, param_index);

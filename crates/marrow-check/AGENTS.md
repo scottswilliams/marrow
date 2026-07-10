@@ -21,4 +21,14 @@ render owner. Call targets, IDs, path effects, and spans are typed and compared
 by value. Say “checked” or “witnessed,” not “proved,” unless a formal result is
 published.
 
+After changing inference, checking, analysis, hover, or another published
+semantic fact, run `marrow check --compiler-dev <projectdir>` on each affected
+clean fixture project. A `compiler.dev.unknown_type` warning blocks integration
+until the missing checker-owned type or fact is fixed, or an existing typed
+semantic owner establishes that the position is non-value and audit eligibility
+is corrected. Do not baseline warnings, add source/path/span allowlists, or
+silence them with lexical probe exceptions. The warning marks unresolved checker
+recovery, not the explicit source `unknown` type. Do not recommend this hidden
+maintainer mode to ordinary Marrow users.
+
 Map: [docs/implementation/compiler.md](../../docs/implementation/compiler.md).

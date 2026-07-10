@@ -56,10 +56,13 @@ pub use data::{
     stamped_saved_data_child_views, stamped_saved_data_root_views_in_store, visit_data_records,
     walk_data,
 };
+pub(crate) use hover::{
+    PrelexedSourceHover, source_hover_fact_at_prelexed, type_contains_recovery_unknown,
+};
 pub use hover::{
     SavedPlaceHoverFact, SavedPlaceHoverKeyParam, SourceCallableFunctionFact,
     SourceCallableHoverFact, SourceCallableParamFact, SourceEnumHoverFact,
-    SourceEnumMemberHoverFact, SourceEnumMemberStatus, SourceEnumMemberSummary,
+    SourceEnumMemberHoverFact, SourceEnumMemberStatus, SourceEnumMemberSummary, SourceHoverFact,
     SourceModulePathDefinitionFact, SourceModulePathHoverFact, SourceOperatorHoverFact,
     SourceProjectModuleHoverFact, SourceResourceHoverFact, SourceResourceHoverMember,
     SourceResourceHoverMemberKind, SourceResourceHoverPathSegment, SourceSchemaHoverFact,
@@ -67,7 +70,7 @@ pub use hover::{
     SourceStandardLibraryModuleHoverFact, SourceStandardLibraryNamespaceHoverFact,
     SourceStandardLibraryOperationHoverFact, SourceSymbolDocs, SourceTypeHoverFact,
     StoreRootHoverFact, StoreRootHoverMember, StoreRootHoverPathSegment, saved_place_hover_fact_at,
-    source_callable_hover_fact_at, source_module_path_definition_fact_at,
+    source_callable_hover_fact_at, source_hover_fact_at, source_module_path_definition_fact_at,
     source_module_path_hover_fact_at, source_operator_hover_fact_at, source_schema_hover_fact_at,
     source_symbol_docs_at, source_type_hover_fact_at, store_root_hover_fact_at,
 };
@@ -94,6 +97,7 @@ pub use signatures::{
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     intrinsic_completion_callables, resource_constructor_signature, source_signature_help_fact_at,
 };
+pub(crate) use source_roots::source_saved_root_cursor_facts;
 pub use source_roots::{
     SourceSavedRootCursorFact, SourceSavedRootCursorKind, source_saved_root_cursor_fact_at,
 };

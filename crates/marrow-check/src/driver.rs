@@ -389,6 +389,7 @@ impl TestResolutionSuppression {
                 self.references_hidden_type(ty)
             }
             DiagnosticPayload::Schema(_)
+            | DiagnosticPayload::InternalTypeIssue(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::SurfaceCollision { .. }
             | DiagnosticPayload::SurfaceTarget(_)

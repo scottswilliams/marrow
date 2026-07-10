@@ -15,6 +15,7 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
     let mut saw_format = false;
     let mut target = None;
     let mut locked = false;
+    let mut compiler_dev = CompilerDevMode::Disabled;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -31,6 +32,13 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
                 locked = true;
+            }
+            "--compiler-dev" => {
+                if compiler_dev != CompilerDevMode::Disabled {
+                    eprintln!("duplicate --compiler-dev");
+                    return ExitCode::from(2);
+                }
+                compiler_dev = CompilerDevMode::UnknownTypeAudit;
             }
             "--help" | "-h" => {
                 print!(
@@ -61,7 +69,16 @@ With --locked, a stale or missing marrow.lock is a fatal error for CI rather tha
         eprintln!("usage: marrow check [--format text|json|jsonl] [--locked] <projectdir>");
         return ExitCode::from(2);
     };
-    check_project_dir(&target, format, locked)
+    check_project_dir(&target, format, locked, compiler_dev)
+}
+
+/// Compiler-maintainer checks that are intentionally absent from the ordinary
+/// project-check contract. The hidden CLI flag selects this typed state so the
+/// default path cannot accidentally acquire audit work or diagnostics.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompilerDevMode {
+    Disabled,
+    UnknownTypeAudit,
 }
 
 /// How a stale committed lock is treated. The ordinary edit -> check -> run loop edits source ahead
@@ -106,7 +123,12 @@ const STALE_CLIENT_MESSAGE: &str = "the declared client is absent or behind the 
 /// identity and, when it disagrees with the current source digest, surfaces a stale-lock condition
 /// — a non-fatal advisory by default, fatal under `--locked`; check never opens or repairs the
 /// store.
-fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
+fn check_project_dir(
+    dir: &str,
+    format: CheckFormat,
+    locked: bool,
+    compiler_dev: CompilerDevMode,
+) -> ExitCode {
     let strictness = if locked {
         LockStrictness::Fatal
     } else {
@@ -129,7 +151,7 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         Ok(authority) => authority,
         Err(error) => return crate::project_io_exit(dir, error, format),
     };
-    let snapshot = match marrow_check::analyze_project(
+    let mut snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
@@ -150,6 +172,27 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     if snapshot.report.has_errors() {
         crate::report_project(dir, &snapshot.report, format);
         return ExitCode::FAILURE;
+    }
+
+    if compiler_dev == CompilerDevMode::UnknownTypeAudit {
+        let diagnostics = marrow_check::internal_type_issue_diagnostics(&snapshot);
+        if !diagnostics.is_empty() {
+            snapshot.report.diagnostics.extend(diagnostics);
+            snapshot.report.diagnostics.sort_by(|left, right| {
+                (
+                    &left.file,
+                    left.span.start_byte,
+                    left.span.end_byte,
+                    left.code,
+                )
+                    .cmp(&(
+                        &right.file,
+                        right.span.start_byte,
+                        right.span.end_byte,
+                        right.code,
+                    ))
+            });
+        }
     }
 
     // A `--locked` gate over a project that has durable shape to lock but no committed lock at all

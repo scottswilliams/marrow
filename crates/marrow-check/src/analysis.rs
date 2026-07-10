@@ -26,6 +26,7 @@ use crate::{
 
 mod catalog_nav;
 mod cursor;
+mod internal_type_audit;
 
 pub use catalog_nav::{CatalogDeclaration, UseSite, UseSiteKind};
 pub(crate) use cursor::{
@@ -33,6 +34,9 @@ pub(crate) use cursor::{
     span_covers,
 };
 pub use cursor::{scope_at, type_at};
+pub use internal_type_audit::{
+    InternalTypeIssue, internal_type_issue_diagnostics, internal_type_issues,
+};
 
 pub const ANALYSIS_GENERATION_PROFILE_VERSION: &str = "analysis.generation.v1";
 

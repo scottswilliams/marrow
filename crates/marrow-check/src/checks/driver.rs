@@ -116,6 +116,7 @@ pub(crate) fn check_resolved_files(
                     !references_incomplete_module_member(name, &incomplete_modules)
                 }
                 DiagnosticPayload::UnknownType(_)
+                | DiagnosticPayload::InternalTypeIssue(_)
                 | DiagnosticPayload::AmbiguousType { .. }
                 | DiagnosticPayload::Schema(_)
                 | DiagnosticPayload::DuplicateDeclaration { .. }

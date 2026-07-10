@@ -132,7 +132,7 @@ Tools derive `kind` from the first dotted segment of `code`:
 | First segment | `kind` |
 |---|---|
 | `parse` | `parse` |
-| `check`, `schema` | `check` |
+| `compiler`, `check`, `schema` | `check` |
 | `run`, `value` | `runtime` |
 | `store` | `storage` |
 | `surface` | `surface` |
@@ -350,10 +350,9 @@ facts, not a v0.1 beta protocol commitment or compiler-integrated authorization 
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),
         r#"
-These codes are emitted, but only as defense-in-depth fail-closed guards over an
-invariant the surrounding layers already close. A lower layer classifies every
-publicly reachable case first, so an internal code has no public product repro.
-It stands as an independent gate rather than a user-facing diagnostic.
+These codes are emitted only by implementation-maintainer surfaces or as
+defense-in-depth fail-closed guards over invariants the surrounding layers
+already close. They are not ordinary user-facing diagnostics.
 
 | Code | Meaning |
 |---|---|"#.to_string(),

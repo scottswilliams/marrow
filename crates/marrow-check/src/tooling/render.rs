@@ -1,10 +1,17 @@
 use super::signatures::{
     CallableArgumentStyle, CallableParameter, CallableSignature, CallableValueShape,
 };
-use crate::MarrowType;
 use crate::model::decls::DeclIds;
+use crate::{CheckedProgram, MarrowType};
 
-pub fn render_callable_signature(names: &DeclIds<'_>, callable: &CallableSignature) -> String {
+pub fn render_callable_signature(program: &CheckedProgram, callable: &CallableSignature) -> String {
+    render_callable_signature_with_names(&program.decl_ids(), callable)
+}
+
+pub(crate) fn render_callable_signature_with_names(
+    names: &DeclIds<'_>,
+    callable: &CallableSignature,
+) -> String {
     let params = callable
         .params
         .iter()
@@ -15,7 +22,7 @@ pub fn render_callable_signature(names: &DeclIds<'_>, callable: &CallableSignatu
     match callable
         .return_shape
         .as_ref()
-        .map(|shape| render_callable_shape(names, shape))
+        .map(|shape| render_callable_shape_with_names(names, shape))
     {
         Some(return_shape) => format!("{path}({params}): {return_shape}"),
         None => format!("{path}({params})"),
@@ -43,15 +50,22 @@ fn render_callable_parameter_label(
             format!(
                 "{}: {}",
                 param.label,
-                render_callable_shape(names, &param.shape)
+                render_callable_shape_with_names(names, &param.shape)
             )
         }
     }
 }
 
-pub fn render_callable_shape(names: &DeclIds<'_>, shape: &CallableValueShape) -> String {
+pub fn render_callable_shape(program: &CheckedProgram, shape: &CallableValueShape) -> String {
+    render_callable_shape_with_names(&program.decl_ids(), shape)
+}
+
+pub(crate) fn render_callable_shape_with_names(
+    names: &DeclIds<'_>,
+    shape: &CallableValueShape,
+) -> String {
     match shape {
-        CallableValueShape::Type(ty) => render_marrow_type(names, ty),
+        CallableValueShape::Type(ty) => render_marrow_type_with_names(names, ty),
         CallableValueShape::Scalar => "scalar".to_string(),
         CallableValueShape::Value => "value".to_string(),
         CallableValueShape::Sequence => "sequence".to_string(),
@@ -64,7 +78,11 @@ pub fn render_callable_shape(names: &DeclIds<'_>, shape: &CallableValueShape) ->
     }
 }
 
-pub fn render_marrow_type(names: &DeclIds<'_>, ty: &MarrowType) -> String {
+pub fn render_marrow_type(program: &CheckedProgram, ty: &MarrowType) -> String {
+    render_marrow_type_with_names(&program.decl_ids(), ty)
+}
+
+pub(crate) fn render_marrow_type_with_names(names: &DeclIds<'_>, ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
         MarrowType::Error => "Error".to_string(),
@@ -79,12 +97,17 @@ pub fn render_marrow_type(names: &DeclIds<'_>, ty: &MarrowType) -> String {
             None => "unknown".to_string(),
         },
         MarrowType::Sequence(element) => {
-            format!("sequence[{}]", render_marrow_type(names, element))
+            format!(
+                "sequence[{}]",
+                render_marrow_type_with_names(names, element)
+            )
         }
         MarrowType::LocalTree { value, .. } => {
-            format!("tree[{}]", render_marrow_type(names, value))
+            format!("tree[{}]", render_marrow_type_with_names(names, value))
         }
-        MarrowType::Optional(inner) => format!("{}?", render_marrow_type(names, inner)),
+        MarrowType::Optional(inner) => {
+            format!("{}?", render_marrow_type_with_names(names, inner))
+        }
         MarrowType::Absent => "absent".to_string(),
         MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => {
             "unknown".to_string()
@@ -111,7 +134,7 @@ mod tests {
             value: Box::new(MarrowType::Primitive(ScalarType::Int)),
         };
 
-        assert_eq!(render_marrow_type(&names, &ty), "tree[int]");
+        assert_eq!(render_marrow_type_with_names(&names, &ty), "tree[int]");
     }
 
     #[test]
@@ -120,7 +143,10 @@ mod tests {
         let roots = StoreRootArena::default();
         let names = DeclIds::new(&facts, &roots);
 
-        assert_eq!(render_marrow_type(&names, &MarrowType::Dynamic), "unknown");
+        assert_eq!(
+            render_marrow_type_with_names(&names, &MarrowType::Dynamic),
+            "unknown"
+        );
     }
 
     #[test]
@@ -147,7 +173,7 @@ mod tests {
         };
 
         assert_eq!(
-            render_callable_signature(&names, &callable),
+            render_callable_signature_with_names(&names, &callable),
             "take(items: tree[int]): value"
         );
     }

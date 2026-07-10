@@ -3,17 +3,18 @@ use std::path::{Path, PathBuf};
 use marrow_catalog::CatalogEntryKind;
 use marrow_schema::{EnumSchema, IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema, stdlib};
 use marrow_syntax::{
-    Declaration, EnumMember, FunctionDecl, IndexDecl, KeyParam, Keyword, ResourceMember,
-    SourceFile, SourceSpan, StoreDecl, TokenKind, lex_source,
+    Declaration, EnumMember, FunctionDecl, IndexDecl, KeyParam, Keyword, LexedSource,
+    ResourceMember, SourceFile, SourceSpan, StoreDecl, Token, TokenKind, lex_source,
 };
 
 use super::signatures::{
-    CallableSignature, callable_callee_contexts, intrinsic_callable_signature_for_file,
+    CallableCalleeContext, CallableSignature, CallableValueShape, callable_callee_contexts,
+    intrinsic_callable_signature_for_file,
 };
 use crate::{
-    AnalysisSnapshot, BindingIndex, CheckedConst, CheckedFunction, DirectEffectFacts, FunctionFact,
-    MarrowType, ModuleFact, ModuleId, ResourceMemberKind, StoreFact, SymbolKind, SymbolOccurrence,
-    SymbolRef, UseSiteKind,
+    AnalysisSnapshot, AnalyzedFile, BindingIndex, CheckedConst, CheckedFunction, DirectEffectFacts,
+    FunctionFact, MarrowType, ModuleFact, ModuleId, ResourceMemberKind, StoreFact, SymbolKind,
+    SymbolOccurrence, SymbolRef, UseSiteKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,89 @@ pub struct SourceSymbolDocs {
 pub struct SourceTypeHoverFact {
     pub ty: MarrowType,
     pub docs: Vec<String>,
+}
+
+/// The canonical checker-owned hover fact at a source position. Variant order
+/// is semantic precedence: callers must ask through [`source_hover_fact_at`]
+/// rather than reconstructing this dispatch downstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceHoverFact {
+    Callable(SourceCallableHoverFact),
+    ModulePath(SourceModulePathHoverFact),
+    StoreRoot(StoreRootHoverFact),
+    Schema(SourceSchemaHoverFact),
+    SavedPlace(SavedPlaceHoverFact),
+    Operator(SourceOperatorHoverFact),
+    Type(SourceTypeHoverFact),
+}
+
+impl SourceHoverFact {
+    pub(crate) fn contains_recovery_unknown(&self) -> bool {
+        match self {
+            Self::Callable(fact) => callable_contains_recovery_unknown(fact),
+            Self::Type(fact) => type_contains_recovery_unknown(&fact.ty),
+            Self::ModulePath(_)
+            | Self::StoreRoot(_)
+            | Self::Schema(_)
+            | Self::SavedPlace(_)
+            | Self::Operator(_) => false,
+        }
+    }
+}
+
+fn callable_contains_recovery_unknown(fact: &SourceCallableHoverFact) -> bool {
+    match fact {
+        SourceCallableHoverFact::Intrinsic(signature) => {
+            signature
+                .params
+                .iter()
+                .any(|param| callable_shape_contains_recovery_unknown(&param.shape))
+                || signature
+                    .return_shape
+                    .as_ref()
+                    .is_some_and(callable_shape_contains_recovery_unknown)
+        }
+        SourceCallableHoverFact::Function(function) => {
+            function
+                .params
+                .iter()
+                .any(|param| type_contains_recovery_unknown(&param.ty))
+                || function
+                    .return_type
+                    .as_ref()
+                    .is_some_and(type_contains_recovery_unknown)
+        }
+        SourceCallableHoverFact::Parameter(param) => type_contains_recovery_unknown(&param.ty),
+        SourceCallableHoverFact::ModuleConst { ty, .. } => {
+            ty.as_ref().is_some_and(type_contains_recovery_unknown)
+        }
+    }
+}
+
+fn callable_shape_contains_recovery_unknown(shape: &CallableValueShape) -> bool {
+    matches!(shape, CallableValueShape::Type(ty) if type_contains_recovery_unknown(ty))
+}
+
+pub(crate) fn type_contains_recovery_unknown(ty: &MarrowType) -> bool {
+    match ty {
+        MarrowType::Unknown => true,
+        MarrowType::Sequence(element) | MarrowType::Optional(element) => {
+            type_contains_recovery_unknown(element)
+        }
+        MarrowType::LocalTree { keys, value } => {
+            keys.iter().any(type_contains_recovery_unknown) || type_contains_recovery_unknown(value)
+        }
+        MarrowType::Primitive(_)
+        | MarrowType::Error
+        | MarrowType::Resource(_)
+        | MarrowType::GroupEntry { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::Enum(_)
+        | MarrowType::Absent
+        | MarrowType::Invalid
+        | MarrowType::Dynamic
+        | MarrowType::NoValue => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,16 +318,101 @@ pub enum StoreRootHoverMember {
     },
 }
 
+/// A file's single lexical input plus derived callable contexts. The internal
+/// type audit constructs one per analyzed file so all hover owners share the
+/// same tokenization and do not repeatedly scan call syntax.
+pub(crate) struct PrelexedSourceHover<'a> {
+    lexed: &'a LexedSource,
+    callable_contexts: Vec<CallableCalleeContext>,
+}
+
+impl<'a> PrelexedSourceHover<'a> {
+    pub(crate) fn new(analyzed: &AnalyzedFile, lexed: &'a LexedSource) -> Self {
+        Self {
+            lexed,
+            callable_contexts: callable_callee_contexts(&analyzed.source, lexed, &analyzed.parsed),
+        }
+    }
+}
+
+/// Return the highest-precedence transport-free hover fact at `offset`.
+pub fn source_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceHoverFact> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_hover_fact_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+pub(crate) fn source_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceHoverFact> {
+    source_callable_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
+        .map(SourceHoverFact::Callable)
+        .or_else(|| {
+            source_module_path_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
+                .map(SourceHoverFact::ModulePath)
+        })
+        .or_else(|| {
+            store_root_hover_fact_at_prelexed(snapshot, analyzed, prelexed, offset)
+                .map(SourceHoverFact::StoreRoot)
+        })
+        .or_else(|| {
+            source_schema_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
+                .map(SourceHoverFact::Schema)
+        })
+        .or_else(|| {
+            saved_place_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
+                .map(SourceHoverFact::SavedPlace)
+        })
+        .or_else(|| {
+            source_operator_hover_fact_at_prelexed(snapshot, analyzed, prelexed, offset)
+                .map(SourceHoverFact::Operator)
+        })
+        .or_else(|| {
+            source_type_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
+                .map(SourceHoverFact::Type)
+        })
+}
+
 pub fn source_symbol_docs_at(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
     file: &Path,
     offset: usize,
 ) -> Option<SourceSymbolDocs> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_symbol_docs_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+fn source_symbol_docs_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceSymbolDocs> {
+    let file = analyzed.path.as_path();
     let symbol = index.definition(file, offset)?;
     if symbol.kind == SymbolKind::Function
         && !matches!(
-            source_callable_hover_fact_at(snapshot, index, file, offset),
+            source_callable_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset,),
             Some(SourceCallableHoverFact::Function(_))
         )
     {
@@ -266,11 +435,24 @@ pub fn source_type_hover_fact_at(
     offset: usize,
 ) -> Option<SourceTypeHoverFact> {
     let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_type_hover_fact_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+fn source_type_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceTypeHoverFact> {
+    let file = analyzed.path.as_path();
     let ty = crate::type_at(&snapshot.program, file, &analyzed.parsed, offset)?;
     if !source_type_hover_eligible(&ty) {
         return None;
     }
-    let docs = source_symbol_docs_at(snapshot, index, file, offset)
+    let docs = source_symbol_docs_at_prelexed(snapshot, index, analyzed, prelexed, offset)
         .map(|docs| docs.lines)
         .unwrap_or_default();
     Some(SourceTypeHoverFact { ty, docs })
@@ -302,7 +484,26 @@ pub fn source_callable_hover_fact_at(
     file: &Path,
     offset: usize,
 ) -> Option<SourceCallableHoverFact> {
-    if let Some(fact) = intrinsic_source_callable_hover_fact_at(snapshot, file, offset) {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_callable_hover_fact_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+fn source_callable_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceCallableHoverFact> {
+    let file = analyzed.path.as_path();
+    if let Some(fact) =
+        intrinsic_source_callable_hover_fact_at_prelexed(snapshot, analyzed, prelexed, offset)
+    {
         return Some(fact);
     }
     let occurrence = index.occurrence(file, offset)?;
@@ -310,16 +511,26 @@ pub fn source_callable_hover_fact_at(
         SymbolKind::Function => function_source_callable_hover_fact(
             snapshot,
             index,
-            file,
+            analyzed,
+            prelexed,
             offset,
             &occurrence.definition,
         ),
-        SymbolKind::Param => {
-            parameter_source_callable_hover_fact(snapshot, index, file, offset, &occurrence)
-        }
-        SymbolKind::ModuleConst => {
-            module_const_source_callable_hover_fact(snapshot, file, offset, &occurrence.definition)
-        }
+        SymbolKind::Param => parameter_source_callable_hover_fact(
+            snapshot,
+            index,
+            analyzed,
+            prelexed,
+            offset,
+            &occurrence,
+        ),
+        SymbolKind::ModuleConst => module_const_source_callable_hover_fact(
+            snapshot,
+            analyzed,
+            prelexed,
+            offset,
+            &occurrence.definition,
+        ),
         _ => None,
     }
 }
@@ -330,27 +541,38 @@ pub fn source_operator_hover_fact_at(
     offset: usize,
 ) -> Option<SourceOperatorHoverFact> {
     let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
-    let tokens = lex_source(&analyzed.source).tokens;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_operator_hover_fact_at_prelexed(snapshot, analyzed, &prelexed, offset)
+}
+
+fn source_operator_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceOperatorHoverFact> {
+    let tokens = &prelexed.lexed.tokens;
     let (index, token) = tokens
         .iter()
         .enumerate()
         .find(|(_, token)| token.span.start_byte <= offset && offset < token.span.end_byte)?;
-    crate::type_at(&snapshot.program, file, &analyzed.parsed, offset)?;
-    if is_operator_keyword_non_expression(&tokens, index) {
+    crate::type_at(&snapshot.program, &analyzed.path, &analyzed.parsed, offset)?;
+    if is_operator_keyword_non_expression(tokens, index) {
         return None;
     }
     operator_fact(operator_spelling(token.kind, token.text(&analyzed.source))?)
 }
 
-fn intrinsic_source_callable_hover_fact_at(
+fn intrinsic_source_callable_hover_fact_at_prelexed(
     snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
 ) -> Option<SourceCallableHoverFact> {
-    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
-    let lexed = lex_source(&analyzed.source);
-    callable_callee_contexts(&analyzed.source, &lexed, &analyzed.parsed)
-        .into_iter()
+    prelexed
+        .callable_contexts
+        .iter()
         .find(|context| {
             offset_in_name(
                 context.callee_leaf_span.start_byte,
@@ -359,7 +581,11 @@ fn intrinsic_source_callable_hover_fact_at(
             )
         })
         .and_then(|context| {
-            intrinsic_callable_signature_for_file(snapshot, file, &context.callee_path_segments)
+            intrinsic_callable_signature_for_file(
+                snapshot,
+                &analyzed.path,
+                &context.callee_path_segments,
+            )
         })
         .map(SourceCallableHoverFact::Intrinsic)
 }
@@ -446,7 +672,20 @@ pub fn source_module_path_hover_fact_at(
     offset: usize,
 ) -> Option<SourceModulePathHoverFact> {
     let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
-    let path = module_path_at(&analyzed.source, offset)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_module_path_hover_fact_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+fn source_module_path_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceModulePathHoverFact> {
+    let file = analyzed.path.as_path();
+    let path = module_path_at(&analyzed.source, &prelexed.lexed.tokens, offset)?;
     if let Some(fact) = standard_library_module_path_hover_fact(snapshot, file, &path) {
         return Some(fact);
     }
@@ -460,7 +699,8 @@ pub fn source_module_path_definition_fact_at(
     offset: usize,
 ) -> Option<SourceModulePathDefinitionFact> {
     let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
-    let path = module_path_at(&analyzed.source, offset)?;
+    let lexed = lex_source(&analyzed.source);
+    let path = module_path_at(&analyzed.source, &lexed.tokens, offset)?;
     if standard_library_module_path_hover_fact(snapshot, file, &path).is_some() {
         return None;
     }
@@ -473,6 +713,23 @@ pub fn source_schema_hover_fact_at(
     file: &Path,
     offset: usize,
 ) -> Option<SourceSchemaHoverFact> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    source_schema_hover_fact_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+fn source_schema_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceSchemaHoverFact> {
+    let file = analyzed.path.as_path();
     if let Some(fact) = enum_annotation_source_schema_hover_fact(snapshot, file, offset) {
         return Some(SourceSchemaHoverFact::Enum(fact));
     }
@@ -481,21 +738,21 @@ pub fn source_schema_hover_fact_at(
     let symbol = &occurrence.definition;
     match symbol.kind {
         SymbolKind::Resource => {
-            if !is_source_schema_hover_target(snapshot, file, offset, &occurrence) {
+            if !is_source_schema_hover_target(snapshot, analyzed, prelexed, offset, &occurrence) {
                 return None;
             }
             resource_source_schema_hover_fact(snapshot, symbol).map(SourceSchemaHoverFact::Resource)
         }
         SymbolKind::Enum => {
-            if blocked_enum_type_symbol_hover(snapshot, file, offset, symbol)
-                || !is_source_schema_hover_target(snapshot, file, offset, &occurrence)
+            if blocked_enum_type_symbol_hover(snapshot, analyzed, prelexed, offset, symbol)
+                || !is_source_schema_hover_target(snapshot, analyzed, prelexed, offset, &occurrence)
             {
                 return None;
             }
             enum_source_schema_hover_fact(snapshot, symbol).map(SourceSchemaHoverFact::Enum)
         }
         SymbolKind::EnumMember => {
-            if !is_source_schema_hover_target(snapshot, file, offset, &occurrence) {
+            if !is_source_schema_hover_target(snapshot, analyzed, prelexed, offset, &occurrence) {
                 return None;
             }
             enum_member_source_schema_hover_fact(snapshot, symbol)
@@ -508,11 +765,12 @@ pub fn source_schema_hover_fact_at(
 fn function_source_callable_hover_fact(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     symbol: &SymbolRef,
 ) -> Option<SourceCallableHoverFact> {
-    if !is_function_hover_target(snapshot, index, file, offset, symbol) {
+    if !is_function_hover_target(snapshot, index, analyzed, prelexed, offset, symbol) {
         return None;
     }
     let parsed_file = snapshot.files.iter().find(|f| f.path == symbol.file)?;
@@ -526,7 +784,8 @@ fn function_source_callable_hover_fact(
 fn parameter_source_callable_hover_fact(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     occurrence: &SymbolOccurrence,
 ) -> Option<SourceCallableHoverFact> {
@@ -538,7 +797,12 @@ fn parameter_source_callable_hover_fact(
     let function_fact = snapshot.program.facts.function(parameter.function);
     let parsed_file = snapshot.files.iter().find(|f| f.path == symbol.file)?;
     let parsed_function = parsed_function_at(&parsed_file.parsed.file, function_fact.span)?;
-    let name = parameter_use_name(snapshot, file, offset, parsed_function)?;
+    let name = parameter_use_name(
+        &analyzed.source,
+        &prelexed.lexed.tokens,
+        offset,
+        parsed_function,
+    )?;
     let checked_function = checked_function_for_fact(snapshot, function_fact)?;
     let checked = checked_function.params.get(parameter.index)?;
     if checked.name != name {
@@ -556,17 +820,19 @@ fn parameter_source_callable_hover_fact(
 
 fn module_const_source_callable_hover_fact(
     snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     symbol: &SymbolRef,
 ) -> Option<SourceCallableHoverFact> {
-    if symbol.file != file {
+    if symbol.file != analyzed.path {
         return None;
     }
     let parsed_file = snapshot.files.iter().find(|f| f.path == symbol.file)?;
     let parsed_const = parsed_const_at(&parsed_file.parsed.file, symbol.span)?;
     if !offset_is_on_declaration_identifier(
         &parsed_file.source,
+        &prelexed.lexed.tokens,
         parsed_const.span,
         &parsed_const.name,
         offset,
@@ -604,8 +870,7 @@ impl ModulePathContext {
     }
 }
 
-fn module_path_at(source: &str, offset: usize) -> Option<ModulePathAt> {
-    let tokens = lex_source(source).tokens;
+fn module_path_at(source: &str, tokens: &[Token], offset: usize) -> Option<ModulePathAt> {
     let index = tokens.iter().position(|token| {
         is_module_path_segment(token.kind)
             && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
@@ -644,12 +909,12 @@ fn module_path_at(source: &str, offset: usize) -> Option<ModulePathAt> {
         token_index += 2;
     }
 
-    let previous = previous_significant_kind(&tokens, start);
+    let previous = previous_significant_kind(tokens, start);
     Some(ModulePathAt {
         segments,
         cursor_segment: cursor_segment?,
         context: module_path_context(previous),
-        call_leaf: next_significant_kind(&tokens, end)
+        call_leaf: next_significant_kind(tokens, end)
             .is_some_and(|kind| kind == TokenKind::LeftParen)
             && !previous.is_some_and(|kind| {
                 matches!(
@@ -920,35 +1185,39 @@ fn enum_annotation_source_schema_hover_fact(
 
 fn is_source_schema_hover_target(
     snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     occurrence: &SymbolOccurrence,
 ) -> bool {
-    source_schema_declaration_name(snapshot, file, offset, &occurrence.definition)
-        || source_schema_reference_leaf(snapshot, file, offset, occurrence)
+    source_schema_declaration_name(snapshot, analyzed, prelexed, offset, &occurrence.definition)
+        || source_schema_reference_leaf(analyzed, prelexed, offset, occurrence)
 }
 
 fn source_schema_reference_leaf(
-    snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     occurrence: &SymbolOccurrence,
 ) -> bool {
+    let file = analyzed.path.as_path();
     let symbol = &occurrence.definition;
     let reference = &occurrence.reference;
     reference.kind == symbol.kind
         && reference.file == file
         && (reference.file != symbol.file || reference.span != symbol.span)
         && span_covers(reference.span, offset)
-        && offset_is_on_last_identifier_half_open(snapshot, file, reference.span, offset)
+        && offset_is_on_last_identifier_half_open(&prelexed.lexed.tokens, reference.span, offset)
 }
 
 fn source_schema_declaration_name(
     snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     symbol: &SymbolRef,
 ) -> bool {
+    let file = analyzed.path.as_path();
     if symbol.file != file {
         return false;
     }
@@ -962,6 +1231,7 @@ fn source_schema_declaration_name(
             };
             offset_is_on_declaration_identifier(
                 &analyzed.source,
+                &prelexed.lexed.tokens,
                 resource.span,
                 &resource.name,
                 offset,
@@ -973,6 +1243,7 @@ fn source_schema_declaration_name(
             };
             offset_is_on_declaration_identifier(
                 &analyzed.source,
+                &prelexed.lexed.tokens,
                 enum_decl.span,
                 &enum_decl.name,
                 offset,
@@ -982,7 +1253,13 @@ fn source_schema_declaration_name(
             let Some(member) = parsed_enum_member_at(&analyzed.parsed.file, symbol.span) else {
                 return false;
             };
-            offset_is_on_declaration_identifier(&analyzed.source, member.span, &member.name, offset)
+            offset_is_on_declaration_identifier(
+                &analyzed.source,
+                &prelexed.lexed.tokens,
+                member.span,
+                &member.name,
+                offset,
+            )
         }
         _ => false,
     }
@@ -990,17 +1267,16 @@ fn source_schema_declaration_name(
 
 fn blocked_enum_type_symbol_hover(
     snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     symbol: &SymbolRef,
 ) -> bool {
+    let file = analyzed.path.as_path();
     if !type_annotation_at(snapshot, file, offset) {
         return false;
     }
-    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
-        return false;
-    };
-    identifier_path_segment_count_at(&analyzed.source, offset).is_some_and(|count| count > 1)
+    identifier_path_segment_count_at(&prelexed.lexed.tokens, offset).is_some_and(|count| count > 1)
         || symbol.file != file
 }
 
@@ -1023,8 +1299,7 @@ fn type_annotation_at(snapshot: &AnalysisSnapshot, file: &Path, offset: usize) -
     found
 }
 
-fn identifier_path_segment_count_at(source: &str, offset: usize) -> Option<usize> {
-    let tokens = lex_source(source).tokens;
+fn identifier_path_segment_count_at(tokens: &[Token], offset: usize) -> Option<usize> {
     let index = tokens.iter().position(|token| {
         token.kind == TokenKind::Identifier
             && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
@@ -1181,7 +1456,24 @@ pub fn store_root_hover_fact_at(
     offset: usize,
 ) -> Option<StoreRootHoverFact> {
     let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
-    let declaration = store_root_declaration_at(&analyzed.parsed.file, &analyzed.source, offset)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    store_root_hover_fact_at_prelexed(snapshot, analyzed, &prelexed, offset)
+}
+
+fn store_root_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<StoreRootHoverFact> {
+    let file = analyzed.path.as_path();
+    let declaration = store_root_declaration_at(
+        &analyzed.parsed.file,
+        &analyzed.source,
+        &prelexed.lexed.tokens,
+        offset,
+    )?;
     let store = snapshot.program.facts.stores().iter().find(|store| {
         store.root == declaration.root.root
             && store.name_span == declaration.root.span
@@ -1196,12 +1488,29 @@ pub fn saved_place_hover_fact_at(
     file: &Path,
     offset: usize,
 ) -> Option<SavedPlaceHoverFact> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    let prelexed = PrelexedSourceHover::new(analyzed, &lexed);
+    saved_place_hover_fact_at_prelexed(snapshot, index, analyzed, &prelexed, offset)
+}
+
+fn saved_place_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SavedPlaceHoverFact> {
+    let file = analyzed.path.as_path();
     let occurrence = index.occurrence(file, offset)?;
     let symbol = &occurrence.definition;
     if !matches!(
         symbol.kind,
         SymbolKind::Field | SymbolKind::Layer | SymbolKind::Index
-    ) || !is_saved_place_hover_target(snapshot, file, offset, &occurrence)
+    ) || !is_saved_place_hover_target(analyzed, prelexed, offset, &occurrence)
     {
         return None;
     }
@@ -1220,6 +1529,7 @@ pub fn saved_place_hover_fact_at(
 fn store_root_declaration_at<'a>(
     source: &'a SourceFile,
     text: &str,
+    tokens: &[Token],
     offset: usize,
 ) -> Option<&'a StoreDecl> {
     source
@@ -1227,16 +1537,16 @@ fn store_root_declaration_at<'a>(
         .iter()
         .find_map(|declaration| match declaration {
             Declaration::Store(store) => {
-                let (start, end) = root_token_span(text, store)?;
+                let (start, end) = root_token_span(text, tokens, store)?;
                 (start <= offset && offset < end).then_some(store)
             }
             _ => None,
         })
 }
 
-fn root_token_span(source: &str, store: &StoreDecl) -> Option<(usize, usize)> {
-    lex_source(source).tokens.windows(2).find_map(|tokens| {
-        let [caret, name] = tokens else {
+fn root_token_span(source: &str, tokens: &[Token], store: &StoreDecl) -> Option<(usize, usize)> {
+    tokens.windows(2).find_map(|window| {
+        let [caret, name] = window else {
             return None;
         };
         if caret.kind == TokenKind::Caret
@@ -1371,29 +1681,31 @@ fn render_schema_leaf_type(member: &Node, ty: &marrow_schema::Type) -> String {
 }
 
 fn is_saved_place_hover_target(
-    snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     occurrence: &SymbolOccurrence,
 ) -> bool {
+    let file = analyzed.path.as_path();
     let symbol = &occurrence.definition;
     is_saved_place_declaration_name(file, offset, symbol)
-        || is_saved_place_reference_leaf(snapshot, file, offset, occurrence)
+        || is_saved_place_reference_leaf(analyzed, prelexed, offset, occurrence)
 }
 
 fn is_saved_place_reference_leaf(
-    snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     occurrence: &SymbolOccurrence,
 ) -> bool {
+    let file = analyzed.path.as_path();
     let symbol = &occurrence.definition;
     let reference = &occurrence.reference;
     reference.kind == symbol.kind
         && reference.file == file
         && (reference.file != symbol.file || reference.span != symbol.span)
         && span_covers(reference.span, offset)
-        && offset_is_on_last_identifier(snapshot, file, reference.span, offset)
+        && offset_is_on_last_identifier(&prelexed.lexed.tokens, reference.span, offset)
 }
 
 fn is_saved_place_declaration_name(file: &Path, offset: usize, symbol: &SymbolRef) -> bool {
@@ -1507,25 +1819,33 @@ fn function_hover_fact(
 fn is_function_hover_target(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     symbol: &SymbolRef,
 ) -> bool {
+    let file = analyzed.path.as_path();
     index.references(symbol).iter().any(|reference| {
         reference.kind == SymbolKind::Function
             && reference.file == file
             && (reference.file != symbol.file || reference.span != symbol.span)
             && span_covers(reference.span, offset)
-            && offset_is_on_last_identifier_half_open(snapshot, file, reference.span, offset)
-    }) || is_function_declaration_name(snapshot, file, offset, symbol)
+            && offset_is_on_last_identifier_half_open(
+                &prelexed.lexed.tokens,
+                reference.span,
+                offset,
+            )
+    }) || is_function_declaration_name(snapshot, analyzed, prelexed, offset, symbol)
 }
 
 fn is_function_declaration_name(
     snapshot: &AnalysisSnapshot,
-    file: &Path,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
     symbol: &SymbolRef,
 ) -> bool {
+    let file = analyzed.path.as_path();
     if symbol.file != file {
         return false;
     }
@@ -1535,7 +1855,13 @@ fn is_function_declaration_name(
     let Some(function) = parsed_function_at(&analyzed.parsed.file, symbol.span) else {
         return false;
     };
-    offset_is_on_declaration_identifier(&analyzed.source, function.span, &function.name, offset)
+    offset_is_on_declaration_identifier(
+        &analyzed.source,
+        &prelexed.lexed.tokens,
+        function.span,
+        &function.name,
+        offset,
+    )
 }
 
 fn parsed_function_at(source: &SourceFile, span: SourceSpan) -> Option<&FunctionDecl> {
@@ -1721,21 +2047,19 @@ fn function_fact_for_symbol<'a>(
 }
 
 fn parameter_use_name<'a>(
-    snapshot: &'a AnalysisSnapshot,
-    file: &Path,
+    source: &'a str,
+    tokens: &[Token],
     offset: usize,
     function: &FunctionDecl,
 ) -> Option<&'a str> {
     if !span_covers(function.body.span, offset) {
         return None;
     }
-    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
-    let tokens = lex_source(&analyzed.source).tokens;
     let (index, token) = tokens.iter().enumerate().find(|(_, token)| {
         token.kind == TokenKind::Identifier
             && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
     })?;
-    let (previous, next) = significant_neighbors(&tokens, index);
+    let (previous, next) = significant_neighbors(tokens, index);
     if previous.is_some_and(|kind| {
         matches!(
             kind,
@@ -1745,7 +2069,7 @@ fn parameter_use_name<'a>(
     {
         return None;
     }
-    Some(token.text(&analyzed.source))
+    Some(token.text(source))
 }
 
 fn significant_neighbors(
@@ -1783,26 +2107,23 @@ fn is_trivia(kind: TokenKind) -> bool {
 
 fn offset_is_on_declaration_identifier(
     source: &str,
+    tokens: &[Token],
     span: SourceSpan,
     name: &str,
     offset: usize,
 ) -> bool {
-    let Some((start, end)) = declaration_identifier_span(source, span, name) else {
+    let Some((start, end)) = declaration_identifier_span(source, tokens, span, name) else {
         return false;
     };
     offset_in_name(start, end, offset)
 }
 
 fn offset_is_on_last_identifier_half_open(
-    snapshot: &AnalysisSnapshot,
-    file: &Path,
+    tokens: &[Token],
     span: SourceSpan,
     offset: usize,
 ) -> bool {
-    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
-        return false;
-    };
-    let Some((start, end)) = last_identifier_span(span, &analyzed.source) else {
+    let Some((start, end)) = last_identifier_span(tokens, span) else {
         return false;
     };
     offset_in_name(start, end, offset)
@@ -1974,25 +2295,16 @@ fn store_index_at(source: &SourceFile, span: SourceSpan) -> Option<&IndexDecl> {
         })
 }
 
-fn offset_is_on_last_identifier(
-    snapshot: &AnalysisSnapshot,
-    file: &Path,
-    span: SourceSpan,
-    offset: usize,
-) -> bool {
-    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
-        return false;
-    };
-    let Some((start, end)) = last_identifier_span(span, &analyzed.source) else {
+fn offset_is_on_last_identifier(tokens: &[Token], span: SourceSpan, offset: usize) -> bool {
+    let Some((start, end)) = last_identifier_span(tokens, span) else {
         return false;
     };
     start <= offset && offset <= end
 }
 
-fn last_identifier_span(span: SourceSpan, source: &str) -> Option<(usize, usize)> {
-    let lexed = lex_source(source);
+fn last_identifier_span(tokens: &[Token], span: SourceSpan) -> Option<(usize, usize)> {
     let mut found = None;
-    for token in lexed.tokens {
+    for token in tokens {
         if token.kind == TokenKind::Identifier
             && span_covers(span, token.span.start_byte)
             && span_covers(span, token.span.end_byte)
@@ -2005,12 +2317,12 @@ fn last_identifier_span(span: SourceSpan, source: &str) -> Option<(usize, usize)
 
 fn declaration_identifier_span(
     source: &str,
+    tokens: &[Token],
     span: SourceSpan,
     name: &str,
 ) -> Option<(usize, usize)> {
-    lex_source(source)
-        .tokens
-        .into_iter()
+    tokens
+        .iter()
         .find(|token| {
             token.kind == TokenKind::Identifier
                 && span_covers(span, token.span.start_byte)
@@ -2030,4 +2342,31 @@ fn span_covers_half_open(span: SourceSpan, offset: usize) -> bool {
 
 fn span_contains_span(outer: SourceSpan, inner: SourceSpan) -> bool {
     outer.start_byte <= inner.start_byte && inner.end_byte <= outer.end_byte
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn hover_recovery_inspection_distinguishes_dynamic_from_nested_recovery() {
+        let recovery = SourceHoverFact::Callable(SourceCallableHoverFact::ModuleConst {
+            name: "items".to_string(),
+            ty: Some(MarrowType::Sequence(Box::new(MarrowType::Unknown))),
+            docs: Vec::new(),
+        });
+        assert!(recovery.contains_recovery_unknown());
+
+        let dynamic = SourceHoverFact::Type(SourceTypeHoverFact {
+            ty: MarrowType::Dynamic,
+            docs: Vec::new(),
+        });
+        assert!(!dynamic.contains_recovery_unknown());
+
+        let poison = SourceHoverFact::Type(SourceTypeHoverFact {
+            ty: MarrowType::Invalid,
+            docs: Vec::new(),
+        });
+        assert!(!poison.contains_recovery_unknown());
+    }
 }

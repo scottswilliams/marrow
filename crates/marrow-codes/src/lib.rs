@@ -17,6 +17,7 @@ pub use docs::generate;
 pub enum Family {
     Parse,
     Fmt,
+    Compiler,
     Check,
     Schema,
     Catalog,
@@ -42,6 +43,7 @@ impl Family {
         match self {
             Self::Parse => "parse",
             Self::Fmt => "fmt",
+            Self::Compiler => "compiler",
             Self::Check => "check",
             Self::Schema => "schema",
             Self::Catalog => "catalog",
@@ -68,7 +70,7 @@ impl Family {
     pub const fn kind(self) -> &'static str {
         match self {
             Self::Parse => "parse",
-            Self::Check | Self::Schema => "check",
+            Self::Compiler | Self::Check | Self::Schema => "check",
             Self::Run | Self::Value => "runtime",
             Self::Store => "storage",
             Self::Surface => "surface",
@@ -117,11 +119,10 @@ pub enum Catchability {
 
 /// Whether a code is emitted by the current build, and how it reaches a user. An
 /// `Active` code is emitted and has a public product surface: a CLI or tooling
-/// path a developer can reach. An `Internal` code is emitted too, but only as a
-/// defense-in-depth fail-closed guard over an invariant the surrounding layers
-/// already close, so it has no public product repro — a lower layer classifies
-/// every reachable case first. The reference renders internal codes separately
-/// from ordinary user-facing diagnostics.
+/// path an ordinary Marrow user can reach. An `Internal` code is emitted only by
+/// an implementation-maintainer surface or as a defense-in-depth fail-closed
+/// guard over an invariant the surrounding layers already close. The reference
+/// renders internal codes separately from ordinary user-facing diagnostics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lifecycle {
     Active,
@@ -182,6 +183,7 @@ macro_rules! codes {
 codes! {
     ParseSyntax => r#"parse.syntax"#, Parse, Error, NotApplicable, Active, r#"The source is not well-formed Marrow: a bad token, a missing piece of a declaration, or an unexpected construct. The only `parse.*` code; the `message` says what was expected."#;
     FmtCommentLoss => r#"fmt.comment_loss"#, Fmt, Error, NotApplicable, Active, r#"`marrow fmt` would drop a retained comment while rewriting the source, so the command refuses instead of publishing lossy formatted output."#;
+    CompilerDevUnknownType => r#"compiler.dev.unknown_type"#, Compiler, Warning, NotApplicable, Internal, r#"The compiler-development type audit found an error-free source position whose inferred type remained unresolved recovery. This indicates missing compiler type information; ordinary project checks do not run the audit or emit this diagnostic."#;
     CheckFailed => r#"check.failed"#, Check, Error, NotApplicable, Active, r#"A project check completed with one or more parse, schema, or check diagnostics. Command boundaries may use this summary code while the detailed diagnostics carry their own codes."#;
     CheckModulePath => r#"check.module_path"#, Check, Error, NotApplicable, Active, r#"A library or test file declares a module name that does not match its path-derived name. A test file may omit the `module` declaration."#;
     CheckDefaultEntry => r#"check.default_entry"#, Check, Error, NotApplicable, Active, r#"The project's `run.defaultEntry` does not name a runnable zero-argument entry: it is missing, private, ambiguous (a bare name in two modules), or declares parameters. A default entry runs with no arguments, so the check rejects it rather than letting it fault at run time."#;
@@ -425,7 +427,7 @@ pub fn kind_for_code(code: &str) -> &'static str {
     }
     match code.split('.').next().unwrap_or("") {
         "parse" => "parse",
-        "check" | "schema" => "check",
+        "compiler" | "check" | "schema" => "check",
         "run" | "value" => "runtime",
         "store" => "storage",
         "surface" => "surface",

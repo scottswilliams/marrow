@@ -97,7 +97,7 @@ Tools derive `kind` from the first dotted segment of `code`:
 | First segment | `kind` |
 |---|---|
 | `parse` | `parse` |
-| `check`, `schema` | `check` |
+| `compiler`, `check`, `schema` | `check` |
 | `run`, `value` | `runtime` |
 | `store` | `storage` |
 | `surface` | `surface` |
@@ -521,11 +521,11 @@ facts, not a v0.1 beta protocol commitment or compiler-integrated authorization 
 
 ### Internal Fail-Closed Codes
 
-These codes are emitted, but only as defense-in-depth fail-closed guards over an
-invariant the surrounding layers already close. A lower layer classifies every
-publicly reachable case first, so an internal code has no public product repro.
-It stands as an independent gate rather than a user-facing diagnostic.
+These codes are emitted only by implementation-maintainer surfaces or as
+defense-in-depth fail-closed guards over invariants the surrounding layers
+already close. They are not ordinary user-facing diagnostics.
 
 | Code | Meaning |
 |---|---|
+| `compiler.dev.unknown_type` | The compiler-development type audit found an error-free source position whose inferred type remained unresolved recovery. This indicates missing compiler type information; ordinary project checks do not run the audit or emit this diagnostic. |
 | `check.lock_corrupt` | A defense-in-depth adoption guard: the committed `marrow.lock` cannot seed first-run identity for a fresh empty store because a source declaration would adopt a stable id the lock's append-only ledger has retired. Adoption fails closed so a retired id is never reissued. The catalog lock decoder rejects every publicly reachable malformed lock as `catalog.lock_corrupt` first, so this checker guard has no public product repro; it stands as an independent fail-closed gate. Restore or regenerate `marrow.lock` from a valid live store. |

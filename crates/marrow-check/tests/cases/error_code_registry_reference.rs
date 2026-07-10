@@ -77,8 +77,8 @@ fn documented_kind_assignments(text: &str) -> Vec<(String, String)> {
 /// documented-vs-emitted comparison on these families; a family documented with a `### ` section
 /// but missing here fails the gate, so a new family cannot slip in.
 const KNOWN_FAMILIES: &[&str] = &[
-    "parse", "fmt", "check", "schema", "catalog", "doctor", "run", "value", "write", "store", "io",
-    "config", "project", "data", "evolve", "test", "backup", "restore", "surface",
+    "parse", "fmt", "compiler", "check", "schema", "catalog", "doctor", "run", "value", "write",
+    "store", "io", "config", "project", "data", "evolve", "test", "backup", "restore", "surface",
 ];
 
 /// Production strings that share an error code's dotted lowercase grammar but are not error codes:

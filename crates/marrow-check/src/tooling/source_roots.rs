@@ -5,7 +5,7 @@ use marrow_syntax::{
     SurfaceItem, SurfaceTarget, TypeExpr,
 };
 
-use crate::analysis::AnalysisSnapshot;
+use crate::analysis::{AnalysisSnapshot, AnalyzedFile};
 use crate::annotation_refs::{TypeAnnotationBodies, walk_declaration_type_refs};
 use crate::source_spans::source_span_at;
 
@@ -34,16 +34,21 @@ pub fn source_saved_root_cursor_fact_at(
         .files
         .iter()
         .find(|analyzed| analyzed.path == file)?;
+    source_saved_root_cursor_facts(analyzed)
+        .into_iter()
+        .filter(|fact| span_covers(fact.span, offset))
+        .min_by_key(|fact| span_width(fact.span))
+}
+
+pub(crate) fn source_saved_root_cursor_facts(
+    analyzed: &AnalyzedFile,
+) -> Vec<SourceSavedRootCursorFact> {
     let mut facts = Vec::new();
 
     for declaration in &analyzed.parsed.file.declarations {
         collect_declaration_roots(&analyzed.source, declaration, &mut facts);
     }
-
     facts
-        .into_iter()
-        .filter(|fact| span_covers(fact.span, offset))
-        .min_by_key(|fact| span_width(fact.span))
 }
 
 fn collect_declaration_roots(

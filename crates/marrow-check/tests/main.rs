@@ -88,6 +88,8 @@ mod enum_member_id_stability;
 mod error_cascade_isolation;
 #[path = "cases/error_code_registry_reference.rs"]
 mod error_code_registry_reference;
+#[path = "cases/internal_type_audit.rs"]
+mod internal_type_audit;
 #[path = "cases/language_reference_docs.rs"]
 mod language_reference_docs;
 #[path = "cases/local_maybe_present_reads.rs"]
@@ -196,6 +198,8 @@ mod static_soundness;
 mod surface_abi;
 #[path = "cases/surface_wire_profile_architecture.rs"]
 mod surface_wire_profile_architecture;
+#[path = "cases/tooling_render_api.rs"]
+mod tooling_render_api;
 #[path = "cases/total_parser_soundness.rs"]
 mod total_parser_soundness;
 #[path = "cases/type_leaf_identity_architecture.rs"]

@@ -149,6 +149,14 @@ dependency cannot satisfy. Repository source remains Apache-2.0.
   settings, limits, raw evidence, and regression policy. Do not call a behavior
   proven, safe, scalable, portable, or institution-ready without the
   corresponding evidence.
+- Checker, inference, analysis, hover, and other semantic-tooling changes must
+  run `marrow check --compiler-dev <projectdir>` on each affected clean fixture
+  project. Every `compiler.dev.unknown_type` warning blocks integration until
+  either the missing checker-owned type or fact is fixed, or an existing typed
+  semantic owner establishes that the position is non-value and audit
+  eligibility is corrected. Do not baseline warnings, add source/path/span
+  allowlists, or silence them with lexical probe exceptions. The hidden mode is
+  for compiler contributors and is not end-user advice.
 
 ## Worktrees, builds, and integration
 

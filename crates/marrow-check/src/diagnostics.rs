@@ -13,6 +13,10 @@ use crate::program::MarrowType;
 use crate::typerules::{TypeDisposition, disposition};
 use crate::{CatalogEntryKind, CatalogLifecycle};
 
+/// A compiler-maintainer audit found a clean source position whose inferred
+/// type remains unresolved recovery. Ordinary project checks never emit it.
+pub const COMPILER_DEV_UNKNOWN_TYPE: &str = Code::CompilerDevUnknownType.as_str();
+
 /// A library or test file declares a module name that does not match its
 /// path-derived name.
 pub const CHECK_MODULE_PATH: &str = Code::CheckModulePath.as_str();
@@ -920,6 +924,14 @@ pub struct SurfaceFieldDiagnostic {
     pub problem: SurfaceFieldProblem,
 }
 
+/// The compiler-internal type state an implementation audit found at a clean
+/// source position. This is typed separately from the source spelling `unknown`:
+/// `RecoveryUnknown` is unresolved checker recovery, not an explicit dynamic type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalTypeIssueKind {
+    RecoveryUnknown,
+}
+
 /// Structured data attached to diagnostics whose consumers need more than the
 /// rendered message. Resolution-suppression branches on typed identities: an
 /// import names the module it failed to resolve, an unresolved call names the
@@ -950,6 +962,9 @@ pub enum DiagnosticPayload {
     /// No resolution identity is attached.
     #[default]
     None,
+    /// `compiler.dev.unknown_type`: the unresolved internal type state that
+    /// escaped an otherwise error-free analysis snapshot.
+    InternalTypeIssue(InternalTypeIssueKind),
     /// `cannot resolve import`: the `use` path that named no module.
     UnresolvedImport(String),
     /// `check.unresolved_call`: the call's (possibly qualified) name and which

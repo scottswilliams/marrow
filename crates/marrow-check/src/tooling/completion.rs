@@ -11,7 +11,7 @@ use super::data::{
     DeclaredDataChild, DeclaredDataChildKind, declared_source_receiver_data_children_fact,
 };
 use super::expected::{ExpectedEnum, ExpectedEnumContext, expected_enum_at};
-use super::render::{render_callable_signature, render_marrow_type};
+use super::render::{render_callable_signature_with_names, render_marrow_type_with_names};
 use super::signatures::{CallableSignature, active_callable_context, intrinsic_callable_signature};
 use crate::analysis::{ScopeCompletionBindingKind, scope_completion_bindings_at};
 use crate::model::decls::DeclIds;
@@ -613,7 +613,10 @@ fn standard_library_module_items(
         .iter()
         .map(|operation| {
             source_completion_item(&operation.name, SourceCompletionItemKind::Function)
-                .detail(render_callable_signature(names, &operation.signature))
+                .detail(render_callable_signature_with_names(
+                    names,
+                    &operation.signature,
+                ))
                 .docs_from(&operation.signature.docs)
         })
         .collect()
@@ -660,14 +663,20 @@ fn source_function_signature(
     let params = function
         .params
         .iter()
-        .map(|param| format!("{}: {}", param.name, render_marrow_type(names, &param.ty)))
+        .map(|param| {
+            format!(
+                "{}: {}",
+                param.name,
+                render_marrow_type_with_names(names, &param.ty)
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     match &function.return_type {
         Some(return_type) => format!(
             "fn {}({params}): {}",
             function.name,
-            render_marrow_type(names, return_type)
+            render_marrow_type_with_names(names, return_type)
         ),
         None => format!("fn {}({params})", function.name),
     }
@@ -731,7 +740,7 @@ fn bare_completion_items(
         if let ScopeCompletionBindingKind::Value { ty } = &binding.kind {
             items.push(
                 source_completion_item(&binding.name, SourceCompletionItemKind::Local)
-                    .detail(render_marrow_type(&names, ty)),
+                    .detail(render_marrow_type_with_names(&names, ty)),
             );
         }
     }
@@ -763,7 +772,7 @@ fn bare_completion_items(
         let label = callable.path.join("::");
         items.push(
             source_completion_item(&label, SourceCompletionItemKind::Function)
-                .detail(render_callable_signature(&names, &callable))
+                .detail(render_callable_signature_with_names(&names, &callable))
                 .docs_from(&callable.docs),
         );
     }

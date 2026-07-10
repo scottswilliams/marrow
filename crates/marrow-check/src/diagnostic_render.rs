@@ -23,6 +23,7 @@ use crate::typerules::{marrow_type_name, mismatch_display};
 /// must never name one. The `no_prose_at_migrated_construction` scan enforces that;
 /// extend this list as each diagnostic family migrates.
 pub(crate) const MIGRATED_CODES: &[Code] = &[
+    Code::CompilerDevUnknownType,
     Code::CheckReturnType,
     Code::CheckAssignmentType,
     Code::CheckDefaultEntry,
@@ -76,6 +77,13 @@ pub(crate) fn render_message(
         "render_message reached for {code:?}, which CheckDiagnostic::new does not own yet",
     );
     match (code, payload) {
+        (
+            Code::CompilerDevUnknownType,
+            DiagnosticPayload::InternalTypeIssue(
+                crate::InternalTypeIssueKind::RecoveryUnknown,
+            ),
+        ) => "compiler type inference left this clean source position at its unresolved recovery type"
+            .to_string(),
         (Code::CheckReturnType, DiagnosticPayload::TypeMismatch { expected, found }) => {
             let (expected, found) = mismatch_display(names, expected, found);
             format!("function returns `{expected}`, but this value is `{found}`")
@@ -1811,6 +1819,8 @@ mod tests {
     /// and its `CHECK_*` wire-string constant. Mirrors [`MIGRATED_CODES`]; kept in
     /// step by the length assertion in `no_prose_at_migrated_construction`.
     const MIGRATED_CONSTRUCTION_TOKENS: &[&str] = &[
+        "Code::CompilerDevUnknownType",
+        "COMPILER_DEV_UNKNOWN_TYPE",
         "Code::CheckReturnType",
         "CHECK_RETURN_TYPE",
         "Code::CheckAssignmentType",
