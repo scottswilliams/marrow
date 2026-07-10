@@ -6,6 +6,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use marrow_syntax::SourceSpan;
+
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::{CheckedExpr, CheckedProgram, CheckedSavedPlace, MarrowType};
 
@@ -78,6 +80,16 @@ pub(crate) fn is_saved_key_range_path(
 ) -> bool {
     checked_saved_expr(program, path, scope, file)
         .is_some_and(|expr| SavedPlaceResolver::new(program).is_key_range_path(&expr))
+}
+
+pub(crate) fn saved_key_range_argument_span(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> Option<SourceSpan> {
+    let expr = checked_saved_expr(program, path, scope, file)?;
+    SavedPlaceResolver::new(program).key_range_argument_span(&expr)
 }
 
 pub(crate) fn is_saved_path_with_key_range_arg(

@@ -178,8 +178,21 @@ impl<'a> SavedPlaceResolver<'a> {
     }
 
     pub(crate) fn is_key_range_path(&self, expr: &CheckedExpr) -> bool {
-        self.range_arg_position(expr).is_some()
-            && (self.is_index_branch(expr) || self.layer_or_root_range_subject(expr).is_some())
+        self.key_range_argument_span(expr).is_some()
+    }
+
+    /// The exact checked range argument owned by a saved key-range path. Syntax
+    /// walkers use this span to exempt the traversal range without exempting
+    /// ranges nested in either endpoint.
+    pub(crate) fn key_range_argument_span(&self, expr: &CheckedExpr) -> Option<SourceSpan> {
+        let position = self.range_arg_position(expr)?;
+        if !self.is_index_branch(expr) && self.layer_or_root_range_subject(expr).is_none() {
+            return None;
+        }
+        let CheckedExpr::Call { args, .. } = expr else {
+            return None;
+        };
+        args.get(position).map(|arg| arg.value.span())
     }
 
     pub(crate) fn has_key_range_arg(&self, expr: &CheckedExpr) -> bool {

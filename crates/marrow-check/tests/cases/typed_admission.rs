@@ -678,41 +678,48 @@ fn recovery_does_not_hide_unconditionally_invalid_operator_or_range_step_sibling
 #[test]
 fn range_admission_preserves_known_endpoint_and_step_constraints() {
     let mut failures = Vec::new();
-    for (name, source) in [
+    for (name, source, expected) in [
         (
             "concrete-sequence-step",
             "module m\nfn f(xs: sequence[int])\n    for x in 1..10 by xs\n        print(x)\n",
+            &["check.range"][..],
         ),
         (
             "concrete-optional-step",
             "module m\nfn f(step: int?)\n    for x in 1..10 by step\n        print(x)\n",
+            &["check.unresolved_optional"][..],
         ),
         (
             "deferred-with-nonsteppable-endpoint",
             "module m\nfn f(start: unknown)\n    for x in start..\"bad\"\n        print(x)\n",
+            &["check.range"][..],
         ),
         (
             "deferred-int-endpoint-duration-step",
             "module m\nfn f(start: unknown)\n    for x in start..10 by 1.day\n        print(x)\n",
+            &["check.range"][..],
         ),
         (
             "deferred-instant-endpoint-needs-step",
             "module m\nfn f(start: unknown)\n    for x in start..std::clock::now()\n        print(x)\n",
+            &["check.range"][..],
         ),
         (
             "deferred-negated-duration-step",
             "module m\nfn f(start: unknown)\n    for x in start..10 by -1.day\n        print(x)\n",
+            &["check.range"][..],
         ),
         (
             "int-negated-duration-step",
             "module m\nfn f()\n    for x in 10..1 by -1.day\n        print(x)\n",
+            &["check.range"][..],
         ),
     ] {
         record_code_failure(
             &mut failures,
             &format!("typed-admission-range-constraint-{name}"),
             source,
-            &["check.range"],
+            expected,
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

@@ -959,6 +959,42 @@ fn count_accepts_index_range_but_rejects_root_and_layer_ranges_with_an_accurate_
 }
 
 #[test]
+fn saved_range_exemptions_are_exact_and_compose_through_range_endpoints() {
+    let loop_endpoint = check_module_report(
+        "count-range-in-loop-endpoint",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f()\n    for i in count(^posts.byDate(1..2))..10\n        print(i)\n",
+    );
+    assert_clean(&loop_endpoint);
+
+    let nested_count = check_module_report(
+        "nested-count-ranges",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f(): int\n    return count(^posts.byDate(count(^posts.byDate(1..2))..10))\n",
+    );
+    assert_clean(&nested_count);
+
+    let nested_loop_range = check_module_report(
+        "nested-range-in-saved-loop",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f()\n    for id in ^posts.byDate((1..2)..10)\n        print(id)\n",
+    );
+    let nested_range_diagnostics = with_code(&nested_loop_range, "check.range_value");
+    assert_eq!(
+        nested_range_diagnostics.len(),
+        1,
+        "{:#?}",
+        nested_loop_range.diagnostics
+    );
+}
+
+#[test]
 fn inclusive_open_end_range_key_argument_is_rejected() {
     let found = check_module(
         "inclusive-open-end-key-range",

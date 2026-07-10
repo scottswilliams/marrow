@@ -236,6 +236,16 @@ fn a_zero_step_is_a_check_error() {
 }
 
 #[test]
+fn a_literal_zero_step_is_rejected_even_when_both_endpoints_are_deferred() {
+    for step in ["0", "0.day"] {
+        let found = codes(&format!(
+            "module m\nfn f(lo: unknown, hi: unknown)\n    for x in lo..hi by {step}\n        print(x)\n"
+        ));
+        assert_eq!(found, ["check.range"], "step {step}: {found:?}");
+    }
+}
+
+#[test]
 fn a_variable_direction_range_is_not_flagged() {
     // A wrong direction is only knowable for literals; a variable step is an empty
     // loop at runtime, never a check error.

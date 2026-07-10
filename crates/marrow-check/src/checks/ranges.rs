@@ -13,13 +13,14 @@ use marrow_syntax::SourceSpan;
 
 use crate::infer::{infer_only, infer_type};
 use crate::typerules::{
-    TypeDisposition, as_primitive, disposition, is_steppable, marrow_type_name,
+    TypeDisposition, as_primitive, disposition, is_optional_value, is_steppable, marrow_type_name,
+    unresolved_optional_diagnostic,
 };
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, MarrowType};
 
 use super::diagnostics::range_diagnostic;
-use super::saved_paths::is_saved_key_range_path;
+use super::saved_paths::saved_key_range_argument_span;
 
 /// The endpoint scalar type of a range iterable when both endpoints are the same
 /// steppable type, or `None` for any other iterable or a mismatched/non-steppable
@@ -77,6 +78,7 @@ enum RangeStepAdmission {
     Poisoned,
     Deferred,
     NoValue,
+    Optional,
     Int,
     Duration,
     InvalidConcrete,
@@ -100,6 +102,7 @@ fn admit_range_step(
         TypeDisposition::Recovery | TypeDisposition::ExplicitDynamic => {
             RangeStepAdmission::Deferred
         }
+        TypeDisposition::Concrete if is_optional_value(ty) => RangeStepAdmission::Optional,
         TypeDisposition::Concrete => match as_primitive(ty) {
             Some(ScalarType::Int) => RangeStepAdmission::Int,
             Some(ScalarType::Duration) => RangeStepAdmission::Duration,
@@ -115,31 +118,21 @@ pub(crate) fn check_range_value(
     expr: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    check_range_value_guarded(file, expr, &|_| false, diagnostics);
+    check_range_values_except(file, expr, &[], diagnostics);
 }
 
-/// The single owner of the [`CHECK_RANGE_VALUE`] emit and message: reject ranges
-/// outside `for` iterables, skipping any subexpression `allowed` exempts (and its
-/// children) so a context that legitimately accepts a range — a saved key-range
-/// argument to `exists`/`count` — is not flagged.
-pub(crate) fn check_range_value_guarded(
+/// The single owner of the [`CHECK_RANGE_VALUE`] emit and message. Each exempt
+/// span identifies one traversal range; its endpoints are still walked so an
+/// unrelated nested range remains a value-position error.
+fn check_range_values_except(
     file: &Path,
     expr: &marrow_syntax::Expression,
-    allowed: &impl Fn(&marrow_syntax::Expression) -> bool,
+    exempt_ranges: &[SourceSpan],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if allowed(expr) {
-        let mut skipped_outer_range = false;
-        for_each_child_expr(expr, |child| {
-            check_allowed_range_context_child(file, child, &mut skipped_outer_range, diagnostics)
-        });
-        debug_assert!(
-            skipped_outer_range,
-            "an allowed saved-range context must contain its traversal range",
-        );
-        return;
-    }
-    if let Some(range) = marrow_syntax::range_expr(expr) {
+    if let Some(range) = marrow_syntax::range_expr(expr)
+        && !exempt_ranges.contains(&range.span)
+    {
         diagnostics.push(CheckDiagnostic::error(
             CHECK_RANGE_VALUE,
             file,
@@ -148,39 +141,29 @@ pub(crate) fn check_range_value_guarded(
         ));
     }
     for_each_child_expr(expr, |child| {
-        check_range_value_guarded(file, child, allowed, diagnostics)
+        check_range_values_except(file, child, exempt_ranges, diagnostics)
     });
 }
 
-/// Walk one allowed `exists`/`count` saved-range call in pre-order, exempting
-/// only its outer traversal range. Ranges nested in either endpoint remain
-/// ordinary range-as-value violations.
-fn check_allowed_range_context_child(
-    file: &Path,
+fn collect_allowed_saved_range_spans(
+    program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
-    skipped_outer_range: &mut bool,
-    diagnostics: &mut Vec<CheckDiagnostic>,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    exempt_ranges: &mut Vec<SourceSpan>,
 ) {
-    if let Some(range) = marrow_syntax::range_expr(expr) {
-        if *skipped_outer_range {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_RANGE_VALUE,
-                file,
-                range.span,
-                "a range can only be used as a `for` iterable",
-            ));
-        } else {
-            *skipped_outer_range = true;
-        }
+    if let Some(span) = allowed_saved_key_range_value_context(program, expr, scope, file)
+        && !exempt_ranges.contains(&span)
+    {
+        exempt_ranges.push(span);
     }
     for_each_child_expr(expr, |child| {
-        check_allowed_range_context_child(file, child, skipped_outer_range, diagnostics)
+        collect_allowed_saved_range_spans(program, child, scope, file, exempt_ranges)
     });
 }
 
 /// Apply the range-as-value rule in a checked expression scope, preserving the
-/// one legitimate value-position range: an index key range passed directly to
-/// `exists` or `count`.
+/// legitimate traversal ranges passed directly to `exists` or `count`.
 pub(crate) fn check_range_value_in_scope(
     program: &CheckedProgram,
     file: &Path,
@@ -188,12 +171,7 @@ pub(crate) fn check_range_value_in_scope(
     scope: &[HashMap<String, MarrowType>],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    check_range_value_guarded(
-        file,
-        expr,
-        &|candidate| allowed_saved_key_range_value_context(program, candidate, scope, file),
-        diagnostics,
-    );
+    check_range_values_in_scope_except(program, file, expr, scope, None, diagnostics);
 }
 
 fn allowed_saved_key_range_value_context(
@@ -201,31 +179,51 @@ fn allowed_saved_key_range_value_context(
     value: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
     file: &Path,
-) -> bool {
+) -> Option<SourceSpan> {
     let marrow_syntax::Expression::Call { callee, args, .. } = value else {
-        return false;
+        return None;
     };
     let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
-        return false;
+        return None;
     };
     let [name] = segments.as_slice() else {
-        return false;
+        return None;
     };
     let [arg] = args.as_slice() else {
-        return false;
+        return None;
     };
-    if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value, scope, file) {
-        return false;
+    if arg.name.is_some() || !matches!(name.as_str(), "exists" | "count") {
+        return None;
     }
     // A saved key-range argument to a cardinality or presence call is a
     // traversal shape. Its own argument checker decides which saved shapes the
     // operation supports.
-    matches!(name.as_str(), "exists" | "count")
+    saved_key_range_argument_span(program, &arg.value, scope, file)
+}
+
+fn check_range_values_in_scope_except(
+    program: &CheckedProgram,
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    owned_range: Option<SourceSpan>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let mut exempt_ranges = Vec::new();
+    collect_allowed_saved_range_spans(program, expr, scope, file, &mut exempt_ranges);
+    if let Some(span) = owned_range
+        && !exempt_ranges.contains(&span)
+    {
+        exempt_ranges.push(span);
+    }
+    check_range_values_except(file, expr, &exempt_ranges, diagnostics);
 }
 
 pub(super) fn check_range_iterable_value_parts(
+    program: &CheckedProgram,
     file: &Path,
     iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if range_endpoints(iterable).is_some() {
@@ -243,19 +241,30 @@ pub(super) fn check_range_iterable_value_parts(
         ));
         return;
     }
-    check_range_value(file, iterable, diagnostics);
+    check_range_value_in_scope(program, file, iterable, scope, diagnostics);
 }
 
 pub(super) fn check_range_iterable_nested_values(
+    program: &CheckedProgram,
     file: &Path,
     iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let Some((left, right)) = range_endpoints(iterable) else {
+    let owned_range = marrow_syntax::range_expr(iterable)
+        .map(|range| range.span)
+        .or_else(|| saved_key_range_argument_span(program, iterable, scope, file));
+    let Some(owned_range) = owned_range else {
         return;
     };
-    check_range_value(file, left, diagnostics);
-    check_range_value(file, right, diagnostics);
+    check_range_values_in_scope_except(
+        program,
+        file,
+        iterable,
+        scope,
+        Some(owned_range),
+        diagnostics,
+    );
 }
 
 /// Validate a range-for header's endpoint, step, and direction rules: both
@@ -381,6 +390,13 @@ pub(crate) fn check_range_header(
             ));
             return;
         }
+        RangeStepAdmission::Optional => {
+            diagnostics.push(unresolved_optional_diagnostic(
+                file,
+                step.expect("an optional step is written").span(),
+            ));
+            return;
+        }
         RangeStepAdmission::InvalidConcrete => {
             let step_type = step_type.as_ref().expect("a written step has a type");
             diagnostics.push(range_diagnostic(
@@ -406,6 +422,17 @@ pub(crate) fn check_range_header(
         | RangeStepAdmission::Int
         | RangeStepAdmission::Duration => {}
         RangeStepAdmission::Poisoned => unreachable!("poisoned steps returned above"),
+    }
+
+    // Zero is invalid for every endpoint type, including when recovery prevents
+    // the checker from selecting a concrete endpoint constraint.
+    if literal_step_sign(step) == Some(Ordering::Equal) {
+        diagnostics.push(range_diagnostic(
+            file,
+            iterable.span(),
+            "a range step cannot be zero".to_string(),
+        ));
+        return;
     }
 
     if let Some(endpoint) = endpoint {
@@ -583,14 +610,11 @@ fn check_dead_loop(
     let Some(step_sign) = literal_step_sign(step) else {
         return;
     };
-    if step_sign == Ordering::Equal {
-        diagnostics.push(range_diagnostic(
-            file,
-            iterable.span(),
-            "a range step cannot be zero".to_string(),
-        ));
-        return;
-    }
+    debug_assert_ne!(
+        step_sign,
+        Ordering::Equal,
+        "zero steps return before constraints"
+    );
     // The endpoints' relative order. A mismatched or non-literal pair yields
     // `None` and is left to the runtime.
     let endpoints = literal_int_value(left)

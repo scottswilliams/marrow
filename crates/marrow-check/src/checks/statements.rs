@@ -1628,7 +1628,13 @@ impl StatementCheck<'_> {
         }
         // Diagnose a range nested inside an outer loop range before subject
         // inference can poison the iterable and take an early recovery return.
-        check_range_iterable_nested_values(self.file, iterable, self.diagnostics);
+        check_range_iterable_nested_values(
+            self.program,
+            self.file,
+            iterable,
+            self.scope,
+            self.diagnostics,
+        );
         let subject_type = infer_collection_subject_type_with_read_scope(
             self.program,
             iterable,
@@ -1699,7 +1705,13 @@ impl StatementCheck<'_> {
         if !is_saved_index_branch_path(self.program, iterable, self.scope, self.file)
             && !is_saved_key_range_path(self.program, iterable, self.scope, self.file)
         {
-            check_range_iterable_value_parts(self.file, iterable, self.diagnostics);
+            check_range_iterable_value_parts(
+                self.program,
+                self.file,
+                iterable,
+                self.scope,
+                self.diagnostics,
+            );
         }
         if let Some(step) = step {
             self.check_range_value(step);
