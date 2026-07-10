@@ -519,7 +519,7 @@ facts, not a v0.1 beta protocol commitment or compiler-integrated authorization 
 | `surface.computed` | A surface computed read was admitted by operation tag, but entry execution or result rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Computed-read argument decode failures use `surface.request`. |
 | `surface.store` | The store reported a fault while executing a surface operation. |
 
-### Internal Fail-Closed Codes
+### Internal Codes
 
 These codes are emitted only by implementation-maintainer surfaces or as
 defense-in-depth fail-closed guards over invariants the surrounding layers

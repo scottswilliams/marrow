@@ -168,12 +168,18 @@ fn compiler_dev_with_no_findings_is_byte_identical_to_ordinary_check() {
         );
     });
 
-    let ordinary = run(&project, &["--format", "json"]);
-    let dev = run(&project, &["--compiler-dev", "--format", "json"]);
-    assert_eq!(ordinary.status.code(), Some(0), "{ordinary:?}");
-    assert_eq!(dev.status.code(), Some(0), "{dev:?}");
-    assert_eq!(dev.stdout, ordinary.stdout);
-    assert_eq!(dev.stderr, ordinary.stderr);
+    for format in [None, Some("json"), Some("jsonl")] {
+        let ordinary_args = format.map_or_else(Vec::new, |format| vec!["--format", format]);
+        let mut dev_args = vec!["--compiler-dev"];
+        dev_args.extend(ordinary_args.iter().copied());
+
+        let ordinary = run(&project, &ordinary_args);
+        let dev = run(&project, &dev_args);
+        assert_eq!(ordinary.status.code(), Some(0), "{format:?}: {ordinary:?}");
+        assert_eq!(dev.status.code(), Some(0), "{format:?}: {dev:?}");
+        assert_eq!(dev.stdout, ordinary.stdout, "{format:?}");
+        assert_eq!(dev.stderr, ordinary.stderr, "{format:?}");
+    }
 }
 
 #[test]

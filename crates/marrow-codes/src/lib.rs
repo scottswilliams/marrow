@@ -533,6 +533,7 @@ mod tests {
             .map(|c| c.as_str())
             .collect();
         let expected: std::collections::BTreeSet<&str> = [
+            "compiler.dev.unknown_type",
             "check.lossy_round_trip",
             "check.commit_amplification",
             "check.next_id_collision",

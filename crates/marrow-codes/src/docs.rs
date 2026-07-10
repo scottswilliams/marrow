@@ -11,7 +11,7 @@ use crate::{Code, Lifecycle};
 
 /// The heading that opens the internal-codes section. `generate` emits it and the
 /// coverage test splits the page on it, so the two cannot disagree.
-pub(crate) const INTERNAL_HEADING: &str = "### Internal Fail-Closed Codes";
+pub(crate) const INTERNAL_HEADING: &str = "### Internal Codes";
 
 fn rows(codes: &[Code]) -> String {
     codes
