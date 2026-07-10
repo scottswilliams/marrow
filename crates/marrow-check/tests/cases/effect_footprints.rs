@@ -309,43 +309,79 @@ fn pending_catalog_proposal_keeps_read_only_entry_write_capable() {
     );
 }
 
-/// The built per-function closure table (phase-2 Close) must reproduce the
-/// demand-driven `effect_closure` walk exactly for every function, including a
-/// mutual-recursion SCC where `write` and `readThenWrite` call each other. The
-/// monotone-union fixpoint over the call graph shares one closure across an SCC,
-/// so both members report the same reachable write set no matter the declaration
-/// order. Asserting equality against the on-demand walk pins that the table is a
-/// faithful batching of the same computation, not a divergent second owner.
-fn assert_built_closures_match_demand(source: &str) {
+/// The built phase-2 closure table, checked by its EXPECTED CONTENTS on a
+/// mutual-recursion SCC. `write` and `readThenWrite` call each other and reach the
+/// `^books` store — `write` through a record write, `readThenWrite` through a record
+/// read. The monotone-union fixpoint shares one closure across the SCC, so each member
+/// must accumulate the WHOLE SCC's effects: both write the store, both read it, both
+/// report `write_effects_reachable`. `save` calls `write` and inherits the same union.
+///
+/// Hardcoding the expected store-read/store-write/index sets and the write bit makes a
+/// walker regression fail loudly: a dropped cycle-guard union leaves a member missing
+/// its partner's effect, an under- or over-inclusive `extend_closure`/`union_closure`
+/// changes a set, and a lost write bit flips `write_effects_reachable`. The
+/// cross-member equality (every SCC member has the identical closure) independently
+/// pins that the fixpoint closed over the whole cycle in either declaration order.
+fn assert_scc_closure_contents(source: &str) {
     let root = temp_project("effect-closure-built-table", |root| {
         write(root, "src/books.mw", source);
     });
     let (report, program) = check_project(&root, &config()).expect("check");
     assert_clean(&report);
 
-    for fact in program.facts.functions() {
-        let function_ref = CheckedFunctionRef {
-            module: fact.module.0,
-            function: fact.source_index,
-        };
-        let demand = program
-            .effect_closure(function_ref)
-            .expect("demand-driven closure");
-        let built = program
+    let module = program.facts.module_id("books").expect("books module");
+    let store = program
+        .facts
+        .store_id(module, "books")
+        .expect("books store");
+
+    let closure_of = |name: &str| {
+        let function_id = program
             .facts
-            .effect_closure_for(fact.id)
-            .expect("built closure table entry");
+            .function_id(module, name)
+            .expect("function id");
+        program
+            .facts
+            .effect_closure_for(function_id)
+            .expect("built closure table entry")
+            .clone()
+    };
+
+    // Every SCC member, plus the caller that reaches it, sees the whole SCC's effects.
+    for name in ["write", "readThenWrite", "save"] {
+        let closure = closure_of(name);
         assert_eq!(
-            *built, demand,
-            "built closure table must reproduce the demand-driven walk for {}",
-            fact.name
+            closure.stores_written,
+            vec![store],
+            "{name} closure must write ^books through the SCC"
+        );
+        assert_eq!(
+            closure.stores_read,
+            vec![store],
+            "{name} closure must read ^books through the SCC"
+        );
+        assert!(
+            closure.indexes_touched.is_empty(),
+            "{name} closure touches no index: {:#?}",
+            closure.indexes_touched
+        );
+        assert!(
+            closure.write_effects_reachable,
+            "{name} closure reaches a write"
         );
     }
+
+    // The cycle-guard must union the whole SCC: both members share one closure.
+    assert_eq!(
+        closure_of("write"),
+        closure_of("readThenWrite"),
+        "mutual-recursion SCC members must share the union closure"
+    );
 }
 
 #[test]
-fn built_closure_table_reproduces_demand_driven_walk_writer_first() {
-    assert_built_closures_match_demand(
+fn built_closure_table_scc_contents_writer_first() {
+    assert_scc_closure_contents(
         "module books\n\
          resource Book\n\
          \x20   required title: string\n\
@@ -363,8 +399,8 @@ fn built_closure_table_reproduces_demand_driven_walk_writer_first() {
 }
 
 #[test]
-fn built_closure_table_reproduces_demand_driven_walk_reader_first() {
-    assert_built_closures_match_demand(
+fn built_closure_table_scc_contents_reader_first() {
+    assert_scc_closure_contents(
         "module books\n\
          resource Book\n\
          \x20   required title: string\n\
