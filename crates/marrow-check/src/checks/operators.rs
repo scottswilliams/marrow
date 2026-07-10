@@ -1,6 +1,7 @@
 //! Condition, throw, return, and assignment type checks, and the unary/binary/
 //! equality/coalesce operator rules. Each fires only on a known wrong or untyped
-//! type, deferring on `Unknown` so an uncertain operand never false-positives.
+//! type, deferring dynamic, no-value, and recovery states where the owning gate
+//! handles them.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,8 +25,8 @@ use crate::{
 use super::diagnostics::operator_diagnostic;
 
 /// Type-check an `if`/`while` condition (must be `bool`). Inferring it also
-/// operator-checks it. An unknown type — an unresolved call, a saved-data read — is
-/// left alone, so the check never fires on an uncertain condition.
+/// operator-checks it. Dynamic, no-value, and unresolved conditions take the
+/// untyped-value path rather than being misreported as a wrong concrete scalar.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_condition(
     program: &CheckedProgram,
@@ -73,9 +74,13 @@ pub(crate) fn check_condition(
         Some(primitive) if primitive != ScalarType::Bool => {
             diagnostics.push(not_bool(condition_type))
         }
-        // An unresolved condition is untyped rather than a wrong type, since strict
-        // typing cannot show it to be `bool`.
-        None if matches!(condition_type, MarrowType::Unknown) => {
+        // A dynamic, missing, or unresolved condition is untyped rather than a
+        // wrong concrete type.
+        None if matches!(
+            condition_type,
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+        ) =>
+        {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
                 file,
@@ -112,7 +117,7 @@ pub(crate) fn check_throw_type(
         return;
     }
     match value_type {
-        MarrowType::Error | MarrowType::Unknown => {}
+        MarrowType::Error | MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {}
         _ => diagnostics.push(CheckDiagnostic::error(
             CHECK_THROW_TYPE,
             file,
@@ -157,7 +162,11 @@ pub(crate) fn check_return_type(
         // Strict typing: an untyped value returned where a convertible type is
         // declared must be converted first. A return type with no conversion boundary
         // (void, a whole resource, a sequence) places no such constraint.
-        None if matches!(value_type, MarrowType::Unknown) && expects_conversion(return_type) => {
+        None if matches!(
+            value_type,
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+        ) && expects_conversion(return_type) =>
+        {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
                 file,
@@ -210,7 +219,11 @@ pub(crate) fn check_assignment(
             ));
         }
         // An untyped value stored into a place with a conversion boundary.
-        None if matches!(value, MarrowType::Unknown) && expects_conversion(place) => {
+        None if matches!(
+            value,
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+        ) && expects_conversion(place) =>
+        {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
                 file,
@@ -469,8 +482,9 @@ fn check_equality(
         | (_, MarrowType::Optional(_) | MarrowType::Absent) => {
             unreachable!("an optional operand is resolved by the one rule before check_equality")
         }
-        // An untyped operand defers: the scalar path handles untyped values.
-        (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
+        // Dynamic values and non-value/recovery states defer to their owning gates.
+        (MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown, _)
+        | (_, MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown) => None,
         // Whole records and sequences have no equality at all.
         (
             MarrowType::Resource(_)
@@ -549,7 +563,9 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
         // An untyped left may be an unresolved maybe-present read; defer to the
         // default's type rather than assert it is always present, so a cross-module
         // unknown read is not turned into operator noise.
-        MarrowType::Unknown => return right_type.clone(),
+        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {
+            return right_type.clone();
+        }
         _ => {
             diagnostics.push(operator_diagnostic(
                 file,

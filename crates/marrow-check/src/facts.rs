@@ -1118,7 +1118,11 @@ impl CheckedFacts {
             // The fact-level type is the present-arm value type; the empty optional
             // has no fact type of its own.
             MarrowType::Optional(inner) => self.checked_type(inner),
-            MarrowType::Absent | MarrowType::Invalid | MarrowType::Unknown => None,
+            MarrowType::Absent
+            | MarrowType::Dynamic
+            | MarrowType::Invalid
+            | MarrowType::NoValue
+            | MarrowType::Unknown => None,
         }
     }
 

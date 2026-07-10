@@ -413,13 +413,13 @@ impl ConversionTarget {
         matches!(self, Self::Str)
     }
 
-    /// The source types this conversion accepts statically, plus unknown.
+    /// The source types this conversion accepts statically, plus explicit dynamic.
     pub fn accepted_source_types(self) -> Vec<MarrowType> {
         self.accepted_sources()
             .iter()
             .copied()
             .map(MarrowType::Primitive)
-            .chain([MarrowType::Unknown])
+            .chain([MarrowType::Dynamic])
             .collect()
     }
 
@@ -438,7 +438,12 @@ impl ConversionTarget {
 
     pub(crate) fn accepts(self, source: &MarrowType) -> bool {
         match source {
-            MarrowType::Unknown | MarrowType::Invalid => true,
+            // Explicit dynamic is the supported conversion boundary. The remaining
+            // states defer only to avoid cascading from a missing value or prior fault.
+            MarrowType::Dynamic
+            | MarrowType::Invalid
+            | MarrowType::NoValue
+            | MarrowType::Unknown => true,
             MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
             MarrowType::Enum(_) => self.accepts_enum(),
             MarrowType::Optional(_)

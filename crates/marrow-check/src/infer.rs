@@ -743,9 +743,9 @@ fn infer_value(
         // The empty optional: assignable to any `T?` place, inert until resolved.
         Expression::Absent { .. } => MarrowType::Absent,
         Expression::Name { .. } => MarrowType::Unknown,
-        // A parse-error placeholder infers as `Unknown`, the checker's poison that
-        // suppresses cascades. It is unreachable in practice: inference runs only
-        // when the file parsed without errors.
+        // A parse-error placeholder infers as unresolved recovery and suppresses
+        // cascades. It is unreachable in practice: inference runs only when the
+        // file parsed without errors.
         Expression::Error { .. } => MarrowType::Unknown,
     };
     wrap_maybe_present(program, expr, position, ty, scope, file, read_scope)
@@ -769,7 +769,11 @@ fn wrap_maybe_present(
     if position != ValuePosition::Value
         || matches!(
             ty,
-            MarrowType::Unknown | MarrowType::Invalid | MarrowType::Absent
+            MarrowType::Absent
+                | MarrowType::Dynamic
+                | MarrowType::Invalid
+                | MarrowType::NoValue
+                | MarrowType::Unknown
         )
     {
         return ty;
@@ -1808,8 +1812,8 @@ fn local_field_resolution(
             .unwrap_or(FieldResolution::UnknownField),
         MarrowType::Invalid => FieldResolution::InvalidBase,
         // A scalar, enum, identity, sequence, or keyed map carries no resource
-        // fields, so a field read off it can never resolve. `Unknown` alone defers,
-        // keeping cross-module unresolved bases free of false positives.
+        // fields, so a field read off it can never resolve. Dynamic, no-value, and
+        // unresolved bases defer below instead of producing false positives.
         MarrowType::Primitive(_)
         | MarrowType::Enum(_)
         | MarrowType::Identity(_)
@@ -1824,9 +1828,11 @@ fn local_field_resolution(
             }
             other => other,
         },
-        // The empty optional has no inner record, and an unknown base defers; the one
-        // rule (for `Absent`) or the surrounding deferral owns the diagnostic.
-        MarrowType::Absent | MarrowType::Unknown => FieldResolution::UnresolvedBase,
+        // The empty optional has no inner record, while dynamic, no-value, and
+        // unresolved bases defer to their owning gates.
+        MarrowType::Absent | MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {
+            FieldResolution::UnresolvedBase
+        }
     }
 }
 
@@ -1909,7 +1915,9 @@ pub(crate) fn sparse_member(program: &CheckedProgram, base_type: &MarrowType, fi
         | MarrowType::Identity(_)
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. }
+        | MarrowType::Dynamic
         | MarrowType::Invalid
+        | MarrowType::NoValue
         | MarrowType::Unknown => false,
     }
 }

@@ -260,7 +260,7 @@ fn check_builtin_call(
             env.file,
             env.diagnostics,
         );
-        return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
+        return std_call_return_type(segments).unwrap_or(MarrowType::NoValue);
     }
     if let Some(params) = std_call_params(segments) {
         check_std_call_args(env, segments, args, arg_types);
@@ -282,7 +282,7 @@ fn check_builtin_call(
     std_call_return_type(segments)
         .or_else(|| conversion_return_type(segments))
         .or_else(|| builtin_return_type(segments))
-        .unwrap_or(MarrowType::Unknown)
+        .unwrap_or(MarrowType::NoValue)
 }
 
 fn check_assert_equal_args(
@@ -320,7 +320,8 @@ fn check_assert_equal_args(
                 },
             ));
         }
-        (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => {}
+        (MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown, _)
+        | (_, MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown) => {}
         (actual, expected) => {
             let found = if matches!(actual, MarrowType::Primitive(_)) {
                 expected
@@ -523,7 +524,7 @@ fn check_user_function_call(
         .return_type
         .clone()
         .map(MarrowType::without_optional)
-        .unwrap_or(MarrowType::Unknown)
+        .unwrap_or(MarrowType::NoValue)
 }
 
 /// Validate a single-name builtin's arguments, returning whether a collection
@@ -687,7 +688,12 @@ fn check_exists_args(
 fn is_always_present_value(ty: &MarrowType) -> bool {
     !matches!(
         ty,
-        MarrowType::Optional(_) | MarrowType::Absent | MarrowType::Unknown | MarrowType::Invalid
+        MarrowType::Optional(_)
+            | MarrowType::Absent
+            | MarrowType::Dynamic
+            | MarrowType::Invalid
+            | MarrowType::NoValue
+            | MarrowType::Unknown
     )
 }
 
@@ -1278,11 +1284,12 @@ impl ArgParam<'_> {
 }
 
 /// Check one positional/named argument against the type its parameter expects: a
-/// known-but-different type is a `check.call_argument`; an `Unknown` argument for a
-/// concrete parameter is a `check.untyped_value` (strict typing). Shared by the
-/// user-function and std argument loops; `label` names the callee, `param` names
-/// the failing parameter or position, and `span` locates the argument expression so
-/// the diagnostic points at the offending argument rather than the call token.
+/// known-but-different type is a `check.call_argument`; a dynamic, no-value, or
+/// unresolved argument for a concrete parameter is a `check.untyped_value`
+/// (strict typing). Shared by the user-function and std argument loops; `label`
+/// names the callee, `param` names the failing parameter or position, and `span`
+/// locates the argument expression so the diagnostic points at the offending
+/// argument rather than the call token.
 pub(crate) fn check_one_arg(
     emit: ArgEmit<'_>,
     label: &str,
@@ -1316,7 +1323,11 @@ pub(crate) fn check_one_arg(
         }
         // Strict typing: an untyped argument against a convertible parameter must be
         // converted first.
-        None if matches!(arg_type, MarrowType::Unknown) && expects_conversion(parameter) => {
+        None if matches!(
+            arg_type,
+            MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+        ) && expects_conversion(parameter) =>
+        {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_UNTYPED_VALUE,
                 emit.file,
@@ -1545,10 +1556,12 @@ pub(crate) fn check_next_id(
                 span,
                 CallArgumentFault::NextIdRequiresBareRoot,
             ));
-        } else if let Some(arg_type) = arg_types
-            .first()
-            .filter(|ty| !matches!(ty, MarrowType::Unknown))
-        {
+        } else if let Some(arg_type) = arg_types.first().filter(|ty| {
+            !matches!(
+                ty,
+                MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+            )
+        }) {
             diagnostics.push(call_argument(
                 &program.decl_ids(),
                 file,
@@ -1678,10 +1691,12 @@ fn check_neighbor(
 /// root is reported elsewhere, so neither is double-reported here.
 fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
     let Some(MarrowType::Identity(root)) = arg_types.first() else {
-        if let Some(arg_type) = arg_types
-            .first()
-            .filter(|ty| !matches!(ty, MarrowType::Unknown))
-        {
+        if let Some(arg_type) = arg_types.first().filter(|ty| {
+            !matches!(
+                ty,
+                MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+            )
+        }) {
             env.diagnostics.push(call_argument(
                 &env.program.decl_ids(),
                 env.file,

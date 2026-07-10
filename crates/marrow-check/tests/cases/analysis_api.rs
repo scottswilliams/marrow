@@ -1260,7 +1260,7 @@ fn intrinsic_callable_signature_returns_error_constructor_shape() {
                     label: "data".to_string(),
                     required: false,
                     repeat: false,
-                    shape: CallableValueShape::Type(MarrowType::Unknown),
+                    shape: CallableValueShape::Type(MarrowType::Dynamic),
                     docs: Vec::new(),
                 },
             ],

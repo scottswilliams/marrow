@@ -44,6 +44,12 @@ The central artifacts and IDs live in `program.rs`, `model/`, and `facts.rs`.
 The main driver is in `driver.rs`; focused passes live under `checks/`,
 `presence/`, `evolution/`, and `tooling/`.
 
+`MarrowType` distinguishes the explicit source `unknown` boundary (`Dynamic`),
+successful calls with no return value (`NoValue`), unresolved recovery
+(`Unknown`), and diagnosed poison (`Invalid`). Source type hover facts are
+available for concrete types and explicit dynamic values. No fact is produced
+for no-value, unresolved, or invalid states.
+
 ## Current durable identity
 
 The `catalog/` pass reconciles source declarations with an accepted catalog

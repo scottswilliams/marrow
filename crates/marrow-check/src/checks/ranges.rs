@@ -134,9 +134,13 @@ pub(crate) fn check_range_header(
     let right_type = infer_only(program, right, scope, aliases, file);
     // A genuinely untyped or already-poisoned endpoint has faulted elsewhere;
     // defer rather than double-report against a type nothing can trust.
-    if matches!(left_type, MarrowType::Unknown | MarrowType::Invalid)
-        || matches!(right_type, MarrowType::Unknown | MarrowType::Invalid)
-    {
+    if matches!(
+        left_type,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+    ) || matches!(
+        right_type,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+    ) {
         return;
     }
     // The endpoint scalar drives the step, direction, and dead-loop rules. Route the

@@ -130,7 +130,7 @@ fn decimal_out_of_envelope(text: &str) -> bool {
 
 /// The scalar a type denotes, or `None` for any non-scalar. A `None` from the
 /// checker-only `Error` is a real mismatch at scalar-requiring sites, distinct
-/// from the untyped-value path taken for `Unknown`.
+/// from dynamic and recovery states.
 pub(crate) fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
     match ty {
         MarrowType::Primitive(scalar) => Some(*scalar),
@@ -140,8 +140,8 @@ pub(crate) fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
 
 /// Whether a type is a concrete non-scalar value type. These compare nominally,
 /// so an operator that defaults or equates them resolves by [`type_compatible`]
-/// rather than by scalar shape. `Error` has its own operator handling and
-/// `Unknown` defers, so both are excluded.
+/// rather than by scalar shape. `Error` has its own operator handling; dynamic,
+/// no-value, and recovery states defer, so all are excluded.
 pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
     match ty {
         MarrowType::Identity(_)
@@ -149,7 +149,7 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
         | MarrowType::GroupEntry { .. }
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. }
-        // An optional is a concrete one-rule value, not an `Unknown` deferral: it
+        // An optional is a concrete one-rule value, not a recovery deferral: it
         // must be resolved before any `T` operation, so the operator and render
         // gates treat it as concrete rather than silently admitting it.
         | MarrowType::Optional(_)
@@ -157,6 +157,8 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
         | MarrowType::Enum(_) => true,
         MarrowType::Primitive(_)
         | MarrowType::Error
+        | MarrowType::Dynamic
+        | MarrowType::NoValue
         | MarrowType::Unknown
         | MarrowType::Invalid => false,
     }
@@ -168,16 +170,16 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
 /// and enums compare nominally: an identity matches by store root, a resource by
 /// module-qualified resource name, and an enum by owning module and name. A
 /// key-compatible foreign identity or same-named enum from another module is
-/// still a mismatch. `Unknown` and `Invalid` defer for recovery and explicit
-/// `unknown` flows.
+/// still a mismatch. Explicit dynamic values retain the former `unknown` flow;
+/// no-value, unresolved, and invalid states defer without becoming value types.
 pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
     // A reported fault poisons its expected type; defer so it does not cascade.
     if matches!(expected, MarrowType::Invalid) {
         return None;
     }
-    // The optional axis is matched before any `Unknown`/`Invalid` deferral so a
-    // degraded-to-`Unknown` expected type can never shadow the one rule and
-    // silently admit an optional. Present widens into an optional place; an
+    // The optional axis is matched before any dynamic/recovery deferral so a
+    // degraded expected type can never shadow the one rule and silently admit an
+    // optional. Present widens into an optional place; an
     // optional or `absent` never satisfies a non-optional place until resolved.
     match (expected, actual) {
         (MarrowType::Optional(_), MarrowType::Absent) => return Some(true),
@@ -188,7 +190,10 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
         (_, MarrowType::Optional(_) | MarrowType::Absent) => return Some(false),
         _ => {}
     }
-    if matches!(actual, MarrowType::Unknown | MarrowType::Invalid) {
+    if matches!(
+        actual,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+    ) {
         return None;
     }
     match expected {
@@ -233,8 +238,9 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
         // The optional axis is fully decided above; reaching here means `actual` is
         // a concrete non-optional that no optional/absent place accepts.
         MarrowType::Optional(_) | MarrowType::Absent => Some(false),
-        MarrowType::Invalid => None,
-        MarrowType::Unknown => None,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => {
+            None
+        }
     }
 }
 
@@ -261,6 +267,8 @@ pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
         MarrowType::Absent
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. }
+        | MarrowType::Dynamic
+        | MarrowType::NoValue
         | MarrowType::Unknown
         | MarrowType::Invalid => false,
     }
@@ -282,12 +290,15 @@ pub(crate) fn is_steppable(scalar: ScalarType) -> bool {
 /// Whether a value of type `ty` renders to text directly through `print` and
 /// interpolation. Every scalar, every enum, a saved identity, and a sequence
 /// whose element type renders can render; local trees and resources are rejected
-/// at check. `None` defers the unknown and recovery types to the runtime value.
+/// at check. `None` defers dynamic and recovery states to their runtime/backstop
+/// owners.
 pub(crate) fn type_renderable_at_runtime(ty: &MarrowType) -> Option<bool> {
     match ty {
         MarrowType::Primitive(_) | MarrowType::Identity(_) | MarrowType::Enum(_) => Some(true),
         MarrowType::Sequence(element) => type_renderable_at_runtime(element),
-        MarrowType::Unknown | MarrowType::Invalid => None,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => {
+            None
+        }
         // An optional must be resolved before it renders (the one rule), so it is a
         // concrete non-renderable value here rather than a deferral.
         MarrowType::Optional(_)
@@ -363,7 +374,7 @@ pub(crate) fn marrow_type_name(names: &DeclIds<'_>, ty: &MarrowType) -> String {
         MarrowType::Optional(inner) => format!("{}?", marrow_type_name(names, inner)),
         MarrowType::Absent => "absent".to_string(),
         MarrowType::Invalid => "value".to_string(),
-        MarrowType::Unknown => "unknown".to_string(),
+        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => "unknown".to_string(),
     }
 }
 

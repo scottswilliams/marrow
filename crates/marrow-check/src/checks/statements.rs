@@ -94,7 +94,7 @@ pub(crate) fn check_function_types(
     let return_type = function
         .return_type
         .as_ref()
-        .map_or(MarrowType::Unknown, |ty| {
+        .map_or(MarrowType::NoValue, |ty| {
             resolve_diagnosed_annotation_type(ty, program, aliases, file)
         });
     check_undeclared_saved_roots(program, file, &function.body, diagnostics);
@@ -2099,7 +2099,10 @@ fn target_has_saved_address_diagnostic(
 /// once, not twice. A resolved, well-formed but non-saved target keeps a concrete
 /// type and still earns the single addressability error.
 fn target_already_blamed(subject_type: &MarrowType) -> bool {
-    matches!(subject_type, MarrowType::Invalid | MarrowType::Unknown)
+    matches!(
+        subject_type,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+    )
 }
 
 fn span_contains(outer: SourceSpan, inner: SourceSpan) -> bool {

@@ -86,7 +86,9 @@ pub fn render_marrow_type(names: &DeclIds<'_>, ty: &MarrowType) -> String {
         }
         MarrowType::Optional(inner) => format!("{}?", render_marrow_type(names, inner)),
         MarrowType::Absent => "absent".to_string(),
-        MarrowType::Invalid | MarrowType::Unknown => "unknown".to_string(),
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => {
+            "unknown".to_string()
+        }
     }
 }
 
@@ -110,6 +112,15 @@ mod tests {
         };
 
         assert_eq!(render_marrow_type(&names, &ty), "tree[int]");
+    }
+
+    #[test]
+    fn source_type_hover_facts_render_explicit_dynamic_as_unknown() {
+        let facts = CheckedFacts::default();
+        let roots = StoreRootArena::default();
+        let names = DeclIds::new(&facts, &roots);
+
+        assert_eq!(render_marrow_type(&names, &MarrowType::Dynamic), "unknown");
     }
 
     #[test]

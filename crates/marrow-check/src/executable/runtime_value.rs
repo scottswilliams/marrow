@@ -176,6 +176,11 @@ pub(crate) fn checked_runtime_value_type(
         MarrowType::Optional(inner) => checked_runtime_value_type(program, *inner),
         MarrowType::Absent => CheckedRuntimeValueType::Unknown,
         MarrowType::Invalid => CheckedRuntimeValueType::Invalid,
-        MarrowType::Unknown => CheckedRuntimeValueType::Unknown,
+        // `Unknown` is the existing unsupported runtime shape used for dynamic
+        // values. No-value and unresolved states map only to that fail-closed shape;
+        // neither acquires a supported runtime value representation.
+        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown => {
+            CheckedRuntimeValueType::Unknown
+        }
     }
 }

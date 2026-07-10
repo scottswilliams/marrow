@@ -744,7 +744,10 @@ pub(crate) fn check_keys_against(
 }
 
 fn saved_key_arg_matches(expected: &MarrowType, actual: &MarrowType) -> bool {
-    if matches!(actual, MarrowType::Unknown) {
+    if matches!(
+        actual,
+        MarrowType::Dynamic | MarrowType::NoValue | MarrowType::Unknown
+    ) {
         return false;
     }
     type_compatible(expected, actual) != Some(false)

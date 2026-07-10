@@ -260,8 +260,8 @@ fn std_op(segments: &[String]) -> Option<&'static stdlib::StdOp> {
 
 /// The declared return type of a value-returning `std::module::op` helper, derived
 /// from its descriptor. Void helpers (`std::log`, `std::assert`,
-/// `std::io::write*`) and single-name builtins return `None`, leaving the call
-/// `Unknown` for the surrounding checks.
+/// `std::io::write*`) and single-name builtins return `None`; call checking turns a
+/// recognized void operation into [`MarrowType::NoValue`].
 pub(crate) fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
     match std_op(segments)?.ret {
         // A maybe-present scalar op (`OptionalScalar`) yields the same present-arm

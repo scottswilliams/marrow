@@ -267,10 +267,33 @@ pub fn source_type_hover_fact_at(
 ) -> Option<SourceTypeHoverFact> {
     let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
     let ty = crate::type_at(&snapshot.program, file, &analyzed.parsed, offset)?;
+    if !source_type_hover_eligible(&ty) {
+        return None;
+    }
     let docs = source_symbol_docs_at(snapshot, index, file, offset)
         .map(|docs| docs.lines)
         .unwrap_or_default();
     Some(SourceTypeHoverFact { ty, docs })
+}
+
+fn source_type_hover_eligible(ty: &MarrowType) -> bool {
+    match ty {
+        MarrowType::Primitive(_)
+        | MarrowType::Error
+        | MarrowType::Resource(_)
+        | MarrowType::GroupEntry { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::Enum(_)
+        | MarrowType::Absent
+        | MarrowType::Dynamic => true,
+        MarrowType::Sequence(element) | MarrowType::Optional(element) => {
+            source_type_hover_eligible(element)
+        }
+        MarrowType::LocalTree { keys, value } => {
+            keys.iter().all(source_type_hover_eligible) && source_type_hover_eligible(value)
+        }
+        MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown => false,
+    }
 }
 
 pub fn source_callable_hover_fact_at(

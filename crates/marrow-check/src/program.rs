@@ -1857,8 +1857,8 @@ impl CheckedRuntimeParam {
     }
 }
 
-/// A resolved Marrow type, best-effort. Anything the checker cannot resolve
-/// (including cross-module resource references) is [`MarrowType::Unknown`].
+/// A resolved Marrow type, best-effort. Explicit source `unknown`, a call with no
+/// return value, unresolved recovery, and diagnosed poison remain distinct states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarrowType {
     /// One of the storable scalar types.
@@ -1899,7 +1899,7 @@ pub enum MarrowType {
     Optional(Box<MarrowType>),
     /// The type of the bare `absent` literal: the empty optional. It is assignable
     /// to any `Optional(_)` place and otherwise inert — a concrete verdict, never an
-    /// `Unknown` deferral, so an optional gate handles it explicitly rather than
+    /// unresolved deferral, so an optional gate handles it explicitly rather than
     /// silently admitting it into a definite slot. It carries no element type, so an
     /// unannotated binding inferred as `Absent` is rejected.
     Absent,
@@ -1907,6 +1907,13 @@ pub enum MarrowType {
     /// It suppresses secondary "untyped value" hints while still keeping unknown
     /// dynamic values distinct.
     Invalid,
+    /// The explicit source type `unknown`: a dynamic value boundary whose runtime
+    /// shape is checked by conversions and other concrete-type gates.
+    Dynamic,
+    /// A successfully resolved call to a function or builtin with no return value.
+    /// It is not a runtime value type.
+    NoValue,
+    /// A type the checker could not resolve, retained only for recovery.
     Unknown,
 }
 
@@ -1959,7 +1966,7 @@ impl MarrowType {
     }
 
     /// Promote a schema-resolved [`Type`] to the checker's lattice without any
-    /// nominal facts. The scalar, sequence, and `unknown` structure is decided here;
+    /// nominal facts. The scalar, sequence, and explicit dynamic structure is decided here;
     /// the checker-only `Error` type is recognized; every nominal reference — a bare
     /// enum name or a store identity root — is left `Unknown`, because its interned
     /// id comes from the facts, which this layer does not hold. A caller with the
@@ -1969,7 +1976,7 @@ impl MarrowType {
             Type::Scalar(scalar) => Self::Primitive(scalar),
             Type::Sequence(element) => Self::Sequence(Box::new(Self::from_resolved(*element))),
             Type::Optional(inner) => Self::optional(Self::from_resolved(*inner)),
-            Type::Unknown => Self::Unknown,
+            Type::Unknown => Self::Dynamic,
             // `Error` is the one checker-only type the store does not model, so it
             // never resolves to a scalar; recognize it here.
             Type::Named(name) if name == "Error" => Self::Error,

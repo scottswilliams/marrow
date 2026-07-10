@@ -351,7 +351,10 @@ fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchAr
 }
 
 fn report_non_enum_match(env: &mut MatchEnv<'_>, scrutinee_type: &MarrowType, span: SourceSpan) {
-    if !matches!(scrutinee_type, MarrowType::Unknown | MarrowType::Invalid) {
+    if !matches!(
+        scrutinee_type,
+        MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+    ) {
         let names = env.program.decl_ids();
         env.diagnostics.push(CheckDiagnostic::new(
             Code::CheckMatchRequiresEnum,
@@ -863,11 +866,12 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         _ => None,
     };
     let Some((left_module, left_name)) = left_enum else {
-        // An untyped or already-errored left operand defers, like the equality path:
-        // `Unknown` is an unchecked dynamic value and `Invalid` is poison from a
-        // diagnostic that already fired, so neither cascades a second error naming the
-        // internal placeholder. A known non-enum is rejected.
-        if !matches!(left_type, MarrowType::Unknown | MarrowType::Invalid) {
+        // Dynamic, non-value, unresolved, and already-errored operands defer to
+        // their owning gates instead of cascading a second enum error.
+        if !matches!(
+            left_type,
+            MarrowType::Dynamic | MarrowType::Invalid | MarrowType::NoValue | MarrowType::Unknown
+        ) {
             diagnostics.push(CheckDiagnostic::new(
                 Code::CheckIsRequiresEnum,
                 DiagnosticAnchor::at(file, span),
