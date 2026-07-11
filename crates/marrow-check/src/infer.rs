@@ -1091,6 +1091,29 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         return MarrowType::Invalid;
     }
     let base_type = match input.context {
+        // The base of a saved-path member access is the saved-place spine navigated to
+        // reach this member — `^books` in `^books.byShelf(shelf)` — not a materialized
+        // value read. Infer it in collection-subject position so a bare store root or
+        // keyed sub-layer there keeps its saved-subject recovery position instead of
+        // being recorded as a value site. A materialized base (a local record value)
+        // reads through no saved place and stays a value read. Any partial-key descent
+        // off the base is already rejected above, so the collection-subject base never
+        // hides a value-position partial-key fault.
+        FieldAccessContext::Read
+            if reads_through_saved_place(input.program, input.base, input.scope, input.file) =>
+        {
+            infer_collection_subject_type_with_read_scope_and_recovery_trace(
+                input.program,
+                input.base,
+                input.scope,
+                input.const_ints,
+                input.aliases,
+                input.file,
+                input.diagnostics,
+                input.read_scope,
+                input.recovery_trace,
+            )
+        }
         FieldAccessContext::Read => infer_type_with_read_scope_and_recovery_trace(
             input.program,
             input.base,

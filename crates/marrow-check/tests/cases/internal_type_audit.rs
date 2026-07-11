@@ -79,6 +79,51 @@ pub fn printIds()
 }
 
 #[test]
+fn clean_saved_index_bases_are_not_value_type_probes() {
+    // A saved index access streams its store-root spine: `^books` in
+    // `^books.byShelf(shelf)` is a saved subject navigated by the index call, not
+    // a materialized value read. Its recovery `Unknown` must be recorded as a
+    // saved subject and excluded from the audit across every index form — a
+    // one-variable branch loop, a key-plus-leaf branch loop, and a unique lookup
+    // consumed in value position.
+    let source = "\
+module books
+
+resource Book
+    required title: string
+    shelf: string
+    isbn: string
+
+store ^books(id: int): Book
+    index byShelf(shelf, id)
+    index byIsbn(isbn) unique
+
+pub fn printShelf(shelf: string)
+    for id in ^books.byShelf(shelf)
+        if const title = ^books(id).title
+            print(title)
+
+pub fn dumpShelf(shelf: string)
+    for id, book in ^books.byShelf(shelf)
+        print($\"{id}: {book.title}\")
+
+pub fn findIsbn(isbn: string): Id(^books)?
+    return ^books.byIsbn(isbn)
+";
+    let (snapshot, _) = analyze(
+        "internal-type-audit-saved-index-bases",
+        &[("src/books.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    assert!(
+        audit_diagnostics(&snapshot).is_empty(),
+        "{:#?}",
+        audit_diagnostics(&snapshot),
+    );
+}
+
+#[test]
 fn clean_local_keys_result_reports_origin_and_propagated_unknown_positions() {
     assert_eq!(Code::CompilerDevUnknownType.family(), Family::Compiler);
     assert_eq!(
