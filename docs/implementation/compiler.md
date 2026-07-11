@@ -73,6 +73,15 @@ addresses consumed as non-value builtin or traversal subjects are outside the
 audit. Local expressions passed through those same collection-shaped positions
 remain ordinary typed values and are audited.
 
+Eligibility follows an audit-eligible value position's final internal type, not
+the ancestry of its operands. If a builtin collapses an explicit dynamic input
+into recovery `Unknown`, or an operator's recovery result propagates to a later
+type-hover position, that position is a compiler-maintainer finding: the
+semantic owner must preserve `Dynamic` or publish a more precise result.
+Operator-shaped expressions themselves remain owned by operator hover. The
+audit does not suppress eligible findings by tracing them back to source
+`unknown`.
+
 The option is intentionally omitted from command help and is not part of the
 ordinary project-check contract. Without it, the audit is not invoked and
 ordinary output is unchanged. Source files are audited against the source-only
