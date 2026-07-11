@@ -246,7 +246,7 @@ fn infer_assignment_field_type(
     recovery_trace: RecoveryTrace<'_>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
-    match expr {
+    let ty = match expr {
         Expression::Field {
             base,
             name,
@@ -294,7 +294,15 @@ fn infer_assignment_field_type(
             read_scope,
             recovery_trace,
         ),
+    };
+    if matches!(
+        expr,
+        Expression::Field { .. } | Expression::OptionalField { .. }
+    ) && recovery_trace.observes(&ty)
+    {
+        recovery_trace.record(file, expr, RecoverySitePosition::Value, &ty);
     }
+    ty
 }
 
 /// Where a saved access sits relative to its consumer. A value position binds,

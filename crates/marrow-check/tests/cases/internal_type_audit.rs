@@ -293,6 +293,31 @@ fn f(xs: sequence[int])
 }
 
 #[test]
+fn assignment_field_targets_observe_propagated_recovery() {
+    let source = "module m\n\nfn f()\n    var x\n    x.foo = 1\n";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-assignment-field-recovery",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    let diagnostics = audit_diagnostics(&snapshot);
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file == paths[0])
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.span)
+            .collect::<Vec<_>>(),
+        [expected_span(source, "x"), expected_span(source, "foo")],
+    );
+}
+
+#[test]
 fn audit_excludes_explicit_dynamic_no_value_and_richer_hover_owners() {
     let source = "\
 module a
