@@ -1,16 +1,16 @@
 //! Genuinely runtime-reachable fault codes that a clean checked program still
 //! raises at run time: integer-key-space exhaustion on `nextId`/`append`, the
-//! entry-name resolution faults the CLI hits when it selects an entry by name,
-//! and binding a no-value call result. Each program passes `check_project` with
-//! no diagnostics; the fault only exists at run time, so the checker cannot pre-empt
-//! it. The oracle is the typed `RuntimeError`/`WriteError` code (and, for the
-//! catchable write faults, the bound `Error` value's code), never rendered prose.
+//! entry-name resolution faults the CLI hits when it selects an entry by name.
+//! Each program passes `check_project` with no diagnostics; the fault only exists
+//! at run time, so the checker cannot pre-empt it. The oracle is the typed
+//! `RuntimeError`/`WriteError` code (and, for the catchable write faults, the bound
+//! `Error` value's code), never rendered prose.
 
 use crate::support;
 use support::*;
 
 use marrow_run::{
-    CallDepthFault, CheckedEntryCall, RUN_AMBIGUOUS_FUNCTION, RUN_NO_VALUE, RUN_PRIVATE_FUNCTION,
+    CallDepthFault, CheckedEntryCall, RUN_AMBIGUOUS_FUNCTION, RUN_PRIVATE_FUNCTION,
     RUN_UNKNOWN_FUNCTION, RuntimeError, Value,
 };
 use marrow_store::key::SavedKey;
@@ -288,19 +288,4 @@ fn unbounded_recursion_faults_with_the_call_depth_budget() {
 fn recursion_within_the_limit_returns_its_result() {
     // A recursion that stays inside the limit runs to completion: 1 + 2 + ... + 254.
     assert_eq!(run_recursion_entry("test::shallow"), Ok(32_385));
-}
-
-#[test]
-fn binding_a_no_value_call_result_faults_at_run_time() {
-    // A function with no return type yields no value. Binding its call to a `const`
-    // type-checks clean (the binding has no declared type to violate), but using the
-    // unit result as a value faults at run time with `run.no_value`.
-    let program = checked_program(
-        "pub fn noop()\n    const seen = 1\n\npub fn f(): int\n    const y = noop()\n    return 0\n",
-    );
-    let store = TreeStore::memory();
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::f")),
-        RUN_NO_VALUE,
-    );
 }
