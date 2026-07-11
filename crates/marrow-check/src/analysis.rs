@@ -530,6 +530,15 @@ enum CompilerDevAudit {
     UnknownType,
 }
 
+/// Source-only state retained while configured tests temporarily extend the
+/// checked program. The maintainer audit keeps the whole semantic snapshot so it
+/// can run only after the complete report is known clean; ordinary analysis keeps
+/// only the program that must be restored.
+enum SourceAnalysisState {
+    Program(Box<CheckedProgram>),
+    CompilerDevSnapshot(Box<AnalysisSnapshot>),
+}
+
 fn analyze_project_inner(
     project_root: &Path,
     config: &ProjectConfig,
@@ -539,15 +548,16 @@ fn analyze_project_inner(
     compiler_dev_audit: CompilerDevAudit,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
     let mut snapshot = analyze_source_project(project_root, config, sources, accepted, lock)?;
-    let source_audit_diagnostics = match compiler_dev_audit {
-        CompilerDevAudit::Disabled => Vec::new(),
+    let source_state = match compiler_dev_audit {
+        CompilerDevAudit::Disabled => {
+            SourceAnalysisState::Program(Box::new(snapshot.program.clone()))
+        }
         CompilerDevAudit::UnknownType => {
-            internal_type_audit::internal_type_issue_diagnostics(&snapshot)
+            SourceAnalysisState::CompilerDevSnapshot(Box::new(snapshot.clone()))
         }
     };
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let test_sources = cached_project_sources(&snapshot, sources);
-    let source_program = snapshot.program.clone();
     let tests = crate::check_tests_with_sources_analysis(
         project_root,
         config,
@@ -569,8 +579,10 @@ fn analyze_project_inner(
     snapshot.files.extend(tests.files);
     snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
     snapshot.files.dedup_by(|a, b| a.path == b.path);
-    if compiler_dev_audit == CompilerDevAudit::UnknownType && !snapshot.report.has_errors() {
-        let mut diagnostics = source_audit_diagnostics;
+    if !snapshot.report.has_errors()
+        && let SourceAnalysisState::CompilerDevSnapshot(source_snapshot) = &source_state
+    {
+        let mut diagnostics = internal_type_audit::internal_type_issue_diagnostics(source_snapshot);
         diagnostics.extend(
             internal_type_audit::internal_type_issue_diagnostics_for_files(&snapshot, &test_files),
         );
@@ -592,7 +604,10 @@ fn analyze_project_inner(
             });
         }
     }
-    snapshot.program = source_program;
+    snapshot.program = match source_state {
+        SourceAnalysisState::Program(program) => *program,
+        SourceAnalysisState::CompilerDevSnapshot(source_snapshot) => source_snapshot.program,
+    };
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
     snapshot.config_digest = analysis_config_digest(config);
     Ok(snapshot)

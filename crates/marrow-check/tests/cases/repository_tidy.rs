@@ -489,6 +489,31 @@ fn internal_type_audit_reuses_one_snapshot_aligned_lexical_cache() {
 }
 
 #[test]
+fn compiler_dev_audit_waits_for_the_complete_source_and_test_report() {
+    let root = repo_root();
+    let analysis = std::fs::read_to_string(root.join("crates/marrow-check/src/analysis.rs"))
+        .expect("read analysis");
+    let pipeline = item_between(
+        &analysis,
+        "fn analyze_project_inner(",
+        "fn cached_project_sources(",
+    );
+    let complete_report_gate = pipeline
+        .find("if !snapshot.report.has_errors()")
+        .expect("complete-report gate");
+    let source_audit = pipeline
+        .find("internal_type_audit::internal_type_issue_diagnostics(source_snapshot)")
+        .expect("source audit");
+    let test_audit = pipeline
+        .find("internal_type_audit::internal_type_issue_diagnostics_for_files")
+        .expect("configured-test audit");
+    assert!(
+        complete_report_gate < source_audit && complete_report_gate < test_audit,
+        "neither semantic snapshot may be audited before configured-test diagnostics are known",
+    );
+}
+
+#[test]
 fn internal_type_audit_hover_masks_keep_indexed_fast_rejections() {
     let root = repo_root();
     let hover = std::fs::read_to_string(root.join("crates/marrow-check/src/tooling/hover.rs"))
