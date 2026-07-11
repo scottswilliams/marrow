@@ -549,7 +549,7 @@ fn source_callable_hover_fact_at_prelexed(
             analyzed,
             prelexed,
             offset,
-            &occurrence.definition,
+            &occurrence,
         ),
         _ => None,
     }
@@ -715,6 +715,9 @@ fn source_module_path_hover_fact_at_prelexed(
         return None;
     }
     let path = module_path_at(&analyzed.source, &prelexed.lexed.tokens, offset)?;
+    if !path.context.is_declaration() && path.cursor_segment + 1 >= path.segments.len() {
+        return None;
+    }
     if let Some(fact) = standard_library_module_path_hover_fact(snapshot, file, &path) {
         return Some(fact);
     }
@@ -851,8 +854,12 @@ fn module_const_source_callable_hover_fact(
     analyzed: &AnalyzedFile,
     prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
-    symbol: &SymbolRef,
+    occurrence: &SymbolOccurrence,
 ) -> Option<SourceCallableHoverFact> {
+    if occurrence.reference != occurrence.definition {
+        return None;
+    }
+    let symbol = &occurrence.definition;
     if symbol.file != analyzed.path {
         return None;
     }
@@ -1081,10 +1088,6 @@ fn project_module_path_hover_fact(
             SymbolKind::Resource | SymbolKind::Enum | SymbolKind::EnumMember
         )
     }) {
-        return None;
-    }
-
-    if !path.context.is_declaration() && path.cursor_segment + 1 >= path.segments.len() {
         return None;
     }
 

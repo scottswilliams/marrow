@@ -583,9 +583,14 @@ fn analyze_project_inner(
         && let SourceAnalysisState::CompilerDevSnapshot(source_snapshot) = &source_state
     {
         let mut diagnostics = internal_type_audit::internal_type_issue_diagnostics(source_snapshot);
-        diagnostics.extend(
-            internal_type_audit::internal_type_issue_diagnostics_for_files(&snapshot, &test_files),
-        );
+        if !test_files.is_empty() {
+            diagnostics.extend(
+                internal_type_audit::internal_type_issue_diagnostics_for_files(
+                    &snapshot,
+                    &test_files,
+                ),
+            );
+        }
         if !diagnostics.is_empty() {
             snapshot.report.diagnostics.extend(diagnostics);
             snapshot.report.diagnostics.sort_by(|left, right| {

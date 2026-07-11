@@ -511,6 +511,13 @@ fn compiler_dev_audit_waits_for_the_complete_source_and_test_report() {
         complete_report_gate < source_audit && complete_report_gate < test_audit,
         "neither semantic snapshot may be audited before configured-test diagnostics are known",
     );
+    let test_presence_gate = pipeline
+        .find("if !test_files.is_empty()")
+        .expect("configured-test presence gate");
+    assert!(
+        test_presence_gate < test_audit,
+        "a source-only project must not rebuild a combined lexical/binding cache for no test files",
+    );
 }
 
 #[test]
@@ -555,6 +562,38 @@ fn internal_type_audit_hover_masks_keep_indexed_fast_rejections() {
     assert!(
         occurrence < annotation,
         "ordinary bound names must reject before the annotation use-site scan",
+    );
+
+    let module_path = item_between(
+        &hover,
+        "fn source_module_path_hover_fact_at_prelexed(",
+        "pub fn source_module_path_definition_fact_at(",
+    );
+    let expression_leaf_rejection = module_path
+        .find("path.cursor_segment + 1 >= path.segments.len()")
+        .expect("expression-leaf module-path rejection");
+    let standard_library_lookup = module_path
+        .find("standard_library_module_path_hover_fact(")
+        .expect("standard-library module lookup");
+    assert!(
+        expression_leaf_rejection < standard_library_lookup,
+        "expression leaves must reject before import-alias expansion",
+    );
+
+    let module_const = item_between(
+        &hover,
+        "fn module_const_source_callable_hover_fact(",
+        "struct ModulePathAt",
+    );
+    let use_rejection = module_const
+        .find("occurrence.reference != occurrence.definition")
+        .expect("module-constant use rejection");
+    let declaration_scan = module_const
+        .find("snapshot.files.iter()")
+        .expect("module-constant declaration lookup");
+    assert!(
+        use_rejection < declaration_scan,
+        "module-constant uses must reject before declaration lookup",
     );
 }
 
