@@ -37,7 +37,8 @@ maintenance.
 
 ## Evidence target
 
-A terminal-first lending application must exercise idempotent commands,
-allocation, secondary trees, exact point access, bounded paging, transaction
-failure, restart, backup, and restore through the same source functions over the
+A terminal-first lending application must exercise allocation, secondary trees,
+exact point access, bounded paging, transaction failure, interrupted-attempt
+classification without automatic retry, typed state refresh after a lost return
+value, restart, backup, and restore through the same source functions over the
 memory conformance model and one private native engine.

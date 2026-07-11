@@ -20,8 +20,10 @@ persistent store.
 
 Graph Report is the storeless acceptance program. Club Locker is an offline
 equipment-lending application with members, assets, unique tags, checkout/return
-history, idempotent commands, application-owned counters and secondary trees,
-bounded pages, restart, backup, and restore.
+history, application-owned counters and secondary trees, bounded pages, restart,
+backup, and restore. If a host loses a mutation result, it should classify the
+single interrupted attempt and require a typed state refresh; it must not replay
+the business action automatically.
 
 Club Locker should work from the terminal before TypeScript generation or UI
 framework work begins. The desktop shell exists to test the host seam, not to

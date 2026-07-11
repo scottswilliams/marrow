@@ -523,6 +523,15 @@ fn future_direction_keeps_beta_evolution_transactions_and_distribution_narrow() 
             && !local.contains("certified application bundle"),
         "local distribution direction must state the qualified beta evidence target"
     );
+    assert!(
+        local_prose.contains("typed state refresh")
+            && local_prose.contains("must not replay the business action automatically")
+            && durable_prose.contains("without automatic retry")
+            && durable_prose.contains("typed state refresh")
+            && !local_prose.contains("idempotent commands")
+            && !durable_prose.contains("idempotent commands"),
+        "future durable/local direction must classify lost mutation results without promising command replay"
+    );
 }
 
 #[test]
