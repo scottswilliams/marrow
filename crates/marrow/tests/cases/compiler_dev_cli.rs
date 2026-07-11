@@ -66,7 +66,7 @@ fn compiler_dev_text_warning_is_located_nonfatal_and_opt_in() {
     assert_eq!(dev.status.code(), Some(0), "{dev:?}");
     let stdout = String::from_utf8(dev.stdout).expect("stdout utf8");
     let stderr = String::from_utf8(dev.stderr).expect("stderr utf8");
-    assert!(stdout.contains("checked (1 warning)"), "{stdout}");
+    assert!(stdout.contains("checked (2 warnings)"), "{stdout}");
     assert!(
         stderr.contains("books.mw") && stderr.contains(": warning: compiler.dev.unknown_type:"),
         "{stderr}"
@@ -84,7 +84,7 @@ fn compiler_dev_json_and_jsonl_use_the_existing_success_diagnostic_envelopes() {
     assert_eq!(report["status"], serde_json::json!("ok"), "{report:#?}");
     assert_eq!(
         diagnostic_codes(&report),
-        ["compiler.dev.unknown_type"],
+        ["compiler.dev.unknown_type", "compiler.dev.unknown_type"],
         "{report:#?}"
     );
     let diagnostic = &report["diagnostics"][0];
@@ -101,15 +101,56 @@ fn compiler_dev_json_and_jsonl_use_the_existing_success_diagnostic_envelopes() {
     assert_eq!(jsonl.status.code(), Some(0), "{jsonl:?}");
     assert!(jsonl.stderr.is_empty(), "{jsonl:?}");
     let records = support::jsonl(jsonl.stdout);
-    assert_eq!(records.len(), 2, "{records:#?}");
+    assert_eq!(records.len(), 3, "{records:#?}");
     assert_eq!(
         records[0]["code"],
         serde_json::json!("compiler.dev.unknown_type")
     );
     assert_eq!(records[0]["severity"], serde_json::json!("warning"));
-    assert_eq!(records[1]["kind"], serde_json::json!("summary"));
-    assert_eq!(records[1]["status"], serde_json::json!("ok"));
-    assert_eq!(records[1]["diagnostics"], serde_json::json!(1));
+    assert_eq!(
+        records[1]["code"],
+        serde_json::json!("compiler.dev.unknown_type")
+    );
+    assert_eq!(records[1]["severity"], serde_json::json!("warning"));
+    assert_eq!(records[2]["kind"], serde_json::json!("summary"));
+    assert_eq!(records[2]["status"], serde_json::json!("ok"));
+    assert_eq!(records[2]["diagnostics"], serde_json::json!(2));
+}
+
+#[test]
+fn compiler_dev_audits_configured_test_files() {
+    let project = support::temp_project_uncommitted("compiler-dev-configured-tests", |root| {
+        support::write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        support::write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"ok\")\n",
+        );
+        support::write(
+            root,
+            "tests/keys_test.mw",
+            "fn copyKeys(xs: sequence[int])\n    const values = keys(xs)\n    const copied = values\n",
+        );
+    });
+
+    let output = run(&project, &["--compiler-dev", "--format", "json"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("json report");
+    let diagnostics = report["diagnostics"].as_array().expect("diagnostics");
+    assert_eq!(diagnostics.len(), 2, "{report:#?}");
+    assert!(
+        diagnostics.iter().all(|diagnostic| {
+            diagnostic["code"] == "compiler.dev.unknown_type"
+                && diagnostic["source_span"]["file"]
+                    .as_str()
+                    .is_some_and(|file| file.ends_with("tests/keys_test.mw"))
+        }),
+        "{report:#?}"
+    );
 }
 
 #[test]

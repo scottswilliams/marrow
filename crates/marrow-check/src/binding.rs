@@ -15,7 +15,7 @@
 //! definitions are recorded at their identifier tokens, including bindings whose
 //! AST node only carries an enclosing statement span.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use marrow_schema::Type as SchemaType;
@@ -25,7 +25,6 @@ use marrow_syntax::{
 };
 
 use crate::MarrowType;
-use crate::analysis::span_covers;
 use crate::annotation_refs::{
     TypeAnnotationBodies, type_ref_path_leaf_span, walk_declaration_type_refs,
 };
@@ -165,6 +164,37 @@ impl RenameTarget {
 #[derive(Debug, Clone, Default)]
 pub struct BindingIndex {
     bindings: Vec<Binding>,
+    positions: HashMap<PathBuf, FileOccurrenceIndex>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FileOccurrenceIndex {
+    // Disjoint, start-sorted winner intervals. Overlapping references are
+    // resolved while building the index, so every cursor lookup is one binary
+    // search and preserves the binding API's tightest-span/first-tie rule.
+    segments: Vec<OccurrenceSegment>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OccurrenceSegment {
+    start: usize,
+    end: usize,
+    binding: usize,
+    reference: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ActiveOccurrence {
+    width: usize,
+    ordinal: usize,
+    binding: usize,
+    reference: usize,
+}
+
+#[derive(Debug, Default)]
+struct OccurrenceEvents {
+    add: Vec<ActiveOccurrence>,
+    remove: Vec<ActiveOccurrence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,18 +421,10 @@ impl BindingIndex {
     }
 
     fn binding_reference_at(&self, file: &Path, offset: usize) -> Option<(&Binding, &SymbolRef)> {
-        let mut best: Option<(&Binding, &SymbolRef, usize)> = None;
-        for binding in &self.bindings {
-            for reference in &binding.references {
-                if reference.file == file && span_covers(reference.span, offset) {
-                    let width = span_width(reference.span);
-                    if best.is_none_or(|(_, _, current)| width < current) {
-                        best = Some((binding, reference, width));
-                    }
-                }
-            }
-        }
-        best.map(|(binding, reference, _)| (binding, reference))
+        let location = self.positions.get(file)?.at(offset)?;
+        let binding = self.bindings.get(location.binding)?;
+        let reference = binding.references.get(location.reference)?;
+        Some((binding, reference))
     }
 
     /// The binding `def` belongs to: the one whose definition site matches, falling
@@ -1043,9 +1065,111 @@ impl<'p> IndexBuilder<'p> {
     }
 
     fn finish(self) -> BindingIndex {
+        let positions = FileOccurrenceIndex::build_by_file(&self.bindings);
         BindingIndex {
             bindings: self.bindings,
+            positions,
         }
+    }
+}
+
+impl FileOccurrenceIndex {
+    /// Sweep each file's inclusive reference intervals into disjoint winner
+    /// segments. An end+1 removal event retains inclusive-end cursor behavior
+    /// without allocating one entry per source byte.
+    fn build_by_file(bindings: &[Binding]) -> HashMap<PathBuf, Self> {
+        let mut by_file: HashMap<PathBuf, BTreeMap<usize, OccurrenceEvents>> = HashMap::new();
+        let mut ordinal = 0usize;
+        for (binding, entry) in bindings.iter().enumerate() {
+            for (reference, symbol) in entry.references.iter().enumerate() {
+                let span = symbol.span;
+                if span.end_byte < span.start_byte {
+                    continue;
+                }
+                let occurrence = ActiveOccurrence {
+                    width: span_width(span),
+                    ordinal,
+                    binding,
+                    reference,
+                };
+                ordinal = ordinal.saturating_add(1);
+                let events = by_file.entry(symbol.file.clone()).or_default();
+                events
+                    .entry(span.start_byte)
+                    .or_default()
+                    .add
+                    .push(occurrence);
+                if let Some(after_end) = span.end_byte.checked_add(1) {
+                    events.entry(after_end).or_default().remove.push(occurrence);
+                }
+            }
+        }
+        by_file
+            .into_iter()
+            .map(|(file, events)| (file, Self::from_events(events)))
+            .collect()
+    }
+
+    fn from_events(events: BTreeMap<usize, OccurrenceEvents>) -> Self {
+        let mut active: BTreeSet<ActiveOccurrence> = BTreeSet::new();
+        let mut segments = Vec::new();
+        let mut previous = None;
+        for (position, events) in events {
+            if let Some(start) = previous
+                && start < position
+                && let Some(winner) = active.first().copied()
+            {
+                Self::push_segment(
+                    &mut segments,
+                    OccurrenceSegment {
+                        start,
+                        end: position - 1,
+                        binding: winner.binding,
+                        reference: winner.reference,
+                    },
+                );
+            }
+            for occurrence in events.remove {
+                active.remove(&occurrence);
+            }
+            active.extend(events.add);
+            previous = Some(position);
+        }
+        if let Some(start) = previous
+            && let Some(winner) = active.first().copied()
+        {
+            Self::push_segment(
+                &mut segments,
+                OccurrenceSegment {
+                    start,
+                    end: usize::MAX,
+                    binding: winner.binding,
+                    reference: winner.reference,
+                },
+            );
+        }
+        Self { segments }
+    }
+
+    fn push_segment(segments: &mut Vec<OccurrenceSegment>, next: OccurrenceSegment) {
+        if let Some(previous) = segments.last_mut()
+            && previous.end.checked_add(1) == Some(next.start)
+            && previous.binding == next.binding
+            && previous.reference == next.reference
+        {
+            previous.end = next.end;
+            return;
+        }
+        segments.push(next);
+    }
+
+    fn at(&self, offset: usize) -> Option<OccurrenceSegment> {
+        let index = self
+            .segments
+            .partition_point(|segment| segment.start <= offset)
+            .checked_sub(1)?;
+        let segment = self.segments[index];
+        (offset <= segment.end).then_some(segment)
     }
 }
 
@@ -1926,4 +2050,74 @@ fn canonical_evolve_rename(from: &str, to: &str) -> Option<String> {
     formatted
         .find("evolve\n")
         .map(|start| formatted[start..].to_string())
+}
+
+#[cfg(test)]
+mod occurrence_index_tests {
+    use super::*;
+
+    fn symbol(file: &Path, start: usize, end: usize, kind: SymbolKind) -> SymbolRef {
+        SymbolRef {
+            file: file.to_path_buf(),
+            span: SourceSpan {
+                start_byte: start,
+                end_byte: end,
+                line: 1,
+                column: start as u32 + 1,
+            },
+            kind,
+        }
+    }
+
+    fn binding(definition: SymbolRef, references: Vec<SymbolRef>) -> Binding {
+        Binding {
+            definition,
+            references,
+            safety: RenameSafety::SourceOnly,
+            rename_target: None,
+            parameter: None,
+        }
+    }
+
+    #[test]
+    fn occurrence_segments_preserve_tightest_first_and_inclusive_lookup() {
+        let file = Path::new("src/m.mw");
+        let broad = symbol(file, 2, 12, SymbolKind::Function);
+        let first_equal = symbol(file, 5, 8, SymbolKind::Local);
+        let second_equal = symbol(file, 5, 8, SymbolKind::Param);
+        let point = symbol(file, 7, 7, SymbolKind::Field);
+        let bindings = vec![
+            binding(broad.clone(), vec![broad]),
+            binding(first_equal.clone(), vec![first_equal]),
+            binding(second_equal.clone(), vec![second_equal]),
+            binding(point.clone(), vec![point]),
+        ];
+        let index = BindingIndex {
+            positions: FileOccurrenceIndex::build_by_file(&bindings),
+            bindings,
+        };
+
+        assert!(index.binding_reference_at(file, 1).is_none());
+        assert_eq!(
+            index.binding_reference_at(file, 2).unwrap().1.kind,
+            SymbolKind::Function,
+        );
+        assert_eq!(
+            index.binding_reference_at(file, 5).unwrap().1.kind,
+            SymbolKind::Local,
+        );
+        assert_eq!(
+            index.binding_reference_at(file, 7).unwrap().1.kind,
+            SymbolKind::Field,
+        );
+        assert_eq!(
+            index.binding_reference_at(file, 8).unwrap().1.kind,
+            SymbolKind::Local,
+        );
+        assert_eq!(
+            index.binding_reference_at(file, 12).unwrap().1.kind,
+            SymbolKind::Function,
+        );
+        assert!(index.binding_reference_at(file, 13).is_none());
+    }
 }

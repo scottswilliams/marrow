@@ -34,9 +34,6 @@ pub(crate) use cursor::{
     span_covers,
 };
 pub use cursor::{scope_at, type_at};
-pub use internal_type_audit::{
-    InternalTypeIssue, internal_type_issue_diagnostics, internal_type_issues,
-};
 
 pub const ANALYSIS_GENERATION_PROFILE_VERSION: &str = "analysis.generation.v1";
 
@@ -497,6 +494,50 @@ pub fn analyze_project(
     accepted: Option<&marrow_catalog::CatalogMetadata>,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
+    analyze_project_inner(
+        project_root,
+        config,
+        sources,
+        accepted,
+        lock,
+        CompilerDevAudit::Disabled,
+    )
+}
+
+/// Analyze a project and append compiler-maintainer diagnostics for unresolved
+/// recovery types. This is an internal CLI seam, not an end-user analysis mode.
+#[doc(hidden)]
+pub fn analyze_project_with_compiler_dev_audit(
+    project_root: &Path,
+    config: &ProjectConfig,
+    sources: &ProjectSources,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
+    lock: Option<&marrow_catalog::CatalogLock>,
+) -> Result<AnalysisSnapshot, DiscoverError> {
+    analyze_project_inner(
+        project_root,
+        config,
+        sources,
+        accepted,
+        lock,
+        CompilerDevAudit::UnknownType,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompilerDevAudit {
+    Disabled,
+    UnknownType,
+}
+
+fn analyze_project_inner(
+    project_root: &Path,
+    config: &ProjectConfig,
+    sources: &ProjectSources,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
+    lock: Option<&marrow_catalog::CatalogLock>,
+    compiler_dev_audit: CompilerDevAudit,
+) -> Result<AnalysisSnapshot, DiscoverError> {
     let mut snapshot = analyze_source_project(project_root, config, sources, accepted, lock)?;
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let test_sources = cached_project_sources(&snapshot, sources);
@@ -518,6 +559,26 @@ pub fn analyze_project(
     snapshot.files.extend(tests.files);
     snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
     snapshot.files.dedup_by(|a, b| a.path == b.path);
+    if compiler_dev_audit == CompilerDevAudit::UnknownType {
+        let diagnostics = internal_type_audit::internal_type_issue_diagnostics(&snapshot);
+        if !diagnostics.is_empty() {
+            snapshot.report.diagnostics.extend(diagnostics);
+            snapshot.report.diagnostics.sort_by(|left, right| {
+                (
+                    &left.file,
+                    left.span.start_byte,
+                    left.span.end_byte,
+                    left.code,
+                )
+                    .cmp(&(
+                        &right.file,
+                        right.span.start_byte,
+                        right.span.end_byte,
+                        right.code,
+                    ))
+            });
+        }
+    }
     snapshot.program.modules = source_modules;
     snapshot.program.facts = source_facts;
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);

@@ -3,6 +3,7 @@
 //! routes each statement kind to its operator, range, condition, and saved-access
 //! checks.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -13,8 +14,9 @@ use crate::diagnostics::{DiagnosticAnchor, UninitializedVarKind};
 use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
-    assignment_target_is_error_code, bind, infer_assignment_target_type_with_read_scope,
-    infer_collection_subject_type_with_read_scope, infer_type_with_read_scope,
+    RecoveryTrace, RecoveryTypeSite, assignment_target_is_error_code, bind,
+    infer_assignment_target_type_with_read_scope, infer_collection_subject_type_with_read_scope,
+    infer_type_with_read_scope, infer_type_with_read_scope_and_recovery_trace,
     local_binding_with_read_scope, reject_saved_access_with_suggested_index,
 };
 use crate::presence::{FlowCtx, Narrowing, ReadScope};
@@ -71,6 +73,50 @@ pub(crate) fn check_function_types(
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    check_function_types_inner(
+        program,
+        file,
+        function,
+        module_constants,
+        aliases,
+        diagnostics,
+        RecoveryTrace::Disabled,
+    );
+}
+
+/// Re-run the production function type walk with a recovery observer. The
+/// compiler-development audit uses the same statement scopes and inference
+/// recursion as checking, while ordinary checking carries no trace storage.
+pub(crate) fn trace_function_recovery_types(
+    program: &CheckedProgram,
+    file: &Path,
+    function: &marrow_syntax::FunctionDecl,
+    module_constants: &HashMap<String, MarrowType>,
+    aliases: &HashMap<String, Vec<String>>,
+) -> Vec<RecoveryTypeSite> {
+    let sites = RefCell::new(Vec::new());
+    check_function_types_inner(
+        program,
+        file,
+        function,
+        module_constants,
+        aliases,
+        &mut Vec::new(),
+        RecoveryTrace::Enabled(&sites),
+    );
+    sites.into_inner()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_function_types_inner(
+    program: &CheckedProgram,
+    file: &Path,
+    function: &marrow_syntax::FunctionDecl,
+    module_constants: &HashMap<String, MarrowType>,
+    aliases: &HashMap<String, Vec<String>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    recovery_trace: RecoveryTrace<'_>,
+) {
     // Module constants overlaid with the parameter list; a parameter shadows a
     // like-named constant.
     let mut base = module_constants.clone();
@@ -112,6 +158,7 @@ pub(crate) fn check_function_types(
             return_type: &return_type,
             aliases,
             transform_old: None,
+            recovery_trace,
         },
         &function.body,
         &mut scope,
@@ -320,6 +367,7 @@ pub(crate) fn check_block_types(
             return_type,
             aliases,
             transform_old: None,
+            recovery_trace: RecoveryTrace::Disabled,
         },
         block,
         scope,
@@ -377,6 +425,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
             return_type,
             aliases,
             transform_old,
+            recovery_trace: RecoveryTrace::Disabled,
         },
         block,
         scope,
@@ -394,6 +443,7 @@ struct BlockTypeContext<'a> {
     return_type: &'a MarrowType,
     aliases: &'a HashMap<String, Vec<String>>,
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    recovery_trace: RecoveryTrace<'a>,
 }
 
 fn check_block_types_with_read_scope(
@@ -448,6 +498,7 @@ fn check_statement_types(
         const_ints,
         aliases: context.aliases,
         transform_old: context.transform_old,
+        recovery_trace: context.recovery_trace,
         diagnostics,
         required_fields,
         narrowing,
@@ -469,6 +520,7 @@ struct StatementCheck<'a> {
     const_ints: &'a mut ConstIntScope,
     aliases: &'a HashMap<String, Vec<String>>,
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    recovery_trace: RecoveryTrace<'a>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
     required_fields: &'a mut RequiredFieldAssignments,
     narrowing: &'a mut Narrowing,
@@ -546,7 +598,7 @@ impl StatementCheck<'_> {
     }
 
     fn infer(&mut self, expr: &marrow_syntax::Expression) -> MarrowType {
-        infer_type_with_read_scope(
+        infer_type_with_read_scope_and_recovery_trace(
             self.program,
             expr,
             self.scope,
@@ -555,6 +607,7 @@ impl StatementCheck<'_> {
             self.diagnostics,
             self.const_ints,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
         )
     }
 
@@ -666,6 +719,7 @@ impl StatementCheck<'_> {
                 return_type: self.return_type,
                 aliases: self.aliases,
                 transform_old: self.transform_old,
+                recovery_trace: self.recovery_trace,
             },
             block,
             self.scope,
@@ -685,6 +739,7 @@ impl StatementCheck<'_> {
                 return_type: self.return_type,
                 aliases: self.aliases,
                 transform_old: self.transform_old,
+                recovery_trace: self.recovery_trace,
             },
             block,
             self.scope,

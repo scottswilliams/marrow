@@ -1925,6 +1925,32 @@ pub enum MarrowType {
 }
 
 impl MarrowType {
+    /// Whether this type still contains compiler-recovery `Unknown`, including
+    /// inside a structural value. Explicit dynamic and diagnosed poison remain
+    /// distinct states and do not satisfy this predicate.
+    pub(crate) fn contains_recovery_unknown(&self) -> bool {
+        match self {
+            MarrowType::Unknown => true,
+            MarrowType::Sequence(element) | MarrowType::Optional(element) => {
+                element.contains_recovery_unknown()
+            }
+            MarrowType::LocalTree { keys, value } => {
+                keys.iter().any(MarrowType::contains_recovery_unknown)
+                    || value.contains_recovery_unknown()
+            }
+            MarrowType::Primitive(_)
+            | MarrowType::Error
+            | MarrowType::Resource(_)
+            | MarrowType::GroupEntry { .. }
+            | MarrowType::Identity(_)
+            | MarrowType::Enum(_)
+            | MarrowType::Absent
+            | MarrowType::Invalid
+            | MarrowType::Dynamic
+            | MarrowType::NoValue => false,
+        }
+    }
+
     /// Whether this type contains diagnosed poison at any structural depth.
     /// Containers retain their own top-level disposition; this inspection only
     /// answers whether a dependent expression must propagate an existing fault.
@@ -2061,6 +2087,29 @@ mod recursive_poison_tests {
 
         for ty in cases {
             assert!(!ty.contains_invalid(), "{ty:?}");
+        }
+    }
+
+    #[test]
+    fn recursive_recovery_finds_unknown_without_reclassifying_other_states() {
+        for ty in [
+            MarrowType::Unknown,
+            MarrowType::Sequence(Box::new(MarrowType::Unknown)),
+            MarrowType::Optional(Box::new(MarrowType::Unknown)),
+            MarrowType::LocalTree {
+                keys: vec![int_type()],
+                value: Box::new(MarrowType::Unknown),
+            },
+        ] {
+            assert!(ty.contains_recovery_unknown(), "{ty:?}");
+        }
+        for ty in [
+            MarrowType::Dynamic,
+            MarrowType::Invalid,
+            MarrowType::NoValue,
+            MarrowType::Sequence(Box::new(MarrowType::Dynamic)),
+        ] {
+            assert!(!ty.contains_recovery_unknown(), "{ty:?}");
         }
     }
 }

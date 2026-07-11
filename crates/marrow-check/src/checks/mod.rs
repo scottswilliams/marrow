@@ -40,4 +40,5 @@ pub(crate) use saved_keys::{
 };
 pub(crate) use statements::{
     TransformBlockTypeCheck, catch_frame, check_block_types, check_transform_block_types,
+    trace_function_recovery_types,
 };

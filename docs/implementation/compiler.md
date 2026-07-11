@@ -64,17 +64,24 @@ the nominal declaration identities needed to render module-qualified types.
 
 `marrow check --compiler-dev <projectdir>` enables an implementation-maintainer
 audit after an otherwise error-free project analysis. It reports
-`compiler.dev.unknown_type` as a non-fatal warning when a representative source
-position has an unresolved-recovery `MarrowType::Unknown` state, either in the
-canonical hover fact or in its type fallback. Explicit source `unknown` values,
-no-return calls, and diagnosed invalid expressions are outside the audit.
+`compiler.dev.unknown_type` as a non-fatal warning when the production function
+type walk leaves a value expression at an unresolved-recovery
+`MarrowType::Unknown` state. The trace records both an originating expression and
+later expressions that propagate the same unresolved type. Explicit source
+`unknown` values, no-return calls, diagnosed invalid expressions, and saved
+addresses consumed as non-value builtin or traversal subjects are outside the
+audit.
 
 The option is intentionally omitted from command help and is not part of the
 ordinary project-check contract. Without it, the audit is not invoked and
-ordinary output is unchanged. The audit tokenizes each analyzed file once and
-shares that cache with binding and hover classification. Snapshots containing
-user errors suppress the audit because recovery types are expected after a
-failed check.
+ordinary output is unchanged. The audit runs while the checked program still
+contains configured test modules, then the analysis snapshot restores its normal
+source-only program. It reuses the checker's statement scopes and recursive
+inference, tokenizes each analyzed file once, and asks only the higher-precedence
+canonical hover owners for actual recovery sites. Binding positions and common
+cursor-token/callable lookups use indexed access rather than repeated
+project-wide scans. Snapshots containing source or configured-test errors
+suppress the audit because recovery types are expected after a failed check.
 
 ## Current durable identity
 

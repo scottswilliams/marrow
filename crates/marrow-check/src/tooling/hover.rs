@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_catalog::CatalogEntryKind;
@@ -46,7 +47,7 @@ impl SourceHoverFact {
     pub(crate) fn contains_recovery_unknown(&self) -> bool {
         match self {
             Self::Callable(fact) => callable_contains_recovery_unknown(fact),
-            Self::Type(fact) => type_contains_recovery_unknown(&fact.ty),
+            Self::Type(fact) => fact.ty.contains_recovery_unknown(),
             Self::ModulePath(_)
             | Self::StoreRoot(_)
             | Self::Schema(_)
@@ -72,43 +73,21 @@ fn callable_contains_recovery_unknown(fact: &SourceCallableHoverFact) -> bool {
             function
                 .params
                 .iter()
-                .any(|param| type_contains_recovery_unknown(&param.ty))
+                .any(|param| param.ty.contains_recovery_unknown())
                 || function
                     .return_type
                     .as_ref()
-                    .is_some_and(type_contains_recovery_unknown)
+                    .is_some_and(MarrowType::contains_recovery_unknown)
         }
-        SourceCallableHoverFact::Parameter(param) => type_contains_recovery_unknown(&param.ty),
-        SourceCallableHoverFact::ModuleConst { ty, .. } => {
-            ty.as_ref().is_some_and(type_contains_recovery_unknown)
-        }
+        SourceCallableHoverFact::Parameter(param) => param.ty.contains_recovery_unknown(),
+        SourceCallableHoverFact::ModuleConst { ty, .. } => ty
+            .as_ref()
+            .is_some_and(MarrowType::contains_recovery_unknown),
     }
 }
 
 fn callable_shape_contains_recovery_unknown(shape: &CallableValueShape) -> bool {
-    matches!(shape, CallableValueShape::Type(ty) if type_contains_recovery_unknown(ty))
-}
-
-pub(crate) fn type_contains_recovery_unknown(ty: &MarrowType) -> bool {
-    match ty {
-        MarrowType::Unknown => true,
-        MarrowType::Sequence(element) | MarrowType::Optional(element) => {
-            type_contains_recovery_unknown(element)
-        }
-        MarrowType::LocalTree { keys, value } => {
-            keys.iter().any(type_contains_recovery_unknown) || type_contains_recovery_unknown(value)
-        }
-        MarrowType::Primitive(_)
-        | MarrowType::Error
-        | MarrowType::Resource(_)
-        | MarrowType::GroupEntry { .. }
-        | MarrowType::Identity(_)
-        | MarrowType::Enum(_)
-        | MarrowType::Absent
-        | MarrowType::Invalid
-        | MarrowType::Dynamic
-        | MarrowType::NoValue => false,
-    }
+    matches!(shape, CallableValueShape::Type(ty) if ty.contains_recovery_unknown())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,13 +303,25 @@ pub enum StoreRootHoverMember {
 pub(crate) struct PrelexedSourceHover<'a> {
     lexed: &'a LexedSource,
     callable_contexts: Vec<CallableCalleeContext>,
+    callable_context_by_span: HashMap<(usize, usize), usize>,
 }
 
 impl<'a> PrelexedSourceHover<'a> {
     pub(crate) fn new(analyzed: &AnalyzedFile, lexed: &'a LexedSource) -> Self {
+        let callable_contexts = callable_callee_contexts(&analyzed.source, lexed, &analyzed.parsed);
+        let mut callable_context_by_span = HashMap::new();
+        for (index, context) in callable_contexts.iter().enumerate() {
+            callable_context_by_span
+                .entry((
+                    context.callee_leaf_span.start_byte,
+                    context.callee_leaf_span.end_byte,
+                ))
+                .or_insert(index);
+        }
         Self {
             lexed,
-            callable_contexts: callable_callee_contexts(&analyzed.source, lexed, &analyzed.parsed),
+            callable_contexts,
+            callable_context_by_span,
         }
     }
 }
@@ -358,6 +349,24 @@ pub(crate) fn source_hover_fact_at_prelexed(
     prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
 ) -> Option<SourceHoverFact> {
+    source_non_type_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset).or_else(
+        || {
+            source_type_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
+                .map(SourceHoverFact::Type)
+        },
+    )
+}
+
+/// Return the canonical higher-precedence hover fact before generic expression
+/// type fallback. The compiler-development recovery trace already owns the
+/// inferred type, so it uses this seam to avoid walking the AST a second time.
+pub(crate) fn source_non_type_hover_fact_at_prelexed(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    analyzed: &AnalyzedFile,
+    prelexed: &PrelexedSourceHover<'_>,
+    offset: usize,
+) -> Option<SourceHoverFact> {
     source_callable_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
         .map(SourceHoverFact::Callable)
         .or_else(|| {
@@ -379,10 +388,6 @@ pub(crate) fn source_hover_fact_at_prelexed(
         .or_else(|| {
             source_operator_hover_fact_at_prelexed(snapshot, analyzed, prelexed, offset)
                 .map(SourceHoverFact::Operator)
-        })
-        .or_else(|| {
-            source_type_hover_fact_at_prelexed(snapshot, index, analyzed, prelexed, offset)
-                .map(SourceHoverFact::Type)
         })
 }
 
@@ -553,10 +558,8 @@ fn source_operator_hover_fact_at_prelexed(
     offset: usize,
 ) -> Option<SourceOperatorHoverFact> {
     let tokens = &prelexed.lexed.tokens;
-    let (index, token) = tokens
-        .iter()
-        .enumerate()
-        .find(|(_, token)| token.span.start_byte <= offset && offset < token.span.end_byte)?;
+    let index = token_index_at(tokens, offset)?;
+    let token = &tokens[index];
     crate::type_at(&snapshot.program, &analyzed.path, &analyzed.parsed, offset)?;
     if is_operator_keyword_non_expression(tokens, index) {
         return None;
@@ -570,10 +573,14 @@ fn intrinsic_source_callable_hover_fact_at_prelexed(
     prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
 ) -> Option<SourceCallableHoverFact> {
+    let token = &prelexed.lexed.tokens[token_index_at(&prelexed.lexed.tokens, offset)?];
+    let index = *prelexed
+        .callable_context_by_span
+        .get(&(token.span.start_byte, token.span.end_byte))?;
     prelexed
         .callable_contexts
-        .iter()
-        .find(|context| {
+        .get(index)
+        .filter(|context| {
             offset_in_name(
                 context.callee_leaf_span.start_byte,
                 context.callee_leaf_span.end_byte,
@@ -871,10 +878,10 @@ impl ModulePathContext {
 }
 
 fn module_path_at(source: &str, tokens: &[Token], offset: usize) -> Option<ModulePathAt> {
-    let index = tokens.iter().position(|token| {
-        is_module_path_segment(token.kind)
-            && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
-    })?;
+    let index = token_index_at(tokens, offset)?;
+    if !is_module_path_segment(tokens[index].kind) {
+        return None;
+    }
 
     let mut start = index;
     while start >= 2
@@ -2055,10 +2062,11 @@ fn parameter_use_name<'a>(
     if !span_covers(function.body.span, offset) {
         return None;
     }
-    let (index, token) = tokens.iter().enumerate().find(|(_, token)| {
-        token.kind == TokenKind::Identifier
-            && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
-    })?;
+    let index = token_index_at(tokens, offset)?;
+    let token = &tokens[index];
+    if token.kind != TokenKind::Identifier {
+        return None;
+    }
     let (previous, next) = significant_neighbors(tokens, index);
     if previous.is_some_and(|kind| {
         matches!(
@@ -2131,6 +2139,13 @@ fn offset_is_on_last_identifier_half_open(
 
 fn offset_in_name(start: usize, end: usize, offset: usize) -> bool {
     start <= offset && offset < end
+}
+
+fn token_index_at(tokens: &[Token], offset: usize) -> Option<usize> {
+    let index = tokens.partition_point(|token| token.span.end_byte <= offset);
+    tokens.get(index).and_then(|token| {
+        (token.span.start_byte <= offset && offset < token.span.end_byte).then_some(index)
+    })
 }
 
 fn declaration_docs<'a>(source: &'a SourceFile, symbol: &SymbolRef) -> Option<&'a [String]> {
@@ -2368,5 +2383,18 @@ mod recovery_tests {
             docs: Vec::new(),
         });
         assert!(!poison.contains_recovery_unknown());
+    }
+
+    #[test]
+    fn token_index_matches_first_half_open_token_at_every_source_byte() {
+        let source = "module m\n\nfn f(value: int)\n    print($\"value {value}\") # note\n";
+        let lexed = lex_source(source);
+        for offset in 0..source.len() {
+            let expected = lexed
+                .tokens
+                .iter()
+                .position(|token| token.span.start_byte <= offset && offset < token.span.end_byte);
+            assert_eq!(token_index_at(&lexed.tokens, offset), expected, "{offset}");
+        }
     }
 }

@@ -242,6 +242,36 @@ fn check_module_report_at(name: &str, relative: &str, src: &str) -> CheckReport 
 /// absolute paths in the given order, so a test can position into the buffer it wrote.
 /// This is the single owner of the write-then-overlay setup the tooling lookups use.
 pub fn analyze_overlay(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot, Vec<PathBuf>) {
+    analyze_overlay_with(name, files, analyze_project)
+}
+
+/// The compiler-maintainer counterpart to [`analyze_overlay`]. It exercises the
+/// hidden production analysis seam and returns any internal audit diagnostics in
+/// the snapshot report.
+pub fn analyze_overlay_compiler_dev(
+    name: &str,
+    files: &[(&str, &str)],
+) -> (AnalysisSnapshot, Vec<PathBuf>) {
+    analyze_overlay_with(
+        name,
+        files,
+        marrow_check::analyze_project_with_compiler_dev_audit,
+    )
+}
+
+type AnalyzeProjectFn = fn(
+    &Path,
+    &ProjectConfig,
+    &ProjectSources,
+    Option<&marrow_catalog::CatalogMetadata>,
+    Option<&marrow_catalog::CatalogLock>,
+) -> Result<AnalysisSnapshot, marrow_project::DiscoverError>;
+
+fn analyze_overlay_with(
+    name: &str,
+    files: &[(&str, &str)],
+    analyze: AnalyzeProjectFn,
+) -> (AnalysisSnapshot, Vec<PathBuf>) {
     let root = temp_root(name);
     let mut sources = ProjectSources::new();
     let mut paths = Vec::new();
@@ -251,7 +281,7 @@ pub fn analyze_overlay(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot,
         sources.insert(&path, *source);
         paths.push(path);
     }
-    let snapshot = analyze_project(&root, &config(), &sources, None, None).expect("analyze");
+    let snapshot = analyze(&root, &config(), &sources, None, None).expect("analyze");
     (snapshot, paths)
 }
 

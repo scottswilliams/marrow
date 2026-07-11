@@ -151,7 +151,11 @@ fn check_project_dir(
         Ok(authority) => authority,
         Err(error) => return crate::project_io_exit(dir, error, format),
     };
-    let mut snapshot = match marrow_check::analyze_project(
+    let analyze = match compiler_dev {
+        CompilerDevMode::Disabled => marrow_check::analyze_project,
+        CompilerDevMode::UnknownTypeAudit => marrow_check::analyze_project_with_compiler_dev_audit,
+    };
+    let snapshot = match analyze(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
@@ -172,27 +176,6 @@ fn check_project_dir(
     if snapshot.report.has_errors() {
         crate::report_project(dir, &snapshot.report, format);
         return ExitCode::FAILURE;
-    }
-
-    if compiler_dev == CompilerDevMode::UnknownTypeAudit {
-        let diagnostics = marrow_check::internal_type_issue_diagnostics(&snapshot);
-        if !diagnostics.is_empty() {
-            snapshot.report.diagnostics.extend(diagnostics);
-            snapshot.report.diagnostics.sort_by(|left, right| {
-                (
-                    &left.file,
-                    left.span.start_byte,
-                    left.span.end_byte,
-                    left.code,
-                )
-                    .cmp(&(
-                        &right.file,
-                        right.span.start_byte,
-                        right.span.end_byte,
-                        right.code,
-                    ))
-            });
-        }
     }
 
     // A `--locked` gate over a project that has durable shape to lock but no committed lock at all

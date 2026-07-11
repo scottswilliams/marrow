@@ -436,7 +436,8 @@ fn internal_type_audit_reuses_one_snapshot_aligned_lexical_cache() {
     for owner in [
         "build_binding_index_from_lexed(",
         "PrelexedSourceHover::new(",
-        "source_hover_fact_at_prelexed(",
+        "source_non_type_hover_fact_at_prelexed(",
+        "trace_function_recovery_types(",
     ] {
         assert!(audit.contains(owner), "the audit must reuse `{owner}`");
     }
@@ -452,6 +453,16 @@ fn internal_type_audit_reuses_one_snapshot_aligned_lexical_cache() {
         assert!(
             !audit.contains(duplicate_owner),
             "the audit must not invoke re-lexing owner `{duplicate_owner}`",
+        );
+    }
+    for forbidden_sampler in [
+        "type_at(",
+        "is_representative_type_probe",
+        "for (token_index, token)",
+    ] {
+        assert!(
+            !audit.contains(forbidden_sampler),
+            "the audit must derive recovery sites from the checker walk, not `{forbidden_sampler}`",
         );
     }
 }

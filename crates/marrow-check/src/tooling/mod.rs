@@ -56,9 +56,7 @@ pub use data::{
     stamped_saved_data_child_views, stamped_saved_data_root_views_in_store, visit_data_records,
     walk_data,
 };
-pub(crate) use hover::{
-    PrelexedSourceHover, source_hover_fact_at_prelexed, type_contains_recovery_unknown,
-};
+pub(crate) use hover::{PrelexedSourceHover, source_non_type_hover_fact_at_prelexed};
 pub use hover::{
     SavedPlaceHoverFact, SavedPlaceHoverKeyParam, SourceCallableFunctionFact,
     SourceCallableHoverFact, SourceCallableParamFact, SourceEnumHoverFact,
@@ -97,7 +95,6 @@ pub use signatures::{
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     intrinsic_completion_callables, resource_constructor_signature, source_signature_help_fact_at,
 };
-pub(crate) use source_roots::source_saved_root_cursor_facts;
 pub use source_roots::{
     SourceSavedRootCursorFact, SourceSavedRootCursorKind, source_saved_root_cursor_fact_at,
 };

@@ -4,34 +4,31 @@
 use std::path::PathBuf;
 
 use marrow_codes::Code;
-use marrow_syntax::{Keyword, SourceSpan, Token, TokenKind, lex_source};
+use marrow_syntax::{Declaration, LexedSource, SourceSpan, TokenKind, lex_source};
 
 use crate::binding::build_binding_index_from_lexed;
-use crate::tooling::{
-    PrelexedSourceHover, SourceSavedRootCursorKind, source_hover_fact_at_prelexed,
-    source_saved_root_cursor_facts, type_contains_recovery_unknown,
-};
+use crate::checks::{file_prelude, trace_function_recovery_types};
+use crate::infer::{RecoveryExpressionSite, RecoveryTypeSite};
+use crate::tooling::{PrelexedSourceHover, source_non_type_hover_fact_at_prelexed};
 use crate::{
     AnalysisSnapshot, CheckDiagnostic, DiagnosticAnchor, DiagnosticPayload, InternalTypeIssueKind,
-    type_at,
 };
 
-/// One compiler-internal type hole found at a source position that would
-/// otherwise fall through to ordinary type hover.
+/// One compiler-internal type hole surfaced at a source hover position.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InternalTypeIssue {
-    pub file: PathBuf,
-    pub span: SourceSpan,
-    pub kind: InternalTypeIssueKind,
+struct InternalTypeIssue {
+    file: PathBuf,
+    span: SourceSpan,
+    kind: InternalTypeIssueKind,
 }
 
 /// Audit a clean analysis snapshot for unresolved recovery types.
 ///
 /// The audit is intentionally separate from ordinary checking. It uses the
-/// compiler's existing binding, hover-fact, and cursor-inference owners. A
+/// compiler's production statement/type walk and canonical hover precedence. A
 /// recovery type inside a richer callable fact is still an issue; explicit
 /// dynamic values, no-value results, and diagnosed poison are not.
-pub fn internal_type_issues(snapshot: &AnalysisSnapshot) -> Vec<InternalTypeIssue> {
+fn internal_type_issues(snapshot: &AnalysisSnapshot) -> Vec<InternalTypeIssue> {
     if snapshot.report.has_errors() {
         return Vec::new();
     }
@@ -44,61 +41,42 @@ pub fn internal_type_issues(snapshot: &AnalysisSnapshot) -> Vec<InternalTypeIssu
     let index = build_binding_index_from_lexed(snapshot, &lexed);
     let mut issues = Vec::new();
     for (analyzed, lexed) in snapshot.files.iter().zip(&lexed) {
-        // `AnalysisSnapshot` retains configured test parses after restoring the
-        // source-only checked program. Cursor inference has no checked module for
-        // those files, so skip them explicitly rather than presenting their lack
-        // of a program fact as an audited clean result.
-        if snapshot
-            .program
-            .module_index_by_file(&analyzed.path)
-            .is_none()
-        {
-            continue;
-        }
         let prelexed = PrelexedSourceHover::new(analyzed, lexed);
-        let non_value_root_spans = source_saved_root_cursor_facts(analyzed)
-            .into_iter()
-            .filter(|root| {
-                root.kind == SourceSavedRootCursorKind::Expression
-                    && snapshot
-                        .program
-                        .facts
-                        .store_by_root(&root.root)
-                        .is_some_and(|store| !store.identity_keys.is_empty())
+        issues.extend(callable_signature_issues(snapshot, analyzed, lexed));
+
+        let prelude = file_prelude(&snapshot.program, &analyzed.path, &analyzed.parsed);
+        let mut recovery_sites = analyzed
+            .parsed
+            .file
+            .declarations
+            .iter()
+            .filter_map(|declaration| match declaration {
+                Declaration::Function(function) => Some(trace_function_recovery_types(
+                    &snapshot.program,
+                    &analyzed.path,
+                    function,
+                    &prelude.module_constants,
+                    &prelude.aliases,
+                )),
+                _ => None,
             })
-            .map(|root| root.span)
+            .flatten()
             .collect::<Vec<_>>();
-        for (token_index, token) in lexed.tokens.iter().enumerate() {
-            if !is_representative_type_probe(&lexed.tokens, token_index) {
+        recovery_sites.sort_by_key(|site| recovery_site_order(site.expression));
+        recovery_sites
+            .dedup_by(|left, right| left.file == right.file && left.expression == right.expression);
+        for site in recovery_sites {
+            let Some((offset, span)) = recovery_site_probe(&site, lexed) else {
                 continue;
-            }
-            let offset = token.span.start_byte;
-            let hover =
-                source_hover_fact_at_prelexed(snapshot, &index, analyzed, &prelexed, offset);
-            let recovery_unknown = match hover {
-                Some(fact) => fact.contains_recovery_unknown(),
-                None => {
-                    // Keyed saved roots in expressions are cursor/navigation
-                    // facts, including collection-shaped loop subjects. Generic
-                    // value inference returns recovery for those non-value
-                    // positions by design.
-                    if non_value_root_spans
-                        .iter()
-                        .any(|span| span.start_byte <= offset && offset <= span.end_byte)
-                    {
-                        continue;
-                    }
-                    type_at(&snapshot.program, &analyzed.path, &analyzed.parsed, offset)
-                        .as_ref()
-                        .is_some_and(type_contains_recovery_unknown)
-                }
             };
-            if !recovery_unknown {
+            if source_non_type_hover_fact_at_prelexed(snapshot, &index, analyzed, &prelexed, offset)
+                .is_some_and(|fact| !fact.contains_recovery_unknown())
+            {
                 continue;
             }
             issues.push(InternalTypeIssue {
-                file: analyzed.path.clone(),
-                span: token.span,
+                file: site.file,
+                span,
                 kind: InternalTypeIssueKind::RecoveryUnknown,
             });
         }
@@ -123,10 +101,110 @@ pub fn internal_type_issues(snapshot: &AnalysisSnapshot) -> Vec<InternalTypeIssu
     issues
 }
 
+fn recovery_site_order(site: RecoveryExpressionSite) -> (u8, usize, usize, u32, u32) {
+    let (kind, span) = match site {
+        RecoveryExpressionSite::Name(span) => (0, span),
+        RecoveryExpressionSite::SavedRoot(span) => (1, span),
+        RecoveryExpressionSite::Call(span) => (2, span),
+        RecoveryExpressionSite::Field(span) => (3, span),
+    };
+    (kind, span.start_byte, span.end_byte, span.line, span.column)
+}
+
+fn callable_signature_issues(
+    snapshot: &AnalysisSnapshot,
+    analyzed: &crate::AnalyzedFile,
+    lexed: &LexedSource,
+) -> Vec<InternalTypeIssue> {
+    let Some(module) = snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == analyzed.path)
+    else {
+        return Vec::new();
+    };
+    let mut issues = Vec::new();
+    for function in &module.functions {
+        let recovery = function
+            .params
+            .iter()
+            .any(|param| param.ty.contains_recovery_unknown())
+            || function
+                .return_type
+                .as_ref()
+                .is_some_and(crate::MarrowType::contains_recovery_unknown);
+        if recovery
+            && let Some(span) =
+                declaration_name_span(&analyzed.source, lexed, function.span, &function.name)
+        {
+            issues.push(InternalTypeIssue {
+                file: analyzed.path.clone(),
+                span,
+                kind: InternalTypeIssueKind::RecoveryUnknown,
+            });
+        }
+    }
+    for constant in &module.constants {
+        if constant
+            .ty
+            .as_ref()
+            .is_some_and(crate::MarrowType::contains_recovery_unknown)
+            && let Some(span) =
+                declaration_name_span(&analyzed.source, lexed, constant.span, &constant.name)
+        {
+            issues.push(InternalTypeIssue {
+                file: analyzed.path.clone(),
+                span,
+                kind: InternalTypeIssueKind::RecoveryUnknown,
+            });
+        }
+    }
+    issues
+}
+
+fn declaration_name_span(
+    source: &str,
+    lexed: &LexedSource,
+    declaration: SourceSpan,
+    name: &str,
+) -> Option<SourceSpan> {
+    lexed.tokens.iter().find_map(|token| {
+        (token.kind == TokenKind::Identifier
+            && declaration.start_byte <= token.span.start_byte
+            && token.span.end_byte <= declaration.end_byte
+            && token.text(source) == name)
+            .then_some(token.span)
+    })
+}
+
+fn recovery_site_probe(
+    site: &RecoveryTypeSite,
+    lexed: &LexedSource,
+) -> Option<(usize, SourceSpan)> {
+    match site.expression {
+        RecoveryExpressionSite::Name(span) | RecoveryExpressionSite::Field(span) => {
+            Some((span.start_byte, span))
+        }
+        RecoveryExpressionSite::SavedRoot(span) => lexed.tokens.iter().find_map(|token| {
+            (token.kind == TokenKind::Identifier
+                && span.start_byte <= token.span.start_byte
+                && token.span.end_byte <= span.end_byte)
+                .then_some((token.span.start_byte, token.span))
+        }),
+        RecoveryExpressionSite::Call(span) => lexed.tokens.iter().rev().find_map(|token| {
+            (token.kind == TokenKind::RightParen
+                && span.start_byte <= token.span.start_byte
+                && token.span.end_byte == span.end_byte)
+                .then_some((span.end_byte, token.span))
+        }),
+    }
+}
+
 /// Convert internal type issues into the checker's canonical typed warning
 /// diagnostics. CLI transports render these through their existing project
 /// diagnostic paths.
-pub fn internal_type_issue_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<CheckDiagnostic> {
+pub(super) fn internal_type_issue_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<CheckDiagnostic> {
     let names = snapshot.program.decl_ids();
     internal_type_issues(snapshot)
         .into_iter()
@@ -141,80 +219,53 @@ pub fn internal_type_issue_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<Check
         .collect()
 }
 
-fn is_representative_type_probe(tokens: &[Token], index: usize) -> bool {
-    let kind = tokens[index].kind;
-    if matches!(
-        kind,
-        TokenKind::Identifier | TokenKind::Keyword(_) | TokenKind::RightParen
-    ) && next_significant_kind(tokens, index).is_some_and(|next| {
-        matches!(
-            next,
-            TokenKind::DoubleColon | TokenKind::Dot | TokenKind::QuestionDot | TokenKind::LeftParen
-        )
-    }) {
-        return false;
-    }
-    match kind {
-        TokenKind::Identifier
-        | TokenKind::Integer
-        | TokenKind::Decimal
-        | TokenKind::Duration
-        | TokenKind::String
-        | TokenKind::Bytes
-        | TokenKind::DotDot
-        | TokenKind::DotDotEqual
-        | TokenKind::EqualEqual
-        | TokenKind::BangEqual
-        | TokenKind::QuestionDot
-        | TokenKind::QuestionQuestion
-        | TokenKind::Less
-        | TokenKind::LessEqual
-        | TokenKind::Greater
-        | TokenKind::GreaterEqual
-        | TokenKind::Plus
-        | TokenKind::Minus
-        | TokenKind::Star
-        | TokenKind::Slash
-        | TokenKind::Percent
-        | TokenKind::PlusEqual
-        | TokenKind::MinusEqual
-        | TokenKind::StarEqual
-        | TokenKind::SlashEqual
-        | TokenKind::PercentEqual
-        | TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Absent)
-        | TokenKind::Keyword(Keyword::Not | Keyword::And | Keyword::Or | Keyword::Is) => true,
-        TokenKind::Keyword(keyword) => marrow_syntax::is_expression_callable_keyword(keyword),
-        TokenKind::RightParen => true,
-        TokenKind::InterpolationStart
-        | TokenKind::InterpolationText
-        | TokenKind::InterpolationExprStart
-        | TokenKind::InterpolationExprEnd
-        | TokenKind::InterpolationEnd
-        | TokenKind::Comment
-        | TokenKind::DocComment
-        | TokenKind::Indent
-        | TokenKind::Dedent
-        | TokenKind::Newline
-        | TokenKind::Eof
-        | TokenKind::LeftParen
-        | TokenKind::LeftBracket
-        | TokenKind::RightBracket
-        | TokenKind::Colon
-        | TokenKind::DoubleColon
-        | TokenKind::Comma
-        | TokenKind::Dot
-        | TokenKind::Equal
-        | TokenKind::Question
-        | TokenKind::Caret => false,
-    }
-}
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
 
-fn next_significant_kind(tokens: &[Token], index: usize) -> Option<TokenKind> {
-    tokens.get(index + 1..)?.iter().find_map(|token| {
-        (!matches!(
-            token.kind,
-            TokenKind::Comment | TokenKind::DocComment | TokenKind::Newline
-        ))
-        .then_some(token.kind)
-    })
+    use marrow_project::parse_config;
+
+    use super::*;
+    use crate::{MarrowType, ProjectSources, analyze_project};
+
+    struct TempProject(PathBuf);
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    #[test]
+    fn callable_signature_recovery_is_a_representative_audit_position() {
+        let root = std::env::temp_dir().join(format!(
+            "marrow-internal-type-audit-callable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos(),
+        ));
+        let project = TempProject(root);
+        std::fs::create_dir_all(project.0.join("src")).expect("create source root");
+        let source = "module m\n\nfn value(): int\n    return 1\n";
+        let source_path = project.0.join("src/m.mw");
+        std::fs::write(&source_path, source).expect("write source");
+        let config =
+            parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+                .expect("config");
+        let sources = ProjectSources::new().with(source_path, source);
+        let mut snapshot =
+            analyze_project(&project.0, &config, &sources, None, None).expect("analyze");
+        assert!(!snapshot.report.has_errors(), "{:#?}", snapshot.report);
+
+        snapshot.program.modules[0].functions[0].return_type =
+            Some(MarrowType::Sequence(Box::new(MarrowType::Unknown)));
+        let issues = internal_type_issues(&snapshot);
+        assert_eq!(issues.len(), 1, "{issues:#?}");
+        assert_eq!(
+            &source[issues[0].span.start_byte..issues[0].span.end_byte],
+            "value",
+        );
+    }
 }

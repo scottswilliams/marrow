@@ -21,7 +21,7 @@ fn rows(codes: &[Code]) -> String {
         .join("\n")
 }
 
-/// The internal fail-closed codes, in registry order, across every family.
+/// The internal codes, in registry order, across every family.
 fn internal() -> Vec<Code> {
     Code::ALL
         .iter()

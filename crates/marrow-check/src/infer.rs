@@ -1,7 +1,8 @@
 //! Expression type inference and the saved-path/field type resolution it walks.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
 use marrow_schema::{MemberPathResolution, Type};
@@ -245,6 +246,7 @@ fn infer_assignment_field_type(
             file,
             diagnostics,
             read_scope,
+            recovery_trace: RecoveryTrace::Disabled,
             context,
             position: ValuePosition::Value,
             optional_access: matches!(expr, Expression::OptionalField { .. }),
@@ -278,6 +280,73 @@ enum ValuePosition {
     CollectionSubject,
 }
 
+/// One value expression whose final inferred type still contains recovery
+/// `Unknown`. The projection retains only the AST-owned position needed to ask
+/// whether a higher-precedence hover owner masks the generic type hover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryTypeSite {
+    pub(crate) file: PathBuf,
+    pub(crate) expression: RecoveryExpressionSite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryExpressionSite {
+    Name(SourceSpan),
+    SavedRoot(SourceSpan),
+    Call(SourceSpan),
+    Field(SourceSpan),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RecoveryTrace<'a> {
+    Disabled,
+    Enabled(&'a RefCell<Vec<RecoveryTypeSite>>),
+}
+
+impl RecoveryTrace<'_> {
+    fn record(
+        self,
+        file: &Path,
+        expression: &marrow_syntax::Expression,
+        position: ValuePosition,
+        ty: &MarrowType,
+    ) {
+        if position != ValuePosition::Value || !ty.contains_recovery_unknown() {
+            return;
+        }
+        let RecoveryTrace::Enabled(sites) = self else {
+            return;
+        };
+        use marrow_syntax::Expression;
+        let expression = match expression {
+            Expression::Name {
+                segment_spans,
+                span,
+                ..
+            } => RecoveryExpressionSite::Name(segment_spans.last().copied().unwrap_or(*span)),
+            Expression::SavedRoot { span, .. } => RecoveryExpressionSite::SavedRoot(*span),
+            Expression::Call { span, .. } => RecoveryExpressionSite::Call(*span),
+            Expression::Field { name_span, .. } | Expression::OptionalField { name_span, .. } => {
+                RecoveryExpressionSite::Field(*name_span)
+            }
+            // Operator-shaped expressions are owned by operator hover, and any
+            // recovery operand is visited independently. Literal, absent, and
+            // interpolation expressions cannot originate a clean recovery type.
+            Expression::Literal { .. }
+            | Expression::Absent { .. }
+            | Expression::Unary { .. }
+            | Expression::Binary { .. }
+            | Expression::Range { .. }
+            | Expression::Interpolation { .. }
+            | Expression::Error { .. } => return,
+        };
+        sites.borrow_mut().push(RecoveryTypeSite {
+            file: file.to_path_buf(),
+            expression,
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn infer_type_with_read_scope(
     program: &CheckedProgram,
@@ -289,6 +358,31 @@ pub(crate) fn infer_type_with_read_scope(
     const_ints: &[HashMap<String, Option<i64>>],
     read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
+    infer_type_with_read_scope_and_recovery_trace(
+        program,
+        expr,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        const_ints,
+        read_scope,
+        RecoveryTrace::Disabled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_type_with_read_scope_and_recovery_trace(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    const_ints: &[HashMap<String, Option<i64>>],
+    read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
+) -> MarrowType {
     infer_value(
         program,
         expr,
@@ -299,6 +393,7 @@ pub(crate) fn infer_type_with_read_scope(
         file,
         diagnostics,
         read_scope,
+        recovery_trace,
     )
 }
 
@@ -318,6 +413,31 @@ pub(crate) fn infer_collection_subject_type_with_read_scope(
     diagnostics: &mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
+    infer_collection_subject_type_with_read_scope_and_recovery_trace(
+        program,
+        expr,
+        scope,
+        const_ints,
+        aliases,
+        file,
+        diagnostics,
+        read_scope,
+        RecoveryTrace::Disabled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_collection_subject_type_with_read_scope_and_recovery_trace(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
+) -> MarrowType {
     infer_value(
         program,
         expr,
@@ -328,6 +448,7 @@ pub(crate) fn infer_collection_subject_type_with_read_scope(
         file,
         diagnostics,
         read_scope,
+        recovery_trace,
     )
 }
 
@@ -342,6 +463,36 @@ fn infer_value(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
+) -> MarrowType {
+    let ty = infer_value_inner(
+        program,
+        expr,
+        position,
+        scope,
+        const_ints,
+        aliases,
+        file,
+        diagnostics,
+        read_scope,
+        recovery_trace,
+    );
+    recovery_trace.record(file, expr, position, &ty);
+    ty
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_value_inner(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    position: ValuePosition,
+    scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
     if reject_saved_access(program, expr, scope, file, diagnostics) {
@@ -371,7 +522,7 @@ fn infer_value(
                     }
                     marrow_syntax::InterpolationPart::Expr(expr) => {
                         let before = diagnostics.len();
-                        let ty = infer_type_with_read_scope(
+                        let ty = infer_type_with_read_scope_and_recovery_trace(
                             program,
                             expr,
                             scope,
@@ -380,6 +531,7 @@ fn infer_value(
                             diagnostics,
                             const_ints,
                             read_scope,
+                            recovery_trace,
                         );
                         if disposition(&ty) == TypeDisposition::Poisoned {
                             result_type = MarrowType::Invalid;
@@ -440,7 +592,7 @@ fn infer_value(
                 );
                 literal_type(marrow_syntax::LiteralKind::Integer)
             } else {
-                infer_type_with_read_scope(
+                infer_type_with_read_scope_and_recovery_trace(
                     program,
                     operand,
                     scope,
@@ -449,6 +601,7 @@ fn infer_value(
                     diagnostics,
                     const_ints,
                     read_scope,
+                    recovery_trace,
                 )
             };
             check_unary(&program.decl_ids(), *op, &operand, *span, file, diagnostics)
@@ -475,7 +628,7 @@ fn infer_value(
                 ));
                 return MarrowType::Invalid;
             }
-            let left_type = infer_type_with_read_scope(
+            let left_type = infer_type_with_read_scope_and_recovery_trace(
                 program,
                 left,
                 scope,
@@ -484,6 +637,7 @@ fn infer_value(
                 diagnostics,
                 const_ints,
                 read_scope,
+                recovery_trace,
             );
             // `is` is the enum-subtree predicate: its right is a member-path naming a
             // member or category, not a value, so it is resolved inside `check_is`
@@ -500,7 +654,7 @@ fn infer_value(
                     diagnostics,
                 });
             }
-            let right_type = infer_type_with_read_scope(
+            let right_type = infer_type_with_read_scope_and_recovery_trace(
                 program,
                 right,
                 scope,
@@ -509,6 +663,7 @@ fn infer_value(
                 diagnostics,
                 const_ints,
                 read_scope,
+                recovery_trace,
             );
             if matches!(
                 op,
@@ -561,7 +716,7 @@ fn infer_value(
             ..
         } => {
             let start_type = start.as_ref().map(|start| {
-                infer_type_with_read_scope(
+                infer_type_with_read_scope_and_recovery_trace(
                     program,
                     start,
                     scope,
@@ -570,10 +725,11 @@ fn infer_value(
                     diagnostics,
                     const_ints,
                     read_scope,
+                    recovery_trace,
                 )
             });
             let end_type = end.as_ref().map(|end| {
-                infer_type_with_read_scope(
+                infer_type_with_read_scope_and_recovery_trace(
                     program,
                     end,
                     scope,
@@ -582,10 +738,11 @@ fn infer_value(
                     diagnostics,
                     const_ints,
                     read_scope,
+                    recovery_trace,
                 )
             });
             if let Some(step) = step {
-                infer_type_with_read_scope(
+                infer_type_with_read_scope_and_recovery_trace(
                     program,
                     step,
                     scope,
@@ -594,6 +751,7 @@ fn infer_value(
                     diagnostics,
                     const_ints,
                     read_scope,
+                    recovery_trace,
                 );
             }
             if position == ValuePosition::Value {
@@ -626,7 +784,7 @@ fn infer_value(
             // (`^cubes(1).cells` in `^cubes(1).cells(x)`) is the valid descent target the
             // arguments complete, not a value-read that the partial-key gate may reject.
             if !is_bare_name(callee) {
-                let callee_type = infer_collection_subject_type_with_read_scope(
+                let callee_type = infer_collection_subject_type_with_read_scope_and_recovery_trace(
                     program,
                     callee,
                     scope,
@@ -635,6 +793,7 @@ fn infer_value(
                     file,
                     diagnostics,
                     read_scope,
+                    recovery_trace,
                 );
                 if callee_type.contains_invalid() {
                     return MarrowType::Invalid;
@@ -655,6 +814,7 @@ fn infer_value(
                     file,
                     diagnostics,
                     read_scope,
+                    recovery_trace,
                 });
                 arg_types.push(inferred.ty);
                 saved_range_types.push(inferred.saved_range);
@@ -757,6 +917,7 @@ fn infer_value(
             file,
             diagnostics,
             read_scope,
+            recovery_trace,
             context: FieldAccessContext::Read,
             position,
             optional_access: matches!(expr, Expression::OptionalField { .. }),
@@ -861,6 +1022,7 @@ struct FieldAccessInfer<'a, 'd> {
     file: &'a Path,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'a>,
+    recovery_trace: RecoveryTrace<'a>,
     context: FieldAccessContext,
     position: ValuePosition,
     /// The access was written `?.`. Off a maybe-present record this resolves the
@@ -894,7 +1056,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         return MarrowType::Invalid;
     }
     let base_type = match input.context {
-        FieldAccessContext::Read => infer_type_with_read_scope(
+        FieldAccessContext::Read => infer_type_with_read_scope_and_recovery_trace(
             input.program,
             input.base,
             input.scope,
@@ -903,6 +1065,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
             input.diagnostics,
             input.const_ints,
             input.read_scope,
+            input.recovery_trace,
         ),
         // The base of a write target is navigated, not itself written, so resolve it
         // silently: only the terminal field reports an undeclared member, leaving an
@@ -1122,6 +1285,7 @@ struct CallArgInfer<'a, 'd> {
     file: &'a Path,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'a>,
+    recovery_trace: RecoveryTrace<'a>,
 }
 
 struct InferredCallArg {
@@ -1162,6 +1326,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> InferredCallArg {
             input.file,
             input.diagnostics,
             input.read_scope,
+            input.recovery_trace,
         )
     {
         let ty = saved_range.representative_type();
@@ -1170,20 +1335,24 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> InferredCallArg {
             saved_range: Some(saved_range),
         };
     }
-    if input.arg_name.is_none() && callee_streams_collection_argument(input.callee, input.arg_index)
+    if input.arg_name.is_none()
+        && callee_takes_non_value_subject_argument(input.callee, input.arg_index)
     {
-        return InferredCallArg::plain(infer_collection_subject_type_with_read_scope(
-            input.program,
-            input.arg,
-            input.scope,
-            input.const_ints,
-            input.aliases,
-            input.file,
-            input.diagnostics,
-            input.read_scope,
-        ));
+        return InferredCallArg::plain(
+            infer_collection_subject_type_with_read_scope_and_recovery_trace(
+                input.program,
+                input.arg,
+                input.scope,
+                input.const_ints,
+                input.aliases,
+                input.file,
+                input.diagnostics,
+                input.read_scope,
+                input.recovery_trace,
+            ),
+        );
     }
-    InferredCallArg::plain(infer_type_with_read_scope(
+    InferredCallArg::plain(infer_type_with_read_scope_and_recovery_trace(
         input.program,
         input.arg,
         input.scope,
@@ -1192,6 +1361,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> InferredCallArg {
         input.diagnostics,
         input.const_ints,
         input.read_scope,
+        input.recovery_trace,
     ))
 }
 
@@ -1202,12 +1372,10 @@ fn callee_accepts_missing_index_suggestion(callee: &marrow_syntax::Expression) -
     )
 }
 
-/// Whether the `arg_index`-th positional argument of builtin `callee` accepts a saved
-/// subject streamed as a collection rather than read as a scalar. The builtin descriptor
-/// table is the sole owner of this argument shape: a parameter typed as a collection,
-/// saved path, or saved layer takes its subject in streamed position, so a partially keyed
-/// composite layer is inferred there instead of being rejected as a non-value.
-fn callee_streams_collection_argument(
+/// Whether the `arg_index`-th positional argument of builtin `callee` consumes a
+/// collection or saved address without materializing it as a scalar value. The
+/// builtin descriptor table is the sole owner of this argument shape.
+fn callee_takes_non_value_subject_argument(
     callee: &marrow_syntax::Expression,
     arg_index: usize,
 ) -> bool {
@@ -1224,6 +1392,7 @@ fn callee_streams_collection_argument(
                 CheckedBuiltinValueShape::Collection
                     | CheckedBuiltinValueShape::SavedPath
                     | CheckedBuiltinValueShape::SavedLayer
+                    | CheckedBuiltinValueShape::SavedRoot
             )
         })
     })
@@ -1239,10 +1408,11 @@ fn infer_saved_key_range_types(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
 ) -> Option<RangeTypeAggregate> {
     let range = marrow_syntax::range_expr(arg)?;
     let step = range.step.map(|step| {
-        infer_type_with_read_scope(
+        infer_type_with_read_scope_and_recovery_trace(
             program,
             step,
             scope,
@@ -1251,10 +1421,11 @@ fn infer_saved_key_range_types(
             diagnostics,
             const_ints,
             read_scope,
+            recovery_trace,
         )
     });
     let start = range.start.map(|expr| {
-        infer_type_with_read_scope(
+        infer_type_with_read_scope_and_recovery_trace(
             program,
             expr,
             scope,
@@ -1263,10 +1434,11 @@ fn infer_saved_key_range_types(
             diagnostics,
             const_ints,
             read_scope,
+            recovery_trace,
         )
     });
     let end = range.end.map(|expr| {
-        infer_type_with_read_scope(
+        infer_type_with_read_scope_and_recovery_trace(
             program,
             expr,
             scope,
@@ -1275,6 +1447,7 @@ fn infer_saved_key_range_types(
             diagnostics,
             const_ints,
             read_scope,
+            recovery_trace,
         )
     });
     Some(RangeTypeAggregate::new(start, end, step))

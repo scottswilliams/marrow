@@ -45,10 +45,9 @@ mod walk;
 pub use analysis::{
     ANALYSIS_GENERATION_PROFILE_VERSION, AnalysisCatalogGeneration, AnalysisConfigDigest,
     AnalysisGeneration, AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
-    InternalTypeIssue, SurfaceActionOperationAnalysis, SurfaceCreateOperationAnalysis,
-    SurfaceDeleteOperationAnalysis, SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis,
-    UseSite, UseSiteKind, analyze_project, internal_type_issue_diagnostics, internal_type_issues,
-    scope_at, type_at,
+    SurfaceActionOperationAnalysis, SurfaceCreateOperationAnalysis, SurfaceDeleteOperationAnalysis,
+    SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis, UseSite, UseSiteKind,
+    analyze_project, analyze_project_with_compiler_dev_audit, scope_at, type_at,
 };
 pub use binding::{
     BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SourceRenameError,
