@@ -1240,6 +1240,10 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         | FieldResolution::NoFields
         | FieldResolution::NonValueMember => MarrowType::Unknown,
         FieldResolution::InvalidBase => MarrowType::Invalid,
+        FieldResolution::ExplicitDynamicBase if wrap_optional => {
+            MarrowType::optional(MarrowType::Dynamic)
+        }
+        FieldResolution::ExplicitDynamicBase => MarrowType::Dynamic,
         FieldResolution::UnresolvedBase => MarrowType::Unknown,
     }
 }
@@ -2007,6 +2011,9 @@ enum FieldResolution {
     /// identity, sequence, or keyed map. A field read off it can never resolve, so
     /// it is a definite error rather than a deferred one.
     NoFields,
+    /// The source explicitly admitted a dynamic value, so a member projection
+    /// remains dynamic rather than becoming compiler-recovery Unknown.
+    ExplicitDynamicBase,
     UnresolvedBase,
 }
 
@@ -2127,11 +2134,11 @@ fn local_field_resolution(
             }
             other => other,
         },
-        // The empty optional has no inner record, while dynamic, no-value, and
-        // unresolved bases defer to their owning gates.
-        MarrowType::Absent | MarrowType::Dynamic | MarrowType::Unknown => {
-            FieldResolution::UnresolvedBase
-        }
+        // The empty optional has no inner record, while no-value and unresolved
+        // bases defer to their owning gates. Explicit dynamic preserves its
+        // provenance through the projection.
+        MarrowType::Dynamic => FieldResolution::ExplicitDynamicBase,
+        MarrowType::Absent | MarrowType::Unknown => FieldResolution::UnresolvedBase,
         MarrowType::NoValue => FieldResolution::UnresolvedBase,
     }
 }

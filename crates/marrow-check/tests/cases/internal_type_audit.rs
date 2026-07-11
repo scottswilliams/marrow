@@ -350,6 +350,33 @@ pub fn inspect(xs: sequence[int], value: unknown, id: int)
 }
 
 #[test]
+fn dynamic_field_reads_and_writes_preserve_explicit_dynamic_provenance() {
+    let source = "module m\n\nfn f(value: unknown)\n    const read = value.foo\n    var copy = value\n    copy.bar = 1\n";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-dynamic-fields",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+    assert!(
+        audit_diagnostics(&snapshot).is_empty(),
+        "{:#?}",
+        audit_diagnostics(&snapshot),
+    );
+
+    let index = build_binding_index(&snapshot);
+    for field in ["foo", "bar"] {
+        let offset = source.find(field).expect("field use");
+        assert!(
+            matches!(
+                source_hover_fact_at(&snapshot, &index, &paths[0], offset),
+                Some(SourceHoverFact::Type(ref fact)) if fact.ty == marrow_check::MarrowType::Dynamic
+            ),
+            "explicit dynamic field `{field}` must stay Dynamic internally",
+        );
+    }
+}
+
+#[test]
 fn audit_is_suppressed_for_a_snapshot_with_user_errors() {
     let source = "\
 module a
