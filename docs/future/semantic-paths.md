@@ -28,15 +28,28 @@ public, durable, wire, or accepted-authority boundary. Stable identities are not
 minted during check/build, derived from URLs or source order, or invented by a
 live store.
 
+The compiler also distinguishes an exact finite-value place from a keyed child
+branch. These are typed designations, not fetched proxies, local collections,
+serializable path values, or authority. General first-class and public generic
+path values are not required for the beta.
+
 ## Constraints
 
 - Stable identity provenance is an explicit reproducible source input.
+- The source-controlled identity ledger records provenance and continuity, not
+  a second schema, and opaque stable IDs do not appear in ordinary business
+  source.
 - Removed stable IDs are not silently reused.
 - Each conversion boundary has one typed owner.
 - The compiler never emits a physical key; the engine never interprets Marrow
   source meaning.
-- A rename may preserve one identity while a split, merge, retype, or retirement
-  requires an explicit supported transition or rejection.
+- A checked rename may preserve one identity and representation. Copy, split,
+  merge, retype, retirement, and ambiguous manual edits require a fresh identity,
+  an explicitly supported transition, or rejection.
+
+Identity continuity cannot establish that a maintainer has preserved human
+meaning. Reinterpreting unchanged retained bytes is a review error rather than
+a compiler theorem; an intentional new meaning receives a fresh identity.
 
 ## Evidence target
 

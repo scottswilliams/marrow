@@ -28,6 +28,11 @@ unverified universal compiler claim.
 - Verification has explicit time, depth, graph, function, and byte limits.
 - VM values, calls, closures, allocation, faults, and evaluation order have
   deterministic language behavior even if their physical representation changes.
+- Presence, exact mutation, transaction ownership, bounded traversal, continuation,
+  and effect laws settle through the complete acceptance corpus before their
+  instruction encodings or relevant retained-data structural encodings receive
+  compatibility promises. Operation and control laws are not folded into a
+  data-contract identity merely because the kernel enforces them.
 
 A compact bytecode and reference VM are the chosen direction for the beta.
 Native code generation, a JIT, optimizer program, stable binary package ABI,
@@ -38,4 +43,9 @@ and compiler self-hosting are not required.
 Storeless and durable acceptance programs must execute only after canonical
 decode and independent verification. Mutation corpora, deep/wide compiler
 workloads, closure/generic allocation measurements, and clean rebuilds must be
-available before the format receives a compatibility promise.
+available before the format receives a compatibility promise. Grammar and image
+work should be driven by the fixed whole-program experience corpus for Graph
+Report and Club Locker, with each implemented feature extending its executable
+slice. Before compatibility freezes, the complete valid and invalid programs,
+diagnostics, formatting, maintenance edits, and terminal/generated-host boundary
+must pass; an architecture-only vertical is not enough.

@@ -30,13 +30,44 @@ external interfaces, and authorization code. Compilation itself remains
 storeless. A separate lifecycle admits and binds an exact verified image to a
 particular store before durable execution.
 
+## Language experience
+
+Marrow should optimize for the shortest honest program. Domain values and
+ordinary functions should dominate source, while every visible durable
+construct should correspond to a real difference in presence, mutation,
+atomicity, work, failure, or authority. Compiler-derived identity, effect, and
+lifecycle facts belong in diagnostics, hover information, and change review
+rather than being copied into business signatures.
+
+A first project should support a complete storeless check, format, test, build,
+and run journey. Adding retained state should add typed durable declarations,
+exact operations, one transaction boundary, and bounded traversal without also
+adding a schema duplicate, serializer, repository, connection, transaction
+object, or storage administration. Long-lived maintenance should expose
+identity-preserving renames and package, API, effect, retained-data, and binding
+changes before a store can be activated under new code.
+
+This progression gives the language a recognizable center: ordinary typed code
+around visibly durable places, with broader work and atomic changes stated
+where they occur. Marrow should not become a query API, a handwritten effect or
+capability calculus, or a small pure language followed by a separate
+persistence sublanguage.
+
+Large durable programs should retain that shape. A bounded Branch page becomes
+an ordinary finite value that local loops, patterns, closures, and helpers can
+process directly. One transaction may apply complex multi-place business logic
+to a bounded batch. Work larger than one safe transaction uses application-
+owned typed progress and repeated batches, so restart and lost-result recovery
+remain explicit without replacing the domain program with a query planner,
+storage cursor, or repository callback API.
+
 ## Durable data as language data
 
 Working with durable state should resemble working with local data where the
 physics permit it:
 
 - paths and keys are typed rather than assembled as strings;
-- point reads and writes address exact elements;
+- point reads, creation, replacement, and exact erasure address exact elements;
 - ordinary functions express business behavior;
 - a visible transaction groups atomic durable changes; and
 - application code maintains secondary access trees and allocation policy with
@@ -44,8 +75,8 @@ physics permit it:
 
 The language must not hide that durable data can be absent, larger than memory,
 contended, unavailable, or damaged. Ordered traversal is explicit and bounded.
-Writes can fail. A compiler check cannot prove business intent or hardware
-durability.
+Exact erasure and broader subtree removal are different operations. Writes can
+fail. A compiler check cannot prove business intent or hardware durability.
 
 ## One semantic coordinate system
 
@@ -65,8 +96,10 @@ region, and physical key have different owners and lifecycles.
 
 This separation enables a compiler to report how a package or code change
 affects types, durable representation, callable effects, and a particular
-store. Inferred effects describe demand; they never grant permission. Runtime
-access should be the intersection of verified demand, an exact accepted
+store. Marrow can project these facts from stable semantic identities while
+retaining their different owners and lifecycles. Inferred effects describe
+demand; they never grant permission.
+Runtime access should be the intersection of verified demand, an exact accepted
 candidate, a separately owned maximum ceiling, and invocation attenuation at
 one path kernel.
 
