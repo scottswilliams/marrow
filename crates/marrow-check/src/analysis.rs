@@ -2,7 +2,7 @@
 //! source into the snapshot editor tooling consumes. The cursor type and scope
 //! lookups that read that snapshot live in [`cursor`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -539,10 +539,15 @@ fn analyze_project_inner(
     compiler_dev_audit: CompilerDevAudit,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
     let mut snapshot = analyze_source_project(project_root, config, sources, accepted, lock)?;
+    let source_audit_diagnostics = match compiler_dev_audit {
+        CompilerDevAudit::Disabled => Vec::new(),
+        CompilerDevAudit::UnknownType => {
+            internal_type_audit::internal_type_issue_diagnostics(&snapshot)
+        }
+    };
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let test_sources = cached_project_sources(&snapshot, sources);
-    let source_modules = snapshot.program.modules.clone();
-    let source_facts = snapshot.program.facts.clone();
+    let source_program = snapshot.program.clone();
     let tests = crate::check_tests_with_sources_analysis(
         project_root,
         config,
@@ -550,6 +555,11 @@ fn analyze_project_inner(
         &test_sources,
         resolution_suppression,
     )?;
+    let test_files = tests
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<HashSet<_>>();
     snapshot.use_sites.extend(catalog_nav::collect_use_sites(
         &snapshot.program,
         &tests.files,
@@ -559,8 +569,11 @@ fn analyze_project_inner(
     snapshot.files.extend(tests.files);
     snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
     snapshot.files.dedup_by(|a, b| a.path == b.path);
-    if compiler_dev_audit == CompilerDevAudit::UnknownType {
-        let diagnostics = internal_type_audit::internal_type_issue_diagnostics(&snapshot);
+    if compiler_dev_audit == CompilerDevAudit::UnknownType && !snapshot.report.has_errors() {
+        let mut diagnostics = source_audit_diagnostics;
+        diagnostics.extend(
+            internal_type_audit::internal_type_issue_diagnostics_for_files(&snapshot, &test_files),
+        );
         if !diagnostics.is_empty() {
             snapshot.report.diagnostics.extend(diagnostics);
             snapshot.report.diagnostics.sort_by(|left, right| {
@@ -579,8 +592,7 @@ fn analyze_project_inner(
             });
         }
     }
-    snapshot.program.modules = source_modules;
-    snapshot.program.facts = source_facts;
+    snapshot.program = source_program;
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
     snapshot.config_digest = analysis_config_digest(config);
     Ok(snapshot)

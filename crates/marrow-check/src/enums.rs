@@ -11,7 +11,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::checks::{ConstIntScope, ErrorCheckpoint, check_block_types};
 use crate::diagnostics::{AmbiguousMemberForm, IsTypeFault, MatchScrutinee};
-use crate::infer::infer_type_with_read_scope;
+use crate::infer::{RecoveryTrace, infer_type_with_read_scope_and_recovery_trace};
 use crate::model::decls::DeclIds;
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{TypeDisposition, disposition};
@@ -262,6 +262,7 @@ pub(crate) struct MatchCheck<'a> {
     pub(crate) scope: &'a mut Vec<HashMap<String, MarrowType>>,
     pub(crate) const_ints: &'a mut ConstIntScope,
     pub(crate) aliases: &'a HashMap<String, Vec<String>>,
+    pub(crate) recovery_trace: RecoveryTrace<'a>,
     pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
@@ -272,6 +273,7 @@ struct MatchEnv<'a> {
     scope: &'a mut Vec<HashMap<String, MarrowType>>,
     const_ints: &'a mut ConstIntScope,
     aliases: &'a HashMap<String, Vec<String>>,
+    recovery_trace: RecoveryTrace<'a>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
@@ -287,6 +289,7 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         scope,
         const_ints,
         aliases,
+        recovery_trace,
         diagnostics,
     } = input;
     let mut env = MatchEnv {
@@ -296,11 +299,12 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         scope,
         const_ints,
         aliases,
+        recovery_trace,
         diagnostics,
     };
     // An error-node scrutinee infers as `Unknown`, which `report_non_enum_match`
     // leaves alone, so the parse error is not compounded with a match diagnostic.
-    let scrutinee_type = infer_type_with_read_scope(
+    let scrutinee_type = infer_type_with_read_scope_and_recovery_trace(
         env.program,
         scrutinee,
         env.scope,
@@ -309,6 +313,7 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         env.diagnostics,
         env.const_ints,
         crate::presence::ReadScope::none(),
+        env.recovery_trace,
     );
     check_match_arm_bodies(&mut env, arms);
 
@@ -348,6 +353,7 @@ fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchAr
             env.const_ints,
             env.aliases,
             env.diagnostics,
+            env.recovery_trace,
         );
     }
 }

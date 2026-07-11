@@ -11,7 +11,7 @@ use std::path::Path;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::{infer_only, infer_type};
+use crate::infer::{RecoveryTrace, infer_only, infer_type_with_read_scope_and_recovery_trace};
 use crate::typerules::{
     TypeDisposition, as_primitive, disposition, is_optional_value, is_steppable, marrow_type_name,
     unresolved_optional_diagnostic,
@@ -246,6 +246,7 @@ pub(super) fn check_range_iterable_nested_values(
 /// requires an explicit step; and a step that statically cannot run
 /// (wrong-direction or zero) is a dead loop. A step on a non-range iterable is
 /// rejected. A non-steppable or mismatched endpoint pair is a `check.range` error.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_range_header(
     program: &CheckedProgram,
     file: &Path,
@@ -254,6 +255,7 @@ pub(crate) fn check_range_header(
     scope: &[HashMap<String, MarrowType>],
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
+    recovery_trace: RecoveryTrace<'_>,
 ) {
     let Some((left, right)) = range_endpoints(iterable) else {
         if infer_only(program, iterable, scope, aliases, file).contains_invalid() {
@@ -273,13 +275,16 @@ pub(crate) fn check_range_header(
     let right_type = infer_only(program, right, scope, aliases, file);
     let mut step_inference_diagnostics = Vec::new();
     let step_type = step.map(|step| {
-        infer_type(
+        infer_type_with_read_scope_and_recovery_trace(
             program,
             step,
             scope,
             aliases,
             file,
             &mut step_inference_diagnostics,
+            &[],
+            crate::presence::ReadScope::none(),
+            recovery_trace,
         )
     });
     // Unary inference deliberately does not model a negative duration literal,

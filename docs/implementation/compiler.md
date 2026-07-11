@@ -70,18 +70,21 @@ type walk leaves a value expression at an unresolved-recovery
 later expressions that propagate the same unresolved type. Explicit source
 `unknown` values, no-return calls, diagnosed invalid expressions, and saved
 addresses consumed as non-value builtin or traversal subjects are outside the
-audit.
+audit. Local expressions passed through those same collection-shaped positions
+remain ordinary typed values and are audited.
 
 The option is intentionally omitted from command help and is not part of the
 ordinary project-check contract. Without it, the audit is not invoked and
-ordinary output is unchanged. The audit runs while the checked program still
-contains configured test modules, then the analysis snapshot restores its normal
-source-only program. It reuses the checker's statement scopes and recursive
-inference, tokenizes each analyzed file once, and asks only the higher-precedence
-canonical hover owners for actual recovery sites. Binding positions and common
-cursor-token/callable lookups use indexed access rather than repeated
-project-wide scans. Snapshots containing source or configured-test errors
-suppress the audit because recovery types are expected after a failed check.
+ordinary output is unchanged. Source files are audited against the source-only
+program that checked them. Configured test files are audited against their
+combined source-and-test program, after which the analysis snapshot atomically
+restores its normal source-only program. The audit reuses the checker's statement
+scopes and recursive inference, tokenizes each file once per semantic snapshot,
+and asks only the higher-precedence canonical hover owners for actual recovery
+sites. Binding positions and common cursor-token/callable/store-root lookups use
+indexed access rather than repeated project-wide scans. Snapshots containing
+source or configured-test errors suppress the audit because recovery types are
+expected after a failed check.
 
 ## Current durable identity
 

@@ -9,7 +9,7 @@ use marrow_codes::Code;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::infer::infer_type_with_read_scope;
+use crate::infer::{RecoveryTrace, infer_type_with_read_scope_and_recovery_trace};
 use crate::model::decls::DeclIds;
 use crate::typerules::{
     Admission, StrictValueFault, TypeDisposition, admit_strict_value, as_primitive, binary_symbol,
@@ -36,6 +36,7 @@ pub(crate) fn check_condition(
     const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     // A condition the parser could not structure carries its own parse error. Skip
@@ -45,7 +46,7 @@ pub(crate) fn check_condition(
     if condition.is_error() {
         return;
     }
-    let condition_type = infer_type_with_read_scope(
+    let condition_type = infer_type_with_read_scope_and_recovery_trace(
         program,
         condition,
         scope,
@@ -54,6 +55,7 @@ pub(crate) fn check_condition(
         diagnostics,
         const_ints,
         read_scope,
+        recovery_trace,
     );
     let span = condition.span();
     if condition_type.contains_invalid() {

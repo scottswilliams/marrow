@@ -15,9 +15,10 @@ use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
     RecoveryTrace, RecoveryTypeSite, assignment_target_is_error_code, bind,
-    infer_assignment_target_type_with_read_scope, infer_collection_subject_type_with_read_scope,
-    infer_type_with_read_scope, infer_type_with_read_scope_and_recovery_trace,
-    local_binding_with_read_scope, reject_saved_access_with_suggested_index,
+    infer_assignment_target_type_with_read_scope_and_recovery_trace,
+    infer_collection_subject_type_with_read_scope_and_recovery_trace, infer_type_with_read_scope,
+    infer_type_with_read_scope_and_recovery_trace, local_binding_with_read_scope,
+    reject_saved_access_with_suggested_index,
 };
 use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
@@ -357,6 +358,7 @@ pub(crate) fn check_block_types(
     const_ints: &mut ConstIntScope,
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
+    recovery_trace: RecoveryTrace<'_>,
 ) {
     let mut required_fields = RequiredFieldAssignments::inactive();
     let mut narrowing = Narrowing::new();
@@ -367,7 +369,7 @@ pub(crate) fn check_block_types(
             return_type,
             aliases,
             transform_old: None,
-            recovery_trace: RecoveryTrace::Disabled,
+            recovery_trace,
         },
         block,
         scope,
@@ -1121,7 +1123,7 @@ impl StatementCheck<'_> {
         target: &marrow_syntax::Expression,
         value: &marrow_syntax::Expression,
     ) {
-        let target_type = infer_assignment_target_type_with_read_scope(
+        let target_type = infer_assignment_target_type_with_read_scope_and_recovery_trace(
             self.program,
             target,
             self.scope,
@@ -1130,6 +1132,7 @@ impl StatementCheck<'_> {
             self.file,
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
         );
         // A clearable saved place — a sparse field or keyed leaf — presents as
         // `Optional` so `absent` and a `T?` value write through present-or-clear, while
@@ -1198,7 +1201,7 @@ impl StatementCheck<'_> {
         op_span: SourceSpan,
         value: &marrow_syntax::Expression,
     ) {
-        let target_type = infer_assignment_target_type_with_read_scope(
+        let target_type = infer_assignment_target_type_with_read_scope_and_recovery_trace(
             self.program,
             target,
             self.scope,
@@ -1207,12 +1210,13 @@ impl StatementCheck<'_> {
             self.file,
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
         );
         // The target is resolved once, by the write leg above, which owns its
         // resolution diagnostics. The read leg needs the target's read type (which
         // wraps a maybe-present place in `?`) to combine and to require a proof, so it
         // reinfers into a scratch sink rather than restating the same diagnostic.
-        let left_type = infer_type_with_read_scope(
+        let left_type = infer_type_with_read_scope_and_recovery_trace(
             self.program,
             target,
             self.scope,
@@ -1221,6 +1225,7 @@ impl StatementCheck<'_> {
             &mut Vec::new(),
             self.const_ints,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
         );
         let right_type = self.infer(value);
         self.check_range_value(value);
@@ -1389,7 +1394,7 @@ impl StatementCheck<'_> {
         // collection-subject position surfaces its key-argument and structural
         // diagnostics while leaving the value-read partial-key gate silent, so the
         // dedicated partial-key delete rejection below is the single root cause.
-        let subject_type = infer_collection_subject_type_with_read_scope(
+        let subject_type = infer_collection_subject_type_with_read_scope_and_recovery_trace(
             self.program,
             path,
             self.scope,
@@ -1398,6 +1403,7 @@ impl StatementCheck<'_> {
             self.file,
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
         );
         if is_saved_index_branch_path(self.program, path, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
@@ -1505,6 +1511,7 @@ impl StatementCheck<'_> {
             self.const_ints,
             self.aliases,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
             self.diagnostics,
         );
         self.check_range_value(condition);
@@ -1690,7 +1697,7 @@ impl StatementCheck<'_> {
             self.scope,
             self.diagnostics,
         );
-        let subject_type = infer_collection_subject_type_with_read_scope(
+        let subject_type = infer_collection_subject_type_with_read_scope_and_recovery_trace(
             self.program,
             iterable,
             self.scope,
@@ -1699,6 +1706,7 @@ impl StatementCheck<'_> {
             self.file,
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
+            self.recovery_trace,
         );
         match admit_collection_operand(&subject_type) {
             Admission::Accepted => {}
@@ -1779,6 +1787,7 @@ impl StatementCheck<'_> {
             self.scope,
             self.aliases,
             self.diagnostics,
+            self.recovery_trace,
         );
         check_for_head(
             &LoopHeadScope {
@@ -1837,6 +1846,7 @@ impl StatementCheck<'_> {
             scope: self.scope,
             const_ints: self.const_ints,
             aliases: self.aliases,
+            recovery_trace: self.recovery_trace,
             diagnostics: self.diagnostics,
         });
         // A match arm is checked outside the narrowing flow, so conservatively drop

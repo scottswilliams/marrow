@@ -465,6 +465,129 @@ fn internal_type_audit_reuses_one_snapshot_aligned_lexical_cache() {
             "the audit must derive recovery sites from the checker walk, not `{forbidden_sampler}`",
         );
     }
+
+    let declaration_probe = item_between(
+        &audit,
+        "fn declaration_name_span(",
+        "fn recovery_site_probe(",
+    );
+    assert!(
+        declaration_probe.contains("partition_point("),
+        "signature probes must enter the token stream at the declaration boundary",
+    );
+    let recovery_probe = item_between(
+        &audit,
+        "fn recovery_site_probe(",
+        "/// Convert internal type issues",
+    );
+    assert!(
+        recovery_probe.contains("token_at(")
+            && !recovery_probe.contains("tokens.iter()")
+            && !recovery_probe.contains("iter().rev()"),
+        "recovery probes must use indexed token lookup rather than per-site scans",
+    );
+}
+
+#[test]
+fn internal_type_audit_hover_masks_keep_indexed_fast_rejections() {
+    let root = repo_root();
+    let hover = std::fs::read_to_string(root.join("crates/marrow-check/src/tooling/hover.rs"))
+        .expect("read hover");
+
+    let store_lookup = item_between(
+        &hover,
+        "fn store_root_declaration_at",
+        "fn store_root_hover_fact(",
+    );
+    assert!(store_lookup.contains("partition_point("));
+    assert!(!store_lookup.contains("tokens.windows(") && !hover.contains("fn root_token_span("));
+
+    let operator = item_between(
+        &hover,
+        "fn source_operator_hover_fact_at_prelexed(",
+        "fn intrinsic_source_callable_hover_fact_at_prelexed(",
+    );
+    let spelling = operator
+        .find("operator_spelling(")
+        .expect("operator token gate");
+    let type_at = operator
+        .find("crate::type_at(")
+        .expect("operator type proof");
+    assert!(
+        spelling < type_at,
+        "non-operator tokens must be rejected before AST type inference",
+    );
+
+    let schema = item_between(
+        &hover,
+        "fn source_schema_hover_fact_at_prelexed(",
+        "fn function_source_callable_hover_fact(",
+    );
+    let occurrence = schema.find("index.occurrence(").expect("binding lookup");
+    let annotation = schema
+        .find("enum_annotation_source_schema_hover_fact(")
+        .expect("enum annotation special case");
+    assert!(
+        occurrence < annotation,
+        "ordinary bound names must reject before the annotation use-site scan",
+    );
+}
+
+#[test]
+fn recovery_trace_reaches_every_primary_statement_inference_path() {
+    let root = repo_root();
+    let infer =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/infer.rs")).expect("read infer");
+    let statements =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/statements.rs"))
+            .expect("read statements");
+    let operators =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/checks/operators.rs"))
+            .expect("read operators");
+    let ranges = std::fs::read_to_string(root.join("crates/marrow-check/src/checks/ranges.rs"))
+        .expect("read ranges");
+    let enums =
+        std::fs::read_to_string(root.join("crates/marrow-check/src/enums.rs")).expect("read enums");
+
+    for (source, start, end) in [
+        (
+            &operators,
+            "pub(crate) fn check_condition(",
+            "pub(crate) fn check_throw_type(",
+        ),
+        (
+            &statements,
+            "fn check_compound_assignment_statement(",
+            "fn check_assignment_target(",
+        ),
+        (
+            &statements,
+            "fn check_delete_statement(",
+            "fn delete_target_is_addressable(",
+        ),
+        (&statements, "fn check_for(", "fn check_try("),
+        (
+            &ranges,
+            "pub(crate) fn check_range_header(",
+            "fn check_date_step_whole_days(",
+        ),
+        (
+            &enums,
+            "pub(crate) fn check_match(",
+            "fn check_match_arm_bodies(",
+        ),
+        (
+            &infer,
+            "pub(crate) fn infer_assignment_target_type_with_read_scope_and_recovery_trace(",
+            "fn infer_assignment_field_type(",
+        ),
+    ] {
+        let item = item_between(source, start, end);
+        assert!(
+            item.contains("recovery_trace"),
+            "primary inference path `{start}` must retain the recovery observer",
+        );
+    }
 }
 
 #[test]

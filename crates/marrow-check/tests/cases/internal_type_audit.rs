@@ -150,6 +150,149 @@ fn nested_recovery_call_is_observed_inside_a_known_outer_call() {
 }
 
 #[test]
+fn condition_inference_observes_nested_recovery() {
+    let source =
+        "module m\n\nfn f(xs: sequence[int])\n    if bool(keys(xs))\n        print(\"ok\")\n";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-condition-recovery",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    let diagnostics = audit_diagnostics(&snapshot);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].file, paths[0]);
+    let inner_close = source.find("))").expect("nested call closes");
+    assert_eq!(diagnostics[0].span, span_at(source, inner_close, 1));
+}
+
+#[test]
+fn local_collection_consumers_observe_nested_recovery() {
+    let source = "module m\n\nfn f(xs: sequence[int])\n    const size = count(keys(xs))\n    const values = keys(xs)\n    for value in values\n        print(value)\n";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-collection-consumer-recovery",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    let diagnostics = audit_diagnostics(&snapshot);
+    assert_eq!(diagnostics.len(), 4, "{diagnostics:#?}");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file == paths[0])
+    );
+    let mut expected = source
+        .match_indices("keys(xs)")
+        .map(|(start, call)| span_at(source, start + call.len() - 1, 1))
+        .collect::<Vec<_>>();
+    expected.push(expected_span(source, "values"));
+    expected.push(expected_span(source, "value"));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.span)
+            .collect::<Vec<_>>(),
+        expected,
+    );
+}
+
+#[test]
+fn match_scrutinee_and_arm_bodies_share_the_recovery_trace() {
+    let source = "\
+module m
+
+enum Status
+    active
+
+fn choose(value: unknown): Status
+    return Status::active
+
+fn f(xs: sequence[int])
+    match choose(keys(xs))
+        active
+            const copied = keys(xs)
+";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-match-recovery",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    let diagnostics = audit_diagnostics(&snapshot);
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file == paths[0])
+    );
+    let closes = source
+        .match_indices("keys(xs)")
+        .map(|(start, call)| span_at(source, start + call.len() - 1, 1))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.span)
+            .collect::<Vec<_>>(),
+        closes,
+    );
+}
+
+#[test]
+fn adjacent_operator_does_not_mask_a_recovery_call_close() {
+    let source = "module m\n\nfn f(xs: sequence[int])\n    keys(xs)+1\n";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-adjacent-operator",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    let diagnostics = audit_diagnostics(&snapshot);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].file, paths[0]);
+    assert_eq!(diagnostics[0].span, expected_span(source, ")"));
+}
+
+#[test]
+fn address_keys_and_range_steps_share_the_recovery_trace() {
+    let source = "\
+module m
+
+fn f(xs: sequence[int])
+    var values(k: int): string
+    values(int(keys(xs))) = \"ok\"
+    delete values(int(keys(xs)))
+    for value in 1..10 by keys(xs)
+        print(value)
+";
+    let (snapshot, paths) = analyze(
+        "internal-type-audit-address-and-step-recovery",
+        &[("src/m.mw", source)],
+    );
+    support::assert_clean(&snapshot.report);
+
+    let diagnostics = audit_diagnostics(&snapshot);
+    assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file == paths[0])
+    );
+    let expected = source
+        .match_indices("keys(xs)")
+        .map(|(start, call)| span_at(source, start + call.len() - 1, 1))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.span)
+            .collect::<Vec<_>>(),
+        expected,
+    );
+}
+
+#[test]
 fn audit_excludes_explicit_dynamic_no_value_and_richer_hover_owners() {
     let source = "\
 module a
@@ -209,17 +352,24 @@ fn audit_includes_configured_test_files_before_restoring_the_source_program() {
         support::write(
             root,
             "tests/keys_test.mw",
-            "fn copyKeys(xs: sequence[int])\n    const values = keys(xs)\n    const copied = values\n",
+            "resource Scratch\n    value: int\n\nstore ^scratch(id: int): Scratch\n\nfn copyKeys(xs: sequence[int])\n    const values = keys(xs)\n    const copied = values\n",
         );
     });
     let config = parse_config(
         r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
     )
     .expect("config");
+    let (source_report, source_program) = marrow_check::check_project(&root, &config)
+        .expect("check source project before configured tests");
+    support::assert_clean(&source_report);
     let snapshot =
         analyze_project_with_compiler_dev_audit(&root, &config, &ProjectSources::new(), None, None)
             .expect("analyze project");
     support::assert_clean(&snapshot.report);
+    assert_eq!(
+        snapshot.program, source_program,
+        "restoring the source program must remove every test-only arena and index entry",
+    );
     assert!(
         snapshot
             .files

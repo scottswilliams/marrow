@@ -1,7 +1,8 @@
 //! Compiler-development audit for unresolved recovery types in an otherwise
 //! error-free analysis snapshot.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
 use marrow_syntax::{Declaration, LexedSource, SourceSpan, TokenKind, lex_source};
@@ -22,13 +23,31 @@ struct InternalTypeIssue {
     kind: InternalTypeIssueKind,
 }
 
+#[derive(Clone, Copy)]
+enum AuditedFiles<'a> {
+    All,
+    Only(&'a HashSet<PathBuf>),
+}
+
+impl AuditedFiles<'_> {
+    fn includes(self, file: &Path) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(files) => files.contains(file),
+        }
+    }
+}
+
 /// Audit a clean analysis snapshot for unresolved recovery types.
 ///
 /// The audit is intentionally separate from ordinary checking. It uses the
 /// compiler's production statement/type walk and canonical hover precedence. A
 /// recovery type inside a richer callable fact is still an issue; explicit
 /// dynamic values, no-value results, and diagnosed poison are not.
-fn internal_type_issues(snapshot: &AnalysisSnapshot) -> Vec<InternalTypeIssue> {
+fn internal_type_issues(
+    snapshot: &AnalysisSnapshot,
+    audited_files: AuditedFiles<'_>,
+) -> Vec<InternalTypeIssue> {
     if snapshot.report.has_errors() {
         return Vec::new();
     }
@@ -41,6 +60,9 @@ fn internal_type_issues(snapshot: &AnalysisSnapshot) -> Vec<InternalTypeIssue> {
     let index = build_binding_index_from_lexed(snapshot, &lexed);
     let mut issues = Vec::new();
     for (analyzed, lexed) in snapshot.files.iter().zip(&lexed) {
+        if !audited_files.includes(&analyzed.path) {
+            continue;
+        }
         let prelexed = PrelexedSourceHover::new(analyzed, lexed);
         issues.extend(callable_signature_issues(snapshot, analyzed, lexed));
 
@@ -116,12 +138,7 @@ fn callable_signature_issues(
     analyzed: &crate::AnalyzedFile,
     lexed: &LexedSource,
 ) -> Vec<InternalTypeIssue> {
-    let Some(module) = snapshot
-        .program
-        .modules
-        .iter()
-        .find(|module| module.source_file == analyzed.path)
-    else {
+    let Some(module) = snapshot.program.module_by_file(&analyzed.path) else {
         return Vec::new();
     };
     let mut issues = Vec::new();
@@ -169,13 +186,19 @@ fn declaration_name_span(
     declaration: SourceSpan,
     name: &str,
 ) -> Option<SourceSpan> {
-    lexed.tokens.iter().find_map(|token| {
-        (token.kind == TokenKind::Identifier
-            && declaration.start_byte <= token.span.start_byte
-            && token.span.end_byte <= declaration.end_byte
-            && token.text(source) == name)
-            .then_some(token.span)
-    })
+    let first = lexed
+        .tokens
+        .partition_point(|token| token.span.end_byte <= declaration.start_byte);
+    lexed.tokens[first..]
+        .iter()
+        .take_while(|token| token.span.start_byte < declaration.end_byte)
+        .find_map(|token| {
+            (token.kind == TokenKind::Identifier
+                && declaration.start_byte <= token.span.start_byte
+                && token.span.end_byte <= declaration.end_byte
+                && token.text(source) == name)
+                .then_some(token.span)
+        })
 }
 
 fn recovery_site_probe(
@@ -186,27 +209,49 @@ fn recovery_site_probe(
         RecoveryExpressionSite::Name(span) | RecoveryExpressionSite::Field(span) => {
             Some((span.start_byte, span))
         }
-        RecoveryExpressionSite::SavedRoot(span) => lexed.tokens.iter().find_map(|token| {
+        RecoveryExpressionSite::SavedRoot(span) => {
+            let token = token_at(&lexed.tokens, span.end_byte.checked_sub(1)?)?;
             (token.kind == TokenKind::Identifier
                 && span.start_byte <= token.span.start_byte
                 && token.span.end_byte <= span.end_byte)
                 .then_some((token.span.start_byte, token.span))
-        }),
-        RecoveryExpressionSite::Call(span) => lexed.tokens.iter().rev().find_map(|token| {
+        }
+        RecoveryExpressionSite::Call(span) => {
+            let token = token_at(&lexed.tokens, span.end_byte.checked_sub(1)?)?;
             (token.kind == TokenKind::RightParen
                 && span.start_byte <= token.span.start_byte
                 && token.span.end_byte == span.end_byte)
-                .then_some((span.end_byte, token.span))
-        }),
+                .then_some((token.span.start_byte, token.span))
+        }
     }
+}
+
+fn token_at(tokens: &[marrow_syntax::Token], offset: usize) -> Option<&marrow_syntax::Token> {
+    let index = tokens.partition_point(|token| token.span.end_byte <= offset);
+    let token = tokens.get(index)?;
+    (token.span.start_byte <= offset && offset < token.span.end_byte).then_some(token)
 }
 
 /// Convert internal type issues into the checker's canonical typed warning
 /// diagnostics. CLI transports render these through their existing project
 /// diagnostic paths.
 pub(super) fn internal_type_issue_diagnostics(snapshot: &AnalysisSnapshot) -> Vec<CheckDiagnostic> {
+    internal_type_issue_diagnostics_in(snapshot, AuditedFiles::All)
+}
+
+pub(super) fn internal_type_issue_diagnostics_for_files(
+    snapshot: &AnalysisSnapshot,
+    files: &HashSet<PathBuf>,
+) -> Vec<CheckDiagnostic> {
+    internal_type_issue_diagnostics_in(snapshot, AuditedFiles::Only(files))
+}
+
+fn internal_type_issue_diagnostics_in(
+    snapshot: &AnalysisSnapshot,
+    audited_files: AuditedFiles<'_>,
+) -> Vec<CheckDiagnostic> {
     let names = snapshot.program.decl_ids();
-    internal_type_issues(snapshot)
+    internal_type_issues(snapshot, audited_files)
         .into_iter()
         .map(|issue| {
             CheckDiagnostic::new(
@@ -261,7 +306,7 @@ mod tests {
 
         snapshot.program.modules[0].functions[0].return_type =
             Some(MarrowType::Sequence(Box::new(MarrowType::Unknown)));
-        let issues = internal_type_issues(&snapshot);
+        let issues = internal_type_issues(&snapshot, AuditedFiles::All);
         assert_eq!(issues.len(), 1, "{issues:#?}");
         assert_eq!(
             &source[issues[0].span.start_byte..issues[0].span.end_byte],

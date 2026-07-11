@@ -304,6 +304,7 @@ pub(crate) struct PrelexedSourceHover<'a> {
     lexed: &'a LexedSource,
     callable_contexts: Vec<CallableCalleeContext>,
     callable_context_by_span: HashMap<(usize, usize), usize>,
+    store_declarations_by_root_span: Vec<(SourceSpan, usize)>,
 }
 
 impl<'a> PrelexedSourceHover<'a> {
@@ -318,10 +319,24 @@ impl<'a> PrelexedSourceHover<'a> {
                 ))
                 .or_insert(index);
         }
+        let mut store_declarations_by_root_span = analyzed
+            .parsed
+            .file
+            .declarations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, declaration)| match declaration {
+                Declaration::Store(store) => Some((store.root.span, index)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        store_declarations_by_root_span
+            .sort_by_key(|(span, _)| (span.start_byte, span.end_byte, span.line, span.column));
         Self {
             lexed,
             callable_contexts,
             callable_context_by_span,
+            store_declarations_by_root_span,
         }
     }
 }
@@ -560,11 +575,12 @@ fn source_operator_hover_fact_at_prelexed(
     let tokens = &prelexed.lexed.tokens;
     let index = token_index_at(tokens, offset)?;
     let token = &tokens[index];
-    crate::type_at(&snapshot.program, &analyzed.path, &analyzed.parsed, offset)?;
+    let spelling = operator_spelling(token.kind, token.text(&analyzed.source))?;
     if is_operator_keyword_non_expression(tokens, index) {
         return None;
     }
-    operator_fact(operator_spelling(token.kind, token.text(&analyzed.source))?)
+    crate::type_at(&snapshot.program, &analyzed.path, &analyzed.parsed, offset)?;
+    operator_fact(spelling)
 }
 
 fn intrinsic_source_callable_hover_fact_at_prelexed(
@@ -692,6 +708,12 @@ fn source_module_path_hover_fact_at_prelexed(
     offset: usize,
 ) -> Option<SourceModulePathHoverFact> {
     let file = analyzed.path.as_path();
+    if index
+        .occurrence(file, offset)
+        .is_some_and(|occurrence| occurrence.definition.kind != SymbolKind::ModuleRef)
+    {
+        return None;
+    }
     let path = module_path_at(&analyzed.source, &prelexed.lexed.tokens, offset)?;
     if let Some(fact) = standard_library_module_path_hover_fact(snapshot, file, &path) {
         return Some(fact);
@@ -737,10 +759,6 @@ fn source_schema_hover_fact_at_prelexed(
     offset: usize,
 ) -> Option<SourceSchemaHoverFact> {
     let file = analyzed.path.as_path();
-    if let Some(fact) = enum_annotation_source_schema_hover_fact(snapshot, file, offset) {
-        return Some(SourceSchemaHoverFact::Enum(fact));
-    }
-
     let occurrence = index.occurrence(file, offset)?;
     let symbol = &occurrence.definition;
     match symbol.kind {
@@ -751,6 +769,9 @@ fn source_schema_hover_fact_at_prelexed(
             resource_source_schema_hover_fact(snapshot, symbol).map(SourceSchemaHoverFact::Resource)
         }
         SymbolKind::Enum => {
+            if let Some(fact) = enum_annotation_source_schema_hover_fact(snapshot, file, offset) {
+                return Some(SourceSchemaHoverFact::Enum(fact));
+            }
             if blocked_enum_type_symbol_hover(snapshot, analyzed, prelexed, offset, symbol)
                 || !is_source_schema_hover_target(snapshot, analyzed, prelexed, offset, &occurrence)
             {
@@ -1475,12 +1496,7 @@ fn store_root_hover_fact_at_prelexed(
     offset: usize,
 ) -> Option<StoreRootHoverFact> {
     let file = analyzed.path.as_path();
-    let declaration = store_root_declaration_at(
-        &analyzed.parsed.file,
-        &analyzed.source,
-        &prelexed.lexed.tokens,
-        offset,
-    )?;
+    let declaration = store_root_declaration_at(&analyzed.parsed.file, prelexed, offset)?;
     let store = snapshot.program.facts.stores().iter().find(|store| {
         store.root == declaration.root.root
             && store.name_span == declaration.root.span
@@ -1535,38 +1551,21 @@ fn saved_place_hover_fact_at_prelexed(
 
 fn store_root_declaration_at<'a>(
     source: &'a SourceFile,
-    text: &str,
-    tokens: &[Token],
+    prelexed: &PrelexedSourceHover<'_>,
     offset: usize,
 ) -> Option<&'a StoreDecl> {
-    source
-        .declarations
-        .iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Store(store) => {
-                let (start, end) = root_token_span(text, tokens, store)?;
-                (start <= offset && offset < end).then_some(store)
-            }
-            _ => None,
-        })
-}
-
-fn root_token_span(source: &str, tokens: &[Token], store: &StoreDecl) -> Option<(usize, usize)> {
-    tokens.windows(2).find_map(|window| {
-        let [caret, name] = window else {
-            return None;
-        };
-        if caret.kind == TokenKind::Caret
-            && name.kind == TokenKind::Identifier
-            && span_covers(store.span, caret.span.start_byte)
-            && span_covers(store.span, name.span.end_byte)
-            && name.text(source) == store.root.root
-        {
-            Some((caret.span.start_byte, name.span.end_byte))
-        } else {
-            None
-        }
-    })
+    let candidate = prelexed
+        .store_declarations_by_root_span
+        .partition_point(|(span, _)| span.start_byte <= offset)
+        .checked_sub(1)?;
+    let (span, declaration_index) = prelexed.store_declarations_by_root_span.get(candidate)?;
+    if !(span.start_byte <= offset && offset < span.end_byte) {
+        return None;
+    }
+    match source.declarations.get(*declaration_index)? {
+        Declaration::Store(store) => Some(store),
+        _ => None,
+    }
 }
 
 fn store_root_hover_fact(

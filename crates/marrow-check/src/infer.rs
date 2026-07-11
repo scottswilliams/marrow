@@ -193,6 +193,31 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
     diagnostics: &mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
+    infer_assignment_target_type_with_read_scope_and_recovery_trace(
+        program,
+        expr,
+        scope,
+        const_ints,
+        aliases,
+        file,
+        diagnostics,
+        read_scope,
+        RecoveryTrace::Disabled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn infer_assignment_target_type_with_read_scope_and_recovery_trace(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    read_scope: crate::presence::ReadScope<'_>,
+    recovery_trace: RecoveryTrace<'_>,
+) -> MarrowType {
     infer_assignment_field_type(
         program,
         expr,
@@ -203,6 +228,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
         diagnostics,
         read_scope,
         FieldAccessContext::AssignmentTarget,
+        recovery_trace,
     )
 }
 
@@ -217,6 +243,7 @@ fn infer_assignment_field_type(
     diagnostics: &mut Vec<CheckDiagnostic>,
     read_scope: crate::presence::ReadScope<'_>,
     context: FieldAccessContext,
+    recovery_trace: RecoveryTrace<'_>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
     match expr {
@@ -246,7 +273,7 @@ fn infer_assignment_field_type(
             file,
             diagnostics,
             read_scope,
-            recovery_trace: RecoveryTrace::Disabled,
+            recovery_trace,
             context,
             position: ValuePosition::Value,
             optional_access: matches!(expr, Expression::OptionalField { .. }),
@@ -256,7 +283,7 @@ fn infer_assignment_field_type(
         // invalid-target rejection owns; routing through the collection-subject
         // position keeps the value-read partial-key gate from stacking a second
         // diagnostic on the same span.
-        _ => infer_collection_subject_type_with_read_scope(
+        _ => infer_collection_subject_type_with_read_scope_and_recovery_trace(
             program,
             expr,
             scope,
@@ -265,6 +292,7 @@ fn infer_assignment_field_type(
             file,
             diagnostics,
             read_scope,
+            recovery_trace,
         ),
     }
 }
@@ -278,6 +306,14 @@ fn infer_assignment_field_type(
 enum ValuePosition {
     Value,
     CollectionSubject,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecoverySitePosition {
+    /// An expression whose inferred result is available as an ordinary hover type.
+    Value,
+    /// A saved address streamed by its consumer rather than materialized as a value.
+    SavedSubject,
 }
 
 /// One value expression whose final inferred type still contains recovery
@@ -304,14 +340,18 @@ pub(crate) enum RecoveryTrace<'a> {
 }
 
 impl RecoveryTrace<'_> {
+    fn observes(self, ty: &MarrowType) -> bool {
+        matches!(self, Self::Enabled(_)) && ty.contains_recovery_unknown()
+    }
+
     fn record(
         self,
         file: &Path,
         expression: &marrow_syntax::Expression,
-        position: ValuePosition,
+        position: RecoverySitePosition,
         ty: &MarrowType,
     ) {
-        if position != ValuePosition::Value || !ty.contains_recovery_unknown() {
+        if position != RecoverySitePosition::Value || !ty.contains_recovery_unknown() {
             return;
         }
         let RecoveryTrace::Enabled(sites) = self else {
@@ -403,31 +443,7 @@ pub(crate) fn infer_type_with_read_scope_and_recovery_trace(
 /// structural diagnostics without the value-position partial-key rejection, since a
 /// partially keyed composite layer is a valid inner sub-layer to stream.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn infer_collection_subject_type_with_read_scope(
-    program: &CheckedProgram,
-    expr: &marrow_syntax::Expression,
-    scope: &[HashMap<String, MarrowType>],
-    const_ints: &[HashMap<String, Option<i64>>],
-    aliases: &HashMap<String, Vec<String>>,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-    read_scope: crate::presence::ReadScope<'_>,
-) -> MarrowType {
-    infer_collection_subject_type_with_read_scope_and_recovery_trace(
-        program,
-        expr,
-        scope,
-        const_ints,
-        aliases,
-        file,
-        diagnostics,
-        read_scope,
-        RecoveryTrace::Disabled,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn infer_collection_subject_type_with_read_scope_and_recovery_trace(
+pub(crate) fn infer_collection_subject_type_with_read_scope_and_recovery_trace(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
@@ -477,7 +493,18 @@ fn infer_value(
         read_scope,
         recovery_trace,
     );
-    recovery_trace.record(file, expr, position, &ty);
+    if recovery_trace.observes(&ty) {
+        let recovery_position = match position {
+            ValuePosition::Value => RecoverySitePosition::Value,
+            ValuePosition::CollectionSubject
+                if reads_through_saved_place(program, expr, scope, file) =>
+            {
+                RecoverySitePosition::SavedSubject
+            }
+            ValuePosition::CollectionSubject => RecoverySitePosition::Value,
+        };
+        recovery_trace.record(file, expr, recovery_position, &ty);
+    }
     ty
 }
 
@@ -1081,6 +1108,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
                 input.diagnostics,
                 input.read_scope,
                 FieldAccessContext::AssignmentBase,
+                input.recovery_trace,
             )
         }
     };
