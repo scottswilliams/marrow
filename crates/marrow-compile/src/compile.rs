@@ -102,12 +102,17 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
     }
 
     // The source-root-relative path is the authority for module identity. A file
-    // that also declares a `module` header must spell the same name (with `::` as
-    // the separator the dotted identity uses).
+    // that declares a `module` header is an importable module and must spell the
+    // path-derived name (with `::` as the dotted separator). A file with no header
+    // is a single-file script: it keeps a path-derived identity for its own scope
+    // and its exports, but is not importable by module path.
+    let mut module_names: BTreeSet<String> = BTreeSet::new();
     for module in &parsed {
         if let Some(header) = &module.parsed.file.module {
             let declared = header.name.replace("::", ".");
-            if declared != module.name {
+            if declared == module.name {
+                module_names.insert(module.name.clone());
+            } else {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckModulePath.as_str(),
                     &module.file,
@@ -122,10 +127,9 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
         }
     }
 
-    // The set of module names, and each module's `use` bindings (final segment ->
-    // dotted target). A `use` must name a project module; two imports binding the
-    // same final segment in one module are ambiguous.
-    let module_names: BTreeSet<String> = parsed.iter().map(|module| module.name.clone()).collect();
+    // Each module's `use` bindings (final segment -> dotted target). A `use` must
+    // name an importable project module; two imports binding the same final segment
+    // in one module are ambiguous.
     let mut imports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for module in &parsed {
         let bindings = imports.entry(module.name.clone()).or_default();

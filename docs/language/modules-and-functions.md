@@ -75,7 +75,9 @@ returns no value. Every reachable path of a value-returning function must
 return. An optional return `T?` may return either `T` or `absent`.
 
 Marrow does not overload functions and has no user-defined generic functions.
-A module has at most one function with a given name.
+A module has at most one function with a given name. Recursion is not admitted:
+a function may not call itself, directly or through a cycle of other functions;
+the direct-call graph is acyclic.
 
 ## Parameters Are By Value
 
@@ -135,10 +137,13 @@ Parameters, local `const` bindings, local `var` bindings, loop variables,
 `if const` bindings, and catch bindings have lexical block scope. A name cannot
 be declared twice in one scope. An inner block may shadow an outer local name.
 
-Top-level constants are compile-time constant expressions over literals, other
-constants, field access, operators, interpolation, and range shapes. Calls are
-not constant expressions, including constructor and conversion calls. Constants
-do not perform durable reads or host operations.
+A top-level constant binds a scalar value and is module-private: it is referred
+to by name only within its own module, and it is folded into its uses at compile
+time. Its value is a scalar literal (`int`, `bool`, or `string`) or a negated
+integer literal, and an optional type annotation must name that scalar type. A
+constant performs no durable read, call, or host operation. Richer constant
+expressions over other constants, operators, interpolation, and range shapes are
+a later addition.
 
 ## Effects
 

@@ -466,6 +466,23 @@ fn a_use_of_an_unknown_module_is_an_import_error() {
 }
 
 #[test]
+fn a_headerless_script_is_not_importable_by_module_path() {
+    // `lib.mw` has no `module` header, so it is a single-file script, not an
+    // importable module; a `use` of it does not resolve.
+    let temp = multi_module(
+        "script-not-importable",
+        &[
+            ("lib.mw", "pub fn helper(): int\n    return 1\n"),
+            (
+                "main.mw",
+                "module main\n\nuse lib\n\npub fn run(): int\n    return 1\n",
+            ),
+        ],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
+}
+
+#[test]
 fn a_module_header_that_disagrees_with_its_path_is_rejected() {
     let temp = multi_module(
         "module-path",
