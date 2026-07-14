@@ -1,7 +1,6 @@
 //! Saved values round-trip through their canonical byte form, and non-canonical
 //! bytes are rejected.
 
-use marrow_store::Decimal;
 use marrow_store::key::SavedKey;
 use marrow_store::value::{
     SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
@@ -52,7 +51,6 @@ fn scalar_names_are_the_canonical_store_spelling() {
         (ScalarType::Date, "date"),
         (ScalarType::Instant, "instant"),
         (ScalarType::Duration, "duration"),
-        (ScalarType::Decimal, "decimal"),
     ] {
         assert_eq!(scalar.name(), name);
     }
@@ -200,72 +198,6 @@ fn non_canonical_instants_are_rejected() {
             decode_value(bad.as_bytes(), ScalarType::Instant),
             None,
             "{bad}"
-        );
-    }
-}
-
-#[test]
-fn decimals_round_trip_through_canonical_text() {
-    for text in [
-        "0", "5", "-5", "0.25", "1.5", "-1.5", "123.45", "0.025", "-0.5",
-    ] {
-        let value = decode_value(text.as_bytes(), ScalarType::Decimal).expect("valid decimal");
-        assert_eq!(encoded(&value), text.as_bytes(), "re-encode {text}");
-    }
-}
-
-#[test]
-fn decimal_encoding_is_value_canonical() {
-    let enc = |coefficient, scale| {
-        encoded(&SavedValue::Decimal(
-            Decimal::from_parts(coefficient, scale).expect("in-envelope decimal"),
-        ))
-    };
-    // Trailing-zero scale is normalized away to one spelling per value.
-    assert_eq!(enc(15, 1), b"1.5");
-    assert_eq!(enc(150, 2), b"1.5");
-    assert_eq!(enc(0, 0), b"0");
-    assert_eq!(enc(0, 5), b"0");
-    assert_eq!(enc(-25, 2), b"-0.25");
-}
-
-#[test]
-fn non_canonical_decimals_are_rejected() {
-    for bad in [
-        "1.0", "1.50", "01", "-0", ".5", "1.", "+1", "1e3", "00", "0.0",
-    ] {
-        assert_eq!(
-            decode_value(bad.as_bytes(), ScalarType::Decimal),
-            None,
-            "{bad}"
-        );
-    }
-}
-
-#[test]
-fn decimals_outside_the_envelope_are_rejected() {
-    // 35 significant digits exceeds the 34-digit envelope.
-    assert_eq!(
-        decode_value("1".repeat(35).as_bytes(), ScalarType::Decimal),
-        None
-    );
-    // 35 fractional places exceeds the 34-place scale.
-    let too_deep = format!("0.{}", "1".repeat(35));
-    assert_eq!(decode_value(too_deep.as_bytes(), ScalarType::Decimal), None);
-}
-
-#[test]
-fn saved_decimal_encoding_matches_the_shared_decimal_codec() {
-    // SavedValue::Decimal and Decimal share one canonical form: encoding a saved
-    // decimal must match Decimal::to_text for the same value, including
-    // normalization of a trailing-zero scale.
-    for text in ["0", "1.5", "-0.25", "123.456", "1.50", "0.50", "100"] {
-        let decimal = Decimal::parse(text).expect("valid decimal");
-        let saved = SavedValue::Decimal(decimal);
-        assert_eq!(
-            encoded(&saved),
-            decimal.to_text().as_bytes(),
-            "saved encoding diverged from the shared codec for {text}"
         );
     }
 }
@@ -429,9 +361,5 @@ fn scalar_key_projection_validates_temporal_ranges() {
         Err(ValueError::InstantOutOfRange {
             nanos: SUPPORTED_INSTANT_MAX_NANOS + 1
         })
-    );
-    assert_eq!(
-        Scalar::Decimal(Decimal::parse("1.5").unwrap()).as_key(),
-        Ok(None)
     );
 }

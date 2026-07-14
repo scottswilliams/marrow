@@ -8,12 +8,10 @@
 //! only the outermost `commit` persists it, and any `rollback` aborts it.
 
 use std::fs;
-use std::ops::{Bound, Range};
+use std::ops::Bound;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
 
 use redb::{
     Database, DatabaseError, Durability, ReadOnlyDatabase, ReadTransaction, ReadableDatabase,
@@ -36,7 +34,6 @@ const MARROW_REDB_DURABILITY: Durability = Durability::Immediate;
 const DELETE_BATCH_LIMIT: usize = 256;
 #[cfg(unix)]
 const STORE_SYMLINK_HOP_LIMIT: usize = 40;
-static STORE_PANIC_HOOK: Mutex<()> = Mutex::new(());
 
 impl<'a> traversal::ScanEntry
     for (
@@ -54,12 +51,9 @@ impl<'a> traversal::ScanEntry
 }
 
 pub(crate) struct RedbStore {
-    /// `Some` for the whole live handle; [`Drop`] takes it to close the database
-    /// under the panic backstop. redb flushes its allocator and region bitmaps as the
-    /// handle drops, and a store damaged in that metadata drives redb's close into a
-    /// slice-index panic; without the catch it would abort the process after a command
-    /// had already returned. The open transaction and pinned snapshot borrow the
-    /// database, so close drops them first.
+    /// `Some` for the whole live handle; [`Drop`] takes it to close the database. The
+    /// open transaction and pinned snapshot borrow the database, so close drops them
+    /// first.
     db: Option<DatabaseHandle>,
     /// The live write transaction while one is open.
     txn: Option<OpenTransaction>,
@@ -70,16 +64,11 @@ pub(crate) struct RedbStore {
 
 impl Drop for RedbStore {
     fn drop(&mut self) {
-        // Close the database under the panic backstop: redb persists its allocator
-        // state as the handle drops, and a store corrupted in that metadata panics
-        // there. The catch keeps a damaged store fail-closed rather than aborting the
-        // process on teardown.
-        let _ = catch_traversal(|| {
-            self.txn = None;
-            self.read_view = None;
-            drop(self.db.take());
-            Ok(())
-        });
+        // The open transaction and pinned snapshot borrow the database, so drop them
+        // before the handle that closes it.
+        self.txn = None;
+        self.read_view = None;
+        drop(self.db.take());
     }
 }
 
@@ -206,19 +195,6 @@ fn transient_open_io() -> StoreError {
     }
 }
 
-/// Map a filesystem error met while probing a store file to a typed store error
-/// without surfacing the platform errno. A denied path is its own path-bearing state;
-/// anything else — including a concurrent delete that races the open as `NotFound` —
-/// is a transient fault, never the raw `os error` string a client could not parse.
-fn classify_store_io_error(path: &Path, error: &std::io::Error) -> StoreError {
-    match error.kind() {
-        std::io::ErrorKind::PermissionDenied => StoreError::PermissionDenied {
-            path: path.to_path_buf(),
-        },
-        _ => transient_open_io(),
-    }
-}
-
 /// Classify a redb storage error surfaced while opening or probing a store:
 /// reported corruption and a torn or truncated body (an I/O `InvalidData` or
 /// unexpected EOF as redb walks the file) are hard corruption; anything else is
@@ -243,125 +219,6 @@ fn is_torn_body(error: &std::io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
     )
-}
-
-/// A redb storage backend that serves reads from an existing store file but absorbs
-/// every write and length change in an in-memory overlay, so the engine's
-/// write-capable open path runs against the real committed bytes without ever
-/// touching the file or taking its write lock.
-///
-/// The engine reads pages lazily, so the overlay materializes only the header,
-/// allocator-state, and system pages the open consults, never the whole store. The
-/// overlay is keyed by byte offset; an unwritten position reads through to the file,
-/// or zero past the file's original length, matching the zero-fill a real backend
-/// gives a freshly extended region.
-#[derive(Debug)]
-struct RecoveryProbeBackend {
-    file: Mutex<fs::File>,
-    file_len: u64,
-    overlay: Mutex<std::collections::BTreeMap<u64, Vec<u8>>>,
-    len: Mutex<u64>,
-}
-
-impl RecoveryProbeBackend {
-    fn open(path: &Path) -> Result<Self, StoreError> {
-        let file = fs::File::open(path).map_err(|error| classify_store_io_error(path, &error))?;
-        let file_len = file
-            .metadata()
-            .map_err(|error| classify_store_io_error(path, &error))?
-            .len();
-        Ok(Self {
-            file: Mutex::new(file),
-            file_len,
-            overlay: Mutex::new(std::collections::BTreeMap::new()),
-            len: Mutex::new(file_len),
-        })
-    }
-}
-
-impl redb::StorageBackend for RecoveryProbeBackend {
-    fn len(&self) -> Result<u64, std::io::Error> {
-        Ok(*self
-            .len
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()))
-    }
-
-    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), std::io::Error> {
-        use std::io::{Read, Seek, SeekFrom};
-        let file_span = out.len().min(self.file_len.saturating_sub(offset) as usize);
-        if file_span > 0 {
-            let mut file = self
-                .file
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            file.seek(SeekFrom::Start(offset))?;
-            file.read_exact(&mut out[..file_span])?;
-        }
-        out[file_span..].fill(0);
-        let read_end = offset + out.len() as u64;
-        let overlay = self
-            .overlay
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for (&start, bytes) in overlay.range(..read_end) {
-            let end = start + bytes.len() as u64;
-            let copy_start = start.max(offset);
-            let copy_end = end.min(read_end);
-            if copy_start >= copy_end {
-                continue;
-            }
-            let out_at = (copy_start - offset) as usize;
-            let src_at = (copy_start - start) as usize;
-            let span = (copy_end - copy_start) as usize;
-            out[out_at..out_at + span].copy_from_slice(&bytes[src_at..src_at + span]);
-        }
-        Ok(())
-    }
-
-    fn set_len(&self, len: u64) -> Result<(), std::io::Error> {
-        *self
-            .len
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = len;
-        Ok(())
-    }
-
-    fn sync_data(&self) -> Result<(), std::io::Error> {
-        Ok(())
-    }
-
-    fn write(&self, offset: u64, data: &[u8]) -> Result<(), std::io::Error> {
-        self.overlay
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(offset, data.to_vec());
-        Ok(())
-    }
-}
-
-/// Run redb's write-capable open detection against the store's committed bytes
-/// without modifying the file, so a read-only inspection agrees with `recover` and
-/// `run` on whether the store is recoverable.
-///
-/// A read-only open loads the allocator state recorded by the last clean commit and
-/// reads through the committed roots, so god-block or commit-tracker damage that the
-/// write-capable open rejects — a torn transaction slot, an aborted-repair state —
-/// opens cleanly and a content walk reads straight past it. The write-capable open
-/// consults that header region; this replays the same open over an overlay backend
-/// that reads the real bytes and discards every write, surfacing the engine's
-/// `RepairAborted` or corruption verdict while leaving the file and its lock
-/// untouched.
-///
-/// The caller runs this inside [`catch_open`], so a redb open panic on a clobbered
-/// header becomes typed corruption; the probe must not nest its own `catch_open`,
-/// whose panic-hook mutex is not reentrant.
-fn verify_committed_recoverable(path: &Path) -> Result<(), StoreError> {
-    let backend = RecoveryProbeBackend::open(path)?;
-    Database::builder()
-        .create_with_backend(backend)
-        .map(|_| ())
-        .map_err(|error| map_open_error(path, error))
 }
 
 /// Run a read-only or existing-store open, absorbing the window in which a concurrent
@@ -406,76 +263,6 @@ fn open_tolerating_creation_race(
 /// socket, or directory) or a missing file is not a store under construction.
 fn store_file_may_be_forming(path: &Path) -> bool {
     matches!(fs::metadata(path), Ok(metadata) if metadata.file_type().is_file())
-}
-
-/// Run a store open and its structural probe under the panic backstop.
-///
-/// redb does not return an error for every damaged file: a truncated or clobbered
-/// body drives its open-and-repair path into a layout assertion or an
-/// `unreachable!()`, which panics. The backstop catches that escape and converts it
-/// into [`StoreError::Corruption`], with a message describing the open failure.
-fn catch_open<T>(open: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
-    catch_store_panic(open, "the storage engine could not open the store file")
-}
-
-/// Run a store traversal under the panic backstop.
-///
-/// redb walks btree pages lazily as a command reads, gets, scans, seeks, inserts,
-/// or removes. A clobbered interior or leaf page that opened cleanly drives that
-/// walk into a slice-index assertion or an `unreachable!()`, panicking deep inside
-/// redb. Both reads and writes run here so the panic becomes typed corruption:
-/// every access shape — point get, forward and reverse scan, seek, snapshot pin,
-/// and the insert/remove descent a write performs — fails closed with a stable code
-/// instead of aborting the process on first traversal.
-fn catch_traversal<T>(body: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
-    catch_store_panic(body, "the store contains a damaged page and cannot be read")
-}
-
-/// Run `body` under a panic backstop that converts an escaping panic into
-/// [`StoreError::Corruption`] carrying `corruption_message`.
-///
-/// Marrow builds unwind on panic, so the catch leaves the process alive and the
-/// fault fail-closed with a typed code instead of a redb backtrace on stderr. The
-/// catch wraps only the store operation so it cannot mask an unrelated bug. A no-op
-/// panic hook is installed for the operation's duration so an expected redb panic
-/// does not print its message and backtrace, then the previous hook is restored. The
-/// hook is process-global, so concurrent in-process store operations serialize the
-/// swap, and panics from other threads still delegate to the hook that was installed
-/// before the operation.
-fn catch_store_panic<T>(
-    body: impl FnOnce() -> Result<T, StoreError>,
-    corruption_message: &'static str,
-) -> Result<T, StoreError> {
-    let hook_guard = STORE_PANIC_HOOK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    catch_store_panic_locked(body, corruption_message, &hook_guard)
-}
-
-fn catch_store_panic_locked<T>(
-    body: impl FnOnce() -> Result<T, StoreError>,
-    corruption_message: &'static str,
-    _hook_guard: &MutexGuard<'_, ()>,
-) -> Result<T, StoreError> {
-    let body_thread = std::thread::current().id();
-    let previous_hook = Arc::new(std::panic::take_hook());
-    let delegate_hook = Arc::clone(&previous_hook);
-    std::panic::set_hook(Box::new(move |info| {
-        if std::thread::current().id() != body_thread {
-            delegate_hook(info);
-        }
-    }));
-    let caught = std::panic::catch_unwind(AssertUnwindSafe(body));
-    drop(std::panic::take_hook());
-    let previous_hook =
-        Arc::try_unwrap(previous_hook).unwrap_or_else(|hook| Box::new(move |info| hook(info)));
-    std::panic::set_hook(previous_hook);
-    match caught {
-        Ok(result) => result,
-        Err(_) => Err(StoreError::Corruption {
-            message: corruption_message.into(),
-        }),
-    }
 }
 
 /// Classify the version recorded in a store's meta table. A missing version is
@@ -549,268 +336,6 @@ fn guard_regular_store_file(path: &Path) -> Result<(), StoreError> {
         }
         Err(_) => Err(transient_open_io()),
     }
-}
-
-/// The fixed prefix of redb's super-header this build reads to bound an open. It
-/// spans the layout fields and both 128-byte commit slots.
-const SUPERBLOCK_PREFIX_LEN: usize = 320;
-
-/// redb's node tags: the first byte of a btree page.
-const REDB_LEAF: u8 = 1;
-const REDB_BRANCH: u8 = 2;
-
-/// Reject a store whose committed page graph points any reachable page beyond the
-/// file, before redb maps that page.
-///
-/// redb sizes a page read straight from the page number — `2^order` pages at a
-/// region/index it never checks against the file — and allocates that span before
-/// examining the page, so one clobbered length or order field drives the open or a
-/// traversal into a multi-gigabyte allocation and an out-of-memory kill the panic
-/// backstop cannot intercept. This is the only place that allocation can be
-/// prevented rather than survived: every page reachable from the live committed
-/// roots is mapped to its byte range and rejected as corruption if it over-reaches,
-/// before the engine touches it. The walk follows the table tree to each table
-/// definition's root and on through the data subtrees' interior branch pages, so an
-/// interior child pointer is validated as strictly as the committed root. A header
-/// shorter than the prefix, or a degenerate geometry, is left to redb, which rejects
-/// a truncated or foreign body itself.
-fn guard_superblock_header(path: &Path) -> Result<(), StoreError> {
-    let header = match read_file_prefix(path, SUPERBLOCK_PREFIX_LEN)? {
-        Some(header) => header,
-        None => return Ok(()),
-    };
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(classify_store_io_error(path, &error)),
-    };
-    let file_len = file
-        .metadata()
-        .map_err(|error| classify_store_io_error(path, &error))?
-        .len();
-    let Some(geometry) = RedbGeometry::parse(&header) else {
-        return Ok(());
-    };
-    guard_committed_page_graph(&mut file, &header, &geometry, file_len)
-}
-
-/// The region geometry redb records in the super-header, enough to map any page
-/// number to its byte range.
-struct RedbGeometry {
-    page_size: u64,
-    region_size: u64,
-    region_pages_start: u64,
-}
-
-impl RedbGeometry {
-    /// Parse the geometry from the super-header prefix, or `None` when a field is
-    /// degenerate or its arithmetic overflows — a truncated or foreign body redb
-    /// rejects on its own.
-    fn parse(header: &[u8]) -> Option<Self> {
-        let page_size = u64::from(read_u32(header, 12));
-        let region_header_pages = u64::from(read_u32(header, 16));
-        let region_max_data_pages = u64::from(read_u32(header, 20));
-        if page_size == 0 {
-            return None;
-        }
-        let region_size = region_header_pages
-            .checked_add(region_max_data_pages)?
-            .checked_mul(page_size)?;
-        let region_pages_start = region_header_pages.checked_mul(page_size)?;
-        Some(Self {
-            page_size,
-            region_size,
-            region_pages_start,
-        })
-    }
-
-    /// The byte range a redb page number occupies, or `None` when it falls outside
-    /// the file or any step overflows. The number packs an order in its top bits and
-    /// a region/index below; its span is `2^order` pages, laid after the super-header
-    /// page.
-    fn page_byte_range(&self, raw: u64, file_len: u64) -> Option<Range<u64>> {
-        let order = (raw >> 59) as u32;
-        let region = (raw >> 20) & 0x000F_FFFF;
-        let page_index = raw & (0x000F_FFFF >> order);
-        let page_bytes = 1u64.checked_shl(order)?.checked_mul(self.page_size)?;
-        let start = region
-            .checked_mul(self.region_size)?
-            .checked_add(self.region_pages_start)?
-            .checked_add(page_index.checked_mul(page_bytes)?)?
-            .checked_add(self.page_size)?;
-        let end = start.checked_add(page_bytes)?;
-        (end <= file_len).then_some(start..end)
-    }
-}
-
-/// The role a page plays in the walk: a table tree's leaves carry table definitions
-/// whose roots open data subtrees, whereas a data subtree's leaves hold user values
-/// and reference no further pages.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PageRole {
-    TableTree,
-    DataTree,
-}
-
-/// Walk the live committed page graph, rejecting any page whose byte range leaves the
-/// file before the engine could allocate against it. Only the primary commit slot's
-/// roots are followed: redb reads the primary on a clean open, and a stale secondary
-/// slot can reference pages a later commit has reused, whose bytes no longer parse as
-/// the nodes they once were.
-fn guard_committed_page_graph(
-    file: &mut fs::File,
-    header: &[u8],
-    geometry: &RedbGeometry,
-    file_len: u64,
-) -> Result<(), StoreError> {
-    let primary_slot = if header[9] & 1 == 0 { 64usize } else { 192 };
-    let mut pending: Vec<(u64, PageRole)> = Vec::new();
-    for (flag_offset, root_offset) in [
-        (primary_slot + 1, primary_slot + 8),
-        (primary_slot + 2, primary_slot + 40),
-    ] {
-        if header[flag_offset] != 0 {
-            let root = u64::from_le_bytes(header[root_offset..root_offset + 8].try_into().unwrap());
-            pending.push((root, PageRole::TableTree));
-        }
-    }
-
-    let page_budget = file_len / geometry.page_size + 16;
-    let mut visited = std::collections::HashSet::new();
-    while let Some((raw, role)) = pending.pop() {
-        if !visited.insert(raw) {
-            continue;
-        }
-        if visited.len() as u64 > page_budget {
-            return Err(corruption(
-                "store page graph exceeds the file's page capacity",
-            ));
-        }
-        let Some(range) = geometry.page_byte_range(raw, file_len) else {
-            return Err(corruption("store points a btree page beyond the file"));
-        };
-        let span = (range.end - range.start) as usize;
-        let tag = read_store_span(file, range.start, span.min(4))?;
-        if tag.len() < 4 {
-            continue;
-        }
-        match tag[0] {
-            REDB_BRANCH => {
-                let children = usize::from(u16::from_le_bytes([tag[2], tag[3]])) + 1;
-                let needed = (8 + 24 * children).min(span);
-                let page = read_store_span(file, range.start, needed)?;
-                for child in 0..children {
-                    let offset = 8 + 16 * children + 8 * child;
-                    let Some(bytes) = page.get(offset..offset + 8) else {
-                        break;
-                    };
-                    pending.push((u64::from_le_bytes(bytes.try_into().unwrap()), role));
-                }
-            }
-            REDB_LEAF if role == PageRole::TableTree => {
-                let page = read_store_span(file, range.start, span)?;
-                for root in table_definition_roots(&page) {
-                    pending.push((root, PageRole::DataTree));
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// The non-null table-definition roots stored in a table-tree leaf. redb lays a
-/// variable-key, variable-value leaf as a u16 pair count, a `key_end` then a
-/// `value_end` offset array, then the key and value bytes; each value is an encoded
-/// table definition whose root page number sits at a fixed offset behind a non-null
-/// flag. A pair that does not parse is skipped rather than treated as damage: the
-/// page is already known to lie within the file, so the engine handles a genuinely
-/// malformed leaf.
-fn table_definition_roots(page: &[u8]) -> Vec<u64> {
-    let mut roots = Vec::new();
-    if page.len() < 4 {
-        return roots;
-    }
-    let pairs = usize::from(u16::from_le_bytes([page[2], page[3]]));
-    let value_ends = 4 + 4 * pairs;
-    let read_u32_at = |offset: usize| -> Option<usize> {
-        page.get(offset..offset + 4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
-    };
-    for pair in 0..pairs {
-        let start = if pair == 0 {
-            read_u32_at(4 + 4 * (pairs - 1))
-        } else {
-            read_u32_at(value_ends + 4 * (pair - 1))
-        };
-        let (Some(start), Some(end)) = (start, read_u32_at(value_ends + 4 * pair)) else {
-            continue;
-        };
-        let Some(value) = page.get(start..end) else {
-            continue;
-        };
-        // A table definition is a type byte, an 8-byte length, then a non-null flag
-        // guarding the root's page number.
-        if value.len() >= 18 && value[9] != 0 {
-            roots.push(u64::from_le_bytes(value[10..18].try_into().unwrap()));
-        }
-    }
-    roots
-}
-
-/// Read `len` bytes at `offset` from a store file whose range is already known to lie
-/// within the file. A short read means the file shrank under a concurrent writer; that
-/// is a transient fault, not corruption.
-fn read_store_span(file: &mut fs::File, offset: u64, len: usize) -> Result<Vec<u8>, StoreError> {
-    use std::io::{Read, Seek, SeekFrom};
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|_| transient_open_io())?;
-    let mut buffer = vec![0u8; len];
-    match file.read_exact(&mut buffer) {
-        Ok(()) => Ok(buffer),
-        Err(_) => Err(transient_open_io()),
-    }
-}
-
-fn corruption(message: &'static str) -> StoreError {
-    StoreError::Corruption {
-        message: message.into(),
-    }
-}
-
-/// Read up to `len` bytes from the start of the file, or `None` when there is no
-/// committed header to validate: a missing file (creation handles it) or a body
-/// shorter than `len` (a truncated body redb rejects on its own).
-fn read_file_prefix(path: &Path, len: usize) -> Result<Option<Vec<u8>>, StoreError> {
-    use std::io::Read;
-
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        // A denied store file is its own path-bearing state: the fix is to grant
-        // access, not retry, so it never collapses into the transient I/O bucket.
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            return Err(StoreError::PermissionDenied {
-                path: path.to_path_buf(),
-            });
-        }
-        Err(_) => return Err(transient_open_io()),
-    };
-    let mut buffer = vec![0u8; len];
-    match file.read_exact(&mut buffer) {
-        Ok(()) => Ok(Some(buffer)),
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            Err(StoreError::PermissionDenied {
-                path: path.to_path_buf(),
-            })
-        }
-        Err(_) => Err(transient_open_io()),
-    }
-}
-
-fn read_u32(header: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap())
 }
 
 #[cfg(unix)]
@@ -925,8 +450,8 @@ fn stamp_or_verify_format_version(
 /// Verify the recorded format version and data table on an existing-store open.
 /// A file with no meta table or no data table is not a complete Marrow store;
 /// this path never creates, so it cannot be a fresh one. Damage below the table
-/// roots is not probed here: redb walks those pages lazily, so it surfaces when a
-/// read traverses the tree, under [`catch_traversal`].
+/// roots is not probed here: redb walks those pages lazily, so it surfaces as a
+/// typed [`StoreError`] when a read traverses the tree.
 fn verify_existing_store_shape(db: &impl ReadableDatabase) -> Result<(), StoreError> {
     let read = db.begin_read().map_err(open_transaction_error)?;
     let recorded = match read.open_table(META) {
@@ -1146,19 +671,14 @@ macro_rules! read_view {
 impl RedbStore {
     /// Open the redb-backed store at `path`, creating the file if needed. A
     /// concurrent read-only or read-write holder is rejected as [`StoreError::Locked`],
-    /// and a file recording
-    /// a different [`FORMAT_VERSION`] as [`StoreError::FormatVersion`]. A damaged
-    /// body fails closed as [`StoreError::Corruption`] rather than panicking the
-    /// process; the open and its structural probe run under [`catch_open`].
+    /// and a file recording a different [`FORMAT_VERSION`] as
+    /// [`StoreError::FormatVersion`]. A malformed body surfaces redb's own open error
+    /// as a typed [`StoreError`] through [`map_open_error`].
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
-        let db = catch_open(|| {
-            guard_regular_store_file(path)?;
-            guard_superblock_header(path)?;
-            let sync_parent_after_commit = prepare_new_store_file(path)?;
-            let db = open_write_capable(path, || Database::create(path))?;
-            stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
-            Ok(db)
-        })?;
+        guard_regular_store_file(path)?;
+        let sync_parent_after_commit = prepare_new_store_file(path)?;
+        let db = open_write_capable(path, || Database::create(path))?;
+        stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
         Ok(Self::from_handle(DatabaseHandle::ReadWrite(db)))
     }
 
@@ -1171,7 +691,7 @@ impl RedbStore {
     }
 
     /// The open database handle. Always present while the store is live; only
-    /// [`Drop`] takes it to close the database under the panic backstop.
+    /// [`Drop`] takes it to close the database.
     fn handle(&self) -> &DatabaseHandle {
         self.db.as_ref().expect("store handle is live until drop")
     }
@@ -1181,13 +701,10 @@ impl RedbStore {
     /// already carries Marrow metadata.
     pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
         let db = open_tolerating_creation_race(path, || {
-            catch_open(|| {
-                guard_regular_store_file(path)?;
-                guard_superblock_header(path)?;
-                let db = open_write_capable(path, || Database::open(path))?;
-                verify_existing_store_shape(&db)?;
-                Ok(DatabaseHandle::ReadWrite(db))
-            })
+            guard_regular_store_file(path)?;
+            let db = open_write_capable(path, || Database::open(path))?;
+            verify_existing_store_shape(&db)?;
+            Ok(DatabaseHandle::ReadWrite(db))
         })?;
         Ok(Self::from_handle(db))
     }
@@ -1195,27 +712,14 @@ impl RedbStore {
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
     /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
     /// than stamping it; write-capability operations fail before any write
-    /// transaction begins.
-    ///
-    /// A read-only open is more permissive than the write-capable open `recover` and
-    /// `run` use: it reads through the last clean commit's roots, so god-block or
-    /// commit-tracker damage that the write open rejects opens cleanly here and a
-    /// content walk reads past it. So before the handle is returned,
-    /// [`verify_committed_recoverable`] replays the write-capable open detection over
-    /// the committed bytes without touching the file, surfacing the same
-    /// [`StoreError::RecoveryRequired`] or corruption the write path reports. The open
-    /// and its probes run under [`catch_open`].
+    /// transaction begins. A malformed body surfaces redb's own open error as a typed
+    /// [`StoreError`] through [`map_open_error`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         let db = open_tolerating_creation_race(path, || {
-            catch_open(|| {
-                guard_regular_store_file(path)?;
-                guard_superblock_header(path)?;
-                let db =
-                    ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
-                verify_existing_store_shape(&db)?;
-                verify_committed_recoverable(path)?;
-                Ok(DatabaseHandle::ReadOnly(db))
-            })
+            guard_regular_store_file(path)?;
+            let db = ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
+            verify_existing_store_shape(&db)?;
+            Ok(DatabaseHandle::ReadOnly(db))
         })?;
         Ok(Self::from_handle(db))
     }
@@ -1242,46 +746,40 @@ impl RedbStore {
         op: &'static str,
         mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        catch_traversal(|| {
-            let Some(txn) = &self.txn else {
-                let write = self.handle().begin_write(op)?;
-                {
-                    let mut table = write.open_table(TABLE).map_err(io(op))?;
-                    mutate(&mut table)?;
-                }
-                return write.commit().map_err(io(op));
-            };
-            let mut table = txn.write.open_table(TABLE).map_err(io(op))?;
-            mutate(&mut table)?;
-            Ok(())
-        })
+        let Some(txn) = &self.txn else {
+            let write = self.handle().begin_write(op)?;
+            {
+                let mut table = write.open_table(TABLE).map_err(io(op))?;
+                mutate(&mut table)?;
+            }
+            return write.commit().map_err(io(op));
+        };
+        let mut table = txn.write.open_table(TABLE).map_err(io(op))?;
+        mutate(&mut table)?;
+        Ok(())
     }
 }
 
 impl Backend for RedbStore {
     fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "read", |table| Ok(table
-                .get(key)
-                .map_err(io("read"))?
-                .map(|guard| guard.value().to_vec())))
-        })
+        read_view!(self, "read", |table| Ok(table
+            .get(key)
+            .map_err(io("read"))?
+            .map(|guard| guard.value().to_vec())))
     }
 
     fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "read_prefix", |table| Ok(table
-                .get(key)
-                .map_err(io("read_prefix"))?
-                .map(|guard| {
-                    let value = guard.value();
-                    let copied = value.len().min(limit);
-                    ValuePrefix {
-                        bytes: value[..copied].to_vec(),
-                        truncated: value.len() > limit,
-                    }
-                })))
-        })
+        read_view!(self, "read_prefix", |table| Ok(table
+            .get(key)
+            .map_err(io("read_prefix"))?
+            .map(|guard| {
+                let value = guard.value();
+                let copied = value.len().min(limit);
+                ValuePrefix {
+                    bytes: value[..copied].to_vec(),
+                    truncated: value.len() > limit,
+                }
+            })))
     }
 
     fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
@@ -1319,7 +817,7 @@ impl Backend for RedbStore {
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        catch_traversal(|| read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit)))
+        read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit))
     }
 
     fn scan_after(
@@ -1328,10 +826,8 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "scan_after", |table| {
-                streamed_scan_after(&table, prefix, cursor, limit)
-            })
+        read_view!(self, "scan_after", |table| {
+            streamed_scan_after(&table, prefix, cursor, limit)
         })
     }
 
@@ -1341,10 +837,8 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "scan_before", |table| {
-                streamed_scan_before(&table, prefix, cursor, limit)
-            })
+        read_view!(self, "scan_before", |table| {
+            streamed_scan_before(&table, prefix, cursor, limit)
         })
     }
 
@@ -1355,10 +849,8 @@ impl Backend for RedbStore {
         upper: Option<&[u8]>,
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "scan_between", |table| {
-                streamed_scan_between(&table, prefix, lower, upper, limit)
-            })
+        read_view!(self, "scan_between", |table| {
+            streamed_scan_between(&table, prefix, lower, upper, limit)
         })
     }
 
@@ -1370,10 +862,8 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "scan_between_after", |table| {
-                streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
-            })
+        read_view!(self, "scan_between_after", |table| {
+            streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
         })
     }
 
@@ -1385,10 +875,8 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_traversal(|| {
-            read_view!(self, "scan_between_before", |table| {
-                streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
-            })
+        read_view!(self, "scan_between_before", |table| {
+            streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
         })
     }
 
@@ -1398,7 +886,7 @@ impl Backend for RedbStore {
             Some(txn) => txn.depth += 1,
             None => {
                 self.txn = Some(OpenTransaction {
-                    write: catch_traversal(|| self.handle().begin_write("begin"))?,
+                    write: self.handle().begin_write("begin")?,
                     depth: 1,
                 });
             }
@@ -1413,7 +901,7 @@ impl Backend for RedbStore {
         };
         txn.depth -= 1;
         if txn.depth == 0 {
-            catch_traversal(|| txn.write.commit().map_err(io("commit")))?;
+            txn.write.commit().map_err(io("commit"))?;
         } else {
             self.txn = Some(txn);
         }
@@ -1425,7 +913,7 @@ impl Backend for RedbStore {
         let Some(txn) = self.txn.take() else {
             return Ok(());
         };
-        catch_traversal(|| txn.write.abort().map_err(io("rollback")))?;
+        txn.write.abort().map_err(io("rollback"))?;
         Ok(())
     }
 
@@ -1453,16 +941,12 @@ impl Backend for RedbStore {
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use redb::{Database, ReadableDatabase, TableDefinition};
 
-    use super::{
-        DELETE_BATCH_LIMIT, FORMAT_VERSION, META, RedbStore, STORE_PANIC_HOOK, TABLE, catch_open,
-        catch_store_panic_locked, map_open_error,
-    };
+    use super::{DELETE_BATCH_LIMIT, FORMAT_VERSION, META, RedbStore, TABLE, map_open_error};
     use crate::backend::{Backend, StoreError};
     use crate::conformance;
 
@@ -1507,65 +991,6 @@ mod tests {
         }
     }
 
-    /// A redb panic during open or repair must not abort the process: the backstop
-    /// converts it into typed corruption. Proven by injecting a panicking open so the
-    /// catch is exercised even without a file that forces redb's exact `unreachable!`.
-    #[test]
-    fn catch_open_converts_a_panicking_open_into_corruption() {
-        let result: Result<(), StoreError> = catch_open(|| panic!("redb unreachable during open"));
-        match result {
-            Err(StoreError::Corruption { .. }) => {}
-            other => panic!("expected corruption from a caught open panic, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn catch_open_preserves_the_panic_hook_for_other_threads() {
-        let hook_guard = STORE_PANIC_HOOK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let seen = Arc::new(AtomicUsize::new(0));
-        let previous_hook = std::panic::take_hook();
-        let seen_hook = Arc::clone(&seen);
-        std::panic::set_hook(Box::new(move |_| {
-            seen_hook.fetch_add(1, Ordering::SeqCst);
-        }));
-
-        let result: Result<(), StoreError> = catch_store_panic_locked(
-            || {
-                std::thread::spawn(|| {
-                    let _ = std::panic::catch_unwind(|| {
-                        panic!("unrelated test panic");
-                    });
-                })
-                .join()
-                .expect("panic was caught in the thread");
-                Ok(())
-            },
-            "the storage engine could not open the store file",
-            &hook_guard,
-        );
-
-        let installed_hook = std::panic::take_hook();
-        drop(installed_hook);
-        std::panic::set_hook(previous_hook);
-        drop(hook_guard);
-
-        result.expect("catch open succeeds");
-        assert_eq!(
-            seen.load(Ordering::SeqCst),
-            1,
-            "unrelated thread panics must keep the existing hook"
-        );
-    }
-
-    /// A non-panicking closure passes its result through unchanged, so the backstop
-    /// adds no behavior beyond catching a panic.
-    #[test]
-    fn catch_open_passes_a_clean_result_through() {
-        assert_eq!(catch_open(|| Ok(7)).expect("clean open"), 7);
-    }
-
     #[test]
     fn redb_write_policy_is_pinned_and_fresh_store_creation_syncs_the_parent() {
         let source = include_str!("redb.rs");
@@ -1605,9 +1030,9 @@ mod tests {
 
     /// An unreadable store file — a regular store body whose mode denies access while
     /// its parent directory stays searchable — is a permission fault, not a transient
-    /// I/O blip. The header probe runs before the engine open, so the denied prefix
-    /// read must carry the typed `store.permission_denied` code and name the path on
-    /// every open path, never collapse into the `store.io` catch-all with a raw errno.
+    /// I/O blip. The engine open on the denied body must carry the typed
+    /// `store.permission_denied` code and name the path on every open path, never
+    /// collapse into the `store.io` catch-all with a raw errno.
     #[cfg(unix)]
     #[test]
     fn opening_a_denied_store_file_is_permission_denied_on_every_open_path() {
@@ -1750,50 +1175,6 @@ mod tests {
             let path = dir.path().join(format!("store-{counter}.redb"));
             RedbStore::open(&path)
         })
-    }
-
-    /// A byte flip below the table roots — invisible to a table-open probe — must
-    /// surface as typed corruption when a read traverses the tree, never as a process
-    /// panic. The read backstop catches redb's slice-index panic on a damaged page
-    /// and maps it to corruption; an offset redb tolerates simply reads through.
-    /// Either way no read panics, across a point get, a forward scan, and a reverse
-    /// scan. The seed spans interior btree pages so the damage hides below the roots.
-    #[test]
-    fn reads_over_a_damaged_page_report_corruption_not_a_panic() {
-        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
-        let seed = dir.path().join("seed.redb");
-        {
-            let mut store = RedbStore::open(&seed).expect("open fresh");
-            for n in 0..4000u32 {
-                let key = format!("k/{n:08}").into_bytes();
-                Backend::write(&mut store, &key, vec![0u8; 64]).expect("write");
-            }
-        }
-        let body = std::fs::read(&seed).expect("read store body");
-
-        for offset in [8192usize, 12288, 16384, 20484, 24576] {
-            let mut bytes = body.clone();
-            bytes[offset] ^= 0xff;
-            let path = dir.path().join(format!("corrupt-{offset}.redb"));
-            std::fs::write(&path, &bytes).expect("write corrupted body");
-
-            let store = match RedbStore::open(&path) {
-                Ok(store) => store,
-                // A flip that damages the file header is caught at open; still no panic.
-                Err(StoreError::Corruption { .. }) => continue,
-                Err(other) => panic!("offset {offset}: unexpected open error {other:?}"),
-            };
-            for outcome in [
-                Backend::read(&store, b"k/00000001").map(|_| ()),
-                Backend::scan(&store, b"k/", 8000).map(|_| ()),
-                Backend::scan_before(&store, b"k/", b"k/99999999", 8000).map(|_| ()),
-            ] {
-                match outcome {
-                    Ok(()) | Err(StoreError::Corruption { .. }) => {}
-                    Err(other) => panic!("offset {offset}: a read must not fault as {other:?}"),
-                }
-            }
-        }
     }
 
     #[test]
@@ -2101,473 +1482,6 @@ mod tests {
         assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
     }
 
-    /// A read-only inspection racing a writer's first-run store creation must never see
-    /// a false corruption: it observes either no store yet, the writer's lock, or a
-    /// healthy store. The header-less empty-file window between the file appearing and
-    /// the writer committing its header under the lock once surfaced as corruption to a
-    /// racing reader; the reader now tolerates that transient empty body and so only
-    /// ever resolves to a healthy store, the lock, or a not-yet-created store.
-    #[test]
-    fn read_only_open_racing_first_run_creation_never_false_corrupts() {
-        for _ in 0..16 {
-            let dir = TempDir::new("marrow-store-redb-race").expect("temp dir");
-            let path = dir.path().join("marrow.redb");
-
-            let writer_path = path.clone();
-            let writer = std::thread::spawn(move || {
-                let mut store = RedbStore::open(&writer_path).expect("create fresh store");
-                store.write(b"k", b"v".to_vec()).expect("write");
-            });
-
-            let reader_path = path.clone();
-            let reader = std::thread::spawn(move || {
-                loop {
-                    match RedbStore::open_read_only(&reader_path) {
-                        Ok(_) => return,
-                        Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {
-                            std::thread::yield_now();
-                            continue;
-                        }
-                        Err(StoreError::Corruption { message }) => {
-                            panic!("reader saw false corruption mid-creation: {message}")
-                        }
-                        Err(other) => {
-                            // A not-yet-created store surfaces as a not-found-style error;
-                            // anything else is an unexpected classification.
-                            if format!("{other:?}").contains("NotFound")
-                                || format!("{other:?}").contains("not found")
-                            {
-                                std::thread::yield_now();
-                                continue;
-                            }
-                            return;
-                        }
-                    }
-                }
-            });
-
-            writer.join().expect("writer thread");
-            reader.join().expect("reader thread");
-        }
-    }
-
-    /// A settled, writer-free zero-length store file is genuine corruption and must
-    /// still be reported as such: the creation-race tolerance retries only while the
-    /// file stays empty, so an empty file that never fills surfaces corruption once the
-    /// brief budget is spent.
-    #[test]
-    fn read_only_open_rejects_a_settled_empty_store_as_corruption() {
-        let dir = TempDir::new("marrow-store-redb-empty").expect("temp dir");
-        let path = dir.path().join("marrow.redb");
-        std::fs::File::create(&path).expect("create empty file");
-
-        match RedbStore::open_read_only(&path).map(|_| ()) {
-            Err(StoreError::Corruption { .. }) => {}
-            other => panic!("a settled empty store must be corruption, got {other:?}"),
-        }
-    }
-
-    /// A read-only open that begins while the store file is a header-less empty body —
-    /// the window a first-run writer briefly leaves — must resolve to the healthy store
-    /// once the writer fills and unlocks it, never a false corruption.
-    #[test]
-    fn read_only_open_tolerates_a_mid_creation_empty_file() {
-        use std::time::Duration;
-
-        let dir = TempDir::new("marrow-store-redb-fill").expect("temp dir");
-        let path = dir.path().join("marrow.redb");
-        std::fs::File::create(&path).expect("create empty file");
-
-        let writer_path = path.clone();
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(3));
-            let mut store = RedbStore::open(&writer_path).expect("create store");
-            store.write(b"k", b"v".to_vec()).expect("write");
-        });
-
-        // The reader starts against the empty placeholder; the tolerance window must
-        // outlast the writer so the reader sees the finished store, not corruption.
-        let result = RedbStore::open_read_only(&path).map(|_| ());
-        writer.join().expect("writer thread");
-        match result {
-            Ok(_) | Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {}
-            Err(StoreError::Corruption { message }) => {
-                panic!("mid-creation empty file misread as corruption: {message}")
-            }
-            other => panic!("unexpected mid-creation classification: {other:?}"),
-        }
-    }
-
-    /// A commit slot's root page number, clobbered in its high bit, decodes to a page
-    /// whose byte range lies far past the file. redb maps that page by allocating its
-    /// span, so the corrupt root drives an unbounded allocation before any data is read.
-    /// The open must reject such a header as corruption promptly, never allocate toward
-    /// it. Each flip runs on a worker thread with a deadline so a regression surfaces as
-    /// a timeout (the unbounded allocation) rather than a hung or OOM-killed suite.
-    #[test]
-    fn open_rejects_a_corrupt_root_page_number_without_unbounded_allocation() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let dir = TempDir::new("marrow-store-redb-root").expect("temp dir");
-        let seed = dir.path().join("seed.redb");
-        {
-            let mut store = RedbStore::open(&seed).expect("open fresh");
-            Backend::write(&mut store, b"k", b"v".to_vec()).expect("write");
-        }
-        let body = std::fs::read(&seed).expect("read store body");
-
-        // The high byte of the little-endian u64 root page number in commit slot 0:
-        // the user root at file offset 72 and the system root at offset 104.
-        for offset in [79usize, 111] {
-            let mut bytes = body.clone();
-            bytes[offset] = 0xff;
-            let path = dir.path().join(format!("root-{offset}.redb"));
-            std::fs::write(&path, &bytes).expect("write corrupted body");
-
-            for label in ["open", "open_existing", "open_read_only"] {
-                let path = path.clone();
-                let (sender, receiver) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let result = match label {
-                        "open" => RedbStore::open(&path),
-                        "open_existing" => RedbStore::open_existing(&path),
-                        _ => RedbStore::open_read_only(&path),
-                    };
-                    let _ = sender.send(result.map(|_| ()));
-                });
-                match receiver.recv_timeout(Duration::from_secs(20)) {
-                    Ok(Err(StoreError::Corruption { .. })) => {}
-                    Ok(other) => panic!(
-                        "offset {offset} {label}: a corrupt root must be corruption, got {other:?}"
-                    ),
-                    Err(_) => panic!(
-                        "offset {offset} {label}: open did not return (unbounded allocation on a corrupt root)"
-                    ),
-                }
-            }
-        }
-    }
-
-    /// An interior btree page number — a branch child pointer below the committed
-    /// root — clobbered toward a huge page order would drive redb's traversal into a
-    /// multi-gigabyte page allocation and an out-of-memory kill the panic backstop
-    /// cannot intercept. The structural guard maps every reachable page to its byte
-    /// range and rejects an over-reaching one as corruption before the engine reads
-    /// it, so every open path fails closed in bounded memory rather than ballooning.
-    /// Each open runs on a worker thread with a deadline so a regression surfaces as a
-    /// timeout instead of an OOM-killed suite.
-    #[test]
-    fn open_rejects_a_corrupt_interior_page_without_unbounded_allocation() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let dir = TempDir::new("marrow-store-redb-interior").expect("temp dir");
-        let seed = dir.path().join("seed.redb");
-        {
-            let mut store = RedbStore::open(&seed).expect("open fresh");
-            for n in 0..8000u32 {
-                let key = format!("k/{n:08}").into_bytes();
-                Backend::write(&mut store, &key, vec![0u8; 48]).expect("write");
-            }
-        }
-        let body = std::fs::read(&seed).expect("read store body");
-        let page_size = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
-        let region_header_pages = u32::from_le_bytes(body[16..20].try_into().unwrap()) as usize;
-        let data_start = (1 + region_header_pages) * page_size;
-
-        // Branch pages carry the tag byte 2; corrupt each one's first child pointer to
-        // a huge page order so its byte span runs far past the file.
-        let mut branch_offsets = Vec::new();
-        let mut offset = data_start;
-        while offset + page_size <= body.len() {
-            if body[offset] == super::REDB_BRANCH {
-                branch_offsets.push(offset);
-            }
-            offset += page_size;
-        }
-        assert!(
-            !branch_offsets.is_empty(),
-            "the seed must build interior branch pages"
-        );
-
-        let mut rejected_any = false;
-        for branch in branch_offsets {
-            let children = usize::from(u16::from_le_bytes(
-                body[branch + 2..branch + 4].try_into().unwrap(),
-            )) + 1;
-            let child0_msb = branch + 8 + 16 * children + 7;
-            let mut bytes = body.clone();
-            bytes[child0_msb] = 0xF8; // a page order far past any region
-            let path = dir.path().join(format!("interior-{branch}.redb"));
-            std::fs::write(&path, &bytes).expect("write corrupted body");
-
-            for label in ["open", "open_existing", "open_read_only"] {
-                let path = path.clone();
-                let (sender, receiver) = mpsc::channel();
-                std::thread::spawn(move || {
-                    let result = match label {
-                        "open" => RedbStore::open(&path).map(|_| ()),
-                        "open_existing" => RedbStore::open_existing(&path).map(|_| ()),
-                        _ => RedbStore::open_read_only(&path).map(|_| ()),
-                    };
-                    let _ = sender.send(result);
-                });
-                match receiver.recv_timeout(Duration::from_secs(20)) {
-                    // A branch below a page the live graph never reaches opens cleanly;
-                    // what matters is that no path ever over-allocates.
-                    Ok(Ok(())) => {}
-                    Ok(Err(StoreError::Corruption { .. })) => rejected_any = true,
-                    Ok(Err(other)) => {
-                        panic!("branch {branch} {label}: unexpected error {other:?}")
-                    }
-                    Err(_) => panic!(
-                        "branch {branch} {label}: open did not return (unbounded allocation on a corrupt interior page)"
-                    ),
-                }
-            }
-        }
-        assert!(
-            rejected_any,
-            "a corrupt interior branch child must be rejected as corruption"
-        );
-    }
-
-    /// A reader opening a store that a concurrent writer is deleting and recreating
-    /// must never see a false corruption: it observes the healthy store, the writer's
-    /// lock, a transient fault, or a not-yet-created store, but never `store.corruption`
-    /// from the partial-superblock window the creator writes incrementally before its
-    /// magic lands.
-    #[test]
-    fn read_only_open_racing_store_recreation_never_false_corrupts() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let dir = TempDir::new("marrow-store-redb-recreate").expect("temp dir");
-        let path = dir.path().join("marrow.redb");
-        {
-            let mut store = RedbStore::open(&path).expect("seed store");
-            store.write(b"k", b"v".to_vec()).expect("seed value");
-        }
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let writer_path = path.clone();
-        let writer_stop = Arc::clone(&stop);
-        let writer = std::thread::spawn(move || {
-            while !writer_stop.load(Ordering::Relaxed) {
-                let _ = std::fs::remove_file(&writer_path);
-                if let Ok(mut store) = RedbStore::open(&writer_path) {
-                    let _ = store.write(b"k", b"v".to_vec());
-                }
-            }
-        });
-
-        for _ in 0..4000 {
-            match RedbStore::open_read_only(&path) {
-                Ok(_) | Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {}
-                Err(StoreError::Corruption { message }) => {
-                    stop.store(true, Ordering::Relaxed);
-                    writer.join().expect("writer thread");
-                    panic!("reader saw false corruption mid-recreation: {message}");
-                }
-                Err(other) => {
-                    if !format!("{other:?}").contains("NotFound")
-                        && !format!("{other:?}").contains("not found")
-                    {
-                        stop.store(true, Ordering::Relaxed);
-                        writer.join().expect("writer thread");
-                        panic!("reader saw unexpected error mid-recreation: {other:?}");
-                    }
-                }
-            }
-        }
-        stop.store(true, Ordering::Relaxed);
-        writer.join().expect("writer thread");
-    }
-
-    /// The creation-race tolerance's discriminator: which corruptions to retry as a
-    /// transient artifact of a live creation rather than surface as settled damage.
-    /// redb writes a store's magic last, so a header-absent placeholder is retry-worthy;
-    /// but a delete-and-create recreation raced on distinct inodes can also leave a torn
-    /// intermediate that already bears the magic, which must be retried too. A missing
-    /// path and a non-regular one (a directory here) are never a store under
-    /// construction.
-    #[test]
-    fn creation_race_discriminator_retries_any_regular_store_file() {
-        let dir = TempDir::new("marrow-store-redb-forming").expect("temp dir");
-        let path = dir.path().join("marrow.redb");
-
-        assert!(
-            !super::store_file_may_be_forming(&path),
-            "a missing path is not a store under construction"
-        );
-
-        let healthy = {
-            let mut store = RedbStore::open(&path).expect("seed store");
-            store.write(b"k", b"v".to_vec()).expect("seed value");
-            drop(store);
-            std::fs::read(&path).expect("read healthy body")
-        };
-
-        // A header-absent placeholder — the magic has not landed — is forming.
-        std::fs::write(&path, b"").expect("write empty placeholder");
-        assert!(super::store_file_may_be_forming(&path));
-
-        // A torn intermediate that already bears the magic — the flock-defeat
-        // recreation window — is likewise retry-worthy, not immediate corruption.
-        std::fs::write(&path, &healthy[..64]).expect("write magic-present torn body");
-        assert!(super::store_file_may_be_forming(&path));
-
-        let subdir = dir.path().join("subdir");
-        std::fs::create_dir(&subdir).expect("create dir");
-        assert!(
-            !super::store_file_may_be_forming(&subdir),
-            "a directory is not a store under construction"
-        );
-    }
-
-    /// Two or more writers deleting and recreating the store on the same path race on
-    /// distinct inodes: one holds a store open while another unlinks it and creates a
-    /// fresh one, so the flock that would serialize same-inode opens does not apply, and
-    /// the window can leave the path a torn intermediate that already bears redb's magic.
-    /// A reader and a backup-capable open racing that recreation must resolve to the
-    /// healthy store, the writer's lock, a transient fault, or a not-yet-created store —
-    /// never a false `store.corruption`.
-    #[test]
-    fn opens_racing_multi_writer_store_recreation_never_false_corrupt() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let dir = TempDir::new("marrow-store-redb-multi-recreate").expect("temp dir");
-        let path = dir.path().join("marrow.redb");
-        {
-            let mut store = RedbStore::open(&path).expect("seed store");
-            store.write(b"k", b"v".to_vec()).expect("seed value");
-        }
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let writers: Vec<_> = (0..2)
-            .map(|_| {
-                let writer_path = path.clone();
-                let writer_stop = Arc::clone(&stop);
-                std::thread::spawn(move || {
-                    while !writer_stop.load(Ordering::Relaxed) {
-                        let _ = std::fs::remove_file(&writer_path);
-                        if let Ok(mut store) = RedbStore::open(&writer_path) {
-                            let _ = store.write(b"k", b"v".to_vec());
-                        }
-                    }
-                })
-            })
-            .collect();
-        let join_writers = |writers: Vec<std::thread::JoinHandle<()>>| {
-            for writer in writers {
-                writer.join().expect("writer thread");
-            }
-        };
-
-        for iteration in 0..2000 {
-            // Alternate the two open paths a reader and a backup-capable inspection take,
-            // both of which route through the creation-race tolerance.
-            let opened = if iteration % 2 == 0 {
-                RedbStore::open_read_only(&path).map(|_| ())
-            } else {
-                RedbStore::open_existing(&path).map(|_| ())
-            };
-            match opened {
-                Ok(()) | Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {}
-                Err(StoreError::Corruption { message }) => {
-                    stop.store(true, Ordering::Relaxed);
-                    join_writers(writers);
-                    panic!("open saw false corruption mid-recreation: {message}");
-                }
-                Err(other) => {
-                    if !format!("{other:?}").contains("NotFound")
-                        && !format!("{other:?}").contains("not found")
-                    {
-                        stop.store(true, Ordering::Relaxed);
-                        join_writers(writers);
-                        panic!("open saw unexpected error mid-recreation: {other:?}");
-                    }
-                }
-            }
-        }
-        stop.store(true, Ordering::Relaxed);
-        join_writers(writers);
-    }
-
-    /// A settled, writer-free store whose body is torn but still carries redb's magic
-    /// number is genuine corruption and must surface, not be mistaken for a store still
-    /// being formed: with no live creator, every open across the creation-race budget
-    /// keeps returning corruption, so it surfaces once the budget is spent. It fails
-    /// closed on both the read-only and the write-capable existing-store open.
-    #[test]
-    fn open_rejects_a_settled_torn_store_bearing_the_magic() {
-        let dir = TempDir::new("marrow-store-redb-torn").expect("temp dir");
-        let path = dir.path().join("marrow.redb");
-        {
-            let mut store = RedbStore::open(&path).expect("seed store");
-            store.write(b"k", b"v".to_vec()).expect("seed value");
-        }
-        // Truncate to just past the magic number: the magic is intact, but the header
-        // is gone, so this is a settled torn body, not a creation race.
-        let body = std::fs::read(&path).expect("read store body");
-        std::fs::write(&path, &body[..64]).expect("truncate store");
-
-        for opened in [
-            RedbStore::open_read_only(&path).map(|_| ()),
-            RedbStore::open_existing(&path).map(|_| ()),
-        ] {
-            match opened {
-                Err(StoreError::Corruption { .. }) => {}
-                other => panic!(
-                    "a settled torn store bearing the magic must be corruption, got {other:?}"
-                ),
-            }
-        }
-    }
-
-    /// The recovery probe's file open maps a vanished store — a delete that races the
-    /// open after the header was read — to the typed transient store error, never the
-    /// raw OS errno string.
-    #[test]
-    fn recovery_probe_open_on_a_missing_file_is_io_without_a_raw_errno() {
-        let dir = TempDir::new("marrow-store-redb-probe-missing").expect("temp dir");
-        let path = dir.path().join("absent.redb");
-        match super::RecoveryProbeBackend::open(&path) {
-            Err(error @ StoreError::Io { .. }) => assert!(
-                !error.to_string().contains("(os error"),
-                "the probe-open message must not leak the OS errno: {error}"
-            ),
-            other => panic!("a missing probe target must be store.io, got {other:?}"),
-        }
-    }
-
-    /// A store-file probe maps a denied path to `store.permission_denied` and any other
-    /// fault — a concurrent delete races the open as `NotFound` — to the transient
-    /// `store.io`, never embedding the platform errno.
-    #[test]
-    fn classify_store_io_error_never_leaks_the_errno() {
-        let path = std::path::Path::new("/tmp/marrow-store-classify.redb");
-        match super::classify_store_io_error(
-            path,
-            &std::io::Error::from(std::io::ErrorKind::NotFound),
-        ) {
-            error @ StoreError::Io { .. } => assert!(
-                !error.to_string().contains("(os error"),
-                "a not-found probe must not leak the errno: {error}"
-            ),
-            other => panic!("not-found must map to store.io, got {other:?}"),
-        }
-        match super::classify_store_io_error(
-            path,
-            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-        ) {
-            StoreError::PermissionDenied { path: reported } => assert_eq!(reported, path),
-            other => panic!("permission denied must map to store.permission_denied, got {other:?}"),
-        }
-    }
-
     /// A store path that is a FIFO (or any other non-regular file) must fail closed
     /// with a typed corruption diagnostic on every open path rather than blocking
     /// forever in the `open()` syscall waiting for a writer. The open runs on a worker
@@ -2606,129 +1520,5 @@ mod tests {
                 Err(_) => panic!("{label} on a FIFO blocked instead of failing closed"),
             }
         }
-    }
-
-    /// Frozen redb files, minted at the pinned engine version, that pin the byte
-    /// offsets the open-time shadow parsers read.
-    const REDB_CORPUS_DIR: &str = "tests/fixtures/redb_corpus";
-
-    /// Record count the corpus seeds: enough that the committed data btree spans
-    /// several pages, so the frozen valid store carries interior branch pages.
-    const SEED_RECORDS: u32 = 300;
-
-    fn redb_corpus_path(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(REDB_CORPUS_DIR)
-            .join(name)
-    }
-
-    /// The super-header parsers (`guard_superblock_header`, `RedbGeometry`,
-    /// `guard_committed_page_graph`) read redb's on-disk layout at fixed byte
-    /// offsets, so they are locked to the pinned redb version. This gate replays
-    /// them over a committed corpus frozen at that version: the geometry must parse
-    /// to redb's region constants, a valid store must be admitted and readable, an
-    /// over-reaching committed page must be rejected, and a torn commit slot must
-    /// defer to redb. A redb bump that shifts any offset moves one of these verdicts
-    /// and trips the gate loudly instead of silently disarming the parsers.
-    #[test]
-    fn redb_layout_corpus_pins_the_shadow_parsers() {
-        let valid = std::fs::read(redb_corpus_path("valid.redb")).expect("read valid fixture");
-        let geometry = super::RedbGeometry::parse(&valid).expect("valid geometry parses");
-        assert_eq!(geometry.page_size, 4096, "pinned redb page size");
-        assert_eq!(
-            geometry.region_size, 4_294_967_296,
-            "pinned redb region size"
-        );
-        assert_eq!(geometry.region_pages_start, 0, "pinned redb region layout");
-
-        let dir = TempDir::new("redb-corpus").expect("temp dir");
-        let materialize = |name: &str| {
-            let bytes = std::fs::read(redb_corpus_path(name))
-                .unwrap_or_else(|e| panic!("read {name}: {e}"));
-            let path = dir.path().join(name);
-            std::fs::write(&path, &bytes).expect("materialize fixture");
-            path
-        };
-
-        let valid_path = materialize("valid.redb");
-        super::guard_superblock_header(&valid_path).expect("the guard admits a valid store");
-        let store = RedbStore::open_read_only(&valid_path).expect("valid store opens read-only");
-        assert_eq!(
-            Backend::read(&store, b"k/00000001").expect("read seeded key"),
-            Some(vec![0xAB; 64]),
-            "the valid fixture reads back its seeded value",
-        );
-        drop(store);
-
-        // The page-graph walk maps every committed page to its byte range and rejects
-        // one that leaves the file: a truncated body drops the page's tail, a damaged
-        // page redirects a root beyond the file.
-        for name in ["truncated.redb", "damaged_page.redb"] {
-            let path = materialize(name);
-            match super::guard_superblock_header(&path) {
-                Err(StoreError::Corruption { .. }) => {}
-                other => {
-                    panic!("{name}: the guard must reject an over-reaching page, got {other:?}")
-                }
-            }
-        }
-
-        // A torn commit slot carries no over-reaching page, so the guard admits it and
-        // leaves slot integrity to redb, which reports the tear as a recoverable open.
-        let torn = materialize("torn_slot.redb");
-        super::guard_superblock_header(&torn).expect("the guard defers slot tears to redb");
-        match RedbStore::open_read_only(&torn).map(|_| ()) {
-            Err(StoreError::RecoveryRequired) => {}
-            other => panic!("torn_slot: expected recovery_required, got {other:?}"),
-        }
-    }
-
-    /// Mint the frozen `redb_layout_corpus` fixtures. Ignored in normal runs because
-    /// it writes into the source tree; it is the sanctioned refresh after an
-    /// intentional, reviewed redb bump. Run
-    /// `cargo test -p marrow-store --features native regenerate_redb_layout_corpus -- --ignored`
-    /// then review the fixture diff and update the pinned constants above to match.
-    #[test]
-    #[ignore = "writes fixtures into the source tree; run only to refresh the corpus"]
-    fn regenerate_redb_layout_corpus() {
-        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join(REDB_CORPUS_DIR);
-        std::fs::create_dir_all(&out).expect("create corpus dir");
-
-        let dir = TempDir::new("redb-corpus-gen").expect("temp dir");
-        let seed = dir.path().join("seed.redb");
-        {
-            // Enough records to build a multi-level committed btree (interior branch
-            // pages the page-graph walk must descend), seeded per-write so redb grows
-            // the file incrementally to the data rather than pre-sizing a large region.
-            let mut store = RedbStore::open(&seed).expect("open fresh store");
-            for n in 0..SEED_RECORDS {
-                let key = format!("k/{n:08}").into_bytes();
-                Backend::write(&mut store, &key, vec![0xAB; 64]).expect("seed record");
-            }
-        }
-        let body = std::fs::read(&seed).expect("read seeded body");
-        std::fs::write(out.join("valid.redb"), &body).expect("write valid fixture");
-
-        // Keep the super-header and both commit slots, drop the committed page extent
-        // past the midpoint so a committed root's page leaves the file.
-        std::fs::write(out.join("truncated.redb"), &body[..body.len() / 2])
-            .expect("write truncated fixture");
-
-        // Redirect the primary slot's first committed root beyond the file by maxing
-        // its region field, the exact over-reach the page-graph walk must catch.
-        let primary = if body[9] & 1 == 0 { 64usize } else { 192 };
-        let mut damaged = body.clone();
-        let root = primary + 8;
-        let mut raw = u64::from_le_bytes(damaged[root..root + 8].try_into().unwrap());
-        raw |= 0x000F_FFFF_u64 << 20;
-        damaged[root..root + 8].copy_from_slice(&raw.to_le_bytes());
-        std::fs::write(out.join("damaged_page.redb"), &damaged)
-            .expect("write damaged_page fixture");
-
-        // Flip the commit-tracker god byte so redb reads the stale slot and reports a
-        // torn commit needing recovery, while every committed page still lies in-file.
-        let mut torn = body.clone();
-        torn[9] ^= 1;
-        std::fs::write(out.join("torn_slot.redb"), &torn).expect("write torn_slot fixture");
     }
 }

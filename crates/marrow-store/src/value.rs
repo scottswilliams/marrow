@@ -5,7 +5,6 @@
 //! type comes from the schema at read time — and are not order-preserving, since
 //! the store orders by tree-cell key rather than by value.
 
-use crate::Decimal;
 use crate::key::SavedKey;
 use marrow_codes::Code;
 
@@ -26,16 +25,14 @@ pub enum Scalar {
     Duration(i128),
     /// A UTC instant, held as a signed count of nanoseconds since the epoch.
     Instant(i128),
-    /// An exact base-10 decimal, already in canonical form.
-    Decimal(Decimal),
 }
 
 /// A saved scalar; the name the store and write planner read a [`Scalar`] under.
 pub type SavedValue = Scalar;
 
 impl Scalar {
-    /// This scalar's order-preserving key projection, or `None` for a decimal, which
-    /// has no order-preserving key encoding. The single home for that mapping.
+    /// This scalar's order-preserving key projection. The single home for that
+    /// mapping; every current scalar type is key-eligible.
     pub fn as_key(&self) -> Result<Option<SavedKey>, ValueError> {
         let key = match self {
             Scalar::Int(v) => SavedKey::Int(*v),
@@ -45,7 +42,6 @@ impl Scalar {
             Scalar::Date(v) => SavedKey::Date(*v),
             Scalar::Duration(v) => SavedKey::Duration(*v),
             Scalar::Instant(v) => SavedKey::Instant(*v),
-            Scalar::Decimal(_) => return Ok(None),
         };
         validate_scalar_key(&key)?;
         Ok(Some(key))
@@ -61,7 +57,6 @@ impl Scalar {
             Scalar::Date(_) => ScalarType::Date,
             Scalar::Duration(_) => ScalarType::Duration,
             Scalar::Instant(_) => ScalarType::Instant,
-            Scalar::Decimal(_) => ScalarType::Decimal,
         }
     }
 }
@@ -111,7 +106,6 @@ pub enum ScalarType {
     Date,
     Duration,
     Instant,
-    Decimal,
 }
 
 impl ScalarType {
@@ -125,7 +119,6 @@ impl ScalarType {
             ScalarType::Date => "date",
             ScalarType::Instant => "instant",
             ScalarType::Duration => "duration",
-            ScalarType::Decimal => "decimal",
         }
     }
 
@@ -161,7 +154,6 @@ pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
         SavedValue::Date(days) => format_date(*days)?.into_bytes(),
         SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
         SavedValue::Instant(nanos) => format_instant(*nanos)?.into_bytes(),
-        SavedValue::Decimal(value) => value.to_text().into_bytes(),
     })
 }
 
@@ -180,14 +172,6 @@ pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
         ScalarType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
         ScalarType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
         ScalarType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
-        // Decode through the shared decimal codec, then enforce the
-        // one-canonical-form invariant: a value is canonical iff it re-encodes to
-        // the very bytes given, so non-canonical spellings (`1.50`, `01`, `-0`)
-        // are rejected even though `Decimal::parse` would normalize them.
-        ScalarType::Decimal => {
-            let value = Decimal::parse(std::str::from_utf8(bytes).ok()?)?;
-            (value.to_text().as_bytes() == bytes).then_some(SavedValue::Decimal(value))
-        }
     }
 }
 
@@ -458,7 +442,6 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
 #[cfg(test)]
 mod tests {
     use super::{Scalar, decode_value, encode_value};
-    use crate::Decimal;
 
     /// Every present scalar encodes to bytes that decode back under its own scalar
     /// type tag — the only cell discriminant. There is no null, optional, or
@@ -474,7 +457,6 @@ mod tests {
             Scalar::Date(0),
             Scalar::Duration(1_500_000_000),
             Scalar::Instant(0),
-            Scalar::Decimal(Decimal::parse("1.5").expect("canonical decimal")),
         ];
         for value in values {
             let bytes = encode_value(&value).expect("a present scalar encodes");
