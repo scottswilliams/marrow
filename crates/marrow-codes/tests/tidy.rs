@@ -79,15 +79,21 @@ fn workspace_members_are_exactly_the_retained_set() {
     let text = String::from_utf8(output.stdout).expect("metadata is utf-8");
 
     // Minimal, dependency-free extraction of package names from the metadata
-    // JSON: the `--no-deps` package list carries only workspace members.
+    // JSON: the `--no-deps` package list carries only workspace members. Package
+    // ids are the unambiguous carrier — `path+file://.../crates/<dir>#<version>`,
+    // or `...#<name>@<version>` when the name differs from the directory. Bare
+    // `"name"` fields also match lib-target names, which use underscores.
     let mut members: Vec<String> = text
-        .split("\"name\":\"")
+        .split("\"id\":\"")
         .skip(1)
-        .map(|rest| {
-            rest.split('"')
-                .next()
-                .expect("name field is delimited")
-                .to_string()
+        .filter_map(|rest| {
+            let id = rest.split('"').next()?;
+            let (path, fragment) = id.split_once('#')?;
+            let name = match fragment.split_once('@') {
+                Some((name, _version)) => name,
+                None => path.rsplit('/').next()?,
+            };
+            Some(name.to_string())
         })
         .filter(|name| name.starts_with("marrow"))
         .collect();
