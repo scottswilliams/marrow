@@ -15,10 +15,12 @@ refounded lane by lane; a feature is absent until its lane lands it.
 
 ## Current
 
-The retained beta workspace is five crates: the diagnostic-code registry
-(`marrow-codes`), the syntax owner (`marrow-syntax`), the ordered-byte storage
-engine (`marrow-store`), the pure project-input owner (`marrow-project`), and a
-thin `marrow` CLI.
+The beta workspace is ten crates: the retained diagnostic-code registry
+(`marrow-codes`), syntax owner (`marrow-syntax`), ordered-byte storage engine
+(`marrow-store`), and pure project-input owner (`marrow-project`); the
+refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
+`marrow-vm`) and path kernel (`marrow-kernel`); and the `marrow` CLI. The
+[implementation map](implementation/README.md) describes each.
 
 ### Language and tooling
 

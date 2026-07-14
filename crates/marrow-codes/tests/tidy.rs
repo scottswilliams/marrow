@@ -134,6 +134,132 @@ fn workspace_members_are_exactly_the_retained_set() {
     );
 }
 
+/// One workspace package's dependency edges, extracted from `cargo metadata`.
+struct PackageEdges {
+    name: String,
+    /// `(dependency name, is_dev)` for every workspace-internal `marrow*` edge.
+    edges: Vec<(String, bool)>,
+}
+
+/// Extract each workspace member's internal dependency edges from
+/// `cargo metadata --no-deps`. The `--no-deps` package list carries every
+/// member's `dependencies` array (name + kind), which is exactly the Cargo DAG
+/// the trust-boundary gates below assert over. Parsing is the same minimal
+/// dependency-free string extraction the membership test uses: the field order
+/// within a package object is stable (`id` precedes `dependencies` precedes
+/// `targets`), so splitting on `"id":"` yields one chunk per package.
+fn workspace_edges() -> Vec<PackageEdges> {
+    let root = workspace_root();
+    let output = Command::new(env!("CARGO"))
+        .arg("metadata")
+        .args(["--format-version", "1", "--no-deps"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .expect("run cargo metadata");
+    assert!(output.status.success(), "cargo metadata failed");
+    let text = String::from_utf8(output.stdout).expect("metadata is utf-8");
+
+    let mut packages = Vec::new();
+    for chunk in text.split("\"id\":\"").skip(1) {
+        let id = chunk.split('"').next().expect("id string terminates");
+        let (path, fragment) = id.split_once('#').expect("package id has a fragment");
+        let name = match fragment.split_once('@') {
+            Some((name, _version)) => name.to_string(),
+            None => path
+                .rsplit('/')
+                .next()
+                .expect("package id path has segments")
+                .to_string(),
+        };
+        let deps_body = chunk
+            .split_once("\"dependencies\":[")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once("],\"targets\""))
+            .map(|(body, _)| body)
+            .unwrap_or("");
+        let edges = deps_body
+            .split("{\"name\":\"")
+            .skip(1)
+            .filter_map(|entry| {
+                let dep = entry.split('"').next()?;
+                if !dep.starts_with("marrow") {
+                    return None;
+                }
+                let is_dev = entry
+                    .split_once('}')
+                    .is_some_and(|(fields, _)| fields.contains("\"kind\":\"dev\""));
+                Some((dep.to_string(), is_dev))
+            })
+            .collect();
+        packages.push(PackageEdges { name, edges });
+    }
+    assert_eq!(
+        packages.len(),
+        RETAINED_MEMBERS.len(),
+        "metadata should list every workspace member"
+    );
+    packages
+}
+
+/// Trust-boundary Cargo-DAG gates (design §A): the VM never decodes the image
+/// container, the compiler cannot reach the verifier/VM/kernel/store (it opens
+/// no store and mints no VerifiedImage), and the raw byte engine is consumed
+/// only through the path kernel. These edges are architecture, not convenience;
+/// this test exists to make a regression conspicuous.
+#[test]
+fn cargo_dag_respects_the_trust_boundaries() {
+    let packages = workspace_edges();
+    let find = |name: &str| {
+        packages
+            .iter()
+            .find(|package| package.name == name)
+            .unwrap_or_else(|| panic!("workspace member {name} missing from metadata"))
+    };
+
+    // marrow-vm consumes only sealed images: no production edge to marrow-image
+    // (a dev-dependency for building test artifacts is permitted).
+    let vm = find("marrow-vm");
+    assert!(
+        !vm.edges
+            .iter()
+            .any(|(dep, is_dev)| dep == "marrow-image" && !is_dev),
+        "marrow-vm must not have a production dependency on marrow-image"
+    );
+
+    // marrow-compile emits bytes only: no edge of any kind to the verifier, VM,
+    // kernel, or store.
+    let compile = find("marrow-compile");
+    for forbidden in [
+        "marrow-verify",
+        "marrow-vm",
+        "marrow-kernel",
+        "marrow-store",
+    ] {
+        assert!(
+            !compile.edges.iter().any(|(dep, _)| dep == forbidden),
+            "marrow-compile must not depend on {forbidden}"
+        );
+    }
+
+    // The raw byte engine has exactly one consumer: the path kernel.
+    for package in &packages {
+        let depends_on_store = package.edges.iter().any(|(dep, _)| dep == "marrow-store");
+        if package.name == "marrow-kernel" {
+            assert!(
+                depends_on_store,
+                "marrow-kernel is the byte engine's consumer and must depend on marrow-store"
+            );
+        } else {
+            assert!(
+                !depends_on_store,
+                "{} must not depend on marrow-store; the path kernel is the engine's only consumer",
+                package.name
+            );
+        }
+    }
+}
+
 #[test]
 fn no_tracked_file_names_a_forbidden_family() {
     let root = workspace_root();
