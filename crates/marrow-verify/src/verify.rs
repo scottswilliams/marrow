@@ -13,8 +13,10 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ImageId, OP_CONST_LOAD, OP_RETURN, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT, TAG_RECORD,
-    TAG_TEXT, TAG_UNIT, image_id,
+    ImageId, OP_BOOL_NOT, OP_CONST_LOAD, OP_EQ_BOOL, OP_EQ_INT, OP_EQ_TEXT, OP_INT_ADD, OP_INT_GE,
+    OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RETURN, OP_TEXT_CONCAT, OPTIONAL_FLAG,
+    Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -606,7 +608,9 @@ fn decode_spans(body: &[u8], functions: &mut [DecodedFunction]) -> Result<(), Ve
 // Phase 3 (per-function structural/type/local-init) + phases 4-6.
 // ---------------------------------------------------------------------------
 
-/// A decoded instruction with resolved operands and its byte offset.
+/// A decoded instruction with resolved operands and its byte offset. Jump targets
+/// are resolved from byte offsets to tape indices by [`resolve_jumps`] before flow
+/// analysis, so a jump can only name an instruction boundary in its own function.
 struct Decoded {
     instr: SealedInstr,
     /// Byte offset of this instruction in the function code (for span mapping).
@@ -642,7 +646,8 @@ fn verify_function(
     function: &DecodedFunction,
     decoded: &DecodedImage,
 ) -> Result<SealedFunction, VerifyRejection> {
-    let decoded_code = decode_code(&function.code)?;
+    let mut decoded_code = decode_code(&function.code)?;
+    resolve_jumps(&mut decoded_code)?;
     let (instrs, max_stack) = check_flow(function, &decoded_code, &decoded.consts)?;
     let spans = map_spans(function, &decoded_code)?;
     Ok(SealedFunction {
@@ -658,7 +663,8 @@ fn verify_function(
     })
 }
 
-/// Decode the function bytecode into instructions on boundaries.
+/// Decode the function bytecode into instructions on boundaries. Jump operands are
+/// container byte offsets here; [`resolve_jumps`] rewrites them to tape indices.
 fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
     let mut reader = Reader::new(code);
     let mut out = Vec::new();
@@ -668,13 +674,28 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             .u8()
             .ok_or(reject(VerifyPhase::Function, "short opcode"))?;
         let instr = match opcode {
-            OP_CONST_LOAD => {
-                let idx = reader
-                    .u16()
-                    .ok_or(reject(VerifyPhase::Function, "short const operand"))?;
-                SealedInstr::ConstLoad(idx)
-            }
+            OP_CONST_LOAD => SealedInstr::ConstLoad(operand_u16(&mut reader)?),
+            OP_LOCAL_GET => SealedInstr::LocalGet(operand_u16(&mut reader)?),
+            OP_LOCAL_SET => SealedInstr::LocalSet(operand_u16(&mut reader)?),
+            OP_POP => SealedInstr::Pop,
             OP_RETURN => SealedInstr::Return,
+            // Jump targets are decoded as byte offsets, resolved to tape indices below.
+            OP_JUMP => SealedInstr::Jump(operand_u32(&mut reader)? as usize),
+            OP_JUMP_IF_FALSE => SealedInstr::JumpIfFalse(operand_u32(&mut reader)? as usize),
+            OP_INT_ADD => SealedInstr::IntAdd,
+            OP_INT_SUB => SealedInstr::IntSub,
+            OP_INT_MUL => SealedInstr::IntMul,
+            OP_INT_REM => SealedInstr::IntRem,
+            OP_INT_NEG => SealedInstr::IntNeg,
+            OP_BOOL_NOT => SealedInstr::BoolNot,
+            OP_INT_LT => SealedInstr::IntLt,
+            OP_INT_LE => SealedInstr::IntLe,
+            OP_INT_GT => SealedInstr::IntGt,
+            OP_INT_GE => SealedInstr::IntGe,
+            OP_EQ_INT => SealedInstr::EqInt,
+            OP_EQ_BOOL => SealedInstr::EqBool,
+            OP_EQ_TEXT => SealedInstr::EqText,
+            OP_TEXT_CONCAT => SealedInstr::TextConcat,
             _ => {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -687,18 +708,64 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
     Ok(out)
 }
 
-/// The control transfer an instruction performs, in terms of the current
-/// instruction index. Successor indices are derived from this by `check_flow`.
+fn operand_u16(reader: &mut Reader) -> Result<u16, VerifyRejection> {
+    reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Function, "short u16 operand"))
+}
+
+fn operand_u32(reader: &mut Reader) -> Result<u32, VerifyRejection> {
+    reader
+        .u32()
+        .ok_or(reject(VerifyPhase::Function, "short u32 operand"))
+}
+
+/// Rewrite jump operands from container byte offsets to tape indices, rejecting a
+/// target that is not an instruction boundary in this function.
+fn resolve_jumps(code: &mut [Decoded]) -> Result<(), VerifyRejection> {
+    let offsets: Vec<u32> = code.iter().map(|decoded| decoded.offset).collect();
+    let index_of = |byte_offset: usize| -> Result<usize, VerifyRejection> {
+        offsets
+            .binary_search(&(byte_offset as u32))
+            .map_err(|_| reject(VerifyPhase::Function, "jump target is not a boundary"))
+    };
+    for decoded in code.iter_mut() {
+        match &mut decoded.instr {
+            SealedInstr::Jump(target) | SealedInstr::JumpIfFalse(target) => {
+                *target = index_of(*target)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The control transfer an instruction performs, in tape indices. Successor
+/// indices are derived from this by `check_flow`.
 enum Control {
     /// Continue to the next instruction.
     Fallthrough,
     /// End the frame (no successor).
     Return,
+    /// Unconditional transfer to one tape index.
+    Jump(usize),
+    /// Conditional: the branch target plus fallthrough.
+    Branch(usize),
+}
+
+/// The abstract machine state at a program point: the typed operand stack and the
+/// definite-init/type state of each local slot.
+#[derive(Clone, PartialEq, Eq)]
+struct Frame {
+    stack: Vec<VType>,
+    /// Per-slot type when definitely initialized on every path reaching this point,
+    /// else `None`. Reading an uninitialized slot rejects.
+    locals: Vec<Option<VType>>,
 }
 
 /// Phase-3 structural, type, and local-init checks via a CFG worklist over the
-/// typed operand stack. Returns the sealed instruction tape and the true max stack
-/// depth (computed here, never read from the image).
+/// typed operand stack and locals. Returns the sealed instruction tape and the true
+/// max stack depth (computed here, never read from the image).
 fn check_flow(
     function: &DecodedFunction,
     code: &[Decoded],
@@ -708,28 +775,37 @@ fn check_flow(
         return Err(reject(VerifyPhase::Function, "function has no code"));
     }
 
-    // Abstract stack recorded at each instruction's entry; `None` = not yet
-    // reached. Params live in locals, so the entry stack is empty.
-    let mut entry: Vec<Option<Vec<VType>>> = vec![None; code.len()];
-    entry[0] = Some(Vec::new());
+    // Params occupy locals `0..param_count`, pre-initialized to their param type;
+    // the rest start uninitialized. The entry operand stack is empty.
+    let mut initial_locals: Vec<Option<VType>> = vec![None; function.local_count as usize];
+    for (slot, scalar) in function.params.iter().enumerate() {
+        initial_locals[slot] = Some(VType::bare_scalar(*scalar));
+    }
+    let mut entry: Vec<Option<Frame>> = vec![None; code.len()];
+    entry[0] = Some(Frame {
+        stack: Vec::new(),
+        locals: initial_locals,
+    });
     let mut max_stack = 0usize;
     let mut worklist = vec![0usize];
 
     while let Some(index) = worklist.pop() {
-        let mut stack = entry[index]
+        let mut frame = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        let control = apply(function, &code[index].instr, consts, &mut stack)?;
-        if stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
+        let control = apply(function, &code[index].instr, consts, &mut frame)?;
+        if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
             return Err(reject(
                 VerifyPhase::Function,
                 "operand stack exceeds depth bound",
             ));
         }
-        max_stack = max_stack.max(stack.len());
+        max_stack = max_stack.max(frame.stack.len());
         let successors: Vec<usize> = match control {
             Control::Return => Vec::new(),
             Control::Fallthrough => vec![index + 1],
+            Control::Jump(target) => vec![target],
+            Control::Branch(target) => vec![target, index + 1],
         };
         for successor in successors {
             if successor >= code.len() {
@@ -738,19 +814,7 @@ fn check_flow(
                     "execution falls off the end without returning",
                 ));
             }
-            match &entry[successor] {
-                None => {
-                    entry[successor] = Some(stack.clone());
-                    worklist.push(successor);
-                }
-                Some(existing) if existing != &stack => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "operand stack shapes disagree at a merge",
-                    ));
-                }
-                Some(_) => {}
-            }
+            propagate(&mut entry, &mut worklist, successor, &frame)?;
         }
     }
 
@@ -762,20 +826,93 @@ fn check_flow(
     Ok((instrs, max_stack))
 }
 
-/// Apply one instruction to the abstract stack and return its control transfer.
+/// Merge `frame` into the entry state of `successor`, enqueueing it when its state
+/// changes. Stacks must agree exactly; locals meet per slot (init on both paths
+/// with the same type stays init, otherwise the slot becomes uninit).
+fn propagate(
+    entry: &mut [Option<Frame>],
+    worklist: &mut Vec<usize>,
+    successor: usize,
+    frame: &Frame,
+) -> Result<(), VerifyRejection> {
+    match &entry[successor] {
+        None => {
+            entry[successor] = Some(frame.clone());
+            worklist.push(successor);
+            Ok(())
+        }
+        Some(existing) => {
+            if existing.stack != frame.stack {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "operand stack shapes disagree at a merge",
+                ));
+            }
+            let mut merged = existing.locals.clone();
+            for (slot, cell) in merged.iter_mut().enumerate() {
+                let incoming = frame.locals[slot];
+                *cell = match (*cell, incoming) {
+                    (Some(a), Some(b)) if a == b => Some(a),
+                    _ => None,
+                };
+            }
+            if merged != existing.locals {
+                entry[successor] = Some(Frame {
+                    stack: existing.stack.clone(),
+                    locals: merged,
+                });
+                worklist.push(successor);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Apply one instruction to the abstract frame and return its control transfer.
 /// Grows one slice at a time with the opcode set.
 fn apply(
     function: &DecodedFunction,
     instr: &SealedInstr,
     consts: &[SealedConst],
-    stack: &mut Vec<VType>,
+    frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
+    let stack = &mut frame.stack;
     match instr {
         SealedInstr::ConstLoad(idx) => {
             let value = consts
                 .get(*idx as usize)
                 .ok_or(reject(VerifyPhase::Function, "const index out of range"))?;
             stack.push(VType::bare_scalar(const_scalar(value)));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::LocalGet(slot) => {
+            let ty = frame
+                .locals
+                .get(*slot as usize)
+                .ok_or(reject(VerifyPhase::Function, "local index out of range"))?
+                .ok_or(reject(VerifyPhase::Function, "local read before init"))?;
+            stack.push(ty);
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::LocalSet(slot) => {
+            let value = pop(stack)?;
+            let cell = frame
+                .locals
+                .get_mut(*slot as usize)
+                .ok_or(reject(VerifyPhase::Function, "local index out of range"))?;
+            match cell {
+                Some(existing) if *existing != value => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "local slot reused at a different type",
+                    ));
+                }
+                _ => *cell = Some(value),
+            }
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::Pop => {
+            pop(stack)?;
             Ok(Control::Fallthrough)
         }
         SealedInstr::Return => {
@@ -797,7 +934,75 @@ fn apply(
             }
             Ok(Control::Return)
         }
+        SealedInstr::Jump(target) => Ok(Control::Jump(*target)),
+        SealedInstr::JumpIfFalse(target) => {
+            expect_scalar(pop(stack)?, Scalar::Bool)?;
+            Ok(Control::Branch(*target))
+        }
+        SealedInstr::IntAdd | SealedInstr::IntSub | SealedInstr::IntMul | SealedInstr::IntRem => {
+            binary(stack, Scalar::Int, Scalar::Int)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::IntNeg => {
+            expect_scalar(pop(stack)?, Scalar::Int)?;
+            stack.push(VType::bare_scalar(Scalar::Int));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::BoolNot => {
+            expect_scalar(pop(stack)?, Scalar::Bool)?;
+            stack.push(VType::bare_scalar(Scalar::Bool));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::IntLt | SealedInstr::IntLe | SealedInstr::IntGt | SealedInstr::IntGe => {
+            binary(stack, Scalar::Int, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::EqInt => {
+            binary(stack, Scalar::Int, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::EqBool => {
+            binary(stack, Scalar::Bool, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::EqText => {
+            binary(stack, Scalar::Text, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::TextConcat => {
+            binary(stack, Scalar::Text, Scalar::Text)?;
+            Ok(Control::Fallthrough)
+        }
     }
+}
+
+/// Pop the top operand, rejecting an empty stack (a verifier-internal shape error).
+fn pop(stack: &mut Vec<VType>) -> Result<VType, VerifyRejection> {
+    stack
+        .pop()
+        .ok_or(reject(VerifyPhase::Function, "operand stack underflow"))
+}
+
+/// Require `value` to be a bare scalar of `scalar`.
+fn expect_scalar(value: VType, scalar: Scalar) -> Result<(), VerifyRejection> {
+    if value == VType::bare_scalar(scalar) {
+        Ok(())
+    } else {
+        Err(reject(
+            VerifyPhase::Function,
+            "operand type mismatch for opcode",
+        ))
+    }
+}
+
+/// Pop two bare `operand`-typed scalars (right then left) and push a bare `result`.
+fn binary(stack: &mut Vec<VType>, operand: Scalar, result: Scalar) -> Result<(), VerifyRejection> {
+    let right = pop(stack)?;
+    let left = pop(stack)?;
+    expect_scalar(right, operand)?;
+    expect_scalar(left, operand)?;
+    stack.push(VType::bare_scalar(result));
+    Ok(())
 }
 
 fn const_scalar(value: &SealedConst) -> Scalar {

@@ -1,8 +1,8 @@
 //! The runtime value model (design §D).
 //!
 //! The vacant state of an optional is the typed `Optional(None)`; there is no
-//! `Value::Absent`. Records and optionals arrive with their slices; the current
-//! subset uses the scalar values.
+//! dedicated absent value variant. Records and optionals arrive with their
+//! slices; the current subset uses the scalar values.
 
 use std::rc::Rc;
 

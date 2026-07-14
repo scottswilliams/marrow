@@ -25,8 +25,32 @@ pub enum SealedConst {
 pub enum SealedInstr {
     /// Push constant `consts[idx]`.
     ConstLoad(u16),
+    /// Push local slot `l`.
+    LocalGet(u16),
+    /// Pop into local slot `l`.
+    LocalSet(u16),
+    /// Discard the top of the stack.
+    Pop,
     /// Return the frame's value (or nothing for a Unit return).
     Return,
+    /// Unconditional jump to the instruction at this tape index.
+    Jump(usize),
+    /// Pop a bool; if false, jump to this tape index, else fall through.
+    JumpIfFalse(usize),
+    IntAdd,
+    IntSub,
+    IntMul,
+    IntRem,
+    IntNeg,
+    BoolNot,
+    IntLt,
+    IntLe,
+    IntGt,
+    IntGe,
+    EqInt,
+    EqBool,
+    EqText,
+    TextConcat,
 }
 
 /// A function's return shape, used to check `Return` and to render the result.
