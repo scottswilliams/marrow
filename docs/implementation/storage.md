@@ -5,23 +5,27 @@ B00. It defines a crate-private byte-oriented engine contract and the two
 implementors that back it. It orders opaque bytes: it does not parse `.mw`
 source, resolve schemas, assign language identity, or interpret key or value
 bytes. The logical key/value/civil-date codecs that give those bytes meaning
-were relocated to the path kernel (`marrow-kernel`) at lane K.5. The engine
-currently has no source-language consumer: the read kernel and runtime that
-will drive it are refounded in later lanes.
+were relocated to the path kernel (`marrow-kernel`), which is now the engine's
+sole consumer: every logical read and write reaches these bytes through the
+kernel's typed sessions.
 
 ## Layers
 
 | Layer | Owner |
 |---|---|
-| Private byte-engine contract and `StoreError` | `backend.rs` |
+| Byte-engine contract (`ByteEngine`/`ReadView`/`WriteTxn`, `CommitOutcome`) | `engine.rs` |
+| Typed owner-local errors (`StoreError`) | `error.rs` |
 | In-memory backend | `mem.rs` |
-| Native redb backend | `redb.rs` |
+| Native redb backend (panic-contained adapter, integrity audit) | `redb.rs` |
 | Shared backend conformance laws | `conformance.rs` (test-only) |
 | Bounded scan accumulation | `traversal.rs` |
 
-The crate's only public API is the `StoreError` re-export. The engine trait and
-both backends are crate-private; the in-crate conformance suite keeps the memory
-and redb implementations aligned on the same byte-level laws.
+The public API is the narrow whitelist in `lib.rs` (the engine trait, the two
+backends, `CommitOutcome`, `Cell`, `StoreError`), frozen by a compile-time
+surface audit; `marrow-kernel` is the only production dependent (enforced by
+the workspace DAG gate). The conformance suite keeps the memory and redb
+implementations aligned on the same byte-level laws, including the documented
+filesystem envelope (fsync-based durability; see the crate docs).
 
 ## What was deleted at B00
 

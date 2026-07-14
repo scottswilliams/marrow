@@ -94,6 +94,16 @@ authoritative heads. Restore finalization requires every restored required root 
 be present and valid, binds the accepted head over that state, and neither
 evaluates initializers nor changes application values.
 
+## Developer surface
+
+The machinery above is internal. The intended developer surface is: an attach
+whose durable contract and binding facts are exactly unchanged rebinds
+automatically through the same lifecycle actor and just runs; any other change
+is one explicit action that reviews, renders a report in source vocabulary
+(places, presence, effects, authority, stored work), takes acceptance, and
+activates atomically. Witnesses, contract hashes, generations, and ceiling
+identifiers never appear in ordinary guidance or require human transcription.
+
 ## Limits of admission
 
 Admission can compare identities, representations, key laws, and stored presence.
