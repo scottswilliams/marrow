@@ -64,10 +64,10 @@ fn discovery_order_does_not_change_the_result() {
 }
 
 #[test]
-fn relocation_yields_byte_identical_identities() {
-    // The owner sees only root-relative paths, so the same source captured for a
-    // project at any location produces byte-identical identities. Two captures
-    // standing in for two on-disk locations must be equal.
+fn determinism_yields_identical_project_input() {
+    // The owner sees only root-relative paths, so the same listing always
+    // produces a byte-identical `ProjectInput`. The on-disk relocation evidence
+    // is the CLI test `relocation_produces_identical_formatted_bytes`.
     let a = capture(vec![file("src/shelf/books.mw", "pub fn a()\n    return\n")]).expect("valid");
     let b = capture(vec![file("src/shelf/books.mw", "pub fn a()\n    return\n")]).expect("valid");
     assert_eq!(identities(&a), identities(&b));

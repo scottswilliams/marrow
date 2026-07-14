@@ -98,6 +98,30 @@ fn init_refuses_an_existing_directory() {
 }
 
 #[test]
+fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
+    // A failure after the exclusive claim must unwind it: otherwise the partial
+    // directory blocks every retry with AlreadyExists. The debug build injects a
+    // post-claim scaffold failure through MARROW_TEST_INIT_FAIL_SCAFFOLD.
+    let temp = TempDir::new("init-unwind");
+    let project = temp.join("app");
+
+    let failed = Command::new(MARROW)
+        .args(["init", project.to_str().unwrap()])
+        .env("MARROW_TEST_INIT_FAIL_SCAFFOLD", "1")
+        .output()
+        .expect("run marrow binary");
+    assert!(!failed.status.success(), "injected failure must fail init");
+    assert!(
+        !project.exists(),
+        "a failed init must remove its claimed directory"
+    );
+
+    let retried = run(&["init", project.to_str().unwrap()]);
+    assert!(retried.status.success(), "retry must succeed: {retried:?}");
+    assert!(project.join("marrow.toml").is_file());
+}
+
+#[test]
 fn fmt_project_checks_and_writes_every_module() {
     let temp = TempDir::new("fmt-project");
     let project = temp.join("app");
@@ -193,6 +217,41 @@ fn relocation_produces_identical_formatted_bytes() {
     let a = fs::read(first.join("src").join("main.mw")).unwrap();
     let b = fs::read(second.join("src").join("main.mw")).unwrap();
     assert_eq!(a, b);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
+    // The containment blocker: if `src` itself is a symlink to an external
+    // directory, following it would let capture escape the project tree and let
+    // `fmt --write` rewrite external files in place. The adapter must refuse a
+    // symlinked source root with a typed code and touch nothing.
+    let temp = TempDir::new("symlink-root");
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+
+    // An external tree with an unformatted module, reachable only through the
+    // symlinked root.
+    let external = temp.join("external");
+    let stray = "pub fn stray()\n    return\n\n\n";
+    write(&external.join("main.mw"), stray);
+    std::os::unix::fs::symlink(&external, project.join("src")).expect("symlink src");
+
+    let checked = run(&["fmt", "--check", project.to_str().unwrap()]);
+    assert!(!checked.status.success(), "symlinked src must be refused");
+    let stderr = String::from_utf8_lossy(&checked.stderr);
+    assert!(stderr.contains("project.source_path"), "{stderr}");
+
+    let written = run(&["fmt", "--write", project.to_str().unwrap()]);
+    assert!(
+        !written.status.success(),
+        "symlinked src must refuse --write"
+    );
+    assert_eq!(
+        fs::read_to_string(external.join("main.mw")).unwrap(),
+        stray,
+        "the external file must remain byte-identical"
+    );
 }
 
 #[cfg(unix)]

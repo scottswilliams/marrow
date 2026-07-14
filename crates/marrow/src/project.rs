@@ -92,8 +92,20 @@ fn manifest_failure(path: &Path, error: ManifestError) -> CaptureFailure {
 fn walk_source(root: &Path, limits: &CaptureLimits) -> Result<Vec<CapturedFile>, CaptureFailure> {
     let source_root = root.join(SOURCE_DIR);
     // A project with no `src` directory has no modules; that is valid, not an error.
-    if !source_root.exists() {
+    let Ok(metadata) = fs::symlink_metadata(&source_root) else {
         return Ok(Vec::new());
+    };
+    // The containment contract starts at the root itself: a symlinked `src`
+    // would carry the whole walk outside the project tree (per-entry symlink
+    // skipping never inspects the root), so it is refused before descending.
+    if metadata.file_type().is_symlink() {
+        return Err(CaptureFailure::simple(
+            Code::ProjectSourcePath.as_str(),
+            format!(
+                "source root {} is a symlink; a project's `src` must be a real directory inside the project",
+                source_root.display()
+            ),
+        ));
     }
     let mut files = Vec::new();
     let mut total_bytes = 0usize;

@@ -86,6 +86,29 @@ fn rejects_non_canonical_paths() {
 }
 
 #[test]
+fn rejects_control_characters() {
+    // NUL and ASCII control characters are wrong under any future module-name
+    // character domain, so the owner rejects them today; the full character and
+    // Unicode-normalization domain lands with the module-name semantic owner.
+    assert_eq!(
+        reason("src/bo\0oks.mw"),
+        Some(SourcePathReason::NonCanonical)
+    );
+    assert_eq!(
+        reason("src/bo\toks.mw"),
+        Some(SourcePathReason::NonCanonical)
+    );
+    assert_eq!(
+        reason("src/bo\noks.mw"),
+        Some(SourcePathReason::NonCanonical)
+    );
+    assert_eq!(
+        reason("src/bo\u{1b}oks.mw"),
+        Some(SourcePathReason::NonCanonical)
+    );
+}
+
+#[test]
 fn a_dotted_stem_derives_a_name_that_collides_with_a_nested_path() {
     // `file_stem` strips only the final `.mw`, so `src/a.b.mw` derives module
     // `a.b` — the same name `src/a/b.mw` derives. Capture reports the collision.

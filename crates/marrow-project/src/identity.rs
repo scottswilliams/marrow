@@ -33,12 +33,19 @@ impl FileIdentity {
     ///
     /// The path must be relative, forward-slash separated, rooted at
     /// [`SOURCE_ROOT`], carry the `.mw` extension, name at least one path segment
-    /// under the root, and contain no empty, `.`, or `..` segment.
+    /// under the root, contain no empty, `.`, or `..` segment, and contain no NUL
+    /// or ASCII control character.
+    ///
+    /// This validates the *path* domain only. The full module-name character and
+    /// Unicode-normalization domain (which spellings may name a module, and
+    /// whether NFC/NFD-distinct segments are the same identity) lands with the
+    /// module-name semantic owner; control characters are rejected here today
+    /// because they are wrong under any future domain.
     pub fn validate(path: &str) -> Result<(FileIdentity, ModuleName), SourcePathReason> {
         if path.is_empty() {
             return Err(SourcePathReason::NonCanonical);
         }
-        if path.contains('\\') {
+        if path.contains('\\') || path.chars().any(|c| c.is_ascii_control()) {
             return Err(SourcePathReason::NonCanonical);
         }
         if path.starts_with('/') {
@@ -99,8 +106,8 @@ pub enum SourcePathReason {
     Absolute,
     /// The path contains a `..` segment that would escape the source root.
     Escapes,
-    /// The path is empty, uses a backslash separator, or has an empty or `.`
-    /// segment.
+    /// The path is empty, uses a backslash separator, contains a NUL or ASCII
+    /// control character, or has an empty or `.` segment.
     NonCanonical,
     /// The path is not under the fixed `src` source root.
     OutsideSourceRoot,

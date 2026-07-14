@@ -135,7 +135,10 @@ impl ProjectInput {
 /// regardless of input order: the file-count bound, then per-path validity, then
 /// module-identity collisions, then the per-file and total byte bounds. Within a
 /// family the offender is chosen by canonical identity (or, for an invalid path,
-/// the smallest raw path), never by arrival order.
+/// the smallest raw path), never by arrival order. A physical adapter that
+/// enforces the same bounds while walking may stop at a different
+/// (traversal-order) offender before this owner ever sees the listing; the
+/// canonical selection here governs only faults this owner reports.
 pub fn capture(
     manifest: &Manifest,
     files: Vec<CapturedFile>,
@@ -293,7 +296,7 @@ impl CaptureError {
             SourcePathReason::Absolute => "must be relative to the project root, not absolute",
             SourcePathReason::Escapes => "must not contain a `..` segment",
             SourcePathReason::NonCanonical => {
-                "must be a canonical forward-slash path with no empty or `.` segment"
+                "must be a canonical forward-slash path with no control character and no empty or `.` segment"
             }
             SourcePathReason::OutsideSourceRoot => "must live under the `src` source root",
             SourcePathReason::NotMarrowSource => "must be a `.mw` file with a non-empty name",

@@ -57,7 +57,8 @@ root, moving a project to a new location does not change any module identity.
 
 Discovery is deterministic — the captured modules are ordered by identity
 regardless of the order the filesystem reports them — and bounded. Symlinks
-under `src` are skipped, so the walk cannot cycle or escape the tree. A project
+under `src` are skipped, and a `src` that is itself a symlink is refused with
+`project.source_path`, so the walk cannot cycle or escape the tree. A project
 that exceeds a fixed capture bound (too many source files, one file too large,
 or too much source in total) reports `project.capture_limit`.
 

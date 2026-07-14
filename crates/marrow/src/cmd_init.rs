@@ -81,13 +81,10 @@ enum ClaimError {
     Io(io::Error),
 }
 
-impl From<io::Error> for ClaimError {
-    fn from(error: io::Error) -> Self {
-        ClaimError::Io(error)
-    }
-}
-
-/// Claim `root` with an exclusive directory create, then write the fixed scaffold.
+/// Claim `root` with an exclusive directory create, then write the fixed
+/// scaffold. A failure after the claim unwinds it — the claimed directory is
+/// removed — so a transient failure leaves nothing behind and a retry is not
+/// blocked by a partial project.
 fn claim_and_scaffold(root: &Path) -> Result<(), ClaimError> {
     match fs::create_dir(root) {
         Ok(()) => {}
@@ -95,6 +92,18 @@ fn claim_and_scaffold(root: &Path) -> Result<(), ClaimError> {
             return Err(ClaimError::AlreadyExists);
         }
         Err(error) => return Err(ClaimError::Io(error)),
+    }
+    if let Err(error) = scaffold(root) {
+        let _ = fs::remove_dir_all(root);
+        return Err(ClaimError::Io(error));
+    }
+    Ok(())
+}
+
+fn scaffold(root: &Path) -> io::Result<()> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("MARROW_TEST_INIT_FAIL_SCAFFOLD").is_some() {
+        return Err(io::Error::other("injected init scaffold failure"));
     }
     fs::create_dir(root.join("src"))?;
     write_new(root.join(MANIFEST_FILE), &manifest_source())?;
