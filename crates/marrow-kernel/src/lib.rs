@@ -15,6 +15,7 @@
 
 pub mod codec;
 pub mod durable;
+pub mod equality;
 
 // The native `DurableStore::open` constructor lives with the store handle so the
 // CLI can provision a redb-backed store; the in-memory engine backs the kernel's
