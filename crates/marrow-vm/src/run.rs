@@ -242,6 +242,41 @@ fn execute<'s>(
                 stack.push(Value::Bool(result));
                 pc += 1;
             }
+            SealedInstr::EqBytes => {
+                let b = as_bytes(pop(&mut stack));
+                let a = as_bytes(pop(&mut stack));
+                stack.push(Value::Bool(a == b));
+                pc += 1;
+            }
+            SealedInstr::BytesLt | SealedInstr::BytesLe | SealedInstr::BytesGt | SealedInstr::BytesGe => {
+                let b = as_bytes(pop(&mut stack));
+                let a = as_bytes(pop(&mut stack));
+                // Bytes order lexicographically, like the durable byte-key order.
+                let ordering = a.as_ref().cmp(b.as_ref());
+                let result = match &function.instrs()[pc] {
+                    SealedInstr::BytesLt => ordering.is_lt(),
+                    SealedInstr::BytesLe => ordering.is_le(),
+                    SealedInstr::BytesGt => ordering.is_gt(),
+                    _ => ordering.is_ge(),
+                };
+                stack.push(Value::Bool(result));
+                pc += 1;
+            }
+            SealedInstr::ConvStringInt => {
+                let v = pop_int(&mut stack);
+                stack.push(Value::Text(v.to_string().into()));
+                pc += 1;
+            }
+            SealedInstr::ConvStringBool => {
+                let v = as_bool(pop(&mut stack));
+                stack.push(Value::Text(if v { "true" } else { "false" }.into()));
+                pc += 1;
+            }
+            SealedInstr::ConvBytesText => {
+                let text = as_text(pop(&mut stack));
+                stack.push(Value::Bytes(Rc::from(text.as_bytes())));
+                pc += 1;
+            }
             SealedInstr::RecordNew(ty) => {
                 let fields = image.record_type(*ty).fields();
                 // f0 was pushed first, so the popped values fill slots in reverse.
@@ -499,6 +534,13 @@ fn as_text(value: Value) -> Rc<str> {
     }
 }
 
+fn as_bytes(value: Value) -> Rc<[u8]> {
+    match value {
+        Value::Bytes(v) => v,
+        _ => unreachable!("verifier proved a bytes operand"),
+    }
+}
+
 /// Unwrap an optional value to its inner `Option`.
 fn as_optional(value: Value) -> Option<Value> {
     match value {
@@ -550,6 +592,7 @@ fn value_to_key(value: Value) -> KeyScalar {
         Value::Int(v) => KeyScalar::Int(v),
         Value::Bool(v) => KeyScalar::Bool(v),
         Value::Text(v) => KeyScalar::Str(v.to_string()),
+        Value::Bytes(v) => KeyScalar::Bytes(v.to_vec()),
         _ => unreachable!("verifier proved a scalar key operand"),
     }
 }
@@ -560,7 +603,8 @@ fn key_to_value(key: KeyScalar) -> Value {
         KeyScalar::Int(v) => Value::Int(v),
         KeyScalar::Bool(v) => Value::Bool(v),
         KeyScalar::Str(v) => Value::Text(v.into()),
-        _ => unreachable!("T01 keys are int, string, or bool"),
+        KeyScalar::Bytes(v) => Value::Bytes(Rc::from(v.as_slice())),
+        _ => unreachable!("C01 keys are int, string, bool, or bytes"),
     }
 }
 
@@ -570,6 +614,7 @@ fn value_to_scalar(value: Value) -> RuntimeScalar {
         Value::Int(v) => RuntimeScalar::Int(v),
         Value::Bool(v) => RuntimeScalar::Bool(v),
         Value::Text(v) => RuntimeScalar::Str(v.to_string()),
+        Value::Bytes(v) => RuntimeScalar::Bytes(v.to_vec()),
         _ => unreachable!("verifier proved a scalar value operand"),
     }
 }
@@ -580,7 +625,8 @@ fn scalar_to_value(scalar: RuntimeScalar) -> Value {
         RuntimeScalar::Int(v) => Value::Int(v),
         RuntimeScalar::Bool(v) => Value::Bool(v),
         RuntimeScalar::Str(v) => Value::Text(v.into()),
-        _ => unreachable!("T01 durable values are int, bool, or string"),
+        RuntimeScalar::Bytes(v) => Value::Bytes(Rc::from(v.as_slice())),
+        _ => unreachable!("C01 durable values are int, bool, string, or bytes"),
     }
 }
 

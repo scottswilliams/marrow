@@ -40,6 +40,14 @@ pub const OP_TEXT_LT: u8 = 0x40;
 pub const OP_TEXT_LE: u8 = 0x41;
 pub const OP_TEXT_GT: u8 = 0x42;
 pub const OP_TEXT_GE: u8 = 0x43;
+pub const OP_EQ_BYTES: u8 = 0x44;
+pub const OP_BYTES_LT: u8 = 0x45;
+pub const OP_BYTES_LE: u8 = 0x46;
+pub const OP_BYTES_GT: u8 = 0x47;
+pub const OP_BYTES_GE: u8 = 0x48;
+pub const OP_CONV_STRING_INT: u8 = 0x50;
+pub const OP_CONV_STRING_BOOL: u8 = 0x51;
+pub const OP_CONV_BYTES_TEXT: u8 = 0x52;
 pub const OP_RECORD_NEW: u8 = 0x20;
 pub const OP_FIELD_GET: u8 = 0x21;
 pub const OP_SOME_WRAP: u8 = 0x22;
@@ -92,6 +100,17 @@ pub enum Instr {
     TextLe,
     TextGt,
     TextGe,
+    EqBytes,
+    BytesLt,
+    BytesLe,
+    BytesGt,
+    BytesGe,
+    /// `int → string`: canonical decimal rendering.
+    ConvStringInt,
+    /// `bool → string`: `"true"`/`"false"`.
+    ConvStringBool,
+    /// `string → bytes`: the UTF-8 bytes of the text.
+    ConvBytesText,
     RecordNew(u16),
     FieldGet(u16),
     SomeWrap,
@@ -143,6 +162,14 @@ impl Instr {
             Instr::TextLe => OP_TEXT_LE,
             Instr::TextGt => OP_TEXT_GT,
             Instr::TextGe => OP_TEXT_GE,
+            Instr::EqBytes => OP_EQ_BYTES,
+            Instr::BytesLt => OP_BYTES_LT,
+            Instr::BytesLe => OP_BYTES_LE,
+            Instr::BytesGt => OP_BYTES_GT,
+            Instr::BytesGe => OP_BYTES_GE,
+            Instr::ConvStringInt => OP_CONV_STRING_INT,
+            Instr::ConvStringBool => OP_CONV_STRING_BOOL,
+            Instr::ConvBytesText => OP_CONV_BYTES_TEXT,
             Instr::RecordNew(_) => OP_RECORD_NEW,
             Instr::FieldGet(_) => OP_FIELD_GET,
             Instr::SomeWrap => OP_SOME_WRAP,

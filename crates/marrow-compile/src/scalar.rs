@@ -13,6 +13,7 @@ pub enum ScalarType {
     Int,
     Bool,
     Text,
+    Bytes,
 }
 
 impl ScalarType {
@@ -22,6 +23,7 @@ impl ScalarType {
             "int" => Some(ScalarType::Int),
             "bool" => Some(ScalarType::Bool),
             "string" => Some(ScalarType::Text),
+            "bytes" => Some(ScalarType::Bytes),
             _ => None,
         }
     }
@@ -32,6 +34,7 @@ impl ScalarType {
             ScalarType::Int => "int",
             ScalarType::Bool => "bool",
             ScalarType::Text => "string",
+            ScalarType::Bytes => "bytes",
         }
     }
 
@@ -41,6 +44,7 @@ impl ScalarType {
             ScalarType::Int => Scalar::Int,
             ScalarType::Bool => Scalar::Bool,
             ScalarType::Text => Scalar::Text,
+            ScalarType::Bytes => Scalar::Bytes,
         }
     }
 }

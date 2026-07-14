@@ -13,14 +13,16 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ExportId, ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CALL, OP_CONST_LOAD, OP_DUR_CREATE_ENTRY,
+    ExportId, ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE,
+    OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
+    OP_CONV_STRING_INT, OP_EQ_BYTES, OP_DUR_CREATE_ENTRY,
     OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
     OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL,
     OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
     OP_INT_DIV, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE,
     OP_LOCAL_GET,
     OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_GE,
-    OP_TEXT_GT, OP_TEXT_LE, OP_TEXT_LT, OP_TXN_BEGIN,
+    OP_TEXT_GT, OP_TEXT_LE, OP_TEXT_LT, OP_TXN_BEGIN, TAG_BYTES,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT,
     TAG_RECORD, TAG_TEXT,
     TAG_UNIT, image_id,
@@ -240,6 +242,7 @@ fn decode_bare_scalar(tag: u8) -> Option<Scalar> {
         TAG_INT => Some(Scalar::Int),
         TAG_BOOL => Some(Scalar::Bool),
         TAG_TEXT => Some(Scalar::Text),
+        TAG_BYTES => Some(Scalar::Bytes),
         _ => None,
     }
 }
@@ -491,7 +494,7 @@ fn decode_type_ref_ret(tag: u8, reader: &mut Reader) -> Result<RetShape, VerifyR
             }
             Ok(RetShape::Unit)
         }
-        TAG_INT | TAG_BOOL | TAG_TEXT => {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => {
             let scalar = decode_bare_scalar(base).expect("scalar base");
             Ok(RetShape::Scalar { scalar, optional })
         }
@@ -1143,6 +1146,14 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_TEXT_LE => SealedInstr::TextLe,
             OP_TEXT_GT => SealedInstr::TextGt,
             OP_TEXT_GE => SealedInstr::TextGe,
+            OP_EQ_BYTES => SealedInstr::EqBytes,
+            OP_BYTES_LT => SealedInstr::BytesLt,
+            OP_BYTES_LE => SealedInstr::BytesLe,
+            OP_BYTES_GT => SealedInstr::BytesGt,
+            OP_BYTES_GE => SealedInstr::BytesGe,
+            OP_CONV_STRING_INT => SealedInstr::ConvStringInt,
+            OP_CONV_STRING_BOOL => SealedInstr::ConvStringBool,
+            OP_CONV_BYTES_TEXT => SealedInstr::ConvBytesText,
             OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
             OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
             OP_SOME_WRAP => SealedInstr::SomeWrap,
@@ -1605,6 +1616,29 @@ fn apply(
         }
         SealedInstr::TextLt | SealedInstr::TextLe | SealedInstr::TextGt | SealedInstr::TextGe => {
             binary(stack, Scalar::Text, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::EqBytes
+        | SealedInstr::BytesLt
+        | SealedInstr::BytesLe
+        | SealedInstr::BytesGt
+        | SealedInstr::BytesGe => {
+            binary(stack, Scalar::Bytes, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::ConvStringInt => {
+            expect_scalar(pop(stack)?, Scalar::Int)?;
+            stack.push(VType::bare_scalar(Scalar::Text));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::ConvStringBool => {
+            expect_scalar(pop(stack)?, Scalar::Bool)?;
+            stack.push(VType::bare_scalar(Scalar::Text));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::ConvBytesText => {
+            expect_scalar(pop(stack)?, Scalar::Text)?;
+            stack.push(VType::bare_scalar(Scalar::Bytes));
             Ok(Control::Fallthrough)
         }
         SealedInstr::RecordNew(_)

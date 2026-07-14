@@ -244,6 +244,91 @@ fn text_ordering_is_lexicographic() {
     }
 }
 
+/// The closed scalar conversions: `string(int)`, `string(bool)`, `bytes(string)`.
+#[test]
+fn scalar_conversions_render_and_encode() {
+    let to_string_int = build_and_run(|draft| {
+        let n = draft.intern_int(-42);
+        (
+            ImageType::scalar(Scalar::Text),
+            vec![
+                Instr::ConstLoad(n.index()),
+                Instr::ConvStringInt,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(to_string_int, Ok(Some(Value::Text("-42".into()))));
+
+    let to_string_bool = build_and_run(|draft| {
+        let b = draft.intern_bool(true);
+        (
+            ImageType::scalar(Scalar::Text),
+            vec![
+                Instr::ConstLoad(b.index()),
+                Instr::ConvStringBool,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(to_string_bool, Ok(Some(Value::Text("true".into()))));
+
+    let to_bytes = build_and_run(|draft| {
+        let s = draft.intern_text("hi");
+        (
+            ImageType::scalar(Scalar::Bytes),
+            vec![
+                Instr::ConstLoad(s.index()),
+                Instr::ConvBytesText,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(
+        to_bytes,
+        Ok(Some(Value::Bytes(std::rc::Rc::from(b"hi".as_slice()))))
+    );
+}
+
+/// Bytes support equality and lexicographic ordering (the durable byte-key order).
+#[test]
+fn bytes_equality_and_ordering() {
+    // bytes("ab") == bytes("ab")
+    let eq = build_and_run(|draft| {
+        let ab = draft.intern_text("ab");
+        (
+            ImageType::scalar(Scalar::Bool),
+            vec![
+                Instr::ConstLoad(ab.index()),
+                Instr::ConvBytesText,
+                Instr::ConstLoad(ab.index()),
+                Instr::ConvBytesText,
+                Instr::EqBytes,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(eq, Ok(Some(Value::Bool(true))));
+
+    // bytes("ab") < bytes("b")
+    let lt = build_and_run(|draft| {
+        let ab = draft.intern_text("ab");
+        let b = draft.intern_text("b");
+        (
+            ImageType::scalar(Scalar::Bool),
+            vec![
+                Instr::ConstLoad(ab.index()),
+                Instr::ConvBytesText,
+                Instr::ConstLoad(b.index()),
+                Instr::ConvBytesText,
+                Instr::BytesLt,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(lt, Ok(Some(Value::Bool(true))));
+}
+
 #[test]
 fn text_concat_over_the_limit_faults() {
     // A single text constant caps at 4 KiB, so reach the 64 KiB result bound by

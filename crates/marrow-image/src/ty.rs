@@ -16,6 +16,7 @@ pub enum Scalar {
     Int,
     Bool,
     Text,
+    Bytes,
 }
 
 /// Base-type tag bytes (low seven bits of a `ImageType` byte).
@@ -24,6 +25,7 @@ pub const TAG_INT: u8 = 0x01;
 pub const TAG_BOOL: u8 = 0x02;
 pub const TAG_TEXT: u8 = 0x03;
 pub const TAG_RECORD: u8 = 0x04;
+pub const TAG_BYTES: u8 = 0x05;
 
 /// The optional-wrapper flag bit.
 pub const OPTIONAL_FLAG: u8 = 0x80;
@@ -35,6 +37,7 @@ impl Scalar {
             Scalar::Int => TAG_INT,
             Scalar::Bool => TAG_BOOL,
             Scalar::Text => TAG_TEXT,
+            Scalar::Bytes => TAG_BYTES,
         }
     }
 }

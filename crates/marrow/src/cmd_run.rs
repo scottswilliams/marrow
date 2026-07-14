@@ -276,6 +276,7 @@ fn scalar_kind(scalar: Scalar) -> ScalarKind {
         Scalar::Int => ScalarKind::Int,
         Scalar::Bool => ScalarKind::Bool,
         Scalar::Text => ScalarKind::Str,
+        Scalar::Bytes => ScalarKind::Bytes,
     }
 }
 
@@ -307,7 +308,25 @@ fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
             _ => Err(format!("`{text}` is not a boolean (true/false)")),
         },
         Scalar::Text => Ok(Value::Text(Rc::from(text))),
+        // A `bytes` argument is a `0x`-prefixed even-length lowercase-hex string,
+        // matching how a `bytes` value renders back out.
+        Scalar::Bytes => decode_hex_bytes(text)
+            .map(|bytes| Value::Bytes(Rc::from(bytes.as_slice())))
+            .ok_or_else(|| format!("`{text}` is not `0x`-prefixed lowercase hex")),
     }
+}
+
+/// Decode a `0x`-prefixed even-length lowercase-hex string to bytes.
+fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
+    let hex = text.strip_prefix("0x")?;
+    if hex.len() % 2 != 0 || hex.bytes().any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
 }
 
 fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {

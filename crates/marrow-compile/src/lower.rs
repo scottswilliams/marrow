@@ -1261,7 +1261,7 @@ impl<'a> FnLowerer<'a> {
             self.fail(binary_error(self.file, span, op, left_ty, right_ty));
             return None;
         };
-        use ScalarType::{Bool, Int, Text};
+        use ScalarType::{Bool, Bytes, Int, Text};
         let (instr, result): (Instr, ScalarType) = match (op, left, right_scalar) {
             (BinaryOp::Add, Int, Int) => (Instr::IntAdd, Int),
             (BinaryOp::Add, Text, Text) => (Instr::TextConcat, Text),
@@ -1277,6 +1277,10 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::LessEqual, Text, Text) => (Instr::TextLe, Bool),
             (BinaryOp::Greater, Text, Text) => (Instr::TextGt, Bool),
             (BinaryOp::GreaterEqual, Text, Text) => (Instr::TextGe, Bool),
+            (BinaryOp::Less, Bytes, Bytes) => (Instr::BytesLt, Bool),
+            (BinaryOp::LessEqual, Bytes, Bytes) => (Instr::BytesLe, Bool),
+            (BinaryOp::Greater, Bytes, Bytes) => (Instr::BytesGt, Bool),
+            (BinaryOp::GreaterEqual, Bytes, Bytes) => (Instr::BytesGe, Bool),
             (BinaryOp::Equal, a, b) if a == b => (eq_instr(a), Bool),
             (BinaryOp::NotEqual, a, b) if a == b => {
                 self.push(eq_instr(a), span);
@@ -1402,6 +1406,14 @@ impl<'a> FnLowerer<'a> {
         }
         if name == "unreachable" {
             return self.lower_unreachable(args, span);
+        }
+        // A scalar-type spelling in call position is a conversion, resolved before
+        // records/functions so a conversion is never shadowed. The admitted set is
+        // closed; an unadmitted pair is a typed `check.unsupported`.
+        if ScalarType::from_spelling(name).is_some() {
+            return self
+                .lower_conversion(name, args, span)
+                .map(CallResult::Value);
         }
         if self.records.by_name(name).is_some() {
             return self
@@ -1785,6 +1797,52 @@ impl<'a> FnLowerer<'a> {
         Some(LTy::bare_scalar(ScalarType::Bool))
     }
 
+    /// Lower a closed scalar conversion `target(value)`. The admitted set is
+    /// `string(int)`, `string(bool)`, and `bytes(string)`; any other conversion is a
+    /// typed `check.unsupported` on the beta line.
+    fn lower_conversion(
+        &mut self,
+        target: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{target}` conversion takes one value"),
+            ));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "a conversion argument is positional".to_string(),
+            ));
+            return None;
+        }
+        let source = self.lower_expr(&arg.value)?;
+        use ScalarType::{Bool, Bytes, Int, Text};
+        let (instr, result) = match (target, source.bare_scalar_type()) {
+            ("string", Some(Int)) => (Instr::ConvStringInt, Text),
+            ("string", Some(Bool)) => (Instr::ConvStringBool, Text),
+            ("bytes", Some(Text)) => (Instr::ConvBytesText, Bytes),
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    &format!("converting {} to {target}", source.spelling()),
+                ));
+                return None;
+            }
+        };
+        self.push(instr, span);
+        Some(LTy::bare_scalar(result))
+    }
+
     /// Lower `unreachable("static text")`: the sole application-invariant fault. It
     /// takes exactly one static string literal, emits a fault instruction carrying
     /// that text, and diverges (control never continues past it).
@@ -2004,6 +2062,7 @@ fn eq_instr(scalar: ScalarType) -> Instr {
         ScalarType::Int => Instr::EqInt,
         ScalarType::Bool => Instr::EqBool,
         ScalarType::Text => Instr::EqText,
+        ScalarType::Bytes => Instr::EqBytes,
     }
 }
 

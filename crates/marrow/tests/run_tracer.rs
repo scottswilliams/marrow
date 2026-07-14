@@ -203,6 +203,34 @@ fn integer_division_truncates_toward_zero() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "-3\n");
 }
 
+/// The closed scalar conversions travel the full path and render canonically.
+#[test]
+fn scalar_conversions_travel_the_full_path() {
+    let temp = TempDir::new("conv");
+    project(
+        &temp,
+        "pub fn asString(n: int): string\n\
+         \x20   return string(n)\n\
+         \n\
+         pub fn flag(b: bool): string\n\
+         \x20   return string(b)\n\
+         \n\
+         pub fn asBytes(s: string): bytes\n\
+         \x20   return bytes(s)\n",
+    );
+    let n = run_in(&temp, &["run", "asString", "--", "-7"]);
+    assert!(n.status.success(), "{n:?}");
+    assert_eq!(String::from_utf8_lossy(&n.stdout), "-7\n");
+
+    let b = run_in(&temp, &["run", "flag", "--", "true"]);
+    assert_eq!(String::from_utf8_lossy(&b.stdout), "true\n");
+
+    // "hi" is 0x6869; bytes render as 0x-prefixed lowercase hex.
+    let by = run_in(&temp, &["run", "asBytes", "--", "hi"]);
+    assert!(by.status.success(), "{by:?}");
+    assert_eq!(String::from_utf8_lossy(&by.stdout), "0x6869\n");
+}
+
 /// `string` comparisons order lexicographically through the full path.
 #[test]
 fn string_comparison_orders_lexicographically() {

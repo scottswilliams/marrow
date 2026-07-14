@@ -95,6 +95,16 @@ impl Record {
     }
 }
 
+/// Render bytes as `0x`-prefixed lowercase hex, the canonical `bytes` rendering.
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + bytes.len() * 2);
+    out.push_str("0x");
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
 }
@@ -104,6 +114,7 @@ fn render_value_text(value: &Value) -> String {
         Value::Int(v) => v.to_string(),
         Value::Bool(v) => v.to_string(),
         Value::Text(v) => v.to_string(),
+        Value::Bytes(v) => hex_bytes(v),
         Value::Optional(None) => "absent".to_string(),
         Value::Optional(Some(inner)) => render_value_text(inner),
         // Record returns are rejected by the verifier, so a record never surfaces
@@ -124,6 +135,12 @@ fn render_data(value: Option<&Value>) -> Result<String, ()> {
                 return Err(());
             }
             json_string(v)
+        }
+        Some(Value::Bytes(v)) => {
+            if v.len() * 2 + 2 > MAX_DATA_BYTES {
+                return Err(());
+            }
+            json_string(&hex_bytes(v))
         }
         Some(Value::Optional(Some(inner))) => render_data(Some(inner))?,
         // A record cannot be an export result (verifier-rejected return); no record

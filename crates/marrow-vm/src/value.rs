@@ -17,6 +17,7 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Text(Rc<str>),
+    Bytes(Rc<[u8]>),
     Record(u16, Box<[Option<Value>]>),
     Optional(Option<Box<Value>>),
 }
