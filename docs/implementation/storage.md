@@ -2,11 +2,12 @@
 
 `marrow-store` is the stripped ordered-byte storage engine retained at lane
 B00. It defines a crate-private byte-oriented engine contract and the two
-implementors that back it, and it temporarily hosts the logical
-key/value/civil-date codecs until a later lane moves them to their runtime
-owner. It does not parse `.mw` source, resolve schemas, or assign language
-identity, and it currently has no source-language consumer: the read kernel and
-runtime that will drive it are refounded in later lanes.
+implementors that back it. It orders opaque bytes: it does not parse `.mw`
+source, resolve schemas, assign language identity, or interpret key or value
+bytes. The logical key/value/civil-date codecs that give those bytes meaning
+were relocated to the path kernel (`marrow-kernel`) at lane K.5. The engine
+currently has no source-language consumer: the read kernel and runtime that
+will drive it are refounded in later lanes.
 
 ## Layers
 
@@ -17,14 +18,10 @@ runtime that will drive it are refounded in later lanes.
 | Native redb backend | `redb.rs` |
 | Shared backend conformance laws | `conformance.rs` (test-only) |
 | Bounded scan accumulation | `traversal.rs` |
-| Physical tree-cell key grammar | `cell.rs` |
-| Order-preserving key codec | `key.rs`, `codec.rs` |
-| Canonical value codec (incl. civil dates) | `value.rs` |
 
-The crate's public API is a short whitelist: the `cell`, `key`, and `value`
-codec modules plus the `StoreError` re-export. The engine trait and both
-backends are crate-private; the in-crate conformance suite keeps the memory and
-redb implementations aligned on the same byte-level laws.
+The crate's only public API is the `StoreError` re-export. The engine trait and
+both backends are crate-private; the in-crate conformance suite keeps the memory
+and redb implementations aligned on the same byte-level laws.
 
 ## What was deleted at B00
 

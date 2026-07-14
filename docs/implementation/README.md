@@ -17,7 +17,7 @@ and what returns through which direction.
 |---|---|---|
 | `marrow` | Thin CLI: `fmt` over a single file, plus typed not-yet-supported responses for refounding command names | — |
 | `marrow-codes` | Typed diagnostic-code registry and generated code reference | — |
-| `marrow-store` | Ordered-byte engine contract, memory and redb backends, engine conformance suite, logical key/value/civil-date codecs | [Storage](storage.md) |
+| `marrow-store` | Ordered-byte engine contract, memory and redb backends, engine conformance suite | [Storage](storage.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics | [Syntax](syntax.md) |
 
 ## Guides

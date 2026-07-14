@@ -37,10 +37,11 @@ thin `marrow` CLI.
 ### Storage engine
 
 - A private ordered-byte engine contract with in-memory and redb backends under
-  one conformance suite, plus the logical key/value/civil-date codecs. The
-  engine has no source-language consumer on the beta line yet; the compiler,
-  path kernel, and runtime that drive it are refounded starting at the thesis
-  tracer lane.
+  one conformance suite. The engine orders opaque bytes; the logical
+  key/value/civil-date codecs that give those bytes meaning are owned by the
+  path kernel (`marrow-kernel`). The engine has no source-language consumer on
+  the beta line yet; the compiler, path kernel, and runtime that drive it are
+  refounded starting at the thesis tracer lane.
 
 ### Deleted at B00
 
