@@ -1273,6 +1273,10 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::LessEqual, Int, Int) => (Instr::IntLe, Bool),
             (BinaryOp::Greater, Int, Int) => (Instr::IntGt, Bool),
             (BinaryOp::GreaterEqual, Int, Int) => (Instr::IntGe, Bool),
+            (BinaryOp::Less, Text, Text) => (Instr::TextLt, Bool),
+            (BinaryOp::LessEqual, Text, Text) => (Instr::TextLe, Bool),
+            (BinaryOp::Greater, Text, Text) => (Instr::TextGt, Bool),
+            (BinaryOp::GreaterEqual, Text, Text) => (Instr::TextGe, Bool),
             (BinaryOp::Equal, a, b) if a == b => (eq_instr(a), Bool),
             (BinaryOp::NotEqual, a, b) if a == b => {
                 self.push(eq_instr(a), span);

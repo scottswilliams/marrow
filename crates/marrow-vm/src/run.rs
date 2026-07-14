@@ -228,6 +228,20 @@ fn execute<'s>(
                 stack.push(Value::Text(joined.into()));
                 pc += 1;
             }
+            SealedInstr::TextLt | SealedInstr::TextLe | SealedInstr::TextGt | SealedInstr::TextGe => {
+                let b = as_text(pop(&mut stack));
+                let a = as_text(pop(&mut stack));
+                // Strings order lexicographically by their UTF-8 bytes.
+                let ordering = a.as_bytes().cmp(b.as_bytes());
+                let result = match &function.instrs()[pc] {
+                    SealedInstr::TextLt => ordering.is_lt(),
+                    SealedInstr::TextLe => ordering.is_le(),
+                    SealedInstr::TextGt => ordering.is_gt(),
+                    _ => ordering.is_ge(),
+                };
+                stack.push(Value::Bool(result));
+                pc += 1;
+            }
             SealedInstr::RecordNew(ty) => {
                 let fields = image.record_type(*ty).fields();
                 // f0 was pushed first, so the popped values fill slots in reverse.

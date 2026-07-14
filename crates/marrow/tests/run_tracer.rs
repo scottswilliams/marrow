@@ -203,6 +203,22 @@ fn integer_division_truncates_toward_zero() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "-3\n");
 }
 
+/// `string` comparisons order lexicographically through the full path.
+#[test]
+fn string_comparison_orders_lexicographically() {
+    let temp = TempDir::new("strcmp");
+    project(
+        &temp,
+        "pub fn before(a: string, b: string): bool\n\
+         \x20   return a < b\n",
+    );
+    let yes = run_in(&temp, &["run", "before", "--", "apple", "banana"]);
+    assert!(yes.status.success(), "run failed: {yes:?}");
+    assert_eq!(String::from_utf8_lossy(&yes.stdout), "true\n");
+    let no = run_in(&temp, &["run", "before", "--", "banana", "apple"]);
+    assert_eq!(String::from_utf8_lossy(&no.stdout), "false\n");
+}
+
 #[test]
 fn integer_division_by_zero_is_a_source_mapped_fault() {
     let temp = TempDir::new("divzero");

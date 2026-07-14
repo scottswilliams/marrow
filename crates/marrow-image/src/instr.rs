@@ -36,6 +36,10 @@ pub const OP_EQ_INT: u8 = 0x1A;
 pub const OP_EQ_BOOL: u8 = 0x1B;
 pub const OP_EQ_TEXT: u8 = 0x1C;
 pub const OP_TEXT_CONCAT: u8 = 0x1D;
+pub const OP_TEXT_LT: u8 = 0x40;
+pub const OP_TEXT_LE: u8 = 0x41;
+pub const OP_TEXT_GT: u8 = 0x42;
+pub const OP_TEXT_GE: u8 = 0x43;
 pub const OP_RECORD_NEW: u8 = 0x20;
 pub const OP_FIELD_GET: u8 = 0x21;
 pub const OP_SOME_WRAP: u8 = 0x22;
@@ -84,6 +88,10 @@ pub enum Instr {
     EqBool,
     EqText,
     TextConcat,
+    TextLt,
+    TextLe,
+    TextGt,
+    TextGe,
     RecordNew(u16),
     FieldGet(u16),
     SomeWrap,
@@ -131,6 +139,10 @@ impl Instr {
             Instr::EqBool => OP_EQ_BOOL,
             Instr::EqText => OP_EQ_TEXT,
             Instr::TextConcat => OP_TEXT_CONCAT,
+            Instr::TextLt => OP_TEXT_LT,
+            Instr::TextLe => OP_TEXT_LE,
+            Instr::TextGt => OP_TEXT_GT,
+            Instr::TextGe => OP_TEXT_GE,
             Instr::RecordNew(_) => OP_RECORD_NEW,
             Instr::FieldGet(_) => OP_FIELD_GET,
             Instr::SomeWrap => OP_SOME_WRAP,

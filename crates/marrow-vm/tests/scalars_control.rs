@@ -216,6 +216,34 @@ fn unreachable_with_non_text_operand_rejects() {
     assert_eq!(result, Err("image.function".to_string()));
 }
 
+/// Strings order lexicographically by their UTF-8 bytes.
+#[test]
+fn text_ordering_is_lexicographic() {
+    for (a, b, instr, expect) in [
+        ("apple", "banana", Instr::TextLt, true),
+        ("banana", "apple", Instr::TextLt, false),
+        ("apple", "apple", Instr::TextLe, true),
+        ("banana", "apple", Instr::TextGt, true),
+        ("apple", "apple", Instr::TextGe, true),
+        ("Z", "a", Instr::TextLt, true), // 'Z' (0x5A) < 'a' (0x61)
+    ] {
+        let result = build_and_run(|draft| {
+            let av = draft.intern_text(a);
+            let bv = draft.intern_text(b);
+            (
+                ImageType::scalar(Scalar::Bool),
+                vec![
+                    Instr::ConstLoad(av.index()),
+                    Instr::ConstLoad(bv.index()),
+                    instr.clone(),
+                    Instr::Return,
+                ],
+            )
+        });
+        assert_eq!(result, Ok(Some(Value::Bool(expect))), "{a} vs {b}");
+    }
+}
+
 #[test]
 fn text_concat_over_the_limit_faults() {
     // A single text constant caps at 4 KiB, so reach the 64 KiB result bound by
