@@ -1,4 +1,4 @@
-//! `marrow fmt`: format a Marrow source file or every file under a project.
+//! `marrow fmt`: format a single Marrow source file through the retained formatter.
 
 use marrow_codes::Code;
 use std::fs::{self, File, OpenOptions};
@@ -8,7 +8,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::{CheckFormat, report_check, report_io_error, report_simple_error};
+use crate::{report_io_error, report_parse, report_simple_error};
 
 const FMT_SYMLINK_HOP_LIMIT: usize = 40;
 
@@ -34,14 +34,12 @@ pub(crate) fn fmt(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow fmt [--check | --write] <file.mw | projectdir>
+  marrow fmt [--check | --write] <file.mw>
 
-Format Marrow source. With a single `.mw` file and no flag, print the formatted
-source to stdout. With a project directory (one that contains marrow.json),
-format every `.mw` file under its source roots; a directory requires --check or
---write, since printing many files to stdout is meaningless. --check exits
-non-zero if any file is not already formatted; --write rewrites changed files in
-place. `marrow fmt` does not read from stdin.
+Format a single Marrow source file. With no flag, print the formatted source to
+stdout. --check exits non-zero if the file is not already formatted; --write
+rewrites it in place. Whole-project formatting returns with the project owner on
+a later lane. `marrow fmt` does not read from stdin.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -49,17 +47,14 @@ place. `marrow fmt` does not read from stdin.
             // A stdin pipe has no path to --write and no project to discover, so
             // reject it explicitly rather than mislabel `-` as an unknown option.
             "-" => {
-                eprintln!("marrow fmt does not read from stdin; pass a file or project directory");
+                eprintln!("marrow fmt does not read from stdin; pass a single .mw file");
                 return ExitCode::from(2);
             }
             value if value.starts_with('-') => return crate::unknown_option("fmt", value),
             value => {
-                if let Err(code) = crate::take_single_target(
-                    &mut target,
-                    value,
-                    "fmt",
-                    "source file or project directory",
-                ) {
+                if let Err(code) =
+                    crate::take_single_target(&mut target, value, "fmt", "source file")
+                {
                     return code;
                 }
             }
@@ -69,30 +64,29 @@ place. `marrow fmt` does not read from stdin.
 
     let mode = mode.unwrap_or(FmtMode::Print);
     let Some(target) = target else {
-        eprintln!("missing source file or project directory");
+        eprintln!("missing source file");
         return ExitCode::from(2);
     };
     let target_path = Path::new(&target);
+    // Whole-project formatting needs the project owner (source-root discovery),
+    // which the beta line refounds at B01. Until then the thin CLI formats one
+    // `.mw` file at a time; a directory target reports the typed not-yet-supported
+    // code rather than silently doing nothing.
     if target_path.is_dir() {
-        return fmt_project_dir(&target, mode);
-    }
-    // A target that exists as neither a directory nor a file is not a Marrow project:
-    // classify it as config.missing through the shared loader, the same as check/run,
-    // rather than leaking a raw not-found errno from the single-file read below.
-    if !target_path.exists() {
-        return match crate::load_config(&target) {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(code) => code,
-        };
+        report_simple_error(
+            Code::CliCommandUnsupported.as_str(),
+            "formatting a project directory is not available on this beta line yet; pass a single .mw file",
+        );
+        return ExitCode::FAILURE;
     }
     if let Err(error) = guard_regular_source_file(Path::new(&target)) {
-        report_io_error(&target, &error, CheckFormat::Text);
+        report_io_error(&target, &error);
         return ExitCode::FAILURE;
     }
     let source = match std::fs::read_to_string(&target) {
         Ok(source) => source,
         Err(error) => {
-            report_io_error(&target, &error, CheckFormat::Text);
+            report_io_error(&target, &error);
             return ExitCode::FAILURE;
         }
     };
@@ -117,51 +111,6 @@ fn guard_regular_source_file(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Format every `.mw` file under a project's source roots. A directory requires a
-/// mode: printing many files to stdout is meaningless, so bare `fmt <dir>` is a
-/// usage error. A missing/invalid `marrow.json` is a typed `config.*` error
-/// through `load_config`, not a raw OS "Is a directory".
-fn fmt_project_dir(dir: &str, mode: FmtMode) -> ExitCode {
-    if matches!(mode, FmtMode::Print) {
-        eprintln!("marrow fmt on a directory requires --check or --write");
-        return ExitCode::from(2);
-    }
-    let config = match crate::load_config(dir) {
-        Ok(config) => config,
-        Err(code) => return code,
-    };
-    let modules = match marrow_project::discover_modules(Path::new(dir), &config) {
-        Ok(modules) => modules,
-        Err(error) => {
-            crate::report_simple_error(error.code, &error.to_string(), CheckFormat::Text);
-            return ExitCode::FAILURE;
-        }
-    };
-    let mut failed = false;
-    for module in &modules {
-        let path = module.path.display().to_string();
-        let source = match std::fs::read_to_string(&module.path) {
-            Ok(source) => source,
-            Err(error) => {
-                report_io_error(&path, &error, CheckFormat::Text);
-                failed = true;
-                continue;
-            }
-        };
-        match fmt_one(&path, &source, mode) {
-            // A whole-project run reports every problem, then fails overall, so
-            // the operator sees all unformatted or unparseable files at once.
-            Ok(FmtOutcome::Formatted) | Ok(FmtOutcome::Unchanged) => {}
-            Ok(FmtOutcome::NeedsFormatting) | Err(()) => failed = true,
-        }
-    }
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
 /// The result of formatting one file in `--check`/`--write` mode.
 enum FmtOutcome {
     /// `--write`: the file was rewritten with new formatting.
@@ -179,7 +128,7 @@ enum FmtOutcome {
 fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
     let parsed = marrow_syntax::parse_source(source);
     if parsed.has_errors() {
-        report_check(file, &parsed, CheckFormat::Text);
+        report_parse(file, &parsed);
         return Err(());
     }
     let formatted = marrow_syntax::format_source(source);
@@ -195,7 +144,6 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                     &format!(
                         "refusing to format {file}: formatting would discard retained comments"
                     ),
-                    CheckFormat::Text,
                 );
                 return Err(());
             }
@@ -211,7 +159,6 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                     &format!(
                         "refusing to format {file}: formatting would discard retained comments"
                     ),
-                    CheckFormat::Text,
                 );
                 Err(())
             } else {
@@ -228,14 +175,12 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
                     &format!(
                         "refusing to write {file}: formatting would discard retained comments"
                     ),
-                    CheckFormat::Text,
                 );
                 Err(())
             } else if let Err(error) = write_formatted_source(file, &formatted) {
                 report_simple_error(
                     Code::IoWrite.as_str(),
                     &format!("failed to write {file}: {error}"),
-                    CheckFormat::Text,
                 );
                 Err(())
             } else {

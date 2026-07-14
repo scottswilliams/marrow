@@ -1,19 +1,17 @@
 # marrow CLI Contributor Notes
 
-This binary hosts current commands for checking, running, testing, formatting,
-data inspection, evolution, serving, backup, and restore. Each command parses
-arguments into typed inputs, calls a lower-level operation, and renders the
-result.
+On the beta line this is a thin CLI: `marrow fmt` over a single `.mw` file
+through the retained formatter, plus `--version`/`--help`. Every other command
+name (`check`, `run`, `test`, `data`, `doctor`, `evolve`, `serve`, `client`,
+`backup`, `restore`, `init`) is recognized and reports a typed
+`cli.command_unsupported` response until its refounding lane lands it. The
+binary depends only on `marrow-codes` and `marrow-syntax`.
 
-One format-aware renderer owns text, JSON, and JSONL output for each diagnostic
-boundary. `term_style` is the single painting owner, and one named usage-exit
-owner handles command-line usage failures. Machine-readable consumers never
-scrape stderr prose. Prefer typed state over behavior-selecting booleans and
-keep reusable engine logic below the binary.
+`term_style` is the single painting owner, and one named usage-exit owner
+handles command-line usage failures. Output is text only until a command that
+needs structured output returns; prefer typed state over behavior-selecting
+booleans and keep reusable logic below the binary.
 
-The current command set, `ServeMode`, and surface routes are implementation
-state. The binary owns no language, semantic path, public URI, or authorization
-meaning. Embedded and served profiles must consume the same compiler-owned
-semantics.
-
-Map: [docs/implementation/tooling.md](../../docs/implementation/tooling.md).
+The binary owns no language, semantic path, public URI, or authorization
+meaning. A refounded command consumes compiler-owned semantics; it does not
+reconstruct them here.

@@ -61,10 +61,6 @@ pub(crate) fn code_message(stream: Stream, code: &str, message: impl std::fmt::D
     Palette::for_stream(stream).code_message(code, message)
 }
 
-pub(crate) fn plain_code_message(code: &str, message: impl std::fmt::Display) -> String {
-    format!("{code}: {message}")
-}
-
 pub(crate) fn render_help(stream: Stream, text: &str) -> String {
     render_help_if(color_enabled(stream), text)
 }
@@ -142,14 +138,6 @@ mod tests {
         );
         assert_eq!(
             Palette::for_test(false).code_message("io.write", "failed to write output"),
-            "io.write: failed to write output"
-        );
-    }
-
-    #[test]
-    fn plain_code_message_never_adds_style() {
-        assert_eq!(
-            plain_code_message("io.write", "failed to write output"),
             "io.write: failed to write output"
         );
     }
