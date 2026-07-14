@@ -32,10 +32,8 @@ CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo fmt --all -- --check
 Run focused tests first. Documentation changes use these focused gates:
 
 ```sh
-CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow --test main docs_entrypoints::
-CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow-check --test main language_reference_docs::
-CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow-check --test main standard_library_docs::
 CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow-codes --test error_codes_doc
+CARGO_TARGET_DIR=/absolute/path/to/marrow-target cargo test -p marrow-codes --test tidy
 ```
 
 Changes to the diagnostic registry regenerate its reference before the drift

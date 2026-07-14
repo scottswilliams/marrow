@@ -8,7 +8,6 @@ pub(crate) enum Stream {
 
 #[derive(Clone, Copy)]
 pub(crate) enum Style {
-    Success,
     Warning,
     Error,
     Code,
@@ -18,7 +17,6 @@ pub(crate) enum Style {
 impl Style {
     fn ansi(self) -> &'static str {
         match self {
-            Self::Success => "\x1b[32m",
             Self::Warning => "\x1b[33m",
             Self::Error => "\x1b[31m",
             Self::Code => "\x1b[36m",
@@ -109,7 +107,6 @@ mod tests {
 
     #[test]
     fn paint_enabled_wraps_text_in_ansi_style() {
-        assert_eq!(paint_if(true, Style::Success, "ok:"), "\x1b[32mok:\x1b[0m");
         assert_eq!(
             paint_if(true, Style::Warning, "warning:"),
             "\x1b[33mwarning:\x1b[0m"
@@ -127,7 +124,7 @@ mod tests {
 
     #[test]
     fn paint_disabled_returns_plain_text() {
-        assert_eq!(paint_if(false, Style::Success, "ok:"), "ok:");
+        assert_eq!(paint_if(false, Style::Error, "error:"), "error:");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! The shared declaration-body frame: the one `INDENT … DEDENT` trivia skeleton
-//! that the resource, store, enum, surface, and evolve bodies drive their member
+//! that the resource, store, enum, and evolve bodies drive their member
 //! loops from. Each body advances its opening `INDENT`, then repeatedly asks for
 //! the next line: the frame consumes blank lines, own-line comments, and stray
 //! nested blocks, and reports a member header for the caller to parse. The two
@@ -25,7 +25,7 @@ pub(super) enum BodyLine {
 
 /// What a declaration body does with an own-line `;;` doc comment: resource and
 /// enum members carry docs, so it accumulates to attach to the next member;
-/// surface items and evolve steps carry none, so it is retained as trivia.
+/// evolve steps carry none, so it is retained as trivia.
 pub(super) enum DocComments<'a> {
     /// Accumulate into `docs` to attach to the next member; any doc comment left
     /// unattached when the block closes is reported by `flush_docs_as_comments`.
@@ -40,7 +40,7 @@ pub(super) enum DocComments<'a> {
 /// block right after its header, before the frame sees the next line).
 pub(super) enum StrayBlock {
     /// Consume the stray `INDENT`, then report `error` at the first content line
-    /// when the block is non-empty (resource, store, enum, surface bodies).
+    /// when the block is non-empty (resource, store, enum bodies).
     AtContent(ParseError),
     /// Report `error` at the stray `INDENT` itself, unconditionally, then consume
     /// the block (evolve steps, where the step keyword owns the diagnostic).

@@ -173,29 +173,16 @@ pub(crate) fn take_single_target(
     Ok(())
 }
 
-/// Report a source file's parse diagnostics, or a one-line parse summary when it
-/// is clean. Text only.
+/// Report a source file's parse diagnostics on standard error. The sole caller
+/// invokes this only for source with parse errors, so there is no success arm.
 pub(crate) fn report_parse(file: &str, parsed: &marrow_syntax::ParsedSource) {
-    if parsed.diagnostics.is_empty() {
-        println!(
-            "{} {file} parsed ({} declaration{})",
-            term_style::paint(Stream::Stdout, Style::Success, "ok:"),
-            parsed.file.declarations.len(),
-            if parsed.file.declarations.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        );
-    } else {
-        for diagnostic in &parsed.diagnostics {
-            eprintln!("{}", syntax_diagnostic_line(file, diagnostic));
-            if let Some(help) = &diagnostic.help {
-                eprintln!(
-                    "{} {help}",
-                    term_style::paint(Stream::Stderr, Style::Code, "help:")
-                );
-            }
+    for diagnostic in &parsed.diagnostics {
+        eprintln!("{}", syntax_diagnostic_line(file, diagnostic));
+        if let Some(help) = &diagnostic.help {
+            eprintln!(
+                "{} {help}",
+                term_style::paint(Stream::Stderr, Style::Code, "help:")
+            );
         }
     }
 }

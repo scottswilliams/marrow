@@ -26,8 +26,7 @@ The current CLI uses three exit classes:
 
 Dotted diagnostic codes and structured report fields are the current
 machine-readable interfaces. Human-readable message prose may change. The
-[Error Code Reference](error-codes.md) is generated from the code registry, and
-the [Diagnostics Reference](tools/diagnostics.md) describes output selection.
+[Error Code Reference](error-codes.md) is generated from the code registry.
 Before a release policy is adopted, even structured interfaces may change with
 the implementation and its documentation.
 
@@ -36,7 +35,7 @@ the implementation and its documentation.
 `marrow.json` and `marrow.lock` are current project artifacts. The live store is
 the authority for accepted durable identity; `marrow.lock` is its committed
 source-tree projection and can also seed an absent disposable store. Exact
-configuration behavior is documented in [Project Files](tools/project-file.md).
+configuration behavior returns with the refounded project owner.
 
 Raw native-store files are private implementation data, not an interchange
 format. Move durable data through typed backup and restore. A restore validates

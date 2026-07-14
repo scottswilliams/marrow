@@ -14,7 +14,8 @@ redb = { version = "4", optional = true }
 
 [features]
 # The native persistent backend (redb). Off by default so the in-memory store
-# and encoding stay dependency-light; the CLI enables it.
+# and encoding stay dependency-light; no retained crate enables it today — CI
+# gates it via --all-features, and the refounded runtime lanes become its caller.
 native = ["dep:redb"]
 
 [lints]

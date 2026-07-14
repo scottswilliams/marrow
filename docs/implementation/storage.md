@@ -1,47 +1,37 @@
 # Storage implementation
 
-`marrow-store` implements the current logical tree-cell and transaction
-contract beneath the language. It knows catalog-shaped identifiers and typed
-key/value encodings used by the current stack, but it does not parse `.mw`
-source.
+`marrow-store` is the stripped ordered-byte storage engine retained at lane
+B00. It defines a crate-private byte-oriented engine contract and the two
+implementors that back it, and it temporarily hosts the logical
+key/value/civil-date codecs until a later lane moves them to their runtime
+owner. It does not parse `.mw` source, resolve schemas, or assign language
+identity, and it currently has no source-language consumer: the read kernel and
+runtime that will drive it are refounded in later lanes.
 
 ## Layers
 
 | Layer | Owner |
 |---|---|
-| Public typed facade | `tree.rs`, `sealed.rs` |
-| Key and value codecs | `key.rs`, `value.rs`, `decimal.rs`, `codec.rs` |
-| Logical cell families | `cell.rs`, `catalog.rs`, `metadata.rs` |
-| Transactions and traversal | `tree.rs`, `traversal.rs` |
-| Backup cell framing | `backup.rs` |
-| Private backend contract | `backend.rs` |
+| Private byte-engine contract and `StoreError` | `backend.rs` |
 | In-memory backend | `mem.rs` |
 | Native redb backend | `redb.rs` |
-| Shared backend laws | `conformance.rs` |
+| Shared backend conformance laws | `conformance.rs` (test-only) |
+| Bounded scan accumulation | `traversal.rs` |
+| Physical tree-cell key grammar | `cell.rs` |
+| Order-preserving key codec | `key.rs`, `codec.rs` |
+| Canonical value codec (incl. civil dates) | `value.rs` |
 
-`TreeStore` is the current typed facade. Native handles are opened through
-`SealedStore` with an `AccessMode`; raw backend and physical key APIs are
-private to the crate.
+The crate's public API is a short whitelist: the `cell`, `key`, and `value`
+codec modules plus the `StoreError` re-export. The engine trait and both
+backends are crate-private; the in-crate conformance suite keeps the memory and
+redb implementations aligned on the same byte-level laws.
 
-## Transactions and durability
+## What was deleted at B00
 
-The backend contract provides snapshot reads and atomic write transactions.
-The facade keeps data, derived index cells, catalog rows, and commit metadata in
-one commit bracket. Memory and redb run the same private substrate conformance
-laws; only redb is the current persistent substrate.
-
-The native store seals each committed state with commit metadata and a commit
-record containing per-root structural digests. Current metadata family tags are
-`04` for engine metadata, `05` for commit metadata, and `07` for the sealed
-commit record. There is no separate `06 + store ID` structural-digest cell.
-
-## Recovery and backup
-
-Normal open performs bounded structural checks. Explicit integrity and recovery
-paths perform deeper validation. Physical recovery is below application
-semantics and cannot by itself establish that saved data matches the current
-program.
-
-Backup streams accepted catalog rows and logical data cells while excluding
-derived indexes; restore rebuilds indexes. One persistent substrate means
-cross-backend portability is not yet an earned conformance claim.
+The prototype's logical tree facade (`TreeStore`/`SealedStore`), admission
+metadata, catalog rows, structural digests, backup framing, and the `decimal`
+value type were deleted with their owners; each returns through its refounding
+lane. Inside the redb adapter, the page-level recovery probe and the
+process-global panic-hook swap were deleted as release-veto families: a
+malformed or torn store now surfaces redb's own open error through the typed
+`StoreError` mapping, with no engine-page parsing above the backend.

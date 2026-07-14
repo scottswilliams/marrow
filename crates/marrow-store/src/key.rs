@@ -118,11 +118,11 @@ pub(crate) const KEY_INT: u8 = 0x02;
 pub(crate) const KEY_DATE: u8 = 0x03;
 pub(crate) const KEY_INSTANT: u8 = 0x04;
 pub(crate) const KEY_DURATION: u8 = 0x05;
-// 0x06 is intentionally reserved for Decimal, which ScalarType permits as a value
-// but SavedKey does not permit as a key, so the tag is held to keep the typed order
-// stable if Decimal ever becomes key-eligible. These tags are a durable physical
-// encoding and must never be renumbered: doing so would silently reorder existing
-// on-disk keys and break stored-key compatibility.
+// 0x06 is intentionally left unassigned: it was reserved for a decimal value
+// type that was removed at B00 and may return later, and holding the slot keeps
+// the relative tag order of the other kinds stable. Pre-beta there is no stored
+// data and no compatibility promise; the durable-key contract that freezes
+// these tags is established by the lane that first writes data under them.
 pub(crate) const KEY_STR: u8 = 0x07;
 pub(crate) const KEY_BYTES: u8 = 0x08;
 

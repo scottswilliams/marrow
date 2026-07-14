@@ -9,4 +9,3 @@ Do not spell registered code strings elsewhere. Semantic code uses typed
 `Code`; renderers produce prose. The generated-document drift gate and per-code
 coverage are the enforcement artifacts for this ownership boundary.
 
-Map: [docs/implementation/tooling.md](../../docs/implementation/tooling.md).

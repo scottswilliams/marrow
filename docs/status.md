@@ -45,7 +45,8 @@ lane, rebuilt as a new owner:
 - the `surface` stack (declarations, generated CRUD/collection/action families,
   operation-tag HTTP routes, experimental serving, and the generated TypeScript
   client), and the user-facing storage-cost model;
-- the tree-walking interpreter, `ProjectSession`, the resource/schema split, the
+- the tree-walking interpreter, the composed project-session owner, the
+  resource/schema split, the
   store-projected catalog and current evolution lifecycle, managed indexes and
   `nextId`, and the mixed compiler/runtime/store JSON model;
 - the `check`/`run`/`test`/`data`/`doctor`/`evolve`/`serve`/`client`/`backup`/

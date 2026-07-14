@@ -157,8 +157,7 @@ evidence rather than asserted in the README.
 ## Build and documentation
 
 Installation currently requires the pinned Rust toolchain and a source build.
-Start with [Installation](docs/install.md) and the
-[Quickstart](docs/quickstart.md).
+Start with [Installation](docs/install.md).
 
 - [Documentation map](docs/) explains authority and navigation.
 - [Language reference](docs/language/) defines current `.mw` behavior.

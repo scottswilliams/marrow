@@ -777,8 +777,8 @@ pub struct KeyParam {
 }
 
 /// A type annotation, parsed once into its structure. The parser classifies the
-/// `sequence[T]`, `Id(^root)`, and trailing-`?` forms here, so `marrow-schema` and
-/// the checker match on this node instead of re-reading the source spelling. The
+/// `sequence[T]`, `Id(^root)`, and trailing-`?` forms here, so downstream
+/// consumers match on this node instead of re-reading the source spelling. The
 /// grammar of type spellings has exactly one owner: the type parser that builds
 /// this node.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -787,7 +787,7 @@ pub enum TypeExpr {
     /// an enum or resource name, a qualified name, or an unresolvable spelling.
     /// `text` is the whitespace-free source spelling; classifying it as a scalar,
     /// `unknown`, or a named type is a resolution concern that needs project
-    /// knowledge, so it stays in `marrow-schema` and the checker.
+    /// knowledge, so it stays with the semantic owner.
     Name { text: String, span: SourceSpan },
     /// `sequence[T]` element-type sugar.
     Sequence {

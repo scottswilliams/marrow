@@ -3,9 +3,10 @@
 //! Two invariants, both enforced from source and the Cargo DAG rather than prose:
 //!
 //! 1. The workspace members are exactly the retained beta set.
-//! 2. No tracked file under `crates/` names a forbidden legacy family — the
-//!    deleted crates, the `surface` construct, `ProjectSession`, `Value::Absent`,
-//!    or the tree-walking interpreter — as a Rust identifier or crate reference.
+//! 2. No tracked file in the repository names a forbidden legacy family — the
+//!    deleted crates (hyphen and underscore forms), the `surface` construct,
+//!    `ProjectSession`, `Value::Absent`, or the tree-walking interpreter — as a
+//!    Rust identifier, crate reference, or documented-current name.
 //!
 //! The scan matches concrete Rust identifiers (crate paths and type/enum names),
 //! not the ordinary English word "surface", so it stays precise as the retained
@@ -23,13 +24,20 @@ const RETAINED_MEMBERS: &[&str] = &["marrow", "marrow-codes", "marrow-store", "m
 /// back in. Each is a real Rust token, never an English word, so the scan has no
 /// false positives against ordinary prose.
 const FORBIDDEN_FAMILIES: &[&str] = &[
-    // Deleted crate references (any `use marrow_x` / `marrow_x::` edge).
+    // Deleted crate references: source edges (`use marrow_x` / `marrow_x::`)
+    // and manifest/doc spellings (`marrow-x`).
     "marrow_check",
     "marrow_run",
     "marrow_schema",
     "marrow_catalog",
     "marrow_json",
     "marrow_project",
+    "marrow-check",
+    "marrow-run",
+    "marrow-schema",
+    "marrow-catalog",
+    "marrow-json",
+    "marrow-project",
     // The surface construct: AST nodes, the keyword variant, the codes family,
     // and the wire ABI types all share the `Surface` identifier prefix.
     "Surface",
@@ -50,11 +58,11 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn tracked_crate_files(root: &Path) -> Vec<PathBuf> {
+fn tracked_files(root: &Path) -> Vec<PathBuf> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "crates"])
+        .args(["ls-files"])
         .output()
         .expect("run git ls-files");
     assert!(output.status.success(), "git ls-files failed");
@@ -110,7 +118,7 @@ fn workspace_members_are_exactly_the_retained_set() {
 }
 
 #[test]
-fn no_tracked_crate_file_names_a_forbidden_family() {
+fn no_tracked_file_names_a_forbidden_family() {
     let root = workspace_root();
     let this_file = Path::new(file!())
         .file_name()
@@ -118,7 +126,7 @@ fn no_tracked_crate_file_names_a_forbidden_family() {
         .to_owned();
 
     let mut violations: Vec<String> = Vec::new();
-    for path in tracked_crate_files(&root) {
+    for path in tracked_files(&root) {
         if path.file_name() == Some(this_file.as_os_str()) {
             continue;
         }

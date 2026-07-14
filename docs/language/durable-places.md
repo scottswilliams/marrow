@@ -198,5 +198,5 @@ A transaction stages deletion with other durable writes and either commits or
 rolls them back together.
 
 Source declarations such as `rename` and `retire` are defined in
-[Evolution](evolution.md). Command and artifact behavior belongs to the
-[evolution tool reference](../tools/evolution.md).
+[Evolution](evolution.md). The evolution command workflow returns with its
+refounding lane.

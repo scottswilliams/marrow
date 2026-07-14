@@ -8,11 +8,9 @@ stable release.
 ## Start here
 
 - [Install Marrow](install.md) from the source tree.
-- [Quickstart](quickstart.md) creates, checks, runs, tests, and inspects a
-  durable program.
 - [Language tour](language/) introduces the programming model in one page.
-- [Project status](status.md) separates current behavior, legacy code, and
-  future direction.
+- [Project status](status.md) separates current behavior from future
+  direction and lists what was deleted at B00.
 
 ## Language reference
 
@@ -35,9 +33,10 @@ It is organized for lookup rather than sequential reading:
 
 ## Tools and operations
 
-- [Tool reference](tools/) covers the project file, CLI, data inspection,
-  evolution, backup, restore, and diagnostics.
-- [Operations](operations/) covers native-store ownership and recovery.
+- [Tool reference](tools/) covers the thin beta CLI; the prototype tool
+  families return through their refounding lanes.
+- [Operations](operations/) holds the place for the refounded durable
+  lifecycle; there are no supported operational procedures yet.
 - [Error codes](error-codes.md) is generated from the current toolchain registry.
 - [Compatibility](compatibility.md) states what an unreleased revision does
   and does not promise.

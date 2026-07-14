@@ -40,9 +40,8 @@ what happened, where it happened, and what to try next when Marrow knows.
 
 Language-level error behavior is described in
 [`language/errors-and-transactions.md`](language/errors-and-transactions.md).
-Tool invocation and output formats are described in
-[`tools/diagnostics.md`](tools/diagnostics.md). This page is generated from the
-code registry and lists every current code.
+Tool invocation is described in [`tools/cli.md`](tools/cli.md). This page is
+generated from the code registry and lists every current code.
 
 ## CLI Exit Codes
 

@@ -5,9 +5,8 @@ what happened, where it happened, and what to try next when Marrow knows.
 
 Language-level error behavior is described in
 [`language/errors-and-transactions.md`](language/errors-and-transactions.md).
-Tool invocation and output formats are described in
-[`tools/diagnostics.md`](tools/diagnostics.md). This page is generated from the
-code registry and lists every current code.
+Tool invocation is described in [`tools/cli.md`](tools/cli.md). This page is
+generated from the code registry and lists every current code.
 
 ## CLI Exit Codes
 
@@ -146,8 +145,8 @@ closed with a typed code — never a process crash: a truncated or torn body is
 | `store.permission_denied` | The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry. |
 | `store.locked` | The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
-| `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a truncated or torn store body and a catalog snapshot whose recomputed digest does not match its stored header. |
-| `store.recovery_required` | The store was not shut down cleanly, so a read-only open is refused until a write-capable open replays the interrupted commit. Run `marrow data recover` to attempt that open. The recovery is attempted, not guaranteed: the command reports whether the store opened, and a store damaged beyond replay surfaces `store.corruption`. |
+| `store.corruption` | The store file or a tree-cell record is corrupt and could not be opened or decoded, including a truncated or torn store body. |
+| `store.recovery_required` | The store was not shut down cleanly, so a read-only open is refused until a write-capable open replays the interrupted commit. The recovery command returns with the refounded durable lifecycle; recovery is attempted, not guaranteed, and a store damaged beyond replay surfaces `store.corruption`. |
 | `store.limit` | Marrow exhausted a fixed representational bound: a store framing length/count did not fit its `u32` field, a record/problem/index count overflowed, or the `u64` commit-ID sequence was exhausted. |
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
