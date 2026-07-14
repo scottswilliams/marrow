@@ -502,15 +502,15 @@ fn future_direction_keeps_beta_evolution_transactions_and_distribution_narrow() 
     let local_prose = normalized_whitespace(&local);
 
     assert!(
-        admission_prose.contains("exactly one new sparse path")
-            && admission_prose.contains("no stored values")
-            && admission_prose.contains("binding-only activation")
-            && admission_prose.contains("not a data-contract transition"),
+        admission_prose.contains("Metadata-only additive activation admits exactly")
+            && admission_prose.contains("without rewriting stored values")
+            && admission_prose.contains("bounded add-index transition")
+            && admission_prose.contains("rejected without mutation"),
         "admission direction must retain the narrow beta transition vocabulary"
     );
     assert!(
-        durable_prose.contains("typed result propagation")
-            && durable_prose.contains("rolls back without poisoning the transaction")
+        durable_prose.contains("Ordinary typed propagation")
+            && durable_prose.contains("rolls back without poisoning")
             && durable_prose.contains("Runtime, validation, and budget faults poison"),
         "durable direction must distinguish deliberate rollback from poisoning"
     );
@@ -525,7 +525,7 @@ fn future_direction_keeps_beta_evolution_transactions_and_distribution_narrow() 
     );
     assert!(
         local_prose.contains("typed state refresh")
-            && local_prose.contains("must not replay the business action automatically")
+            && local_prose.contains("does not replay a business action")
             && durable_prose.contains("without automatic retry")
             && durable_prose.contains("typed state refresh")
             && !local_prose.contains("idempotent commands")
