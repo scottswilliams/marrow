@@ -52,6 +52,24 @@ resource node without children, and otherwise the number of immediate present
 children. On a local collection it returns the number of entries. String and
 byte lengths are `std::text::length` and `std::bytes::length`.
 
+## Text
+
+A small closed set of pure text built-ins is available without `use`. This is the
+whole text floor; there is no general string library.
+
+| Form | Result |
+|---|---|
+| `isEmpty(text): bool` | Whether `text` is the empty string |
+| `contains(haystack, needle): bool` | Whether `haystack` contains `needle` as a substring |
+| `trim(text): string` | `text` with leading and trailing Unicode whitespace removed |
+
+```mw
+module docs::text_floor
+
+pub fn isBlank(s: string): bool
+    return isEmpty(trim(s))
+```
+
 ## Ordered Neighbors
 
 `next(place)` and `prev(place)` return an optional neighboring key or entry

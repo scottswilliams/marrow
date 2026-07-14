@@ -1407,6 +1407,9 @@ impl<'a> FnLowerer<'a> {
         if name == "unreachable" {
             return self.lower_unreachable(args, span);
         }
+        if matches!(name, "isEmpty" | "contains" | "trim") {
+            return self.lower_text_builtin(name, args, span).map(CallResult::Value);
+        }
         // A scalar-type spelling in call position is a conversion, resolved before
         // records/functions so a conversion is never shadowed. The admitted set is
         // closed; an unadmitted pair is a typed `check.unsupported`.
@@ -1795,6 +1798,41 @@ impl<'a> FnLowerer<'a> {
         };
         self.push(Instr::DurExists(site), place.span);
         Some(LTy::bare_scalar(ScalarType::Bool))
+    }
+
+    /// Lower a call in the closed pure text floor: `isEmpty(string): bool`,
+    /// `contains(string, string): bool`, `trim(string): string`. One owner for the
+    /// whole floor; there is no general string library.
+    fn lower_text_builtin(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let text = LTy::bare_scalar(ScalarType::Text);
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
+        let (arity, instr, result): (usize, Instr, LTy) = match name {
+            "isEmpty" => (1, Instr::TextIsEmpty, bool_ty),
+            "contains" => (2, Instr::TextContains, bool_ty),
+            "trim" => (1, Instr::TextTrim, text),
+            _ => unreachable!("caller matched the text-floor names"),
+        };
+        if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` takes {arity} positional string argument(s)"),
+            ));
+            return None;
+        }
+        for arg in args {
+            if self.lower_as(&arg.value, text).is_none() {
+                return None;
+            }
+        }
+        self.push(instr, span);
+        Some(result)
     }
 
     /// Lower a closed scalar conversion `target(value)`. The admitted set is

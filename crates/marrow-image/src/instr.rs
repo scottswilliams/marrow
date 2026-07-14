@@ -48,6 +48,9 @@ pub const OP_BYTES_GE: u8 = 0x48;
 pub const OP_CONV_STRING_INT: u8 = 0x50;
 pub const OP_CONV_STRING_BOOL: u8 = 0x51;
 pub const OP_CONV_BYTES_TEXT: u8 = 0x52;
+pub const OP_TEXT_IS_EMPTY: u8 = 0x60;
+pub const OP_TEXT_CONTAINS: u8 = 0x61;
+pub const OP_TEXT_TRIM: u8 = 0x62;
 pub const OP_RECORD_NEW: u8 = 0x20;
 pub const OP_FIELD_GET: u8 = 0x21;
 pub const OP_SOME_WRAP: u8 = 0x22;
@@ -111,6 +114,11 @@ pub enum Instr {
     ConvStringBool,
     /// `string → bytes`: the UTF-8 bytes of the text.
     ConvBytesText,
+    /// The closed pure text floor. `string → bool`, `string, string → bool`, and
+    /// `string → string`.
+    TextIsEmpty,
+    TextContains,
+    TextTrim,
     RecordNew(u16),
     FieldGet(u16),
     SomeWrap,
@@ -170,6 +178,9 @@ impl Instr {
             Instr::ConvStringInt => OP_CONV_STRING_INT,
             Instr::ConvStringBool => OP_CONV_STRING_BOOL,
             Instr::ConvBytesText => OP_CONV_BYTES_TEXT,
+            Instr::TextIsEmpty => OP_TEXT_IS_EMPTY,
+            Instr::TextContains => OP_TEXT_CONTAINS,
+            Instr::TextTrim => OP_TEXT_TRIM,
             Instr::RecordNew(_) => OP_RECORD_NEW,
             Instr::FieldGet(_) => OP_FIELD_GET,
             Instr::SomeWrap => OP_SOME_WRAP,

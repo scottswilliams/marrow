@@ -66,6 +66,11 @@ pub enum SealedInstr {
     ConvStringInt,
     ConvStringBool,
     ConvBytesText,
+    /// The closed pure text floor: `string → bool`, `string, string → bool`,
+    /// `string → string`.
+    TextIsEmpty,
+    TextContains,
+    TextTrim,
     /// Construct a record of type index `_0` from its field values popped in
     /// reverse (f0 pushed first). The field count and per-field required flag come
     /// from the sealed record type.

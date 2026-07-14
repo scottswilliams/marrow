@@ -22,7 +22,8 @@ use marrow_image::{
     OP_INT_DIV, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE,
     OP_LOCAL_GET,
     OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_GE,
-    OP_TEXT_GT, OP_TEXT_LE, OP_TEXT_LT, OP_TXN_BEGIN, TAG_BYTES,
+    OP_TEXT_CONTAINS, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM,
+    OP_TXN_BEGIN, TAG_BYTES,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT,
     TAG_RECORD, TAG_TEXT,
     TAG_UNIT, image_id,
@@ -1154,6 +1155,9 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_CONV_STRING_INT => SealedInstr::ConvStringInt,
             OP_CONV_STRING_BOOL => SealedInstr::ConvStringBool,
             OP_CONV_BYTES_TEXT => SealedInstr::ConvBytesText,
+            OP_TEXT_IS_EMPTY => SealedInstr::TextIsEmpty,
+            OP_TEXT_CONTAINS => SealedInstr::TextContains,
+            OP_TEXT_TRIM => SealedInstr::TextTrim,
             OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
             OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
             OP_SOME_WRAP => SealedInstr::SomeWrap,
@@ -1639,6 +1643,22 @@ fn apply(
         SealedInstr::ConvBytesText => {
             expect_scalar(pop(stack)?, Scalar::Text)?;
             stack.push(VType::bare_scalar(Scalar::Bytes));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::TextIsEmpty => {
+            expect_scalar(pop(stack)?, Scalar::Text)?;
+            stack.push(VType::bare_scalar(Scalar::Bool));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::TextContains => {
+            expect_scalar(pop(stack)?, Scalar::Text)?;
+            expect_scalar(pop(stack)?, Scalar::Text)?;
+            stack.push(VType::bare_scalar(Scalar::Bool));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::TextTrim => {
+            expect_scalar(pop(stack)?, Scalar::Text)?;
+            stack.push(VType::bare_scalar(Scalar::Text));
             Ok(Control::Fallthrough)
         }
         SealedInstr::RecordNew(_)

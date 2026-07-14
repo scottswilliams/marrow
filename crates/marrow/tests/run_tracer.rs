@@ -231,6 +231,36 @@ fn scalar_conversions_travel_the_full_path() {
     assert_eq!(String::from_utf8_lossy(&by.stdout), "0x6869\n");
 }
 
+/// The closed pure text floor: isEmpty / contains / trim.
+#[test]
+fn text_floor_builtins_travel_the_full_path() {
+    let temp = TempDir::new("textfloor");
+    project(
+        &temp,
+        "pub fn empty(s: string): bool\n\
+         \x20   return isEmpty(trim(s))\n\
+         \n\
+         pub fn has(h: string, n: string): bool\n\
+         \x20   return contains(h, n)\n",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "empty", "--", "   "]).stdout),
+        "true\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "empty", "--", " x "]).stdout),
+        "false\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "has", "--", "hello", "ell"]).stdout),
+        "true\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "has", "--", "hello", "xyz"]).stdout),
+        "false\n"
+    );
+}
+
 /// `string` comparisons order lexicographically through the full path.
 #[test]
 fn string_comparison_orders_lexicographically() {

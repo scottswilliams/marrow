@@ -277,6 +277,24 @@ fn execute<'s>(
                 stack.push(Value::Bytes(Rc::from(text.as_bytes())));
                 pc += 1;
             }
+            SealedInstr::TextIsEmpty => {
+                let s = as_text(pop(&mut stack));
+                stack.push(Value::Bool(s.is_empty()));
+                pc += 1;
+            }
+            SealedInstr::TextContains => {
+                let needle = as_text(pop(&mut stack));
+                let haystack = as_text(pop(&mut stack));
+                stack.push(Value::Bool(haystack.contains(needle.as_ref())));
+                pc += 1;
+            }
+            SealedInstr::TextTrim => {
+                // Trim leading/trailing Unicode whitespace; the result never grows,
+                // so it needs no length bound.
+                let s = as_text(pop(&mut stack));
+                stack.push(Value::Text(Rc::from(s.trim())));
+                pc += 1;
+            }
             SealedInstr::RecordNew(ty) => {
                 let fields = image.record_type(*ty).fields();
                 // f0 was pushed first, so the popped values fill slots in reverse.
