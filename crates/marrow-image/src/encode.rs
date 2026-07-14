@@ -276,7 +276,9 @@ fn encode_code(
     for instr in code {
         out.push(instr.opcode());
         match instr {
-            Instr::ConstLoad(raw) => push_u16(&mut out, const_map[*raw as usize]),
+            Instr::ConstLoad(raw) | Instr::Unreachable(raw) => {
+                push_u16(&mut out, const_map[*raw as usize])
+            }
             Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(&mut out, *l),
             Instr::Call(f) => push_u16(&mut out, *f),
             Instr::RecordNew(t) => push_u16(&mut out, *t),

@@ -20,6 +20,7 @@ pub const OP_CALL: u8 = 0x06;
 pub const OP_JUMP: u8 = 0x07;
 pub const OP_JUMP_IF_FALSE: u8 = 0x08;
 pub const OP_BRANCH_PRESENT: u8 = 0x09;
+pub const OP_UNREACHABLE: u8 = 0x0A;
 pub const OP_INT_ADD: u8 = 0x10;
 pub const OP_INT_SUB: u8 = 0x11;
 pub const OP_INT_MUL: u8 = 0x12;
@@ -65,6 +66,9 @@ pub enum Instr {
     Jump(u32),
     JumpIfFalse(u32),
     BranchPresent(u32),
+    /// Fault with `run.unreachable`, carrying the static text at const index `_0`.
+    /// The sole application-invariant fault; it never falls through.
+    Unreachable(u16),
     IntAdd,
     IntSub,
     IntMul,
@@ -111,6 +115,7 @@ impl Instr {
             Instr::Jump(_) => OP_JUMP,
             Instr::JumpIfFalse(_) => OP_JUMP_IF_FALSE,
             Instr::BranchPresent(_) => OP_BRANCH_PRESENT,
+            Instr::Unreachable(_) => OP_UNREACHABLE,
             Instr::IntAdd => OP_INT_ADD,
             Instr::IntSub => OP_INT_SUB,
             Instr::IntMul => OP_INT_MUL,
@@ -151,6 +156,7 @@ impl Instr {
             Instr::ConstLoad(_)
             | Instr::LocalGet(_)
             | Instr::LocalSet(_)
+            | Instr::Unreachable(_)
             | Instr::Call(_)
             | Instr::RecordNew(_)
             | Instr::FieldGet(_)

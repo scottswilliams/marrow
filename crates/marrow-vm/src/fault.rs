@@ -5,17 +5,38 @@
 //! from the language `Result<T,E>`, from source diagnostics, and from artifact
 //! rejections.
 
+use std::rc::Rc;
+
 /// A runtime fault, mapped to the source position of the faulting instruction.
+/// `detail` carries the static author text of an `unreachable("...")` fault; every
+/// other fault has none. It is presentation-only: the stable typed fault surface is
+/// the code and span.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeFault {
     code: &'static str,
     line: u32,
     column: u32,
+    detail: Option<Rc<str>>,
 }
 
 impl RuntimeFault {
     pub(crate) fn new(code: &'static str, line: u32, column: u32) -> Self {
-        Self { code, line, column }
+        Self {
+            code,
+            line,
+            column,
+            detail: None,
+        }
+    }
+
+    /// A fault carrying static author text (an `unreachable("...")` invariant).
+    pub(crate) fn with_detail(code: &'static str, line: u32, column: u32, detail: Rc<str>) -> Self {
+        Self {
+            code,
+            line,
+            column,
+            detail: Some(detail),
+        }
     }
 
     pub fn code(&self) -> &'static str {
@@ -28,6 +49,11 @@ impl RuntimeFault {
 
     pub fn column(&self) -> u32 {
         self.column
+    }
+
+    /// The static author text, present only for an `unreachable("...")` fault.
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 }
 

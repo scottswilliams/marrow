@@ -25,11 +25,14 @@ pub(crate) enum Record {
     },
     /// Family 2: an image decode/verify rejection.
     ArtifactRejected { code: &'static str },
-    /// Family 3: a source-mapped runtime fault.
+    /// Family 3: a source-mapped runtime fault. `detail` is the static author text
+    /// of an `unreachable("...")` fault, surfaced in text output only; the typed
+    /// JSONL surface stays the code and span.
     Fault {
         code: &'static str,
         line: u32,
         column: u32,
+        detail: Option<String>,
     },
     /// Family 4: an owner-local operational error (CLI/store/io).
     OperationalError { code: &'static str },
@@ -41,9 +44,16 @@ impl Record {
         match self {
             Record::Value(Some(value)) => render_value_text(value),
             Record::Value(None) => String::new(),
-            Record::Diagnostic { code, line, column } | Record::Fault { code, line, column } => {
-                format!("{code} at {line}:{column}")
-            }
+            Record::Diagnostic { code, line, column } => format!("{code} at {line}:{column}"),
+            Record::Fault {
+                code,
+                line,
+                column,
+                detail,
+            } => match detail {
+                Some(text) => format!("{code} at {line}:{column}: {text}"),
+                None => format!("{code} at {line}:{column}"),
+            },
             Record::ArtifactRejected { code } | Record::OperationalError { code } => {
                 code.to_string()
             }
@@ -70,7 +80,9 @@ impl Record {
                 r#"{{"code":{},"kind":"run","outcome":"artifact_rejected"}}"#,
                 json_string(code)
             ),
-            Record::Fault { code, line, column } => format!(
+            Record::Fault {
+                code, line, column, ..
+            } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"fault","span":{}}}"#,
                 json_string(code),
                 span_object(*line, *column)
@@ -186,7 +198,8 @@ mod tests {
             Record::Fault {
                 code: "run.overflow",
                 line: 1,
-                column: 1
+                column: 1,
+                detail: None,
             }
             .to_jsonl()
             .contains(r#""outcome":"fault""#)
@@ -206,6 +219,7 @@ mod tests {
             code: "run.overflow",
             line: 7,
             column: 2,
+            detail: None,
         }
         .to_jsonl();
         assert_eq!(

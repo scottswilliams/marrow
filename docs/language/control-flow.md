@@ -103,6 +103,33 @@ pub fn show(wanted: string)
 When these exits leave a transaction normally, the transaction commits before
 control transfers. An escaping error instead rolls it back.
 
+## `unreachable`
+
+`unreachable("static text")` asserts that control never reaches this point. It is
+the sole application-declared invariant fault. It takes exactly one static string
+literal — never a computed value — recording the invariant the author believes
+holds. Reaching it raises the source-uncatchable `run.unreachable` fault, mapped to
+the statement, carrying that text.
+
+`unreachable` diverges: control never continues past it. It therefore stands as the
+final statement of a value-returning function whose earlier branches already cover
+every real case, without a spurious "not all paths return a value" error.
+
+```mw
+module docs::invariant
+
+pub fn sign(n: int): int
+    if n > 0
+        return 1
+    if n < 0
+        return -1
+    if n == 0
+        return 0
+    unreachable("every int is positive, negative, or zero")
+```
+
+It is a statement, not an expression: it cannot be used where a value is required.
+
 ## Enum Matching
 
 An enum is a nominal set of declared members:

@@ -67,6 +67,9 @@ pub enum SealedInstr {
     /// Pop an optional; if present, push its bare value and fall through, else jump
     /// to this tape index. The only way to obtain a bare value from an optional.
     BranchPresent(usize),
+    /// Fault with `run.unreachable`, carrying the static text at const index `_0`.
+    /// Terminates the frame; it never falls through.
+    Unreachable(u16),
     /// Call function `_0` directly: pop its arguments (a0 pushed first, lands in
     /// callee local 0) and push its return value (nothing for a Unit return).
     Call(u16),

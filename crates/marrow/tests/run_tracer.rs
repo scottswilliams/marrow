@@ -218,6 +218,73 @@ fn integer_division_by_zero_is_a_source_mapped_fault() {
     assert!(stdout.contains("run.divide_by_zero"), "{output:?}");
 }
 
+/// `unreachable(...)` diverges, so it stands as the final statement of a
+/// value-returning function whose earlier branches cover every real case, and it
+/// runs the returning path normally.
+#[test]
+fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
+    let temp = TempDir::new("unreach-ok");
+    project(
+        &temp,
+        "pub fn sign(n: int): int\n\
+         \x20   if n > 0\n\
+         \x20       return 1\n\
+         \x20   if n < 0\n\
+         \x20       return -1\n\
+         \x20   if n == 0\n\
+         \x20       return 0\n\
+         \x20   unreachable(\"n is int, so one branch always returns\")\n",
+    );
+    let output = run_in(&temp, &["run", "sign", "--", "-5"]);
+    assert!(output.status.success(), "run failed: {output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "-1\n");
+}
+
+/// Reaching an `unreachable` faults with `run.unreachable`; the text output carries
+/// the static author text, while the typed JSONL surface stays code and span.
+#[test]
+fn unreachable_faults_and_carries_static_text() {
+    let temp = TempDir::new("unreach-fault");
+    let source = "pub fn boom(hit: bool): int\n\
+         \x20   if hit\n\
+         \x20       unreachable(\"the invariant broke\")\n\
+         \x20   return 0\n";
+    project(&temp, source);
+
+    let jsonl = run_in(&temp, &["run", "boom", "--format", "jsonl", "--", "true"]);
+    assert!(!jsonl.status.success());
+    let jsonl_out = String::from_utf8_lossy(&jsonl.stdout);
+    assert!(jsonl_out.contains(r#""outcome":"fault""#), "{jsonl:?}");
+    assert!(jsonl_out.contains("run.unreachable"), "{jsonl:?}");
+    assert!(
+        !jsonl_out.contains("the invariant broke"),
+        "static text stays out of the typed JSONL grammar: {jsonl:?}"
+    );
+
+    let text = run_in(&temp, &["run", "boom", "--", "true"]);
+    assert!(!text.status.success());
+    let text_out = String::from_utf8_lossy(&text.stdout);
+    assert!(text_out.contains("run.unreachable"), "{text:?}");
+    assert!(text_out.contains("the invariant broke"), "{text:?}");
+}
+
+/// `unreachable` requires a static string literal, so a computed argument is a
+/// source diagnostic, not a runtime value.
+#[test]
+fn unreachable_rejects_a_computed_argument() {
+    let temp = TempDir::new("unreach-arg");
+    project(
+        &temp,
+        "pub fn bad(s: string): int\n\
+         \x20   unreachable(s)\n",
+    );
+    let output = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "x"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
+    assert!(stdout.contains("check.type"), "{output:?}");
+}
+
 /// A project whose resource, constructor, field reads, optional coalescing, and
 /// `if const` guard travel the full path. One source file drives several exports.
 const RECORDS_SOURCE: &str = "resource Note\n\

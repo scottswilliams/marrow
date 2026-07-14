@@ -188,6 +188,34 @@ fn int_min_div_negative_one_faults_overflow() {
     assert_eq!(result, Err("run.overflow".to_string()));
 }
 
+/// `unreachable("...")` faults with `run.unreachable` and never falls through, so
+/// it stands alone as a function body that declares an int return.
+#[test]
+fn unreachable_faults() {
+    let result = build_and_run(|draft| {
+        let text = draft.intern_text("cannot happen");
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![Instr::Unreachable(text.index())],
+        )
+    });
+    assert_eq!(result, Err("run.unreachable".to_string()));
+}
+
+/// The `unreachable` operand must be a text const; an int-const operand is a
+/// per-function verifier rejection.
+#[test]
+fn unreachable_with_non_text_operand_rejects() {
+    let result = seal(|draft| {
+        let int_const = draft.intern_int(7);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![Instr::Unreachable(int_const.index())],
+        )
+    });
+    assert_eq!(result, Err("image.function".to_string()));
+}
+
 #[test]
 fn text_concat_over_the_limit_faults() {
     // A single text constant caps at 4 KiB, so reach the 64 KiB result bound by

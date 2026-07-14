@@ -115,10 +115,12 @@ enum RetType {
     Value(LTy),
 }
 
-/// The outcome of lowering a call: whether it yields a value or nothing.
+/// The outcome of lowering a call: whether it yields a value, nothing, or diverges
+/// (never returns to the caller, e.g. `unreachable`).
 enum CallResult {
     Unit,
     Value(LTy),
+    Diverges,
 }
 
 /// The structural durable shape of a place expression.
@@ -584,6 +586,7 @@ impl<'a> FnLowerer<'a> {
                 {
                     match self.lower_call_core(callee, args, *span) {
                         Some(CallResult::Value(_)) => self.push(Instr::Pop, value.span()),
+                        Some(CallResult::Diverges) => return Flow::Terminates,
                         Some(CallResult::Unit) | None => {}
                     }
                 } else if self.lower_expr(value).is_some() {
@@ -1150,6 +1153,17 @@ impl<'a> FnLowerer<'a> {
                     ));
                     None
                 }
+                CallResult::Diverges => {
+                    // `unreachable` is a diverging statement, not a value; it is only
+                    // valid in statement position.
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *span,
+                        "`unreachable` is a statement and cannot be used as a value".to_string(),
+                    ));
+                    None
+                }
             },
             Expression::Field {
                 base, name, span, ..
@@ -1381,6 +1395,9 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<CallResult> {
         if name == "exists" {
             return self.lower_exists(args, span).map(CallResult::Value);
+        }
+        if name == "unreachable" {
+            return self.lower_unreachable(args, span);
         }
         if self.records.by_name(name).is_some() {
             return self
@@ -1762,6 +1779,52 @@ impl<'a> FnLowerer<'a> {
         };
         self.push(Instr::DurExists(site), place.span);
         Some(LTy::bare_scalar(ScalarType::Bool))
+    }
+
+    /// Lower `unreachable("static text")`: the sole application-invariant fault. It
+    /// takes exactly one static string literal, emits a fault instruction carrying
+    /// that text, and diverges (control never continues past it).
+    fn lower_unreachable(&mut self, args: &[Argument], span: SourceSpan) -> Option<CallResult> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`unreachable` takes one static string literal".to_string(),
+            ));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`unreachable` takes one positional static string literal".to_string(),
+            ));
+            return None;
+        }
+        let Expression::Literal {
+            kind: LiteralKind::String,
+            text,
+            span: lit_span,
+        } = &arg.value
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`unreachable` requires a static string literal, not a computed value"
+                    .to_string(),
+            ));
+            return None;
+        };
+        let Ok(decoded) = decode_string_literal(text) else {
+            self.fail(unsupported(self.file, *lit_span, "this string literal"));
+            return None;
+        };
+        let const_id = self.draft.intern_text(&decoded);
+        self.push(Instr::Unreachable(const_id.index()), span);
+        Some(CallResult::Diverges)
     }
 
     /// Lower a durable assignment: a whole-entry upsert or a field set.

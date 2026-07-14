@@ -20,7 +20,8 @@ use marrow_image::{
     OP_INT_DIV, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE,
     OP_LOCAL_GET,
     OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT,
+    TAG_RECORD, TAG_TEXT,
     TAG_UNIT, image_id,
 };
 
@@ -1072,7 +1073,7 @@ impl Effects {
 /// The control-flow successors of the sealed instruction at `index`.
 fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
     match &code[index] {
-        SealedInstr::Return => Vec::new(),
+        SealedInstr::Return | SealedInstr::Unreachable(_) => Vec::new(),
         SealedInstr::Jump(target) => vec![*target],
         SealedInstr::JumpIfFalse(target) | SealedInstr::BranchPresent(target) => {
             vec![*target, index + 1]
@@ -1142,6 +1143,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_SOME_WRAP => SealedInstr::SomeWrap,
             OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
+            OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(&mut reader)?),
             OP_CALL => SealedInstr::Call(operand_u16(&mut reader)?),
             OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(&mut reader)?),
             OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(&mut reader)?),
@@ -1542,6 +1544,17 @@ fn apply(
             }
             Ok(Control::Return)
         }
+        SealedInstr::Unreachable(idx) => match consts.get(*idx as usize) {
+            // The operand is the static invariant text; it must be a text const. The
+            // instruction never falls through, so it ends the frame like `Return`
+            // without a return-value check — it always faults.
+            Some(SealedConst::Text(_)) => Ok(Control::Return),
+            Some(_) => Err(reject(
+                VerifyPhase::Function,
+                "unreachable operand must be a text const",
+            )),
+            None => Err(reject(VerifyPhase::Function, "const index out of range")),
+        },
         SealedInstr::Jump(target) => Ok(Control::Jump(*target)),
         SealedInstr::JumpIfFalse(target) => {
             expect_scalar(pop(stack)?, Scalar::Bool)?;

@@ -272,6 +272,19 @@ fn execute<'s>(
                     pc = *target;
                 }
             },
+            SealedInstr::Unreachable(idx) => {
+                let text = match &image.consts()[*idx as usize] {
+                    SealedConst::Text(text) => text.clone(),
+                    _ => unreachable!("verifier proved a text const operand"),
+                };
+                let (line, column) = function.span_at(pc).unwrap_or((1, 1));
+                return Err(RuntimeFault::with_detail(
+                    Code::RunUnreachable.as_str(),
+                    line,
+                    column,
+                    text,
+                ));
+            }
             SealedInstr::Call(target) => {
                 if depth + 1 > MAX_CALL_DEPTH {
                     return Err(fault(function, pc, Code::RunCallDepth.as_str()));

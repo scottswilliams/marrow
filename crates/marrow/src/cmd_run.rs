@@ -160,6 +160,7 @@ fn run_storeless(image: &VerifiedImage, func_index: u16, call_args: Vec<Value>) 
             code: fault.code(),
             line: fault.line(),
             column: fault.column(),
+            detail: fault.detail().map(str::to_owned),
         },
     }
 }
@@ -210,6 +211,7 @@ fn run_session(
             code: fault.code(),
             line: fault.line(),
             column: fault.column(),
+            detail: fault.detail().map(str::to_owned),
         },
     }
 }
@@ -225,6 +227,7 @@ fn session_error_record(image: &VerifiedImage, func_index: u16, error: SessionEr
                 code: marrow_codes::Code::RunAuthority.as_str(),
                 line,
                 column,
+                detail: None,
             }
         }
         SessionError::ProfileMismatch => Record::OperationalError {

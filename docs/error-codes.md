@@ -146,16 +146,18 @@ VM can run it.
 ### `run.*` — kind `runtime`
 
 Source-mapped runtime faults raised by the VM and the path kernel while running a
-verified program: checked-arithmetic overflow, a zero remainder divisor, a text
-bound, call depth, an execution budget, an authority denial, a required field
-left unset at commit, an unconfirmed commit, and durable corruption. These are
-not catchable inside the program.
+verified program: checked-arithmetic overflow, a zero division or remainder
+divisor, a text bound, a reached `unreachable` invariant, call depth, an
+execution budget, an authority denial, a required field left unset at commit, an
+unconfirmed commit, and durable corruption. These are not catchable inside the
+program.
 
 | Code | Meaning |
 |---|---|
 | `run.overflow` | A checked integer operation overflowed the 64-bit range at runtime: an add, subtract, multiply, negate, or the `i64::MIN / -1` division and `i64::MIN % -1` remainder cases whose result is unrepresentable. The fault is mapped to the source span of the operation and is not catchable inside the program. |
 | `run.divide_by_zero` | A division or remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
 | `run.text_limit` | A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program. |
+| `run.unreachable` | A program reached an `unreachable("...")` statement, the sole application-declared invariant fault. The static text records the invariant the author believed held; reaching the statement means it did not. The fault is mapped to the statement's source span and is not catchable inside the program. |
 | `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
 | `run.budget` | A running program exhausted a fixed execution budget: the per-invocation instruction budget or the value-heap budget. The fault stops execution and is not catchable inside the program. |
 | `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |

@@ -190,10 +190,11 @@ VM can run it.
 ### `run.*` — kind `runtime`
 
 Source-mapped runtime faults raised by the VM and the path kernel while running a
-verified program: checked-arithmetic overflow, a zero remainder divisor, a text
-bound, call depth, an execution budget, an authority denial, a required field
-left unset at commit, an unconfirmed commit, and durable corruption. These are
-not catchable inside the program.
+verified program: checked-arithmetic overflow, a zero division or remainder
+divisor, a text bound, a reached `unreachable` invariant, call depth, an
+execution budget, an authority denial, a required field left unset at commit, an
+unconfirmed commit, and durable corruption. These are not catchable inside the
+program.
 
 | Code | Meaning |
 |---|---|"#
@@ -202,6 +203,7 @@ not catchable inside the program.
             Code::RunOverflow,
             Code::RunDivideByZero,
             Code::RunTextLimit,
+            Code::RunUnreachable,
             Code::RunCallDepth,
             Code::RunBudget,
             Code::RunAuthority,
