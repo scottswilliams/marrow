@@ -356,6 +356,18 @@ fn a_module_constant_is_private_to_its_module() {
     assert!(stdout.contains("check.type"), "{stdout}");
 }
 
+#[test]
+fn a_duplicate_constant_in_one_module_conflicts() {
+    let temp = multi_module(
+        "dup-const",
+        &[(
+            "main.mw",
+            "module main\n\nconst K = 1\n\nconst K = 2\n\npub fn run(): int\n    return K\n",
+        )],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.name_conflict"));
+}
+
 // --- Module-scoped call resolution and `use` imports (C00). ---
 
 /// Write a `marrow.toml` and the named `(relative path, source)` modules under a
@@ -436,6 +448,42 @@ fn a_same_name_function_in_another_module_does_not_conflict() {
     let output = run_in(&temp, &["run", "b.run"]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+}
+
+#[test]
+fn a_bare_call_does_not_reach_a_function_in_another_module() {
+    // `greet` exists only in `other`; an unqualified call from `main` resolves in
+    // `main` alone and is unresolved, not silently bound across the boundary.
+    let temp = multi_module(
+        "bare-foreign",
+        &[
+            (
+                "other.mw",
+                "module other\n\npub fn greet(): int\n    return 1\n",
+            ),
+            (
+                "main.mw",
+                "module main\n\npub fn run(): int\n    return greet()\n",
+            ),
+        ],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.type"));
+}
+
+#[test]
+fn a_qualified_call_to_an_own_module_private_function_resolves() {
+    // Qualifying a call with the caller's own module reaches a private function
+    // there; visibility only gates crossing a module boundary.
+    let temp = multi_module(
+        "own-qualified-private",
+        &[(
+            "main.mw",
+            "module main\n\nfn secret(): int\n    return 7\n\npub fn run(): int\n    return main::secret()\n",
+        )],
+    );
+    let output = run_in(&temp, &["run", "main.run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
 }
 
 #[test]
