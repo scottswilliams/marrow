@@ -33,7 +33,12 @@
 //! big-endian length of the whole payload, then the payload. Every module segment
 //! and the item are ASCII identifiers (non-empty, no `.`), so the dotted `module`
 //! join is injective over segments and the id is collision-free across declaration
-//! paths; the compiler rejects a non-conforming path before minting an id.
+//! paths. Three defenses keep that true: the compiler validates every module
+//! segment and the item against the identifier domain immediately before minting
+//! an id (its `valid_export_path` guard); project capture derives each module
+//! name from a unique canonical source path, so no two declarations share a
+//! payload; and the verifier rejects an EXPORTS table whose ids are not strictly
+//! ascending and unique.
 //!
 //! Identity is not compatibility. Because signatures are excluded, a later
 //! cross-boundary *binding* that stores an `ExportId` must pair it with a separate

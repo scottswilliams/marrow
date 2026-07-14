@@ -48,18 +48,15 @@ when their members appear across a module boundary.
 Function visibility controls calls; it does not grant or restrict access to a
 durable root. Current store declarations are project-wide.
 
+On the command line an export is addressed by its dot-separated declaration
+path — `marrow run shelf.books.add` for the path source spells
+`shelf::books::add` — and a headerless script's exports stay addressable by its
+path-derived name even though the script is not importable.
+
 ## Declarations And Returns
 
 ```mw
 module docs::functions
-
-resource Book
-    required title: string
-
-fn normalize(book: Book): Book
-    var result: Book = book
-    result.title = std::text::trim(result.title)
-    return result
 
 fn maybeTitle(show: bool): string?
     if show
@@ -90,17 +87,14 @@ read-only.
 ```mw
 module docs::parameters
 
-fn total(scores(player: string): int): int
-    var sum = 0
-    for player, score in scores
-        sum += score
-    return sum
+fn increment(count: int): int
+    return count + 1
 
 pub fn example(): int
-    var scores(player: string): int
-    scores("Ada") = 8
-    scores("Lin") = 13
-    return total(scores)
+    var count = 0
+    count = increment(count)
+    count = increment(count)
+    return count
 ```
 
 A durable root, durable child layer, or index branch is not a by-value

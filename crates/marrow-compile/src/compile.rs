@@ -259,6 +259,25 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
                         callees: result.callees,
                     });
                     if function.public {
+                        // The injectivity owner's own guard: every dotted module
+                        // segment and the item must be ASCII identifiers before an
+                        // ExportId is minted over them (see marrow-image::export_id).
+                        // Unreachable through the current capture path, which already
+                        // constrains both; kept so the id payload's injectivity never
+                        // silently rests on an upstream layer alone.
+                        if !valid_export_path(&module.name, &function.name) {
+                            diagnostics.push(SourceDiagnostic::at(
+                                Code::CheckModulePath.as_str(),
+                                &module.file,
+                                function.span,
+                                format!(
+                                    "export `{}` in module `{}` is not an ASCII \
+                                     identifier path, so it cannot be exported",
+                                    function.name, module.name
+                                ),
+                            ));
+                            continue;
+                        }
                         let id = ExportId::of_local(&module.name, &function.name);
                         draft.add_export(id, result.func);
                         exports.push(ExportEntry {
@@ -388,5 +407,58 @@ fn declaration_span(declaration: &Declaration) -> SourceSpan {
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
         Declaration::Evolve(decl) => decl.span,
+    }
+}
+
+/// Whether an export declaration path is valid to mint an [`ExportId`] over:
+/// every dotted module segment and the item must be non-empty ASCII identifiers
+/// (a letter or `_`, then letters, digits, or `_`; never a `.`). This is what
+/// keeps the id payload's dotted `module` join injective over segments, so it is
+/// checked here — immediately before minting — rather than assumed from capture.
+fn valid_export_path(module: &str, item: &str) -> bool {
+    module.split('.').all(is_ascii_identifier) && is_ascii_identifier(item)
+}
+
+/// Whether `text` is a non-empty ASCII identifier.
+fn is_ascii_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_export_path;
+
+    /// The minting guard rejects every input class whose dotted join would break
+    /// the ExportId payload's injectivity, even though the current capture path
+    /// cannot produce them.
+    #[test]
+    fn export_path_validation_guards_the_id_payload() {
+        // Ordinary declaration paths mint.
+        assert!(valid_export_path("main", "run"));
+        assert!(valid_export_path("shelf.books", "add"));
+        assert!(valid_export_path("a_b", "_x1"));
+
+        // Empty or dotted components would let two distinct declaration paths
+        // collide on one payload.
+        assert!(!valid_export_path("", "run"));
+        assert!(!valid_export_path("a", ""));
+        assert!(!valid_export_path("a..b", "run"));
+        assert!(!valid_export_path("a.", "run"));
+        assert!(!valid_export_path(".a", "run"));
+        assert!(!valid_export_path("a", "b.c"));
+
+        // Non-ASCII and non-identifier characters are outside the frozen payload
+        // domain.
+        assert!(!valid_export_path("caf\u{e9}", "run"));
+        assert!(!valid_export_path("a", "r\u{e9}sum\u{e9}"));
+        assert!(!valid_export_path("a-b", "run"));
+        assert!(!valid_export_path("1a", "run"));
+        assert!(!valid_export_path("a", "1run"));
+        assert!(!valid_export_path("a b", "run"));
     }
 }
