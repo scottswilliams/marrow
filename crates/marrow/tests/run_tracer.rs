@@ -231,6 +231,26 @@ fn scalar_conversions_travel_the_full_path() {
     assert_eq!(String::from_utf8_lossy(&by.stdout), "0x6869\n");
 }
 
+/// A non-terminating loop exhausts the per-invocation instruction budget and
+/// faults with `run.budget` — the VM's dynamic-limit backstop — rather than running
+/// forever. There is no runner or environment override.
+#[test]
+fn nonterminating_loop_faults_on_the_instruction_budget() {
+    let temp = TempDir::new("budget");
+    project(
+        &temp,
+        "pub fn spin()\n\
+         \x20   var n: int = 0\n\
+         \x20   while true\n\
+         \x20       n = n + 1\n",
+    );
+    let output = run_in(&temp, &["run", "spin", "--format", "jsonl"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""outcome":"fault""#), "{output:?}");
+    assert!(stdout.contains("run.budget"), "{output:?}");
+}
+
 /// The closed pure text floor: isEmpty / contains / trim.
 #[test]
 fn text_floor_builtins_travel_the_full_path() {

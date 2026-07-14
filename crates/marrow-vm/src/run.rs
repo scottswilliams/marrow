@@ -17,8 +17,14 @@ use marrow_verify::{SealedConst, SealedFunction, SealedInstr, VerifiedImage};
 use crate::fault::RuntimeFault;
 use crate::value::Value;
 
+// The VM is the sole owner of one invocation's dynamic limits. They are private
+// constants: `run`/`run_durable` take no budget or limit parameter, so no runner,
+// CLI, environment variable, or caller can raise or disable them. The verifier
+// owns the complementary static bounds (stack depth, locals, code size).
+
 /// Per-invocation instruction budget (design §D). Bounds total work across the
-/// whole call tree regardless of loop or call structure.
+/// whole call tree regardless of loop or call structure, so a non-terminating loop
+/// faults with `run.budget` rather than running forever.
 const INSTRUCTION_BUDGET: u64 = 1 << 26;
 
 /// Maximum dynamic call depth (design §D). Static recursion is already rejected at

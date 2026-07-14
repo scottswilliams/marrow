@@ -1,50 +1,56 @@
 # Execution Limits
 
-The current parser and runtime enforce fixed limits that are observable by
-Marrow programs and source files.
+Marrow enforces fixed limits at three layers, each with a distinct owner: the
+parser bounds source nesting, the independent verifier bounds the program image
+before it allocates, and the virtual machine bounds one invocation's dynamic work.
+None of these limits is configurable, and no runner, environment variable, or
+caller can raise them.
 
-## Core Limits
+## Source Nesting
 
 | Limit | Value | Result when exceeded |
 |---|---:|---|
-| Source nesting | 256 levels | Located check diagnostic |
-| Function-call nesting | 256 active calls | Typed runtime depth error |
-| One transaction estimated buffered footprint budget | 64 MiB | Transaction-too-large error; rollback if the fault escapes |
+| Source nesting | 256 levels | `check.nesting_limit` at the offending span |
 
-Source nesting includes indentation blocks and expression nesting such as
-parentheses, unary expressions, and binary operands. The entry function is call
-depth 1; attempting depth 257 fails before native stack overflow.
+Source nesting counts indentation blocks and expression nesting such as
+parentheses, unary expressions, and binary operands. The parser fails closed
+before native stack overflow.
 
-The transaction limit meters the estimated buffered footprint of writes,
-including per-record and per-cell overhead as well as variable path, key, and
-value bytes. It is not a raw serialized-data byte count. Nested transactions
-share the outer transaction and its budget. The write that crosses the budget
-is rejected before it is staged. If the error escapes the transaction block,
-the block's staged durable changes roll back. If code catches the error inside
-the block, the rejected write adds nothing; earlier staged writes remain and
-may commit when the block finishes normally.
+## Program-Image Bounds
 
-## Library Input Limits
+The verifier rechecks every representational bound against the received bytes
+before it allocates, so a hostile or malformed image cannot drive unbounded work.
+A violation is an `image.table` or `image.function` rejection.
 
-| Module | Limits |
-|---|---|
-| `std::json` parsing and accessors | 1 MiB input, depth 64, 10,000 nodes, 65,536 bytes per string |
-| `std::csv` parsing and accessors | 1 MiB input, 10,000 rows, 256 columns, 65,536 bytes per cell |
-| `std::matrix` | 1 MiB text, dimension 64, 4,096 cells, 100,000 arithmetic operations |
+| Limit | Value |
+|---|---:|
+| Whole image | 256 KiB |
+| String-pool entries / bytes per entry | 1024 / 4 KiB |
+| Constant-pool entries | 1024 |
+| Functions / params per function | 64 / 16 |
+| Locals per frame | 256 |
+| Code bytes per function | 64 KiB |
+| Operand-stack depth | 256 |
 
-The JSON row covers `valid` and the pointer accessors, not `stringLit` or
-`stringArray`. The CSV row covers `rowCount`, `hasColumn`, and the typed readers,
-not the `row` builder. Builder output is constrained by available memory rather
-than these parser bounds. Bounded accessors and matrix functions raise a runtime
-type error when their limit is exceeded. `std::json::valid` instead returns
-`false` for malformed or over-limit JSON. These bounds apply per call.
+The operand-stack depth is computed and sealed by the verifier, never read from
+the image. These bounds size the current subset; widening any of them is a later
+decision recorded with its own coverage.
 
-## Unbounded Work
+## Per-Invocation Runtime Limits
 
-`while` and `for` do not have a step or fuel limit. A nonterminating `while`
-continues indefinitely, subject only to external process control. Traversal of
-a durable collection visits every matching stored entry unless the body exits.
+The virtual machine owns the dynamic limits of one invocation. They are private
+constants with no override path.
 
-Collection size, durable-tree depth, and the total number of writes in a run
-have no single language-wide count limit. Available memory, store capacity,
-host capabilities, and the transaction budget still constrain an execution.
+| Limit | Value | Result when exceeded |
+|---|---:|---|
+| Instruction budget | 67,108,864 (2^26) steps | `run.budget` |
+| Call depth | 64 active calls | `run.call_depth` |
+| Text-concatenation result | 64 KiB | `run.text_limit` |
+
+The instruction budget is shared across the whole call tree of one invocation, so
+total work stays bounded regardless of loop or call structure. A `while` or `for`
+loop has no separate iteration limit, but a non-terminating loop still exhausts
+the instruction budget and faults with `run.budget` rather than running forever.
+Static recursion is rejected at verification, so the call-depth limit guards a
+pathologically deep non-recursive call chain. Each faulting instruction maps to
+its source span, and none of these faults is catchable inside the program.
