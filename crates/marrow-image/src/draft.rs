@@ -58,6 +58,13 @@ impl FuncId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SiteId(pub(crate) u16);
 
+impl SiteId {
+    /// The raw site index, as carried in a `Dur*` operand.
+    pub fn index(self) -> u16 {
+        self.0
+    }
+}
+
 /// One record field.
 #[derive(Debug, Clone)]
 pub struct FieldDef {

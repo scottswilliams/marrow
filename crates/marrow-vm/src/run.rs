@@ -9,6 +9,9 @@
 use std::rc::Rc;
 
 use marrow_codes::Code;
+use marrow_kernel::codec::key::KeyScalar;
+use marrow_kernel::codec::value::RuntimeScalar;
+use marrow_kernel::durable::{CommitResult, Durable, EntryValue, NextKey, Presence};
 use marrow_verify::{SealedConst, SealedFunction, SealedInstr, VerifiedImage};
 
 use crate::fault::RuntimeFault;
@@ -26,25 +29,41 @@ const MAX_CALL_DEPTH: u32 = 64;
 /// VM has no edge to the image crate, so it owns this limit itself.
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 
-/// Run the function at `func_index` with `args`, returning its value (or `None`
-/// for a Unit return) or a source-mapped runtime fault.
+/// Run a storeless function at `func_index` with `args`, returning its value (or
+/// `None` for a Unit return) or a source-mapped runtime fault. Rejected for a
+/// durable export (its demand is nonempty); use [`run_durable`].
 pub fn run(
     image: &VerifiedImage,
     func_index: u16,
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let mut budget = INSTRUCTION_BUDGET;
-    execute(image, func_index, args, 0, &mut budget)
+    execute(image, func_index, args, 0, &mut budget, None)
+}
+
+/// Run a durable function at `func_index`, driving `session` for every durable
+/// operation. The session is a read session for a read-only export and a
+/// transaction session for a mutating one.
+pub fn run_durable(
+    image: &VerifiedImage,
+    func_index: u16,
+    args: Vec<Value>,
+    session: &mut dyn Durable,
+) -> Result<Option<Value>, RuntimeFault> {
+    let mut budget = INSTRUCTION_BUDGET;
+    execute(image, func_index, args, 0, &mut budget, Some(session))
 }
 
 /// Execute one frame. `depth` is the current call depth and `budget` is shared
-/// across the whole call tree so total work stays bounded.
-fn execute(
+/// across the whole call tree so total work stays bounded. `session` drives durable
+/// operations; it is `None` for a storeless call tree.
+fn execute<'s>(
     image: &VerifiedImage,
     func_index: u16,
     args: Vec<Value>,
     depth: u32,
     budget: &mut u64,
+    mut session: Option<&mut (dyn Durable + 's)>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let function = image.function(func_index);
     let mut locals: Vec<Option<Value>> = Vec::with_capacity(function.local_count() as usize);
@@ -247,9 +266,159 @@ fn execute(
                 let start = stack.len() - arg_count;
                 // a0 was pushed first, so the tail of the stack is a0..an-1 in order.
                 let call_args = stack.split_off(start);
-                if let Some(value) = execute(image, *target, call_args, depth + 1, budget)? {
+                if let Some(value) = execute(
+                    image,
+                    *target,
+                    call_args,
+                    depth + 1,
+                    budget,
+                    session.as_deref_mut(),
+                )? {
                     stack.push(value);
                 }
+                pc += 1;
+            }
+            SealedInstr::TxnBegin => {
+                // The session's engine transaction is already open; Begin is the
+                // verifier's flow marker, a runtime no-op.
+                pc += 1;
+            }
+            SealedInstr::TxnCommit => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a mutating export runs with a session");
+                match durable.commit() {
+                    CommitResult::Committed => pc += 1,
+                    CommitResult::RequiredMissing { .. } => {
+                        return Err(fault(function, pc, Code::RunRequiredMissing.as_str()));
+                    }
+                    CommitResult::CommitFault => {
+                        return Err(fault(function, pc, Code::RunCommit.as_str()));
+                    }
+                }
+            }
+            SealedInstr::DurExists(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let key = pop_key(&mut stack);
+                let present = durable
+                    .presence(&authorized, key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                stack.push(Value::Bool(present == Presence::Present));
+                pc += 1;
+            }
+            SealedInstr::DurReadField(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let key = pop_key(&mut stack);
+                let value = durable
+                    .read_field(&authorized, key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                stack.push(Value::Optional(value.map(|s| Box::new(scalar_to_value(s)))));
+                pc += 1;
+            }
+            SealedInstr::DurReadEntry(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let key = pop_key(&mut stack);
+                let entry = durable
+                    .read_entry(&authorized, key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                let ty = entry_record_type(image, *site);
+                stack.push(Value::Optional(
+                    entry.map(|entry| Box::new(entry_to_record(ty, entry))),
+                ));
+                pc += 1;
+            }
+            SealedInstr::DurSetRequired(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let value = value_to_scalar(pop(&mut stack));
+                let key = pop_key(&mut stack);
+                durable
+                    .set_required(&authorized, key, value)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurSetSparse(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let value = as_optional(pop(&mut stack)).map(value_to_scalar);
+                let key = pop_key(&mut stack);
+                durable
+                    .set_sparse(&authorized, key, value)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurCreateEntry(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let entry = record_to_entry(pop(&mut stack));
+                let key = pop_key(&mut stack);
+                durable
+                    .create_entry(&authorized, key, entry)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurReplaceEntry(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let entry = record_to_entry(pop(&mut stack));
+                let key = pop_key(&mut stack);
+                durable
+                    .replace_entry(&authorized, key, entry)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurEraseField(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let key = pop_key(&mut stack);
+                durable
+                    .erase_field(&authorized, key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurEraseEntry(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let key = pop_key(&mut stack);
+                durable
+                    .erase_entry(&authorized, key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurNextKey(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let after = as_optional(pop(&mut stack)).map(value_to_key);
+                let next = durable
+                    .next_key(&authorized, after)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                stack.push(Value::Optional(match next {
+                    NextKey::Next(key) => Some(Box::new(key_to_value(key))),
+                    NextKey::End => None,
+                }));
                 pc += 1;
             }
         }
@@ -318,4 +487,86 @@ fn const_value(value: &SealedConst) -> Value {
 fn fault(function: &SealedFunction, pc: usize, code: &'static str) -> RuntimeFault {
     let (line, column) = function.span_at(pc).unwrap_or((1, 1));
     RuntimeFault::new(code, line, column)
+}
+
+/// Map a kernel fault to a source-mapped runtime fault at `pc`.
+fn kernel_fault(
+    function: &SealedFunction,
+    pc: usize,
+    kernel: &marrow_kernel::durable::KernelFault,
+) -> RuntimeFault {
+    fault(function, pc, kernel.code())
+}
+
+/// Pop a key operand and convert it to a typed key scalar.
+fn pop_key(stack: &mut Vec<Value>) -> KeyScalar {
+    value_to_key(pop(stack))
+}
+
+/// Convert a scalar runtime value to a typed key scalar (verifier-proved scalar).
+fn value_to_key(value: Value) -> KeyScalar {
+    match value {
+        Value::Int(v) => KeyScalar::Int(v),
+        Value::Bool(v) => KeyScalar::Bool(v),
+        Value::Text(v) => KeyScalar::Str(v.to_string()),
+        _ => unreachable!("verifier proved a scalar key operand"),
+    }
+}
+
+/// Convert a key scalar back to a runtime value.
+fn key_to_value(key: KeyScalar) -> Value {
+    match key {
+        KeyScalar::Int(v) => Value::Int(v),
+        KeyScalar::Bool(v) => Value::Bool(v),
+        KeyScalar::Str(v) => Value::Text(v.into()),
+        _ => unreachable!("T01 keys are int, string, or bool"),
+    }
+}
+
+/// Convert a scalar runtime value to a typed runtime scalar.
+fn value_to_scalar(value: Value) -> RuntimeScalar {
+    match value {
+        Value::Int(v) => RuntimeScalar::Int(v),
+        Value::Bool(v) => RuntimeScalar::Bool(v),
+        Value::Text(v) => RuntimeScalar::Str(v.to_string()),
+        _ => unreachable!("verifier proved a scalar value operand"),
+    }
+}
+
+/// Convert a typed runtime scalar back to a runtime value.
+fn scalar_to_value(scalar: RuntimeScalar) -> Value {
+    match scalar {
+        RuntimeScalar::Int(v) => Value::Int(v),
+        RuntimeScalar::Bool(v) => Value::Bool(v),
+        RuntimeScalar::Str(v) => Value::Text(v.into()),
+        _ => unreachable!("T01 durable values are int, bool, or string"),
+    }
+}
+
+/// Convert a record value into a whole-entry value: one slot per field in order.
+fn record_to_entry(value: Value) -> EntryValue {
+    let (_, slots) = as_record(value);
+    EntryValue {
+        fields: slots
+            .into_vec()
+            .into_iter()
+            .map(|slot| slot.map(value_to_scalar))
+            .collect(),
+    }
+}
+
+/// Convert a whole-entry value into a record value of type `ty`.
+fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
+    let slots: Vec<Option<Value>> = entry
+        .fields
+        .into_iter()
+        .map(|slot| slot.map(scalar_to_value))
+        .collect();
+    Value::Record(ty, slots.into_boxed_slice())
+}
+
+/// The record type index of the entry a site's root addresses.
+fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
+    let root = image.sites()[site as usize].root;
+    image.roots()[root as usize].record()
 }

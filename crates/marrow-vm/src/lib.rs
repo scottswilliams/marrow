@@ -13,5 +13,5 @@ mod run;
 mod value;
 
 pub use fault::RuntimeFault;
-pub use run::run;
+pub use run::{run, run_durable};
 pub use value::Value;

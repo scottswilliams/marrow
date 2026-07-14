@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
+marrow-kernel = { path = "../marrow-kernel" }
 marrow-verify = { path = "../marrow-verify" }
 
 [dev-dependencies]

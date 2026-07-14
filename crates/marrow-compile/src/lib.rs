@@ -9,6 +9,7 @@
 
 mod compile;
 mod diag;
+mod durable;
 mod lower;
 mod record;
 mod scalar;

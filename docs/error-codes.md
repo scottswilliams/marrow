@@ -143,8 +143,9 @@ VM can run it.
 
 Source-mapped runtime faults raised by the VM and the path kernel while running a
 verified program: checked-arithmetic overflow, a zero remainder divisor, a text
-bound, call depth, an execution budget, and an authority denial. These are not
-catchable inside the program.
+bound, call depth, an execution budget, an authority denial, a required field
+left unset at commit, an unconfirmed commit, and durable corruption. These are
+not catchable inside the program.
 
 | Code | Meaning |
 |---|---|
@@ -154,6 +155,9 @@ catchable inside the program.
 | `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
 | `run.budget` | A running program exhausted a fixed execution budget: the per-invocation instruction budget or the value-heap budget. The fault stops execution and is not catchable inside the program. |
 | `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |
+| `run.required_missing` | A durable transaction reached its commit with an entry it created or staged that still leaves a required field unset. The transaction rolls back rather than committing a partial entry, and the fault is mapped to the transaction's source span. Not catchable inside the program. |
+| `run.commit` | A durable transaction commit did not confirm. The store handle is poisoned and every later operation fails; the process must exit and reopen, where the recorded witness classifies whether the commit completed. The fault is mapped to the transaction's source span and is not catchable inside the program. |
+| `run.corruption` | The path kernel found the durable store internally inconsistent while running a verified program: a field leaf with no entry marker (an orphan leaf), a cell it could not decode as its typed value, or a stored schema descriptor that does not match the program image. The fault is mapped to the operation's source span and is not catchable inside the program. |
 
 ### `value.*` — kind `runtime`
 

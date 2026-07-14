@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
+marrow-store = { path = "../marrow-store", features = ["native"] }
 
 [lints]
 workspace = true

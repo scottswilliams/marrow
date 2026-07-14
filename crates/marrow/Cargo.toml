@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
 marrow-compile = { path = "../marrow-compile" }
+marrow-kernel = { path = "../marrow-kernel" }
 marrow-project = { path = "../marrow-project" }
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-verify = { path = "../marrow-verify" }

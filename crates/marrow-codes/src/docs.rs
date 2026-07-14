@@ -187,8 +187,9 @@ VM can run it.
 
 Source-mapped runtime faults raised by the VM and the path kernel while running a
 verified program: checked-arithmetic overflow, a zero remainder divisor, a text
-bound, call depth, an execution budget, and an authority denial. These are not
-catchable inside the program.
+bound, call depth, an execution budget, an authority denial, a required field
+left unset at commit, an unconfirmed commit, and durable corruption. These are
+not catchable inside the program.
 
 | Code | Meaning |
 |---|---|"#
@@ -200,6 +201,9 @@ catchable inside the program.
             Code::RunCallDepth,
             Code::RunBudget,
             Code::RunAuthority,
+            Code::RunRequiredMissing,
+            Code::RunCommit,
+            Code::RunCorruption,
         ]),
         r#"
 ### `value.*` — kind `runtime`

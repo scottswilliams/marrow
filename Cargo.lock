@@ -68,6 +68,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-codes",
  "marrow-compile",
+ "marrow-kernel",
  "marrow-project",
  "marrow-syntax",
  "marrow-verify",
@@ -100,6 +101,7 @@ name = "marrow-kernel"
 version = "0.1.0"
 dependencies = [
  "marrow-codes",
+ "marrow-store",
 ]
 
 [[package]]
@@ -139,6 +141,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-codes",
  "marrow-image",
+ "marrow-kernel",
  "marrow-verify",
 ]
 

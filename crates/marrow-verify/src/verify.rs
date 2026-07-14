@@ -13,18 +13,21 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CALL, OP_CONST_LOAD, OP_EQ_BOOL, OP_EQ_INT,
-    OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL,
-    OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET,
-    OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_VACANT_LOAD, OPTIONAL_FLAG,
-    Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CALL, OP_CONST_LOAD, OP_DUR_CREATE_ENTRY,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
+    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
+    OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET,
+    OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TXN_BEGIN,
+    OP_TXN_COMMIT, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT,
+    TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
-    SealedRecordType, SpanRow, VerifiedImage,
+    Demand, RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
+    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -49,20 +52,29 @@ pub fn verify(bytes: &[u8]) -> Result<VerifiedImage, VerifyRejection> {
 // Phase 1 (envelope) + phase 2 (table closure).
 // ---------------------------------------------------------------------------
 
-// The record-type table is decoded and grammar-checked in full now; its fields are
-// consumed by the record slice (RecordNew/FieldGet). Until then they are validated
-// but unread.
-#[allow(dead_code)]
 struct DecodedRecordType {
+    #[allow(dead_code)]
     name: u16,
     fields: Vec<DecodedField>,
 }
 
-#[allow(dead_code)]
 struct DecodedField {
     name: u16,
     ty: Scalar,
     required: bool,
+}
+
+/// A decoded durable root: name string index, key scalar, and record type index.
+struct DecodedRoot {
+    name: u16,
+    key: Scalar,
+    record: u16,
+}
+
+/// A decoded durable site: root index and entry-or-field target.
+struct DecodedSite {
+    root: u16,
+    target: SealedSiteTarget,
 }
 
 struct DecodedFunction {
@@ -78,8 +90,9 @@ struct DecodedFunction {
 struct DecodedImage {
     image_id: ImageId,
     strings: Vec<Rc<str>>,
-    #[allow(dead_code)]
     types: Vec<DecodedRecordType>,
+    roots: Vec<DecodedRoot>,
+    sites: Vec<DecodedSite>,
     consts: Vec<SealedConst>,
     functions: Vec<DecodedFunction>,
     exports: Vec<(u16, u16)>,
@@ -162,7 +175,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     // order, so they are attached to the already-decoded function list.
     let strings = decode_strings(sections[0].1)?;
     let types = decode_types(sections[1].1, strings.len())?;
-    decode_durable_empty(sections[2].1)?;
+    let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(sections[4].1, strings.len())?;
     let exports = decode_exports(sections[5].1, strings.len(), functions.len())?;
@@ -172,6 +185,8 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         image_id: image_id(payload),
         strings,
         types,
+        roots,
+        sites,
         consts,
         functions,
         exports,
@@ -299,28 +314,94 @@ fn decode_types(
     Ok(types)
 }
 
-/// The T01 subset compiles no durable roots or sites yet; the DURABLE table must
-/// therefore decode to zero roots and zero sites. A populated table is a
-/// not-yet-supported artifact and rejects until the durable slice lands.
-fn decode_durable_empty(body: &[u8]) -> Result<(), VerifyRejection> {
+/// Decode the DURABLE table (design §C 0x03): 0 or 1 roots, then the operation
+/// sites, revalidating every site against the roots and record types.
+fn decode_durable(
+    body: &[u8],
+    string_count: usize,
+    types: &[DecodedRecordType],
+) -> Result<(Vec<DecodedRoot>, Vec<DecodedSite>), VerifyRejection> {
     let mut reader = Reader::new(body);
-    let roots = reader
+    let root_count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short root count"))?;
-    if roots != 0 {
-        return Err(reject(
-            VerifyPhase::Table,
-            "durable roots are not yet supported",
-        ));
+        .ok_or(reject(VerifyPhase::Table, "short root count"))? as usize;
+    if root_count > marrow_image::bounds::MAX_ROOTS {
+        return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
-    let sites = reader
+    let mut roots = Vec::with_capacity(root_count);
+    for _ in 0..root_count {
+        let name = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short root name"))?;
+        if name as usize >= string_count {
+            return Err(reject(VerifyPhase::Table, "root name index out of range"));
+        }
+        let key_tag = reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, "short root key type"))?;
+        let key = match decode_bare_scalar(key_tag) {
+            Some(scalar @ (Scalar::Int | Scalar::Text)) => scalar,
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "root key type must be int or string",
+                ));
+            }
+        };
+        let record = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short root record"))?;
+        if record as usize >= types.len() {
+            return Err(reject(
+                VerifyPhase::Table,
+                "root record type index out of range",
+            ));
+        }
+        roots.push(DecodedRoot { name, key, record });
+    }
+
+    let site_count = reader
         .u16()
-        .ok_or(reject(VerifyPhase::Table, "short site count"))?;
-    if sites != 0 {
-        return Err(reject(
-            VerifyPhase::Table,
-            "durable sites are not yet supported",
-        ));
+        .ok_or(reject(VerifyPhase::Table, "short site count"))? as usize;
+    if site_count > marrow_image::bounds::MAX_SITES {
+        return Err(reject(VerifyPhase::Table, "too many durable sites"));
+    }
+    let mut sites: Vec<DecodedSite> = Vec::with_capacity(site_count);
+    for _ in 0..site_count {
+        let root = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short site root"))?;
+        if root as usize >= roots.len() {
+            return Err(reject(VerifyPhase::Table, "site root index out of range"));
+        }
+        let target_tag = reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, "short site target"))?;
+        let target = match target_tag {
+            0x00 => SealedSiteTarget::Entry,
+            0x01 => {
+                let field = reader
+                    .u16()
+                    .ok_or(reject(VerifyPhase::Table, "short site field"))?;
+                let record = &types[roots[root as usize].record as usize];
+                if field as usize >= record.fields.len() {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "site field index out of range for its root record",
+                    ));
+                }
+                SealedSiteTarget::Field(field)
+            }
+            _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
+        };
+        // Sites are unique by (root, target).
+        if sites
+            .iter()
+            .any(|existing| existing.root == root && existing.target == target)
+        {
+            return Err(reject(VerifyPhase::Table, "duplicate durable site"));
+        }
+        sites.push(DecodedSite { root, target });
     }
     if !reader.is_empty() {
         return Err(reject(
@@ -328,7 +409,7 @@ fn decode_durable_empty(body: &[u8]) -> Result<(), VerifyRejection> {
             "trailing bytes in durable table",
         ));
     }
-    Ok(())
+    Ok((roots, sites))
 }
 
 fn decode_consts(body: &[u8], strings: &[Rc<str>]) -> Result<Vec<SealedConst>, VerifyRejection> {
@@ -628,10 +709,28 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 .fields
                 .iter()
                 .map(|field| SealedField {
+                    name: decoded.strings[field.name as usize].clone(),
                     scalar: field.ty,
                     required: field.required,
                 })
                 .collect(),
+        })
+        .collect();
+    let roots: Vec<SealedRoot> = decoded
+        .roots
+        .iter()
+        .map(|root| SealedRoot {
+            name: decoded.strings[root.name as usize].clone(),
+            key: root.key,
+            record: root.record,
+        })
+        .collect();
+    let sites: Vec<SealedSite> = decoded
+        .sites
+        .iter()
+        .map(|site| SealedSite {
+            root: site.root,
+            target: site.target,
         })
         .collect();
     // Function signatures feed the per-function `Call` type check (phase 3).
@@ -643,15 +742,34 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
             ret: function.ret,
         })
         .collect();
+    let ctx = Ctx {
+        types: &types,
+        roots: &roots,
+        sites: &sites,
+        signatures: &signatures,
+    };
     let mut functions = Vec::with_capacity(decoded.functions.len());
     for function in &decoded.functions {
-        functions.push(verify_function(function, &types, &signatures, &decoded)?);
+        functions.push(verify_function(function, &ctx, &decoded)?);
     }
 
     // Phase 4: the call graph over the recorded direct calls must be acyclic
-    // (recursion is not admitted). Durable effect closure lands with the durable
-    // slice; at this subset every export is read-only.
+    // (recursion is not admitted).
     reject_call_cycles(&functions)?;
+
+    // Phase 4/5: closure-informed effect and transaction-flow validation. An export
+    // entry that mutates in closure is the owner of a transaction.
+    let effects = Effects::compute(&functions);
+    let export_entries: Vec<bool> = {
+        let mut entries = vec![false; functions.len()];
+        for (_, func) in &decoded.exports {
+            entries[*func as usize] = true;
+        }
+        entries
+    };
+    for (index, function) in functions.iter().enumerate() {
+        effects.check_transaction_flow(index, function, export_entries[index])?;
+    }
 
     let exports = decoded
         .exports
@@ -659,16 +777,33 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .map(|(name, func)| SealedExport {
             name: decoded.strings[*name as usize].clone(),
             func: *func,
-            mutating: false,
+            mutating: effects.mutates_closure[*func as usize],
+            demand: effects.demand(*func),
         })
         .collect();
+
+    // Record each export's effect class on its entry function too, for tools.
+    for export in &decoded.exports {
+        functions[export.1 as usize].mutating = effects.mutates_closure[export.1 as usize];
+    }
+
     Ok(VerifiedImage {
         image_id: decoded.image_id,
         types,
+        roots,
+        sites,
         consts: decoded.consts,
         functions,
         exports,
     })
+}
+
+/// The sealed tables the per-function checks consult.
+struct Ctx<'a> {
+    types: &'a [SealedRecordType],
+    roots: &'a [SealedRoot],
+    sites: &'a [SealedSite],
+    signatures: &'a [FnSig],
 }
 
 /// A callee's signature, consulted by the per-function `Call` type check.
@@ -734,16 +869,220 @@ fn call_targets(function: &SealedFunction) -> Vec<usize> {
         .collect()
 }
 
+/// Phase 4/5 durable-effect closure and the transaction-flow lattice (design §E).
+struct Effects {
+    /// Per function: whether it or a transitive callee stages a mutation.
+    mutates_closure: Vec<bool>,
+    /// Per function: whether it or a transitive callee reads durable data.
+    reads_closure: Vec<bool>,
+    /// Per function: whether it contains a `TxnBegin` (a transaction owner).
+    has_begin: Vec<bool>,
+    /// Per function: whether it contains a `TxnCommit`.
+    has_commit: Vec<bool>,
+}
+
+impl Effects {
+    fn compute(functions: &[SealedFunction]) -> Self {
+        let count = functions.len();
+        let mutates_self: Vec<bool> = functions
+            .iter()
+            .map(|function| function.instrs().iter().any(SealedInstr::is_mutation))
+            .collect();
+        let reads_self: Vec<bool> = functions
+            .iter()
+            .map(|function| function.instrs().iter().any(SealedInstr::is_durable_read))
+            .collect();
+        let has_begin: Vec<bool> = functions
+            .iter()
+            .map(|function| {
+                function
+                    .instrs()
+                    .iter()
+                    .any(|instr| matches!(instr, SealedInstr::TxnBegin))
+            })
+            .collect();
+        let has_commit: Vec<bool> = functions
+            .iter()
+            .map(|function| {
+                function
+                    .instrs()
+                    .iter()
+                    .any(|instr| matches!(instr, SealedInstr::TxnCommit))
+            })
+            .collect();
+        let callees: Vec<Vec<usize>> = functions.iter().map(call_targets).collect();
+
+        // Fixpoint over the acyclic call graph: iterating `count` times converges.
+        let mut mutates_closure = mutates_self.clone();
+        let mut reads_closure = reads_self;
+        for _ in 0..count {
+            let mut changed = false;
+            for f in 0..count {
+                for &callee in &callees[f] {
+                    if mutates_closure[callee] && !mutates_closure[f] {
+                        mutates_closure[f] = true;
+                        changed = true;
+                    }
+                    if reads_closure[callee] && !reads_closure[f] {
+                        reads_closure[f] = true;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        Self {
+            mutates_closure,
+            reads_closure,
+            has_begin,
+            has_commit,
+        }
+    }
+
+    /// The verifier-derived per-root demand of the export entered at `func`.
+    fn demand(&self, func: u16) -> Demand {
+        Demand {
+            read: self.reads_closure[func as usize],
+            write: self.mutates_closure[func as usize],
+        }
+    }
+
+    /// Phase 5: validate one function's transaction flow. A transaction owner (a
+    /// function that mutates in closure and contains `TxnBegin`) runs the
+    /// {BeforeBegin, InTxn, AfterCommit} lattice; every other function must contain
+    /// no transaction marker; and no function may call a transaction owner.
+    fn check_transaction_flow(
+        &self,
+        index: usize,
+        function: &SealedFunction,
+        is_export_entry: bool,
+    ) -> Result<(), VerifyRejection> {
+        // A function containing `TxnBegin` is a transaction owner and may never be
+        // called.
+        for &callee in &call_targets(function) {
+            if self.has_begin[callee] {
+                return Err(reject(
+                    VerifyPhase::Flow,
+                    "a transaction owner may not be called",
+                ));
+            }
+        }
+
+        // A mutating export entry owns exactly one transaction; the lattice requires
+        // it to begin and commit on every path with all mutations inside.
+        if is_export_entry && self.mutates_closure[index] {
+            return self.check_owner_lattice(function);
+        }
+
+        // Every other function is a read-only function or a mutating helper (wholly
+        // inside its caller's transaction). Neither may carry a transaction marker.
+        if self.has_begin[index] || self.has_commit[index] {
+            return Err(reject(
+                VerifyPhase::Flow,
+                "a transaction marker sits outside its owning export",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The three-state transaction lattice over a transaction owner's CFG.
+    fn check_owner_lattice(&self, function: &SealedFunction) -> Result<(), VerifyRejection> {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum State {
+            BeforeBegin,
+            InTxn,
+            AfterCommit,
+        }
+        let code = function.instrs();
+        let mut entry: Vec<Option<State>> = vec![None; code.len()];
+        entry[0] = Some(State::BeforeBegin);
+        let mut worklist = vec![0usize];
+        while let Some(index) = worklist.pop() {
+            let state = entry[index].expect("worklist only enqueues reached instructions");
+            let instr = &code[index];
+            let next_state = match instr {
+                SealedInstr::TxnBegin => {
+                    if state != State::BeforeBegin {
+                        return Err(reject(
+                            VerifyPhase::Flow,
+                            "the transaction is begun more than once",
+                        ));
+                    }
+                    State::InTxn
+                }
+                SealedInstr::TxnCommit => {
+                    if state != State::InTxn {
+                        return Err(reject(
+                            VerifyPhase::Flow,
+                            "a transaction is committed outside its region",
+                        ));
+                    }
+                    State::AfterCommit
+                }
+                SealedInstr::Return => {
+                    if state != State::AfterCommit {
+                        return Err(reject(
+                            VerifyPhase::Flow,
+                            "a path returns without committing the transaction",
+                        ));
+                    }
+                    continue; // no successors
+                }
+                _ => {
+                    let mutating_here = instr.is_mutation()
+                        || matches!(instr, SealedInstr::Call(target) if self.mutates_closure[*target as usize]);
+                    if mutating_here && state != State::InTxn {
+                        return Err(reject(
+                            VerifyPhase::Flow,
+                            "a mutation sits outside the transaction region",
+                        ));
+                    }
+                    state
+                }
+            };
+            for successor in flow_successors(code, index) {
+                match entry[successor] {
+                    None => {
+                        entry[successor] = Some(next_state);
+                        worklist.push(successor);
+                    }
+                    Some(existing) if existing == next_state => {}
+                    Some(_) => {
+                        return Err(reject(
+                            VerifyPhase::Flow,
+                            "transaction state disagrees at a merge",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The control-flow successors of the sealed instruction at `index`.
+fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
+    match &code[index] {
+        SealedInstr::Return => Vec::new(),
+        SealedInstr::Jump(target) => vec![*target],
+        SealedInstr::JumpIfFalse(target) | SealedInstr::BranchPresent(target) => {
+            vec![*target, index + 1]
+        }
+        _ => vec![index + 1],
+    }
+}
+
 fn verify_function(
     function: &DecodedFunction,
-    types: &[SealedRecordType],
-    signatures: &[FnSig],
+    ctx: &Ctx,
     decoded: &DecodedImage,
 ) -> Result<SealedFunction, VerifyRejection> {
     let mut decoded_code = decode_code(&function.code)?;
     resolve_jumps(&mut decoded_code)?;
-    let (instrs, max_stack) =
-        check_flow(function, types, signatures, &decoded_code, &decoded.consts)?;
+    let (instrs, max_stack) = check_flow(function, ctx, &decoded_code, &decoded.consts)?;
     let spans = map_spans(function, &decoded_code)?;
     Ok(SealedFunction {
         name: decoded.strings[function.name as usize].clone(),
@@ -797,6 +1136,18 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
             OP_CALL => SealedInstr::Call(operand_u16(&mut reader)?),
+            OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(&mut reader)?),
+            OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(&mut reader)?),
+            OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(&mut reader)?),
+            OP_DUR_SET_REQUIRED => SealedInstr::DurSetRequired(operand_u16(&mut reader)?),
+            OP_DUR_SET_SPARSE => SealedInstr::DurSetSparse(operand_u16(&mut reader)?),
+            OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_u16(&mut reader)?),
+            OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(&mut reader)?),
+            OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
+            OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(&mut reader)?),
+            OP_DUR_NEXT_KEY => SealedInstr::DurNextKey(operand_u16(&mut reader)?),
+            OP_TXN_BEGIN => SealedInstr::TxnBegin,
+            OP_TXN_COMMIT => SealedInstr::TxnCommit,
             _ => {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -893,8 +1244,7 @@ struct Frame {
 /// max stack depth (computed here, never read from the image).
 fn check_flow(
     function: &DecodedFunction,
-    types: &[SealedRecordType],
-    signatures: &[FnSig],
+    ctx: &Ctx,
     code: &[Decoded],
     consts: &[SealedConst],
 ) -> Result<(Vec<SealedInstr>, usize), VerifyRejection> {
@@ -920,14 +1270,7 @@ fn check_flow(
         let mut frame = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        let control = apply(
-            function,
-            types,
-            signatures,
-            &code[index].instr,
-            consts,
-            &mut frame,
-        )?;
+        let control = apply(function, ctx, &code[index].instr, consts, &mut frame)?;
         if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
             return Err(reject(
                 VerifyPhase::Function,
@@ -1019,12 +1362,16 @@ fn propagate(
 /// Grows one slice at a time with the opcode set.
 fn apply(
     function: &DecodedFunction,
-    types: &[SealedRecordType],
-    signatures: &[FnSig],
+    ctx: &Ctx,
     instr: &SealedInstr,
     consts: &[SealedConst],
     frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
+    let types = ctx.types;
+    let signatures = ctx.signatures;
+    if is_durable(instr) {
+        return apply_durable(ctx, instr, frame);
+    }
     // Record/optional/call opcodes need the whole frame or the signatures; the
     // scalar opcodes work on the stack alone, borrowed here after these return.
     if let SealedInstr::Call(target) = instr {
@@ -1232,9 +1579,184 @@ fn apply(
         | SealedInstr::SomeWrap
         | SealedInstr::VacantLoad(_)
         | SealedInstr::BranchPresent(_)
-        | SealedInstr::Call(_) => {
-            unreachable!("record, optional, and call opcodes return from the earlier matches")
+        | SealedInstr::Call(_)
+        | SealedInstr::DurExists(_)
+        | SealedInstr::DurReadField(_)
+        | SealedInstr::DurReadEntry(_)
+        | SealedInstr::DurSetRequired(_)
+        | SealedInstr::DurSetSparse(_)
+        | SealedInstr::DurCreateEntry(_)
+        | SealedInstr::DurReplaceEntry(_)
+        | SealedInstr::DurEraseField(_)
+        | SealedInstr::DurEraseEntry(_)
+        | SealedInstr::DurNextKey(_)
+        | SealedInstr::TxnBegin
+        | SealedInstr::TxnCommit => {
+            unreachable!(
+                "record, optional, call, and durable opcodes return from the earlier matches"
+            )
         }
+    }
+}
+
+/// Whether `instr` is handled by [`apply_durable`] (a durable op or a transaction
+/// marker).
+fn is_durable(instr: &SealedInstr) -> bool {
+    instr.is_mutation()
+        || instr.is_durable_read()
+        || matches!(instr, SealedInstr::TxnBegin | SealedInstr::TxnCommit)
+}
+
+/// The site operand of a durable op, or `None` for a transaction marker.
+fn durable_site(instr: &SealedInstr) -> Option<u16> {
+    match instr {
+        SealedInstr::DurExists(site)
+        | SealedInstr::DurReadField(site)
+        | SealedInstr::DurReadEntry(site)
+        | SealedInstr::DurSetRequired(site)
+        | SealedInstr::DurSetSparse(site)
+        | SealedInstr::DurCreateEntry(site)
+        | SealedInstr::DurReplaceEntry(site)
+        | SealedInstr::DurEraseField(site)
+        | SealedInstr::DurEraseEntry(site)
+        | SealedInstr::DurNextKey(site) => Some(*site),
+        _ => None,
+    }
+}
+
+/// Phase-3 type check for durable opcodes and transaction markers (design §D). The
+/// transaction markers leave the stack unchanged; phase 5 checks their flow.
+fn apply_durable(
+    ctx: &Ctx,
+    instr: &SealedInstr,
+    frame: &mut Frame,
+) -> Result<Control, VerifyRejection> {
+    let Some(site_index) = durable_site(instr) else {
+        // TxnBegin / TxnCommit: no stack effect here.
+        return Ok(Control::Fallthrough);
+    };
+    let site = ctx.sites.get(site_index as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "durable site index out of range",
+    ))?;
+    let root = ctx.roots.get(site.root as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "durable site root out of range",
+    ))?;
+    let key_ty = VType::bare_scalar(root.key);
+    let stack = &mut frame.stack;
+    match instr {
+        SealedInstr::DurExists(_) => {
+            expect(pop(stack)?, key_ty)?;
+            stack.push(VType::bare_scalar(Scalar::Bool));
+        }
+        SealedInstr::DurReadField(_) => {
+            let field = field_of(ctx, site, root)?;
+            let value = VType::bare_scalar(field.scalar).to_optional();
+            expect(pop(stack)?, key_ty)?;
+            stack.push(value);
+        }
+        SealedInstr::DurReadEntry(_) => {
+            require_entry(site)?;
+            expect(pop(stack)?, key_ty)?;
+            stack.push(VType::bare_record(root.record).to_optional());
+        }
+        SealedInstr::DurSetRequired(_) => {
+            let field = field_of(ctx, site, root)?;
+            if !field.required {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "set-required targets a sparse field",
+                ));
+            }
+            let value = VType::bare_scalar(field.scalar);
+            expect(pop(stack)?, value)?;
+            expect(pop(stack)?, key_ty)?;
+        }
+        SealedInstr::DurSetSparse(_) => {
+            let field = field_of(ctx, site, root)?;
+            if field.required {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "set-sparse targets a required field",
+                ));
+            }
+            let value = VType::bare_scalar(field.scalar).to_optional();
+            expect(pop(stack)?, value)?;
+            expect(pop(stack)?, key_ty)?;
+        }
+        SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
+            require_entry(site)?;
+            expect(pop(stack)?, VType::bare_record(root.record))?;
+            expect(pop(stack)?, key_ty)?;
+        }
+        SealedInstr::DurEraseField(_) => {
+            let field = field_of(ctx, site, root)?;
+            if field.required {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "erase targets a required field",
+                ));
+            }
+            expect(pop(stack)?, key_ty)?;
+        }
+        SealedInstr::DurEraseEntry(_) => {
+            require_entry(site)?;
+            expect(pop(stack)?, key_ty)?;
+        }
+        SealedInstr::DurNextKey(_) => {
+            require_entry(site)?;
+            let opt_key = key_ty.to_optional();
+            expect(pop(stack)?, opt_key)?;
+            stack.push(opt_key);
+        }
+        _ => unreachable!("durable_site returned a site for this opcode"),
+    }
+    Ok(Control::Fallthrough)
+}
+
+/// The field a field-target site addresses, or a rejection when the site is an
+/// entry site.
+fn field_of<'a>(
+    ctx: &'a Ctx,
+    site: &SealedSite,
+    root: &SealedRoot,
+) -> Result<&'a SealedField, VerifyRejection> {
+    let SealedSiteTarget::Field(field) = site.target else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "operation requires a field site",
+        ));
+    };
+    ctx.types[root.record as usize]
+        .fields()
+        .get(field as usize)
+        .ok_or(reject(
+            VerifyPhase::Function,
+            "site field index out of range",
+        ))
+}
+
+/// Require an entry-target site.
+fn require_entry(site: &SealedSite) -> Result<(), VerifyRejection> {
+    match site.target {
+        SealedSiteTarget::Entry => Ok(()),
+        SealedSiteTarget::Field(_) => Err(reject(
+            VerifyPhase::Function,
+            "operation requires an entry site",
+        )),
+    }
+}
+
+/// Require `value` to be exactly `want`.
+fn expect(value: VType, want: VType) -> Result<(), VerifyRejection> {
+    if value == want {
+        Ok(())
+    } else {
+        Err(reject(
+            VerifyPhase::Function,
+            "durable operand type mismatch",
+        ))
     }
 }
 

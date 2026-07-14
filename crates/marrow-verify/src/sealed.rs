@@ -69,11 +69,100 @@ pub enum SealedInstr {
     /// Call function `_0` directly: pop its arguments (a0 pushed first, lands in
     /// callee local 0) and push its return value (nothing for a Unit return).
     Call(u16),
+    /// `K → bool`: whether the cell site `_0` addresses is present.
+    DurExists(u16),
+    /// `K → T?`: read field site `_0`.
+    DurReadField(u16),
+    /// `K → Rec?`: read the whole entry at site `_0`.
+    DurReadEntry(u16),
+    /// `K, T →`: set the required field site `_0` (transaction-region only).
+    DurSetRequired(u16),
+    /// `K, T? →`: set (present) or clear (vacant) the sparse field site `_0`.
+    DurSetSparse(u16),
+    /// `K, Rec →`: create the entry at site `_0` (algebra `create`).
+    DurCreateEntry(u16),
+    /// `K, Rec →`: replace the entry at site `_0` (algebra `replace`).
+    DurReplaceEntry(u16),
+    /// `K →`: erase the sparse field site `_0` (no-op on absent).
+    DurEraseField(u16),
+    /// `K →`: erase the entry at site `_0` (no-op on absent).
+    DurEraseEntry(u16),
+    /// `K? → K?`: the next key at entry site `_0` (vacant in = first key).
+    DurNextKey(u16),
+    /// Open the export's single transaction region.
+    TxnBegin,
+    /// Close the export's single transaction region.
+    TxnCommit,
 }
 
-/// A sealed record field: its scalar type and whether it is required.
+impl SealedInstr {
+    /// Whether this instruction stages a durable mutation (design §D). Read and
+    /// iteration ops are not mutations; the transaction markers are not either.
+    pub fn is_mutation(&self) -> bool {
+        matches!(
+            self,
+            SealedInstr::DurSetRequired(_)
+                | SealedInstr::DurSetSparse(_)
+                | SealedInstr::DurCreateEntry(_)
+                | SealedInstr::DurReplaceEntry(_)
+                | SealedInstr::DurEraseField(_)
+                | SealedInstr::DurEraseEntry(_)
+        )
+    }
+
+    /// Whether this instruction reads durable data (presence, field/entry read, or
+    /// iteration).
+    pub fn is_durable_read(&self) -> bool {
+        matches!(
+            self,
+            SealedInstr::DurExists(_)
+                | SealedInstr::DurReadField(_)
+                | SealedInstr::DurReadEntry(_)
+                | SealedInstr::DurNextKey(_)
+        )
+    }
+}
+
+/// What a durable operation site addresses within its root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealedSiteTarget {
+    Entry,
+    /// A field of the root's record, by field index.
+    Field(u16),
+}
+
+/// A verified durable operation site: a root index plus an entry-or-field target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealedSite {
+    pub root: u16,
+    pub target: SealedSiteTarget,
+}
+
+/// A verified durable root: one keyed placement of a record type.
+#[derive(Debug, Clone)]
+pub struct SealedRoot {
+    pub(crate) name: Rc<str>,
+    pub(crate) key: Scalar,
+    pub(crate) record: u16,
+}
+
+impl SealedRoot {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn key(&self) -> Scalar {
+        self.key
+    }
+    pub fn record(&self) -> u16 {
+        self.record
+    }
+}
+
+/// A sealed record field: its name, scalar type, and whether it is required. The
+/// name is carried so the path kernel can key physical field leaves.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedField {
+    pub name: Rc<str>,
     pub scalar: Scalar,
     pub required: bool,
 }
@@ -158,12 +247,28 @@ impl SealedFunction {
 }
 
 /// A public export: a name bound to a function, with its verifier-derived effect
-/// class.
+/// class and per-root durable demand.
 #[derive(Debug, Clone)]
 pub struct SealedExport {
     pub(crate) name: Rc<str>,
     pub(crate) func: u16,
     pub(crate) mutating: bool,
+    pub(crate) demand: Demand,
+}
+
+/// The verifier-derived durable demand of an export over the single root: whether
+/// its closure reads or writes. An input to the authority check, never a grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Demand {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl Demand {
+    /// Whether the export touches the store at all.
+    pub fn is_empty(self) -> bool {
+        !self.read && !self.write
+    }
 }
 
 impl SealedExport {
@@ -176,6 +281,9 @@ impl SealedExport {
     pub fn is_mutating(&self) -> bool {
         self.mutating
     }
+    pub fn demand(&self) -> Demand {
+        self.demand
+    }
 }
 
 /// The verified, sealed program image.
@@ -183,6 +291,8 @@ impl SealedExport {
 pub struct VerifiedImage {
     pub(crate) image_id: ImageId,
     pub(crate) types: Vec<SealedRecordType>,
+    pub(crate) roots: Vec<SealedRoot>,
+    pub(crate) sites: Vec<SealedSite>,
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
@@ -195,6 +305,16 @@ impl VerifiedImage {
 
     pub fn record_type(&self, index: u16) -> &SealedRecordType {
         &self.types[index as usize]
+    }
+
+    /// The durable roots (0 or 1 at v0).
+    pub fn roots(&self) -> &[SealedRoot] {
+        &self.roots
+    }
+
+    /// The durable operation sites, indexed by image site index.
+    pub fn sites(&self) -> &[SealedSite] {
+        &self.sites
     }
 
     pub fn consts(&self) -> &[SealedConst] {

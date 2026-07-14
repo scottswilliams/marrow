@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 mod backend;
+mod engine;
 mod mem;
 #[cfg(feature = "native")]
 mod redb;
@@ -27,3 +28,7 @@ mod conformance;
 
 /// The shared store error for typed byte-cell operations.
 pub use backend::StoreError;
+#[cfg(feature = "native")]
+pub use engine::NativeEngine;
+/// The narrow ordered-byte seam the path kernel consumes.
+pub use engine::{ByteEngine, Cell, MemoryEngine};

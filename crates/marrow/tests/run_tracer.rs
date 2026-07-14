@@ -290,3 +290,121 @@ fn mutual_recursion_is_an_artifact_rejection() {
     );
     assert!(stdout.contains("image.closure"), "{output:?}");
 }
+
+// --- Durable tracer (slices K.6/K.7): the counter CLI travels the full path
+// through redb, and a store written by one process is read by the next. ---
+
+const COUNTER_SOURCE: &str = "resource Counter\n\
+     \x20   required value: int\n\
+     \x20   label: string\n\
+     \n\
+     store ^counters(name: string): Counter\n\
+     \n\
+     pub fn set(name: string, v: int)\n\
+     \x20   transaction\n\
+     \x20       ^counters(name) = Counter(value: v)\n\
+     \n\
+     pub fn get(name: string): int?\n\
+     \x20   return ^counters(name).value\n\
+     \n\
+     pub fn bump(name: string)\n\
+     \x20   transaction\n\
+     \x20       const current = ^counters(name).value ?? 0\n\
+     \x20       ^counters(name).value = current + 1\n\
+     \n\
+     pub fn label(name: string, text: string)\n\
+     \x20   transaction\n\
+     \x20       ^counters(name).label = text\n\
+     \n\
+     pub fn remove(name: string)\n\
+     \x20   transaction\n\
+     \x20       delete ^counters(name)\n";
+
+fn run_counter(dir: &Path, store: &Path, export: &str, call: &[&str]) -> Output {
+    let mut args = vec!["run", export, "--store"];
+    let store = store.to_str().expect("utf-8 store path");
+    args.push(store);
+    args.push("--");
+    args.extend_from_slice(call);
+    run_in(dir, &args)
+}
+
+fn stdout_of(output: &Output) -> String {
+    assert!(
+        output.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn durable_set_then_get_round_trips_on_redb() {
+    let temp = TempDir::new("counter-set-get");
+    project(&temp, COUNTER_SOURCE);
+    let store = temp.join("store");
+
+    stdout_of(&run_counter(&temp, &store, "set", &["hits", "5"]));
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
+        "5\n"
+    );
+}
+
+#[test]
+fn durable_full_algebra_travels_the_path() {
+    let temp = TempDir::new("counter-algebra");
+    project(&temp, COUNTER_SOURCE);
+    let store = temp.join("store");
+
+    // A read of an absent entry is absent.
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
+        "absent\n"
+    );
+    // Bump creates the entry (field-by-field creation at commit).
+    stdout_of(&run_counter(&temp, &store, "bump", &["hits"]));
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
+        "1\n"
+    );
+    // A sparse field write leaves the required value intact.
+    stdout_of(&run_counter(&temp, &store, "label", &["hits", "primary"]));
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
+        "1\n"
+    );
+    // Erase removes the whole entry.
+    stdout_of(&run_counter(&temp, &store, "remove", &["hits"]));
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
+        "absent\n"
+    );
+}
+
+/// The exit gate: one process writes and exits; a fresh process reads the same
+/// redb file back. Each `run_counter` spawns the built binary anew.
+#[test]
+fn a_store_survives_a_process_restart() {
+    let temp = TempDir::new("counter-restart");
+    project(&temp, COUNTER_SOURCE);
+    let store = temp.join("store");
+
+    // First process: write and exit.
+    stdout_of(&run_counter(&temp, &store, "set", &["visits", "41"]));
+    stdout_of(&run_counter(&temp, &store, "bump", &["visits"]));
+
+    // Second process: read it back.
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "get", &["visits"])),
+        "42\n"
+    );
+}
+
+#[test]
+fn a_durable_export_without_a_store_is_a_usage_error() {
+    let temp = TempDir::new("counter-nostore");
+    project(&temp, COUNTER_SOURCE);
+    let output = run_in(&temp, &["run", "get", "--", "hits"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}

@@ -10,10 +10,11 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
-    Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, parse_source,
+    Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, StoreDecl, parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
+use crate::durable::DurableRegistry;
 use crate::lower::{FnLowerer, FunctionRegistry};
 use crate::record::RecordRegistry;
 
@@ -86,6 +87,19 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
         })
         .collect();
     let records = RecordRegistry::build(&mut draft, &resources, &mut diagnostics);
+    let stores: Vec<(String, &StoreDecl)> = parsed
+        .iter()
+        .flat_map(|(path, module)| {
+            module.file.declarations.iter().filter_map(move |decl| {
+                if let Declaration::Store(store) = decl {
+                    Some((path.clone(), store))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
     let signatures = FunctionRegistry::build(&records, &functions);
 
     // Lower each function, in the same order the registry assigned indices. Other
@@ -97,13 +111,14 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
                     FnLowerer::lower(
                         &mut draft,
                         &records,
+                        &durable,
                         &signatures,
                         &mut diagnostics,
                         path,
                         function,
                     );
                 }
-                Declaration::Resource(_) => {}
+                Declaration::Resource(_) | Declaration::Store(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
                     Code::CheckUnsupported.as_str(),
                     path,

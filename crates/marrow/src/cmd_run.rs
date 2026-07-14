@@ -8,10 +8,17 @@
 //! Durable execution (opening a store for an export with nonempty demand) is wired
 //! in with the durable slices; at this slice every admitted export is read-only.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 
 use marrow_compile::compile;
+use marrow_kernel::codec::value::ScalarKind;
+use marrow_kernel::durable::{
+    DurableStore, ExportDemand, FieldSchema, InvocationGrant, SessionError, SiteSpec,
+    SiteTarget as KernelSiteTarget, StoreSchema,
+};
+use marrow_verify::{Scalar, SealedSiteTarget, VerifiedImage};
 use marrow_vm::Value;
 
 use crate::outcome::Record;
@@ -26,7 +33,6 @@ enum Format {
 
 struct RunArgs {
     export: String,
-    #[allow(dead_code)]
     store: Option<PathBuf>,
     format: Format,
     call_args: Vec<String>,
@@ -88,29 +94,186 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let func_index = export.function();
+    let demand = export.demand();
 
     // Positional call arguments are decoded against the verified export signature.
-    // The current subset admits only zero-parameter exports.
     let function = image.function(func_index);
-    if !function.params().is_empty() || !args.call_args.is_empty() {
-        eprintln!("`marrow run {}` takes no arguments yet", args.export);
-        return ExitCode::from(2);
-    }
+    let call_args = match decode_args(function.params(), &args.call_args) {
+        Ok(values) => values,
+        Err(message) => return usage(&message),
+    };
 
-    // Family 3: source-mapped runtime fault, or the value.
-    let record = match marrow_vm::run(&image, func_index, Vec::<Value>::new()) {
+    // Family 3: source-mapped runtime fault, or the value. A durable export (nonempty
+    // demand) runs against an in-process store opened here (interim; dies at D00).
+    let record = if demand.is_empty() {
+        run_storeless(&image, func_index, call_args)
+    } else {
+        let Some(store_path) = &args.store else {
+            return usage("this export reads or writes durable data; pass `--store <path>`");
+        };
+        run_durable(&image, func_index, call_args, store_path, demand)
+    };
+
+    let exit = match &record {
+        Record::Value(_) => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    };
+    emit(args.format, &[record], exit)
+}
+
+/// Run a storeless export.
+fn run_storeless(image: &VerifiedImage, func_index: u16, call_args: Vec<Value>) -> Record {
+    match marrow_vm::run(image, func_index, call_args) {
         Ok(value) => Record::Value(value),
         Err(fault) => Record::Fault {
             code: fault.code(),
             line: fault.line(),
             column: fault.column(),
         },
+    }
+}
+
+/// Open the store in-process, resolve authority, and run the durable export.
+fn run_durable(
+    image: &VerifiedImage,
+    func_index: u16,
+    call_args: Vec<Value>,
+    store_path: &Path,
+    demand: marrow_verify::Demand,
+) -> Record {
+    let schema = build_schema(image);
+    let sites = build_sites(image);
+    let mut store = match DurableStore::open(store_path, schema, sites) {
+        Ok(store) => store,
+        Err(error) => return Record::OperationalError { code: error.code() },
     };
-    let exit = match &record {
-        Record::Value(_) => ExitCode::SUCCESS,
-        _ => ExitCode::FAILURE,
+    let grant = InvocationGrant::full_store();
+    let kernel_demand = ExportDemand {
+        read: demand.read,
+        write: demand.write,
     };
-    emit(args.format, &[record], exit)
+    // A mutating export drives a transaction session; a read-only export a read
+    // session over a pinned snapshot.
+    if demand.write {
+        match store.txn_session(grant, kernel_demand) {
+            Ok(mut session) => run_session(image, func_index, call_args, &mut session),
+            Err(error) => session_error_record(image, func_index, error),
+        }
+    } else {
+        match store.read_session(grant, kernel_demand) {
+            Ok(mut session) => run_session(image, func_index, call_args, &mut session),
+            Err(error) => session_error_record(image, func_index, error),
+        }
+    }
+}
+
+fn run_session(
+    image: &VerifiedImage,
+    func_index: u16,
+    call_args: Vec<Value>,
+    session: &mut dyn marrow_kernel::durable::Durable,
+) -> Record {
+    match marrow_vm::run_durable(image, func_index, call_args, session) {
+        Ok(value) => Record::Value(value),
+        Err(fault) => Record::Fault {
+            code: fault.code(),
+            line: fault.line(),
+            column: fault.column(),
+        },
+    }
+}
+
+/// Map a session-setup failure to a typed record. An authority denial is a
+/// source-uncatchable fault at the export entry; a profile mismatch or engine
+/// failure is an operational error.
+fn session_error_record(image: &VerifiedImage, func_index: u16, error: SessionError) -> Record {
+    match error {
+        SessionError::Denied => {
+            let (line, column) = image.function(func_index).span_at(0).unwrap_or((1, 1));
+            Record::Fault {
+                code: marrow_codes::Code::RunAuthority.as_str(),
+                line,
+                column,
+            }
+        }
+        SessionError::ProfileMismatch => Record::OperationalError {
+            code: marrow_codes::Code::StoreCorruption.as_str(),
+        },
+        SessionError::Engine(store) => Record::OperationalError { code: store.code() },
+    }
+}
+
+/// The kernel store schema derived from the verified image's single root.
+fn build_schema(image: &VerifiedImage) -> StoreSchema {
+    let root = &image.roots()[0];
+    let record = image.record_type(root.record());
+    StoreSchema {
+        root_name: root.name().to_string(),
+        key: scalar_kind(root.key()),
+        fields: record
+            .fields()
+            .iter()
+            .map(|field| FieldSchema {
+                name: field.name.to_string(),
+                kind: scalar_kind(field.scalar),
+                required: field.required,
+            })
+            .collect(),
+    }
+}
+
+/// The kernel site specs derived from the verified image's site table.
+fn build_sites(image: &VerifiedImage) -> Vec<SiteSpec> {
+    image
+        .sites()
+        .iter()
+        .map(|site| SiteSpec {
+            target: match site.target {
+                SealedSiteTarget::Entry => KernelSiteTarget::Entry,
+                SealedSiteTarget::Field(field) => KernelSiteTarget::Field(field),
+            },
+        })
+        .collect()
+}
+
+/// The kernel scalar kind for an image scalar type.
+fn scalar_kind(scalar: Scalar) -> ScalarKind {
+    match scalar {
+        Scalar::Int => ScalarKind::Int,
+        Scalar::Bool => ScalarKind::Bool,
+        Scalar::Text => ScalarKind::Str,
+    }
+}
+
+/// Decode positional CLI arguments against the export's scalar parameter types.
+fn decode_args(params: &[Scalar], args: &[String]) -> Result<Vec<Value>, String> {
+    if params.len() != args.len() {
+        return Err(format!(
+            "this export takes {} argument(s), found {}",
+            params.len(),
+            args.len()
+        ));
+    }
+    params
+        .iter()
+        .zip(args)
+        .map(|(scalar, text)| decode_arg(*scalar, text))
+        .collect()
+}
+
+fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
+    match scalar {
+        Scalar::Int => text
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| format!("`{text}` is not an integer")),
+        Scalar::Bool => match text {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(format!("`{text}` is not a boolean (true/false)")),
+        },
+        Scalar::Text => Ok(Value::Text(Rc::from(text))),
+    }
 }
 
 fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {

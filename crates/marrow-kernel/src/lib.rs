@@ -14,3 +14,36 @@
 //! as known-answer-tested seeds and are not a frozen public value domain.
 
 pub mod codec;
+pub mod durable;
+
+// The native `DurableStore::open` constructor lives with the store handle so the
+// CLI can provision a redb-backed store; the in-memory engine backs the kernel's
+// differential proving ground.
+impl durable::DurableStore<marrow_store::NativeEngine> {
+    /// Open (creating if needed) a write-capable native store at `path`. CLI-only
+    /// caller at T01; dies at D00.
+    pub fn open(
+        path: &std::path::Path,
+        schema: durable::StoreSchema,
+        sites: Vec<durable::SiteSpec>,
+    ) -> Result<Self, marrow_store::StoreError> {
+        Ok(Self::from_engine(
+            marrow_store::NativeEngine::open(path)?,
+            schema,
+            sites,
+        ))
+    }
+
+    /// Open an existing native store read-only, never creating the file.
+    pub fn open_read_only(
+        path: &std::path::Path,
+        schema: durable::StoreSchema,
+        sites: Vec<durable::SiteSpec>,
+    ) -> Result<Self, marrow_store::StoreError> {
+        Ok(Self::from_engine(
+            marrow_store::NativeEngine::open_read_only(path)?,
+            schema,
+            sites,
+        ))
+    }
+}

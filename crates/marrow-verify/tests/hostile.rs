@@ -8,7 +8,10 @@
 //!
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, image_id};
+use marrow_image::{
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, RootDef, Scalar, SiteDef,
+    SiteTarget, SpanEntry, image_id,
+};
 use marrow_verify::verify;
 
 /// A well-formed multi-function image: a caller exporting `main` that calls a helper,
@@ -238,4 +241,198 @@ fn closure_phase_mutual_recursion() {
     });
     draft.add_export(ping_name, ping);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.closure");
+}
+
+// --- Phase-5 durable transaction-flow hostiles (design §E phase 5). ---
+
+/// Build the tracer-like durable schema into `draft`: a `Counter { value:int
+/// required, label:string sparse }` at root `^counters(name:string)`, returning the
+/// entry, required-field, and sparse-field site indices.
+fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: Scalar::Int,
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: Scalar::Text,
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("counters");
+    draft.add_root(RootDef {
+        name: root,
+        key: Scalar::Text,
+        record,
+    });
+    let entry = draft.add_site(SiteDef {
+        root: 0,
+        target: SiteTarget::Entry,
+    });
+    let value_site = draft.add_site(SiteDef {
+        root: 0,
+        target: SiteTarget::Field(0),
+    });
+    let label_site = draft.add_site(SiteDef {
+        root: 0,
+        target: SiteTarget::Field(1),
+    });
+    (entry.index(), value_site.index(), label_site.index())
+}
+
+/// Encode a single mutating export `put(k:string, v:int)` whose body is `code`.
+fn put_export(code: Vec<Instr>) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let (_entry, _value, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![Scalar::Text, Scalar::Int],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(name, func);
+    draft
+}
+
+#[test]
+fn durable_put_export_verifies() {
+    // The well-formed baseline the flow hostiles derive from.
+    let (_entry, value_site, _label) = {
+        let mut probe = ImageDraft::new();
+        durable_schema(&mut probe)
+    };
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+#[test]
+fn flow_mutation_outside_transaction_rejects() {
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
+#[test]
+fn flow_return_without_commit_rejects() {
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
+#[test]
+fn flow_double_begin_rejects() {
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
+#[test]
+fn flow_transaction_owner_may_not_be_called_rejects() {
+    // A helper owns a transaction (contains TxnBegin); an export that calls it is a
+    // flow violation — helpers cannot own the transaction.
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let key = draft.intern_text("x");
+    let val = draft.intern_int(1);
+    let helper_name = draft.intern_string("helper");
+    let helper_code = vec![
+        Instr::TxnBegin,
+        Instr::ConstLoad(key.index()),
+        Instr::ConstLoad(val.index()),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let helper = draft.add_function(FunctionDef {
+        name: helper_name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&helper_code),
+        code: helper_code,
+    });
+    let main_name = draft.intern_string("main");
+    let main_code = vec![Instr::Call(helper.index()), Instr::Return];
+    let main = draft.add_function(FunctionDef {
+        name: main_name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&main_code),
+        code: main_code,
+    });
+    draft.add_export(main_name, main);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
+#[test]
+fn set_sparse_on_a_required_field_rejects_at_function() {
+    // Targeting the required `value` field with the sparse opcode is a phase-3
+    // site/target error.
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)),
+        Instr::DurSetSparse(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+#[test]
+fn create_on_a_field_site_rejects_at_function() {
+    // `create` requires an entry site; a field-target site is a phase-3 error.
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::DurCreateEntry(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }

@@ -16,6 +16,7 @@ use marrow_syntax::{
 };
 
 use crate::diag::SourceDiagnostic;
+use crate::durable::DurableRegistry;
 use crate::record::RecordRegistry;
 use crate::scalar::ScalarType;
 
@@ -117,6 +118,33 @@ enum CallResult {
     Value(LTy),
 }
 
+/// The structural durable shape of a place expression.
+enum DurShape {
+    Entry,
+    Field,
+}
+
+/// A resolved durable place: its key expression, key type, and target.
+struct DurablePlace<'e> {
+    key: &'e Expression,
+    key_ty: ScalarType,
+    target: DurTarget,
+    span: SourceSpan,
+}
+
+/// A resolved durable target: the whole entry or one field.
+enum DurTarget {
+    Entry {
+        entry_site: u16,
+        record: TypeId,
+    },
+    Field {
+        site: u16,
+        scalar: ScalarType,
+        required: bool,
+    },
+}
+
 /// A resolved function signature, keyed by index (the image FUNCTIONS position,
 /// which equals declaration order).
 pub(crate) struct FnSignature {
@@ -196,6 +224,7 @@ struct LoopCtx {
 pub(crate) struct FnLowerer<'a> {
     draft: &'a mut ImageDraft,
     records: &'a RecordRegistry,
+    durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
@@ -211,9 +240,11 @@ pub(crate) struct FnLowerer<'a> {
 
 impl<'a> FnLowerer<'a> {
     /// Lower `function` and add it (and its export, when public) to the draft.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
         records: &'a RecordRegistry,
+        durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -237,6 +268,7 @@ impl<'a> FnLowerer<'a> {
         let mut lowerer = FnLowerer {
             draft,
             records,
+            durable,
             functions,
             diagnostics,
             file,
@@ -494,6 +526,16 @@ impl<'a> FnLowerer<'a> {
             Statement::While {
                 condition, body, ..
             } => self.lower_while(condition, body),
+            Statement::Transaction { body, .. } => {
+                self.push(Instr::TxnBegin, body.span);
+                self.lower_block(body);
+                self.push(Instr::TxnCommit, body.span);
+                Flow::Fallthrough
+            }
+            Statement::Delete { path, span } => {
+                self.lower_durable_delete(path, *span);
+                Flow::Fallthrough
+            }
             other => {
                 self.fail(unsupported(self.file, other.span(), "this statement"));
                 Flow::Fallthrough
@@ -538,6 +580,12 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_assign(&mut self, target: &Expression, value: &Expression) {
+        if Self::durable_shape(target).is_some() {
+            if let Some(place) = self.resolve_durable(target) {
+                self.lower_durable_assign(place, value);
+            }
+            return;
+        }
         let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
             return;
         };
@@ -854,6 +902,10 @@ impl<'a> FnLowerer<'a> {
 
     /// Lower `expr`, emitting code that pushes its value and returning its type.
     fn lower_expr(&mut self, expr: &Expression) -> Option<LTy> {
+        if Self::durable_shape(expr).is_some() {
+            let place = self.resolve_durable(expr)?;
+            return self.lower_durable_read(place);
+        }
         match expr {
             Expression::Literal { kind, text, span } => self.lower_literal(*kind, text, *span),
             Expression::Name { segments, span, .. } => {
@@ -1102,6 +1154,9 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "this call"));
             return None;
         };
+        if name == "exists" {
+            return self.lower_exists(args, span).map(CallResult::Value);
+        }
         if self.records.by_name(name).is_some() {
             return self
                 .lower_constructor(name, args, span)
@@ -1264,6 +1319,306 @@ impl<'a> FnLowerer<'a> {
         } else {
             LTy::bare_scalar(scalar).to_optional()
         })
+    }
+
+    // --- durable places (design §D) ---
+
+    /// Detect the durable shape of a place expression, if any (no diagnostics).
+    fn durable_shape(expr: &Expression) -> Option<DurShape> {
+        match expr {
+            Expression::Call { callee, .. }
+                if matches!(&**callee, Expression::SavedRoot { .. }) =>
+            {
+                Some(DurShape::Entry)
+            }
+            Expression::Field { base, .. } => match &**base {
+                Expression::Call { callee, .. }
+                    if matches!(&**callee, Expression::SavedRoot { .. }) =>
+                {
+                    Some(DurShape::Field)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Resolve a durable place against the store root, reporting a diagnostic on a
+    /// bad root name, key arity, or field name. The returned place holds no borrow of
+    /// the registry.
+    fn resolve_durable<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+        let Some(root) = self.durable.root() else {
+            self.fail(unsupported(
+                self.file,
+                expr.span(),
+                "durable access without a declared store",
+            ));
+            return None;
+        };
+        match expr {
+            Expression::Call {
+                callee, args, span, ..
+            } => {
+                let Expression::SavedRoot {
+                    name,
+                    span: root_span,
+                } = &**callee
+                else {
+                    return None;
+                };
+                self.check_root_name(root, name, *root_span)?;
+                let key = self.single_key_arg(args, *span)?;
+                Some(DurablePlace {
+                    key,
+                    key_ty: root.key,
+                    target: DurTarget::Entry {
+                        entry_site: root.entry_site,
+                        record: root.record,
+                    },
+                    span: *span,
+                })
+            }
+            Expression::Field {
+                base,
+                name: field_name,
+                name_span,
+                span,
+                ..
+            } => {
+                let Expression::Call { callee, args, .. } = &**base else {
+                    return None;
+                };
+                let Expression::SavedRoot {
+                    name,
+                    span: root_span,
+                } = &**callee
+                else {
+                    return None;
+                };
+                self.check_root_name(root, name, *root_span)?;
+                let key = self.single_key_arg(args, *span)?;
+                let Some(field) = root.field(field_name) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *name_span,
+                        format!("`{}` has no field `{field_name}`", root.name),
+                    ));
+                    return None;
+                };
+                Some(DurablePlace {
+                    key,
+                    key_ty: root.key,
+                    target: DurTarget::Field {
+                        site: field.site,
+                        scalar: field.scalar,
+                        required: field.required,
+                    },
+                    span: *span,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn check_root_name(
+        &mut self,
+        root: &crate::durable::DurableRoot,
+        name: &str,
+        span: SourceSpan,
+    ) -> Option<()> {
+        if root.name == name {
+            Some(())
+        } else {
+            self.fail(name_error(self.file, span, name));
+            None
+        }
+    }
+
+    fn single_key_arg<'e>(
+        &mut self,
+        args: &'e [Argument],
+        span: SourceSpan,
+    ) -> Option<&'e Expression> {
+        match args {
+            [arg] if arg.name.is_none() => Some(&arg.value),
+            _ => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    "a store access takes one positional key".to_string(),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lower a durable read (`^r(k)` entry or `^r(k).f` field).
+    fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
+        self.lower_as(place.key, LTy::bare_scalar(place.key_ty))?;
+        Some(match place.target {
+            DurTarget::Entry { entry_site, record } => {
+                self.push(Instr::DurReadEntry(entry_site), place.span);
+                LTy::Record {
+                    ty: record,
+                    optional: true,
+                }
+            }
+            DurTarget::Field { site, scalar, .. } => {
+                self.push(Instr::DurReadField(site), place.span);
+                LTy::bare_scalar(scalar).to_optional()
+            }
+        })
+    }
+
+    /// Lower `exists(place)`: the presence of the cell the place addresses.
+    fn lower_exists(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`exists` takes one store place".to_string(),
+            ));
+            return None;
+        };
+        if Self::durable_shape(&arg.value).is_none() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`exists` takes a store place such as `^root(key)`".to_string(),
+            ));
+            return None;
+        }
+        let place = self.resolve_durable(&arg.value)?;
+        self.lower_as(place.key, LTy::bare_scalar(place.key_ty))?;
+        let site = match place.target {
+            DurTarget::Entry { entry_site, .. } => entry_site,
+            DurTarget::Field { site, .. } => site,
+        };
+        self.push(Instr::DurExists(site), place.span);
+        Some(LTy::bare_scalar(ScalarType::Bool))
+    }
+
+    /// Lower a durable assignment: a whole-entry upsert or a field set.
+    fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
+        match place.target {
+            DurTarget::Entry { entry_site, record } => {
+                self.lower_upsert(
+                    place.key,
+                    place.key_ty,
+                    entry_site,
+                    record,
+                    value,
+                    place.span,
+                );
+            }
+            DurTarget::Field {
+                site,
+                scalar,
+                required,
+            } => {
+                if self
+                    .lower_as(place.key, LTy::bare_scalar(place.key_ty))
+                    .is_none()
+                {
+                    return;
+                }
+                let expected = if required {
+                    LTy::bare_scalar(scalar)
+                } else {
+                    LTy::bare_scalar(scalar).to_optional()
+                };
+                if self.lower_as(value, expected).is_none() {
+                    return;
+                }
+                let instr = if required {
+                    Instr::DurSetRequired(site)
+                } else {
+                    Instr::DurSetSparse(site)
+                };
+                self.push(instr, place.span);
+            }
+        }
+    }
+
+    /// Lower `^r(k) = record` to the transaction-local presence branch (design §D):
+    /// `DurExists` decides `replace` vs `create` against the coherent staged view.
+    fn lower_upsert(
+        &mut self,
+        key: &Expression,
+        key_ty: ScalarType,
+        entry_site: u16,
+        record: TypeId,
+        value: &Expression,
+        span: SourceSpan,
+    ) -> Option<()> {
+        let key_slot = self.alloc_slot();
+        self.lower_as(key, LTy::bare_scalar(key_ty))?;
+        self.push(Instr::LocalSet(key_slot), span);
+        let rec_slot = self.alloc_slot();
+        self.lower_as(
+            value,
+            LTy::Record {
+                ty: record,
+                optional: false,
+            },
+        )?;
+        self.push(Instr::LocalSet(rec_slot), span);
+
+        self.push(Instr::LocalGet(key_slot), span);
+        self.push(Instr::DurExists(entry_site), span);
+        let to_create = self.push_jif(span);
+        // Present: replace.
+        self.push(Instr::LocalGet(key_slot), span);
+        self.push(Instr::LocalGet(rec_slot), span);
+        self.push(Instr::DurReplaceEntry(entry_site), span);
+        let to_end = self.push_jump(span);
+        // Absent: create.
+        let create_at = self.here();
+        self.patch(to_create, create_at);
+        self.push(Instr::LocalGet(key_slot), span);
+        self.push(Instr::LocalGet(rec_slot), span);
+        self.push(Instr::DurCreateEntry(entry_site), span);
+        let end = self.here();
+        self.patch(to_end, end);
+        Some(())
+    }
+
+    /// Lower `delete ^r(k)` (entry erase) or `delete ^r(k).f` (sparse-field erase).
+    fn lower_durable_delete(&mut self, path: &Expression, span: SourceSpan) {
+        if Self::durable_shape(path).is_none() {
+            self.fail(unsupported(self.file, span, "this delete target"));
+            return;
+        }
+        let Some(place) = self.resolve_durable(path) else {
+            return;
+        };
+        if self
+            .lower_as(place.key, LTy::bare_scalar(place.key_ty))
+            .is_none()
+        {
+            return;
+        }
+        match place.target {
+            DurTarget::Entry { entry_site, .. } => {
+                self.push(Instr::DurEraseEntry(entry_site), place.span);
+            }
+            DurTarget::Field { site, required, .. } => {
+                if required {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        place.span,
+                        "a required field cannot be deleted".to_string(),
+                    ));
+                    return;
+                }
+                self.push(Instr::DurEraseField(site), place.span);
+            }
+        }
     }
 
     // --- type resolution ---
