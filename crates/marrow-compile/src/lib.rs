@@ -10,6 +10,7 @@
 mod compile;
 mod diag;
 mod durable;
+mod konst;
 mod lower;
 mod record;
 mod scalar;

@@ -19,6 +19,7 @@ use marrow_syntax::{
 
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
+use crate::konst::{ConstRegistry, ConstScalar};
 use crate::record::RecordRegistry;
 use crate::scalar::ScalarType;
 
@@ -306,6 +307,7 @@ pub(crate) struct FnLowerer<'a> {
     records: &'a RecordRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
+    consts: &'a ConstRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
     /// The dotted module the function being lowered belongs to; unqualified calls
@@ -336,6 +338,7 @@ impl<'a> FnLowerer<'a> {
         records: &'a RecordRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
+        consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
         module: &'a str,
@@ -361,6 +364,7 @@ impl<'a> FnLowerer<'a> {
             records,
             durable,
             functions,
+            consts,
             diagnostics,
             file,
             module,
@@ -1107,13 +1111,18 @@ impl<'a> FnLowerer<'a> {
                     self.fail(unsupported(self.file, *span, "a qualified name"));
                     return None;
                 };
-                let Some(local) = self.lookup(name) else {
-                    self.fail(name_error(self.file, *span, name));
-                    return None;
-                };
-                let (slot, ty) = (local.slot, local.ty);
-                self.push(Instr::LocalGet(slot), *span);
-                Some(ty)
+                if let Some(local) = self.lookup(name) {
+                    let (slot, ty) = (local.slot, local.ty);
+                    self.push(Instr::LocalGet(slot), *span);
+                    return Some(ty);
+                }
+                // A module-private constant, folded to a constant load. Locals and
+                // parameters shadow it (checked first).
+                if let Some(value) = self.consts.get(self.module, name).cloned() {
+                    return Some(self.lower_const_value(&value, *span));
+                }
+                self.fail(name_error(self.file, *span, name));
+                None
             }
             Expression::Absent { span } => {
                 self.fail(SourceDiagnostic::at(
@@ -1150,6 +1159,17 @@ impl<'a> FnLowerer<'a> {
                 None
             }
         }
+    }
+
+    /// Emit a folded module constant as a constant load of its scalar value.
+    fn lower_const_value(&mut self, value: &ConstScalar, span: SourceSpan) -> LTy {
+        let (scalar, const_id) = match value {
+            ConstScalar::Int(value) => (ScalarType::Int, self.draft.intern_int(*value)),
+            ConstScalar::Bool(value) => (ScalarType::Bool, self.draft.intern_bool(*value)),
+            ConstScalar::Text(text) => (ScalarType::Text, self.draft.intern_text(text)),
+        };
+        self.push(Instr::ConstLoad(const_id.index()), span);
+        LTy::bare_scalar(scalar)
     }
 
     fn lower_literal(&mut self, kind: LiteralKind, text: &str, span: SourceSpan) -> Option<LTy> {
@@ -1942,7 +1962,7 @@ fn operator_symbol(op: BinaryOp) -> &'static str {
     }
 }
 
-fn parse_int(text: &str) -> Option<i64> {
+pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
 }
 

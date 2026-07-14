@@ -284,6 +284,78 @@ fn a_qualified_export_in_a_second_module_runs() {
     assert_eq!(String::from_utf8_lossy(&start.stdout), "1\n");
 }
 
+// --- Module constants (C00). ---
+
+#[test]
+fn a_module_constant_folds_into_a_function() {
+    let temp = multi_module(
+        "module-const",
+        &[(
+            "main.mw",
+            "module main\n\nconst MAX: int = 100\n\npub fn cap(): int\n    return MAX + 1\n",
+        )],
+    );
+    let output = run_in(&temp, &["run", "main.cap"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "101\n");
+}
+
+#[test]
+fn a_negated_integer_constant_is_allowed() {
+    let temp = multi_module(
+        "neg-const",
+        &[(
+            "main.mw",
+            "module main\n\nconst MIN = -5\n\npub fn floor(): int\n    return MIN\n",
+        )],
+    );
+    let output = run_in(&temp, &["run", "main.floor"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "-5\n");
+}
+
+#[test]
+fn a_constant_type_annotation_must_match_its_value() {
+    let temp = multi_module(
+        "const-type",
+        &[(
+            "main.mw",
+            "module main\n\nconst FLAG: bool = 1\n\npub fn run(): bool\n    return FLAG\n",
+        )],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.type"));
+}
+
+#[test]
+fn a_non_literal_constant_is_unsupported() {
+    let temp = multi_module(
+        "const-nonliteral",
+        &[(
+            "main.mw",
+            "module main\n\nconst SUM = 1 + 2\n\npub fn run(): int\n    return SUM\n",
+        )],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.unsupported"));
+}
+
+#[test]
+fn a_module_constant_is_private_to_its_module() {
+    // `SECRET` is declared in `lib`; referencing it unqualified from `main` is not
+    // in scope, and a qualified constant reference is not a supported form.
+    let temp = multi_module(
+        "const-private",
+        &[
+            ("lib.mw", "module lib\n\nconst SECRET = 7\n"),
+            (
+                "main.mw",
+                "module main\n\npub fn run(): int\n    return SECRET\n",
+            ),
+        ],
+    );
+    let stdout = run_diagnostic_code(&temp, "main.run");
+    assert!(stdout.contains("check.type"), "{stdout}");
+}
+
 // --- Module-scoped call resolution and `use` imports (C00). ---
 
 /// Write a `marrow.toml` and the named `(relative path, source)` modules under a

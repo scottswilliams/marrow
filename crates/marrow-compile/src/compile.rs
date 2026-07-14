@@ -12,11 +12,13 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
-    Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, StoreDecl, parse_source,
+    ConstDecl, Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, StoreDecl,
+    parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
+use crate::konst::ConstRegistry;
 use crate::lower::{FnLowerer, FunctionRegistry};
 use crate::record::RecordRegistry;
 
@@ -206,6 +208,22 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
     let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
     let signatures = FunctionRegistry::build(&records, &functions, module_names, imports);
 
+    // Module-private constants, evaluated before body lowering so a reference folds
+    // to its value.
+    let const_decls: Vec<(String, String, &ConstDecl)> = parsed
+        .iter()
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
+                if let Declaration::Const(konst) = decl {
+                    Some((module.name.clone(), module.file.clone(), konst))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    let constants = ConstRegistry::build(&const_decls, &mut diagnostics);
+
     // Lower each function, in the same order the registry assigned indices, minting
     // an export for each public function from its declaration path and recording its
     // direct-call edges for recursion detection. Other declarations are handled
@@ -221,6 +239,7 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
                         &records,
                         &durable,
                         &signatures,
+                        &constants,
                         &mut diagnostics,
                         &module.file,
                         &module.name,
@@ -245,7 +264,9 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
                         });
                     }
                 }
-                Declaration::Resource(_) | Declaration::Store(_) => {}
+                // Constants are evaluated into the const registry above; resources
+                // and stores are handled by their own registries.
+                Declaration::Const(_) | Declaration::Resource(_) | Declaration::Store(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
                     Code::CheckUnsupported.as_str(),
                     &module.file,
