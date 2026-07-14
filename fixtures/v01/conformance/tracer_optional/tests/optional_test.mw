@@ -1,0 +1,13 @@
+use optional
+
+pub fn oOrDefaultAbsent()
+    std::assert::equal(optional::orDefaultAbsent(), 5)
+
+pub fn oOrDefaultPresent()
+    std::assert::equal(optional::orDefaultPresent(), 7)
+
+pub fn oIfConstPresent()
+    std::assert::equal(optional::ifConstPresent(), 7)
+
+pub fn oIfConstAbsent()
+    std::assert::equal(optional::ifConstAbsent(), 0)

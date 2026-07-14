@@ -1,66 +1,35 @@
 # Errors And Transactions
 
-Marrow uses typed `Error` resource values for explicit throws and selected
-runtime faults. Transactions group durable changes under commit or rollback.
+Marrow keeps failure kinds distinct and groups durable changes under one
+transaction that commits or rolls back as a unit. The current language has no
+throwable error value and no `try`/`catch`: a runtime fault stops the operation
+and is reported with a typed code and a source span.
 
-## The `Error` Shape
+## Failure Kinds
 
-The built-in shape is:
+A program can fail in four distinct ways, and they never collapse into one
+channel:
 
-```text
-resource Error
-    required code: ErrorCode
-    required message: string
-    help: string
-    data: unknown
-```
+- **Source diagnostics** are reported before the program runs, when the source
+  does not parse or check. They carry a `parse.*` or `check.*` code and a span.
+- **Artifact rejection** happens when the independent verifier refuses a program
+  image (an `image.*` code). A compiler cannot mint a verified image; only
+  verification produces one, so a malformed or tampered image is rejected before
+  the VM runs it.
+- **Runtime faults** occur while a verified program runs. Each carries a `run.*`
+  code and is mapped to the source span of the operation that faulted — a checked
+  arithmetic overflow (`run.overflow`), a zero remainder divisor
+  (`run.divide_by_zero`), an exceeded text bound (`run.text_limit`), an exhausted
+  execution budget (`run.budget`), a denied durable demand (`run.authority`), a
+  commit that leaves a required field unset (`run.required_missing`), an
+  unconfirmed commit (`run.commit`), or a store the kernel finds internally
+  inconsistent (`run.corruption`). A runtime fault is **not catchable inside the
+  program**; it stops the current operation.
+- **Operational errors** are owner-local failures of the command or store itself
+  (a missing project, an I/O failure, a `store.*` condition). They are not
+  program values.
 
-`code` and `message` are always present. `help` and `data` are sparse.
-`ErrorCode` is represented as validated string text; valid codes contain two or
-more nonempty lowercase segments separated by dots. Digits and underscores are
-also accepted within segments.
-
-```mw
-module docs::errors
-
-fn requirePositive(value: int): int
-    if value <= 0
-        throw Error(
-            code: "input.not_positive",
-            message: "Expected a positive integer.",
-            help: "Pass a value greater than zero.",
-        )
-    return value
-
-pub fn describe(value: int): string
-    try
-        return string(requirePositive(value))
-    catch err: Error
-        return $"{err.code}: {err.message}"
-```
-
-`Error(...)` uses named resource-constructor arguments. A dynamic string can be
-validated explicitly with `ErrorCode(text)` before it reaches `code`.
-
-## Throwing And Catching
-
-`throw expression` requires an `Error` value and stops the current control path.
-A `try` block has one following `catch` block:
-
-```text
-try
-    work()
-catch err: Error
-    recover(err)
-```
-
-The annotation may be omitted; the binding is still `Error`. A catch block may
-return, continue normally, or rethrow with `throw err`.
-
-Application throws and runtime faults classified as catchable become `Error`
-values. Not every failure is catchable. Failure to attach or validate durable
-data, detected corruption, and internal integrity failures terminate the
-operation instead of entering application recovery code.
+See [Error codes](../error-codes.md) for the full typed list.
 
 ## Transactions
 
@@ -107,24 +76,9 @@ complete-new (the commit landed) or complete-old (it did not); the result is
 reported, never retried. Local variable assignments are ordinary state and are
 not rewound by durable rollback.
 
-## Host Effects
-
-Rollback cannot undo output or external writes. The following are rejected
-inside transactions before the effect occurs:
-
-- `print`;
-- `std::log::info`, `std::log::warn`, and `std::log::error`;
-- `std::io::writeText` and `std::io::writeBytes`.
-
-Host capability reads, including clock, environment, context, and file reads,
-may run inside a transaction. Their returned values are ordinary values, but
-the external state they observe is not controlled by the durable transaction.
-
-When an external write must follow a durable change, commit an ordinary durable
-work record first and perform the external effect after the transaction.
-
 ## Transaction Scope
 
 A transaction governs Marrow durable writes only. It is not a process lock and
-does not make an external service part of the commit. Conflict and store errors
-that escape the block cause rollback under the same rule as an explicit throw.
+does not make an external service part of the commit. Store conditions that
+escape the block — a lock conflict, an I/O failure — surface as the
+corresponding typed fault and roll the staged writes back.

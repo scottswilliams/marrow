@@ -1,0 +1,10 @@
+use control
+
+pub fn cSumTo()
+    std::assert::equal(control::sumTo(5), 15)
+
+pub fn cFirstEvenOver()
+    std::assert::equal(control::firstEvenOver(5), 6)
+
+pub fn cSign()
+    std::assert::equal(control::sign(-3), -1)

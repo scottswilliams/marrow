@@ -2,80 +2,43 @@
 
 A durable place begins with `^` and a declared store root. The prefix marks
 saved lifetime in the language. It does not expose a storage key or backend
-representation.
+representation. Every durable read and write named below reaches the store
+through the compiler-checked path kernel; application code never receives a raw
+key, an engine handle, or a transaction object.
 
 ## Store Declarations
 
-A keyed store attaches a resource type to typed identity columns:
+A keyed store attaches a resource type to one typed identity column:
 
 ```mw
 module docs::durable
 
 resource Book
     required title: string
-    required author: string
     subtitle: string
-    aliases(kind: string): string
-    tags(pos: int): string
 
 store ^books(id: int): Book
 
-pub fn create(title: string, author: string): Id(^books)
-    const id = nextId(^books)
+pub fn put(id: int, title: string)
     transaction
-        ^books(id).title = title
-        ^books(id).author = author
-    return id
+        ^books(id) = Book(title: title)
 
-pub fn title(id: Id(^books)): string?
+pub fn title(id: int): string?
     return ^books(id).title
 ```
 
-A singleton root omits keys:
+The identity column is a single `int` or `string` key. A resource declares
+scalar fields that are `required` or sparse; a sparse field may be absent. The
+store root is project-wide: any module uses the declared root shape directly,
+and function visibility does not change root access.
 
-```text
-resource Settings
-    required locale: string
-
-store ^settings: Settings
-```
-
-Store roots are project-wide in the current language. Modules use the declared
-root shape directly; function visibility does not change root access.
-
-## Entry Identities
-
-`Id(^books)` is the entry identity type for `^books`. It is distinct from every
-other store identity type, including roots with the same raw key types.
-
-`Id(^books, 42)` constructs an identity from explicit raw key values. For a
-composite root, all key components are supplied to one constructor:
-
-```text
-Id(^enrollments, "student-1", "course-9")
-```
-
-Construction validates the declared arity and types. It does not read the
-store, create an entry, or prove presence. A durable root call accepts either
-one matching identity value or its explicit raw key components at this
-boundary.
-
-## `nextId`
-
-`nextId(^root)` is defined only for a root with one `int` identity column. It
-returns one greater than the greatest currently stored key. An empty root uses
-`0` as the starting maximum and therefore returns `1`.
-
-The call does not reserve or create the result. Two calls made before either
-candidate is written may return the same identity. Code that needs allocation
-and creation together performs them in one transaction and still handles
-conflicts imposed by its execution environment.
+Durable writes are grouped by an explicit transaction owned by the exporting
+function; see [Errors and transactions](errors-and-transactions.md).
 
 ## Presence And Reads
 
-`exists(path)` reports whether the exact node is present. Reading a place that
-may not exist yields `T?`. The resource and each ancestor must be known present
-before a required descendant is a bare `T`.
+`exists(path)` reports whether the addressed entry is present. Reading a place
+that may not exist yields `T?`, because the entry at that key may be absent:
 
 ```mw
 module docs::durable_presence
@@ -86,76 +49,55 @@ resource Book
 
 store ^books(id: int): Book
 
-pub fn show(id: Id(^books))
-    if const book = ^books(id)
-        print(book.title)
+pub fn present(id: int): bool
+    return exists(^books(id))
 
-    if const subtitle = ^books(id).subtitle
-        print(subtitle)
+pub fn subtitle(id: int): string?
+    return ^books(id).subtitle
+
+pub fn titleOrNone(id: int): string
+    if const book = ^books(id)
+        return book.title
+    return "none"
 ```
 
-A whole resource binding makes its required fields bare. An `exists` guard
-narrows the exact place it tests; testing only a resource ancestor does not
-rewrite later descendant expressions. A whole resource read materializes scalar
-fields and unkeyed groups. Keyed children remain separately addressed layers.
-Reading a keyed or positional leaf at one key is optional because that position
-may be absent.
+Binding a whole resource with `if const` proves the entry present, so its
+required fields read as bare `T` through that binding. Reading a single field of
+a keyed entry directly is optional, because that key may be absent.
 
-Store roots and keyed child layers have ordered typed keys. Iteration and
-neighbor operations use that order and visit only present entries; see
-[Traversal and indexes](traversal-and-indexes.md).
+Store roots have ordered typed keys. Iteration visits only present entries in
+key order; see [Traversal and indexes](traversal-and-indexes.md).
 
 ## Field Assignment
 
-Assigning one field changes that field and preserves sibling fields, groups, and
-keyed children:
-
-```text
-^books(id).subtitle = "A Discworld novel"
-```
-
-A sparse field and a non-positional keyed leaf are **present-or-clear** places.
-They accept `T`, `T?`, or `absent`. A present value is stored; an absent value
-deletes that leaf. Required fields and positional sequence elements do not
-accept optional or absent assignment.
+Assigning one field changes that field and preserves the entry's other fields:
 
 ```mw
-module docs::durable_clear
+module docs::durable_field
 
 resource Book
     required title: string
     subtitle: string
-    aliases(kind: string): string
 
 store ^books(id: int): Book
 
-pub fn copySparse(from: Id(^books), to: Id(^books))
-    if exists(^books(to))
-        const subtitle: string? = ^books(from).subtitle
-        ^books(to).subtitle = subtitle
+pub fn setSubtitle(id: int, subtitle: string)
+    transaction
+        ^books(id).subtitle = subtitle
 
-        const shortName: string? = ^books(from).aliases("short")
-        ^books(to).aliases("short") = shortName
+pub fn clearSubtitle(id: int)
+    transaction
+        const none: string? = absent
+        ^books(id).subtitle = none
 ```
 
-The same clearing behavior applies when an optional local contains `absent`;
-the syntax need not use the literal directly.
-
-## Required-Member Validation
-
-Creating a resource entry must establish every required member. Outside a
-transaction, validation occurs at the end of the individual durable write.
-Field-by-field creation of a resource with several required fields therefore
-uses a transaction. Inside nested transactions, validation is deferred until
-the outer transaction commits.
-
-Required descendants of unkeyed groups are checked as requirements of the
-containing entry. Required fields of a keyed child resource are checked when
-that keyed entry is created or replaced.
+A sparse field is a **present-or-clear** place: it accepts a value, an optional
+value, or `absent`. A present value is stored; an absent value clears the field.
+A required field does not accept an optional or absent assignment.
 
 ## Whole Resource Assignment
 
-Assignment to the resource address is exact replacement:
+Assignment to the entry address is exact replacement:
 
 ```mw
 module docs::durable_replace
@@ -166,37 +108,37 @@ resource Book
 
 store ^books(id: int): Book
 
-pub fn replace(id: Id(^books), title: string)
-    const replacement = Book(title: title)
-    ^books(id) = replacement
+pub fn replace(id: int, title: string)
+    transaction
+        ^books(id) = Book(title: title)
 ```
 
-The assignment removes omitted sparse fields and unkeyed groups. It also
-removes every keyed child below the replaced entry, because keyed children are
-not members of the materialized `Book` value. Index entries derived from the
-old data are updated as part of the same managed write.
-
-Whole assignment to a keyed resource child likewise replaces that complete
-child entry and removes its omitted descendants. Use field assignment when
-sibling data must remain.
+The assignment stores every field named by the constructed value and removes any
+omitted sparse field. A required field left unset when the entry commits rolls
+the transaction back with `run.required_missing` rather than storing a partial
+entry.
 
 ## Deletion
 
-`delete place` removes the addressed subtree:
+`delete place` removes the addressed place:
 
-```text
-delete ^books(id).subtitle
-delete ^books(id).aliases("short")
-delete ^books(id)
+```mw
+module docs::durable_delete
+
+resource Book
+    required title: string
+    subtitle: string
+
+store ^books(id: int): Book
+
+pub fn removeSubtitle(id: int)
+    transaction
+        delete ^books(id).subtitle
+
+pub fn remove(id: int)
+    transaction
+        delete ^books(id)
 ```
 
-Deleting an absent sparse place is a no-op. Deleting a required field or a
-group containing required descendants is rejected. Deleting a complete store
-entry removes its fields, children, and maintained index entries.
-
-A transaction stages deletion with other durable writes and either commits or
-rolls them back together.
-
-Source declarations such as `rename` and `retire` are defined in
-[Evolution](evolution.md). The evolution command workflow returns with its
-refounding lane.
+Deleting a sparse field that is already absent is a no-op. Deleting a required
+field is rejected. Deleting a whole entry removes the entry and its fields.

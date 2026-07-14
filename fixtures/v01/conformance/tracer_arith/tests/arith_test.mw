@@ -1,0 +1,28 @@
+use arith
+
+pub fn aSub()
+    std::assert::equal(arith::sub(10, 3), 7)
+
+pub fn aMul()
+    std::assert::equal(arith::mul(6, 7), 42)
+
+pub fn aRemDividendNeg()
+    std::assert::equal(arith::remDividendNeg(), -1)
+
+pub fn aRemDivisorNeg()
+    std::assert::equal(arith::remDivisorNeg(), 1)
+
+pub fn aBigInRange()
+    std::assert::equal(arith::bigInRange(), 9000000000000000000)
+
+pub fn aNegMax()
+    std::assert::equal(arith::negMax(), -9223372036854775807)
+
+pub fn aEq()
+    std::assert::equal(arith::eq(4, 4), true)
+
+pub fn aLe()
+    std::assert::equal(arith::le(4, 5), true)
+
+pub fn aAndOr()
+    std::assert::equal(arith::andOr(false, false), true)

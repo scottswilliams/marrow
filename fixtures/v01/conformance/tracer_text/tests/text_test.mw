@@ -1,0 +1,7 @@
+use text
+
+pub fn tJoin3()
+    std::assert::equal(text::join3("a", "b", "c"), "abc")
+
+pub fn tEqText()
+    std::assert::equal(text::eqText("x", "x"), true)
