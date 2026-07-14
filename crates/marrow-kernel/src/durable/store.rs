@@ -716,3 +716,141 @@ fn mint_token() -> [u8; 16] {
     let pid = u128::from(std::process::id());
     (nanos ^ counter.rotate_left(64) ^ pid.rotate_left(32)).to_be_bytes()
 }
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::{ByteEngine, MemoryEngine};
+
+    use super::super::physical;
+    use super::super::{
+        CommitResult, EntryValue, ExportDemand, FieldSchema, InvocationGrant, KernelFault, NextKey,
+        SiteSpec, SiteTarget, StoreSchema,
+    };
+    use super::{Durable, DurableStore};
+    use crate::codec::key::KeyScalar;
+    use crate::codec::value::{RuntimeScalar, ScalarKind};
+
+    fn schema() -> StoreSchema {
+        StoreSchema {
+            root_name: "counters".into(),
+            key: ScalarKind::Str,
+            fields: vec![
+                FieldSchema {
+                    name: "value".into(),
+                    kind: ScalarKind::Int,
+                    required: true,
+                },
+                FieldSchema {
+                    name: "label".into(),
+                    kind: ScalarKind::Str,
+                    required: false,
+                },
+            ],
+        }
+    }
+
+    fn sites() -> Vec<SiteSpec> {
+        vec![
+            SiteSpec {
+                target: SiteTarget::Entry,
+            },
+            SiteSpec {
+                target: SiteTarget::Field(0),
+            },
+            SiteSpec {
+                target: SiteTarget::Field(1),
+            },
+        ]
+    }
+
+    fn value_entry(v: i64) -> EntryValue {
+        EntryValue {
+            fields: vec![Some(RuntimeScalar::Int(v)), None],
+        }
+    }
+
+    fn write_demand() -> ExportDemand {
+        ExportDemand {
+            read: true,
+            write: true,
+        }
+    }
+
+    fn read_demand() -> ExportDemand {
+        ExportDemand {
+            read: true,
+            write: false,
+        }
+    }
+
+    #[test]
+    fn iterates_created_keys_in_forward_order() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let entry = txn.site(0);
+            // Insert out of order; iteration must still be ascending.
+            for name in ["b", "a", "c"] {
+                txn.create_entry(&entry, KeyScalar::Str(name.into()), value_entry(1))
+                    .expect("create");
+            }
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let entry = read.site(0);
+        let mut keys = Vec::new();
+        let mut cursor = None;
+        while let NextKey::Next(key) = read.next_key(&entry, cursor.clone()).expect("next") {
+            keys.push(key.clone());
+            cursor = Some(key);
+        }
+        assert_eq!(
+            keys,
+            vec![
+                KeyScalar::Str("a".into()),
+                KeyScalar::Str("b".into()),
+                KeyScalar::Str("c".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_field_leaf_without_a_marker_is_corruption() {
+        // Write a field leaf directly, with no entry marker: an orphan leaf.
+        let mut engine = MemoryEngine::new();
+        engine
+            .write(
+                &physical::field_leaf_key("counters", &KeyScalar::Str("x".into()), "value"),
+                b"5".to_vec(),
+            )
+            .expect("seed orphan leaf");
+        let mut store = DurableStore::from_engine(engine, schema(), sites());
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let entry = read.site(0);
+        assert_eq!(read.next_key(&entry, None), Err(KernelFault::Corruption));
+    }
+
+    #[test]
+    fn a_required_field_missing_at_commit_rolls_back() {
+        // Stage only the sparse label on a fresh entry: the required value is unset,
+        // so commit reports RequiredMissing and rolls back.
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write_demand())
+            .expect("txn session");
+        let label = txn.site(2);
+        txn.set_sparse(
+            &label,
+            KeyScalar::Str("x".into()),
+            Some(RuntimeScalar::Str("hi".into())),
+        )
+        .expect("set sparse");
+        assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
+    }
+}

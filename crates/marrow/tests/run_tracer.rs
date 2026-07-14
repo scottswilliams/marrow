@@ -318,7 +318,13 @@ const COUNTER_SOURCE: &str = "resource Counter\n\
      \n\
      pub fn remove(name: string)\n\
      \x20   transaction\n\
-     \x20       delete ^counters(name)\n";
+     \x20       delete ^counters(name)\n\
+     \n\
+     pub fn total(): int\n\
+     \x20   var sum = 0\n\
+     \x20   for k in ^counters\n\
+     \x20       sum = sum + (^counters(k).value ?? 0)\n\
+     \x20   return sum\n";
 
 fn run_counter(dir: &Path, store: &Path, export: &str, call: &[&str]) -> Output {
     let mut args = vec!["run", export, "--store"];
@@ -407,4 +413,38 @@ fn a_durable_export_without_a_store_is_a_usage_error() {
     project(&temp, COUNTER_SOURCE);
     let output = run_in(&temp, &["run", "get", "--", "hits"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
+}
+
+#[test]
+fn durable_iteration_totals_entries() {
+    let temp = TempDir::new("counter-total");
+    project(&temp, COUNTER_SOURCE);
+    let store = temp.join("store");
+    stdout_of(&run_counter(&temp, &store, "set", &["a", "10"]));
+    stdout_of(&run_counter(&temp, &store, "set", &["b", "20"]));
+    stdout_of(&run_counter(&temp, &store, "set", &["c", "30"]));
+    let output = run_in(&temp, &["run", "total", "--store", store.to_str().unwrap()]);
+    assert_eq!(stdout_of(&output), "60\n");
+}
+
+/// The checked-in tracer fixture app compiles and runs through the built binary.
+#[test]
+fn tracer_fixture_app_runs() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/v01/conformance/tracer_counter");
+    let store = TempDir::new("fixture-store");
+    let store_path = store.join("s");
+    let store_arg = store_path.to_str().unwrap();
+    let set = run_in(
+        &fixture,
+        &["run", "set", "--store", store_arg, "--", "hits", "9"],
+    );
+    assert!(set.status.success(), "{set:?}");
+    let bump = run_in(
+        &fixture,
+        &["run", "bump", "--store", store_arg, "--", "hits"],
+    );
+    assert!(bump.status.success(), "{bump:?}");
+    let total = run_in(&fixture, &["run", "total", "--store", store_arg]);
+    assert_eq!(stdout_of(&total), "10\n");
 }

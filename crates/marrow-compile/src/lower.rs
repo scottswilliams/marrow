@@ -526,6 +526,14 @@ impl<'a> FnLowerer<'a> {
             Statement::While {
                 condition, body, ..
             } => self.lower_while(condition, body),
+            Statement::For {
+                binding,
+                order,
+                iterable,
+                step,
+                body,
+                span,
+            } => self.lower_for(binding, *order, iterable, step.as_ref(), body, *span),
             Statement::Transaction { body, .. } => {
                 self.push(Instr::TxnBegin, body.span);
                 self.lower_block(body);
@@ -822,6 +830,99 @@ impl<'a> FnLowerer<'a> {
         } else {
             Flow::Fallthrough
         }
+    }
+
+    /// Lower `for k in ^root` (design §B): a forward key walk driven by `DurNextKey`
+    /// over a cursor local. Reversed order, a range step, a multi-name binding, and a
+    /// non-store iterable are not admitted at T01.
+    fn lower_for(
+        &mut self,
+        binding: &marrow_syntax::ForBinding,
+        order: marrow_syntax::LoopOrder,
+        iterable: &Expression,
+        step: Option<&Expression>,
+        body: &Block,
+        span: SourceSpan,
+    ) -> Flow {
+        if order != marrow_syntax::LoopOrder::Forward {
+            self.fail(unsupported(self.file, span, "reversed iteration"));
+            return Flow::Fallthrough;
+        }
+        if step.is_some() {
+            self.fail(unsupported(self.file, span, "a loop step"));
+            return Flow::Fallthrough;
+        }
+        let Expression::SavedRoot {
+            name,
+            span: root_span,
+        } = iterable
+        else {
+            self.fail(unsupported(self.file, iterable.span(), "this iterable"));
+            return Flow::Fallthrough;
+        };
+        let [var] = binding.names.as_slice() else {
+            self.fail(unsupported(
+                self.file,
+                span,
+                "iterating an entry value (`for k, v`)",
+            ));
+            return Flow::Fallthrough;
+        };
+        let Some(root) = self.durable.root() else {
+            self.fail(unsupported(
+                self.file,
+                *root_span,
+                "iterating without a store",
+            ));
+            return Flow::Fallthrough;
+        };
+        if self.check_root_name(root, name, *root_span).is_none() {
+            return Flow::Fallthrough;
+        }
+        let (key_ty, entry_site) = (root.key, root.entry_site);
+        let var_name = var.name.clone();
+
+        // cursor := absent
+        let cursor_slot = self.alloc_slot();
+        self.push(
+            Instr::VacantLoad(ImageType::opt_scalar(key_ty.image())),
+            span,
+        );
+        self.push(Instr::LocalSet(cursor_slot), span);
+
+        let top = self.here();
+        self.push(Instr::LocalGet(cursor_slot), span);
+        self.push(Instr::DurNextKey(entry_site), span);
+        // Absent next key ends the loop.
+        let to_end = self.push_branch_present(span);
+        // Bind the key and advance the cursor to `Some(k)`.
+        let key_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(key_slot), span);
+        self.push(Instr::LocalGet(key_slot), span);
+        self.push(Instr::SomeWrap, span);
+        self.push(Instr::LocalSet(cursor_slot), span);
+
+        let mark = self.locals.len();
+        self.locals.push(Local {
+            name: var_name,
+            ty: LTy::bare_scalar(key_ty),
+            mutable: false,
+            slot: key_slot,
+        });
+        self.loops.push(LoopCtx {
+            continue_target: top,
+            break_jumps: Vec::new(),
+        });
+        let body_flow = self.lower_block(body);
+        if body_flow == Flow::Fallthrough {
+            self.push(Instr::Jump(top as u32), body.span);
+        }
+        let ctx = self.loops.pop().expect("loop was pushed");
+        self.locals.truncate(mark);
+        let end = self.here();
+        self.patch(to_end, end);
+        self.patch_all(ctx.break_jumps, end);
+        Flow::Fallthrough
     }
 
     fn lower_while(&mut self, condition: &Expression, body: &Block) -> Flow {
