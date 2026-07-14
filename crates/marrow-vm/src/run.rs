@@ -234,7 +234,10 @@ fn execute<'s>(
                 stack.push(Value::Text(joined.into()));
                 pc += 1;
             }
-            SealedInstr::TextLt | SealedInstr::TextLe | SealedInstr::TextGt | SealedInstr::TextGe => {
+            SealedInstr::TextLt
+            | SealedInstr::TextLe
+            | SealedInstr::TextGt
+            | SealedInstr::TextGe => {
                 let b = as_text(pop(&mut stack));
                 let a = as_text(pop(&mut stack));
                 // Strings order lexicographically by their UTF-8 bytes.
@@ -254,7 +257,10 @@ fn execute<'s>(
                 stack.push(Value::Bool(a == b));
                 pc += 1;
             }
-            SealedInstr::BytesLt | SealedInstr::BytesLe | SealedInstr::BytesGt | SealedInstr::BytesGe => {
+            SealedInstr::BytesLt
+            | SealedInstr::BytesLe
+            | SealedInstr::BytesGt
+            | SealedInstr::BytesGe => {
                 let b = as_bytes(pop(&mut stack));
                 let a = as_bytes(pop(&mut stack));
                 // Bytes order lexicographically, like the durable byte-key order.
@@ -282,6 +288,35 @@ fn execute<'s>(
                 let text = as_text(pop(&mut stack));
                 stack.push(Value::Bytes(Rc::from(text.as_bytes())));
                 pc += 1;
+            }
+            // Checked arithmetic: on overflow, transfer to the fault handler instead
+            // of raising `run.*`. A zero divisor is handled by a compiler-emitted
+            // branch before the op, so these guard only the representable-result case.
+            SealedInstr::IntAddChecked(target) => {
+                let (a, b) = pop_ints(&mut stack);
+                checked_or_branch(&mut stack, a.checked_add(b), *target, &mut pc);
+            }
+            SealedInstr::IntSubChecked(target) => {
+                let (a, b) = pop_ints(&mut stack);
+                checked_or_branch(&mut stack, a.checked_sub(b), *target, &mut pc);
+            }
+            SealedInstr::IntMulChecked(target) => {
+                let (a, b) = pop_ints(&mut stack);
+                checked_or_branch(&mut stack, a.checked_mul(b), *target, &mut pc);
+            }
+            SealedInstr::IntNegChecked(target) => {
+                let a = pop_int(&mut stack);
+                checked_or_branch(&mut stack, a.checked_neg(), *target, &mut pc);
+            }
+            SealedInstr::IntDivChecked(target) => {
+                let (a, b) = pop_ints(&mut stack);
+                // The zero divisor was already excluded by a compiler-emitted branch,
+                // so `checked_div` here fails only on the i64::MIN / -1 overflow.
+                checked_or_branch(&mut stack, a.checked_div(b), *target, &mut pc);
+            }
+            SealedInstr::IntRemChecked(target) => {
+                let (a, b) = pop_ints(&mut stack);
+                checked_or_branch(&mut stack, a.checked_rem(b), *target, &mut pc);
             }
             SealedInstr::TextIsEmpty => {
                 let s = as_text(pop(&mut stack));
@@ -522,6 +557,18 @@ fn execute<'s>(
                 pc += 1;
             }
         }
+    }
+}
+
+/// Push a checked-arithmetic result and advance, or transfer to the fault-handler
+/// tape index `target` when the operation had no representable result.
+fn checked_or_branch(stack: &mut Vec<Value>, result: Option<i64>, target: usize, pc: &mut usize) {
+    match result {
+        Some(v) => {
+            stack.push(Value::Int(v));
+            *pc += 1;
+        }
+        None => *pc = target,
     }
 }
 

@@ -51,6 +51,16 @@ pub const OP_CONV_BYTES_TEXT: u8 = 0x52;
 pub const OP_TEXT_IS_EMPTY: u8 = 0x60;
 pub const OP_TEXT_CONTAINS: u8 = 0x61;
 pub const OP_TEXT_TRIM: u8 = 0x62;
+// Checked arithmetic: on the fault the op does not raise `run.*`; it transfers to
+// the fault-handler tape index in its `u32` operand (an out-of-range handler). A
+// zero divisor is handled by a compiler-emitted branch before the checked op, so
+// every checked op carries exactly one target.
+pub const OP_INT_ADD_CHECKED: u8 = 0x70;
+pub const OP_INT_SUB_CHECKED: u8 = 0x71;
+pub const OP_INT_MUL_CHECKED: u8 = 0x72;
+pub const OP_INT_NEG_CHECKED: u8 = 0x73;
+pub const OP_INT_DIV_CHECKED: u8 = 0x74;
+pub const OP_INT_REM_CHECKED: u8 = 0x75;
 pub const OP_RECORD_NEW: u8 = 0x20;
 pub const OP_FIELD_GET: u8 = 0x21;
 pub const OP_SOME_WRAP: u8 = 0x22;
@@ -119,6 +129,15 @@ pub enum Instr {
     TextIsEmpty,
     TextContains,
     TextTrim,
+    /// Checked arithmetic: `_0` is the fault-handler target (instruction index in
+    /// the draft, rewritten to a byte offset by the encoder). On overflow the op
+    /// jumps to the target instead of faulting; otherwise it pushes the result.
+    IntAddChecked(u32),
+    IntSubChecked(u32),
+    IntMulChecked(u32),
+    IntNegChecked(u32),
+    IntDivChecked(u32),
+    IntRemChecked(u32),
     RecordNew(u16),
     FieldGet(u16),
     SomeWrap,
@@ -181,6 +200,12 @@ impl Instr {
             Instr::TextIsEmpty => OP_TEXT_IS_EMPTY,
             Instr::TextContains => OP_TEXT_CONTAINS,
             Instr::TextTrim => OP_TEXT_TRIM,
+            Instr::IntAddChecked(_) => OP_INT_ADD_CHECKED,
+            Instr::IntSubChecked(_) => OP_INT_SUB_CHECKED,
+            Instr::IntMulChecked(_) => OP_INT_MUL_CHECKED,
+            Instr::IntNegChecked(_) => OP_INT_NEG_CHECKED,
+            Instr::IntDivChecked(_) => OP_INT_DIV_CHECKED,
+            Instr::IntRemChecked(_) => OP_INT_REM_CHECKED,
             Instr::RecordNew(_) => OP_RECORD_NEW,
             Instr::FieldGet(_) => OP_FIELD_GET,
             Instr::SomeWrap => OP_SOME_WRAP,
@@ -220,7 +245,15 @@ impl Instr {
             | Instr::DurEraseField(_)
             | Instr::DurEraseEntry(_)
             | Instr::DurNextKey(_) => 2,
-            Instr::Jump(_) | Instr::JumpIfFalse(_) | Instr::BranchPresent(_) => 4,
+            Instr::Jump(_)
+            | Instr::JumpIfFalse(_)
+            | Instr::BranchPresent(_)
+            | Instr::IntAddChecked(_)
+            | Instr::IntSubChecked(_)
+            | Instr::IntMulChecked(_)
+            | Instr::IntNegChecked(_)
+            | Instr::IntDivChecked(_)
+            | Instr::IntRemChecked(_) => 4,
             // A `ImageType` operand is a 1-byte tag; the only draft producer of a
             // `VacantLoad` uses an optional scalar, which never carries a record
             // index, so the operand is exactly one byte.

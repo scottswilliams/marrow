@@ -15,18 +15,16 @@ use std::rc::Rc;
 use marrow_image::{
     ExportId, ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE,
     OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
-    OP_CONV_STRING_INT, OP_EQ_BYTES, OP_DUR_CREATE_ENTRY,
-    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
-    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL,
-    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
-    OP_INT_DIV, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE,
-    OP_LOCAL_GET,
-    OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_GE,
-    OP_TEXT_CONTAINS, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM,
-    OP_TXN_BEGIN, TAG_BYTES,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT,
-    TAG_RECORD, TAG_TEXT,
-    TAG_UNIT, image_id,
+    OP_CONV_STRING_INT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
+    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_INT, OP_EQ_TEXT,
+    OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE,
+    OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
+    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE,
+    OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -1080,7 +1078,14 @@ fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
     match &code[index] {
         SealedInstr::Return | SealedInstr::Unreachable(_) => Vec::new(),
         SealedInstr::Jump(target) => vec![*target],
-        SealedInstr::JumpIfFalse(target) | SealedInstr::BranchPresent(target) => {
+        SealedInstr::JumpIfFalse(target)
+        | SealedInstr::BranchPresent(target)
+        | SealedInstr::IntAddChecked(target)
+        | SealedInstr::IntSubChecked(target)
+        | SealedInstr::IntMulChecked(target)
+        | SealedInstr::IntNegChecked(target)
+        | SealedInstr::IntDivChecked(target)
+        | SealedInstr::IntRemChecked(target) => {
             vec![*target, index + 1]
         }
         _ => vec![index + 1],
@@ -1133,6 +1138,12 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_INT_MUL => SealedInstr::IntMul,
             OP_INT_REM => SealedInstr::IntRem,
             OP_INT_DIV => SealedInstr::IntDiv,
+            OP_INT_ADD_CHECKED => SealedInstr::IntAddChecked(operand_u32(&mut reader)? as usize),
+            OP_INT_SUB_CHECKED => SealedInstr::IntSubChecked(operand_u32(&mut reader)? as usize),
+            OP_INT_MUL_CHECKED => SealedInstr::IntMulChecked(operand_u32(&mut reader)? as usize),
+            OP_INT_NEG_CHECKED => SealedInstr::IntNegChecked(operand_u32(&mut reader)? as usize),
+            OP_INT_DIV_CHECKED => SealedInstr::IntDivChecked(operand_u32(&mut reader)? as usize),
+            OP_INT_REM_CHECKED => SealedInstr::IntRemChecked(operand_u32(&mut reader)? as usize),
             OP_INT_NEG => SealedInstr::IntNeg,
             OP_BOOL_NOT => SealedInstr::BoolNot,
             OP_INT_LT => SealedInstr::IntLt,
@@ -1232,7 +1243,13 @@ fn resolve_jumps(code: &mut [Decoded]) -> Result<(), VerifyRejection> {
         match &mut decoded.instr {
             SealedInstr::Jump(target)
             | SealedInstr::JumpIfFalse(target)
-            | SealedInstr::BranchPresent(target) => {
+            | SealedInstr::BranchPresent(target)
+            | SealedInstr::IntAddChecked(target)
+            | SealedInstr::IntSubChecked(target)
+            | SealedInstr::IntMulChecked(target)
+            | SealedInstr::IntNegChecked(target)
+            | SealedInstr::IntDivChecked(target)
+            | SealedInstr::IntRemChecked(target) => {
                 *target = index_of(*target)?;
             }
             _ => {}
@@ -1256,6 +1273,10 @@ enum Control {
     /// stack; the present edge (fallthrough) additionally carries the unwrapped
     /// bare value.
     BranchPresent { target: usize, present: VType },
+    /// Checked-arithmetic branch: the operands are already popped. The fault edge
+    /// (`target`) carries the current stack; the success edge (fallthrough)
+    /// additionally carries the operation's `result`.
+    CheckedResult { target: usize, result: VType },
 }
 
 /// The abstract machine state at a program point: the typed operand stack and the
@@ -1324,6 +1345,18 @@ fn check_flow(
                 }
                 max_stack = max_stack.max(present_frame.stack.len());
                 vec![(target, frame.clone()), (index + 1, present_frame)]
+            }
+            Control::CheckedResult { target, result } => {
+                let mut success_frame = frame.clone();
+                success_frame.stack.push(result);
+                if success_frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "operand stack exceeds depth bound",
+                    ));
+                }
+                max_stack = max_stack.max(success_frame.stack.len());
+                vec![(target, frame.clone()), (index + 1, success_frame)]
             }
         };
         for (successor, edge_frame) in edges {
@@ -1592,6 +1625,25 @@ fn apply(
             expect_scalar(pop(stack)?, Scalar::Int)?;
             stack.push(VType::bare_scalar(Scalar::Int));
             Ok(Control::Fallthrough)
+        }
+        SealedInstr::IntAddChecked(target)
+        | SealedInstr::IntSubChecked(target)
+        | SealedInstr::IntMulChecked(target)
+        | SealedInstr::IntDivChecked(target)
+        | SealedInstr::IntRemChecked(target) => {
+            expect_scalar(pop(stack)?, Scalar::Int)?;
+            expect_scalar(pop(stack)?, Scalar::Int)?;
+            Ok(Control::CheckedResult {
+                target: *target,
+                result: VType::bare_scalar(Scalar::Int),
+            })
+        }
+        SealedInstr::IntNegChecked(target) => {
+            expect_scalar(pop(stack)?, Scalar::Int)?;
+            Ok(Control::CheckedResult {
+                target: *target,
+                result: VType::bare_scalar(Scalar::Int),
+            })
         }
         SealedInstr::BoolNot => {
             expect_scalar(pop(stack)?, Scalar::Bool)?;

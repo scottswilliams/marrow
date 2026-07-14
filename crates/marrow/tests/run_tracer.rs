@@ -251,6 +251,149 @@ fn nonterminating_loop_faults_on_the_instruction_budget() {
     assert!(stdout.contains("run.budget"), "{output:?}");
 }
 
+/// The checked-arithmetic form: the success path binds the result; each fault
+/// runs its diverging arm.
+#[test]
+fn checked_arithmetic_success_and_each_arm() {
+    let temp = TempDir::new("checked");
+    project(
+        &temp,
+        "pub fn safeMul(a: int, b: int): int\n\
+         \x20   const p: int = checked a * b\n\
+         \x20       on out_of_range\n\
+         \x20           return -1\n\
+         \x20   return p\n\
+         \n\
+         pub fn safeDiv(a: int, b: int): int\n\
+         \x20   return checked a / b\n\
+         \x20       on out_of_range\n\
+         \x20           return -1\n\
+         \x20       on zero_divisor\n\
+         \x20           return 0\n",
+    );
+    // Success paths.
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "safeMul", "--", "6", "7"]).stdout),
+        "42\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "safeDiv", "--", "20", "4"]).stdout),
+        "5\n"
+    );
+    // out_of_range arm: 2^62 * 4 overflows.
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_in(&temp, &["run", "safeMul", "--", "4611686018427387904", "4"]).stdout
+        ),
+        "-1\n"
+    );
+    // zero_divisor arm.
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "safeDiv", "--", "1", "0"]).stdout),
+        "0\n"
+    );
+    // out_of_range arm of division: i64::MIN / -1.
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_in(
+                &temp,
+                &["run", "safeDiv", "--", "-9223372036854775808", "-1"]
+            )
+            .stdout
+        ),
+        "-1\n"
+    );
+}
+
+/// Complex nested procedural code reads clearly with the checked form, without
+/// combinator ceremony: a running total that both guards overflow and short-circuits.
+#[test]
+fn checked_reads_clearly_in_nested_procedural_code() {
+    let temp = TempDir::new("checked-nested");
+    project(
+        &temp,
+        "pub fn boundedFactorial(n: int, cap: int): int\n\
+         \x20   var acc: int = 1\n\
+         \x20   var i: int = 2\n\
+         \x20   while i <= n\n\
+         \x20       const next: int = checked acc * i\n\
+         \x20           on out_of_range\n\
+         \x20               return -1\n\
+         \x20       if next > cap\n\
+         \x20           return cap\n\
+         \x20       acc = next\n\
+         \x20       i = i + 1\n\
+         \x20   return acc\n",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_in(&temp, &["run", "boundedFactorial", "--", "5", "1000000"]).stdout
+        ),
+        "120\n"
+    );
+    // Overflow guard fires before native overflow: with the cap just below
+    // i64::MAX, 20! (2.4e18) stays under it but 21! overflows and runs the arm.
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_in(
+                &temp,
+                &[
+                    "run",
+                    "boundedFactorial",
+                    "--",
+                    "100",
+                    "9000000000000000000"
+                ]
+            )
+            .stdout
+        ),
+        "-1\n"
+    );
+    // Cap short-circuit.
+    assert_eq!(
+        String::from_utf8_lossy(
+            &run_in(&temp, &["run", "boundedFactorial", "--", "20", "100"]).stdout
+        ),
+        "100\n"
+    );
+}
+
+/// A checked form whose arm does not diverge, or that omits a required arm, is a
+/// source diagnostic.
+#[test]
+fn checked_form_arm_rules_are_diagnostics() {
+    let temp = TempDir::new("checked-bad");
+    // Non-diverging out_of_range arm.
+    project(
+        &temp,
+        "pub fn bad(a: int, b: int): int\n\
+         \x20   const p: int = checked a + b\n\
+         \x20       on out_of_range\n\
+         \x20           const x: int = 0\n\
+         \x20   return p\n",
+    );
+    let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1", "2"]);
+    assert!(!out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains(r#""outcome":"diagnostic""#), "{out:?}");
+    assert!(s.contains("check.type"), "{out:?}");
+
+    // Missing zero_divisor arm on a checked division.
+    project(
+        &temp,
+        "pub fn bad(a: int, b: int): int\n\
+         \x20   return checked a / b\n\
+         \x20       on out_of_range\n\
+         \x20           return -1\n",
+    );
+    let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1", "2"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("check.type"),
+        "{out:?}"
+    );
+}
+
 /// The closed pure text floor: isEmpty / contains / trim.
 #[test]
 fn text_floor_builtins_travel_the_full_path() {

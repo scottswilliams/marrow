@@ -130,6 +130,39 @@ pub fn sign(n: int): int
 
 It is a statement, not an expression: it cannot be used where a value is required.
 
+## Checked Arithmetic
+
+By default an integer operation that overflows or divides by zero raises a
+source-uncatchable runtime fault (`run.overflow`, `run.divide_by_zero`). The
+adjacent `checked` form instead handles those faults locally with diverging arms.
+It wraps exactly one integer operation — `+`, `-`, `*`, `/`, `%`, or negation — and
+binds the result of the non-faulting path to a `const`/`var` or returns it:
+
+```mw
+module docs::checked_arithmetic
+
+pub fn safeDivide(a: int, b: int): int
+    return checked a / b
+        on out_of_range
+            return -1
+        on zero_divisor
+            return 0
+
+pub fn product(a: int, b: int): int?
+    const p: int = checked a * b
+        on out_of_range
+            return absent
+    return p
+```
+
+Each `on` arm runs when the operation faults that way and must diverge — every path
+through it must `return`, `break`, `continue`, `throw`, or reach `unreachable`, so
+control never falls out of an arm back into the surrounding code. The required arms
+are exactly the faults the operation can raise: `+`, `-`, `*`, and negation take an
+`on out_of_range` arm; `/` and `%` take both `on out_of_range` (for the
+`i64::MIN / -1` case) and `on zero_divisor`. A missing, extra, or non-diverging arm
+is a compile error.
+
 ## Enum Matching
 
 An enum is a nominal set of declared members:

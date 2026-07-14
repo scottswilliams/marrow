@@ -13,8 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use marrow_codes::Code;
 use marrow_image::{FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId};
 use marrow_syntax::{
-    Argument, BinaryOp, Block, ElseIf, Expression, FunctionDecl, LiteralKind, SourceSpan,
-    Statement, TypeExpr, UnaryOp, decode_string_literal,
+    Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, FunctionDecl, LiteralKind,
+    SourceSpan, Statement, TypeExpr, UnaryOp, decode_string_literal,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -487,7 +487,15 @@ impl<'a> FnLowerer<'a> {
 
     fn patch(&mut self, at: usize, target: usize) {
         match &mut self.code[at] {
-            Instr::Jump(t) | Instr::JumpIfFalse(t) | Instr::BranchPresent(t) => *t = target as u32,
+            Instr::Jump(t)
+            | Instr::JumpIfFalse(t)
+            | Instr::BranchPresent(t)
+            | Instr::IntAddChecked(t)
+            | Instr::IntSubChecked(t)
+            | Instr::IntMulChecked(t)
+            | Instr::IntNegChecked(t)
+            | Instr::IntDivChecked(t)
+            | Instr::IntRemChecked(t) => *t = target as u32,
             other => unreachable!("patch target is not a jump: {other:?}"),
         }
     }
@@ -634,6 +642,19 @@ impl<'a> FnLowerer<'a> {
                 body,
                 span,
             } => self.lower_for(binding, *order, iterable, step.as_ref(), body, *span),
+            Statement::Checked {
+                bind,
+                op,
+                out_of_range,
+                zero_divisor,
+                span,
+            } => self.lower_checked(
+                bind,
+                op,
+                out_of_range.as_ref(),
+                zero_divisor.as_ref(),
+                *span,
+            ),
             Statement::Transaction { body, .. } => {
                 self.push(Instr::TxnBegin, body.span);
                 self.lower_block(body);
@@ -1046,6 +1067,260 @@ impl<'a> FnLowerer<'a> {
         Flow::Fallthrough
     }
 
+    /// Lower the adjacent single-operation checked-arithmetic form. It wraps one int
+    /// arithmetic operation; on a fault the diverging `on` arms run instead of the
+    /// runtime raising `run.*`. Lowered to a checked op that branches to the
+    /// out-of-range handler, with the zero divisor tested by an explicit branch
+    /// before a checked `/`/`%`. The operands are evaluated into fresh locals so the
+    /// checked op runs with exactly its two operands on the stack, leaving the fault
+    /// edge at the statement-boundary (empty) stack.
+    fn lower_checked(
+        &mut self,
+        bind: &CheckedBind,
+        op: &Expression,
+        out_of_range: Option<&Block>,
+        zero_divisor: Option<&Block>,
+        span: SourceSpan,
+    ) -> Flow {
+        // The wrapped operation: a single int `+`/`-`/`*`/`/`/`%` or negation.
+        enum Wrapped<'e> {
+            Binary(BinaryOp, &'e Expression, &'e Expression),
+            Neg(&'e Expression),
+        }
+        let wrapped = match op {
+            Expression::Binary {
+                op:
+                    bop @ (BinaryOp::Add
+                    | BinaryOp::Subtract
+                    | BinaryOp::Multiply
+                    | BinaryOp::Divide
+                    | BinaryOp::Remainder),
+                left,
+                right,
+                ..
+            } => Wrapped::Binary(*bop, left, right),
+            Expression::Unary {
+                op: UnaryOp::Neg,
+                operand,
+                ..
+            } => Wrapped::Neg(operand),
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    op.span(),
+                    "a checked form wrapping anything but one int `+`, `-`, `*`, `/`, `%`, or negation",
+                ));
+                return Flow::Fallthrough;
+            }
+        };
+        let is_div = matches!(
+            wrapped,
+            Wrapped::Binary(BinaryOp::Divide | BinaryOp::Remainder, _, _)
+        );
+
+        // Arm requirements: out_of_range is always possible; a zero divisor is
+        // possible for `/`/`%` and never for the others.
+        let Some(out_of_range) = out_of_range else {
+            self.fail(checked_arm_error(
+                self.file,
+                span,
+                "requires an `on out_of_range` arm",
+            ));
+            return Flow::Fallthrough;
+        };
+        if is_div && zero_divisor.is_none() {
+            self.fail(checked_arm_error(
+                self.file,
+                span,
+                "a checked `/` or `%` requires an `on zero_divisor` arm",
+            ));
+            return Flow::Fallthrough;
+        }
+        if !is_div && zero_divisor.is_some() {
+            self.fail(checked_arm_error(
+                self.file,
+                span,
+                "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm",
+            ));
+            return Flow::Fallthrough;
+        }
+
+        let int = LTy::bare_scalar(ScalarType::Int);
+        // Evaluate the operands into fresh locals.
+        let la = self.alloc_slot();
+        let (checked, lb) = match wrapped {
+            Wrapped::Binary(bop, left, right) => {
+                if self.lower_as(left, int).is_none() {
+                    return Flow::Fallthrough;
+                }
+                self.push(Instr::LocalSet(la), span);
+                let lb = self.alloc_slot();
+                if self.lower_as(right, int).is_none() {
+                    return Flow::Fallthrough;
+                }
+                self.push(Instr::LocalSet(lb), span);
+                let checked = match bop {
+                    BinaryOp::Add => Instr::IntAddChecked(0),
+                    BinaryOp::Subtract => Instr::IntSubChecked(0),
+                    BinaryOp::Multiply => Instr::IntMulChecked(0),
+                    BinaryOp::Divide => Instr::IntDivChecked(0),
+                    BinaryOp::Remainder => Instr::IntRemChecked(0),
+                    _ => unreachable!("classified as an admitted binary op"),
+                };
+                (checked, Some(lb))
+            }
+            Wrapped::Neg(operand) => {
+                if self.lower_as(operand, int).is_none() {
+                    return Flow::Fallthrough;
+                }
+                self.push(Instr::LocalSet(la), span);
+                (Instr::IntNegChecked(0), None)
+            }
+        };
+
+        // A checked `/`/`%` tests its divisor first; a zero divisor runs the diverging
+        // `on zero_divisor` arm.
+        if is_div {
+            let lb = lb.expect("division has a right operand");
+            self.push(Instr::LocalGet(lb), span);
+            let zero = self.draft.intern_int(0);
+            self.push(Instr::ConstLoad(zero.index()), span);
+            self.push(Instr::EqInt, span);
+            let to_nonzero = self.push_jif(span);
+            let zero_block = zero_divisor.expect("checked division requires the arm");
+            if self.lower_block(zero_block) != Flow::Terminates {
+                self.fail(checked_arm_error(
+                    self.file,
+                    zero_block.span,
+                    "an `on zero_divisor` arm must diverge (every path must return, break, continue, throw, or be unreachable)",
+                ));
+            }
+            let nonzero = self.here();
+            self.patch(to_nonzero, nonzero);
+        }
+
+        // The checked operation. On the fault edge it transfers to the handler with
+        // the operands already popped (the statement-boundary stack); on success it
+        // pushes the int result.
+        self.push(Instr::LocalGet(la), span);
+        if let Some(lb) = lb {
+            self.push(Instr::LocalGet(lb), span);
+        }
+        let checked_at = self.here();
+        self.push(checked, span);
+
+        // Success path: coerce the int result to the binding and store it.
+        let pending = self.store_checked_result(bind, span);
+        let success_falls_through =
+            matches!(bind, CheckedBind::Const { .. } | CheckedBind::Var { .. });
+        let end_jump = if success_falls_through {
+            Some(self.push_jump(span))
+        } else {
+            None
+        };
+
+        // The out-of-range handler.
+        let handler = self.here();
+        self.patch(checked_at, handler);
+        if self.lower_block(out_of_range) != Flow::Terminates {
+            self.fail(checked_arm_error(
+                self.file,
+                out_of_range.span,
+                "an `on out_of_range` arm must diverge (every path must return, break, continue, throw, or be unreachable)",
+            ));
+        }
+
+        // The binding is in scope only after the whole form, on the success path.
+        if let Some(end_jump) = end_jump {
+            let end = self.here();
+            self.patch(end_jump, end);
+        }
+        if let Some(local) = pending {
+            self.locals.push(local);
+            Flow::Fallthrough
+        } else {
+            // A `return` binding leaves the frame on the success path; the arms
+            // diverge, so the whole form terminates.
+            Flow::Terminates
+        }
+    }
+
+    /// Emit the store of a checked form's int result into its binding, on the success
+    /// path. Returns the local to bring into scope *after* the handler (for
+    /// `const`/`var`, so the name is not visible inside the arms), or `None` for a
+    /// `return` binding (which stores by returning).
+    fn store_checked_result(&mut self, bind: &CheckedBind, span: SourceSpan) -> Option<Local> {
+        let int = LTy::bare_scalar(ScalarType::Int);
+        match bind {
+            CheckedBind::Const { name, ty } | CheckedBind::Var { name, ty } => {
+                let mutable = matches!(bind, CheckedBind::Var { .. });
+                let target = self.coerce_int_result(ty.as_ref(), int, span);
+                let slot = self.alloc_slot();
+                self.push(Instr::LocalSet(slot), span);
+                Some(Local {
+                    name: name.clone(),
+                    ty: target,
+                    mutable,
+                    slot,
+                })
+            }
+            CheckedBind::Return => {
+                match self.ret {
+                    RetType::Value(want) => {
+                        if want == int {
+                        } else if want == int.to_optional() {
+                            self.push(Instr::SomeWrap, span);
+                        } else {
+                            self.fail(type_mismatch(self.file, span, int, want));
+                        }
+                        self.push(Instr::Return, span);
+                    }
+                    RetType::Unit => {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            span,
+                            "this function returns nothing, so it cannot `return checked`"
+                                .to_string(),
+                        ));
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Coerce the bare-int checked result to a `const`/`var` annotation (`int` or
+    /// `int?`), emitting a `SomeWrap` for the optional case. An annotation that is not
+    /// int-compatible is a type error; a missing annotation infers `int`.
+    fn coerce_int_result(
+        &mut self,
+        annotation: Option<&TypeExpr>,
+        int: LTy,
+        span: SourceSpan,
+    ) -> LTy {
+        let Some(annotation) = annotation else {
+            return int;
+        };
+        let Some(declared) = self.resolve(annotation) else {
+            self.fail(unsupported(
+                self.file,
+                annotation.span(),
+                "this type annotation",
+            ));
+            return int;
+        };
+        if declared == int {
+            int
+        } else if declared == int.to_optional() {
+            self.push(Instr::SomeWrap, span);
+            declared
+        } else {
+            self.fail(type_mismatch(self.file, annotation.span(), int, declared));
+            int
+        }
+    }
+
     fn lower_condition(&mut self, expr: &Expression) -> Option<()> {
         let ty = self.lower_expr(expr)?;
         if ty != LTy::bare_scalar(ScalarType::Bool) {
@@ -1408,7 +1683,9 @@ impl<'a> FnLowerer<'a> {
             return self.lower_unreachable(args, span);
         }
         if matches!(name, "isEmpty" | "contains" | "trim") {
-            return self.lower_text_builtin(name, args, span).map(CallResult::Value);
+            return self
+                .lower_text_builtin(name, args, span)
+                .map(CallResult::Value);
         }
         // A scalar-type spelling in call position is a conversion, resolved before
         // records/functions so a conversion is never shadowed. The admitted set is
@@ -1827,9 +2104,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         }
         for arg in args {
-            if self.lower_as(&arg.value, text).is_none() {
-                return None;
-            }
+            self.lower_as(&arg.value, text)?;
         }
         self.push(instr, span);
         Some(result)
@@ -1913,8 +2188,7 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 arg.value.span(),
-                "`unreachable` requires a static string literal, not a computed value"
-                    .to_string(),
+                "`unreachable` requires a static string literal, not a computed value".to_string(),
             ));
             return None;
         };
@@ -2142,6 +2416,15 @@ fn name_error(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
         file,
         span,
         format!("`{name}` is not in scope"),
+    )
+}
+
+fn checked_arm_error(file: &str, span: SourceSpan, detail: &str) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!("this checked form {detail}"),
     )
 }
 

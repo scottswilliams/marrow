@@ -17,6 +17,11 @@ perform implicit numeric or text conversions.
 | `instant` | Nanosecond UTC instants in years 0001 through 9999 |
 | `duration` | Signed fixed elapsed nanoseconds in the `i128` range |
 
+On the current beta line the implemented scalar floor is `int`, `bool`, `string`,
+and `bytes`. `decimal` and the temporal types (`date`, `instant`, `duration`) are
+recorded here as direction and are not yet accepted by the compiler; a program that
+uses one reports `check.unsupported` until its lane lands.
+
 ## Nominal Values
 
 An enum value belongs to one declared enum and names one of its members.
@@ -91,6 +96,10 @@ pub fn checkedCode(raw: string): ErrorCode
 | `instant` | `instant` or validated instant text |
 | `duration` | `duration` or validated duration text |
 | `ErrorCode` | validated `string` text |
+
+On the current beta line the implemented conversions are `string(int)`,
+`string(bool)`, and `bytes(string)`; the remaining rows are direction and report
+`check.unsupported` until their scalar types land.
 
 `ErrorCode` is represented as a string value. `ErrorCode(text)` requires two or
 more nonempty dot-separated segments containing lowercase ASCII letters,

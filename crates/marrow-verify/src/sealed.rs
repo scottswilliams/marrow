@@ -71,6 +71,15 @@ pub enum SealedInstr {
     TextIsEmpty,
     TextContains,
     TextTrim,
+    /// Checked arithmetic: `_0` is the fault-handler tape index. On overflow the op
+    /// transfers there (carrying the post-pop stack) instead of faulting; otherwise
+    /// it pushes the int result and falls through.
+    IntAddChecked(usize),
+    IntSubChecked(usize),
+    IntMulChecked(usize),
+    IntNegChecked(usize),
+    IntDivChecked(usize),
+    IntRemChecked(usize),
     /// Construct a record of type index `_0` from its field values popped in
     /// reverse (f0 pushed first). The field count and per-field required flag come
     /// from the sealed record type.

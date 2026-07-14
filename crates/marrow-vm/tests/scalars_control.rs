@@ -329,6 +329,96 @@ fn bytes_equality_and_ordering() {
     assert_eq!(lt, Ok(Some(Value::Bool(true))));
 }
 
+/// A checked op transfers to its fault handler on overflow instead of faulting;
+/// the handler carries the post-pop stack and returns its own value.
+#[test]
+fn checked_add_overflow_transfers_to_handler() {
+    // instr 3 is the out_of_range handler.
+    let result = build_and_run(|draft| {
+        let max = draft.intern_int(i64::MAX);
+        let one = draft.intern_int(1);
+        let sentinel = draft.intern_int(-1);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![
+                Instr::ConstLoad(max.index()),
+                Instr::ConstLoad(one.index()),
+                Instr::IntAddChecked(4), // overflow -> jump to instr 4
+                Instr::Return,           // success path
+                Instr::ConstLoad(sentinel.index()),
+                Instr::Return, // handler
+            ],
+        )
+    });
+    assert_eq!(result, Ok(Some(Value::Int(-1))));
+}
+
+/// On the non-overflowing path a checked op pushes its result and falls through.
+#[test]
+fn checked_add_success_falls_through() {
+    let result = build_and_run(|draft| {
+        let two = draft.intern_int(2);
+        let three = draft.intern_int(3);
+        let sentinel = draft.intern_int(-1);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![
+                Instr::ConstLoad(two.index()),
+                Instr::ConstLoad(three.index()),
+                Instr::IntAddChecked(4),
+                Instr::Return,
+                Instr::ConstLoad(sentinel.index()),
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Ok(Some(Value::Int(5))));
+}
+
+/// A checked division transfers on the `i64::MIN / -1` overflow.
+#[test]
+fn checked_div_min_neg_one_transfers_to_handler() {
+    let result = build_and_run(|draft| {
+        let min = draft.intern_int(i64::MIN);
+        let neg_one = draft.intern_int(-1);
+        let sentinel = draft.intern_int(0);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![
+                Instr::ConstLoad(min.index()),
+                Instr::ConstLoad(neg_one.index()),
+                Instr::IntDivChecked(4),
+                Instr::Return,
+                Instr::ConstLoad(sentinel.index()),
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Ok(Some(Value::Int(0))));
+}
+
+/// A checked op with a non-int operand is a per-function verifier rejection, like
+/// its faulting counterpart.
+#[test]
+fn checked_op_with_non_int_operand_rejects() {
+    let result = seal(|draft| {
+        let flag = draft.intern_bool(true);
+        let one = draft.intern_int(1);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![
+                Instr::ConstLoad(flag.index()),
+                Instr::ConstLoad(one.index()),
+                Instr::IntAddChecked(4),
+                Instr::Return,
+                Instr::ConstLoad(one.index()),
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Err("image.function".to_string()));
+}
+
 #[test]
 fn text_concat_over_the_limit_faults() {
     // A single text constant caps at 4 KiB, so reach the 64 KiB result bound by

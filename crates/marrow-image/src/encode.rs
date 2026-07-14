@@ -293,7 +293,15 @@ fn encode_code(
             | Instr::DurEraseField(s)
             | Instr::DurEraseEntry(s)
             | Instr::DurNextKey(s) => push_u16(&mut out, *s),
-            Instr::Jump(target) | Instr::JumpIfFalse(target) | Instr::BranchPresent(target) => {
+            Instr::Jump(target)
+            | Instr::JumpIfFalse(target)
+            | Instr::BranchPresent(target)
+            | Instr::IntAddChecked(target)
+            | Instr::IntSubChecked(target)
+            | Instr::IntMulChecked(target)
+            | Instr::IntNegChecked(target)
+            | Instr::IntDivChecked(target)
+            | Instr::IntRemChecked(target) => {
                 let byte_offset = *layout
                     .offsets
                     .get(*target as usize)
