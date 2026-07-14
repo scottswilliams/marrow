@@ -42,8 +42,13 @@ numeric types implicitly.
 | `a + b` | matching numeric types; `string`; `duration`; `instant + duration` | matching type, or `instant` |
 | `a - b` | matching numeric types; `duration`; `instant - duration`; `instant - instant` | matching type, `instant`, or `duration` |
 | `a * b` | matching `int` or matching `decimal` | matching type |
-| `a / b` | matching `int` or matching `decimal` | `decimal` |
+| `a / b` | matching `int` or matching `decimal` | `int` for `int / int`, else `decimal` |
 | `a % b` | `int` and `int` | `int` |
+
+`int / int` is integer division truncated toward zero, paired with the `int % int`
+remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
+`run.divide_by_zero`, and `i64::MIN / -1` (like `i64::MIN % -1`) raises
+`run.overflow` because its result is unrepresentable.
 | `<`, `<=`, `>`, `>=` | matching `int`, `decimal`, `string`, `bytes`, `date`, `instant`, or `duration` | `bool` |
 | `==`, `!=` | matching scalars, the same enum type, or identities for the same store root | `bool` |
 | `and`, `or` | `bool` and `bool` | `bool` |

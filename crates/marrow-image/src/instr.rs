@@ -24,6 +24,7 @@ pub const OP_INT_ADD: u8 = 0x10;
 pub const OP_INT_SUB: u8 = 0x11;
 pub const OP_INT_MUL: u8 = 0x12;
 pub const OP_INT_REM: u8 = 0x13;
+pub const OP_INT_DIV: u8 = 0x1E;
 pub const OP_INT_NEG: u8 = 0x14;
 pub const OP_BOOL_NOT: u8 = 0x15;
 pub const OP_INT_LT: u8 = 0x16;
@@ -68,6 +69,7 @@ pub enum Instr {
     IntSub,
     IntMul,
     IntRem,
+    IntDiv,
     IntNeg,
     BoolNot,
     IntLt,
@@ -113,6 +115,7 @@ impl Instr {
             Instr::IntSub => OP_INT_SUB,
             Instr::IntMul => OP_INT_MUL,
             Instr::IntRem => OP_INT_REM,
+            Instr::IntDiv => OP_INT_DIV,
             Instr::IntNeg => OP_INT_NEG,
             Instr::BoolNot => OP_BOOL_NOT,
             Instr::IntLt => OP_INT_LT,

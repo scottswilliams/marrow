@@ -41,6 +41,7 @@ pub enum SealedInstr {
     IntSub,
     IntMul,
     IntRem,
+    IntDiv,
     IntNeg,
     BoolNot,
     IntLt,

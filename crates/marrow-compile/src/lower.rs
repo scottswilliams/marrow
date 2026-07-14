@@ -1254,10 +1254,7 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::Subtract, Int, Int) => (Instr::IntSub, Int),
             (BinaryOp::Multiply, Int, Int) => (Instr::IntMul, Int),
             (BinaryOp::Remainder, Int, Int) => (Instr::IntRem, Int),
-            (BinaryOp::Divide, _, _) => {
-                self.fail(unsupported(self.file, span, "integer division `/`"));
-                return None;
-            }
+            (BinaryOp::Divide, Int, Int) => (Instr::IntDiv, Int),
             (BinaryOp::Less, Int, Int) => (Instr::IntLt, Bool),
             (BinaryOp::LessEqual, Int, Int) => (Instr::IntLe, Bool),
             (BinaryOp::Greater, Int, Int) => (Instr::IntGt, Bool),

@@ -128,6 +128,66 @@ fn rem_by_zero_faults_divide_by_zero() {
     assert_eq!(result, Err("run.divide_by_zero".to_string()));
 }
 
+/// `/` truncates toward zero, so it pairs with the truncating `%`:
+/// `-7 / 2 == -3` and `-7 % 2 == -1`, satisfying `a == (a / b) * b + a % b`.
+#[test]
+fn int_div_truncates_toward_zero() {
+    for (a, b, quotient) in [(7, 2, 3), (-7, 2, -3), (7, -2, -3), (-7, -2, 3), (6, 3, 2)] {
+        let result = build_and_run(|draft| {
+            let av = draft.intern_int(a);
+            let bv = draft.intern_int(b);
+            (
+                ImageType::scalar(Scalar::Int),
+                vec![
+                    Instr::ConstLoad(av.index()),
+                    Instr::ConstLoad(bv.index()),
+                    Instr::IntDiv,
+                    Instr::Return,
+                ],
+            )
+        });
+        assert_eq!(result, Ok(Some(Value::Int(quotient))), "{a} / {b}");
+    }
+}
+
+#[test]
+fn div_by_zero_faults_divide_by_zero() {
+    let result = build_and_run(|draft| {
+        let five = draft.intern_int(5);
+        let zero = draft.intern_int(0);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![
+                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(zero.index()),
+                Instr::IntDiv,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Err("run.divide_by_zero".to_string()));
+}
+
+/// `i64::MIN / -1` has an unrepresentable quotient, so it faults as overflow —
+/// the division counterpart of the `i64::MIN % -1` remainder case.
+#[test]
+fn int_min_div_negative_one_faults_overflow() {
+    let result = build_and_run(|draft| {
+        let min = draft.intern_int(i64::MIN);
+        let neg_one = draft.intern_int(-1);
+        (
+            ImageType::scalar(Scalar::Int),
+            vec![
+                Instr::ConstLoad(min.index()),
+                Instr::ConstLoad(neg_one.index()),
+                Instr::IntDiv,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Err("run.overflow".to_string()));
+}
+
 #[test]
 fn text_concat_over_the_limit_faults() {
     // A single text constant caps at 4 KiB, so reach the 64 KiB result bound by

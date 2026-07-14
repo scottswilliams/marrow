@@ -189,6 +189,35 @@ fn runtime_overflow_is_a_source_mapped_fault() {
     assert!(stdout.contains("run.overflow"), "{output:?}");
 }
 
+/// Integer `/` truncates toward zero through the full production path.
+#[test]
+fn integer_division_truncates_toward_zero() {
+    let temp = TempDir::new("div");
+    project(
+        &temp,
+        "pub fn q(a: int, b: int): int\n\
+         \x20   return a / b\n",
+    );
+    let output = run_in(&temp, &["run", "q", "--", "-7", "2"]);
+    assert!(output.status.success(), "run failed: {output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "-3\n");
+}
+
+#[test]
+fn integer_division_by_zero_is_a_source_mapped_fault() {
+    let temp = TempDir::new("divzero");
+    project(
+        &temp,
+        "pub fn q(a: int, b: int): int\n\
+         \x20   return a / b\n",
+    );
+    let output = run_in(&temp, &["run", "q", "--format", "jsonl", "--", "1", "0"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""outcome":"fault""#), "{output:?}");
+    assert!(stdout.contains("run.divide_by_zero"), "{output:?}");
+}
+
 /// A project whose resource, constructor, field reads, optional coalescing, and
 /// `if const` guard travel the full path. One source file drives several exports.
 const RECORDS_SOURCE: &str = "resource Note\n\

@@ -152,6 +152,20 @@ fn execute<'s>(
                 }
                 pc += 1;
             }
+            SealedInstr::IntDiv => {
+                let (a, b) = pop_ints(&mut stack);
+                if b == 0 {
+                    return Err(fault(function, pc, Code::RunDivideByZero.as_str()));
+                }
+                // Truncating division toward zero, paired with the truncating `%`
+                // remainder so `a == (a / b) * b + a % b`. `i64::MIN / -1` has an
+                // unrepresentable quotient, so it faults as overflow.
+                match a.checked_div(b) {
+                    Some(v) => stack.push(Value::Int(v)),
+                    None => return Err(fault(function, pc, Code::RunOverflow.as_str())),
+                }
+                pc += 1;
+            }
             SealedInstr::IntNeg => {
                 let a = pop_int(&mut stack);
                 match a.checked_neg() {

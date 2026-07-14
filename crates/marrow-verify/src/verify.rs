@@ -17,7 +17,8 @@ use marrow_image::{
     OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
     OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL,
     OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
-    OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET,
+    OP_INT_DIV, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE,
+    OP_LOCAL_GET,
     OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT,
     TAG_UNIT, image_id,
@@ -1125,6 +1126,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_INT_SUB => SealedInstr::IntSub,
             OP_INT_MUL => SealedInstr::IntMul,
             OP_INT_REM => SealedInstr::IntRem,
+            OP_INT_DIV => SealedInstr::IntDiv,
             OP_INT_NEG => SealedInstr::IntNeg,
             OP_BOOL_NOT => SealedInstr::BoolNot,
             OP_INT_LT => SealedInstr::IntLt,
@@ -1545,7 +1547,11 @@ fn apply(
             expect_scalar(pop(stack)?, Scalar::Bool)?;
             Ok(Control::Branch(*target))
         }
-        SealedInstr::IntAdd | SealedInstr::IntSub | SealedInstr::IntMul | SealedInstr::IntRem => {
+        SealedInstr::IntAdd
+        | SealedInstr::IntSub
+        | SealedInstr::IntMul
+        | SealedInstr::IntRem
+        | SealedInstr::IntDiv => {
             binary(stack, Scalar::Int, Scalar::Int)?;
             Ok(Control::Fallthrough)
         }

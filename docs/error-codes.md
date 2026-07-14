@@ -153,8 +153,8 @@ not catchable inside the program.
 
 | Code | Meaning |
 |---|---|
-| `run.overflow` | A checked integer operation overflowed the 64-bit range at runtime: an add, subtract, multiply, negate, or the `i64::MIN % -1` remainder case. The fault is mapped to the source span of the operation and is not catchable inside the program. |
-| `run.divide_by_zero` | A remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
+| `run.overflow` | A checked integer operation overflowed the 64-bit range at runtime: an add, subtract, multiply, negate, or the `i64::MIN / -1` division and `i64::MIN % -1` remainder cases whose result is unrepresentable. The fault is mapped to the source span of the operation and is not catchable inside the program. |
+| `run.divide_by_zero` | A division or remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
 | `run.text_limit` | A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program. |
 | `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
 | `run.budget` | A running program exhausted a fixed execution budget: the per-invocation instruction budget or the value-heap budget. The fault stops execution and is not catchable inside the program. |
