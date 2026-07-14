@@ -87,9 +87,9 @@ pub enum Declaration {
     Evolve(EvolveDecl),
 }
 
-/// An `evolve` block: the source's explicit intent for catalog-addressable
-/// entities. A bare source diff implies no intent, so identity-preserving and
-/// destructive changes are stated here rather than inferred from edits.
+/// An `evolve` block: the source's explicit intent for durable entities. A bare
+/// source diff implies no intent, so identity-preserving and destructive changes
+/// are stated here rather than inferred from edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvolveDecl {
     pub steps: Vec<EvolveStep>,
@@ -97,10 +97,9 @@ pub struct EvolveDecl {
     pub span: SourceSpan,
 }
 
-/// One evolution intent. Each step's target is a path expression naming a
-/// catalog-addressable entity, written in the same surface forms the language
-/// already uses for such references (`Book.title`, `^books`, `^books.byTitle`,
-/// `Status::archived`).
+/// One evolution intent. Each step's target is a path expression naming a durable
+/// entity, written in the same source forms the language already uses for such
+/// references (`Book.title`, `^books`, `^books.byTitle`, `Status::archived`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvolveStep {
     /// `from` and `to` name the same durable entity, so stable identity and

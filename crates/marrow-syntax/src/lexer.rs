@@ -298,7 +298,12 @@ impl<'a> Lexer<'a> {
                 } else {
                     TokenKind::Comment
                 };
-                self.push(kind, self.span(line, index, line.end_byte));
+                // A comment runs to the end of its lexical range, not the physical
+                // line: at the top level `end` is the line end, but inside an
+                // interpolation hole it is the hole boundary, so the comment stops
+                // before the closing `}` and its tokens rather than overlapping
+                // them and breaking the lossless token tiling.
+                self.push(kind, self.span(line, index, end));
                 break;
             }
 

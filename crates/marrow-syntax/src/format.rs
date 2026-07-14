@@ -256,31 +256,6 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     }
 }
 
-/// Render an `evolve transform` body to canonical layout, the normalized text that
-/// identifies the transform's work independent of source whitespace. A reformat of the
-/// body leaves this unchanged, while a real change to what the body computes drifts it.
-///
-/// Blank lines are layout, not work, so they are dropped here: the formatter
-/// preserves a grouping blank line in human-facing output, but the transform's
-/// identity must not shift when a developer adds or removes one.
-pub fn format_transform_body(source: &str, body: &Block) -> String {
-    strip_layout_blanks(&format_block(source, body, 0))
-}
-
-/// Drop the grouping blank lines the formatter preserves for human-facing output,
-/// yielding the layout-independent rendering that identifies a declaration's durable
-/// shape. The formatter owns the blank-preservation policy, so it also owns its
-/// inverse: a digest or transform identity that must not shift when a developer adds
-/// or removes a grouping blank line strips them through this one helper rather than
-/// re-deciding how identity rendering normalizes layout.
-pub fn strip_layout_blanks(rendering: &str) -> String {
-    rendering
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
     let body = format_body_lines(
@@ -320,11 +295,7 @@ fn format_evolve_step(source: &str, step: &EvolveStep) -> String {
         }
         EvolveStep::Transform { target, body, .. } => {
             let mut out = format!("{step_pad}transform {}", format_expression_at(target, 1));
-            let body = format_block(source, body, 2);
-            if !body.is_empty() {
-                out.push('\n');
-                out.push_str(&body);
-            }
+            append_body_block(&mut out, &format_block(source, body, 2));
             out
         }
     }
@@ -677,11 +648,7 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         format_params(&decl.params),
         format_type_annotation(&decl.return_type)
     ));
-    let body = format_block(source, &decl.body, 1);
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(&body);
-    }
+    append_body_block(&mut out, &format_block(source, &decl.body, 1));
     out
 }
 
@@ -733,11 +700,10 @@ fn format_docs(docs: &[String], level: usize) -> String {
 /// trailing newline.
 ///
 /// Block comments are re-emitted so `parse -> format` round-trips them: own-line
-/// comments appear on their own line, in source order between statements.
-/// Outdented comments keep their source column; over-indented comments canonicalize
-/// to the block indent. A trailing comment is appended to the line of the
-/// statement it sits on. Walking comments in step with statements relies on both
-/// being in source order.
+/// comments appear on their own line, in source order between statements, each at
+/// the block's canonical indent (see [`format_block_comment`]). A trailing comment
+/// is appended to the line of the statement it sits on. Walking comments in step
+/// with statements relies on both being in source order.
 ///
 /// A comment in the middle of a value that spans several lines inside open
 /// delimiters is not round-tripped: that is the one position the expression
@@ -852,10 +818,17 @@ fn format_comment(comment: &Comment) -> String {
     }
 }
 
+/// Render an own-line comment attached to a block at that block's canonical
+/// indent. A comment belongs to exactly one block, so it renders at the same
+/// indent as that block's statements or members regardless of its source column;
+/// keeping a shallower source column would leave the comment misaligned from its
+/// siblings when the block itself was written at a non-canonical indent, and a
+/// reparse of that mismatched output would open a spurious deeper block and drop
+/// the following statement (a non-idempotent, content-losing rewrite).
 fn format_block_comment(comment: &Comment, level: usize) -> String {
     let block_column = (level * INDENT.len() + 1) as u32;
     let mut comment = comment.clone();
-    comment.span.column = comment.span.column.min(block_column);
+    comment.span.column = block_column;
     format_comment(&comment)
 }
 
@@ -908,10 +881,22 @@ fn format_header_block(
         ctx.start_byte,
         body.span.start_byte,
     );
-    format!(
-        "{header}\n{}",
-        format_block(ctx.source, body, ctx.level + 1)
-    )
+    append_body_block(&mut header, &format_block(ctx.source, body, ctx.level + 1));
+    header
+}
+
+/// Append a formatted body block under its header line. An empty body appends
+/// nothing, leaving the header to stand alone: appending the usual newline would
+/// leave a dangling blank line that the block-level blank accounting then counts
+/// as a grouping blank and doubles, breaking formatter idempotence. Every
+/// body-bearing construct — function and transform declarations, the compound
+/// statements, `else`/`catch` clauses, and match arms — joins its body through
+/// here, so an empty body is rendered uniformly.
+fn append_body_block(out: &mut String, block: &str) {
+    if !block.is_empty() {
+        out.push('\n');
+        out.push_str(block);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1108,9 +1093,10 @@ fn format_if(
         ctx.start_byte,
         then_block.span.start_byte,
     );
-    let mut out = format!(
-        "{header}\n{}",
-        format_block(ctx.source, then_block, ctx.level + 1)
+    let mut out = header;
+    append_body_block(
+        &mut out,
+        &format_block(ctx.source, then_block, ctx.level + 1),
     );
     format_else_chain(
         ctx,
@@ -1143,9 +1129,10 @@ fn format_if_const(
         ctx.start_byte,
         then_block.span.start_byte,
     );
-    let mut out = format!(
-        "{header}\n{}",
-        format_block(ctx.source, then_block, ctx.level + 1)
+    let mut out = header;
+    append_body_block(
+        &mut out,
+        &format_block(ctx.source, then_block, ctx.level + 1),
     );
     format_else_chain(
         ctx,
@@ -1181,8 +1168,10 @@ fn format_else_chain(
         );
         out.push('\n');
         out.push_str(&header);
-        out.push('\n');
-        out.push_str(&format_block(ctx.source, &else_if.block, ctx.level + 1));
+        append_body_block(
+            out,
+            &format_block(ctx.source, &else_if.block, ctx.level + 1),
+        );
         previous_end = else_if.block.span.end_byte;
     }
     if let Some(else_block) = else_block {
@@ -1195,8 +1184,7 @@ fn format_else_chain(
         );
         out.push('\n');
         out.push_str(&header);
-        out.push('\n');
-        out.push_str(&format_block(ctx.source, else_block, ctx.level + 1));
+        append_body_block(out, &format_block(ctx.source, else_block, ctx.level + 1));
     }
 }
 
@@ -1243,10 +1231,8 @@ fn format_try(
         ctx.start_byte,
         body.span.start_byte,
     );
-    let mut out = format!(
-        "{header}\n{}",
-        format_block(ctx.source, body, ctx.level + 1)
-    );
+    let mut out = header;
+    append_body_block(&mut out, &format_block(ctx.source, body, ctx.level + 1));
     if let Some(catch) = catch {
         let mut header = format!(
             "{pad}catch {}{}",
@@ -1261,8 +1247,10 @@ fn format_try(
         );
         out.push('\n');
         out.push_str(&header);
-        out.push('\n');
-        out.push_str(&format_block(ctx.source, &catch.block, ctx.level + 1));
+        append_body_block(
+            &mut out,
+            &format_block(ctx.source, &catch.block, ctx.level + 1),
+        );
     }
     out
 }
@@ -1317,8 +1305,10 @@ fn format_match(
         }
         out.push('\n');
         out.push_str(&header);
-        out.push('\n');
-        out.push_str(&format_block(ctx.source, &arm.block, ctx.level + 2));
+        append_body_block(
+            &mut out,
+            &format_block(ctx.source, &arm.block, ctx.level + 2),
+        );
     }
     for comment in comments {
         out.push('\n');

@@ -1,6 +1,9 @@
 //! Shared helpers for the integration tests: one reader over the fenced `mw`
 //! code blocks in the language reference, so the lexer, parser, and formatter
-//! suites all filter the same source of documented examples.
+//! suites all filter the same source of documented examples, plus the reusable
+//! bounded [`oracle`] the source-bytes drivers adapt.
+pub mod oracle;
+
 use std::path::Path;
 
 use marrow_syntax::{Diagnostic, DiagnosticReason, LexerDiagnosticReason, ParseDiagnosticReason};
@@ -101,6 +104,39 @@ pub fn documented_module_blocks() -> Vec<MwBlock> {
         .into_iter()
         .filter(|block| block.starts_with_module)
         .collect()
+}
+
+/// Every tracked `.mw` fixture under `fixtures/v01/`, in sorted path order. These
+/// are the preserved-semantics corpus: shared-syntax programs the beta parser
+/// structures, fed to the oracle as valid parse subjects.
+pub fn tracked_mw_fixtures() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("fixtures")
+        .join("v01");
+    let mut out = Vec::new();
+    collect_mw(&root, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn collect_mw(dir: &Path, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths = entries
+        .map(|entry| entry.expect("fixture entry").path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_mw(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("mw") {
+            let text = std::fs::read_to_string(&path).expect("read mw fixture");
+            out.push((path.display().to_string(), text));
+        }
+    }
 }
 
 /// The reference library: the single `mw` block in `sample.md`, the canonical

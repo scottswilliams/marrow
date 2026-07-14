@@ -453,7 +453,11 @@ impl<'a> StmtParser<'a> {
             while let Some(kind) = self.peek() {
                 match kind {
                     TokenKind::Dedent => {
-                        end = self.advance().span;
+                        // Close the body at the last arm's content, not at the
+                        // `DEDENT` — whose span sits on the following (often
+                        // outdented) line, which would extend the match span over a
+                        // sibling comment or statement and mis-claim it on format.
+                        self.advance();
                         break;
                     }
                     TokenKind::Newline => {
@@ -582,15 +586,36 @@ impl<'a> StmtParser<'a> {
         if matches!(self.peek(), Some(TokenKind::Indent)) {
             self.parse_nested_block()
         } else {
-            let span = self
-                .tokens
-                .get(self.pos)
-                .map(|token| token.span)
-                .unwrap_or_default();
+            // An empty body occupies no source. Anchor a zero-width span at the
+            // point a body would start rather than adopting a whole token's span,
+            // so the enclosing statement's span does not extend over a following
+            // sibling comment or statement and mis-claim it — which would drop that
+            // sibling when the block is formatted. The point is the next token's
+            // start, or the end of the last consumed token at end of input; never a
+            // default zero position, which would invert the statement's span.
+            let point = match self.tokens.get(self.pos) {
+                Some(token) => SourceSpan {
+                    end_byte: token.span.start_byte,
+                    ..token.span
+                },
+                None => {
+                    let end = self
+                        .tokens
+                        .get(self.pos.saturating_sub(1))
+                        .map(|token| token.span)
+                        .unwrap_or_default();
+                    SourceSpan {
+                        start_byte: end.end_byte,
+                        end_byte: end.end_byte,
+                        line: end.line,
+                        column: end.column,
+                    }
+                }
+            };
             Block {
                 statements: Vec::new(),
                 comments: Vec::new(),
-                span,
+                span: point,
             }
         }
     }

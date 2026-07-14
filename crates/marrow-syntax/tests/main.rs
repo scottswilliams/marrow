@@ -2,6 +2,8 @@ mod common;
 
 #[path = "cases/format.rs"]
 mod format;
+#[path = "cases/fuzz.rs"]
+mod fuzz;
 #[path = "cases/lexer.rs"]
 mod lexer;
 #[path = "cases/parse_call_arg_order_consistency.rs"]
