@@ -310,11 +310,16 @@ fn execute<'s>(
             }
             SealedInstr::IntDivChecked(target) => {
                 let (a, b) = pop_ints(&mut stack);
-                // The zero divisor was already excluded by a compiler-emitted branch,
-                // so `checked_div` here fails only on the i64::MIN / -1 overflow.
+                // Compiler output routes a zero divisor to the `zero_divisor` arm
+                // before this op, so here `checked_div` fails only on i64::MIN / -1.
+                // `checked_div` (not `/`) is load-bearing regardless: it returns `None`
+                // for a zero or overflowing divisor, so it never panics even on a
+                // hand-built image that omits the branch.
                 checked_or_branch(&mut stack, a.checked_div(b), *target, &mut pc);
             }
             SealedInstr::IntRemChecked(target) => {
+                // `checked_rem` returns `None` for a zero or i64::MIN / -1 divisor, so
+                // it never panics; keep it rather than `%`.
                 let (a, b) = pop_ints(&mut stack);
                 checked_or_branch(&mut stack, a.checked_rem(b), *target, &mut pc);
             }

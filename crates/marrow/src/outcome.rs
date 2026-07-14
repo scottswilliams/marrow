@@ -97,10 +97,11 @@ impl Record {
 
 /// Render bytes as `0x`-prefixed lowercase hex, the canonical `bytes` rendering.
 fn hex_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(2 + bytes.len() * 2);
     out.push_str("0x");
     for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

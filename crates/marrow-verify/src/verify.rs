@@ -1092,6 +1092,28 @@ fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
     }
 }
 
+/// The successor edges for a two-way branch that keeps the current stack on the
+/// `target` edge and pushes one value on the fallthrough edge (`index + 1`). Shared
+/// by `BranchPresent` (present value) and the checked ops (int result).
+fn push_on_fallthrough(
+    frame: &Frame,
+    target: usize,
+    index: usize,
+    pushed: VType,
+    max_stack: &mut usize,
+) -> Result<Vec<(usize, Frame)>, VerifyRejection> {
+    let mut fallthrough = frame.clone();
+    fallthrough.stack.push(pushed);
+    if fallthrough.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
+        return Err(reject(
+            VerifyPhase::Function,
+            "operand stack exceeds depth bound",
+        ));
+    }
+    *max_stack = (*max_stack).max(fallthrough.stack.len());
+    Ok(vec![(target, frame.clone()), (index + 1, fallthrough)])
+}
+
 fn verify_function(
     function: &DecodedFunction,
     ctx: &Ctx,
@@ -1334,29 +1356,14 @@ fn check_flow(
             Control::Fallthrough => vec![(index + 1, frame.clone())],
             Control::Jump(target) => vec![(target, frame.clone())],
             Control::Branch(target) => vec![(target, frame.clone()), (index + 1, frame.clone())],
+            // Both carry the current stack on the `target` edge and push one value on
+            // the fallthrough edge; only which edge is the "taken" one differs in
+            // meaning (present vs fault), not in the CFG edge shapes.
             Control::BranchPresent { target, present } => {
-                let mut present_frame = frame.clone();
-                present_frame.stack.push(present);
-                if present_frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "operand stack exceeds depth bound",
-                    ));
-                }
-                max_stack = max_stack.max(present_frame.stack.len());
-                vec![(target, frame.clone()), (index + 1, present_frame)]
+                push_on_fallthrough(&frame, target, index, present, &mut max_stack)?
             }
             Control::CheckedResult { target, result } => {
-                let mut success_frame = frame.clone();
-                success_frame.stack.push(result);
-                if success_frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "operand stack exceeds depth bound",
-                    ));
-                }
-                max_stack = max_stack.max(success_frame.stack.len());
-                vec![(target, frame.clone()), (index + 1, success_frame)]
+                push_on_fallthrough(&frame, target, index, result, &mut max_stack)?
             }
         };
         for (successor, edge_frame) in edges {

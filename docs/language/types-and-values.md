@@ -49,16 +49,16 @@ numeric types implicitly.
 | `a * b` | matching `int` or matching `decimal` | matching type |
 | `a / b` | matching `int` or matching `decimal` | `int` for `int / int`, else `decimal` |
 | `a % b` | `int` and `int` | `int` |
-
-`int / int` is integer division truncated toward zero, paired with the `int % int`
-remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
-`run.divide_by_zero`, and `i64::MIN / -1` (like `i64::MIN % -1`) raises
-`run.overflow` because its result is unrepresentable.
 | `<`, `<=`, `>`, `>=` | matching `int`, `decimal`, `string`, `bytes`, `date`, `instant`, or `duration` | `bool` |
 | `==`, `!=` | matching scalars, the same enum type, or identities for the same store root | `bool` |
 | `and`, `or` | `bool` and `bool` | `bool` |
 | `optional ?? fallback` | compatible present-arm types | presence follows the fallback |
 | `value is Enum::member` | an enum value and one member or category of that enum | `bool` |
+
+`int / int` is integer division truncated toward zero, paired with the `int % int`
+remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
+`run.divide_by_zero`, and `i64::MIN / -1` (like `i64::MIN % -1`) raises
+`run.overflow` because its result is unrepresentable.
 
 Whole resources, sequences, keyed collections, and `Error` values have no
 equality operator. Arithmetic overflow, invalid division, and invalid temporal

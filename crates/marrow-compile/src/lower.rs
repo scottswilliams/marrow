@@ -1209,15 +1209,11 @@ impl<'a> FnLowerer<'a> {
         let checked_at = self.here();
         self.push(checked, span);
 
-        // Success path: coerce the int result to the binding and store it.
+        // Success path: coerce the int result to the binding and store it. A
+        // `const`/`var` binding (`pending` is `Some`) falls through and jumps over the
+        // handler; a `return` binding leaves the frame, so no skip jump is needed.
         let pending = self.store_checked_result(bind, span);
-        let success_falls_through =
-            matches!(bind, CheckedBind::Const { .. } | CheckedBind::Var { .. });
-        let end_jump = if success_falls_through {
-            Some(self.push_jump(span))
-        } else {
-            None
-        };
+        let end_jump = pending.is_some().then(|| self.push_jump(span));
 
         // The out-of-range handler.
         let handler = self.here();
@@ -1267,12 +1263,7 @@ impl<'a> FnLowerer<'a> {
             CheckedBind::Return => {
                 match self.ret {
                     RetType::Value(want) => {
-                        if want == int {
-                        } else if want == int.to_optional() {
-                            self.push(Instr::SomeWrap, span);
-                        } else {
-                            self.fail(type_mismatch(self.file, span, int, want));
-                        }
+                        self.coerce_bare_int_to(want, span, span);
                         self.push(Instr::Return, span);
                     }
                     RetType::Unit => {
@@ -1310,14 +1301,20 @@ impl<'a> FnLowerer<'a> {
             ));
             return int;
         };
-        if declared == int {
-            int
-        } else if declared == int.to_optional() {
-            self.push(Instr::SomeWrap, span);
-            declared
-        } else {
-            self.fail(type_mismatch(self.file, annotation.span(), int, declared));
-            int
+        self.coerce_bare_int_to(declared, annotation.span(), span);
+        declared
+    }
+
+    /// Coerce the bare-int result already on the stack to `target` (`int` or `int?`),
+    /// emitting a `SomeWrap` for the optional case. A `target` that is not
+    /// int-compatible is a type error reported at `err_span`. One owner for the two
+    /// checked-result binding sites (`const`/`var` annotation and `return`).
+    fn coerce_bare_int_to(&mut self, target: LTy, err_span: SourceSpan, wrap_span: SourceSpan) {
+        let int = LTy::bare_scalar(ScalarType::Int);
+        if target == int.to_optional() {
+            self.push(Instr::SomeWrap, wrap_span);
+        } else if target != int {
+            self.fail(type_mismatch(self.file, err_span, int, target));
         }
     }
 
