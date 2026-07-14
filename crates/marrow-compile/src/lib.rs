@@ -10,6 +10,7 @@
 mod compile;
 mod diag;
 mod lower;
+mod record;
 mod scalar;
 
 pub use compile::compile;

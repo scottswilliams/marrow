@@ -51,6 +51,40 @@ pub enum SealedInstr {
     EqBool,
     EqText,
     TextConcat,
+    /// Construct a record of type index `_0` from its field values popped in
+    /// reverse (f0 pushed first). The field count and per-field required flag come
+    /// from the sealed record type.
+    RecordNew(u16),
+    /// Read field `_0` of the record on the stack; required-ness comes from the
+    /// record value's sealed type (bare value vs optional).
+    FieldGet(u16),
+    /// Coerce a bare value into an optional (`Some`).
+    SomeWrap,
+    /// Push a vacant optional of the given scalar type. The runtime pushes only the
+    /// vacant marker; the scalar records the verifier-checked operand type.
+    VacantLoad(Scalar),
+    /// Pop an optional; if present, push its bare value and fall through, else jump
+    /// to this tape index. The only way to obtain a bare value from an optional.
+    BranchPresent(usize),
+}
+
+/// A sealed record field: its scalar type and whether it is required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealedField {
+    pub scalar: Scalar,
+    pub required: bool,
+}
+
+/// A sealed record type: an ordered field list in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedRecordType {
+    pub(crate) fields: Vec<SealedField>,
+}
+
+impl SealedRecordType {
+    pub fn fields(&self) -> &[SealedField] {
+        &self.fields
+    }
 }
 
 /// A function's return shape, used to check `Return` and to render the result.
@@ -145,6 +179,7 @@ impl SealedExport {
 #[derive(Debug, Clone)]
 pub struct VerifiedImage {
     pub(crate) image_id: ImageId,
+    pub(crate) types: Vec<SealedRecordType>,
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
@@ -153,6 +188,10 @@ pub struct VerifiedImage {
 impl VerifiedImage {
     pub fn image_id(&self) -> ImageId {
         self.image_id
+    }
+
+    pub fn record_type(&self, index: u16) -> &SealedRecordType {
+        &self.types[index as usize]
     }
 
     pub fn consts(&self) -> &[SealedConst] {

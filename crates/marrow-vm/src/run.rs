@@ -179,6 +179,50 @@ pub fn run(
                 stack.push(Value::Text(joined.into()));
                 pc += 1;
             }
+            SealedInstr::RecordNew(ty) => {
+                let fields = image.record_type(*ty).fields();
+                // f0 was pushed first, so the popped values fill slots in reverse.
+                let mut slots: Vec<Option<Value>> = vec![None; fields.len()];
+                for (index, field) in fields.iter().enumerate().rev() {
+                    let value = pop(&mut stack);
+                    slots[index] = if field.required {
+                        Some(value)
+                    } else {
+                        as_optional(value)
+                    };
+                }
+                stack.push(Value::Record(*ty, slots.into_boxed_slice()));
+                pc += 1;
+            }
+            SealedInstr::FieldGet(field) => {
+                let (ty, slots) = as_record(pop(&mut stack));
+                let cell = slots[*field as usize].clone();
+                let required = image.record_type(ty).fields()[*field as usize].required;
+                if required {
+                    stack.push(cell.expect("verifier proved a required field is present"));
+                } else {
+                    stack.push(Value::Optional(cell.map(Box::new)));
+                }
+                pc += 1;
+            }
+            SealedInstr::SomeWrap => {
+                let value = pop(&mut stack);
+                stack.push(Value::Optional(Some(Box::new(value))));
+                pc += 1;
+            }
+            SealedInstr::VacantLoad(_) => {
+                stack.push(Value::Optional(None));
+                pc += 1;
+            }
+            SealedInstr::BranchPresent(target) => match as_optional(pop(&mut stack)) {
+                Some(inner) => {
+                    stack.push(inner);
+                    pc += 1;
+                }
+                None => {
+                    pc = *target;
+                }
+            },
         }
     }
 }
@@ -213,6 +257,21 @@ fn as_text(value: Value) -> Rc<str> {
     match value {
         Value::Text(v) => v,
         _ => unreachable!("verifier proved a text operand"),
+    }
+}
+
+/// Unwrap an optional value to its inner `Option`.
+fn as_optional(value: Value) -> Option<Value> {
+    match value {
+        Value::Optional(inner) => inner.map(|boxed| *boxed),
+        _ => unreachable!("verifier proved an optional operand"),
+    }
+}
+
+fn as_record(value: Value) -> (u16, Box<[Option<Value>]>) {
+    match value {
+        Value::Record(ty, slots) => (ty, slots),
+        _ => unreachable!("verifier proved a record operand"),
     }
 }
 

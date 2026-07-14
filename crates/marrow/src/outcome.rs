@@ -92,6 +92,11 @@ fn render_value_text(value: &Value) -> String {
         Value::Int(v) => v.to_string(),
         Value::Bool(v) => v.to_string(),
         Value::Text(v) => v.to_string(),
+        Value::Optional(None) => "absent".to_string(),
+        Value::Optional(Some(inner)) => render_value_text(inner),
+        // Record returns are rejected by the verifier, so a record never surfaces
+        // as an export result; render defensively rather than panicking.
+        Value::Record(..) => String::new(),
     }
 }
 
@@ -99,7 +104,7 @@ fn render_value_text(value: &Value) -> String {
 /// data bound (the caller turns that into an operational error, never a truncation).
 fn render_data(value: Option<&Value>) -> Result<String, ()> {
     Ok(match value {
-        None => "null".to_string(),
+        None | Some(Value::Optional(None)) => "null".to_string(),
         Some(Value::Int(v)) => v.to_string(),
         Some(Value::Bool(v)) => v.to_string(),
         Some(Value::Text(v)) => {
@@ -108,6 +113,10 @@ fn render_data(value: Option<&Value>) -> Result<String, ()> {
             }
             json_string(v)
         }
+        Some(Value::Optional(Some(inner))) => render_data(Some(inner))?,
+        // A record cannot be an export result (verifier-rejected return); no record
+        // wire format is minted here.
+        Some(Value::Record(..)) => return Err(()),
     })
 }
 

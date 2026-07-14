@@ -13,16 +13,18 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ImageId, OP_BOOL_NOT, OP_CONST_LOAD, OP_EQ_BOOL, OP_EQ_INT, OP_EQ_TEXT, OP_INT_ADD, OP_INT_GE,
-    OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RETURN, OP_TEXT_CONCAT, OPTIONAL_FLAG,
-    Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CONST_LOAD, OP_EQ_BOOL, OP_EQ_INT, OP_EQ_TEXT,
+    OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_NEG,
+    OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP,
+    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar,
+    TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    RetShape, SealedConst, SealedExport, SealedFunction, SealedInstr, SpanRow, VerifiedImage,
+    RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
+    SealedRecordType, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -618,9 +620,23 @@ struct Decoded {
 }
 
 fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
+    let types: Vec<SealedRecordType> = decoded
+        .types
+        .iter()
+        .map(|record| SealedRecordType {
+            fields: record
+                .fields
+                .iter()
+                .map(|field| SealedField {
+                    scalar: field.ty,
+                    required: field.required,
+                })
+                .collect(),
+        })
+        .collect();
     let mut functions = Vec::with_capacity(decoded.functions.len());
     for function in &decoded.functions {
-        functions.push(verify_function(function, &decoded)?);
+        functions.push(verify_function(function, &types, &decoded)?);
     }
     // Phase 4/5 at the T01 storeless subset: no calls and no durable effects yet,
     // so every export is read-only. Call-cycle and transaction-flow closure land
@@ -636,6 +652,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .collect();
     Ok(VerifiedImage {
         image_id: decoded.image_id,
+        types,
         consts: decoded.consts,
         functions,
         exports,
@@ -644,11 +661,12 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
 
 fn verify_function(
     function: &DecodedFunction,
+    types: &[SealedRecordType],
     decoded: &DecodedImage,
 ) -> Result<SealedFunction, VerifyRejection> {
     let mut decoded_code = decode_code(&function.code)?;
     resolve_jumps(&mut decoded_code)?;
-    let (instrs, max_stack) = check_flow(function, &decoded_code, &decoded.consts)?;
+    let (instrs, max_stack) = check_flow(function, types, &decoded_code, &decoded.consts)?;
     let spans = map_spans(function, &decoded_code)?;
     Ok(SealedFunction {
         name: decoded.strings[function.name as usize].clone(),
@@ -696,6 +714,11 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_EQ_BOOL => SealedInstr::EqBool,
             OP_EQ_TEXT => SealedInstr::EqText,
             OP_TEXT_CONCAT => SealedInstr::TextConcat,
+            OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
+            OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
+            OP_SOME_WRAP => SealedInstr::SomeWrap,
+            OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
+            OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
             _ => {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -720,6 +743,24 @@ fn operand_u32(reader: &mut Reader) -> Result<u32, VerifyRejection> {
         .ok_or(reject(VerifyPhase::Function, "short u32 operand"))
 }
 
+/// Decode a `VacantLoad` operand: a single type-ref tag that must be an optional
+/// scalar (design §C, §D `VacantLoad`).
+fn decode_optional_scalar_operand(reader: &mut Reader) -> Result<Scalar, VerifyRejection> {
+    let tag = reader
+        .u8()
+        .ok_or(reject(VerifyPhase::Function, "short vacant-load operand"))?;
+    if tag & OPTIONAL_FLAG == 0 {
+        return Err(reject(
+            VerifyPhase::Function,
+            "vacant-load operand must be optional",
+        ));
+    }
+    decode_bare_scalar(tag & !OPTIONAL_FLAG).ok_or(reject(
+        VerifyPhase::Function,
+        "vacant-load operand must be an optional scalar",
+    ))
+}
+
 /// Rewrite jump operands from container byte offsets to tape indices, rejecting a
 /// target that is not an instruction boundary in this function.
 fn resolve_jumps(code: &mut [Decoded]) -> Result<(), VerifyRejection> {
@@ -731,7 +772,9 @@ fn resolve_jumps(code: &mut [Decoded]) -> Result<(), VerifyRejection> {
     };
     for decoded in code.iter_mut() {
         match &mut decoded.instr {
-            SealedInstr::Jump(target) | SealedInstr::JumpIfFalse(target) => {
+            SealedInstr::Jump(target)
+            | SealedInstr::JumpIfFalse(target)
+            | SealedInstr::BranchPresent(target) => {
                 *target = index_of(*target)?;
             }
             _ => {}
@@ -749,8 +792,12 @@ enum Control {
     Return,
     /// Unconditional transfer to one tape index.
     Jump(usize),
-    /// Conditional: the branch target plus fallthrough.
+    /// Conditional: the branch target plus fallthrough (identical stack on both).
     Branch(usize),
+    /// Optional-presence branch: the absent edge (`target`) carries the current
+    /// stack; the present edge (fallthrough) additionally carries the unwrapped
+    /// bare value.
+    BranchPresent { target: usize, present: VType },
 }
 
 /// The abstract machine state at a program point: the typed operand stack and the
@@ -768,6 +815,7 @@ struct Frame {
 /// max stack depth (computed here, never read from the image).
 fn check_flow(
     function: &DecodedFunction,
+    types: &[SealedRecordType],
     code: &[Decoded],
     consts: &[SealedConst],
 ) -> Result<(Vec<SealedInstr>, usize), VerifyRejection> {
@@ -793,7 +841,7 @@ fn check_flow(
         let mut frame = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        let control = apply(function, &code[index].instr, consts, &mut frame)?;
+        let control = apply(function, types, &code[index].instr, consts, &mut frame)?;
         if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
             return Err(reject(
                 VerifyPhase::Function,
@@ -801,20 +849,33 @@ fn check_flow(
             ));
         }
         max_stack = max_stack.max(frame.stack.len());
-        let successors: Vec<usize> = match control {
+        // Each successor edge carries a frame; `BranchPresent` differs between edges.
+        let edges: Vec<(usize, Frame)> = match control {
             Control::Return => Vec::new(),
-            Control::Fallthrough => vec![index + 1],
-            Control::Jump(target) => vec![target],
-            Control::Branch(target) => vec![target, index + 1],
+            Control::Fallthrough => vec![(index + 1, frame.clone())],
+            Control::Jump(target) => vec![(target, frame.clone())],
+            Control::Branch(target) => vec![(target, frame.clone()), (index + 1, frame.clone())],
+            Control::BranchPresent { target, present } => {
+                let mut present_frame = frame.clone();
+                present_frame.stack.push(present);
+                if present_frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "operand stack exceeds depth bound",
+                    ));
+                }
+                max_stack = max_stack.max(present_frame.stack.len());
+                vec![(target, frame.clone()), (index + 1, present_frame)]
+            }
         };
-        for successor in successors {
+        for (successor, edge_frame) in edges {
             if successor >= code.len() {
                 return Err(reject(
                     VerifyPhase::Function,
                     "execution falls off the end without returning",
                 ));
             }
-            propagate(&mut entry, &mut worklist, successor, &frame)?;
+            propagate(&mut entry, &mut worklist, successor, &edge_frame)?;
         }
     }
 
@@ -872,10 +933,96 @@ fn propagate(
 /// Grows one slice at a time with the opcode set.
 fn apply(
     function: &DecodedFunction,
+    types: &[SealedRecordType],
     instr: &SealedInstr,
     consts: &[SealedConst],
     frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
+    // Record/optional opcodes need the whole frame; the scalar opcodes work on the
+    // stack alone, borrowed here after the frame-level ones return.
+    match instr {
+        SealedInstr::RecordNew(ty) => {
+            let record = types.get(*ty as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "record type index out of range",
+            ))?;
+            // f0 is pushed first, so pop fields in reverse declaration order.
+            for field in record.fields.iter().rev() {
+                let want = if field.required {
+                    VType::bare_scalar(field.scalar)
+                } else {
+                    VType::bare_scalar(field.scalar).to_optional()
+                };
+                let got = pop(&mut frame.stack)?;
+                if got != want {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "record field operand type mismatch",
+                    ));
+                }
+            }
+            frame.stack.push(VType::bare_record(*ty));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::FieldGet(field) => {
+            let record = pop(&mut frame.stack)?;
+            let VType::Record {
+                idx,
+                optional: false,
+            } = record
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "field read requires a bare record",
+                ));
+            };
+            let record_type = types.get(idx as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "record type index out of range",
+            ))?;
+            let field_def = record_type
+                .fields
+                .get(*field as usize)
+                .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+            let result = if field_def.required {
+                VType::bare_scalar(field_def.scalar)
+            } else {
+                VType::bare_scalar(field_def.scalar).to_optional()
+            };
+            frame.stack.push(result);
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::SomeWrap => {
+            let value = pop(&mut frame.stack)?;
+            if value.is_optional() {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "some-wrap operand is already optional",
+                ));
+            }
+            frame.stack.push(value.to_optional());
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::VacantLoad(scalar) => {
+            frame.stack.push(VType::bare_scalar(*scalar).to_optional());
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::BranchPresent(target) => {
+            let value = pop(&mut frame.stack)?;
+            if !value.is_optional() {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "branch-present requires an optional",
+                ));
+            }
+            return Ok(Control::BranchPresent {
+                target: *target,
+                present: value.to_bare(),
+            });
+        }
+        _ => {}
+    }
+
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::ConstLoad(idx) => {
@@ -972,6 +1119,13 @@ fn apply(
         SealedInstr::TextConcat => {
             binary(stack, Scalar::Text, Scalar::Text)?;
             Ok(Control::Fallthrough)
+        }
+        SealedInstr::RecordNew(_)
+        | SealedInstr::FieldGet(_)
+        | SealedInstr::SomeWrap
+        | SealedInstr::VacantLoad(_)
+        | SealedInstr::BranchPresent(_) => {
+            unreachable!("record and optional opcodes return from the frame-level match")
         }
     }
 }

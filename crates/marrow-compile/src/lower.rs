@@ -2,20 +2,99 @@
 //!
 //! [`FnLowerer`] type-checks the compiled subset and lowers one function body to
 //! a draft instruction stream. Locals are allocated one fresh slot per `const`/
-//! `var`/param — slots are never reused — so every read is dominated by the slot's
-//! single write and the independent verifier's definite-init dataflow is satisfied.
-//! Jumps are emitted with placeholder targets and patched to instruction indices
-//! once the target position is known; the encoder rewrites indices to byte offsets.
+//! `var`/param/`if const` binding — slots are never reused — so every read is
+//! dominated by the slot's single write and the independent verifier's
+//! definite-init dataflow is satisfied. Jumps are emitted with placeholder targets
+//! and patched to instruction indices once the target position is known; the
+//! encoder rewrites indices to byte offsets.
 
 use marrow_codes::Code;
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, SpanEntry};
+use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId};
 use marrow_syntax::{
-    BinaryOp, Block, ElseIf, Expression, FunctionDecl, LiteralKind, SourceSpan, Statement,
-    TypeExpr, UnaryOp, decode_string_literal,
+    Argument, BinaryOp, Block, ElseIf, Expression, FunctionDecl, LiteralKind, SourceSpan,
+    Statement, TypeExpr, UnaryOp, decode_string_literal,
 };
 
 use crate::diag::SourceDiagnostic;
+use crate::record::RecordRegistry;
 use crate::scalar::ScalarType;
+
+/// A lowered value type: a scalar or the project record, each bare or optional.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LTy {
+    Scalar { scalar: ScalarType, optional: bool },
+    Record { ty: TypeId, optional: bool },
+}
+
+impl LTy {
+    fn bare_scalar(scalar: ScalarType) -> Self {
+        LTy::Scalar {
+            scalar,
+            optional: false,
+        }
+    }
+
+    fn is_optional(self) -> bool {
+        match self {
+            LTy::Scalar { optional, .. } | LTy::Record { optional, .. } => optional,
+        }
+    }
+
+    fn to_optional(self) -> Self {
+        match self {
+            LTy::Scalar { scalar, .. } => LTy::Scalar {
+                scalar,
+                optional: true,
+            },
+            LTy::Record { ty, .. } => LTy::Record { ty, optional: true },
+        }
+    }
+
+    fn to_bare(self) -> Self {
+        match self {
+            LTy::Scalar { scalar, .. } => LTy::bare_scalar(scalar),
+            LTy::Record { ty, .. } => LTy::Record {
+                ty,
+                optional: false,
+            },
+        }
+    }
+
+    fn bare_scalar_type(self) -> Option<ScalarType> {
+        match self {
+            LTy::Scalar {
+                scalar,
+                optional: false,
+            } => Some(scalar),
+            _ => None,
+        }
+    }
+
+    fn spelling(self) -> String {
+        let (base, optional) = match self {
+            LTy::Scalar { scalar, optional } => (scalar.spelling().to_string(), optional),
+            LTy::Record { optional, .. } => ("record".to_string(), optional),
+        };
+        if optional { format!("{base}?") } else { base }
+    }
+
+    fn image(self) -> ImageType {
+        match self {
+            LTy::Scalar {
+                scalar,
+                optional: false,
+            } => ImageType::scalar(scalar.image()),
+            LTy::Scalar {
+                scalar,
+                optional: true,
+            } => ImageType::opt_scalar(scalar.image()),
+            LTy::Record { ty, optional } => ImageType::Record {
+                idx: ty.index(),
+                optional,
+            },
+        }
+    }
+}
 
 /// Whether control continues past a statement or block, or leaves it (via `return`,
 /// `break`, or `continue`).
@@ -29,13 +108,13 @@ enum Flow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetType {
     Unit,
-    Scalar(ScalarType),
+    Value(LTy),
 }
 
 /// One in-scope local binding.
 struct Local {
     name: String,
-    ty: ScalarType,
+    ty: LTy,
     mutable: bool,
     slot: u16,
 }
@@ -49,19 +128,16 @@ struct LoopCtx {
 
 pub(crate) struct FnLowerer<'a> {
     draft: &'a mut ImageDraft,
+    records: &'a RecordRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
     code: Vec<Instr>,
     spans: Vec<SpanEntry>,
     locals: Vec<Local>,
-    /// `locals.len()` at each open scope's entry, for popping visibility on exit.
-    scope_marks: Vec<usize>,
     loops: Vec<LoopCtx>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
     ret: RetType,
-    /// Set when an unrecoverable check error was reported, so the caller skips
-    /// adding a half-built function to the draft.
     failed: bool,
 }
 
@@ -69,40 +145,42 @@ impl<'a> FnLowerer<'a> {
     /// Lower `function` and add it (and its export, when public) to the draft.
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
+        records: &'a RecordRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
         function: &FunctionDecl,
     ) {
         let ret = match &function.return_type {
             None => RetType::Unit,
-            Some(TypeExpr::Name { text, span }) => match ScalarType::from_spelling(text) {
-                Some(scalar) => RetType::Scalar(scalar),
+            Some(annotation) => match resolve_type(records, annotation) {
+                Some(LTy::Record { .. }) => {
+                    diagnostics.push(unsupported(file, annotation.span(), "a record return type"));
+                    return;
+                }
+                Some(ty) => RetType::Value(ty),
                 None => {
-                    diagnostics.push(unsupported(file, *span, "this return type"));
+                    diagnostics.push(unsupported(file, annotation.span(), "this return type"));
                     return;
                 }
             },
-            Some(other) => {
-                diagnostics.push(unsupported(file, other.span(), "this return type"));
-                return;
-            }
         };
 
         let mut lowerer = FnLowerer {
             draft,
+            records,
             diagnostics,
             file,
             code: Vec::new(),
             spans: Vec::new(),
             locals: Vec::new(),
-            scope_marks: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
             ret,
             failed: false,
         };
 
-        // Params occupy the first slots, pre-initialized to their scalar type.
+        // Params occupy the first slots as bare scalars (design §C: params are bare
+        // scalar type refs), pre-initialized to their type.
         for param in &function.params {
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
@@ -113,23 +191,19 @@ impl<'a> FnLowerer<'a> {
             let slot = lowerer.alloc_slot();
             lowerer.locals.push(Local {
                 name: param.name.clone(),
-                ty: scalar,
+                ty: LTy::bare_scalar(scalar),
                 mutable: false,
                 slot,
             });
         }
 
         let body_flow = lowerer.lower_block(&function.body);
-
-        // Every reachable path must end in a return. A Unit function gets an implicit
-        // one when it can fall through; a value function that can fall through is a
-        // control-flow error.
         match (body_flow, lowerer.ret) {
             (Flow::Terminates, _) => {}
             (Flow::Fallthrough, RetType::Unit) => {
                 lowerer.push(Instr::Return, function.body.span);
             }
-            (Flow::Fallthrough, RetType::Scalar(_)) => {
+            (Flow::Fallthrough, RetType::Value(_)) => {
                 lowerer.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     file,
@@ -143,17 +217,18 @@ impl<'a> FnLowerer<'a> {
             return;
         }
 
-        // After the body scope closes, `locals[0..params]` are exactly the params in
-        // declaration order, so their image types are read back here.
-        let params: Vec<_> = lowerer
-            .locals
+        let params: Vec<Scalar> = function
+            .params
             .iter()
-            .take(function.params.len())
-            .map(|local| local.ty.image())
+            .zip(&lowerer.locals)
+            .map(|(_, local)| match local.ty {
+                LTy::Scalar { scalar, .. } => scalar.image(),
+                LTy::Record { .. } => unreachable!("params are scalars"),
+            })
             .collect();
         let ret_ref = match ret {
             RetType::Unit => ImageType::Unit,
-            RetType::Scalar(scalar) => ImageType::scalar(scalar.image()),
+            RetType::Value(ty) => ty.image(),
         };
         let name_id = lowerer.draft.intern_string(&function.name);
         let source_id = lowerer.draft.intern_string(file);
@@ -191,8 +266,6 @@ impl<'a> FnLowerer<'a> {
         });
     }
 
-    /// Emit a jump with a placeholder target and return its instruction index for
-    /// later patching.
     fn push_jump(&mut self, span: SourceSpan) -> usize {
         let at = self.here();
         self.push(Instr::Jump(0), span);
@@ -205,10 +278,22 @@ impl<'a> FnLowerer<'a> {
         at
     }
 
+    fn push_branch_present(&mut self, span: SourceSpan) -> usize {
+        let at = self.here();
+        self.push(Instr::BranchPresent(0), span);
+        at
+    }
+
     fn patch(&mut self, at: usize, target: usize) {
         match &mut self.code[at] {
-            Instr::Jump(t) | Instr::JumpIfFalse(t) => *t = target as u32,
+            Instr::Jump(t) | Instr::JumpIfFalse(t) | Instr::BranchPresent(t) => *t = target as u32,
             other => unreachable!("patch target is not a jump: {other:?}"),
+        }
+    }
+
+    fn patch_all(&mut self, jumps: Vec<usize>, target: usize) {
+        for jump in jumps {
+            self.patch(jump, target);
         }
     }
 
@@ -230,7 +315,7 @@ impl<'a> FnLowerer<'a> {
     // --- statements ---
 
     fn lower_block(&mut self, block: &Block) -> Flow {
-        self.scope_marks.push(self.locals.len());
+        let mark = self.locals.len();
         let mut flow = Flow::Fallthrough;
         for statement in &block.statements {
             if flow == Flow::Terminates {
@@ -244,7 +329,6 @@ impl<'a> FnLowerer<'a> {
             }
             flow = self.lower_statement(statement);
         }
-        let mark = self.scope_marks.pop().expect("scope was opened");
         self.locals.truncate(mark);
         flow
     }
@@ -254,7 +338,7 @@ impl<'a> FnLowerer<'a> {
             Statement::Const {
                 name, ty, value, ..
             } => {
-                self.lower_binding(name, ty.as_ref(), Some(value), false);
+                self.lower_binding(name, ty.as_ref(), value, false);
                 Flow::Fallthrough
             }
             Statement::Var {
@@ -276,7 +360,7 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return Flow::Fallthrough;
                 };
-                self.lower_binding(name, ty.as_ref(), Some(value), true);
+                self.lower_binding(name, ty.as_ref(), value, true);
                 Flow::Fallthrough
             }
             Statement::Assign { target, value, .. } => {
@@ -293,9 +377,7 @@ impl<'a> FnLowerer<'a> {
             Statement::Break { span } => self.lower_break(*span),
             Statement::Continue { span } => self.lower_continue(*span),
             Statement::Expr { value, .. } => {
-                if let Some(ty) = self.lower_expr(value) {
-                    // Discard the produced value to keep the stack balanced.
-                    let _ = ty;
+                if self.lower_expr(value).is_some() {
                     self.push(Instr::Pop, value.span());
                 }
                 Flow::Fallthrough
@@ -306,7 +388,29 @@ impl<'a> FnLowerer<'a> {
                 else_ifs,
                 else_block,
                 ..
-            } => self.lower_if(condition, then_block, else_ifs, else_block.as_ref()),
+            } => {
+                let mut branches: Vec<(&Expression, &Block)> = vec![(condition, then_block)];
+                for else_if in else_ifs {
+                    branches.push((&else_if.condition, &else_if.block));
+                }
+                self.lower_cond_chain(&branches, else_block.as_ref())
+            }
+            Statement::IfConst {
+                name,
+                ty,
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => self.lower_if_const(
+                name,
+                ty.as_ref(),
+                value,
+                then_block,
+                else_ifs,
+                else_block.as_ref(),
+            ),
             Statement::While {
                 condition, body, ..
             } => self.lower_while(condition, body),
@@ -321,29 +425,28 @@ impl<'a> FnLowerer<'a> {
         &mut self,
         name: &str,
         annotation: Option<&TypeExpr>,
-        value: Option<&Expression>,
+        value: &Expression,
         mutable: bool,
     ) {
-        let value = value.expect("bindings carry an initializer at this slice");
-        let Some(ty) = self.lower_expr(value) else {
-            return;
+        let ty = if let Some(annotation) = annotation {
+            let Some(expected) = self.resolve(annotation) else {
+                self.fail(unsupported(
+                    self.file,
+                    annotation.span(),
+                    "this type annotation",
+                ));
+                return;
+            };
+            if self.lower_as(value, expected).is_none() {
+                return;
+            }
+            expected
+        } else {
+            let Some(ty) = self.lower_expr(value) else {
+                return;
+            };
+            ty
         };
-        if let Some(annotation) = annotation
-            && let Some(declared) = self.annotation_scalar(annotation)
-            && declared != ty
-        {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                annotation.span(),
-                format!(
-                    "initializer is {} but the annotation is {}",
-                    ty.spelling(),
-                    declared.spelling()
-                ),
-            ));
-            return;
-        }
         let slot = self.alloc_slot();
         self.push(Instr::LocalSet(slot), value.span());
         self.locals.push(Local {
@@ -355,78 +458,79 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_assign(&mut self, target: &Expression, value: &Expression) {
-        let Expression::Name { segments, span, .. } = target else {
-            self.fail(unsupported(
-                self.file,
-                target.span(),
-                "this assignment target",
-            ));
+        let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
             return;
         };
-        let [name] = segments.as_slice() else {
-            self.fail(unsupported(self.file, *span, "this assignment target"));
-            return;
-        };
-        let Some(local) = self.lookup(name) else {
-            self.fail(name_error(self.file, *span, name));
-            return;
-        };
-        let (slot, local_ty, mutable) = (local.slot, local.ty, local.mutable);
         if !mutable {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
-                *span,
+                span,
                 format!("`{name}` is a `const` and cannot be reassigned"),
             ));
             return;
         }
-        let Some(value_ty) = self.lower_expr(value) else {
-            return;
-        };
-        if value_ty != local_ty {
-            self.fail(type_mismatch(self.file, value.span(), value_ty, local_ty));
+        if self.lower_as(value, ty).is_none() {
             return;
         }
         self.push(Instr::LocalSet(slot), value.span());
     }
 
     fn lower_compound_assign(&mut self, target: &Expression, op: BinaryOp, value: &Expression) {
+        let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
+            return;
+        };
+        if !mutable {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` is a `const` and cannot be reassigned"),
+            ));
+            return;
+        }
+        let Some(scalar) = ty.bare_scalar_type() else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("cannot apply a compound assignment to {}", ty.spelling()),
+            ));
+            return;
+        };
+        self.push(Instr::LocalGet(slot), span);
+        let Some(result) = self.lower_binary_op(op, LTy::bare_scalar(scalar), value) else {
+            return;
+        };
+        if result != ty {
+            self.fail(type_mismatch(self.file, value.span(), result, ty));
+            return;
+        }
+        self.push(Instr::LocalSet(slot), value.span());
+    }
+
+    /// Resolve an assignment target to a mutable-checked local place.
+    fn resolve_place(
+        &mut self,
+        target: &Expression,
+    ) -> Option<(u16, LTy, bool, SourceSpan, String)> {
         let Expression::Name { segments, span, .. } = target else {
             self.fail(unsupported(
                 self.file,
                 target.span(),
                 "this assignment target",
             ));
-            return;
+            return None;
         };
         let [name] = segments.as_slice() else {
             self.fail(unsupported(self.file, *span, "this assignment target"));
-            return;
+            return None;
         };
         let Some(local) = self.lookup(name) else {
             self.fail(name_error(self.file, *span, name));
-            return;
+            return None;
         };
-        let (slot, local_ty, mutable) = (local.slot, local.ty, local.mutable);
-        if !mutable {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                *span,
-                format!("`{name}` is a `const` and cannot be reassigned"),
-            ));
-            return;
-        }
-        self.push(Instr::LocalGet(slot), *span);
-        let Some(result_ty) = self.lower_binary_op(op, local_ty, value) else {
-            return;
-        };
-        if result_ty != local_ty {
-            self.fail(type_mismatch(self.file, value.span(), result_ty, local_ty));
-            return;
-        }
-        self.push(Instr::LocalSet(slot), value.span());
+        Some((local.slot, local.ty, local.mutable, *span, name.clone()))
     }
 
     fn lower_return(&mut self, value: Option<&Expression>, span: SourceSpan) -> Flow {
@@ -434,7 +538,7 @@ impl<'a> FnLowerer<'a> {
             (None, RetType::Unit) => {
                 self.push(Instr::Return, span);
             }
-            (None, RetType::Scalar(_)) => {
+            (None, RetType::Value(_)) => {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -450,13 +554,9 @@ impl<'a> FnLowerer<'a> {
                     "this function returns nothing".to_string(),
                 ));
             }
-            (Some(expr), RetType::Scalar(want)) => {
-                if let Some(ty) = self.lower_expr(expr) {
-                    if ty != want {
-                        self.fail(type_mismatch(self.file, expr.span(), ty, want));
-                    } else {
-                        self.push(Instr::Return, span);
-                    }
+            (Some(expr), RetType::Value(want)) => {
+                if self.lower_as(expr, want).is_some() {
+                    self.push(Instr::Return, span);
                 }
             }
         }
@@ -465,12 +565,7 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_break(&mut self, span: SourceSpan) -> Flow {
         if self.loops.is_empty() {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                span,
-                "`break` is not inside a loop".to_string(),
-            ));
+            self.fail(loop_error(self.file, span, "break"));
             return Flow::Terminates;
         }
         let at = self.push_jump(span);
@@ -484,12 +579,7 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_continue(&mut self, span: SourceSpan) -> Flow {
         let Some(ctx) = self.loops.last() else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                span,
-                "`continue` is not inside a loop".to_string(),
-            ));
+            self.fail(loop_error(self.file, span, "continue"));
             return Flow::Terminates;
         };
         let target = ctx.continue_target;
@@ -497,20 +587,15 @@ impl<'a> FnLowerer<'a> {
         Flow::Terminates
     }
 
-    fn lower_if(
+    /// Lower a chain of conditional branches followed by an optional `else`. Used for
+    /// `if`/`else if`/`else` and for the absent tail of `if const`.
+    fn lower_cond_chain(
         &mut self,
-        condition: &Expression,
-        then_block: &Block,
-        else_ifs: &[ElseIf],
+        branches: &[(&Expression, &Block)],
         else_block: Option<&Block>,
     ) -> Flow {
         let mut end_jumps: Vec<usize> = Vec::new();
         let mut all_terminate = else_block.is_some();
-
-        let mut branches: Vec<(&Expression, &Block)> = vec![(condition, then_block)];
-        for else_if in else_ifs {
-            branches.push((&else_if.condition, &else_if.block));
-        }
 
         for (cond, block) in branches {
             if self.lower_condition(cond).is_none() {
@@ -532,11 +617,79 @@ impl<'a> FnLowerer<'a> {
         }
 
         let end = self.here();
-        for jump in end_jumps {
-            self.patch(jump, end);
+        self.patch_all(end_jumps, end);
+        if all_terminate {
+            Flow::Terminates
+        } else {
+            Flow::Fallthrough
+        }
+    }
+
+    fn lower_if_const(
+        &mut self,
+        name: &str,
+        annotation: Option<&TypeExpr>,
+        value: &Expression,
+        then_block: &Block,
+        else_ifs: &[ElseIf],
+        else_block: Option<&Block>,
+    ) -> Flow {
+        let Some(optional) = self.lower_expr(value) else {
+            return Flow::Fallthrough;
+        };
+        if !optional.is_optional() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                value.span(),
+                format!(
+                    "`if const` needs an optional, found {}",
+                    optional.spelling()
+                ),
+            ));
+            return Flow::Fallthrough;
+        }
+        let bound = optional.to_bare();
+        if let Some(annotation) = annotation
+            && let Some(declared) = self.resolve(annotation)
+            && declared != bound
+        {
+            self.fail(type_mismatch(self.file, annotation.span(), bound, declared));
+            return Flow::Fallthrough;
         }
 
-        if all_terminate {
+        // Present edge falls through with the unwrapped bare value; absent edge jumps.
+        let bp = self.push_branch_present(value.span());
+        let mark = self.locals.len();
+        let slot = self.alloc_slot();
+        self.push(Instr::LocalSet(slot), value.span());
+        self.locals.push(Local {
+            name: name.to_string(),
+            ty: bound,
+            mutable: false,
+            slot,
+        });
+        let then_flow = self.lower_block(then_block);
+        self.locals.truncate(mark);
+
+        let mut end_jumps = Vec::new();
+        if then_flow == Flow::Fallthrough {
+            end_jumps.push(self.push_jump(then_block.span));
+        }
+
+        // Absent tail: the `else if`/`else` chain.
+        let absent = self.here();
+        self.patch(bp, absent);
+        let branches: Vec<(&Expression, &Block)> = else_ifs
+            .iter()
+            .map(|else_if| (&else_if.condition, &else_if.block))
+            .collect();
+        let else_flow = self.lower_cond_chain(&branches, else_block);
+
+        let end = self.here();
+        self.patch_all(end_jumps, end);
+
+        if then_flow == Flow::Terminates && else_flow == Flow::Terminates {
             Flow::Terminates
         } else {
             Flow::Fallthrough
@@ -560,16 +713,13 @@ impl<'a> FnLowerer<'a> {
         let ctx = self.loops.pop().expect("loop was pushed");
         let end = self.here();
         self.patch(exit, end);
-        for jump in ctx.break_jumps {
-            self.patch(jump, end);
-        }
+        self.patch_all(ctx.break_jumps, end);
         Flow::Fallthrough
     }
 
-    /// Lower a condition expression, requiring it to be `bool`.
     fn lower_condition(&mut self, expr: &Expression) -> Option<()> {
         let ty = self.lower_expr(expr)?;
-        if ty != ScalarType::Bool {
+        if ty != LTy::bare_scalar(ScalarType::Bool) {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -583,9 +733,47 @@ impl<'a> FnLowerer<'a> {
 
     // --- expressions ---
 
-    /// Lower `expr`, emitting code that pushes its value and returning its type, or
-    /// `None` after reporting a diagnostic.
-    fn lower_expr(&mut self, expr: &Expression) -> Option<ScalarType> {
+    /// Lower `expr`, emitting code that pushes its value, then coerce that value to
+    /// exactly `expected` (bare-to-optional via `SomeWrap`; `absent` becomes a vacant
+    /// optional). Reports a diagnostic and returns `None` on mismatch.
+    fn lower_as(&mut self, expr: &Expression, expected: LTy) -> Option<()> {
+        if let Expression::Absent { span } = expr {
+            let LTy::Scalar {
+                scalar,
+                optional: true,
+            } = expected
+            else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    *span,
+                    format!(
+                        "`absent` needs an optional type, found {}",
+                        expected.spelling()
+                    ),
+                ));
+                return None;
+            };
+            self.push(
+                Instr::VacantLoad(ImageType::opt_scalar(scalar.image())),
+                *span,
+            );
+            return Some(());
+        }
+        let got = self.lower_expr(expr)?;
+        if got == expected {
+            return Some(());
+        }
+        if !got.is_optional() && expected.is_optional() && got.to_optional() == expected {
+            self.push(Instr::SomeWrap, expr.span());
+            return Some(());
+        }
+        self.fail(type_mismatch(self.file, expr.span(), got, expected));
+        None
+    }
+
+    /// Lower `expr`, emitting code that pushes its value and returning its type.
+    fn lower_expr(&mut self, expr: &Expression) -> Option<LTy> {
         match expr {
             Expression::Literal { kind, text, span } => self.lower_literal(*kind, text, *span),
             Expression::Name { segments, span, .. } => {
@@ -601,10 +789,25 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalGet(slot), *span);
                 Some(ty)
             }
+            Expression::Absent { span } => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    *span,
+                    "the type of `absent` cannot be inferred here".to_string(),
+                ));
+                None
+            }
             Expression::Unary { op, operand, span } => self.lower_unary(*op, operand, *span),
             Expression::Binary {
                 op, left, right, ..
             } => self.lower_binary(*op, left, right),
+            Expression::Call {
+                callee, args, span, ..
+            } => self.lower_call(callee, args, *span),
+            Expression::Field {
+                base, name, span, ..
+            } => self.lower_field(base, name, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this expression"));
                 None
@@ -612,13 +815,8 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    fn lower_literal(
-        &mut self,
-        kind: LiteralKind,
-        text: &str,
-        span: SourceSpan,
-    ) -> Option<ScalarType> {
-        match kind {
+    fn lower_literal(&mut self, kind: LiteralKind, text: &str, span: SourceSpan) -> Option<LTy> {
+        let (scalar, const_id) = match kind {
             LiteralKind::Integer => {
                 let Some(value) = parse_int(text) else {
                     self.fail(SourceDiagnostic::at(
@@ -629,94 +827,71 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return None;
                 };
-                let konst = self.draft.intern_int(value);
-                self.push(Instr::ConstLoad(konst.index()), span);
-                Some(ScalarType::Int)
+                (ScalarType::Int, self.draft.intern_int(value))
             }
-            LiteralKind::Bool => {
-                let konst = self.draft.intern_bool(text == "true");
-                self.push(Instr::ConstLoad(konst.index()), span);
-                Some(ScalarType::Bool)
-            }
+            LiteralKind::Bool => (ScalarType::Bool, self.draft.intern_bool(text == "true")),
             LiteralKind::String => {
                 let Ok(decoded) = decode_string_literal(text) else {
                     self.fail(unsupported(self.file, span, "this string literal"));
                     return None;
                 };
-                let konst = self.draft.intern_text(&decoded);
-                self.push(Instr::ConstLoad(konst.index()), span);
-                Some(ScalarType::Text)
+                (ScalarType::Text, self.draft.intern_text(&decoded))
             }
             _ => {
                 self.fail(unsupported(self.file, span, "this literal"));
-                None
+                return None;
             }
-        }
+        };
+        self.push(Instr::ConstLoad(const_id.index()), span);
+        Some(LTy::bare_scalar(scalar))
     }
 
-    fn lower_unary(
-        &mut self,
-        op: UnaryOp,
-        operand: &Expression,
-        span: SourceSpan,
-    ) -> Option<ScalarType> {
+    fn lower_unary(&mut self, op: UnaryOp, operand: &Expression, span: SourceSpan) -> Option<LTy> {
         let ty = self.lower_expr(operand)?;
         match op {
             UnaryOp::Neg => {
-                if ty != ScalarType::Int {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        span,
-                        format!("cannot negate {}", ty.spelling()),
-                    ));
+                if ty != LTy::bare_scalar(ScalarType::Int) {
+                    self.fail(unary_error(self.file, span, "negate", ty));
                     return None;
                 }
                 self.push(Instr::IntNeg, span);
-                Some(ScalarType::Int)
+                Some(LTy::bare_scalar(ScalarType::Int))
             }
             UnaryOp::Not => {
-                if ty != ScalarType::Bool {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        span,
-                        format!("cannot apply `not` to {}", ty.spelling()),
-                    ));
+                if ty != LTy::bare_scalar(ScalarType::Bool) {
+                    self.fail(unary_error(self.file, span, "apply `not` to", ty));
                     return None;
                 }
                 self.push(Instr::BoolNot, span);
-                Some(ScalarType::Bool)
+                Some(LTy::bare_scalar(ScalarType::Bool))
             }
         }
     }
 
-    /// Lower a binary expression whose left operand's type is not yet known.
-    fn lower_binary(
-        &mut self,
-        op: BinaryOp,
-        left: &Expression,
-        right: &Expression,
-    ) -> Option<ScalarType> {
-        if matches!(op, BinaryOp::And | BinaryOp::Or) {
-            return self.lower_short_circuit(op, left, right);
+    fn lower_binary(&mut self, op: BinaryOp, left: &Expression, right: &Expression) -> Option<LTy> {
+        match op {
+            BinaryOp::And | BinaryOp::Or => self.lower_short_circuit(op, left, right),
+            BinaryOp::Coalesce => self.lower_coalesce(left, right),
+            _ => {
+                let left_ty = self.lower_expr(left)?;
+                self.lower_binary_op(op, left_ty, right)
+            }
         }
-        let left_ty = self.lower_expr(left)?;
-        self.lower_binary_op(op, left_ty, right)
     }
 
-    /// Lower the right operand and the operator, given the left operand's type and
-    /// its value already on the stack.
-    fn lower_binary_op(
-        &mut self,
-        op: BinaryOp,
-        left_ty: ScalarType,
-        right: &Expression,
-    ) -> Option<ScalarType> {
+    /// Lower the right operand and the arithmetic/comparison operator, given the left
+    /// operand's already-pushed type. Both operands must be bare scalars.
+    fn lower_binary_op(&mut self, op: BinaryOp, left_ty: LTy, right: &Expression) -> Option<LTy> {
         let right_ty = self.lower_expr(right)?;
         let span = right.span();
+        let (Some(left), Some(right_scalar)) =
+            (left_ty.bare_scalar_type(), right_ty.bare_scalar_type())
+        else {
+            self.fail(binary_error(self.file, span, op, left_ty, right_ty));
+            return None;
+        };
         use ScalarType::{Bool, Int, Text};
-        let (instr, result): (Instr, ScalarType) = match (op, left_ty, right_ty) {
+        let (instr, result): (Instr, ScalarType) = match (op, left, right_scalar) {
             (BinaryOp::Add, Int, Int) => (Instr::IntAdd, Int),
             (BinaryOp::Add, Text, Text) => (Instr::TextConcat, Text),
             (BinaryOp::Subtract, Int, Int) => (Instr::IntSub, Int),
@@ -734,46 +909,61 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::NotEqual, a, b) if a == b => {
                 self.push(eq_instr(a), span);
                 self.push(Instr::BoolNot, span);
-                return Some(Bool);
+                return Some(LTy::bare_scalar(Bool));
             }
             _ => {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    span,
-                    format!(
-                        "`{}` is not defined for {} and {}",
-                        operator_symbol(op),
-                        left_ty.spelling(),
-                        right_ty.spelling()
-                    ),
-                ));
+                self.fail(binary_error(self.file, span, op, left_ty, right_ty));
                 return None;
             }
         };
         self.push(instr, span);
-        Some(result)
+        Some(LTy::bare_scalar(result))
     }
 
-    /// Lower `and`/`or` with short-circuit evaluation using conditional jumps.
+    /// `left ?? right`: yield the present value of the optional `left`, else `right`.
+    /// Lowered to the atomic present-branch (design §D), so no unchecked unwrap.
+    fn lower_coalesce(&mut self, left: &Expression, right: &Expression) -> Option<LTy> {
+        let left_ty = self.lower_expr(left)?;
+        if !left_ty.is_optional() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                left.span(),
+                format!(
+                    "`??` needs an optional on the left, found {}",
+                    left_ty.spelling()
+                ),
+            ));
+            return None;
+        }
+        let bare = left_ty.to_bare();
+        let bp = self.push_branch_present(left.span());
+        let to_end = self.push_jump(left.span());
+        let absent = self.here();
+        self.patch(bp, absent);
+        self.lower_as(right, bare)?;
+        let end = self.here();
+        self.patch(to_end, end);
+        Some(bare)
+    }
+
     fn lower_short_circuit(
         &mut self,
         op: BinaryOp,
         left: &Expression,
         right: &Expression,
-    ) -> Option<ScalarType> {
+    ) -> Option<LTy> {
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let left_ty = self.lower_expr(left)?;
-        if left_ty != ScalarType::Bool {
+        if left_ty != bool_ty {
             self.fail(logic_operand(self.file, left.span(), op, left_ty));
             return None;
         }
-        // `a and b`: if a is false, the result is false (skip b); else the result is
-        // b. `a or b`: if a is false, the result is b; else the result is true.
         match op {
             BinaryOp::And => {
                 let jif = self.push_jif(left.span());
                 let right_ty = self.lower_expr(right)?;
-                if right_ty != ScalarType::Bool {
+                if right_ty != bool_ty {
                     self.fail(logic_operand(self.file, right.span(), op, right_ty));
                     return None;
                 }
@@ -793,7 +983,7 @@ impl<'a> FnLowerer<'a> {
                 let rhs_at = self.here();
                 self.patch(jif, rhs_at);
                 let right_ty = self.lower_expr(right)?;
-                if right_ty != ScalarType::Bool {
+                if right_ty != bool_ty {
                     self.fail(logic_operand(self.file, right.span(), op, right_ty));
                     return None;
                 }
@@ -802,14 +992,139 @@ impl<'a> FnLowerer<'a> {
             }
             _ => unreachable!("only and/or reach short-circuit lowering"),
         }
-        Some(ScalarType::Bool)
+        Some(bool_ty)
     }
 
-    fn annotation_scalar(&mut self, annotation: &TypeExpr) -> Option<ScalarType> {
-        match annotation {
-            TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
-            _ => None,
+    /// A parenthesized application at this slice is a record constructor
+    /// (`Note(title: t, ...)`); function calls land with the call slice.
+    fn lower_call(
+        &mut self,
+        callee: &Expression,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let Expression::Name { segments, .. } = callee else {
+            self.fail(unsupported(self.file, span, "this call"));
+            return None;
+        };
+        let [name] = segments.as_slice() else {
+            self.fail(unsupported(self.file, span, "this call"));
+            return None;
+        };
+        let Some(record) = self.records.by_name(name) else {
+            self.fail(unsupported(self.file, span, "a function call"));
+            return None;
+        };
+        let type_id = record.type_id;
+
+        // Resolve each named argument against a field before emitting, so evaluation
+        // order is the field declaration order (f0 pushed first).
+        for argument in args {
+            let Some(arg_name) = &argument.name else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    "constructor arguments must be named".to_string(),
+                ));
+                return None;
+            };
+            if self.records.by_name(name)?.field(arg_name).is_none() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{name}` has no field `{arg_name}`"),
+                ));
+                return None;
+            }
         }
+
+        let field_plan: Vec<(String, ScalarType, bool)> = self
+            .records
+            .by_name(name)?
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.scalar, field.required))
+            .collect();
+        for (field_name, scalar, required) in field_plan {
+            let arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(field_name.as_str()));
+            let expected = if required {
+                LTy::bare_scalar(scalar)
+            } else {
+                LTy::bare_scalar(scalar).to_optional()
+            };
+            match arg {
+                Some(argument) => {
+                    self.lower_as(&argument.value, expected)?;
+                }
+                None if required => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("missing required field `{field_name}`"),
+                    ));
+                    return None;
+                }
+                None => {
+                    self.push(
+                        Instr::VacantLoad(ImageType::opt_scalar(scalar.image())),
+                        span,
+                    );
+                }
+            }
+        }
+        self.push(Instr::RecordNew(type_id.index()), span);
+        Some(LTy::Record {
+            ty: type_id,
+            optional: false,
+        })
+    }
+
+    fn lower_field(&mut self, base: &Expression, name: &str, span: SourceSpan) -> Option<LTy> {
+        let base_ty = self.lower_expr(base)?;
+        let LTy::Record {
+            ty,
+            optional: false,
+        } = base_ty
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                base.span(),
+                format!("field access needs a record, found {}", base_ty.spelling()),
+            ));
+            return None;
+        };
+        let Some(record) = self.records.by_name_for_type(ty) else {
+            self.fail(unsupported(self.file, span, "this field access"));
+            return None;
+        };
+        let Some((index, field)) = record.field(name) else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("record has no field `{name}`"),
+            ));
+            return None;
+        };
+        let (scalar, required) = (field.scalar, field.required);
+        self.push(Instr::FieldGet(index), span);
+        Some(if required {
+            LTy::bare_scalar(scalar)
+        } else {
+            LTy::bare_scalar(scalar).to_optional()
+        })
+    }
+
+    // --- type resolution ---
+
+    fn resolve(&self, annotation: &TypeExpr) -> Option<LTy> {
+        resolve_type(self.records, annotation)
     }
 
     fn param_scalar(&mut self, ty: &TypeExpr) -> Option<ScalarType> {
@@ -826,6 +1141,32 @@ impl<'a> FnLowerer<'a> {
                 None
             }
         }
+    }
+}
+
+/// Resolve a type annotation into a lowered type, or `None` for an unsupported
+/// spelling.
+fn resolve_type(records: &RecordRegistry, annotation: &TypeExpr) -> Option<LTy> {
+    match annotation {
+        TypeExpr::Name { text, .. } => {
+            if let Some(scalar) = ScalarType::from_spelling(text) {
+                Some(LTy::bare_scalar(scalar))
+            } else {
+                records.by_name(text).map(|record| LTy::Record {
+                    ty: record.type_id,
+                    optional: false,
+                })
+            }
+        }
+        TypeExpr::Optional { inner, .. } => {
+            let inner = resolve_type(records, inner)?;
+            if inner.is_optional() {
+                None
+            } else {
+                Some(inner.to_optional())
+            }
+        }
+        _ => None,
     }
 }
 
@@ -878,12 +1219,16 @@ fn name_error(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
     )
 }
 
-fn type_mismatch(
-    file: &str,
-    span: SourceSpan,
-    found: ScalarType,
-    want: ScalarType,
-) -> SourceDiagnostic {
+fn loop_error(file: &str, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!("`{keyword}` is not inside a loop"),
+    )
+}
+
+fn type_mismatch(file: &str, span: SourceSpan, found: LTy, want: LTy) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
@@ -896,7 +1241,36 @@ fn type_mismatch(
     )
 }
 
-fn logic_operand(file: &str, span: SourceSpan, op: BinaryOp, ty: ScalarType) -> SourceDiagnostic {
+fn unary_error(file: &str, span: SourceSpan, verb: &str, ty: LTy) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!("cannot {verb} {}", ty.spelling()),
+    )
+}
+
+fn binary_error(
+    file: &str,
+    span: SourceSpan,
+    op: BinaryOp,
+    left: LTy,
+    right: LTy,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!(
+            "`{}` is not defined for {} and {}",
+            operator_symbol(op),
+            left.spelling(),
+            right.spelling()
+        ),
+    )
+}
+
+fn logic_operand(file: &str, span: SourceSpan, op: BinaryOp, ty: LTy) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,

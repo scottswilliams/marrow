@@ -35,6 +35,14 @@ impl ConstId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeId(pub(crate) u16);
 
+impl TypeId {
+    /// The raw record-type index, as carried in a `RecordNew`/`FieldGet` operand and
+    /// in an `ImageType::Record`.
+    pub fn index(self) -> u16 {
+        self.0
+    }
+}
+
 /// A function index (also the final container index; functions keep insertion order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FuncId(pub(crate) u16);

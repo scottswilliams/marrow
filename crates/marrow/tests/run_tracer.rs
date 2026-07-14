@@ -188,3 +188,67 @@ fn runtime_overflow_is_a_source_mapped_fault() {
     assert!(stdout.contains(r#""outcome":"fault""#), "{output:?}");
     assert!(stdout.contains("run.overflow"), "{output:?}");
 }
+
+/// A project whose resource, constructor, field reads, optional coalescing, and
+/// `if const` guard travel the full path. One source file drives several exports.
+const RECORDS_SOURCE: &str = "resource Note\n\
+     \x20   required title: string\n\
+     \x20   body: string\n\
+     \n\
+     pub fn titleOf(): string\n\
+     \x20   const n = Note(title: \"hello\")\n\
+     \x20   return n.title\n\
+     \n\
+     pub fn bodyOrDefault(): string\n\
+     \x20   const n = Note(title: \"hi\", body: \"there\")\n\
+     \x20   return n.body ?? \"none\"\n\
+     \n\
+     pub fn missingBody(): string\n\
+     \x20   const n = Note(title: \"hi\")\n\
+     \x20   return n.body ?? \"none\"\n\
+     \n\
+     pub fn guardedBody(): string\n\
+     \x20   const n = Note(title: \"hi\", body: \"yo\")\n\
+     \x20   if const b = n.body\n\
+     \x20       return b\n\
+     \x20   return \"none\"\n\
+     \n\
+     pub fn maybe(): string?\n\
+     \x20   return absent\n";
+
+fn run_records(export: &str) -> String {
+    let temp = TempDir::new(&format!("records-{export}"));
+    project(&temp, RECORDS_SOURCE);
+    let output = run_in(&temp, &["run", export]);
+    assert!(
+        output.status.success(),
+        "run {export} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn required_field_read() {
+    assert_eq!(run_records("titleOf"), "hello\n");
+}
+
+#[test]
+fn present_sparse_field_coalesces_to_itself() {
+    assert_eq!(run_records("bodyOrDefault"), "there\n");
+}
+
+#[test]
+fn vacant_sparse_field_coalesces_to_default() {
+    assert_eq!(run_records("missingBody"), "none\n");
+}
+
+#[test]
+fn if_const_binds_a_present_optional() {
+    assert_eq!(run_records("guardedBody"), "yo\n");
+}
+
+#[test]
+fn an_absent_optional_return_renders_absent() {
+    assert_eq!(run_records("maybe"), "absent\n");
+}

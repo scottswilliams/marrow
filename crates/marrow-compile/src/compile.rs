@@ -9,10 +9,11 @@
 use marrow_codes::Code;
 use marrow_image::{EncodedImage, ImageDraft};
 use marrow_project::ProjectInput;
-use marrow_syntax::{Declaration, ParsedSource, SourceSpan, parse_source};
+use marrow_syntax::{Declaration, ParsedSource, ResourceDecl, SourceSpan, parse_source};
 
 use crate::diag::SourceDiagnostic;
 use crate::lower::FnLowerer;
+use crate::record::RecordRegistry;
 
 /// Compile a captured project into canonical program-image bytes, or return the
 /// typed source diagnostics that block it.
@@ -55,14 +56,32 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
     // C00). A duplicate is a name conflict, detected before lowering.
     reject_duplicate_exports(&parsed, &mut diagnostics);
 
-    // Lower each declaration. Only functions are admitted at this slice.
+    // Build the single project record type before lowering, so constructors and
+    // field reads resolve against it.
     let mut draft = ImageDraft::new();
+    let resources: Vec<(String, &ResourceDecl)> = parsed
+        .iter()
+        .flat_map(|(path, module)| {
+            module.file.declarations.iter().filter_map(move |decl| {
+                if let Declaration::Resource(resource) = decl {
+                    Some((path.clone(), resource))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    let records = RecordRegistry::build(&mut draft, &resources, &mut diagnostics);
+
+    // Lower each function. Resources are handled above; other declarations are not
+    // yet admitted.
     for (path, module) in &parsed {
         for declaration in &module.file.declarations {
             match declaration {
                 Declaration::Function(function) => {
-                    FnLowerer::lower(&mut draft, &mut diagnostics, path, function);
+                    FnLowerer::lower(&mut draft, &records, &mut diagnostics, path, function);
                 }
+                Declaration::Resource(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
                     Code::CheckUnsupported.as_str(),
                     path,

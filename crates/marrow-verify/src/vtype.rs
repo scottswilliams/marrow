@@ -8,16 +8,8 @@ use crate::sealed::RetShape;
 /// values, so a `T?` can never reach a bare-`T` consumer on any path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VType {
-    Scalar {
-        scalar: Scalar,
-        optional: bool,
-    },
-    // Record-typed stack slots arrive with the record slice (RecordNew/FieldGet).
-    #[allow(dead_code)]
-    Record {
-        idx: u16,
-        optional: bool,
-    },
+    Scalar { scalar: Scalar, optional: bool },
+    Record { idx: u16, optional: bool },
 }
 
 impl VType {
@@ -25,6 +17,47 @@ impl VType {
         VType::Scalar {
             scalar,
             optional: false,
+        }
+    }
+
+    pub(crate) fn bare_record(idx: u16) -> Self {
+        VType::Record {
+            idx,
+            optional: false,
+        }
+    }
+
+    pub(crate) fn is_optional(self) -> bool {
+        match self {
+            VType::Scalar { optional, .. } | VType::Record { optional, .. } => optional,
+        }
+    }
+
+    /// The bare (non-optional) form of this type.
+    pub(crate) fn to_bare(self) -> Self {
+        match self {
+            VType::Scalar { scalar, .. } => VType::Scalar {
+                scalar,
+                optional: false,
+            },
+            VType::Record { idx, .. } => VType::Record {
+                idx,
+                optional: false,
+            },
+        }
+    }
+
+    /// The optional form of this bare type.
+    pub(crate) fn to_optional(self) -> Self {
+        match self {
+            VType::Scalar { scalar, .. } => VType::Scalar {
+                scalar,
+                optional: true,
+            },
+            VType::Record { idx, .. } => VType::Record {
+                idx,
+                optional: true,
+            },
         }
     }
 
