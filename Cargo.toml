@@ -3,6 +3,10 @@ resolver = "2"
 members = [
     "crates/marrow",
     "crates/marrow-codes",
+    "crates/marrow-compile",
+    "crates/marrow-image",
+    "crates/marrow-verify",
+    "crates/marrow-vm",
     "crates/marrow-project",
     "crates/marrow-store",
     "crates/marrow-syntax",

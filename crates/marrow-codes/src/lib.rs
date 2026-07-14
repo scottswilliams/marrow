@@ -19,6 +19,8 @@ pub enum Family {
     Fmt,
     Cli,
     Check,
+    Image,
+    Run,
     Value,
     Store,
     Io,
@@ -34,6 +36,8 @@ impl Family {
             Self::Fmt => "fmt",
             Self::Cli => "cli",
             Self::Check => "check",
+            Self::Image => "image",
+            Self::Run => "run",
             Self::Value => "value",
             Self::Store => "store",
             Self::Io => "io",
@@ -49,6 +53,8 @@ impl Family {
         match self {
             Self::Parse => "parse",
             Self::Check => "check",
+            Self::Image => "artifact",
+            Self::Run => "runtime",
             Self::Value => "runtime",
             Self::Store => "storage",
             Self::Io => "io",
@@ -147,6 +153,20 @@ codes! {
     FmtCommentLoss => r#"fmt.comment_loss"#, Fmt, Error, NotApplicable, Active, r#"`marrow fmt` would drop a retained comment while rewriting the source, so the command refuses instead of publishing lossy formatted output."#;
     CliCommandUnsupported => r#"cli.command_unsupported"#, Cli, Error, NotApplicable, Active, r#"A command name is recognized but not yet available on this beta line: its owning capability is being refounded and returns through a later lane. `marrow fmt`, `marrow --version`, and `marrow --help` are the currently available commands."#;
     CheckNestingLimit => r#"check.nesting_limit"#, Check, Error, NotApplicable, Active, r#"Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md)."#;
+    CheckUnsupported => r#"check.unsupported"#, Check, Error, NotApplicable, Active, r#"A parsed construct is well-formed Marrow but outside the subset the beta line currently compiles. Its owning language capability is being refounded lane by lane and returns through a later one; until then the construct is absent by the capability trough, and the checker reports this at its span."#;
+    CheckType => r#"check.type"#, Check, Error, NotApplicable, Active, r#"An expression or declaration is not well-typed in the compiled subset: a return value whose type does not match the declared return type, an operator applied to the wrong operand type, a use of a name that is not in scope, or a value used where a different type is required."#;
+    CheckNameConflict => r#"check.name_conflict"#, Check, Error, NotApplicable, Active, r#"Two declarations collide on a name the compiler must resolve uniquely: two exported (`pub fn`) functions share a name, or two declarations share an identifier in the same scope. The message names the colliding declarations."#;
+    ImageEnvelope => r#"image.envelope"#, Image, Error, NotApplicable, Active, r#"A program image failed envelope verification (phase 1): a bad magic or version, a digest that does not match the image bytes, a malformed or misordered section frame, a declared length past the input, or trailing bytes. The image is rejected before any table is read."#;
+    ImageTable => r#"image.table"#, Image, Error, NotApplicable, Active, r#"A program image failed table verification (phase 2): a string, type, durable, constant, function, export, or span table violates its grammar — a duplicate or unsorted entry, an out-of-range index, a bad type tag or flag, or an operation site that does not resolve against the declared roots and records."#;
+    ImageFunction => r#"image.function"#, Image, Error, NotApplicable, Active, r#"A program image failed per-function verification (phase 3): the bytecode does not decode to instruction boundaries, a jump leaves the function or lands off a boundary, an instruction is unreachable or a path falls off the end without returning, the typed operand stack does not agree at a merge or a return, a local is read before it is initialized, or a per-opcode rule is violated."#;
+    ImageClosure => r#"image.closure"#, Image, Error, NotApplicable, Active, r#"A program image failed call/effect-closure verification (phase 4): the call graph contains a cycle (recursion is not admitted), or a recorded call or effect does not close consistently across the function set."#;
+    ImageFlow => r#"image.flow"#, Image, Error, NotApplicable, Active, r#"A program image failed transaction-flow verification (phase 5): a transaction is begun outside an export entry, a mutation or mutating call sits outside the single owned transaction region, the region is not opened exactly once and closed on every path, or a read-only export contains a mutation."#;
+    RunOverflow => r#"run.overflow"#, Run, Error, NotApplicable, Active, r#"A checked integer operation overflowed the 64-bit range at runtime: an add, subtract, multiply, negate, or the `i64::MIN % -1` remainder case. The fault is mapped to the source span of the operation and is not catchable inside the program."#;
+    RunDivideByZero => r#"run.divide_by_zero"#, Run, Error, NotApplicable, Active, r#"A remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program."#;
+    RunTextLimit => r#"run.text_limit"#, Run, Error, NotApplicable, Active, r#"A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program."#;
+    RunCallDepth => r#"run.call_depth"#, Run, Error, NotApplicable, Active, r#"Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program."#;
+    RunBudget => r#"run.budget"#, Run, Error, NotApplicable, Active, r#"A running program exhausted a fixed execution budget: the per-invocation instruction budget or the value-heap budget. The fault stops execution and is not catchable inside the program."#;
+    RunAuthority => r#"run.authority"#, Run, Error, NotApplicable, Active, r#"An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program."#;
     ValueRange => r#"value.range"#, Value, Error, Catchable, Active, r#"A `date` or `instant` reaching the store codec lies outside Marrow's supported calendar range, years 0001-9999. This is a store-boundary integrity guard, not a source-arithmetic fault: every `.mw` temporal path (the `date`/`instant` constructors, `std::clock` parse and `addDays` helpers, and `+`/`-` arithmetic) shares the same 0001-9999 envelope and already raises `run.temporal_overflow` before an out-of-range value can be produced, so no ordinary checked program reaches this code. It fires only if a value that bypasses those bounds reaches the canonical encoder or key projection."#;
     StoreIo => r#"store.io"#, Store, Error, NotApplicable, Active, r#"An I/O operation on a persistent backend failed."#;
     StorePermissionDenied => r#"store.permission_denied"#, Store, Error, NotApplicable, Active, r#"The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry."#;
@@ -186,6 +206,8 @@ pub fn kind_for_code(code: &str) -> &'static str {
     match code.split('.').next().unwrap_or("") {
         "parse" => "parse",
         "check" => "check",
+        "image" => "artifact",
+        "run" => "runtime",
         "value" => "runtime",
         "store" => "storage",
         "io" => "io",

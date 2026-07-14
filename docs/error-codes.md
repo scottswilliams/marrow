@@ -76,6 +76,8 @@ Tools derive `kind` from the first dotted segment of `code`:
 |---|---|
 | `parse` | `parse` |
 | `check` | `check` |
+| `image` | `artifact` |
+| `run` | `runtime` |
 | `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
@@ -118,6 +120,40 @@ Static errors found while checking source.
 | Code | Meaning |
 |---|---|
 | `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md). |
+| `check.unsupported` | A parsed construct is well-formed Marrow but outside the subset the beta line currently compiles. Its owning language capability is being refounded lane by lane and returns through a later one; until then the construct is absent by the capability trough, and the checker reports this at its span. |
+| `check.type` | An expression or declaration is not well-typed in the compiled subset: a return value whose type does not match the declared return type, an operator applied to the wrong operand type, a use of a name that is not in scope, or a value used where a different type is required. |
+| `check.name_conflict` | Two declarations collide on a name the compiler must resolve uniquely: two exported (`pub fn`) functions share a name, or two declarations share an identifier in the same scope. The message names the colliding declarations. |
+
+### `image.*` — kind `artifact`
+
+Program-image decode and verification rejections, one per verifier phase. A
+compiled image travels `bytes → verify → sealed image`; a hostile or malformed
+image is rejected at the earliest phase whose invariant it violates, before the
+VM can run it.
+
+| Code | Meaning |
+|---|---|
+| `image.envelope` | A program image failed envelope verification (phase 1): a bad magic or version, a digest that does not match the image bytes, a malformed or misordered section frame, a declared length past the input, or trailing bytes. The image is rejected before any table is read. |
+| `image.table` | A program image failed table verification (phase 2): a string, type, durable, constant, function, export, or span table violates its grammar — a duplicate or unsorted entry, an out-of-range index, a bad type tag or flag, or an operation site that does not resolve against the declared roots and records. |
+| `image.function` | A program image failed per-function verification (phase 3): the bytecode does not decode to instruction boundaries, a jump leaves the function or lands off a boundary, an instruction is unreachable or a path falls off the end without returning, the typed operand stack does not agree at a merge or a return, a local is read before it is initialized, or a per-opcode rule is violated. |
+| `image.closure` | A program image failed call/effect-closure verification (phase 4): the call graph contains a cycle (recursion is not admitted), or a recorded call or effect does not close consistently across the function set. |
+| `image.flow` | A program image failed transaction-flow verification (phase 5): a transaction is begun outside an export entry, a mutation or mutating call sits outside the single owned transaction region, the region is not opened exactly once and closed on every path, or a read-only export contains a mutation. |
+
+### `run.*` — kind `runtime`
+
+Source-mapped runtime faults raised by the VM and the path kernel while running a
+verified program: checked-arithmetic overflow, a zero remainder divisor, a text
+bound, call depth, an execution budget, and an authority denial. These are not
+catchable inside the program.
+
+| Code | Meaning |
+|---|---|
+| `run.overflow` | A checked integer operation overflowed the 64-bit range at runtime: an add, subtract, multiply, negate, or the `i64::MIN % -1` remainder case. The fault is mapped to the source span of the operation and is not catchable inside the program. |
+| `run.divide_by_zero` | A remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
+| `run.text_limit` | A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program. |
+| `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
+| `run.budget` | A running program exhausted a fixed execution budget: the per-invocation instruction budget or the value-heap budget. The fault stops execution and is not catchable inside the program. |
+| `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |
 
 ### `value.*` — kind `runtime`
 

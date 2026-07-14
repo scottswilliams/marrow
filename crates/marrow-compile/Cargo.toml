@@ -1,6 +1,6 @@
 [package]
-name = "marrow"
-description = "The Marrow command-line interface."
+name = "marrow-compile"
+description = "The storeless Marrow compiler slice: the subset checker, the language scalar vocabulary, and lowering to the program-image draft."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,17 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "marrow"
-path = "src/main.rs"
-
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
-marrow-compile = { path = "../marrow-compile" }
+marrow-image = { path = "../marrow-image" }
 marrow-project = { path = "../marrow-project" }
 marrow-syntax = { path = "../marrow-syntax" }
-marrow-verify = { path = "../marrow-verify" }
-marrow-vm = { path = "../marrow-vm" }
 
 [lints]
 workspace = true

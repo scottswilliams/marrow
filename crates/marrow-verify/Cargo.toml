@@ -1,0 +1,16 @@
+[package]
+name = "marrow-verify"
+description = "The independent Marrow program-image verifier: the only container decoder, the phased verifier, and the sealed VerifiedImage the VM accepts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-codes = { path = "../marrow-codes" }
+marrow-image = { path = "../marrow-image" }
+
+[lints]
+workspace = true

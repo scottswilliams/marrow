@@ -20,9 +20,13 @@ use std::process::Command;
 const RETAINED_MEMBERS: &[&str] = &[
     "marrow",
     "marrow-codes",
+    "marrow-compile",
+    "marrow-image",
     "marrow-project",
     "marrow-store",
     "marrow-syntax",
+    "marrow-verify",
+    "marrow-vm",
 ];
 
 /// Forbidden legacy families, spelled as the concrete identifiers or crate

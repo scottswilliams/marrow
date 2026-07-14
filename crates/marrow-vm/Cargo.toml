@@ -1,0 +1,21 @@
+[package]
+name = "marrow-vm"
+description = "The Marrow stack VM: runs a sealed VerifiedImage over the typed instruction tape, with source-mapped runtime faults and private execution bounds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-codes = { path = "../marrow-codes" }
+marrow-verify = { path = "../marrow-verify" }
+
+[dev-dependencies]
+# The VM is exercised through `ImageDraft → encode → verify` with no compiler
+# dependency, so its tests prove the executable path independent of the compiler.
+marrow-image = { path = "../marrow-image" }
+
+[lints]
+workspace = true

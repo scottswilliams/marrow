@@ -1,0 +1,15 @@
+[package]
+name = "marrow-image"
+description = "The Marrow program-image container contract: the typed validating ImageDraft, the canonical encoder, and the ImageId digest owner."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false }
+
+[lints]
+workspace = true

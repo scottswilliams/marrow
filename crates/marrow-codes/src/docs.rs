@@ -111,6 +111,8 @@ Tools derive `kind` from the first dotted segment of `code`:
 |---|---|
 | `parse` | `parse` |
 | `check` | `check` |
+| `image` | `artifact` |
+| `run` | `runtime` |
 | `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
@@ -156,7 +158,49 @@ Static errors found while checking source.
 | Code | Meaning |
 |---|---|"#
             .to_string(),
-        rows(&[Code::CheckNestingLimit]),
+        rows(&[
+            Code::CheckNestingLimit,
+            Code::CheckUnsupported,
+            Code::CheckType,
+            Code::CheckNameConflict,
+        ]),
+        r#"
+### `image.*` — kind `artifact`
+
+Program-image decode and verification rejections, one per verifier phase. A
+compiled image travels `bytes → verify → sealed image`; a hostile or malformed
+image is rejected at the earliest phase whose invariant it violates, before the
+VM can run it.
+
+| Code | Meaning |
+|---|---|"#
+            .to_string(),
+        rows(&[
+            Code::ImageEnvelope,
+            Code::ImageTable,
+            Code::ImageFunction,
+            Code::ImageClosure,
+            Code::ImageFlow,
+        ]),
+        r#"
+### `run.*` — kind `runtime`
+
+Source-mapped runtime faults raised by the VM and the path kernel while running a
+verified program: checked-arithmetic overflow, a zero remainder divisor, a text
+bound, call depth, an execution budget, and an authority denial. These are not
+catchable inside the program.
+
+| Code | Meaning |
+|---|---|"#
+            .to_string(),
+        rows(&[
+            Code::RunOverflow,
+            Code::RunDivideByZero,
+            Code::RunTextLimit,
+            Code::RunCallDepth,
+            Code::RunBudget,
+            Code::RunAuthority,
+        ]),
         r#"
 ### `value.*` — kind `runtime`
 
