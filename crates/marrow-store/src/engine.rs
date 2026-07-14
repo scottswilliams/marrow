@@ -45,7 +45,9 @@ pub(crate) mod limits {
 /// One ordered-byte cell: its key and value.
 pub type Cell = (Vec<u8>, Vec<u8>);
 
-/// How a [`WriteTxn::commit`] resolved.
+/// How a [`WriteTxn::commit`] resolved. The outcome is the durability verdict
+/// (`Indeterminate` drives poisoning), so discarding it is always a bug.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitOutcome {
     /// The transaction's writes are durably committed.

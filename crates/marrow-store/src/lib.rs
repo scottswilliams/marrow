@@ -32,10 +32,12 @@ pub use mem::MemoryEngine;
 #[cfg(feature = "native")]
 pub use redb::NativeEngine;
 
-/// Freezes the crate's public surface. Every `pub` export named in `lib.rs`
-/// appears below, so removing or renaming one fails to compile here and adding a
-/// new one requires a deliberate edit to this list — the retained-file whitelist
-/// cannot drift silently. This is a compile-time audit, not a runtime test.
+/// Freezes the crate's public surface against removal and rename: every `pub`
+/// export named in `lib.rs` appears below, so deleting or renaming one fails to
+/// compile here. It does NOT detect additions — a new `pub` item compiles clean
+/// past this audit, so review is the gate against surface growth (an additive
+/// freeze would need external tooling, deliberately out of the dependency
+/// budget). This is a compile-time audit, not a runtime test.
 #[cfg(test)]
 mod public_surface_audit {
     use super::*;
