@@ -82,7 +82,6 @@ pub enum Declaration {
     Const(ConstDecl),
     Resource(ResourceDecl),
     Store(StoreDecl),
-    Surface(SurfaceDecl),
     Function(FunctionDecl),
     Enum(EnumDecl),
     Evolve(EvolveDecl),
@@ -425,98 +424,6 @@ pub struct StoreDecl {
     pub indexes: Vec<IndexDecl>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SurfaceDecl {
-    pub name: String,
-    pub store: SavedRoot,
-    pub items: Vec<SurfaceItem>,
-    pub comments: Vec<Comment>,
-    pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SurfaceItem {
-    Fields {
-        names: Vec<String>,
-        name_spans: Vec<SourceSpan>,
-        span: SourceSpan,
-    },
-    Collection {
-        target: SurfaceTarget,
-        alias: String,
-        span: SourceSpan,
-    },
-    Action {
-        function: Vec<String>,
-        function_span: SourceSpan,
-        alias: String,
-        span: SourceSpan,
-    },
-    Read {
-        function: Vec<String>,
-        function_span: SourceSpan,
-        alias: String,
-        span: SourceSpan,
-    },
-    Create {
-        names: Vec<String>,
-        name_spans: Vec<SourceSpan>,
-        span: SourceSpan,
-    },
-    Update {
-        names: Vec<String>,
-        name_spans: Vec<SourceSpan>,
-        span: SourceSpan,
-    },
-    Delete {
-        span: SourceSpan,
-    },
-}
-
-impl SurfaceItem {
-    pub fn span(&self) -> SourceSpan {
-        match self {
-            Self::Fields { span, .. }
-            | Self::Collection { span, .. }
-            | Self::Action { span, .. }
-            | Self::Read { span, .. }
-            | Self::Create { span, .. }
-            | Self::Update { span, .. }
-            | Self::Delete { span } => *span,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SurfaceTarget {
-    Root {
-        root: String,
-        span: SourceSpan,
-    },
-    Index {
-        root: String,
-        index: String,
-        span: SourceSpan,
-    },
-    IndexRange {
-        root: String,
-        index: String,
-        span: SourceSpan,
-    },
-}
-
-impl SurfaceTarget {
-    /// The span of the `^target` token(s), so a checker rejection points at the
-    /// offending target rather than column 1 of the `collection` line.
-    pub fn span(&self) -> SourceSpan {
-        match self {
-            Self::Root { span, .. } | Self::Index { span, .. } | Self::IndexRange { span, .. } => {
-                *span
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

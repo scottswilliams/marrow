@@ -1,7 +1,7 @@
 use crate::common;
 use marrow_syntax::{
     Block, Comment, CommentMarker, CommentPlacement, Declaration, EvolveDecl, Statement,
-    SurfaceDecl, format_expression, format_preserves_comments, format_source, parse_source,
+    format_expression, format_preserves_comments, format_source, parse_source,
 };
 /// Format a single-declaration `module app` source through `format_source` and
 /// return just that declaration's canonical text. `format_source` wraps the file
@@ -65,25 +65,6 @@ fn reparsed_evolve_decl(source: &str) -> EvolveDecl {
             _ => None,
         })
         .expect("formatted source defines evolve")
-}
-
-fn reparsed_surface_decl(source: &str) -> SurfaceDecl {
-    let formatted = format_source(source);
-    let parsed = parse_source(&formatted);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "formatted output must re-parse cleanly:\n{formatted}\n{:#?}",
-        parsed.diagnostics
-    );
-    parsed
-        .file
-        .declarations
-        .iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Surface(decl) => Some(decl.clone()),
-            _ => None,
-        })
-        .expect("formatted source defines surface")
 }
 
 /// A retained comment reduced to the facts a round-trip must preserve: its
@@ -187,67 +168,6 @@ fn formats_split_store_declaration() {
          store ^books(id: int): Book\n\
          \x20   index byTitle(title, id)\n"
     );
-}
-
-#[test]
-fn formats_surface_declaration_with_canonical_items() {
-    let source = "module app\n\
-         surface Books from ^books\n\
-         \x20   fields title,author, blurb\n\
-         \x20   collection ^books as list\n\
-         \x20   collection ^books.byAuthor as byAuthor\n\
-         \x20   collection ^books.byPublished range as byPublished\n\
-         \x20   create title,author\n\
-         \x20   update title,blurb\n\
-         \x20   action addBook\n\
-         \x20   action shelf::loanBook as loan\n";
-    let expected = "module app\n\
-         \n\
-         surface Books from ^books\n\
-         \x20   fields title, author, blurb\n\
-         \x20   collection ^books as list\n\
-         \x20   collection ^books.byAuthor as byAuthor\n\
-         \x20   collection ^books.byPublished range as byPublished\n\
-         \x20   create title, author\n\
-         \x20   update title, blurb\n\
-         \x20   action addBook\n\
-         \x20   action shelf::loanBook as loan\n";
-
-    assert_eq!(format_source(source), expected);
-}
-
-#[test]
-fn preserves_surface_comments_and_index_named_as() {
-    let source = "module app\n\
-         surface Books from ^books\n\
-         \x20   ; public collections\n\
-         \x20   collection ^books.as as byAs ; index named as\n";
-    let expected = "module app\n\
-         \n\
-         surface Books from ^books\n\
-         \x20   ; public collections\n\
-         \x20   collection ^books.as as byAs ; index named as\n";
-
-    assert_eq!(format_source(source), expected);
-
-    let surface = reparsed_surface_decl(source);
-    assert_eq!(
-        comment_facts(&surface.comments),
-        vec![
-            (
-                "public collections",
-                CommentPlacement::OwnLine,
-                CommentMarker::Line,
-            ),
-            (
-                "index named as",
-                CommentPlacement::Trailing,
-                CommentMarker::Line,
-            ),
-        ]
-    );
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
 }
 
 #[test]

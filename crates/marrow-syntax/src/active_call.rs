@@ -1,7 +1,7 @@
 use crate::{
     Block, ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax,
     KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember,
-    SourceSpan, Statement, SurfaceItem, Token, TokenKind, TypeExpr, is_expression_callable_keyword,
+    SourceSpan, Statement, Token, TokenKind, TypeExpr, is_expression_callable_keyword,
     is_expression_path_segment_keyword, token::is_trivia,
 };
 
@@ -441,13 +441,6 @@ fn collect_declaration_suppression(
                 declarations.push(index.span);
             }
         }
-        Declaration::Surface(surface) => {
-            declarations.push(surface.span);
-            collect_key_param_type_refs(&surface.store.keys, type_refs);
-            for item in &surface.items {
-                declarations.push(surface_item_span(item));
-            }
-        }
         Declaration::Function(function) => {
             declarations.push(function.span);
             for param in &function.params {
@@ -639,16 +632,6 @@ fn diagnostic_suppresses_callable(diagnostic: &crate::Diagnostic) -> bool {
                     | ExpectedSyntax::ResourceName
                     | ExpectedSyntax::StoreResourceName
                     | ExpectedSyntax::StoreRoot
-                    | ExpectedSyntax::SurfaceAction
-                    | ExpectedSyntax::SurfaceBody
-                    | ExpectedSyntax::SurfaceCollection
-                    | ExpectedSyntax::SurfaceFieldList
-                    | ExpectedSyntax::SurfaceCollectionTarget
-                    | ExpectedSyntax::SurfaceHeader
-                    | ExpectedSyntax::SurfaceItem
-                    | ExpectedSyntax::SurfaceName
-                    | ExpectedSyntax::SurfaceRead
-                    | ExpectedSyntax::SurfaceStore
                     | ExpectedSyntax::TransformBody,
             ))
     )
@@ -859,7 +842,6 @@ fn declaration_header_span_contains(
         Declaration::Const(decl) => const_header_span_contains(parsed, decl, byte),
         Declaration::Resource(decl) => span_contains(decl.span, byte),
         Declaration::Store(decl) => span_contains(decl.span, byte),
-        Declaration::Surface(decl) => span_contains(decl.span, byte),
         Declaration::Function(decl) => span_contains(decl.span, byte),
         Declaration::Enum(decl) => span_contains(decl.span, byte),
         Declaration::Evolve(decl) => span_contains(decl.span, byte),
@@ -915,10 +897,6 @@ fn declaration_member_span_contains(parsed: &ParsedSource, byte: usize) -> bool 
                 .indexes
                 .iter()
                 .any(|index| span_contains(index.span, byte)),
-            Declaration::Surface(surface) => surface
-                .items
-                .iter()
-                .any(|item| span_contains(surface_item_span(item), byte)),
             Declaration::Enum(enum_decl) => enum_decl
                 .members
                 .iter()
@@ -940,10 +918,6 @@ fn resource_member_span_contains(member: &ResourceMember, byte: usize) -> bool {
                 .iter()
                 .any(|member| resource_member_span_contains(member, byte)),
         }
-}
-
-fn surface_item_span(item: &SurfaceItem) -> SourceSpan {
-    item.span()
 }
 
 fn enum_member_span_contains(member: &EnumMember, byte: usize) -> bool {

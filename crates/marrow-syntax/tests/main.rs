@@ -26,8 +26,6 @@ mod parse_resource_member_order;
 mod parse_resources_storage;
 #[path = "cases/parse_statements.rs"]
 mod parse_statements;
-#[path = "cases/parse_surface.rs"]
-mod parse_surface;
 #[path = "cases/parse_type_expr.rs"]
 mod parse_type_expr;
 #[path = "cases/parse_types_params.rs"]

@@ -318,7 +318,7 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
 
     match body_start {
         Some(start) => push_param_group(&mut groups, &mut docs, &inner[start..]),
-        // A `;;` run with no parameter after it documents nothing. Surface it as a
+        // A `;;` run with no parameter after it documents nothing. Report it as a
         // body-less group so the caller can report the misplaced doc rather than
         // drop it.
         None if !docs.is_empty() => push_param_group(&mut groups, &mut docs, &inner[inner.len()..]),

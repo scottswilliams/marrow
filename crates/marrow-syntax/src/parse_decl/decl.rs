@@ -127,13 +127,6 @@ impl<'a> DeclParser<'a> {
                 file.declarations.push(Declaration::Store(store));
                 file.comments.extend(trailing_comment);
             }
-            Some(TokenKind::Keyword(Keyword::Surface)) if self.keyword_introduces_decl() => {
-                self.flush_docs_as_comments(docs, &mut file.comments);
-                let trailing_comment = self.peek_header_trailing_comment();
-                let surface = self.parse_surface();
-                file.declarations.push(Declaration::Surface(surface));
-                file.comments.extend(trailing_comment);
-            }
             // `evolve` needs no trailing-space gate: its header is the bare
             // keyword, with the steps in the indented block below.
             Some(TokenKind::Keyword(Keyword::Evolve)) => {
@@ -183,7 +176,7 @@ impl<'a> DeclParser<'a> {
                 self.flush_docs_as_comments(docs, &mut file.comments);
                 self.error_header(
                     ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
-                    "expected module, use, const, resource, store, surface, or fn declaration",
+                    "expected module, use, const, resource, store, or fn declaration",
                 );
             }
         }

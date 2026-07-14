@@ -11,8 +11,7 @@ use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
     FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, ParamDecl, ResourceDecl,
-    ResourceMember, Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget, TokenKind,
-    TypeExpr, UnaryOp,
+    ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -160,7 +159,6 @@ fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingComme
             TrailingCommentLine::Line(format_function_header_last_line(decl))
         }
         Declaration::Enum(decl) => TrailingCommentLine::Line(decl.docs.len()),
-        Declaration::Surface(_) => TrailingCommentLine::Line(0),
         Declaration::Evolve(_) => TrailingCommentLine::Line(0),
     }
 }
@@ -206,7 +204,7 @@ fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
         Declaration::Store(decl) => decl.docs.len(),
         Declaration::Function(decl) => decl.docs.len(),
         Declaration::Enum(decl) => decl.docs.len(),
-        Declaration::Surface(_) | Declaration::Evolve(_) => 0,
+        Declaration::Evolve(_) => 0,
     };
     docs as u32
 }
@@ -240,7 +238,6 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
         Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
-        Declaration::Surface(decl) => decl.span,
         Declaration::Evolve(decl) => decl.span,
     }
 }
@@ -255,7 +252,6 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Store(decl) => format_store(source, decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(source, decl),
-        Declaration::Surface(decl) => format_surface(source, decl),
         Declaration::Evolve(decl) => format_evolve(source, decl),
     }
 }
@@ -385,16 +381,6 @@ fn format_store(source: &str, decl: &StoreDecl) -> String {
     out
 }
 
-fn format_surface(source: &str, decl: &SurfaceDecl) -> String {
-    let mut out = format!("surface {} from ^{}", decl.name, decl.store.root);
-    let body = format_surface_body(source, &decl.items, &decl.comments, 1);
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(&body);
-    }
-    out
-}
-
 fn format_enum(source: &str, decl: &EnumDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
@@ -455,23 +441,6 @@ fn format_store_body(
             span: index.span,
             text: format_index_decl(index, level),
             trailing_comment_line: TrailingCommentLine::Line(index.docs.len()),
-        }),
-    )
-}
-
-fn format_surface_body(
-    source: &str,
-    items: &[SurfaceItem],
-    comments: &[Comment],
-    level: usize,
-) -> String {
-    format_body_lines(
-        source,
-        comments,
-        items.iter().map(|item| FormattedBodyLine {
-            span: item.span(),
-            text: format_surface_item(item, level),
-            trailing_comment_line: TrailingCommentLine::Last,
         }),
     )
 }
@@ -684,60 +653,6 @@ fn format_resource_member(source: &str, member: &ResourceMember, level: usize) -
             }
             out
         }
-    }
-}
-
-fn format_surface_item(item: &SurfaceItem, level: usize) -> String {
-    let pad = INDENT.repeat(level);
-    match item {
-        SurfaceItem::Fields { names, .. } => {
-            format!("{pad}fields {}", format_surface_name_list(names))
-        }
-        SurfaceItem::Collection { target, alias, .. } => {
-            format!(
-                "{pad}collection {} as {alias}",
-                format_surface_target(target)
-            )
-        }
-        SurfaceItem::Action {
-            function, alias, ..
-        } => {
-            let function = function.join("::");
-            if function.rsplit("::").next() == Some(alias.as_str()) {
-                format!("{pad}action {function}")
-            } else {
-                format!("{pad}action {function} as {alias}")
-            }
-        }
-        SurfaceItem::Read {
-            function, alias, ..
-        } => {
-            let function = function.join("::");
-            if function.rsplit("::").next() == Some(alias.as_str()) {
-                format!("{pad}read {function}")
-            } else {
-                format!("{pad}read {function} as {alias}")
-            }
-        }
-        SurfaceItem::Create { names, .. } => {
-            format!("{pad}create {}", format_surface_name_list(names))
-        }
-        SurfaceItem::Update { names, .. } => {
-            format!("{pad}update {}", format_surface_name_list(names))
-        }
-        SurfaceItem::Delete { .. } => format!("{pad}delete"),
-    }
-}
-
-fn format_surface_name_list(names: &[String]) -> String {
-    names.join(", ")
-}
-
-fn format_surface_target(target: &SurfaceTarget) -> String {
-    match target {
-        SurfaceTarget::Root { root, .. } => format!("^{root}"),
-        SurfaceTarget::Index { root, index, .. } => format!("^{root}.{index}"),
-        SurfaceTarget::IndexRange { root, index, .. } => format!("^{root}.{index} range"),
     }
 }
 
