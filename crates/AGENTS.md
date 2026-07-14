@@ -1,7 +1,8 @@
 # Crate Contributor Notes
 
-The crates in this directory implement the current compiler and runtime
-pipeline for typed local and durable trees. The topology is described in
-[docs/implementation/](../docs/implementation/README.md); it is current code,
-not permanent architecture. The nearest crate instructions apply in addition
-to the repository instructions.
+On the beta line this directory holds the retained core: the diagnostic-code
+registry (`marrow-codes`), the syntax owner (`marrow-syntax`), the ordered-byte
+storage engine (`marrow-store`), and a thin `marrow` CLI. The prototype's
+compiler, interpreter, catalog, and durable owners were deleted at B00 and are
+being refounded lane by lane; a feature is absent until its lane lands it. The
+nearest crate instructions apply in addition to the repository instructions.

@@ -2,13 +2,7 @@
 resolver = "2"
 members = [
     "crates/marrow",
-    "crates/marrow-catalog",
     "crates/marrow-codes",
-    "crates/marrow-check",
-    "crates/marrow-json",
-    "crates/marrow-project",
-    "crates/marrow-run",
-    "crates/marrow-schema",
     "crates/marrow-store",
     "crates/marrow-syntax",
 ]
