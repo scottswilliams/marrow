@@ -1,13 +1,51 @@
-//! Private native persistent ordered-byte engine, over [redb](https://docs.rs/redb).
+//! The native persistent ordered-byte engine, over [redb](https://docs.rs/redb).
 //!
 //! redb's `&[u8]` keys order byte-lexicographically, the same order as the
-//! in-memory `BTreeMap`, so range scans need no custom comparator.
+//! in-memory `BTreeMap`, so range scans need no custom comparator. A
+//! [`NativeEngine`] hands out a [`RedbView`] backed by a redb read transaction (a
+//! stable version, so its reads are coherent) and one [`RedbTxn`] backed by a
+//! redb write transaction (which reads its own staged writes and either commits
+//! durably or aborts).
 //!
-//! A transaction holds one redb write transaction for its whole life, so reads
-//! inside it see their own writes. Nested `begin` calls join that transaction:
-//! only the outermost `commit` persists it, and any `rollback` aborts it.
+//! ## Filesystem durability envelope
+//!
+//! The engine's native recovery and sync sit above a documented filesystem
+//! contract; where the filesystem does not honor it, durability is not
+//! guaranteed and no software layer here can restore it:
+//!
+//! - redb's only durability primitive is the standard library's `sync_data()`,
+//!   i.e. `fsync(2)` (`fdatasync` where available). It issues **no**
+//!   `F_FULLFSYNC` anywhere, so a confirmed commit is durable across a **process
+//!   kill and an OS crash** — the engine flushes to the kernel and the kernel
+//!   owns the page cache — but **not** across **power loss or a drive-cache
+//!   reset**, where a drive may acknowledge an `fsync` before the bytes reach
+//!   stable media. Default SQLite behaves identically. Routing commits through
+//!   `F_FULLFSYNC` for power-loss durability is a later lifecycle
+//!   (native-attach / audit) and operations-documentation decision, not this
+//!   contract.
+//! - `fsync` on a directory makes a new directory entry durable. The engine
+//!   commits with [`Durability::Immediate`], and a fresh store's parent
+//!   directory is fsynced after the create commit ([`sync_parent_directory`]).
+//! - A rename is atomic and a `create_new` open is exclusive, so a partly-formed
+//!   store is never mistaken for a complete one.
+//! - The filesystem does not silently reorder or drop already-`fsync`ed data. A
+//!   torn or truncated body is surfaced as [`StoreError::Corruption`] rather
+//!   than misread; an unclean shutdown that left a repairable log is surfaced as
+//!   [`StoreError::RecoveryRequired`] and replayed only by a write-capable open.
+//!   The fast open path does **not** re-verify page checksums, so an external
+//!   bit-flip on live bytes reads back silently altered on a clean open; the
+//!   bounded [`ByteEngine::audit_integrity`](crate::ByteEngine::audit_integrity)
+//!   walk is the primitive that catches it.
+//!
+//! The engine does not parse redb's pages, replace process-global hooks, or
+//! assume any durability the filesystem does not provide. The adapter and the
+//! Marrow workspace contain no `unsafe`; redb ships reviewed internal `unsafe`
+//! (chiefly its xxHash3 checksums), so a corrupt or externally-mutated body is
+//! contained at the adapter boundary ([`contain_panic`]) rather than trusted to
+//! fail gracefully.
 
 use std::fs;
+use std::marker::PhantomData;
 use std::ops::Bound;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -15,10 +53,11 @@ use std::path::Path;
 
 use redb::{
     Database, DatabaseError, Durability, ReadOnlyDatabase, ReadTransaction, ReadableDatabase,
-    ReadableTable, StorageError, Table, TableDefinition, WriteTransaction,
+    ReadableTable, StorageError, TableDefinition, WriteTransaction,
 };
 
-use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
+use crate::engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, check_cell_limits};
+use crate::error::StoreError;
 use crate::traversal;
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
@@ -31,7 +70,6 @@ const FORMAT_VERSION: u32 = 1;
 
 const MARROW_REDB_DURABILITY: Durability = Durability::Immediate;
 
-const DELETE_BATCH_LIMIT: usize = 256;
 #[cfg(unix)]
 const STORE_SYMLINK_HOP_LIMIT: usize = 40;
 
@@ -50,31 +88,9 @@ impl<'a> traversal::ScanEntry
     }
 }
 
-pub(crate) struct RedbStore {
-    /// `Some` for the whole live handle; [`Drop`] takes it to close the database. The
-    /// open transaction and pinned snapshot borrow the database, so close drops them
-    /// first.
-    db: Option<DatabaseHandle>,
-    /// The live write transaction while one is open.
-    txn: Option<OpenTransaction>,
-    /// A pinned read transaction while a snapshot is held, so reads observe one
-    /// consistent version even as later write transactions commit.
-    read_view: Option<ReadTransaction>,
-}
-
-impl Drop for RedbStore {
-    fn drop(&mut self) {
-        // The open transaction and pinned snapshot borrow the database, so drop them
-        // before the handle that closes it.
-        self.txn = None;
-        self.read_view = None;
-        drop(self.db.take());
-    }
-}
-
-struct OpenTransaction {
-    write: WriteTransaction,
-    depth: usize,
+/// A redb-backed native ordered-byte engine, durable across processes.
+pub struct NativeEngine {
+    db: DatabaseHandle,
 }
 
 enum DatabaseHandle {
@@ -117,6 +133,29 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
     move |error| StoreError::Io {
         op,
         message: error.to_string(),
+    }
+}
+
+/// Contain a panic from the redb dependency at the adapter boundary. redb asserts
+/// internally on some externally-mutated files rather than returning `Err`, so an
+/// operation over a corrupt body can unwind instead of failing cleanly; this
+/// converts that unwind into a typed corruption error. It is adapter-boundary
+/// containment of one dependency's panic policy over a bounded call, not a
+/// process-global panic hook (the deleted `B00` hook swap stays forbidden). The
+/// engine itself contains no `unsafe`; redb ships reviewed internal `unsafe`, so
+/// a corrupt body is contained here rather than trusted to fail gracefully.
+fn contain_panic<T>(
+    op: &'static str,
+    body: impl FnOnce() -> Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(result) => result,
+        Err(_) => Err(StoreError::Corruption {
+            message: format!(
+                "the storage engine panicked during {op}; the store body is corrupt or was \
+                 modified externally"
+            ),
+        }),
     }
 }
 
@@ -506,436 +545,198 @@ fn open_commit_error(error: redb::CommitError) -> StoreError {
     }
 }
 
-/// Collect up to one batch of keys under `prefix`, starting strictly after `after`
-/// when one is given. Resuming from an excluded cursor — rather than re-opening the
-/// range at `prefix` each batch — bounds the iterator the same way the read scans do,
-/// so a damaged page that would spin redb's range walk on a re-entered region is
-/// stepped over by an exclusive seek rather than looped on.
-fn delete_key_batch<T>(
-    table: &T,
-    prefix: &[u8],
-    after: Option<&[u8]>,
-) -> Result<Vec<Vec<u8>>, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let lower = match after {
-        Some(after) => Bound::Excluded(after),
-        None => Bound::Included(prefix),
-    };
-    let mut keys = Vec::new();
-    for entry in table
-        .range::<&[u8]>((lower, Bound::Unbounded))
-        .map_err(io("delete"))?
-    {
-        let (key, _) = entry.map_err(io("delete"))?;
-        let key = key.value();
-        if !key.starts_with(prefix) {
-            break;
-        }
-        keys.push(key.to_vec());
-        if keys.len() == DELETE_BATCH_LIMIT {
-            break;
+impl NativeEngine {
+    /// Open the redb-backed store at `path`, creating the file if needed. A
+    /// concurrent read-only or read-write holder is rejected as
+    /// [`StoreError::Locked`], and a file recording a different [`FORMAT_VERSION`]
+    /// as [`StoreError::FormatVersion`]. A brand-new file is stamped with the
+    /// current format version; an existing complete store is verified. A malformed
+    /// body surfaces redb's own open error as a typed [`StoreError`] through
+    /// [`map_open_error`].
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        contain_panic("open", || {
+            guard_regular_store_file(path)?;
+            let sync_parent_after_commit = prepare_new_store_file(path)?;
+            let db = open_write_capable(path, || Database::create(path))?;
+            stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
+            Ok(Self {
+                db: DatabaseHandle::ReadWrite(db),
+            })
+        })
+    }
+
+    /// Open an existing store read-only. Unlike [`open`](Self::open) it never
+    /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
+    /// than stamping it; write-capability operations fail before any write
+    /// transaction begins. A malformed body surfaces redb's own open error as a
+    /// typed [`StoreError`] through [`map_open_error`].
+    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+        contain_panic("open", || {
+            let db = open_tolerating_creation_race(path, || {
+                guard_regular_store_file(path)?;
+                let db =
+                    ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
+                verify_existing_store_shape(&db)?;
+                Ok(DatabaseHandle::ReadOnly(db))
+            })?;
+            Ok(Self { db })
+        })
+    }
+}
+
+impl ByteEngine for NativeEngine {
+    type View<'a> = RedbView<'a>;
+    type Txn<'a> = RedbTxn<'a>;
+
+    fn read_view(&self) -> Result<RedbView<'_>, StoreError> {
+        Ok(RedbView {
+            read: self.db.begin_read("read_view")?,
+            _engine: PhantomData,
+        })
+    }
+
+    fn begin(&mut self) -> Result<RedbTxn<'_>, StoreError> {
+        Ok(RedbTxn {
+            write: Some(self.db.begin_write("begin")?),
+            _engine: PhantomData,
+        })
+    }
+
+    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+        self.db.require_write_access(op)
+    }
+
+    fn audit_integrity(&mut self) -> Result<(), StoreError> {
+        match &mut self.db {
+            DatabaseHandle::ReadWrite(db) => contain_panic("audit", || {
+                match db
+                    .check_integrity()
+                    .map_err(|error| map_open_error(Path::new(""), error))
+                {
+                    // The full Merkle walk passed, or found and repaired damage: a
+                    // repaired store had been externally modified, which the audit
+                    // reports as corruption rather than silently accepting.
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(StoreError::Corruption {
+                        message: "integrity audit found and repaired external damage".into(),
+                    }),
+                    Err(error) => Err(error),
+                }
+            }),
+            DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: "audit" }),
         }
     }
-    Ok(keys)
 }
 
-fn streamed_scan<T>(table: &T, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let range = table.range::<&[u8]>(prefix..).map_err(io("scan"))?;
-    traversal::scan(range, prefix, limit, io("scan"))
+/// A coherent read view over a redb read transaction — a stable version whose
+/// reads are unaffected by later commits. Bound to the engine borrow that
+/// produced it, so no write can interleave for its life.
+pub struct RedbView<'a> {
+    read: ReadTransaction,
+    _engine: PhantomData<&'a NativeEngine>,
 }
 
-fn streamed_scan_after<T>(
-    table: &T,
-    prefix: &[u8],
-    cursor: &[u8],
-    limit: usize,
-) -> Result<ScanPage, StoreError>
+impl ReadView for RedbView<'_> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        contain_panic("read", || {
+            let table = self.read.open_table(TABLE).map_err(io("read"))?;
+            Ok(table
+                .get(key)
+                .map_err(io("read"))?
+                .map(|guard| guard.value().to_vec()))
+        })
+    }
+
+    fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError> {
+        contain_panic("scan_after", || {
+            let table = self.read.open_table(TABLE).map_err(io("scan_after"))?;
+            scan_after_table(&table, prefix, cursor)
+        })
+    }
+}
+
+/// A redb write transaction. Reads observe its own staged writes; it commits
+/// durably or, on drop, aborts. Borrows the engine mutably, so a second
+/// transaction cannot be named while it is live.
+pub struct RedbTxn<'a> {
+    write: Option<WriteTransaction>,
+    _engine: PhantomData<&'a mut NativeEngine>,
+}
+
+impl RedbTxn<'_> {
+    fn write(&self) -> &WriteTransaction {
+        self.write
+            .as_ref()
+            .expect("write transaction is live until commit or drop")
+    }
+}
+
+impl ReadView for RedbTxn<'_> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        contain_panic("read", || {
+            let table = self.write().open_table(TABLE).map_err(io("read"))?;
+            Ok(table
+                .get(key)
+                .map_err(io("read"))?
+                .map(|guard| guard.value().to_vec()))
+        })
+    }
+
+    fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError> {
+        contain_panic("scan_after", || {
+            let table = self.write().open_table(TABLE).map_err(io("scan_after"))?;
+            scan_after_table(&table, prefix, cursor)
+        })
+    }
+}
+
+impl WriteTxn for RedbTxn<'_> {
+    fn put(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+        check_cell_limits(key, &value)?;
+        let mut table = self.write().open_table(TABLE).map_err(io("put"))?;
+        table.insert(key, value.as_slice()).map_err(io("put"))?;
+        Ok(())
+    }
+
+    fn remove(&mut self, key: &[u8]) -> Result<(), StoreError> {
+        let mut table = self.write().open_table(TABLE).map_err(io("remove"))?;
+        table.remove(key).map_err(io("remove"))?;
+        Ok(())
+    }
+
+    fn commit(mut self) -> CommitOutcome {
+        let Some(write) = self.write.take() else {
+            return CommitOutcome::Aborted;
+        };
+        // A commit failure — a returned error or a contained panic over a corrupt
+        // body — leaves durability unknown: the write may or may not have reached
+        // disk, so the caller must close and reclassify on reopen rather than
+        // retry.
+        match contain_panic("commit", || write.commit().map_err(io("commit"))) {
+            Ok(()) => CommitOutcome::Confirmed,
+            Err(_) => CommitOutcome::Indeterminate,
+        }
+    }
+}
+
+impl Drop for RedbTxn<'_> {
+    fn drop(&mut self) {
+        if let Some(write) = self.write.take() {
+            let _ = write.abort();
+        }
+    }
+}
+
+/// Collect the cells under `prefix` strictly after `cursor` from a readable redb
+/// table, bounded by the shared scan limits.
+fn scan_after_table<T>(table: &T, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
     let range = table
         .range::<&[u8]>((Bound::Excluded(cursor), Bound::Unbounded))
         .map_err(io("scan_after"))?;
-    traversal::scan(range, prefix, limit, io("scan_after"))
-}
-
-fn streamed_scan_between<T>(
-    table: &T,
-    prefix: &[u8],
-    lower: Option<&[u8]>,
-    upper: Option<&[u8]>,
-    limit: usize,
-) -> Result<ScanPage, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let lower = lower.map_or(Bound::Unbounded, Bound::Included);
-    let upper = upper.map_or(Bound::Unbounded, Bound::Excluded);
-    let range = table
-        .range::<&[u8]>((lower, upper))
-        .map_err(io("scan_between"))?;
-    traversal::scan(range, prefix, limit, io("scan_between"))
-}
-
-fn streamed_scan_between_after<T>(
-    table: &T,
-    prefix: &[u8],
-    lower: Option<&[u8]>,
-    upper: Option<&[u8]>,
-    cursor: &[u8],
-    limit: usize,
-) -> Result<ScanPage, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let lower = match lower {
-        Some(lower) if lower > cursor => lower,
-        _ => cursor,
-    };
-    let upper = upper.map_or(Bound::Unbounded, Bound::Excluded);
-    let range = table
-        .range::<&[u8]>((Bound::Excluded(lower), upper))
-        .map_err(io("scan_between_after"))?;
-    traversal::scan(range, prefix, limit, io("scan_between_after"))
-}
-
-fn streamed_scan_before<T>(
-    table: &T,
-    prefix: &[u8],
-    cursor: &[u8],
-    limit: usize,
-) -> Result<ScanPage, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let range = table
-        .range::<&[u8]>((Bound::Unbounded, Bound::Excluded(cursor)))
-        .map_err(io("scan_before"))?;
-    traversal::scan(range.rev(), prefix, limit, io("scan_before"))
-}
-
-fn streamed_scan_between_before<T>(
-    table: &T,
-    prefix: &[u8],
-    lower: Option<&[u8]>,
-    upper: Option<&[u8]>,
-    cursor: &[u8],
-    limit: usize,
-) -> Result<ScanPage, StoreError>
-where
-    T: ReadableTable<&'static [u8], &'static [u8]>,
-{
-    let lower = lower.map_or(Bound::Unbounded, Bound::Included);
-    let upper = match upper {
-        Some(upper) if upper < cursor => upper,
-        _ => cursor,
-    };
-    let range = table
-        .range::<&[u8]>((lower, Bound::Excluded(upper)))
-        .map_err(io("scan_between_before"))?;
-    traversal::scan(range.rev(), prefix, limit, io("scan_between_before"))
-}
-
-/// Run a read `$body` over the current read view: the open write transaction's
-/// table, the pinned snapshot, or a fresh read transaction. A macro rather than a
-/// `&dyn` helper because redb's `ReadableTable` is not object-safe, so the body is
-/// monomorphized per table type.
-macro_rules! read_view {
-    ($self:expr, $op:expr, |$table:ident| $body:expr) => {
-        match (&$self.txn, &$self.read_view) {
-            // An open write transaction reads its own writes.
-            (Some(txn), _) => {
-                let $table = txn.write.open_table(TABLE).map_err(io($op))?;
-                $body
-            }
-            // A pinned snapshot reads its consistent version.
-            (None, Some(read)) => {
-                let $table = read.open_table(TABLE).map_err(io($op))?;
-                $body
-            }
-            // Otherwise read the latest committed data.
-            (None, None) => {
-                let read = $self.handle().begin_read($op)?;
-                let $table = read.open_table(TABLE).map_err(io($op))?;
-                $body
-            }
-        }
-    };
-}
-
-impl RedbStore {
-    /// Open the redb-backed store at `path`, creating the file if needed. A
-    /// concurrent read-only or read-write holder is rejected as [`StoreError::Locked`],
-    /// and a file recording a different [`FORMAT_VERSION`] as
-    /// [`StoreError::FormatVersion`]. A malformed body surfaces redb's own open error
-    /// as a typed [`StoreError`] through [`map_open_error`].
-    pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
-        guard_regular_store_file(path)?;
-        let sync_parent_after_commit = prepare_new_store_file(path)?;
-        let db = open_write_capable(path, || Database::create(path))?;
-        stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
-        Ok(Self::from_handle(DatabaseHandle::ReadWrite(db)))
-    }
-
-    fn from_handle(db: DatabaseHandle) -> Self {
-        Self {
-            db: Some(db),
-            txn: None,
-            read_view: None,
-        }
-    }
-
-    /// The open database handle. Always present while the store is live; only
-    /// [`Drop`] takes it to close the database.
-    fn handle(&self) -> &DatabaseHandle {
-        self.db.as_ref().expect("store handle is live until drop")
-    }
-
-    /// Open an existing redb-backed store with write capability, without creating
-    /// or adopting missing/non-store data. This is the repair path for a file that
-    /// already carries Marrow metadata.
-    pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
-        let db = open_tolerating_creation_race(path, || {
-            guard_regular_store_file(path)?;
-            let db = open_write_capable(path, || Database::open(path))?;
-            verify_existing_store_shape(&db)?;
-            Ok(DatabaseHandle::ReadWrite(db))
-        })?;
-        Ok(Self::from_handle(db))
-    }
-
-    /// Open an existing store read-only. Unlike [`open`](Self::open) it never
-    /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
-    /// than stamping it; write-capability operations fail before any write
-    /// transaction begins. A malformed body surfaces redb's own open error as a typed
-    /// [`StoreError`] through [`map_open_error`].
-    pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
-        let db = open_tolerating_creation_race(path, || {
-            guard_regular_store_file(path)?;
-            let db = ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
-            verify_existing_store_shape(&db)?;
-            Ok(DatabaseHandle::ReadOnly(db))
-        })?;
-        Ok(Self::from_handle(db))
-    }
-
-    /// Require a writable handle and no pinned read snapshot. `on_snapshot` names
-    /// the snapshot-conflict error for this operation.
-    fn ensure_writable(
-        &self,
-        op: &'static str,
-        on_snapshot: fn() -> StoreError,
-    ) -> Result<(), StoreError> {
-        self.handle().require_write_access(op)?;
-        if self.read_view.is_some() {
-            return Err(on_snapshot());
-        }
-        Ok(())
-    }
-
-    /// Run `mutate` against the current write table. Outside a transaction it is
-    /// its own short, immediately durable redb transaction; inside one it joins
-    /// the open write transaction.
-    fn mutate(
-        &mut self,
-        op: &'static str,
-        mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<(), StoreError>,
-    ) -> Result<(), StoreError> {
-        let Some(txn) = &self.txn else {
-            let write = self.handle().begin_write(op)?;
-            {
-                let mut table = write.open_table(TABLE).map_err(io(op))?;
-                mutate(&mut table)?;
-            }
-            return write.commit().map_err(io(op));
-        };
-        let mut table = txn.write.open_table(TABLE).map_err(io(op))?;
-        mutate(&mut table)?;
-        Ok(())
-    }
-}
-
-impl Backend for RedbStore {
-    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        read_view!(self, "read", |table| Ok(table
-            .get(key)
-            .map_err(io("read"))?
-            .map(|guard| guard.value().to_vec())))
-    }
-
-    fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
-        read_view!(self, "read_prefix", |table| Ok(table
-            .get(key)
-            .map_err(io("read_prefix"))?
-            .map(|guard| {
-                let value = guard.value();
-                let copied = value.len().min(limit);
-                ValuePrefix {
-                    bytes: value[..copied].to_vec(),
-                    truncated: value.len() > limit,
-                }
-            })))
-    }
-
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
-        self.handle().require_write_access(op)
-    }
-
-    fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        self.ensure_writable("write", StoreError::write_while_snapshot_pinned)?;
-        self.mutate("write", |table| {
-            table.insert(key, value.as_slice()).map_err(io("write"))?;
-            Ok(())
-        })
-    }
-
-    fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
-        self.ensure_writable("delete", StoreError::delete_while_snapshot_pinned)?;
-        self.mutate("delete", |table| {
-            // Collect and remove keys in bounded batches so a large prefix subtree
-            // never materializes every key at once, resuming each batch strictly
-            // after the prior one so the scan advances monotonically across the
-            // subtree rather than re-reading from its start.
-            let mut after: Option<Vec<u8>> = None;
-            loop {
-                let keys = delete_key_batch(&*table, prefix, after.as_deref())?;
-                let Some(last) = keys.last().cloned() else {
-                    break;
-                };
-                for key in keys {
-                    table.remove(key.as_slice()).map_err(io("delete"))?;
-                }
-                after = Some(last);
-            }
-            Ok(())
-        })
-    }
-
-    fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit))
-    }
-
-    fn scan_after(
-        &self,
-        prefix: &[u8],
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_after", |table| {
-            streamed_scan_after(&table, prefix, cursor, limit)
-        })
-    }
-
-    fn scan_before(
-        &self,
-        prefix: &[u8],
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_before", |table| {
-            streamed_scan_before(&table, prefix, cursor, limit)
-        })
-    }
-
-    fn scan_between(
-        &self,
-        prefix: &[u8],
-        lower: Option<&[u8]>,
-        upper: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_between", |table| {
-            streamed_scan_between(&table, prefix, lower, upper, limit)
-        })
-    }
-
-    fn scan_between_after(
-        &self,
-        prefix: &[u8],
-        lower: Option<&[u8]>,
-        upper: Option<&[u8]>,
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_between_after", |table| {
-            streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
-        })
-    }
-
-    fn scan_between_before(
-        &self,
-        prefix: &[u8],
-        lower: Option<&[u8]>,
-        upper: Option<&[u8]>,
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_between_before", |table| {
-            streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
-        })
-    }
-
-    fn begin(&mut self) -> Result<(), StoreError> {
-        self.ensure_writable("begin", StoreError::begin_while_snapshot_pinned)?;
-        match &mut self.txn {
-            Some(txn) => txn.depth += 1,
-            None => {
-                self.txn = Some(OpenTransaction {
-                    write: self.handle().begin_write("begin")?,
-                    depth: 1,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn commit(&mut self) -> Result<(), StoreError> {
-        // No open transaction is a harmless no-op, matching the in-memory store.
-        let Some(mut txn) = self.txn.take() else {
-            return Ok(());
-        };
-        txn.depth -= 1;
-        if txn.depth == 0 {
-            txn.write.commit().map_err(io("commit"))?;
-        } else {
-            self.txn = Some(txn);
-        }
-        Ok(())
-    }
-
-    fn rollback(&mut self) -> Result<(), StoreError> {
-        // No open transaction is a harmless no-op, matching the in-memory store.
-        let Some(txn) = self.txn.take() else {
-            return Ok(());
-        };
-        txn.write.abort().map_err(io("rollback"))?;
-        Ok(())
-    }
-
-    fn transaction_depth(&self) -> usize {
-        self.txn.as_ref().map_or(0, |txn| txn.depth)
-    }
-
-    fn begin_snapshot(&mut self) -> Result<(), StoreError> {
-        if self.txn.is_some() {
-            return Err(StoreError::snapshot_while_transaction_open());
-        }
-        if self.read_view.is_some() {
-            return Err(StoreError::snapshot_already_pinned());
-        }
-        // A redb read transaction is a stable version unaffected by later writes.
-        self.read_view = Some(self.handle().begin_read("snapshot")?);
-        Ok(())
-    }
-
-    fn end_snapshot(&mut self) {
-        self.read_view = None;
-    }
+    traversal::collect_after(range, prefix, io("scan_after"))
 }
 
 #[cfg(test)]
@@ -946,9 +747,10 @@ mod tests {
 
     use redb::{Database, ReadableDatabase, TableDefinition};
 
-    use super::{DELETE_BATCH_LIMIT, FORMAT_VERSION, META, RedbStore, TABLE, map_open_error};
-    use crate::backend::{Backend, StoreError};
+    use super::{FORMAT_VERSION, META, NativeEngine, TABLE, map_open_error};
     use crate::conformance;
+    use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn};
+    use crate::error::StoreError;
 
     static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1041,16 +843,17 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-denied-file").expect("temp dir");
         let path = dir.path().join("marrow.redb");
         {
-            let mut store = RedbStore::open(&path).expect("create fresh store");
-            Backend::write(&mut store, b"k", b"v".to_vec()).expect("write");
+            let mut store = NativeEngine::open(&path).expect("create fresh store");
+            let mut txn = store.begin().expect("begin");
+            txn.put(b"k", b"v".to_vec()).expect("write");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
         }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
             .expect("deny access to the store file");
 
         for result in [
-            RedbStore::open(&path).map(|_| ()),
-            RedbStore::open_existing(&path).map(|_| ()),
-            RedbStore::open_read_only(&path).map(|_| ()),
+            NativeEngine::open(&path).map(|_| ()),
+            NativeEngine::open_read_only(&path).map(|_| ()),
         ] {
             match result {
                 Err(StoreError::PermissionDenied { path: reported }) => {
@@ -1093,24 +896,16 @@ mod tests {
         };
 
         // A symlink loop is rejected before any handle opens, on every open path.
-        expect_io(RedbStore::open(&loop_a).map(|_| ()), "loop open");
+        expect_io(NativeEngine::open(&loop_a).map(|_| ()), "loop open");
         expect_io(
-            RedbStore::open_existing(&loop_a).map(|_| ()),
-            "loop existing",
-        );
-        expect_io(
-            RedbStore::open_read_only(&loop_a).map(|_| ()),
+            NativeEngine::open_read_only(&loop_a).map(|_| ()),
             "loop read-only",
         );
 
-        // A dangling target is a missing store to the non-creating opens; `open`
-        // creates the target, so only inspection and repair surface the fault.
+        // A dangling target is a missing store to the read-only open; `open`
+        // creates the target, so only inspection surfaces the fault.
         expect_io(
-            RedbStore::open_existing(&dangling).map(|_| ()),
-            "dangling existing",
-        );
-        expect_io(
-            RedbStore::open_read_only(&dangling).map(|_| ()),
+            NativeEngine::open_read_only(&dangling).map(|_| ()),
             "dangling read-only",
         );
     }
@@ -1173,74 +968,120 @@ mod tests {
             // its files) outlives every store, dropping only when the test ends.
             counter += 1;
             let path = dir.path().join(format!("store-{counter}.redb"));
-            RedbStore::open(&path)
+            NativeEngine::open(&path)
         })
     }
 
+    /// A fresh store passes its integrity audit, and an externally byte-mutated
+    /// store body is rejected by the audit — as a returned typed error or a
+    /// contained panic — rather than read back silently altered or crashing.
     #[test]
-    fn delete_removes_more_than_one_bounded_batch() {
-        let dir = TempDir::new("marrow-store-redb-test").expect("create a temp dir");
-        let path = dir.path().join("bulk-delete.redb");
-        let mut store = RedbStore::open(&path).expect("open a fresh redb store");
-        let prefix = b"bulk/";
-        let outside = b"bulk0/kept".as_slice();
+    fn audit_detects_external_corruption_without_crashing() {
+        use std::io::{Read, Seek, SeekFrom, Write};
 
-        let mut keys = Vec::new();
-        for n in 0..DELETE_BATCH_LIMIT + 7 {
-            let key = format!("bulk/{n:04}").into_bytes();
-            Backend::write(&mut store, key.as_slice(), b"value".to_vec()).expect("write bulk key");
-            keys.push(key);
+        let dir = TempDir::new("marrow-store-redb-audit").expect("temp dir");
+        let path = dir.path().join("audit.redb");
+        {
+            let mut store = NativeEngine::open(&path).expect("open fresh");
+            let mut txn = store.begin().expect("begin");
+            for n in 0..64u32 {
+                txn.put(format!("k{n:03}").as_bytes(), vec![n as u8; 32])
+                    .expect("put");
+            }
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+            store
+                .audit_integrity()
+                .expect("a fresh store passes its audit");
         }
-        Backend::write(&mut store, outside, b"kept".to_vec()).expect("write outside key");
 
-        Backend::delete(&mut store, prefix).expect("delete bulk prefix");
-
-        for key in keys {
-            assert_eq!(
-                Backend::read(&store, key.as_slice()).expect("read bulk key"),
-                None
-            );
+        // Flip a spread of live bytes in the store body out from under redb.
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("reopen store file");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read body");
+        for offset in (0..bytes.len()).step_by(97) {
+            bytes[offset] ^= 0xFF;
         }
-        assert_eq!(
-            Backend::read(&store, outside).expect("read outside key"),
-            Some(b"kept".to_vec())
-        );
+        file.seek(SeekFrom::Start(0)).expect("seek");
+        file.write_all(&bytes).expect("write mutated body");
+        file.sync_all().expect("sync mutated body");
+        drop(file);
+
+        // Opening and auditing a corrupted body must fail closed with a typed
+        // error, never a process panic.
+        let audited = std::panic::catch_unwind(|| match NativeEngine::open(&path) {
+            Ok(mut store) => store.audit_integrity(),
+            Err(error) => Err(error),
+        });
+        match audited {
+            Ok(Err(_)) => {}
+            Ok(Ok(())) => panic!("a byte-mutated store must not pass the integrity audit"),
+            Err(_) => panic!("the adapter must contain redb's panic as a typed error"),
+        }
     }
 
+    /// The memory and redb engines compute the same ordered-byte algebra: an
+    /// identical put/remove sequence, read back by point `get` and by `scan_after`
+    /// at the boundary minus/at/plus each key, agrees cell-for-cell across both.
     #[test]
-    fn rollback_restores_delete_across_more_than_one_bounded_batch() {
-        let dir = TempDir::new("marrow-store-redb-test").expect("create a temp dir");
-        let path = dir.path().join("bulk-delete-rollback.redb");
-        let mut store = RedbStore::open(&path).expect("open a fresh redb store");
-        let prefix = b"bulk/";
-        let outside = b"bulk0/kept".as_slice();
+    fn memory_and_redb_agree_byte_for_byte() {
+        use crate::MemoryEngine;
 
-        let mut keys = Vec::new();
-        for n in 0..DELETE_BATCH_LIMIT + 7 {
-            let key = format!("bulk/{n:04}").into_bytes();
-            Backend::write(&mut store, key.as_slice(), b"value".to_vec()).expect("write bulk key");
-            keys.push(key);
+        fn apply<E: ByteEngine>(engine: &mut E) -> Vec<(Vec<u8>, Vec<u8>)> {
+            {
+                let mut txn = engine.begin().expect("begin");
+                for n in 0..40u32 {
+                    let key = format!("\x30{:02}", (n * 3) % 20).into_bytes();
+                    if n % 4 == 0 {
+                        txn.remove(&key).expect("remove");
+                    } else {
+                        txn.put(&key, format!("v{n}").into_bytes()).expect("put");
+                    }
+                }
+                assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+            }
+            let view = engine.read_view().expect("view");
+            // Page the whole \x30 range and probe boundary cursors around each key.
+            let mut all = Vec::new();
+            let mut cursor = b"\x30".to_vec();
+            loop {
+                let page = view.scan_after(b"\x30", &cursor).expect("scan");
+                let Some((last, _)) = page.last().cloned() else {
+                    break;
+                };
+                cursor = last;
+                all.extend(page);
+            }
+            for (key, _) in all.clone() {
+                let mut minus = key.clone();
+                *minus.last_mut().unwrap() -= 1;
+                // A cursor just below a key includes it; at it excludes it.
+                assert!(
+                    view.scan_after(b"\x30", &minus)
+                        .expect("minus")
+                        .iter()
+                        .any(|(k, _)| *k == key)
+                );
+                assert!(
+                    view.scan_after(b"\x30", &key)
+                        .expect("at")
+                        .iter()
+                        .all(|(k, _)| *k != key)
+                );
+            }
+            all
         }
-        Backend::write(&mut store, outside, b"kept".to_vec()).expect("write outside key");
 
-        Backend::begin(&mut store).expect("begin transaction");
-        Backend::delete(&mut store, prefix).expect("delete bulk prefix");
-        assert_eq!(
-            Backend::read(&store, keys[0].as_slice()).expect("read deleted key"),
-            None
-        );
-        Backend::rollback(&mut store).expect("rollback delete");
+        let mem = apply(&mut MemoryEngine::new());
 
-        for key in keys {
-            assert_eq!(
-                Backend::read(&store, key.as_slice()).expect("read rollback key"),
-                Some(b"value".to_vec())
-            );
-        }
-        assert_eq!(
-            Backend::read(&store, outside).expect("read outside key"),
-            Some(b"kept".to_vec())
-        );
+        let dir = TempDir::new("marrow-store-redb-diff").expect("temp dir");
+        let path = dir.path().join("diff.redb");
+        let native = apply(&mut NativeEngine::open(&path).expect("open native"));
+
+        assert_eq!(mem, native, "memory and redb disagree on the byte algebra");
     }
 
     #[test]
@@ -1251,8 +1092,12 @@ mod tests {
         let old: &[u8] = b"old";
         let new: &[u8] = b"new";
 
-        let mut store = RedbStore::open(&path).expect("open");
-        Backend::write(&mut store, key, old.to_vec()).expect("seed old value");
+        let mut store = NativeEngine::open(&path).expect("open");
+        {
+            let mut txn = store.begin().expect("begin");
+            txn.put(key, old.to_vec()).expect("seed old value");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
         drop(store);
         let db = Database::open(&path).expect("reopen raw redb handle");
 
@@ -1302,7 +1147,7 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("aborted-write.redb");
 
-        drop(RedbStore::open(&path).expect("open"));
+        drop(NativeEngine::open(&path).expect("open"));
         let db = Database::open(&path).expect("reopen raw redb handle");
 
         let seed = db.begin_write().expect("begin seed transaction");
@@ -1362,7 +1207,7 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("ordered-bytes.redb");
 
-        drop(RedbStore::open(&path).expect("open"));
+        drop(NativeEngine::open(&path).expect("open"));
         let db = Database::open(&path).expect("reopen raw redb handle");
 
         let write = db.begin_write().expect("begin write transaction");
@@ -1425,7 +1270,7 @@ mod tests {
             write.commit().expect("commit foreign db");
         }
 
-        match RedbStore::open(&path) {
+        match NativeEngine::open(&path) {
             Err(StoreError::Corruption { .. }) => {}
             Err(other) => panic!("expected corruption for a meta-less file, got {other:?}"),
             Ok(_) => panic!("a meta-less file must not be adopted as a Marrow store"),
@@ -1452,7 +1297,10 @@ mod tests {
             write.commit().expect("commit future-format store");
         }
 
-        for result in [RedbStore::open(&path), RedbStore::open_read_only(&path)] {
+        for result in [
+            NativeEngine::open(&path),
+            NativeEngine::open_read_only(&path),
+        ] {
             let error = match result {
                 Err(error) => error,
                 Ok(_) => panic!("future format version must be rejected"),
@@ -1475,11 +1323,20 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("fresh.redb");
         {
-            let mut store = RedbStore::open(&path).expect("create fresh");
-            store.write(b"k", b"v".to_vec()).expect("write");
+            let mut store = NativeEngine::open(&path).expect("create fresh");
+            let mut txn = store.begin().expect("begin");
+            txn.put(b"k", b"v".to_vec()).expect("write");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
         }
-        let store = RedbStore::open(&path).expect("reopen stamped store");
-        assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
+        let store = NativeEngine::open(&path).expect("reopen stamped store");
+        assert_eq!(
+            store
+                .read_view()
+                .expect("read view")
+                .get(b"k")
+                .expect("read"),
+            Some(b"v".to_vec())
+        );
     }
 
     /// A store path that is a FIFO (or any other non-regular file) must fail closed
@@ -1500,14 +1357,13 @@ mod tests {
             .expect("spawn mkfifo");
         assert!(status.success(), "mkfifo failed");
 
-        for label in ["open", "open_existing", "open_read_only"] {
+        for label in ["open", "open_read_only"] {
             let path = path.clone();
             let (sender, receiver) = mpsc::channel();
             std::thread::spawn(move || {
                 let result = match label {
-                    "open" => RedbStore::open(&path),
-                    "open_existing" => RedbStore::open_existing(&path),
-                    _ => RedbStore::open_read_only(&path),
+                    "open" => NativeEngine::open(&path),
+                    _ => NativeEngine::open_read_only(&path),
                 };
                 let _ = sender.send(result.map(|_| ()));
             });

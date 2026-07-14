@@ -1,124 +1,156 @@
-//! The narrow ordered-byte seam the path kernel consumes.
+//! The narrow ordered-byte engine contract the path kernel consumes.
 //!
-//! [`ByteEngine`] is the minimal public projection of the crate-private
-//! [`Backend`](crate::backend::Backend): the operations the path kernel
-//! (`marrow-kernel`) needs to lay out and traverse durable cells — point read,
-//! write, prefix delete, forward `scan_after`, the transaction bracket, a pinned
-//! read snapshot, and a write-access probe. The rich scan family and the value
-//! prefix reader stay crate-private for the byte-engine lane (E00) to delete; the
-//! kernel never sees them.
+//! The seam is exactly three capabilities and nothing more:
 //!
-//! The kernel keys physical cells itself and interprets no bytes here: this seam
-//! orders opaque bytes and nothing more.
+//! - [`ByteEngine::read_view`] hands out a lifetime-bound coherent [`ReadView`].
+//!   Nothing can mutate the engine while a view borrows it, so the snapshot a
+//!   view reads is stable for its whole life without an explicit pin/unpin pair.
+//! - [`ByteEngine::begin`] consumes exclusive write access into a [`WriteTxn`].
+//!   Because the transaction borrows the engine mutably, a second concurrent
+//!   transaction cannot be named: nesting is unrepresentable, not merely rejected
+//!   at runtime.
+//! - [`ByteEngine::require_write_access`] reports whether the open handle admits
+//!   writes at all, so a read-only handle mints a read-only ceiling.
+//!
+//! A [`WriteTxn`] is *consuming*: [`WriteTxn::commit`] takes `self` and reports a
+//! [`CommitOutcome`], and dropping an uncommitted transaction aborts it. A
+//! [`ReadView`] offers only reads, so mutation through a read capability is a
+//! type error rather than a guarded call.
+//!
+//! Keys sort byte-wise; the single [`scan_after`](ReadView::scan_after) primitive
+//! yields cells in ascending key order after a cursor, up to the batch limits in
+//! [`limits`]. The engine orders opaque bytes and interprets none of them: the
+//! logical key and value codecs that give bytes meaning are owned by the path
+//! kernel (`marrow-kernel`).
 
-use crate::backend::{Backend, StoreError};
-use crate::mem::MemStore;
-#[cfg(feature = "native")]
-use crate::redb::RedbStore;
+use crate::error::StoreError;
 
-/// The maximum entries a single [`ByteEngine::scan_after`] returns. The kernel
-/// walks one cell at a time, so one is enough; the bound keeps a page from
-/// materializing an unbounded subtree.
-const SCAN_PAGE: usize = 64;
+/// Bounds every batch the engine returns or admits, so no operation allocates
+/// unbounded work (campaign law 9). The values are engine policy; the kernel
+/// keys and values it stores sit far below them.
+pub(crate) mod limits {
+    /// The largest key the engine will store. A key beyond this is a
+    /// [`LimitExceeded`](crate::error::StoreError::LimitExceeded).
+    pub(crate) const MAX_KEY_LEN: usize = 4096;
+    /// The largest value the engine will store.
+    pub(crate) const MAX_VALUE_LEN: usize = 1 << 20;
+    /// The most cells one [`scan_after`](super::ReadView::scan_after) returns. The
+    /// kernel walks one cell at a time, so a small page bounds a subtree walk.
+    pub(crate) const SCAN_MAX_RECORDS: usize = 64;
+    /// The most bytes one `scan_after` page accumulates before it stops early
+    /// (always returning at least one cell so progress is guaranteed).
+    pub(crate) const SCAN_MAX_AGGREGATE_BYTES: usize = 1 << 20;
+}
 
 /// One ordered-byte cell: its key and value.
 pub type Cell = (Vec<u8>, Vec<u8>);
 
-/// The ordered-byte operations the path kernel consumes. Keys sort byte-wise, so
-/// `scan_after` yields cells in ascending key order; the kernel's physical layout
-/// relies on that order.
-pub trait ByteEngine {
+/// How a [`WriteTxn::commit`] resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOutcome {
+    /// The transaction's writes are durably committed.
+    Confirmed,
+    /// The commit did not persist and the store is unchanged; retry is a fresh
+    /// transaction, never a replay.
+    Aborted,
+    /// The commit's durability is unknown — it may or may not have persisted. The
+    /// caller must close the store and reclassify on reopen rather than retry.
+    Indeterminate,
+}
+
+/// A coherent read view. Bound to the engine borrow that produced it, so every
+/// read it serves observes one consistent version.
+pub trait ReadView {
     /// The value stored at `key`, or `None`.
-    fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
-    /// Store `value` at `key`, replacing any prior value.
-    fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError>;
-    /// Remove `key` and every key under it as a prefix.
-    fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError>;
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
     /// The cells under `prefix` strictly after `cursor`, in ascending key order,
-    /// up to a bounded page. An empty result means no such cell exists.
+    /// up to [`limits::SCAN_MAX_RECORDS`] cells and
+    /// [`limits::SCAN_MAX_AGGREGATE_BYTES`] bytes. An empty result means no cell
+    /// under `prefix` sorts after `cursor`.
     fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError>;
-    /// Fail closed when the handle cannot accept writes.
+}
+
+/// A write transaction. Reads observe its own staged writes ([`ReadView`]), and
+/// it is consumed by [`commit`](WriteTxn::commit) or aborted by drop.
+pub trait WriteTxn: ReadView {
+    /// Stage `value` at `key`, replacing any prior value. A key or value beyond
+    /// the [`limits`] is refused before it is staged.
+    fn put(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError>;
+    /// Stage the removal of exactly `key`. Removing an absent key stages nothing
+    /// and is not an error.
+    fn remove(&mut self, key: &[u8]) -> Result<(), StoreError>;
+    /// Attempt to commit the staged writes, reporting whether they persisted.
+    fn commit(self) -> CommitOutcome;
+}
+
+/// The ordered-byte engine. Its two implementors — an in-memory engine and a
+/// redb-backed native engine — satisfy one conformance suite.
+///
+/// Two misuses the narrowed contract makes *unrepresentable* rather than
+/// rejecting at runtime:
+///
+/// Nesting: a second transaction cannot be opened while one is live, because
+/// [`begin`](ByteEngine::begin) borrows the engine mutably.
+///
+/// ```compile_fail
+/// use marrow_store::{ByteEngine, MemoryEngine};
+/// let mut engine = MemoryEngine::new();
+/// let first = engine.begin().unwrap();
+/// let second = engine.begin().unwrap(); // second mutable borrow of `engine`
+/// drop((first, second));
+/// ```
+///
+/// Mutation through a read capability: a [`ReadView`] exposes no `put` or
+/// `remove`.
+///
+/// ```compile_fail
+/// use marrow_store::{ByteEngine, MemoryEngine, WriteTxn};
+/// let engine = MemoryEngine::new();
+/// let view = engine.read_view().unwrap();
+/// view.put(b"k", b"v".to_vec()).unwrap(); // no `put` on a read view
+/// ```
+pub trait ByteEngine {
+    /// A coherent read view over this engine.
+    type View<'a>: ReadView
+    where
+        Self: 'a;
+    /// An exclusive write transaction over this engine.
+    type Txn<'a>: WriteTxn
+    where
+        Self: 'a;
+
+    /// Open a coherent read view. The view borrows the engine, so no write can
+    /// interleave for its lifetime.
+    fn read_view(&self) -> Result<Self::View<'_>, StoreError>;
+    /// Begin the one write transaction. The returned transaction borrows the
+    /// engine mutably, so a second cannot be opened while it is live.
+    fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError>;
+    /// Fail closed with [`StoreError::ReadOnly`] when the handle cannot accept
+    /// writes, so a caller can mint a read-only ceiling before opening a
+    /// transaction.
     fn require_write_access(&self, op: &'static str) -> Result<(), StoreError>;
-    /// Open (or deepen) the write-transaction bracket.
-    fn begin(&mut self) -> Result<(), StoreError>;
-    /// Commit the outermost write-transaction bracket.
-    fn commit(&mut self) -> Result<(), StoreError>;
-    /// Abort the open write-transaction bracket, discarding its staged writes.
-    fn rollback(&mut self) -> Result<(), StoreError>;
-    /// Pin a consistent read view so a multi-call traversal observes one snapshot.
-    fn begin_snapshot(&mut self) -> Result<(), StoreError>;
-    /// Release the pinned read view.
-    fn end_snapshot(&mut self);
+    /// Run one full integrity audit: a complete structural walk that verifies
+    /// every stored checksum. The fast open path does not re-verify page
+    /// checksums, so an external bit-flip on live bytes reads back silently
+    /// altered on a clean open; this walk catches it and reports
+    /// [`StoreError::Corruption`]. It is one bounded pass over the store — the
+    /// audit primitive the lifecycle audit mode consumes — and allocates no
+    /// per-caller unbounded work. A backend with nothing durable beneath it
+    /// (the in-memory engine) has nothing to walk and passes trivially.
+    fn audit_integrity(&mut self) -> Result<(), StoreError>;
 }
 
-/// Project the crate-private [`Backend`] onto the narrow public seam.
-macro_rules! byte_engine_from_backend {
-    ($ty:ty) => {
-        impl ByteEngine for $ty {
-            fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-                Backend::read(&self.0, key)
-            }
-            fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-                Backend::write(&mut self.0, key, value)
-            }
-            fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
-                Backend::delete(&mut self.0, prefix)
-            }
-            fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<Cell>, StoreError> {
-                Ok(Backend::scan_after(&self.0, prefix, cursor, SCAN_PAGE)?.entries)
-            }
-            fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
-                Backend::require_write_access(&self.0, op)
-            }
-            fn begin(&mut self) -> Result<(), StoreError> {
-                Backend::begin(&mut self.0)
-            }
-            fn commit(&mut self) -> Result<(), StoreError> {
-                Backend::commit(&mut self.0)
-            }
-            fn rollback(&mut self) -> Result<(), StoreError> {
-                Backend::rollback(&mut self.0)
-            }
-            fn begin_snapshot(&mut self) -> Result<(), StoreError> {
-                Backend::begin_snapshot(&mut self.0)
-            }
-            fn end_snapshot(&mut self) {
-                Backend::end_snapshot(&mut self.0);
-            }
-        }
-    };
-}
-
-/// An in-memory ordered-byte engine. The differential proving ground for the path
-/// kernel; not durable across processes.
-#[derive(Debug, Default)]
-pub struct MemoryEngine(MemStore);
-
-impl MemoryEngine {
-    /// A fresh empty in-memory engine.
-    pub fn new() -> Self {
-        Self::default()
+/// Reject a key or value that exceeds its batch limit before it is staged.
+pub(crate) fn check_cell_limits(key: &[u8], value: &[u8]) -> Result<(), StoreError> {
+    if key.len() > limits::MAX_KEY_LEN {
+        return Err(StoreError::LimitExceeded {
+            limit: "key length",
+        });
     }
-}
-
-byte_engine_from_backend!(MemoryEngine);
-
-/// A redb-backed native ordered-byte engine, durable across processes.
-#[cfg(feature = "native")]
-pub struct NativeEngine(RedbStore);
-
-#[cfg(feature = "native")]
-impl NativeEngine {
-    /// Open (creating if needed) a write-capable native store at `path`.
-    pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
-        Ok(Self(RedbStore::open(path)?))
+    if value.len() > limits::MAX_VALUE_LEN {
+        return Err(StoreError::LimitExceeded {
+            limit: "value length",
+        });
     }
-
-    /// Open an existing native store read-only, never creating the file.
-    pub fn open_read_only(path: &std::path::Path) -> Result<Self, StoreError> {
-        Ok(Self(RedbStore::open_read_only(path)?))
-    }
+    Ok(())
 }
-
-#[cfg(feature = "native")]
-byte_engine_from_backend!(NativeEngine);

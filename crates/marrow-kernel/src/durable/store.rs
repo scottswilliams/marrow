@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_store::{ByteEngine, StoreError};
+use marrow_store::{ByteEngine, CommitOutcome, ReadView, StoreError, WriteTxn};
 
 use super::physical::{self, CellKind};
 use super::profile;
@@ -106,7 +106,7 @@ impl<E: ByteEngine> DurableStore<E> {
     /// The witness classification after reopening: whether the recorded witness cell
     /// holds `token` (the commit completed) or not (it did not).
     pub fn classify(&self, token: [u8; 16]) -> Result<Reopen, StoreError> {
-        match self.engine.read(&physical::meta_key(WITNESS))? {
+        match self.engine.read_view()?.get(&physical::meta_key(WITNESS))? {
             Some(w) if w == token => Ok(Reopen::CompleteNew),
             _ => Ok(Reopen::CompleteOld),
         }
@@ -115,7 +115,9 @@ impl<E: ByteEngine> DurableStore<E> {
     fn verify_profile(&self) -> Result<(), SessionError> {
         match self
             .engine
-            .read(&physical::meta_key(PROFILE))
+            .read_view()
+            .map_err(SessionError::Engine)?
+            .get(&physical::meta_key(PROFILE))
             .map_err(SessionError::Engine)?
         {
             None => Ok(()),
@@ -145,8 +147,10 @@ impl<E: ByteEngine> DurableStore<E> {
             .collect()
     }
 
-    /// Open a read session over a pinned snapshot after resolving effective
-    /// authority and revalidating the store profile.
+    /// Open a read session over a coherent read view after resolving effective
+    /// authority and revalidating the store profile. The view is bound to the
+    /// session's borrow of the store, so its reads observe one version for the
+    /// whole call.
     pub fn read_session(
         &mut self,
         grant: InvocationGrant,
@@ -155,9 +159,13 @@ impl<E: ByteEngine> DurableStore<E> {
         resolve_authority(demand, self.ceiling_writable, grant)
             .map_err(|Denied| SessionError::Denied)?;
         self.verify_profile()?;
-        self.engine.begin_snapshot().map_err(SessionError::Engine)?;
         let auth = self.authorized_sites();
-        Ok(ReadSession { store: self, auth })
+        let view = self.engine.read_view().map_err(SessionError::Engine)?;
+        Ok(ReadSession {
+            view,
+            schema: &self.schema,
+            auth,
+        })
     }
 
     /// Open a transaction session after resolving effective authority, revalidating
@@ -170,26 +178,35 @@ impl<E: ByteEngine> DurableStore<E> {
         resolve_authority(demand, self.ceiling_writable, grant)
             .map_err(|Denied| SessionError::Denied)?;
         self.verify_profile()?;
-        self.engine.begin().map_err(SessionError::Engine)?;
+        let auth = self.authorized_sites();
+        let descriptor = profile::descriptor(&self.schema);
+        // Split the store's fields into disjoint borrows: the transaction borrows
+        // the engine mutably while the session still reads the schema and writes
+        // the poison flag.
+        let Self {
+            engine,
+            schema,
+            poisoned,
+            ..
+        } = self;
+        let mut txn = engine.begin().map_err(SessionError::Engine)?;
         // First provision: record the profile inside this transaction if absent.
         let profile_key = physical::meta_key(PROFILE);
-        if self
-            .engine
-            .read(&profile_key)
+        if txn
+            .get(&profile_key)
             .map_err(SessionError::Engine)?
             .is_none()
         {
-            self.engine
-                .write(&profile_key, profile::descriptor(&self.schema))
+            txn.put(&profile_key, descriptor)
                 .map_err(SessionError::Engine)?;
         }
-        let auth = self.authorized_sites();
         Ok(TxnSession {
-            store: self,
+            txn: Some(txn),
+            schema,
+            poisoned,
             auth,
             token: mint_token(),
             pending: BTreeSet::new(),
-            finished: false,
         })
     }
 }
@@ -215,46 +232,44 @@ fn resolve_authority(
     }
 }
 
-/// A read session: reads observe one pinned snapshot for the whole call. Non-`Clone`;
-/// releases the snapshot on drop.
-pub struct ReadSession<'s, E: ByteEngine> {
-    store: &'s mut DurableStore<E>,
+/// A read session: reads observe one coherent view for the whole call. Non-`Clone`;
+/// the view is released when the session drops.
+pub struct ReadSession<'s, E: ByteEngine>
+where
+    E: 's,
+{
+    view: E::View<'s>,
+    schema: &'s StoreSchema,
     auth: Vec<AuthorizedSite>,
 }
 
-impl<E: ByteEngine> Drop for ReadSession<'_, E> {
-    fn drop(&mut self) {
-        self.store.engine.end_snapshot();
-    }
-}
-
-impl<E: ByteEngine> Durable for ReadSession<'_, E> {
+impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
         self.auth[index as usize].clone()
     }
     fn presence(&mut self, site: &AuthorizedSite, key: KeyScalar) -> Result<Presence, KernelFault> {
-        op_presence(&self.store.engine, site, &key)
+        op_presence(&self.view, site, &key)
     }
     fn read_field(
         &mut self,
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<Option<RuntimeScalar>, KernelFault> {
-        op_read_field(&self.store.engine, site, &key)
+        op_read_field(&self.view, site, &key)
     }
     fn read_entry(
         &mut self,
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<Option<EntryValue>, KernelFault> {
-        op_read_entry(&self.store.engine, &self.store.schema, site, &key)
+        op_read_entry(&self.view, self.schema, site, &key)
     }
     fn next_key(
         &mut self,
         site: &AuthorizedSite,
         after: Option<KeyScalar>,
     ) -> Result<NextKey, KernelFault> {
-        op_next_key(&self.store.engine, site, after)
+        op_next_key(&self.view, site, after)
     }
     fn set_required(
         &mut self,
@@ -308,60 +323,82 @@ impl<E: ByteEngine> Durable for ReadSession<'_, E> {
 }
 
 /// A transaction session: one implicit single-writer transaction the export's call
-/// graph joins. Non-`Clone`, `#[must_use]`; rolls back on drop if not committed.
+/// graph joins. Non-`Clone`, `#[must_use]`; the consuming engine transaction it
+/// holds aborts on drop if it was not committed.
 #[must_use = "a transaction session must be committed or it rolls back on drop"]
-pub struct TxnSession<'s, E: ByteEngine> {
-    store: &'s mut DurableStore<E>,
+pub struct TxnSession<'s, E: ByteEngine>
+where
+    E: 's,
+{
+    /// The engine write transaction. `None` after commit consumes it, so a
+    /// second commit is a fault and drop is a no-op.
+    txn: Option<E::Txn<'s>>,
+    schema: &'s StoreSchema,
+    /// The store's poison flag, set on an indeterminate commit so a reopen
+    /// reclassifies.
+    poisoned: &'s mut bool,
     auth: Vec<AuthorizedSite>,
     token: [u8; 16],
     /// Keys whose fields were staged; reconciled at commit to decide created vs
     /// required-missing.
     pending: BTreeSet<Vec<u8>>,
-    finished: bool,
 }
 
-impl<E: ByteEngine> TxnSession<'_, E> {
+impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     /// The witness token this session commits, so a caller can classify a later
     /// reopen after an indeterminate commit.
     pub fn token(&self) -> [u8; 16] {
         self.token
     }
 
+    /// The live engine transaction. Present until commit consumes it; the verifier
+    /// proves no durable op runs after commit.
+    fn txn(&self) -> &E::Txn<'s> {
+        self.txn
+            .as_ref()
+            .expect("transaction is live until commit or drop")
+    }
+
+    fn txn_mut(&mut self) -> &mut E::Txn<'s> {
+        self.txn
+            .as_mut()
+            .expect("transaction is live until commit or drop")
+    }
+
     fn do_commit(&mut self) -> CommitResult {
-        if self.finished || self.store.poisoned {
+        if *self.poisoned || self.txn.is_none() {
             return CommitResult::CommitFault;
         }
         match self.reconcile() {
             Ok(()) => {}
             Err(result @ CommitResult::RequiredMissing { .. }) => {
-                self.store.engine.rollback().ok();
-                self.finished = true;
+                self.txn = None; // drop aborts the engine transaction.
                 return result;
             }
             Err(_) => {
-                self.store.engine.rollback().ok();
-                self.store.poisoned = true;
-                self.finished = true;
+                self.txn = None;
+                *self.poisoned = true;
                 return CommitResult::CommitFault;
             }
         }
         // The witness rides in the same engine transaction as the staged data.
+        let witness = self.token.to_vec();
         if self
-            .store
-            .engine
-            .write(&physical::meta_key(WITNESS), self.token.to_vec())
+            .txn_mut()
+            .put(&physical::meta_key(WITNESS), witness)
             .is_err()
         {
-            self.store.engine.rollback().ok();
-            self.store.poisoned = true;
-            self.finished = true;
+            self.txn = None;
+            *self.poisoned = true;
             return CommitResult::CommitFault;
         }
-        self.finished = true;
-        match self.store.engine.commit() {
-            Ok(()) => CommitResult::Committed,
-            Err(_) => {
-                self.store.poisoned = true;
+        match self.txn.take().expect("checked live above").commit() {
+            CommitOutcome::Confirmed => CommitResult::Committed,
+            // A clean abort left the store unchanged; an indeterminate commit
+            // leaves durability unknown and poisons the store for reclassification.
+            CommitOutcome::Aborted => CommitResult::CommitFault,
+            CommitOutcome::Indeterminate => {
+                *self.poisoned = true;
                 CommitResult::CommitFault
             }
         }
@@ -371,7 +408,7 @@ impl<E: ByteEngine> TxnSession<'_, E> {
     /// `RequiredMissing`; a live markerless entry with all required fields present
     /// gets its marker (created at commit).
     fn reconcile(&mut self) -> Result<(), CommitResult> {
-        let root = self.store.schema.root_name.clone();
+        let root = self.schema.root_name.clone();
         let staged: Vec<KeyScalar> = self
             .pending
             .iter()
@@ -383,14 +420,14 @@ impl<E: ByteEngine> TxnSession<'_, E> {
             .collect();
         for key in staged {
             let marker_key = physical::marker_key(&root, &key);
-            let marker_present = read_raw(&self.store.engine, &marker_key)
+            let marker_present = read_raw(self.txn(), &marker_key)
                 .map_err(|_| CommitResult::CommitFault)?
                 .is_some();
             let mut any_leaf = false;
             let mut missing_required: Option<String> = None;
-            for field in &self.store.schema.fields {
+            for field in &self.schema.fields {
                 let leaf = physical::field_leaf_key(&root, &key, &field.name);
-                let present = read_raw(&self.store.engine, &leaf)
+                let present = read_raw(self.txn(), &leaf)
                     .map_err(|_| CommitResult::CommitFault)?
                     .is_some();
                 any_leaf |= present;
@@ -405,9 +442,8 @@ impl<E: ByteEngine> TxnSession<'_, E> {
                 return Err(CommitResult::RequiredMissing { key, field });
             }
             if !marker_present {
-                self.store
-                    .engine
-                    .write(&marker_key, physical::MARKER_VALUE.to_vec())
+                self.txn_mut()
+                    .put(&marker_key, physical::MARKER_VALUE.to_vec())
                     .map_err(|_| CommitResult::CommitFault)?;
             }
         }
@@ -415,41 +451,33 @@ impl<E: ByteEngine> TxnSession<'_, E> {
     }
 }
 
-impl<E: ByteEngine> Drop for TxnSession<'_, E> {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.store.engine.rollback().ok();
-        }
-    }
-}
-
-impl<E: ByteEngine> Durable for TxnSession<'_, E> {
+impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
         self.auth[index as usize].clone()
     }
     fn presence(&mut self, site: &AuthorizedSite, key: KeyScalar) -> Result<Presence, KernelFault> {
-        op_presence(&self.store.engine, site, &key)
+        op_presence(self.txn(), site, &key)
     }
     fn read_field(
         &mut self,
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<Option<RuntimeScalar>, KernelFault> {
-        op_read_field(&self.store.engine, site, &key)
+        op_read_field(self.txn(), site, &key)
     }
     fn read_entry(
         &mut self,
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<Option<EntryValue>, KernelFault> {
-        op_read_entry(&self.store.engine, &self.store.schema, site, &key)
+        op_read_entry(self.txn(), self.schema, site, &key)
     }
     fn next_key(
         &mut self,
         site: &AuthorizedSite,
         after: Option<KeyScalar>,
     ) -> Result<NextKey, KernelFault> {
-        op_next_key(&self.store.engine, site, after)
+        op_next_key(self.txn(), site, after)
     }
     fn set_required(
         &mut self,
@@ -460,9 +488,8 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
         let name = field_name(site, true);
         let leaf = physical::field_leaf_key(&site.root, &key, name);
         let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
-        self.store
-            .engine
-            .write(&leaf, bytes)
+        self.txn_mut()
+            .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
         self.pending.insert(encode_key_value(&key));
         Ok(())
@@ -478,17 +505,13 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
         match value {
             Some(value) => {
                 let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
-                self.store
-                    .engine
-                    .write(&leaf, bytes)
+                self.txn_mut()
+                    .put(&leaf, bytes)
                     .map_err(KernelFault::Engine)?;
                 self.pending.insert(encode_key_value(&key));
             }
             None => {
-                self.store
-                    .engine
-                    .delete(&leaf)
-                    .map_err(KernelFault::Engine)?;
+                self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
             }
         }
         Ok(())
@@ -500,7 +523,7 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
         let marker_key = physical::marker_key(&site.root, &key);
-        if read_raw(&self.store.engine, &marker_key)?.is_some() {
+        if read_raw(self.txn(), &marker_key)?.is_some() {
             return Ok(CreateOutcome::AlreadyPresent);
         }
         self.write_entry(&site.root, &key, &entry)?;
@@ -513,15 +536,13 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
         entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
         let marker_key = physical::marker_key(&site.root, &key);
-        if read_raw(&self.store.engine, &marker_key)?.is_none() {
+        if read_raw(self.txn(), &marker_key)?.is_none() {
             return Ok(ReplaceOutcome::Missing);
         }
-        // Exact replacement: drop the whole entry, then rewrite it, so unlisted
-        // sparse leaves do not survive.
-        self.store
-            .engine
-            .delete(&marker_key)
-            .map_err(KernelFault::Engine)?;
+        // Exact replacement: remove the entry's marker and every field leaf by
+        // exact key, then rewrite it, so unlisted sparse leaves do not survive.
+        // The engine has no prefix delete; the kernel knows the entry's cells.
+        self.remove_entry_cells(&site.root, &key)?;
         self.write_entry(&site.root, &key, &entry)?;
         Ok(ReplaceOutcome::Replaced)
     }
@@ -532,11 +553,8 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
     ) -> Result<EraseOutcome, KernelFault> {
         let name = field_name(site, false);
         let leaf = physical::field_leaf_key(&site.root, &key, name);
-        let existed = read_raw(&self.store.engine, &leaf)?.is_some();
-        self.store
-            .engine
-            .delete(&leaf)
-            .map_err(KernelFault::Engine)?;
+        let existed = read_raw(self.txn(), &leaf)?.is_some();
+        self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
         Ok(if existed {
             EraseOutcome::Erased
         } else {
@@ -549,11 +567,9 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
         key: KeyScalar,
     ) -> Result<EraseOutcome, KernelFault> {
         let marker_key = physical::marker_key(&site.root, &key);
-        let existed = read_raw(&self.store.engine, &marker_key)?.is_some();
-        self.store
-            .engine
-            .delete(&marker_key)
-            .map_err(KernelFault::Engine)?;
+        let existed = read_raw(self.txn(), &marker_key)?.is_some();
+        // Exact-cells removal of the whole entry: marker plus every field leaf.
+        self.remove_entry_cells(&site.root, &key)?;
         Ok(if existed {
             EraseOutcome::Erased
         } else {
@@ -565,7 +581,7 @@ impl<E: ByteEngine> Durable for TxnSession<'_, E> {
     }
 }
 
-impl<E: ByteEngine> TxnSession<'_, E> {
+impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     /// Write an entry's marker and every present field leaf.
     fn write_entry(
         &mut self,
@@ -579,17 +595,30 @@ impl<E: ByteEngine> TxnSession<'_, E> {
         )];
         for (index, slot) in entry.fields.iter().enumerate() {
             if let Some(value) = slot {
-                let name = &self.store.schema.fields[index].name;
+                let name = &self.schema.fields[index].name;
                 let leaf = physical::field_leaf_key(root, key, name);
                 let bytes = encode_value(value).map_err(|_| KernelFault::ValueRange)?;
                 writes.push((leaf, bytes));
             }
         }
         for (physical_key, value) in writes {
-            self.store
-                .engine
-                .write(&physical_key, value)
+            self.txn_mut()
+                .put(&physical_key, value)
                 .map_err(KernelFault::Engine)?;
+        }
+        Ok(())
+    }
+
+    /// Remove every cell of an entry — its marker and one field leaf per schema
+    /// field — by exact key. The engine offers only point removal, so the kernel
+    /// enumerates the entry's cells from the schema rather than deleting a prefix.
+    fn remove_entry_cells(&mut self, root: &str, key: &KeyScalar) -> Result<(), KernelFault> {
+        let mut cells = vec![physical::marker_key(root, key)];
+        for field in &self.schema.fields {
+            cells.push(physical::field_leaf_key(root, key, &field.name));
+        }
+        for cell in cells {
+            self.txn_mut().remove(&cell).map_err(KernelFault::Engine)?;
         }
         Ok(())
     }
@@ -612,12 +641,12 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
     }
 }
 
-fn read_raw<E: ByteEngine>(engine: &E, key: &[u8]) -> Result<Option<Vec<u8>>, KernelFault> {
-    engine.read(key).map_err(KernelFault::Engine)
+fn read_raw<V: ReadView>(cells: &V, key: &[u8]) -> Result<Option<Vec<u8>>, KernelFault> {
+    cells.get(key).map_err(KernelFault::Engine)
 }
 
-fn op_presence<E: ByteEngine>(
-    engine: &E,
+fn op_presence<V: ReadView>(
+    cells: &V,
     site: &AuthorizedSite,
     key: &KeyScalar,
 ) -> Result<Presence, KernelFault> {
@@ -625,14 +654,14 @@ fn op_presence<E: ByteEngine>(
         AuthTarget::Entry => physical::marker_key(&site.root, key),
         AuthTarget::Field { name, .. } => physical::field_leaf_key(&site.root, key, name),
     };
-    Ok(match read_raw(engine, &physical_key)? {
+    Ok(match read_raw(cells, &physical_key)? {
         Some(_) => Presence::Present,
         None => Presence::Absent,
     })
 }
 
-fn op_read_field<E: ByteEngine>(
-    engine: &E,
+fn op_read_field<V: ReadView>(
+    cells: &V,
     site: &AuthorizedSite,
     key: &KeyScalar,
 ) -> Result<Option<RuntimeScalar>, KernelFault> {
@@ -640,7 +669,7 @@ fn op_read_field<E: ByteEngine>(
         unreachable!("verifier proved a field read targets a field site")
     };
     let leaf = physical::field_leaf_key(&site.root, key, name);
-    match read_raw(engine, &leaf)? {
+    match read_raw(cells, &leaf)? {
         None => Ok(None),
         Some(bytes) => decode_value(&bytes, *kind)
             .map(Some)
@@ -648,20 +677,20 @@ fn op_read_field<E: ByteEngine>(
     }
 }
 
-fn op_read_entry<E: ByteEngine>(
-    engine: &E,
+fn op_read_entry<V: ReadView>(
+    cells: &V,
     schema: &StoreSchema,
     site: &AuthorizedSite,
     key: &KeyScalar,
 ) -> Result<Option<EntryValue>, KernelFault> {
     let marker = physical::marker_key(&site.root, key);
-    if read_raw(engine, &marker)?.is_none() {
+    if read_raw(cells, &marker)?.is_none() {
         return Ok(None);
     }
     let mut fields = Vec::with_capacity(schema.fields.len());
     for field in &schema.fields {
         let leaf = physical::field_leaf_key(&site.root, key, &field.name);
-        match read_raw(engine, &leaf)? {
+        match read_raw(cells, &leaf)? {
             None => {
                 // A present marker with a missing required field is a marker/field
                 // mismatch: corruption, never implicit absence.
@@ -680,8 +709,8 @@ fn op_read_entry<E: ByteEngine>(
     Ok(Some(EntryValue { fields }))
 }
 
-fn op_next_key<E: ByteEngine>(
-    engine: &E,
+fn op_next_key<V: ReadView>(
+    cells: &V,
     site: &AuthorizedSite,
     after: Option<KeyScalar>,
 ) -> Result<NextKey, KernelFault> {
@@ -690,7 +719,7 @@ fn op_next_key<E: ByteEngine>(
         None => prefix.clone(),
         Some(key) => physical::cursor(&site.root, key),
     };
-    let page = engine
+    let page = cells
         .scan_after(&prefix, &cursor)
         .map_err(KernelFault::Engine)?;
     let Some((cell_key, _)) = page.into_iter().next() else {
@@ -719,7 +748,7 @@ fn mint_token() -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use marrow_store::{ByteEngine, MemoryEngine};
+    use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, WriteTxn};
 
     use super::super::physical;
     use super::super::{
@@ -822,12 +851,15 @@ mod tests {
     fn a_field_leaf_without_a_marker_is_corruption() {
         // Write a field leaf directly, with no entry marker: an orphan leaf.
         let mut engine = MemoryEngine::new();
-        engine
-            .write(
+        {
+            let mut txn = engine.begin().expect("begin");
+            txn.put(
                 &physical::field_leaf_key("counters", &KeyScalar::Str("x".into()), "value"),
                 b"5".to_vec(),
             )
             .expect("seed orphan leaf");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
         let mut store = DurableStore::from_engine(engine, schema(), sites());
         let mut read = store
             .read_session(InvocationGrant::full_store(), read_demand())

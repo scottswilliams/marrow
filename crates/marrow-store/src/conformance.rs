@@ -1,442 +1,270 @@
-//! Private conformance checks for ordered-byte backend implementors.
+//! Conformance laws every [`ByteEngine`] implementor satisfies. One suite, run
+//! against both the in-memory and the redb-backed engine, pins the narrowed
+//! ordered-byte contract: point get/put/remove, the one bounded forward
+//! `scan_after` (proved at the boundary minus/at/plus a key), consuming
+//! transactions, batch limits, and the integrity audit.
 
-use crate::backend::{Backend, StoreError, ValuePrefix};
-use marrow_codes::Code;
+use crate::engine::{ByteEngine, CommitOutcome, ReadView, WriteTxn, limits};
+use crate::error::StoreError;
 
-pub(crate) fn run_all<B: Backend>(
-    mut make: impl FnMut() -> Result<B, StoreError>,
+pub(crate) fn run_all<E: ByteEngine>(
+    mut make: impl FnMut() -> Result<E, StoreError>,
 ) -> Result<(), StoreError> {
     values_round_trip(&mut make()?)?;
-    read_prefix_obeys_limits_and_truncation_flags(&mut make()?)?;
-    delete_removes_the_prefix_subtree(&mut make()?)?;
-    delete_of_an_absent_prefix_is_a_no_op(&mut make()?)?;
-    scan_returns_only_the_prefix_in_order(&mut make()?)?;
-    scan_is_bounded_by_the_limit(&mut make()?)?;
-    scan_after_resumes_inside_the_prefix(&mut make()?)?;
-    scan_before_resumes_inside_the_prefix_in_reverse(&mut make()?)?;
-    bounded_scan_returns_only_entries_between_prefix_bounds(&mut make()?)?;
-    bounded_scan_after_resumes_between_prefix_bounds(&mut make()?)?;
-    bounded_reverse_scan_returns_only_entries_between_prefix_bounds(&mut make()?)?;
-    a_committed_transaction_keeps_its_writes(&mut make()?)?;
-    a_rolled_back_transaction_discards_its_writes(&mut make()?)?;
-    an_unbalanced_commit_or_rollback_is_a_no_op(&mut make()?)?;
-    a_joined_transaction_commit_waits_for_the_outer_commit(&mut make()?)?;
-    rollback_of_a_joined_transaction_aborts_the_whole_transaction(&mut make()?)?;
-    a_transaction_sees_its_writes_in_scans(&mut make()?)?;
-    open_transaction_state_tracks_transaction_depth(&mut make()?)?;
-    a_snapshot_pins_one_consistent_view(&mut make()?)?;
-    read_prefix_observes_snapshot_visibility(&mut make()?)?;
-    a_snapshot_and_write_transaction_cannot_overlap(&mut make()?)?;
-    read_snapshots_are_not_reentrant(&mut make()?)?;
-    writes_are_rejected_while_a_read_snapshot_is_pinned(&mut make()?)?;
+    a_transaction_reads_its_own_writes(&mut make()?)?;
+    a_committed_transaction_persists(&mut make()?)?;
+    a_dropped_transaction_aborts(&mut make()?)?;
+    remove_is_exact_not_prefix(&mut make()?)?;
+    remove_of_an_absent_key_is_a_no_op(&mut make()?)?;
+    scan_after_is_forward_half_open_at_the_boundary(&mut make()?)?;
+    scan_after_stops_at_the_prefix_edge(&mut make()?)?;
+    scan_after_is_bounded_by_the_record_limit(&mut make()?)?;
+    oversized_cells_are_refused(&mut make()?)?;
+    a_populated_store_passes_its_integrity_audit(&mut make()?)?;
+    a_model_sequence_matches_a_reference_map(&mut make()?)?;
     Ok(())
 }
 
-fn values_round_trip(store: &mut dyn Backend) -> Result<(), StoreError> {
-    assert_eq!(store.read(b"\x10key")?, None);
-    store.write(b"\x10key", b"draft".to_vec())?;
-    assert_eq!(store.read(b"\x10key")?, Some(b"draft".to_vec()));
-    store.write(b"\x10key", b"final".to_vec())?;
-    assert_eq!(store.read(b"\x10key")?, Some(b"final".to_vec()));
+/// Commit `cells` into `engine`, asserting the commit confirms.
+fn seed<E: ByteEngine>(engine: &mut E, cells: &[(&[u8], &[u8])]) -> Result<(), StoreError> {
+    let mut txn = engine.begin()?;
+    for (key, value) in cells {
+        txn.put(key, value.to_vec())?;
+    }
+    assert_eq!(txn.commit(), CommitOutcome::Confirmed, "seed commit");
     Ok(())
 }
 
-fn read_prefix_obeys_limits_and_truncation_flags(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    assert_eq!(store.read_prefix(b"\x11missing", 3)?, None);
+fn keys(cells: &[(Vec<u8>, Vec<u8>)]) -> Vec<Vec<u8>> {
+    cells.iter().map(|(key, _)| key.clone()).collect()
+}
 
-    store.write(b"\x11key", b"abcdef".to_vec())?;
+fn values_round_trip<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    assert_eq!(engine.read_view()?.get(b"\x10key")?, None);
+    seed(engine, &[(b"\x10key", b"draft")])?;
     assert_eq!(
-        store.read_prefix(b"\x11key", 0)?,
-        Some(ValuePrefix {
-            bytes: Vec::new(),
-            truncated: true,
-        })
+        engine.read_view()?.get(b"\x10key")?,
+        Some(b"draft".to_vec())
     );
+    seed(engine, &[(b"\x10key", b"final")])?;
     assert_eq!(
-        store.read_prefix(b"\x11key", 3)?,
-        Some(ValuePrefix {
-            bytes: b"abc".to_vec(),
-            truncated: true,
-        })
-    );
-    assert_eq!(
-        store.read_prefix(b"\x11key", 6)?,
-        Some(ValuePrefix {
-            bytes: b"abcdef".to_vec(),
-            truncated: false,
-        })
-    );
-    assert_eq!(
-        store.read_prefix(b"\x11key", 8)?,
-        Some(ValuePrefix {
-            bytes: b"abcdef".to_vec(),
-            truncated: false,
-        })
+        engine.read_view()?.get(b"\x10key")?,
+        Some(b"final".to_vec())
     );
     Ok(())
 }
 
-fn delete_removes_the_prefix_subtree(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x20a", b"node".to_vec())?;
-    store.write(b"\x20a\x01", b"left".to_vec())?;
-    store.write(b"\x20b\x01", b"right".to_vec())?;
-    store.delete(b"\x20a")?;
-    assert_eq!(store.read(b"\x20a")?, None);
-    assert_eq!(store.read(b"\x20a\x01")?, None);
-    assert_eq!(store.read(b"\x20b\x01")?, Some(b"right".to_vec()));
+fn a_transaction_reads_its_own_writes<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    let mut txn = engine.begin()?;
+    assert_eq!(txn.get(b"\x60\x01")?, None);
+    txn.put(b"\x60\x01", b"staged".to_vec())?;
+    assert_eq!(txn.get(b"\x60\x01")?, Some(b"staged".to_vec()));
+    assert_eq!(
+        keys(&txn.scan_after(b"\x60", b"\x60")?),
+        vec![b"\x60\x01".to_vec()],
+        "a scan inside the transaction sees its staged write"
+    );
+    // The write is not visible outside until commit: dropping aborts it.
+    drop(txn);
+    assert_eq!(engine.read_view()?.get(b"\x60\x01")?, None);
     Ok(())
 }
 
-fn delete_of_an_absent_prefix_is_a_no_op(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x20b\x01", b"right".to_vec())?;
-    store.delete(b"\x20a")?;
-    assert_eq!(store.read(b"\x20b\x01")?, Some(b"right".to_vec()));
+fn a_committed_transaction_persists<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    seed(engine, &[(b"k", b"v")])?;
+    assert_eq!(engine.read_view()?.get(b"k")?, Some(b"v".to_vec()));
     Ok(())
 }
 
-fn scan_returns_only_the_prefix_in_order(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x30\x02", b"second".to_vec())?;
-    store.write(b"\x30\x01", b"first".to_vec())?;
-    store.write(b"\x31\x01", b"outside".to_vec())?;
-    let page = store.scan(b"\x30", 10)?;
-    assert!(!page.truncated);
-    assert_eq!(
-        page.entries,
-        vec![
-            (b"\x30\x01".to_vec(), b"first".to_vec()),
-            (b"\x30\x02".to_vec(), b"second".to_vec()),
-        ]
-    );
+fn a_dropped_transaction_aborts<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    seed(engine, &[(b"k", b"old")])?;
+    {
+        let mut txn = engine.begin()?;
+        txn.put(b"k", b"new".to_vec())?;
+        txn.put(b"temp", b"gone".to_vec())?;
+        // No commit: the transaction aborts on drop.
+    }
+    let view = engine.read_view()?;
+    assert_eq!(view.get(b"k")?, Some(b"old".to_vec()));
+    assert_eq!(view.get(b"temp")?, None);
     Ok(())
 }
 
-fn scan_is_bounded_by_the_limit(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x40\x01", b"first".to_vec())?;
-    store.write(b"\x40\x02", b"second".to_vec())?;
-    let page = store.scan(b"\x40", 1)?;
-    assert_eq!(page.entries.len(), 1);
-    assert!(page.truncated);
-    Ok(())
-}
-
-fn scan_after_resumes_inside_the_prefix(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x50\x01", b"first".to_vec())?;
-    store.write(b"\x50\x02", b"second".to_vec())?;
-    store.write(b"\x51\x01", b"outside".to_vec())?;
-
-    let first = store.scan(b"\x50", 1)?;
-    assert!(first.truncated);
-    assert_eq!(
-        first.entries,
-        vec![(b"\x50\x01".to_vec(), b"first".to_vec())]
-    );
-    let cursor = first.entries[0].0.clone();
-    let second = store.scan_after(b"\x50", &cursor, 10)?;
-    assert!(!second.truncated);
-    assert_eq!(
-        second.entries,
-        vec![(b"\x50\x02".to_vec(), b"second".to_vec())]
-    );
-    Ok(())
-}
-
-fn scan_before_resumes_inside_the_prefix_in_reverse(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    store.write(b"\x50\x01", b"first".to_vec())?;
-    store.write(b"\x50\x02", b"second".to_vec())?;
-    store.write(b"\x51\x01", b"outside".to_vec())?;
-
-    let first = store.scan_before(b"\x50", b"\x51", 1)?;
-    assert!(first.truncated);
-    assert_eq!(
-        first.entries,
-        vec![(b"\x50\x02".to_vec(), b"second".to_vec())]
-    );
-    let cursor = first.entries[0].0.clone();
-    let second = store.scan_before(b"\x50", &cursor, 10)?;
-    assert!(!second.truncated);
-    assert_eq!(
-        second.entries,
-        vec![(b"\x50\x01".to_vec(), b"first".to_vec())]
-    );
-    Ok(())
-}
-
-fn bounded_scan_returns_only_entries_between_prefix_bounds(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    store.write(b"\x58\x01", b"below".to_vec())?;
-    store.write(b"\x58\x02", b"first".to_vec())?;
-    store.write(b"\x58\x03", b"second".to_vec())?;
-    store.write(b"\x58\x04", b"above".to_vec())?;
-    store.write(b"\x59\x02", b"outside".to_vec())?;
-
-    let page = store.scan_between(b"\x58", Some(b"\x58\x02"), Some(b"\x58\x04"), 10)?;
-    assert!(!page.truncated);
-    assert_eq!(
-        page.entries,
-        vec![
-            (b"\x58\x02".to_vec(), b"first".to_vec()),
-            (b"\x58\x03".to_vec(), b"second".to_vec()),
-        ]
-    );
-    Ok(())
-}
-
-fn bounded_scan_after_resumes_between_prefix_bounds(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    store.write(b"\x5b\x01", b"below".to_vec())?;
-    store.write(b"\x5b\x02", b"first".to_vec())?;
-    store.write(b"\x5b\x03", b"second".to_vec())?;
-    store.write(b"\x5b\x04", b"above".to_vec())?;
-    store.write(b"\x5c\x02", b"outside".to_vec())?;
-
-    let first = store.scan_between(b"\x5b", Some(b"\x5b\x02"), Some(b"\x5b\x04"), 1)?;
-    assert!(first.truncated);
-    assert_eq!(
-        first.entries,
-        vec![(b"\x5b\x02".to_vec(), b"first".to_vec())]
-    );
-
-    let cursor = first.entries[0].0.clone();
-    let second =
-        store.scan_between_after(b"\x5b", Some(b"\x5b\x02"), Some(b"\x5b\x04"), &cursor, 10)?;
-    assert!(!second.truncated);
-    assert_eq!(
-        second.entries,
-        vec![(b"\x5b\x03".to_vec(), b"second".to_vec())]
-    );
-    Ok(())
-}
-
-fn bounded_reverse_scan_returns_only_entries_between_prefix_bounds(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    store.write(b"\x59\x01", b"below".to_vec())?;
-    store.write(b"\x59\x02", b"first".to_vec())?;
-    store.write(b"\x59\x03", b"second".to_vec())?;
-    store.write(b"\x59\x04", b"above".to_vec())?;
-    store.write(b"\x5a\x02", b"outside".to_vec())?;
-
-    let first = store.scan_between_before(
-        b"\x59",
-        Some(b"\x59\x02"),
-        Some(b"\x59\x04"),
-        b"\x59\x04",
-        1,
+/// `remove` deletes exactly one key. A key that is a byte-prefix of the removed
+/// key survives — the engine has no prefix-delete, and the kernel removes an
+/// entry's cells one exact key at a time.
+fn remove_is_exact_not_prefix<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    seed(
+        engine,
+        &[
+            (b"\x20a", b"node"),
+            (b"\x20a\x01", b"child"),
+            (b"\x20b", b"sibling"),
+        ],
     )?;
-    assert!(first.truncated);
-    assert_eq!(
-        first.entries,
-        vec![(b"\x59\x03".to_vec(), b"second".to_vec())]
-    );
-
-    let cursor = first.entries[0].0.clone();
-    let second =
-        store.scan_between_before(b"\x59", Some(b"\x59\x02"), Some(b"\x59\x04"), &cursor, 10)?;
-    assert!(!second.truncated);
-    assert_eq!(
-        second.entries,
-        vec![(b"\x59\x02".to_vec(), b"first".to_vec())]
-    );
+    {
+        let mut txn = engine.begin()?;
+        txn.remove(b"\x20a")?;
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+    let view = engine.read_view()?;
+    assert_eq!(view.get(b"\x20a")?, None);
+    assert_eq!(view.get(b"\x20a\x01")?, Some(b"child".to_vec()));
+    assert_eq!(view.get(b"\x20b")?, Some(b"sibling".to_vec()));
     Ok(())
 }
 
-fn a_committed_transaction_keeps_its_writes(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.begin()?;
-    store.write(b"k", b"v".to_vec())?;
-    store.commit()?;
-    assert_eq!(store.read(b"k")?, Some(b"v".to_vec()));
+fn remove_of_an_absent_key_is_a_no_op<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    seed(engine, &[(b"\x20b", b"kept")])?;
+    {
+        let mut txn = engine.begin()?;
+        txn.remove(b"\x20a")?;
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+    assert_eq!(engine.read_view()?.get(b"\x20b")?, Some(b"kept".to_vec()));
     Ok(())
 }
 
-fn a_rolled_back_transaction_discards_its_writes(
-    store: &mut dyn Backend,
+/// `scan_after` is forward and half-open: it excludes the cursor key and returns
+/// the rest in ascending order. Proved at the boundary a cursor just below a key,
+/// exactly at it, and just above the last key.
+fn scan_after_is_forward_half_open_at_the_boundary<E: ByteEngine>(
+    engine: &mut E,
 ) -> Result<(), StoreError> {
-    store.write(b"k", b"old".to_vec())?;
-    store.begin()?;
-    store.write(b"k", b"new".to_vec())?;
-    store.write(b"temp", b"gone".to_vec())?;
-    store.rollback()?;
-    assert_eq!(store.read(b"k")?, Some(b"old".to_vec()));
-    assert_eq!(store.read(b"temp")?, None);
-    Ok(())
-}
-
-fn an_unbalanced_commit_or_rollback_is_a_no_op(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"k", b"v".to_vec())?;
-    store.commit()?;
-    assert_eq!(store.read(b"k")?, Some(b"v".to_vec()));
-    store.rollback()?;
-    assert_eq!(store.read(b"k")?, Some(b"v".to_vec()));
-    Ok(())
-}
-
-fn a_joined_transaction_commit_waits_for_the_outer_commit(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    store.write(b"k", b"base".to_vec())?;
-    store.begin()?;
-    store.write(b"k", b"outer".to_vec())?;
-    store.begin()?;
-    store.write(b"inner", b"value".to_vec())?;
-    store.commit()?;
-    assert_eq!(store.read(b"inner")?, Some(b"value".to_vec()));
-    store.rollback()?;
-    assert_eq!(store.read(b"k")?, Some(b"base".to_vec()));
-    assert_eq!(store.read(b"inner")?, None);
-    Ok(())
-}
-
-fn rollback_of_a_joined_transaction_aborts_the_whole_transaction(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    store.begin()?;
-    store.write(b"outer", b"1".to_vec())?;
-    store.begin()?;
-    store.write(b"inner", b"3".to_vec())?;
-    store.rollback()?;
-    assert_eq!(store.read(b"outer")?, None);
-    assert_eq!(store.read(b"inner")?, None);
-    store.commit()?;
-    assert_eq!(store.read(b"outer")?, None);
-    assert_eq!(store.read(b"inner")?, None);
-    Ok(())
-}
-
-fn a_transaction_sees_its_writes_in_scans(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.begin()?;
-    store.write(b"\x60\x01", b"inside".to_vec())?;
+    seed(
+        engine,
+        &[
+            (b"\x30\x01", b"a"),
+            (b"\x30\x02", b"b"),
+            (b"\x30\x03", b"c"),
+        ],
+    )?;
+    let view = engine.read_view()?;
+    // minus: a cursor just below the first key yields every cell.
     assert_eq!(
-        store.scan(b"\x60", 10)?.entries,
-        vec![(b"\x60\x01".to_vec(), b"inside".to_vec())]
-    );
-    store.rollback()?;
-    Ok(())
-}
-
-fn open_transaction_state_tracks_transaction_depth(
-    store: &mut dyn Backend,
-) -> Result<(), StoreError> {
-    assert_eq!(store.transaction_depth(), 0);
-    store.begin()?;
-    assert_eq!(store.transaction_depth(), 1);
-    store.begin()?;
-    assert_eq!(store.transaction_depth(), 2);
-    store.commit()?;
-    assert_eq!(store.transaction_depth(), 1);
-    store.rollback()?;
-    assert_eq!(store.transaction_depth(), 0);
-    Ok(())
-}
-
-fn a_snapshot_pins_one_consistent_view(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x70\x01", b"before".to_vec())?;
-    store.begin_snapshot()?;
-    assert_eq!(store.read(b"\x70\x01")?, Some(b"before".to_vec()));
-    assert_eq!(store.read(b"\x70\x02")?, None);
-    assert_eq!(
-        store.scan(b"\x70", 10)?.entries,
-        vec![(b"\x70\x01".to_vec(), b"before".to_vec())]
-    );
-    store.end_snapshot();
-
-    store.write(b"\x70\x01", b"after".to_vec())?;
-    store.write(b"\x70\x02", b"added".to_vec())?;
-    assert_eq!(store.read(b"\x70\x01")?, Some(b"after".to_vec()));
-    assert_eq!(
-        store.scan(b"\x70", 10)?.entries,
+        keys(&view.scan_after(b"\x30", b"\x30\x00")?),
         vec![
-            (b"\x70\x01".to_vec(), b"after".to_vec()),
-            (b"\x70\x02".to_vec(), b"added".to_vec()),
-        ]
+            b"\x30\x01".to_vec(),
+            b"\x30\x02".to_vec(),
+            b"\x30\x03".to_vec()
+        ],
     );
-    Ok(())
-}
-
-fn read_prefix_observes_snapshot_visibility(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x71\x01", b"before".to_vec())?;
-    store.begin_snapshot()?;
+    // at: a cursor exactly at the first key excludes it (half-open).
     assert_eq!(
-        store.read_prefix(b"\x71\x01", 3)?,
-        Some(ValuePrefix {
-            bytes: b"bef".to_vec(),
-            truncated: true,
-        })
+        keys(&view.scan_after(b"\x30", b"\x30\x01")?),
+        vec![b"\x30\x02".to_vec(), b"\x30\x03".to_vec()],
     );
-    store.end_snapshot();
+    // plus: a cursor at the last key yields nothing further.
+    assert!(view.scan_after(b"\x30", b"\x30\x03")?.is_empty());
+    Ok(())
+}
 
-    store.write(b"\x71\x01", b"after".to_vec())?;
+fn scan_after_stops_at_the_prefix_edge<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    seed(
+        engine,
+        &[
+            (b"\x30\x01", b"in"),
+            (b"\x30\x02", b"in"),
+            (b"\x31\x00", b"out"),
+        ],
+    )?;
     assert_eq!(
-        store.read_prefix(b"\x71\x01", 8)?,
-        Some(ValuePrefix {
-            bytes: b"after".to_vec(),
-            truncated: false,
-        })
+        keys(&engine.read_view()?.scan_after(b"\x30", b"\x30")?),
+        vec![b"\x30\x01".to_vec(), b"\x30\x02".to_vec()],
+        "the scan stops at the first key outside the prefix",
     );
     Ok(())
 }
 
-fn a_snapshot_and_write_transaction_cannot_overlap(
-    store: &mut dyn Backend,
+fn scan_after_is_bounded_by_the_record_limit<E: ByteEngine>(
+    engine: &mut E,
 ) -> Result<(), StoreError> {
-    store.begin_snapshot()?;
-    let begin = store
-        .begin()
-        .expect_err("begin must reject an already pinned snapshot");
-    assert_eq!(begin.code(), Code::StoreTransaction.as_str());
-    store.end_snapshot();
-
-    store.begin()?;
-    let snapshot = store
-        .begin_snapshot()
-        .expect_err("begin_snapshot must reject an open write transaction");
-    assert_eq!(snapshot.code(), Code::StoreTransaction.as_str());
-    store.rollback()?;
+    let over = limits::SCAN_MAX_RECORDS + 8;
+    {
+        let mut txn = engine.begin()?;
+        for n in 0..over {
+            txn.put(format!("\x40{n:04}").as_bytes(), b"v".to_vec())?;
+        }
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+    let page = engine.read_view()?.scan_after(b"\x40", b"\x40")?;
+    assert_eq!(
+        page.len(),
+        limits::SCAN_MAX_RECORDS,
+        "a single scan page never exceeds the record limit"
+    );
     Ok(())
 }
 
-fn read_snapshots_are_not_reentrant(store: &mut dyn Backend) -> Result<(), StoreError> {
-    store.write(b"\x80\x01", b"before".to_vec())?;
-    store.begin_snapshot()?;
-    let nested = store
-        .begin_snapshot()
-        .expect_err("a second pinned snapshot on the same handle must be rejected");
-    assert_eq!(nested.code(), Code::StoreTransaction.as_str());
-    let begin = store
-        .begin()
-        .expect_err("the original snapshot still blocks a write transaction");
-    assert_eq!(begin.code(), Code::StoreTransaction.as_str());
-    store.end_snapshot();
-
-    store.begin()?;
-    store.write(b"\x80\x01", b"after".to_vec())?;
-    store.commit()?;
-    assert_eq!(store.read(b"\x80\x01")?, Some(b"after".to_vec()));
+fn oversized_cells_are_refused<E: ByteEngine>(engine: &mut E) -> Result<(), StoreError> {
+    let mut txn = engine.begin()?;
+    let big_key = vec![0u8; limits::MAX_KEY_LEN + 1];
+    assert!(matches!(
+        txn.put(&big_key, b"v".to_vec()),
+        Err(StoreError::LimitExceeded { .. })
+    ));
+    let big_value = vec![0u8; limits::MAX_VALUE_LEN + 1];
+    assert!(matches!(
+        txn.put(b"k", big_value),
+        Err(StoreError::LimitExceeded { .. })
+    ));
     Ok(())
 }
 
-fn writes_are_rejected_while_a_read_snapshot_is_pinned(
-    store: &mut dyn Backend,
+fn a_populated_store_passes_its_integrity_audit<E: ByteEngine>(
+    engine: &mut E,
 ) -> Result<(), StoreError> {
-    store.write(b"\x90\x01", b"before".to_vec())?;
-    store.begin_snapshot()?;
-    let write = store
-        .write(b"\x90\x01", b"after".to_vec())
-        .expect_err("autocommit writes must reject a pinned read snapshot");
-    assert_eq!(write.code(), Code::StoreTransaction.as_str());
-    let delete = store
-        .delete(b"\x90")
-        .expect_err("autocommit deletes must reject a pinned read snapshot");
-    assert_eq!(delete.code(), Code::StoreTransaction.as_str());
-    assert_eq!(store.read(b"\x90\x01")?, Some(b"before".to_vec()));
-    store.end_snapshot();
+    seed(engine, &[(b"a", b"1"), (b"b", b"2"), (b"c", b"3")])?;
+    engine.audit_integrity()
+}
 
-    store.write(b"\x90\x01", b"after".to_vec())?;
-    assert_eq!(store.read(b"\x90\x01")?, Some(b"after".to_vec()));
+/// A deterministic sequence of puts and removes leaves the engine agreeing with a
+/// plain `BTreeMap` reference model, read back both by point `get` and by paging
+/// the whole key range with `scan_after`.
+fn a_model_sequence_matches_a_reference_map<E: ByteEngine>(
+    engine: &mut E,
+) -> Result<(), StoreError> {
+    use std::collections::BTreeMap;
+
+    let mut model: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+    let mut step = 0u32;
+    for round in 0..6u32 {
+        let mut txn = engine.begin()?;
+        for n in 0..20u32 {
+            let key = format!("\x50{:03}", (step * 7 + n) % 50).into_bytes();
+            if (round + n) % 5 == 0 {
+                txn.remove(&key)?;
+                model.remove(&key);
+            } else {
+                let value = format!("v{step}-{n}").into_bytes();
+                txn.put(&key, value.clone())?;
+                model.insert(key, value);
+            }
+            step += 1;
+        }
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+
+    let view = engine.read_view()?;
+    // Point reads agree with the model.
+    for (key, value) in &model {
+        assert_eq!(view.get(key)?.as_ref(), Some(value));
+    }
+    // Paging the whole \x50 range with scan_after reconstructs the model in order.
+    let mut paged: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut cursor = b"\x50".to_vec();
+    loop {
+        let page = view.scan_after(b"\x50", &cursor)?;
+        let Some((last, _)) = page.last().cloned() else {
+            break;
+        };
+        cursor = last;
+        paged.extend(page);
+    }
+    let expected: Vec<(Vec<u8>, Vec<u8>)> = model.into_iter().collect();
+    assert_eq!(
+        paged, expected,
+        "paged scan reconstructs the reference model"
+    );
     Ok(())
 }
