@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use marrow_compile::compile;
+use marrow_compile::{ExportEntry, ExportId, compile};
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{
     DurableStore, ExportDemand, FieldSchema, InvocationGrant, SessionError, SiteSpec,
@@ -56,8 +56,8 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     };
 
     // Family 1: source diagnostics.
-    let encoded = match compile(&project) {
-        Ok(image) => image,
+    let compiled = match compile(&project) {
+        Ok(compiled) => compiled,
         Err(diagnostics) => {
             let records: Vec<Record> = diagnostics
                 .iter()
@@ -71,9 +71,17 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         }
     };
 
+    // Resolve the caller-supplied name to a stable id through the compiler's export
+    // directory, before verification, so no source string reaches the image. The VM
+    // dispatches only on this verified id.
+    let export_id = match resolve_export(&compiled.exports, &args.export) {
+        Ok(id) => id,
+        Err(message) => return usage(&message),
+    };
+
     // Family 2: artifact decode/verify rejection. The compiler cannot mint a
     // verified image — only `marrow_verify::verify` can.
-    let image = match marrow_verify::verify(&encoded.bytes) {
+    let image = match marrow_verify::verify(&compiled.image.bytes) {
         Ok(image) => image,
         Err(rejection) => {
             return emit(
@@ -86,12 +94,11 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         }
     };
 
-    let Some(export) = image.export(&args.export) else {
-        eprintln!(
-            "no exported function named `{}` in this project",
-            args.export
-        );
-        return ExitCode::from(2);
+    let Some(export) = image.export_by_id(export_id) else {
+        // The directory named an id the verified image does not carry: a compiler
+        // bug, since the same draft produced both.
+        eprintln!("internal error: export directory and image disagree");
+        return ExitCode::FAILURE;
     };
     let func_index = export.function();
     let demand = export.demand();
@@ -119,6 +126,30 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         _ => ExitCode::FAILURE,
     };
     emit(args.format, &[record], exit)
+}
+
+/// Resolve a caller-supplied export path to its [`ExportId`] through the compiler's
+/// export directory. A `module.item` path (one containing a `.`) matches a module
+/// and item exactly; a bare item matches by item name and is an error when more
+/// than one module exports it.
+fn resolve_export(directory: &[ExportEntry], query: &str) -> Result<ExportId, String> {
+    if let Some((module, item)) = query.rsplit_once('.') {
+        return directory
+            .iter()
+            .find(|entry| entry.module == module && entry.item == item)
+            .map(|entry| entry.id)
+            .ok_or_else(|| format!("no exported function `{query}` in this project"));
+    }
+    let mut matching = directory.iter().filter(|entry| entry.item == query);
+    let first = matching
+        .next()
+        .ok_or_else(|| format!("no exported function `{query}` in this project"))?;
+    if matching.next().is_some() {
+        return Err(format!(
+            "`{query}` is exported by more than one module; qualify it as `module.{query}`"
+        ));
+    }
+    Ok(first.id)
 }
 
 /// Run a storeless export.

@@ -3,9 +3,14 @@
 //! canonical bytes, and sealed by the independent verifier before the VM sees it —
 //! so the executable trust path is exercised end to end without the compiler.
 
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
+
+/// The synthetic export id these draft-level tests bind and look up by.
+fn answer_id() -> ExportId {
+    ExportId::of_local("", "answer")
+}
 
 /// Build a one-function image `answer(): int = <value>` and return its bytes.
 fn return_const_image(value: i64) -> Vec<u8> {
@@ -26,7 +31,7 @@ fn return_const_image(value: i64) -> Vec<u8> {
             column: 12,
         }],
     });
-    draft.add_export(name, func);
+    draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
 
@@ -34,7 +39,7 @@ fn return_const_image(value: i64) -> Vec<u8> {
 fn verified_image_runs_on_the_vm() {
     let bytes = return_const_image(42);
     let image = verify(&bytes).expect("image verifies");
-    let export = image.export("answer").expect("export present");
+    let export = image.export_by_id(answer_id()).expect("export present");
     let result = run(&image, export.function(), Vec::<Value>::new()).expect("run");
     assert_eq!(result, Some(Value::Int(42)));
 }

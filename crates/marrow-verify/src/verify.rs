@@ -13,7 +13,7 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CALL, OP_CONST_LOAD, OP_DUR_CREATE_ENTRY,
+    ExportId, ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CALL, OP_CONST_LOAD, OP_DUR_CREATE_ENTRY,
     OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
     OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL,
     OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
@@ -95,7 +95,7 @@ struct DecodedImage {
     sites: Vec<DecodedSite>,
     consts: Vec<SealedConst>,
     functions: Vec<DecodedFunction>,
-    exports: Vec<(u16, u16)>,
+    exports: Vec<(ExportId, u16)>,
 }
 
 fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
@@ -178,7 +178,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(sections[4].1, strings.len())?;
-    let exports = decode_exports(sections[5].1, strings.len(), functions.len())?;
+    let exports = decode_exports(sections[5].1, functions.len())?;
     decode_spans(sections[6].1, &mut functions)?;
 
     Ok(DecodedImage {
@@ -589,11 +589,17 @@ fn decode_functions(
     Ok(functions)
 }
 
+/// Decode the EXPORTS table: `32-byte ExportId ‖ u16 func` entries in strictly
+/// ascending id order. The id is reconstructed from bytes, not recomputed — the
+/// compiler that minted it is untrusted, so the id is only an opaque, verified
+/// dispatch key. Each function is the target of at most one export (the v0
+/// one-export-per-function invariant); admitting more than one export per function,
+/// or an alternate id shape, is a v1 format change that would bump the container
+/// version, so it is rejected here.
 fn decode_exports(
     body: &[u8],
-    string_count: usize,
     function_count: usize,
-) -> Result<Vec<(u16, u16)>, VerifyRejection> {
+) -> Result<Vec<(ExportId, u16)>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
@@ -603,32 +609,31 @@ fn decode_exports(
     }
     let mut exports = Vec::with_capacity(count);
     let mut seen_funcs: Vec<u16> = Vec::with_capacity(count);
-    let mut previous_name: Option<u16> = None;
+    let mut previous_id: Option<[u8; 32]> = None;
     for _ in 0..count {
-        let name = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short export name"))?;
+        let id_bytes: [u8; 32] = reader
+            .take(32)
+            .ok_or(reject(VerifyPhase::Table, "short export id"))?
+            .try_into()
+            .expect("take(32) yields 32 bytes");
         let func = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short export function"))?;
-        if name as usize >= string_count {
-            return Err(reject(VerifyPhase::Table, "export name index out of range"));
-        }
         if func as usize >= function_count {
             return Err(reject(
                 VerifyPhase::Table,
                 "export function index out of range",
             ));
         }
-        if let Some(prev) = previous_name
-            && name <= prev
+        if let Some(prev) = previous_id
+            && id_bytes <= prev
         {
             return Err(reject(
                 VerifyPhase::Table,
-                "exports must be sorted and unique by name",
+                "exports must be sorted and unique by id",
             ));
         }
-        previous_name = Some(name);
+        previous_id = Some(id_bytes);
         if seen_funcs.contains(&func) {
             return Err(reject(
                 VerifyPhase::Table,
@@ -636,7 +641,7 @@ fn decode_exports(
             ));
         }
         seen_funcs.push(func);
-        exports.push((name, func));
+        exports.push((ExportId::from_bytes(id_bytes), func));
     }
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in export table"));
@@ -774,8 +779,8 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     let exports = decoded
         .exports
         .iter()
-        .map(|(name, func)| SealedExport {
-            name: decoded.strings[*name as usize].clone(),
+        .map(|(id, func)| SealedExport {
+            id: *id,
             func: *func,
             mutating: effects.mutates_closure[*func as usize],
             demand: effects.demand(*func),
@@ -783,8 +788,8 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .collect();
 
     // Record each export's effect class on its entry function too, for tools.
-    for export in &decoded.exports {
-        functions[export.1 as usize].mutating = effects.mutates_closure[export.1 as usize];
+    for (_, func) in &decoded.exports {
+        functions[*func as usize].mutating = effects.mutates_closure[*func as usize];
     }
 
     Ok(VerifiedImage {

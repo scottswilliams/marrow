@@ -6,7 +6,9 @@
 //! valid image). No external fuzz dependency; a fixed iteration budget keeps it in
 //! the default suite. A minimized counterexample becomes a permanent fixture.
 
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, image_id};
+use marrow_image::{
+    ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, image_id,
+};
 use marrow_verify::verify;
 
 /// The reusable bounded oracle: `verify` must return without panicking, and any
@@ -68,7 +70,7 @@ fn a_good_image() -> Vec<u8> {
         }],
         code,
     });
-    draft.add_export(name, func);
+    draft.add_export(ExportId::of_local("", "e"), func);
     draft.encode().expect("encode").bytes
 }
 

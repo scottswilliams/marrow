@@ -6,7 +6,7 @@
 //! structural rejections (unreachable code, fall-off-end, return-type mismatch) live
 //! here beside the machine that owns them.
 
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
@@ -32,7 +32,7 @@ fn encode(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Vec
         code,
         spans,
     });
-    draft.add_export(name, func);
+    draft.add_export(ExportId::of_local("", "f"), func);
     draft.encode().expect("encode").bytes
 }
 
@@ -50,7 +50,10 @@ fn build_and_run(
 ) -> Result<Option<Value>, String> {
     let bytes = encode(build);
     let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;
-    let index = image.export("f").expect("export present").function();
+    let index = image
+        .export_by_id(ExportId::of_local("", "f"))
+        .expect("export present")
+        .function();
     run(&image, index, Vec::new()).map_err(|fault| fault.code().to_string())
 }
 

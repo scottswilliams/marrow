@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use marrow_image::{ImageId, Scalar};
+use marrow_image::{ExportId, ImageId, Scalar};
 
 /// A resolved constant value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,11 +246,12 @@ impl SealedFunction {
     }
 }
 
-/// A public export: a name bound to a function, with its verifier-derived effect
-/// class and per-root durable demand.
+/// A public export: a stable [`ExportId`] bound to a function, with its
+/// verifier-derived effect class and per-root durable demand. The image carries no
+/// export name, so an export is addressed only by its verified id.
 #[derive(Debug, Clone)]
 pub struct SealedExport {
-    pub(crate) name: Rc<str>,
+    pub(crate) id: ExportId,
     pub(crate) func: u16,
     pub(crate) mutating: bool,
     pub(crate) demand: Demand,
@@ -272,8 +273,9 @@ impl Demand {
 }
 
 impl SealedExport {
-    pub fn name(&self) -> &str {
-        &self.name
+    /// The stable identity this export is addressed by.
+    pub fn id(&self) -> ExportId {
+        self.id
     }
     pub fn function(&self) -> u16 {
         self.func
@@ -333,8 +335,10 @@ impl VerifiedImage {
         &self.exports
     }
 
-    /// The export bound to `name`, if any.
-    pub fn export(&self, name: &str) -> Option<&SealedExport> {
-        self.exports.iter().find(|export| export.name() == name)
+    /// The export bound to `id`, if any. The VM and CLI dispatch only through this
+    /// verified id — a source name is resolved to an id outside the image (through
+    /// the compiler's export directory) and never crosses this boundary.
+    pub fn export_by_id(&self, id: ExportId) -> Option<&SealedExport> {
+        self.exports.iter().find(|export| export.id == id)
     }
 }

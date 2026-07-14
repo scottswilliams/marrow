@@ -9,8 +9,8 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, RootDef, Scalar, SiteDef,
-    SiteTarget, SpanEntry, image_id,
+    ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, RootDef, Scalar,
+    SiteDef, SiteTarget, SpanEntry, image_id,
 };
 use marrow_verify::verify;
 
@@ -42,7 +42,7 @@ fn good_image() -> Vec<u8> {
         spans: spans(&main_code),
         code: main_code,
     });
-    draft.add_export(main_name, main);
+    draft.add_export(ExportId::of_local("", "main"), main);
     draft.encode().expect("encode").bytes
 }
 
@@ -130,11 +130,77 @@ fn rehashed_bad_section_count_rejects_at_envelope() {
 #[test]
 fn rehashed_export_index_out_of_range_rejects_at_table() {
     let mut bytes = good_image();
-    // EXPORTS is section id 6: body = count(u16), then per export name(u16) func(u16).
+    // EXPORTS is section id 6: body = count(u16), then per export id(32 bytes) func(u16).
     let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 6).unwrap();
-    let func_field = body + 2 + 2; // after count and the first export's name
+    let func_field = body + 2 + 32; // after the count and the first export's id
     bytes[func_field] = 0xFF;
     bytes[func_field + 1] = 0xFF;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+/// An image with two exported functions, `a` and `b`, each returning a constant.
+/// The EXPORTS entries are two `32-byte id ‖ u16 func` records the encoder writes
+/// in ascending id order.
+fn two_export_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let one = draft.intern_int(1);
+    let a_name = draft.intern_string("a");
+    let a_code = vec![Instr::ConstLoad(one.index()), Instr::Return];
+    let a = draft.add_function(FunctionDef {
+        name: a_name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&a_code),
+        code: a_code,
+    });
+    let b_name = draft.intern_string("b");
+    let b_code = vec![Instr::ConstLoad(one.index()), Instr::Return];
+    let b = draft.add_function(FunctionDef {
+        name: b_name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&b_code),
+        code: b_code,
+    });
+    draft.add_export(ExportId::of_local("", "a"), a);
+    draft.add_export(ExportId::of_local("", "b"), b);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn rehashed_out_of_order_export_ids_reject_at_table() {
+    // Swap the two 34-byte EXPORTS entries so their ids descend. The verifier
+    // requires strictly ascending ids, so the second entry is now out of order.
+    let mut bytes = two_export_image();
+    let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 6).unwrap();
+    let first = body + 2;
+    let entry = 32 + 2;
+    let (a, b) = (first, first + entry);
+    let mut e0 = bytes[a..a + entry].to_vec();
+    let mut e1 = bytes[b..b + entry].to_vec();
+    std::mem::swap(&mut e0, &mut e1);
+    bytes[a..a + entry].copy_from_slice(&e0);
+    bytes[b..b + entry].copy_from_slice(&e1);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_two_exports_of_one_function_reject_at_table() {
+    // Point the second export's function field at the first export's function, so
+    // one function is the target of two exports — forbidden at v0.
+    let mut bytes = two_export_image();
+    let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 6).unwrap();
+    let first_func = body + 2 + 32;
+    let second_func = first_func + 32 + 2;
+    let func0 = bytes[first_func..first_func + 2].to_vec();
+    bytes[second_func..second_func + 2].copy_from_slice(&func0);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
 }
@@ -171,7 +237,7 @@ fn function_phase_unreachable_instruction() {
         spans: spans(&code),
         code,
     });
-    draft.add_export(name, func);
+    draft.add_export(ExportId::of_local("", "e"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
@@ -207,7 +273,7 @@ fn function_phase_call_argument_type_mismatch() {
         spans: spans(&main_code),
         code: main_code,
     });
-    draft.add_export(main_name, main);
+    draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
@@ -239,7 +305,7 @@ fn closure_phase_mutual_recursion() {
         spans: spans(&pong_code),
         code: pong_code,
     });
-    draft.add_export(ping_name, ping);
+    draft.add_export(ExportId::of_local("", "ping"), ping);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.closure");
 }
 
@@ -303,7 +369,7 @@ fn put_export(code: Vec<Instr>) -> ImageDraft {
         spans: spans(&code),
         code,
     });
-    draft.add_export(name, func);
+    draft.add_export(ExportId::of_local("", "e"), func);
     draft
 }
 
@@ -403,7 +469,7 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
         spans: spans(&main_code),
         code: main_code,
     });
-    draft.add_export(main_name, main);
+    draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 

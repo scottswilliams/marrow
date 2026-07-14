@@ -9,7 +9,7 @@
 //! encoder rewrites indices to byte offsets.
 
 use marrow_codes::Code;
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId};
+use marrow_image::{FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId};
 use marrow_syntax::{
     Argument, BinaryOp, Block, ElseIf, Expression, FunctionDecl, LiteralKind, SourceSpan,
     Statement, TypeExpr, UnaryOp, decode_string_literal,
@@ -239,7 +239,10 @@ pub(crate) struct FnLowerer<'a> {
 }
 
 impl<'a> FnLowerer<'a> {
-    /// Lower `function` and add it (and its export, when public) to the draft.
+    /// Lower `function` and add it to the draft, returning its assigned [`FuncId`]
+    /// on success. Export minting is the caller's job: it holds the dotted module
+    /// name needed to compute the export's [`marrow_image::ExportId`]. A function
+    /// that fails to lower pushes its diagnostics and returns `None`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
@@ -249,18 +252,18 @@ impl<'a> FnLowerer<'a> {
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
         function: &FunctionDecl,
-    ) {
+    ) -> Option<FuncId> {
         let ret = match &function.return_type {
             None => RetType::Unit,
             Some(annotation) => match resolve_type(records, annotation) {
                 Some(LTy::Record { .. }) => {
                     diagnostics.push(unsupported(file, annotation.span(), "a record return type"));
-                    return;
+                    return None;
                 }
                 Some(ty) => RetType::Value(ty),
                 None => {
                     diagnostics.push(unsupported(file, annotation.span(), "this return type"));
-                    return;
+                    return None;
                 }
             },
         };
@@ -316,7 +319,7 @@ impl<'a> FnLowerer<'a> {
         }
 
         if lowerer.failed {
-            return;
+            return None;
         }
 
         let params: Vec<Scalar> = function
@@ -346,10 +349,7 @@ impl<'a> FnLowerer<'a> {
             spans,
         });
 
-        if function.public {
-            let export_name = lowerer.draft.intern_string(&function.name);
-            lowerer.draft.add_export(export_name, func_id);
-        }
+        Some(func_id)
     }
 
     // --- emission helpers ---

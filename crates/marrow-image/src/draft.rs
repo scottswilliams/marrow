@@ -12,6 +12,7 @@
 //! rechecks every bound against the received bytes; the draft's checks are a
 //! producer-side guard, not the trust boundary.
 
+use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::ty::{ImageType, Scalar};
 
@@ -126,10 +127,12 @@ pub struct FunctionDef {
     pub spans: Vec<SpanEntry>,
 }
 
-/// An export: a public name bound to a function.
+/// An export: a stable [`ExportId`] bound to a function. The image carries the id,
+/// never the source name — the VM looks an export up by its verified id, so no
+/// human-readable name crosses the trust boundary.
 #[derive(Debug, Clone)]
 struct ExportDef {
-    name: StrId,
+    id: ExportId,
     func: FuncId,
 }
 
@@ -247,8 +250,11 @@ impl ImageDraft {
         id
     }
 
-    pub fn add_export(&mut self, name: StrId, func: FuncId) {
-        self.exports.push(ExportDef { name, func });
+    /// Bind the export identity `id` to function `func`. The compiler mints `id`
+    /// with [`ExportId::of_local`] from the export's declaration path; at v0 each
+    /// public function is one export, so `func` is unique across the table.
+    pub fn add_export(&mut self, id: ExportId, func: FuncId) {
+        self.exports.push(ExportDef { id, func });
     }
 
     // --- accessors used by the encoder ---
@@ -271,11 +277,11 @@ impl ImageDraft {
         &self.functions
     }
 
-    /// The `(name-str-id, function-index)` pairs for the export table.
-    pub(crate) fn export_pairs(&self) -> Vec<(u16, u16)> {
+    /// The `(ExportId, function-index)` pairs for the export table.
+    pub(crate) fn export_entries(&self) -> Vec<(ExportId, u16)> {
         self.exports
             .iter()
-            .map(|export| (export.name.0, export.func.0))
+            .map(|export| (export.id, export.func.0))
             .collect()
     }
 }

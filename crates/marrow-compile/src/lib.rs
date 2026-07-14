@@ -14,6 +14,7 @@ mod lower;
 mod record;
 mod scalar;
 
-pub use compile::compile;
+pub use compile::{Compiled, ExportEntry, compile};
 pub use diag::SourceDiagnostic;
+pub use marrow_image::ExportId;
 pub use scalar::ScalarType;

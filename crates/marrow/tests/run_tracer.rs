@@ -254,6 +254,37 @@ fn an_absent_optional_return_renders_absent() {
 }
 
 #[test]
+fn a_qualified_export_in_a_second_module_runs() {
+    // Two modules, each with its own public export. The export in `src/math.mw`
+    // (module `math`) is invoked by its qualified `module.item` path through the
+    // export directory, resolved to its `ExportId`, and looked up in the image by
+    // that verified id — never by a source-string dispatch on the name.
+    let temp = TempDir::new("qualified-export");
+    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
+    write(
+        &temp.join("src").join("main.mw"),
+        "pub fn start(): int\n    return 1\n",
+    );
+    write(
+        &temp.join("src").join("math.mw"),
+        "pub fn two(): int\n    return 2\n",
+    );
+
+    let output = run_in(&temp, &["run", "math.two"]);
+    assert!(
+        output.status.success(),
+        "qualified run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+
+    // The other module's export resolves by its own qualified path too.
+    let start = run_in(&temp, &["run", "main.start"]);
+    assert!(start.status.success(), "{start:?}");
+    assert_eq!(String::from_utf8_lossy(&start.stdout), "1\n");
+}
+
+#[test]
 fn direct_calls_resolve_forward_and_compute() {
     let temp = TempDir::new("calls");
     // `quad` is declared before `double`, exercising forward resolution.

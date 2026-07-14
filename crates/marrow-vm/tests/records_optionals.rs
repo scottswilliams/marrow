@@ -6,7 +6,7 @@
 //! `BranchPresent`, so an image that feeds `T?` into arithmetic rejects at verify.
 
 use marrow_image::{
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, Scalar, SpanEntry,
+    ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, Scalar, SpanEntry,
 };
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
@@ -58,10 +58,13 @@ fn build_and_run(
         code,
         spans,
     });
-    draft.add_export(name, func);
+    draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft.encode().expect("encode").bytes;
     let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;
-    let index = image.export("f").expect("export present").function();
+    let index = image
+        .export_by_id(ExportId::of_local("", "f"))
+        .expect("export present")
+        .function();
     run(&image, index, Vec::new()).map_err(|fault| fault.code().to_string())
 }
 

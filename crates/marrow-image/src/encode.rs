@@ -42,7 +42,7 @@ impl ImageDraft {
         push_section(&mut tail, 0x04, encode_consts(&sorted_consts, &str_map))?;
         let function_offsets = self.encode_functions(&str_map, &const_map)?;
         push_section(&mut tail, 0x05, function_offsets.body)?;
-        push_section(&mut tail, 0x06, self.encode_exports(&str_map)?)?;
+        push_section(&mut tail, 0x06, self.encode_exports())?;
         push_section(&mut tail, 0x07, self.encode_spans(&function_offsets.per_fn))?;
 
         let id = image_id(&tail);
@@ -90,7 +90,7 @@ impl ImageDraft {
         if self.functions().len() > bounds::MAX_FUNCTIONS {
             return Err(ImageBuildError::TooManyFunctions);
         }
-        if self.export_pairs().len() > bounds::MAX_EXPORTS {
+        if self.export_entries().len() > bounds::MAX_EXPORTS {
             return Err(ImageBuildError::TooManyExports);
         }
         for function in self.functions() {
@@ -213,20 +213,19 @@ impl ImageDraft {
         Ok(EncodedFunctions { body, per_fn })
     }
 
-    fn encode_exports(&self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
-        let mut pairs: Vec<(u16, u16)> = self
-            .export_pairs()
-            .into_iter()
-            .map(|(name, func)| (str_map[name as usize], func))
-            .collect();
-        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    /// Encode the EXPORTS table: a count, then each `32-byte ExportId ‖ u16 func`
+    /// entry in strictly ascending id order. The id is the only export key carried;
+    /// the source name is not, so the VM can only dispatch on a verified id.
+    fn encode_exports(&self) -> Vec<u8> {
+        let mut entries = self.export_entries();
+        entries.sort_by(|a, b| a.0.bytes().cmp(b.0.bytes()));
         let mut body = Vec::new();
-        push_u16(&mut body, pairs.len() as u16);
-        for (name, func) in pairs {
-            push_u16(&mut body, name);
+        push_u16(&mut body, entries.len() as u16);
+        for (id, func) in entries {
+            body.extend_from_slice(id.bytes());
             push_u16(&mut body, func);
         }
-        Ok(body)
+        body
     }
 
     fn encode_spans(&self, per_fn: &[CodeLayout]) -> Vec<u8> {

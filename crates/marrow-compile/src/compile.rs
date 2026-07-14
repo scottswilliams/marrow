@@ -7,7 +7,7 @@
 //! silent drop.
 
 use marrow_codes::Code;
-use marrow_image::{EncodedImage, ImageDraft};
+use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
     Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, StoreDecl, parse_source,
@@ -18,33 +18,65 @@ use crate::durable::DurableRegistry;
 use crate::lower::{FnLowerer, FunctionRegistry};
 use crate::record::RecordRegistry;
 
-/// Compile a captured project into canonical program-image bytes, or return the
-/// typed source diagnostics that block it.
-pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnostic>> {
+/// One resolved public export: its dotted module, its item name, and the stable
+/// [`ExportId`] the image carries. This directory is the only place a human export
+/// name is paired with its id; the CLI resolves a caller-supplied path to an id
+/// here, then dispatches into the image by that verified id.
+#[derive(Debug, Clone)]
+pub struct ExportEntry {
+    pub module: String,
+    pub item: String,
+    pub id: ExportId,
+}
+
+/// The result of compiling a project: the canonical image bytes and the export
+/// directory that maps declaration paths to their ids.
+#[derive(Debug, Clone)]
+pub struct Compiled {
+    pub image: EncodedImage,
+    pub exports: Vec<ExportEntry>,
+}
+
+/// A parsed module: its file identity (for spans and diagnostics), its dotted
+/// module name (for export identity), and the parse tree.
+struct Module {
+    file: String,
+    name: String,
+    parsed: ParsedSource,
+}
+
+/// Compile a captured project into canonical program-image bytes and its export
+/// directory, or return the typed source diagnostics that block it.
+pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>> {
     let mut diagnostics = Vec::new();
 
     // Parse every module first. A parse error blocks semantic processing, mirroring
     // the total-parser contract: semantics run only on `!has_errors`.
-    let mut parsed: Vec<(String, ParsedSource)> = Vec::new();
+    let mut parsed: Vec<Module> = Vec::new();
     for module in project.modules() {
-        let path = module.identity().as_str().to_string();
+        let file = module.identity().as_str().to_string();
+        let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
-            Ok(source) => parsed.push((path, parse_source(source))),
+            Ok(source) => parsed.push(Module {
+                file,
+                name,
+                parsed: parse_source(source),
+            }),
             Err(_) => diagnostics.push(SourceDiagnostic {
                 code: Code::CheckUnsupported.as_str(),
-                file: path,
+                file,
                 line: 1,
                 column: 1,
                 message: "source file is not valid UTF-8".to_string(),
             }),
         }
     }
-    for (path, module) in &parsed {
-        for diagnostic in &module.diagnostics {
+    for module in &parsed {
+        for diagnostic in &module.parsed.diagnostics {
             if diagnostic.severity == marrow_syntax::Severity::Error {
                 diagnostics.push(SourceDiagnostic::at(
                     diagnostic.code,
-                    path,
+                    &module.file,
                     diagnostic.span,
                     diagnostic.message.clone(),
                 ));
@@ -56,13 +88,14 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
     }
 
     // Function names must be unique project-wide so a `Call` resolves to one target
-    // (interim export mapping; `ExportId` lands at C00). A duplicate is a conflict.
+    // (interim flat registry; module-scoped resolution lands later in C00). A
+    // duplicate is a conflict.
     let functions: Vec<(String, &FunctionDecl)> = parsed
         .iter()
-        .flat_map(|(path, module)| {
-            module.file.declarations.iter().filter_map(move |decl| {
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl {
-                    Some((path.clone(), function))
+                    Some((module.file.clone(), function))
                 } else {
                     None
                 }
@@ -76,10 +109,10 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
     let mut draft = ImageDraft::new();
     let resources: Vec<(String, &ResourceDecl)> = parsed
         .iter()
-        .flat_map(|(path, module)| {
-            module.file.declarations.iter().filter_map(move |decl| {
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
                 if let Declaration::Resource(resource) = decl {
-                    Some((path.clone(), resource))
+                    Some((module.file.clone(), resource))
                 } else {
                     None
                 }
@@ -89,10 +122,10 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
     let records = RecordRegistry::build(&mut draft, &resources, &mut diagnostics);
     let stores: Vec<(String, &StoreDecl)> = parsed
         .iter()
-        .flat_map(|(path, module)| {
-            module.file.declarations.iter().filter_map(move |decl| {
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
                 if let Declaration::Store(store) = decl {
-                    Some((path.clone(), store))
+                    Some((module.file.clone(), store))
                 } else {
                     None
                 }
@@ -102,26 +135,39 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
     let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
     let signatures = FunctionRegistry::build(&records, &functions);
 
-    // Lower each function, in the same order the registry assigned indices. Other
+    // Lower each function, in the same order the registry assigned indices, minting
+    // an export for each public function from its declaration path. Other
     // declarations are handled above or not yet admitted.
-    for (path, module) in &parsed {
-        for declaration in &module.file.declarations {
+    let mut exports: Vec<ExportEntry> = Vec::new();
+    for module in &parsed {
+        for declaration in &module.parsed.file.declarations {
             match declaration {
                 Declaration::Function(function) => {
-                    FnLowerer::lower(
+                    let func = FnLowerer::lower(
                         &mut draft,
                         &records,
                         &durable,
                         &signatures,
                         &mut diagnostics,
-                        path,
+                        &module.file,
                         function,
                     );
+                    if let Some(func) = func
+                        && function.public
+                    {
+                        let id = ExportId::of_local(&module.name, &function.name);
+                        draft.add_export(id, func);
+                        exports.push(ExportEntry {
+                            module: module.name.clone(),
+                            item: function.name.clone(),
+                            id,
+                        });
+                    }
                 }
                 Declaration::Resource(_) | Declaration::Store(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
                     Code::CheckUnsupported.as_str(),
-                    path,
+                    &module.file,
                     declaration_span(other),
                     "this declaration is not yet supported on the beta line".to_string(),
                 )),
@@ -133,7 +179,7 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
         return Err(diagnostics);
     }
 
-    draft.encode().map_err(|error| {
+    let image = draft.encode().map_err(|error| {
         vec![SourceDiagnostic {
             code: Code::CheckUnsupported.as_str(),
             file: String::new(),
@@ -141,12 +187,13 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
             column: 1,
             message: format!("program exceeds a representational bound: {error}"),
         }]
-    })
+    })?;
+    Ok(Compiled { image, exports })
 }
 
 /// Report a `check.name_conflict` for every function name declared more than once
-/// across the project (a `Call`, and the interim export mapping, must resolve to a
-/// unique target).
+/// across the project (a `Call` must resolve to a unique target in the interim flat
+/// registry).
 fn reject_duplicate_functions(
     functions: &[(String, &FunctionDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,

@@ -1,7 +1,7 @@
 //! Slice K.4 evidence: direct calls, the acyclic-call-graph rejection, and the
 //! dynamic call-depth guard.
 
-use marrow_image::{FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
@@ -52,10 +52,13 @@ fn a_direct_call_runs() {
         spans: spans(&caller_code),
         code: caller_code,
     });
-    draft.add_export(caller_name, caller);
+    draft.add_export(ExportId::of_local("", "caller"), caller);
     let bytes = draft.encode().expect("encode").bytes;
     let image = verify(&bytes).expect("verifies");
-    let index = image.export("caller").expect("export").function();
+    let index = image
+        .export_by_id(ExportId::of_local("", "caller"))
+        .expect("export")
+        .function();
     assert_eq!(run(&image, index, Vec::new()), Ok(Some(Value::Int(42))));
 }
 
@@ -74,7 +77,7 @@ fn a_self_recursive_call_rejects_as_a_cycle() {
         spans: spans(&code),
         code,
     });
-    draft.add_export(name, func);
+    draft.add_export(ExportId::of_local("", "loops"), func);
     let bytes = draft.encode().expect("encode").bytes;
     assert_eq!(
         verify(&bytes).err().map(|r| r.code().to_string()),
