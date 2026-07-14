@@ -8,10 +8,10 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
-    Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
-    FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, ParamDecl, ResourceDecl,
-    ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
+    Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement,
+    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
+    ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, ParamDecl,
+    ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -1066,6 +1066,28 @@ fn format_statement_with_comments(
             };
             return format_match(ctx, scrutinee, arms, *span);
         }
+        Statement::Checked {
+            bind,
+            op,
+            out_of_range,
+            zero_divisor,
+            span,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                start_byte: span.start_byte,
+                level,
+            };
+            return format_checked(
+                ctx,
+                bind,
+                op,
+                out_of_range.as_ref(),
+                zero_divisor.as_ref(),
+                *span,
+            );
+        }
         // The formatter is invoked on parsed source and the CLI gates emission on
         // `!has_errors`, so this renders only in a best-effort `format_source` over
         // input that failed to parse. Echo the unstructured span verbatim rather
@@ -1313,6 +1335,52 @@ fn format_match(
     for comment in comments {
         out.push('\n');
         out.push_str(&format_block_comment(comment, ctx.level + 1));
+    }
+    out
+}
+
+/// Format a checked-arithmetic form: the binding prefix and `checked <op>` on the
+/// header line, then each present arm (`on out_of_range` before `on zero_divisor`,
+/// regardless of source order) with its body. Idempotent for a comment-free parse.
+fn format_checked(
+    ctx: StatementFormatContext<'_, '_>,
+    bind: &CheckedBind,
+    op: &Expression,
+    out_of_range: Option<&Block>,
+    zero_divisor: Option<&Block>,
+    span: crate::SourceSpan,
+) -> String {
+    let pad = INDENT.repeat(ctx.level);
+    let prefix = match bind {
+        CheckedBind::Const { name, ty } => {
+            format!("const {name}{} = ", format_type_annotation(ty))
+        }
+        CheckedBind::Var { name, ty } => {
+            format!("var {name}{} = ", format_type_annotation(ty))
+        }
+        CheckedBind::Return => "return ".to_string(),
+    };
+    let mut out = format!(
+        "{pad}{prefix}checked {}",
+        format_expression_at(op, ctx.level)
+    );
+    let first_arm_start = [out_of_range, zero_divisor]
+        .into_iter()
+        .flatten()
+        .map(|block| block.span.start_byte)
+        .min()
+        .unwrap_or(span.end_byte);
+    append_trailing_comment_between(&mut out, ctx.comments, span.start_byte, first_arm_start);
+    let arm_pad = INDENT.repeat(ctx.level + 1);
+    for (kind, block) in [
+        ("out_of_range", out_of_range),
+        ("zero_divisor", zero_divisor),
+    ] {
+        if let Some(block) = block {
+            out.push('\n');
+            out.push_str(&format!("{arm_pad}on {kind}"));
+            append_body_block(&mut out, &format_block(ctx.source, block, ctx.level + 2));
+        }
     }
     out
 }

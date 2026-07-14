@@ -1,8 +1,8 @@
 use crate::{
-    Block, ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax,
-    KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember,
-    SourceSpan, Statement, Token, TokenKind, TypeExpr, is_expression_callable_keyword,
-    is_expression_path_segment_keyword, token::is_trivia,
+    Block, CheckedBind, ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep,
+    ExpectedSyntax, KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource,
+    ResourceMember, SourceSpan, Statement, Token, TokenKind, TypeExpr,
+    is_expression_callable_keyword, is_expression_path_segment_keyword, token::is_trivia,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -566,6 +566,19 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         Statement::Match { arms, .. } => {
             for arm in arms {
                 collect_block_type_refs(&arm.block, type_refs);
+            }
+        }
+        Statement::Checked {
+            bind,
+            out_of_range,
+            zero_divisor,
+            ..
+        } => {
+            if let CheckedBind::Const { ty, .. } | CheckedBind::Var { ty, .. } = bind {
+                collect_optional_type_ref(ty.as_ref(), type_refs);
+            }
+            for block in [out_of_range, zero_divisor].into_iter().flatten() {
+                collect_block_type_refs(block, type_refs);
             }
         }
         Statement::Assign { .. }

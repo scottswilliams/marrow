@@ -4,9 +4,9 @@
 use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
-    CompoundAssignOp, Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason,
+    CheckedBind, CompoundAssignOp, Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason,
     ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Statement, UnsupportedSyntax,
-    parse_source,
+    format_source, parse_source,
 };
 
 #[test]
@@ -837,4 +837,143 @@ fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
 
     let spaced = parse_source("module app\nfn f()\n    i < = 3\n");
     assert!(spaced.has_errors(), "{:#?}", spaced.diagnostics);
+}
+
+/// The checked-arithmetic form parses in all three binding positions with both
+/// diverging arms, captured by fault kind regardless of source order.
+#[test]
+fn parses_checked_arithmetic_forms() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main(a: int, b: int)\n\
+         \x20   const q: int = checked a / b\n\
+         \x20       on out_of_range\n\
+         \x20           return\n\
+         \x20       on zero_divisor\n\
+         \x20           return\n\
+         \x20   var r = checked a + b\n\
+         \x20       on out_of_range\n\
+         \x20           r = 0\n\
+         \x20   return\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    let statements = &main.body.statements;
+
+    match &statements[0] {
+        Statement::Checked {
+            bind,
+            out_of_range,
+            zero_divisor,
+            ..
+        } => {
+            assert!(
+                matches!(bind, CheckedBind::Const { name, ty: Some(_) } if name == "q"),
+                "{bind:#?}"
+            );
+            assert!(out_of_range.is_some() && zero_divisor.is_some());
+        }
+        other => panic!("expected a checked const, got {other:#?}"),
+    }
+    match &statements[1] {
+        Statement::Checked {
+            bind,
+            out_of_range,
+            zero_divisor,
+            ..
+        } => {
+            assert!(
+                matches!(bind, CheckedBind::Var { name, ty: None } if name == "r"),
+                "{bind:#?}"
+            );
+            assert!(out_of_range.is_some() && zero_divisor.is_none());
+        }
+        other => panic!("expected a checked var, got {other:#?}"),
+    }
+}
+
+/// `return checked ...` binds through a return.
+#[test]
+fn parses_checked_return() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main(a: int, b: int): int\n\
+         \x20   return checked a * b\n\
+         \x20       on out_of_range\n\
+         \x20           return 0\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(matches!(
+        &main.body.statements[0],
+        Statement::Checked {
+            bind: CheckedBind::Return,
+            ..
+        }
+    ));
+}
+
+/// A checked form with no indented arms reports one `CheckedBody` diagnostic and
+/// still yields a `Statement::Checked` node (total parsing).
+#[test]
+fn checked_form_missing_arms_reports_checked_body() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main(a: int, b: int)\n\
+         \x20   const q = checked a + b\n\
+         \x20   return\n",
+    );
+    assert!(has_reason(
+        &parsed.diagnostics,
+        parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::CheckedBody)),
+    ));
+    let main = parsed.file.function("main").expect("main function");
+    assert!(matches!(
+        &main.body.statements[0],
+        Statement::Checked { .. }
+    ));
+}
+
+/// A malformed arm header reports one `CheckedArm` diagnostic and its block does
+/// not leak into the surrounding form.
+#[test]
+fn checked_form_bad_arm_reports_checked_arm() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main(a: int, b: int)\n\
+         \x20   const q = checked a + b\n\
+         \x20       on wat\n\
+         \x20           return\n\
+         \x20   return\n",
+    );
+    assert!(has_reason(
+        &parsed.diagnostics,
+        parse_reason(ParseDiagnosticReason::CheckedArm),
+    ));
+}
+
+/// The checked form formats idempotently: arms render `on out_of_range` before
+/// `on zero_divisor`, and formatting a formatted form is a fixed point.
+#[test]
+fn checked_form_formats_idempotently() {
+    let source = "module app\n\
+         fn main(a: int, b: int): int\n\
+         \x20   const q: int = checked a / b\n\
+         \x20       on zero_divisor\n\
+         \x20           return 0\n\
+         \x20       on out_of_range\n\
+         \x20           return 1\n\
+         \x20   return q\n";
+    let once = format_source(source);
+    let twice = format_source(&once);
+    assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
+    // The fixed-order render puts out_of_range first even though source had it second.
+    let oor = once.find("on out_of_range").expect("out_of_range arm");
+    let zd = once.find("on zero_divisor").expect("zero_divisor arm");
+    assert!(
+        oor < zd,
+        "out_of_range renders before zero_divisor:\n{once}"
+    );
+    // The formatted output re-parses cleanly.
+    assert!(parse_source(&once).diagnostics.is_empty());
 }

@@ -8,11 +8,12 @@ use super::statement_lines::{
     parse_catch_header, parse_for_header, parse_if_const_head, parse_simple_statement,
 };
 use super::tokens::{
-    comment_from_token, expr_of_after, first_line_end, is_line_comment, line_end, line_span_or,
+    comment_from_token, expr_of_after, find_top_level_equal, first_line_end, is_line_comment,
+    line_end, line_span_or, parse_type, push_parse_error,
 };
 use crate::ast::{
-    Block, CatchClause, Comment, CommentMarker, CommentPlacement, ElseIf, Expression, MatchArm,
-    Statement, TypeExpr,
+    Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf, Expression,
+    MatchArm, Statement, TypeExpr,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -28,6 +29,13 @@ enum IfHead {
         ty: Option<TypeExpr>,
         value: Expression,
     },
+}
+
+/// Which fault a checked arm handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckedFault {
+    OutOfRange,
+    ZeroDivisor,
 }
 
 /// A block-introducing keyword that has no statement of its own and only ever
@@ -185,6 +193,14 @@ impl<'a> StmtParser<'a> {
                 return None;
             }
             _ => {}
+        }
+
+        // The checked-arithmetic form binds through `const`/`var`/`return`, so its
+        // header token is not a distinguishing keyword. Detect it on the header line
+        // — its `on` arms live on the following indented lines that `take_line` does
+        // not see — before the generic line-based simple-statement path.
+        if self.at_checked_form() {
+            return Some(self.checked_stmt());
         }
 
         let start = self.tokens[self.pos].span;
@@ -525,6 +541,149 @@ impl<'a> StmtParser<'a> {
         }
     }
 
+    /// Whether the current header line is a checked-arithmetic form: a `const`/`var`
+    /// whose value slot after `=` is `checked`, or a `return checked`. Inspects the
+    /// header line without consuming it.
+    fn at_checked_form(&self) -> bool {
+        let line = &self.tokens[self.pos..self.find_line_end()];
+        let Some(first) = line.first() else {
+            return false;
+        };
+        let checked = TokenKind::Keyword(Keyword::Checked);
+        match first.kind {
+            TokenKind::Keyword(Keyword::Return) => {
+                line.get(1).map(|token| token.kind) == Some(checked)
+            }
+            TokenKind::Keyword(Keyword::Const | Keyword::Var) => {
+                find_top_level_equal(line)
+                    .and_then(|equal| line.get(equal + 1))
+                    .map(|token| token.kind)
+                    == Some(checked)
+            }
+            _ => false,
+        }
+    }
+
+    /// Parse a checked-arithmetic form: the binding prefix and single operation on
+    /// the header line, then the indented `on out_of_range`/`on zero_divisor` arms.
+    /// The parser captures the operation and each arm block; the checker owns which
+    /// arms an operation requires and that each arm diverges.
+    fn checked_stmt(&mut self) -> Statement {
+        let start = self.tokens[self.pos].span;
+        let header = self.take_line();
+        let checked_index = header
+            .iter()
+            .position(|token| token.kind == TokenKind::Keyword(Keyword::Checked))
+            .expect("checked form detected before dispatch");
+        let checked_span = header[checked_index].span;
+        let bind = parse_checked_bind(self.source, &header[..checked_index], &mut self.diagnostics);
+        let op_tokens = &header[checked_index + 1..];
+        let op_error_span = line_span_or(op_tokens, checked_span);
+        let op = expr_of_after(self.source, op_tokens, checked_span, &mut self.diagnostics)
+            .unwrap_or(Expression::Error {
+                span: op_error_span,
+            });
+        let (out_of_range, zero_divisor, end) = self.checked_arms(start);
+        Statement::Checked {
+            bind,
+            op,
+            out_of_range,
+            zero_divisor,
+            span: join_spans(start, end),
+        }
+    }
+
+    /// Consume the indented block of `on <faultkind>` arms of a checked form. Returns
+    /// the two optional arm blocks (by kind, regardless of source order) and the span
+    /// of the last arm consumed. A missing indented block is a `CheckedBody` error.
+    fn checked_arms(
+        &mut self,
+        header_start: SourceSpan,
+    ) -> (Option<Block>, Option<Block>, SourceSpan) {
+        let mut out_of_range = None;
+        let mut zero_divisor = None;
+        let mut end = header_start;
+        if !matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.error_span_reason(
+                header_start,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::CheckedBody),
+                "expected indented `on out_of_range` / `on zero_divisor` arms",
+            );
+            return (out_of_range, zero_divisor, end);
+        }
+        self.advance(); // INDENT
+        while let Some(kind) = self.peek() {
+            match kind {
+                TokenKind::Dedent => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Newline => {
+                    self.advance();
+                }
+                kind if is_line_comment(kind) => self.take_own_line_comment(),
+                // A stray nested block under an arm header opens its own block; skip
+                // an unexpected extra indent rather than mis-parsing it.
+                TokenKind::Indent => {
+                    self.skip_block();
+                }
+                _ => {
+                    if let Some((fault, block)) = self.checked_arm() {
+                        end = block.span;
+                        let slot = match fault {
+                            CheckedFault::OutOfRange => &mut out_of_range,
+                            CheckedFault::ZeroDivisor => &mut zero_divisor,
+                        };
+                        if slot.is_some() {
+                            self.error_span_reason(
+                                block.span,
+                                ParseDiagnosticReason::CheckedArm,
+                                "this checked arm is already given",
+                            );
+                        } else {
+                            *slot = Some(block);
+                        }
+                    }
+                }
+            }
+        }
+        (out_of_range, zero_divisor, end)
+    }
+
+    /// Parse one checked arm: an `on out_of_range` / `on zero_divisor` header line,
+    /// then its indented block. A header that is not one of those two forms is a
+    /// `CheckedArm` parse error, and its block is skipped so it does not leak.
+    fn checked_arm(&mut self) -> Option<(CheckedFault, Block)> {
+        let start = self.tokens[self.pos].span;
+        let header = self.take_line();
+        let span = line_span_or(header, start);
+        let fault = match header {
+            [on, kind]
+                if on.kind == TokenKind::Identifier
+                    && on.text(self.source) == "on"
+                    && kind.kind == TokenKind::Identifier =>
+            {
+                match kind.text(self.source) {
+                    "out_of_range" => Some(CheckedFault::OutOfRange),
+                    "zero_divisor" => Some(CheckedFault::ZeroDivisor),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(fault) = fault else {
+            self.error_span_reason(
+                span,
+                ParseDiagnosticReason::CheckedArm,
+                "a checked arm is `on out_of_range` or `on zero_divisor`",
+            );
+            self.skip_block_if_indented();
+            return None;
+        };
+        let block = self.block_body();
+        Some((fault, block))
+    }
+
     /// Parse the expression that ends the current header line, consuming up to
     /// and including its `NEWLINE`. `keyword` is the header keyword
     /// (`while`/`if`/`match`) already consumed; an empty header reports the
@@ -835,4 +994,86 @@ impl<'a> StmtParser<'a> {
         }
         end
     }
+}
+
+/// Parse the binding prefix of a checked form (everything before `checked`) into a
+/// [`CheckedBind`]. The prefix is `return`, or `const`/`var NAME [: TYPE] =`. Stays
+/// total: a malformed name or type reports one diagnostic and falls back to an empty
+/// name so the statement node is still produced.
+fn parse_checked_bind(
+    source: &str,
+    prefix: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CheckedBind {
+    match prefix.first().map(|token| token.kind) {
+        Some(TokenKind::Keyword(Keyword::Return)) => CheckedBind::Return,
+        Some(TokenKind::Keyword(Keyword::Var)) => {
+            let (name, ty) = parse_checked_binding_name(source, prefix, true, diagnostics);
+            CheckedBind::Var { name, ty }
+        }
+        // `const`, and the detection-guaranteed-unreachable fallback, both bind a
+        // fresh const so the node is well-formed.
+        _ => {
+            let (name, ty) = parse_checked_binding_name(source, prefix, false, diagnostics);
+            CheckedBind::Const { name, ty }
+        }
+    }
+}
+
+/// Parse the `NAME [: TYPE]` of a `const`/`var checked` binding prefix (which ends at
+/// the binding `=`). Reports a keyword-in-name-position or malformed-type error and
+/// falls back to an empty name / no annotation.
+fn parse_checked_binding_name(
+    source: &str,
+    prefix: &[Token],
+    is_var: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (String, Option<TypeExpr>) {
+    let name = match prefix.get(1) {
+        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+        other => {
+            let (span, expected) = (
+                other.map_or(prefix[0].span, |token| token.span),
+                if is_var {
+                    ExpectedSyntax::VariableName
+                } else {
+                    ExpectedSyntax::ConstName
+                },
+            );
+            diagnostics.push(Diagnostic {
+                code: ParseDiagnosticReason::Expected(expected).code(),
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(expected)),
+                severity: Severity::Error,
+                message: "expected a name for the checked binding".to_string(),
+                help: None,
+                span,
+            });
+            String::new()
+        }
+    };
+
+    let mut ty = None;
+    if prefix.get(2).map(|token| token.kind) == Some(TokenKind::Colon) {
+        // The type spans from after the colon up to the binding `=` that ends the
+        // prefix (types carry no `=`, so the top-level `=` is the binding one).
+        let type_start = 3;
+        let type_end = find_top_level_equal(prefix).unwrap_or(prefix.len());
+        if type_end > type_start {
+            let (expected, message) = if is_var {
+                (
+                    ExpectedSyntax::ParameterType,
+                    "expected variable type annotation",
+                )
+            } else {
+                (ExpectedSyntax::ConstType, "expected const type annotation")
+            };
+            match parse_type(source, &prefix[type_start..type_end], expected, message) {
+                Ok(parsed) => ty = Some(parsed),
+                Err(error) => {
+                    push_parse_error(diagnostics, line_span_or(prefix, prefix[0].span), error)
+                }
+            }
+        }
+    }
+    (name, ty)
 }

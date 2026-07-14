@@ -183,6 +183,18 @@ fn stmt_has_error(stmt: &Statement) -> bool {
         Statement::Match {
             scrutinee, arms, ..
         } => expr_has_error(scrutinee) || arms.iter().any(|arm| block_has_error(&arm.block)),
+        Statement::Checked {
+            op,
+            out_of_range,
+            zero_divisor,
+            ..
+        } => {
+            expr_has_error(op)
+                || [out_of_range, zero_divisor]
+                    .into_iter()
+                    .flatten()
+                    .any(block_has_error)
+        }
         Statement::Break { .. } | Statement::Continue { .. } => false,
     }
 }

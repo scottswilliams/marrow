@@ -43,6 +43,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    default Book.author = \"unknown\"\n    retire ^books.byTitle\n    transform Book.shelf\n        return ^books(1).shelf\n",
         "module app\n\nfn compound()\n    var total: int = 0\n    total += 1\n    total *= 2\n",
         "module app\n\nfn strings()\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n",
+        "module app\n\nfn guard(a: int, b: int): int\n    const q: int = checked a / b\n        on out_of_range\n            return 0\n        on zero_divisor\n            return 0\n    return q\n",
+        "module app\n\nfn guardReturn(a: int, b: int): int\n    return checked a + b\n        on out_of_range\n            return 0\n",
     ]
     .into_iter()
     .map(str::to_string)
@@ -71,6 +73,8 @@ fn pathological_inputs() -> Vec<String> {
         "const X = 999999999999999999999999999999.day\n".to_string(),
         "@#$%^&*~`|\n".to_string(),
         "module\nuse\nconst\nresource\nstore\nenum\nfn\n".to_string(),
+        // A checked form with a malformed arm header and no body must recover.
+        "fn f(a: int)\n    const q = checked a + a\n        on nope\n".to_string(),
     ];
     // Very long single line: a wide operand chain the expression parser bounds.
     inputs.push(format!("const X = {}\n", "1 + ".repeat(5_000)));

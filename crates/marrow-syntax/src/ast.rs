@@ -666,6 +666,18 @@ pub enum Statement {
         arms: Vec<MatchArm>,
         span: SourceSpan,
     },
+    /// The adjacent single-operation checked-arithmetic form, bound to a
+    /// `const`/`var` or produced by `return`. It wraps one operation `op`; the `on`
+    /// arms run when the operation faults and each must diverge. The parser captures
+    /// `op` and the two optional arms; the checker owns which arms are required for
+    /// the operation and that each arm diverges.
+    Checked {
+        bind: CheckedBind,
+        op: Expression,
+        out_of_range: Option<Block>,
+        zero_divisor: Option<Block>,
+        span: SourceSpan,
+    },
     /// A statement line the parser could not structure. Total parsing yields this
     /// node in place of a dropped line so every body parses to a statement list;
     /// it always travels with a `parse.syntax` diagnostic at its span, and
@@ -673,6 +685,15 @@ pub enum Statement {
     Error {
         span: SourceSpan,
     },
+}
+
+/// The binding a `checked` form writes into: a fresh `const`/`var` (with an optional
+/// type annotation) or a `return`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedBind {
+    Const { name: String, ty: Option<TypeExpr> },
+    Var { name: String, ty: Option<TypeExpr> },
+    Return,
 }
 
 /// `path` is the arm's member path relative to the scrutinee enum, as written;
@@ -750,6 +771,7 @@ impl Statement {
             | Self::Transaction { span, .. }
             | Self::Try { span, .. }
             | Self::Match { span, .. }
+            | Self::Checked { span, .. }
             | Self::Error { span } => *span,
         }
     }

@@ -69,6 +69,8 @@ pub enum ParseDiagnosticReason {
     /// grammar admits only identifiers.
     KeywordPathSegment,
     LateModuleDeclaration,
+    /// A `checked` form's arm header is not `on out_of_range`/`on zero_divisor`.
+    CheckedArm,
     MatchArmMemberPath,
     NestingLimit,
     /// A second operator on a non-associative level (`==`/`!=`/`</`is`/`??`),
@@ -99,6 +101,7 @@ impl ParseDiagnosticReason {
 pub enum ExpectedSyntax {
     CloseParen,
     Comma,
+    CheckedBody,
     ConstName,
     ConstType,
     Declaration,
