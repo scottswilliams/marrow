@@ -3,18 +3,25 @@
 //! Values are stored in a backend-independent canonical byte form, so backup,
 //! diff, equality, and restore are stable. The bytes carry no type tag — the
 //! type comes from the schema at read time — and are not order-preserving, since
-//! the store orders by tree-cell key rather than by value.
+//! the store orders by key rather than by value.
 
-use crate::key::SavedKey;
 use marrow_codes::Code;
 
-/// Version of the canonical value encoding, recorded in a backup so a restore can
-/// refuse data it cannot decode. Advances only on an incompatible byte-format change.
+use super::civil::{
+    NANOS_PER_DAY, NANOS_PER_SEC, civil_from_days, date_parts, supported_date_days,
+    supported_instant_nanos,
+};
+use super::key::KeyScalar;
+
+/// Version of the canonical value encoding, recorded in a store profile so a
+/// reopen can refuse data it cannot decode. Advances only on an incompatible
+/// byte-format change.
 pub const VALUE_CODEC_VERSION: u32 = 0;
 
-/// A decoded scalar value, shared by the store, runtime, and tooling.
+/// A decoded scalar value, the runtime representation shared by the VM, kernel,
+/// and tooling.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Scalar {
+pub enum RuntimeScalar {
     Bool(bool),
     Int(i64),
     Str(String),
@@ -27,36 +34,33 @@ pub enum Scalar {
     Instant(i128),
 }
 
-/// A saved scalar; the name the store and write planner read a [`Scalar`] under.
-pub type SavedValue = Scalar;
-
-impl Scalar {
+impl RuntimeScalar {
     /// This scalar's order-preserving key projection. The single home for that
     /// mapping; every current scalar type is key-eligible.
-    pub fn as_key(&self) -> Result<Option<SavedKey>, ValueError> {
+    pub fn as_key(&self) -> Result<Option<KeyScalar>, ValueError> {
         let key = match self {
-            Scalar::Int(v) => SavedKey::Int(*v),
-            Scalar::Bool(v) => SavedKey::Bool(*v),
-            Scalar::Str(v) => SavedKey::Str(v.clone()),
-            Scalar::Bytes(v) => SavedKey::Bytes(v.clone()),
-            Scalar::Date(v) => SavedKey::Date(*v),
-            Scalar::Duration(v) => SavedKey::Duration(*v),
-            Scalar::Instant(v) => SavedKey::Instant(*v),
+            RuntimeScalar::Int(v) => KeyScalar::Int(*v),
+            RuntimeScalar::Bool(v) => KeyScalar::Bool(*v),
+            RuntimeScalar::Str(v) => KeyScalar::Str(v.clone()),
+            RuntimeScalar::Bytes(v) => KeyScalar::Bytes(v.clone()),
+            RuntimeScalar::Date(v) => KeyScalar::Date(*v),
+            RuntimeScalar::Duration(v) => KeyScalar::Duration(*v),
+            RuntimeScalar::Instant(v) => KeyScalar::Instant(*v),
         };
         validate_scalar_key(&key)?;
         Ok(Some(key))
     }
 
     /// This scalar's type discriminant.
-    pub fn ty(&self) -> ScalarType {
+    pub fn ty(&self) -> ScalarKind {
         match self {
-            Scalar::Bool(_) => ScalarType::Bool,
-            Scalar::Int(_) => ScalarType::Int,
-            Scalar::Str(_) => ScalarType::Str,
-            Scalar::Bytes(_) => ScalarType::Bytes,
-            Scalar::Date(_) => ScalarType::Date,
-            Scalar::Duration(_) => ScalarType::Duration,
-            Scalar::Instant(_) => ScalarType::Instant,
+            RuntimeScalar::Bool(_) => ScalarKind::Bool,
+            RuntimeScalar::Int(_) => ScalarKind::Int,
+            RuntimeScalar::Str(_) => ScalarKind::Str,
+            RuntimeScalar::Bytes(_) => ScalarKind::Bytes,
+            RuntimeScalar::Date(_) => ScalarKind::Date,
+            RuntimeScalar::Duration(_) => ScalarKind::Duration,
+            RuntimeScalar::Instant(_) => ScalarKind::Instant,
         }
     }
 }
@@ -96,9 +100,11 @@ impl std::fmt::Display for ValueError {
 
 impl std::error::Error for ValueError {}
 
-/// The type to decode saved bytes as. A typed read knows this from the schema.
+/// The type to decode saved bytes as. A typed read knows this from the verified
+/// site. Distinct from the compiler's language-level scalar classification: this
+/// is the runtime codec's discriminant over the full saved-value domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScalarType {
+pub enum ScalarKind {
     Bool,
     Int,
     Str,
@@ -108,30 +114,18 @@ pub enum ScalarType {
     Instant,
 }
 
-impl ScalarType {
+impl ScalarKind {
     /// The canonical language spelling of this scalar type.
     pub fn name(self) -> &'static str {
         match self {
-            ScalarType::Bool => "bool",
-            ScalarType::Int => "int",
-            ScalarType::Str => "string",
-            ScalarType::Bytes => "bytes",
-            ScalarType::Date => "date",
-            ScalarType::Instant => "instant",
-            ScalarType::Duration => "duration",
+            ScalarKind::Bool => "bool",
+            ScalarKind::Int => "int",
+            ScalarKind::Str => "string",
+            ScalarKind::Bytes => "bytes",
+            ScalarKind::Date => "date",
+            ScalarKind::Instant => "instant",
+            ScalarKind::Duration => "duration",
         }
-    }
-
-    /// This scalar named with its indefinite article and backtick spelling
-    /// (`` an `int` ``), the convention every type-naming diagnostic shares so a
-    /// message reads naturally. `int` and `instant` are the vowel-initial
-    /// spellings.
-    pub fn indefinite(self) -> String {
-        let article = match self {
-            ScalarType::Int | ScalarType::Instant => "an",
-            _ => "a",
-        };
-        format!("{article} `{}`", self.name())
     }
 }
 
@@ -141,37 +135,37 @@ impl ScalarType {
 ///
 /// The canonical boundary: it emits only forms [`decode_value`] reads back, so a
 /// `date`/`instant` outside year 0001-9999 is a typed [`ValueError`].
-pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
+pub fn encode_value(value: &RuntimeScalar) -> Result<Vec<u8>, ValueError> {
     // A saved cell holds exactly one present scalar: the only cell discriminant is
     // the scalar type tag, never a null, optional, or tombstone value. Absence is
     // the lack of a cell at the data path, not an encoded marker. The closed
-    // `SavedValue` sum is the structural guarantee.
+    // `RuntimeScalar` sum is the structural guarantee.
     Ok(match value {
-        SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
-        SavedValue::Int(value) => value.to_string().into_bytes(),
-        SavedValue::Str(text) => text.as_bytes().to_vec(),
-        SavedValue::Bytes(bytes) => bytes.clone(),
-        SavedValue::Date(days) => format_date(*days)?.into_bytes(),
-        SavedValue::Duration(nanos) => format_duration(*nanos).into_bytes(),
-        SavedValue::Instant(nanos) => format_instant(*nanos)?.into_bytes(),
+        RuntimeScalar::Bool(value) => vec![if *value { b'1' } else { b'0' }],
+        RuntimeScalar::Int(value) => value.to_string().into_bytes(),
+        RuntimeScalar::Str(text) => text.as_bytes().to_vec(),
+        RuntimeScalar::Bytes(bytes) => bytes.clone(),
+        RuntimeScalar::Date(days) => format_date(*days)?.into_bytes(),
+        RuntimeScalar::Duration(nanos) => format_duration(*nanos).into_bytes(),
+        RuntimeScalar::Instant(nanos) => format_instant(*nanos)?.into_bytes(),
     })
 }
 
 /// Decodes canonical saved bytes as `ty`, strictly: non-canonical bytes such as
 /// `+1`, `01`, or a non-`0`/`1` boolean are rejected rather than normalized.
-pub fn decode_value(bytes: &[u8], ty: ScalarType) -> Option<SavedValue> {
+pub fn decode_value(bytes: &[u8], ty: ScalarKind) -> Option<RuntimeScalar> {
     match ty {
-        ScalarType::Bool => match bytes {
-            b"0" => Some(SavedValue::Bool(false)),
-            b"1" => Some(SavedValue::Bool(true)),
+        ScalarKind::Bool => match bytes {
+            b"0" => Some(RuntimeScalar::Bool(false)),
+            b"1" => Some(RuntimeScalar::Bool(true)),
             _ => None,
         },
-        ScalarType::Int => Some(SavedValue::Int(parse_canonical_int(bytes)?)),
-        ScalarType::Str => Some(SavedValue::Str(String::from_utf8(bytes.to_vec()).ok()?)),
-        ScalarType::Bytes => Some(SavedValue::Bytes(bytes.to_vec())),
-        ScalarType::Date => Some(SavedValue::Date(parse_date(bytes)?)),
-        ScalarType::Duration => Some(SavedValue::Duration(parse_duration(bytes)?)),
-        ScalarType::Instant => Some(SavedValue::Instant(parse_instant(bytes)?)),
+        ScalarKind::Int => Some(RuntimeScalar::Int(parse_canonical_int(bytes)?)),
+        ScalarKind::Str => Some(RuntimeScalar::Str(String::from_utf8(bytes.to_vec()).ok()?)),
+        ScalarKind::Bytes => Some(RuntimeScalar::Bytes(bytes.to_vec())),
+        ScalarKind::Date => Some(RuntimeScalar::Date(parse_date(bytes)?)),
+        ScalarKind::Duration => Some(RuntimeScalar::Duration(parse_duration(bytes)?)),
+        ScalarKind::Instant => Some(RuntimeScalar::Instant(parse_instant(bytes)?)),
     }
 }
 
@@ -181,40 +175,6 @@ fn parse_canonical_int(bytes: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(bytes).ok()?;
     let value: i64 = text.parse().ok()?;
     (value.to_string() == text).then_some(value)
-}
-
-/// Days from the Unix epoch to `year-month-day` (years 0001-9999), or `None` if out
-/// of range. Validates by reconstructing the date, so 2021-02-29 and the like fail.
-pub fn date_days(year: i32, month: u32, day: u32) -> Option<i32> {
-    if !(1..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    let value = i32::try_from(days).ok()?;
-    (civil_from_days(days) == (year, month, day)).then_some(value)
-}
-
-pub const SUPPORTED_DATE_MIN_DAYS: i32 = -719_162;
-pub const SUPPORTED_DATE_MAX_DAYS: i32 = 2_932_896;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DateParts {
-    pub year: i32,
-    pub month: u32,
-    pub day: u32,
-}
-
-/// The calendar components of a supported date day count.
-pub fn date_parts(days: i32) -> Option<DateParts> {
-    if !supported_date_days(days) {
-        return None;
-    }
-    let (year, month, day) = civil_from_days(i64::from(days));
-    Some(DateParts { year, month, day })
-}
-
-pub fn supported_date_days(days: i32) -> bool {
-    (SUPPORTED_DATE_MIN_DAYS..=SUPPORTED_DATE_MAX_DAYS).contains(&days)
 }
 
 /// Formats days-since-epoch as `YYYY-MM-DD`, erroring outside year 0001-9999 since a
@@ -236,7 +196,7 @@ fn parse_date(bytes: &[u8]) -> Option<i32> {
     let year = parse_digit_field(&bytes[0..4])?;
     let month = parse_digit_field(&bytes[5..7])?;
     let day = parse_digit_field(&bytes[8..10])?;
-    date_days(year as i32, month, day)
+    super::civil::date_days(year as i32, month, day)
 }
 
 /// Parses an all-ASCII-digit field as a `u32`; any non-digit byte rejects it, so
@@ -249,66 +209,20 @@ fn parse_digit_field(slice: &[u8]) -> Option<u32> {
     }
 }
 
-/// Howard Hinnant's `days_from_civil`: proleptic-Gregorian date to days from the Unix
-/// epoch. Valid for any real `month`/`day`; callers validate ranges.
-fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
-    let year = year as i64 - i64::from(month <= 2);
-    let era = (if year >= 0 { year } else { year - 399 }) / 400;
-    let year_of_era = year - era * 400;
-    let month_part = (if month > 2 { month - 3 } else { month + 9 }) as i64;
-    let day_of_year = (153 * month_part + 2) / 5 + day as i64 - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146097 + day_of_era - 719468
-}
-
-/// Hinnant's `civil_from_days`, the inverse of [`days_from_civil`].
-fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let days = days + 719468;
-    let era = (if days >= 0 { days } else { days - 146096 }) / 146097;
-    let day_of_era = days - era * 146097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_part = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_part + 2) / 5 + 1) as u32;
-    let month = (if month_part < 10 {
-        month_part + 3
-    } else {
-        month_part - 9
-    }) as u32;
-    let year = year + i64::from(month <= 2);
-    (year as i32, month, day)
-}
-
-const NANOS_PER_SEC: i128 = 1_000_000_000;
-
-/// Nanoseconds in a 24-hour day, the date<->nanos conversion factor. Owned here
-/// alongside the date/instant codecs; the runtime imports it for the same model.
-pub const NANOS_PER_DAY: i128 = 86_400 * NANOS_PER_SEC;
-
-pub const SUPPORTED_INSTANT_MIN_NANOS: i128 = SUPPORTED_DATE_MIN_DAYS as i128 * NANOS_PER_DAY;
-pub const SUPPORTED_INSTANT_MAX_NANOS: i128 =
-    SUPPORTED_DATE_MAX_DAYS as i128 * NANOS_PER_DAY + (NANOS_PER_DAY - 1);
-
-pub fn supported_instant_nanos(nanos: i128) -> bool {
-    (SUPPORTED_INSTANT_MIN_NANOS..=SUPPORTED_INSTANT_MAX_NANOS).contains(&nanos)
-}
-
-pub fn validate_scalar_key(key: &SavedKey) -> Result<(), ValueError> {
+pub fn validate_scalar_key(key: &KeyScalar) -> Result<(), ValueError> {
     match key {
-        SavedKey::Date(days) if !supported_date_days(*days) => {
+        KeyScalar::Date(days) if !supported_date_days(*days) => {
             Err(ValueError::DateOutOfRange { days: *days })
         }
-        SavedKey::Instant(nanos) if !supported_instant_nanos(*nanos) => {
+        KeyScalar::Instant(nanos) if !supported_instant_nanos(*nanos) => {
             Err(ValueError::InstantOutOfRange { nanos: *nanos })
         }
         _ => Ok(()),
     }
 }
 
-pub fn scalar_key_matches_type(key: &SavedKey, expected: ScalarType) -> bool {
-    key.scalar_type() == expected && validate_scalar_key(key).is_ok()
+pub fn scalar_key_matches_type(key: &KeyScalar, expected: ScalarKind) -> bool {
+    key.scalar_kind() == expected && validate_scalar_key(key).is_ok()
 }
 
 /// Appends the canonical sub-second fraction of `nanos_fraction` (in `[0, 10^9)`):
@@ -441,7 +355,7 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Scalar, decode_value, encode_value};
+    use super::{RuntimeScalar, decode_value, encode_value};
 
     /// Every present scalar encodes to bytes that decode back under its own scalar
     /// type tag — the only cell discriminant. There is no null, optional, or
@@ -450,13 +364,13 @@ mod tests {
     #[test]
     fn the_only_cell_discriminant_is_the_scalar_type_tag() {
         let values = [
-            Scalar::Bool(true),
-            Scalar::Int(-7),
-            Scalar::Str("hello".into()),
-            Scalar::Bytes(vec![0x00, 0xff]),
-            Scalar::Date(0),
-            Scalar::Duration(1_500_000_000),
-            Scalar::Instant(0),
+            RuntimeScalar::Bool(true),
+            RuntimeScalar::Int(-7),
+            RuntimeScalar::Str("hello".into()),
+            RuntimeScalar::Bytes(vec![0x00, 0xff]),
+            RuntimeScalar::Date(0),
+            RuntimeScalar::Duration(1_500_000_000),
+            RuntimeScalar::Instant(0),
         ];
         for value in values {
             let bytes = encode_value(&value).expect("a present scalar encodes");

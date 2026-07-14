@@ -1,9 +1,17 @@
-//! Typed saved-key values used by the tree-cell store.
+//! Typed key values and their order-preserving byte encoding.
+//!
+//! A [`KeyScalar`] is a typed key value; its encoding sorts byte-wise into the
+//! same order as the typed value, so an ordered-byte engine ranges over keys in
+//! Marrow's key order without decoding them. Type tags ascend in that order, and
+//! variable-length keys use a `0x00`-escape framing so an embedded null never
+//! ends a field early.
 
 use std::cmp::Ordering;
 
+use super::value::ScalarKind;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SavedKey {
+pub enum KeyScalar {
     Int(i64),
     Bool(bool),
     Str(String),
@@ -17,46 +25,28 @@ pub enum SavedKey {
     Bytes(Vec<u8>),
 }
 
-impl SavedKey {
-    pub fn scalar_type(&self) -> crate::value::ScalarType {
-        use crate::value::ScalarType;
-
+impl KeyScalar {
+    pub fn scalar_kind(&self) -> ScalarKind {
         match self {
-            SavedKey::Bool(_) => ScalarType::Bool,
-            SavedKey::Int(_) => ScalarType::Int,
-            SavedKey::Str(_) => ScalarType::Str,
-            SavedKey::Bytes(_) => ScalarType::Bytes,
-            SavedKey::Date(_) => ScalarType::Date,
-            SavedKey::Duration(_) => ScalarType::Duration,
-            SavedKey::Instant(_) => ScalarType::Instant,
-        }
-    }
-
-    /// Payload bytes this key contributes to a staged write's in-memory
-    /// footprint: the fixed scalar width, or the variable-length content of a
-    /// string or byte key. A keyed write buffers this in the pending tree (and
-    /// again in each plan step that carries the identity), so the
-    /// transaction-breadth budget charges it to bound real key memory.
-    pub fn byte_len(&self) -> usize {
-        match self {
-            SavedKey::Bool(_) => 1,
-            SavedKey::Date(_) => 4,
-            SavedKey::Int(_) => 8,
-            SavedKey::Duration(_) | SavedKey::Instant(_) => 16,
-            SavedKey::Str(value) => value.len(),
-            SavedKey::Bytes(value) => value.len(),
+            KeyScalar::Bool(_) => ScalarKind::Bool,
+            KeyScalar::Int(_) => ScalarKind::Int,
+            KeyScalar::Str(_) => ScalarKind::Str,
+            KeyScalar::Bytes(_) => ScalarKind::Bytes,
+            KeyScalar::Date(_) => ScalarKind::Date,
+            KeyScalar::Duration(_) => ScalarKind::Duration,
+            KeyScalar::Instant(_) => ScalarKind::Instant,
         }
     }
 
     fn kind(&self) -> KeyKind {
         match self {
-            SavedKey::Bool(_) => KeyKind::Bool,
-            SavedKey::Int(_) => KeyKind::Int,
-            SavedKey::Date(_) => KeyKind::Date,
-            SavedKey::Instant(_) => KeyKind::Instant,
-            SavedKey::Duration(_) => KeyKind::Duration,
-            SavedKey::Str(_) => KeyKind::Str,
-            SavedKey::Bytes(_) => KeyKind::Bytes,
+            KeyScalar::Bool(_) => KeyKind::Bool,
+            KeyScalar::Int(_) => KeyKind::Int,
+            KeyScalar::Date(_) => KeyKind::Date,
+            KeyScalar::Instant(_) => KeyKind::Instant,
+            KeyScalar::Duration(_) => KeyKind::Duration,
+            KeyScalar::Str(_) => KeyKind::Str,
+            KeyScalar::Bytes(_) => KeyKind::Bytes,
         }
     }
 
@@ -90,22 +80,22 @@ impl KeyKind {
     }
 }
 
-impl PartialOrd for SavedKey {
+impl PartialOrd for KeyScalar {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for SavedKey {
+impl Ord for KeyScalar {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (SavedKey::Bool(left), SavedKey::Bool(right)) => left.cmp(right),
-            (SavedKey::Int(left), SavedKey::Int(right)) => left.cmp(right),
-            (SavedKey::Date(left), SavedKey::Date(right)) => left.cmp(right),
-            (SavedKey::Instant(left), SavedKey::Instant(right)) => left.cmp(right),
-            (SavedKey::Duration(left), SavedKey::Duration(right)) => left.cmp(right),
-            (SavedKey::Str(left), SavedKey::Str(right)) => left.cmp(right),
-            (SavedKey::Bytes(left), SavedKey::Bytes(right)) => left.cmp(right),
+            (KeyScalar::Bool(left), KeyScalar::Bool(right)) => left.cmp(right),
+            (KeyScalar::Int(left), KeyScalar::Int(right)) => left.cmp(right),
+            (KeyScalar::Date(left), KeyScalar::Date(right)) => left.cmp(right),
+            (KeyScalar::Instant(left), KeyScalar::Instant(right)) => left.cmp(right),
+            (KeyScalar::Duration(left), KeyScalar::Duration(right)) => left.cmp(right),
+            (KeyScalar::Str(left), KeyScalar::Str(right)) => left.cmp(right),
+            (KeyScalar::Bytes(left), KeyScalar::Bytes(right)) => left.cmp(right),
             _ => self.kind().cmp(&other.kind()),
         }
     }
@@ -126,18 +116,14 @@ pub(crate) const KEY_DURATION: u8 = 0x05;
 pub(crate) const KEY_STR: u8 = 0x07;
 pub(crate) const KEY_BYTES: u8 = 0x08;
 
-// The bounded int-key band uses this tag-only cursor as its exclusive upper bound.
-pub(crate) const KEY_INT_EXCLUSIVE_END: u8 = KEY_INT + 1;
-const _: () = assert!(KEY_DATE == KEY_INT_EXCLUSIVE_END);
-
-pub(crate) fn encode_key_value(key: &SavedKey) -> Vec<u8> {
+pub fn encode_key_value(key: &KeyScalar) -> Vec<u8> {
     let mut bytes = Vec::new();
     encode_key_into(key, &mut bytes);
     bytes
 }
 
 /// Decodes the leading scalar key, returning it with the byte count it consumed.
-pub(crate) fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
+pub fn decode_key_value(bytes: &[u8]) -> Option<(KeyScalar, usize)> {
     match *bytes.first()? {
         KEY_BOOL => {
             let value = match *bytes.get(1)? {
@@ -145,121 +131,70 @@ pub(crate) fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
                 1 => true,
                 _ => return None,
             };
-            Some((SavedKey::Bool(value), 2))
+            Some((KeyScalar::Bool(value), 2))
         }
         KEY_INT => {
             let raw: [u8; 8] = bytes.get(1..9)?.try_into().ok()?;
             Some((
-                SavedKey::Int((u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64),
+                KeyScalar::Int((u64::from_be_bytes(raw) ^ (1u64 << 63)) as i64),
                 9,
             ))
         }
         KEY_DATE => {
             let raw: [u8; 4] = bytes.get(1..5)?.try_into().ok()?;
             Some((
-                SavedKey::Date((u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32),
+                KeyScalar::Date((u32::from_be_bytes(raw) ^ (1u32 << 31)) as i32),
                 5,
             ))
         }
         KEY_DURATION => {
             let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
             Some((
-                SavedKey::Duration((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
+                KeyScalar::Duration((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
                 17,
             ))
         }
         KEY_INSTANT => {
             let raw: [u8; 16] = bytes.get(1..17)?.try_into().ok()?;
             Some((
-                SavedKey::Instant((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
+                KeyScalar::Instant((u128::from_be_bytes(raw) ^ (1u128 << 127)) as i128),
                 17,
             ))
         }
         KEY_STR => {
             let (decoded, used) = decode_escaped_bytes(bytes.get(1..)?)?;
-            Some((SavedKey::Str(String::from_utf8(decoded).ok()?), 1 + used))
+            Some((KeyScalar::Str(String::from_utf8(decoded).ok()?), 1 + used))
         }
         KEY_BYTES => {
             let (decoded, used) = decode_escaped_bytes(bytes.get(1..)?)?;
-            Some((SavedKey::Bytes(decoded), 1 + used))
+            Some((KeyScalar::Bytes(decoded), 1 + used))
         }
         _ => None,
     }
 }
 
-/// The cell value a non-unique index entry carries. Its unique sibling instead carries the
-/// record identity as an [`encode_identity_payload`] blob, so the value shape alone distinguishes
-/// the two entry kinds without a schema lookup.
-pub const INDEX_MARKER: &[u8] = b"1";
-
-pub fn encode_identity_payload(identity: &[SavedKey]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for key in identity {
-        bytes.extend_from_slice(&encode_key_value(key));
-    }
-    bytes
-}
-
-pub fn encode_identity_index_key(store_catalog_id: &str, identity: &[SavedKey]) -> Vec<u8> {
-    let payload = encode_identity_payload(identity);
-    let mut bytes = Vec::with_capacity(1 + store_catalog_id.len() + 1 + payload.len());
-    bytes.push(0);
-    bytes.extend_from_slice(store_catalog_id.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(&payload);
-    bytes
-}
-
-/// Decodes a canonical identity payload, returning `None` unless it holds exactly `arity` keys.
-pub fn decode_identity_payload_arity(bytes: &[u8], arity: usize) -> Option<Vec<SavedKey>> {
-    let mut keys = Vec::with_capacity(arity);
-    let mut rest = bytes;
-    for _ in 0..arity {
-        let (key, used) = decode_key_value(rest)?;
-        keys.push(key);
-        rest = rest.get(used..)?;
-    }
-    rest.is_empty().then_some(keys)
-}
-
-pub fn decode_identity_index_key(
-    bytes: &[u8],
-    store_catalog_id: &str,
-    arity: usize,
-) -> Option<Vec<SavedKey>> {
-    let prefix_len = 1 + store_catalog_id.len() + 1;
-    let prefix = bytes.get(..prefix_len)?;
-    if prefix.first().copied()? != 0
-        || prefix.get(1..1 + store_catalog_id.len())? != store_catalog_id.as_bytes()
-        || prefix.last().copied()? != 0
-    {
-        return None;
-    }
-    decode_identity_payload_arity(bytes.get(prefix_len..)?, arity)
-}
-
-pub(crate) fn encode_key_into(key: &SavedKey, out: &mut Vec<u8>) {
+pub fn encode_key_into(key: &KeyScalar, out: &mut Vec<u8>) {
     out.push(key.order_tag());
     match key {
-        SavedKey::Bool(value) => {
+        KeyScalar::Bool(value) => {
             out.push(u8::from(*value));
         }
-        SavedKey::Int(value) => {
+        KeyScalar::Int(value) => {
             out.extend_from_slice(&((*value as u64) ^ (1u64 << 63)).to_be_bytes());
         }
-        SavedKey::Date(value) => {
+        KeyScalar::Date(value) => {
             out.extend_from_slice(&((*value as u32) ^ (1u32 << 31)).to_be_bytes());
         }
-        SavedKey::Duration(value) => {
+        KeyScalar::Duration(value) => {
             out.extend_from_slice(&((*value as u128) ^ (1u128 << 127)).to_be_bytes());
         }
-        SavedKey::Instant(value) => {
+        KeyScalar::Instant(value) => {
             out.extend_from_slice(&((*value as u128) ^ (1u128 << 127)).to_be_bytes());
         }
-        SavedKey::Str(value) => {
+        KeyScalar::Str(value) => {
             encode_escaped_bytes(value.as_bytes(), out);
         }
-        SavedKey::Bytes(value) => {
+        KeyScalar::Bytes(value) => {
             encode_escaped_bytes(value, out);
         }
     }
@@ -302,31 +237,31 @@ pub(crate) fn decode_escaped_bytes(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SavedKey, decode_key_value, encode_key_value};
+    use super::{KeyScalar, decode_key_value, encode_key_value};
 
-    fn representative_keys() -> Vec<SavedKey> {
+    fn representative_keys() -> Vec<KeyScalar> {
         vec![
-            SavedKey::Bool(false),
-            SavedKey::Bool(true),
-            SavedKey::Int(i64::MIN),
-            SavedKey::Int(-1),
-            SavedKey::Int(0),
-            SavedKey::Int(i64::MAX),
-            SavedKey::Date(i32::MIN),
-            SavedKey::Date(-719_162),
-            SavedKey::Date(0),
-            SavedKey::Date(2_932_896),
-            SavedKey::Date(i32::MAX),
-            SavedKey::Instant(i128::MIN),
-            SavedKey::Instant(0),
-            SavedKey::Instant(i128::MAX),
-            SavedKey::Duration(i128::MIN),
-            SavedKey::Duration(-1),
-            SavedKey::Duration(i128::MAX),
-            SavedKey::Str(String::new()),
-            SavedKey::Str("a\u{0}b".into()),
-            SavedKey::Bytes(vec![]),
-            SavedKey::Bytes(vec![0x00, 0x01, 0xff]),
+            KeyScalar::Bool(false),
+            KeyScalar::Bool(true),
+            KeyScalar::Int(i64::MIN),
+            KeyScalar::Int(-1),
+            KeyScalar::Int(0),
+            KeyScalar::Int(i64::MAX),
+            KeyScalar::Date(i32::MIN),
+            KeyScalar::Date(-719_162),
+            KeyScalar::Date(0),
+            KeyScalar::Date(2_932_896),
+            KeyScalar::Date(i32::MAX),
+            KeyScalar::Instant(i128::MIN),
+            KeyScalar::Instant(0),
+            KeyScalar::Instant(i128::MAX),
+            KeyScalar::Duration(i128::MIN),
+            KeyScalar::Duration(-1),
+            KeyScalar::Duration(i128::MAX),
+            KeyScalar::Str(String::new()),
+            KeyScalar::Str("a\u{0}b".into()),
+            KeyScalar::Bytes(vec![]),
+            KeyScalar::Bytes(vec![0x00, 0x01, 0xff]),
         ]
     }
 
@@ -350,7 +285,7 @@ mod tests {
 
         assert_eq!(
             by_bytes, by_type,
-            "encoded key bytes must sort like SavedKey"
+            "encoded key bytes must sort like KeyScalar"
         );
     }
 
@@ -378,18 +313,18 @@ mod tests {
 
         assert_eq!(
             by_bytes, by_type,
-            "reverse encoded key bytes must sort like reverse SavedKey order"
+            "reverse encoded key bytes must sort like reverse KeyScalar order"
         );
     }
 
     #[test]
     fn escaped_key_byte_fingerprints_are_stable() {
         assert_eq!(
-            encode_key_value(&SavedKey::Str("a\u{0}b".into())),
+            encode_key_value(&KeyScalar::Str("a\u{0}b".into())),
             vec![0x07, b'a', 0x00, 0x01, b'b', 0x00, 0x00]
         );
         assert_eq!(
-            encode_key_value(&SavedKey::Bytes(vec![0x00, 0x01, 0xff])),
+            encode_key_value(&KeyScalar::Bytes(vec![0x00, 0x01, 0xff])),
             vec![0x08, 0x00, 0x01, 0x01, 0xff, 0x00, 0x00]
         );
     }

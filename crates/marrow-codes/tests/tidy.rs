@@ -22,6 +22,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-codes",
     "marrow-compile",
     "marrow-image",
+    "marrow-kernel",
     "marrow-project",
     "marrow-store",
     "marrow-syntax",
@@ -55,6 +56,14 @@ const FORBIDDEN_FAMILIES: &[&str] = &[
     "Value::Absent",
     // The tree-walking interpreter's owning type.
     "Interpreter",
+    // Store-owned language vocabulary relocated to the path kernel at K.5: the
+    // key/value scalar types and the deleted tree-cell/catalog-id key substrate.
+    // The kernel now owns `KeyScalar`/`RuntimeScalar`; these old spellings must
+    // not reappear in the store or anywhere else.
+    "SavedKey",
+    "SavedValue",
+    "CatalogId",
+    "DataPathSegment",
 ];
 
 fn workspace_root() -> PathBuf {

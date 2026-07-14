@@ -96,6 +96,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-kernel"
+version = "0.1.0"
+dependencies = [
+ "marrow-codes",
+]
+
+[[package]]
 name = "marrow-project"
 version = "0.1.0"
 dependencies = [
