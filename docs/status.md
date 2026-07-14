@@ -1,90 +1,57 @@
 # Project status
 
 Marrow is experimental and unreleased. This page describes the repository at
-the same Git revision and separates reachable behavior from direction.
+the same Git revision and separates current behavior from direction.
+
+The beta line began at lane B00 with a deliberate capability trough: the
+entangled prototype semantic owners were deleted, and the trustworthy decoupled
+parts were retained to be built on. The verticals listed under Future are being
+refounded lane by lane; a feature is absent until its lane lands it.
 
 | State | Meaning |
 |---|---|
 | Current | Implemented behavior documented by the current reference and tests. |
-| Legacy | Reachable behavior that is being removed and must not shape replacement architecture. |
 | Future | Unimplemented direction under `docs/future/`; it is not current syntax or a guarantee. |
 
 ## Current
 
-### Language and checking
+The retained beta workspace is four crates: the diagnostic-code registry
+(`marrow-codes`), the syntax owner (`marrow-syntax`), the ordered-byte storage
+engine (`marrow-store`), and a thin `marrow` CLI.
 
-- Native parser and formatter for `.mw` source.
-- Static scalar, resource, enum, sequence, local-tree, optional, and nominal
-  store-identity types.
-- Modules, functions, lexical bindings, control flow, structured errors,
-  presence narrowing, and host-effect checks.
-- Direct durable reads, assignments, deletion, ordered keyed iteration,
-  managed indexes, and lexical transactions.
-- Source declarations for selected changes to populated data.
+### Language and tooling
 
-### Execution and durable state
-
-- A checked in-memory executable representation interpreted by a tree-walking
-  runtime; no bytecode or native compiler backend.
-- Memory and redb implementations of the current ordered-tree API.
-- One owning write-capable native-store process or session.
-- Managed writes that maintain declared indexes and commit transactionally.
-- Accepted declaration identities and state-bound preview/apply for supported
-  evolution.
-- Typed inspection, integrity, backup, restore, and physical recovery commands.
-
-### Developer tools
-
-- `init`, `check`, `fmt`, `run`, `test`, `doctor`, `data`, `evolve`, `backup`,
-  and `restore` command families.
-- Text, JSON, and selected JSONL diagnostic/report forms. (Experimental
-  `serve`, TypeScript client generation, and client scaffolding remain
-  reachable but are rejected product families; see Legacy below.)
-- A downstream language-server repository using current Marrow semantic APIs.
+- Native lexer, parser, and formatter for `.mw` source, with typed parse
+  diagnostics.
+- `marrow fmt` formats a single `.mw` file (`--check`/`--write`); `marrow
+  --version` and `marrow --help`. Every other command name is recognized but
+  reports `cli.command_unsupported` until its refounding lane lands.
 - Linux and macOS source builds with the pinned Rust toolchain.
 
-### Known implementation defects
+### Storage engine
 
-- Argument labels are not rejected consistently on standard-library and some
-  intrinsic/local-collection calls. A mislabeled call may check without an
-  executable body or fail only during interpretation.
-- `ErrorCode` validation is not preserved through every annotated boundary;
-  several parameter, return, local, collection, key, optional, and constant
-  paths erase the refinement to `string`.
+- A private ordered-byte engine contract with in-memory and redb backends under
+  one conformance suite, plus the logical key/value/civil-date codecs. The
+  engine has no source-language consumer on the beta line yet; the compiler,
+  path kernel, and runtime that drive it are refounded starting at the thesis
+  tracer lane.
 
-These defects are replacement and containment inputs, not beta promises.
+### Deleted at B00
 
-## Legacy and transitional architecture
+The prototype's entangled owners were deleted on the beta line and must not
+shape the replacement architecture. Each returns only through its refounding
+lane, rebuilt as a new owner:
 
-The following behavior remains reachable until its owning deletion lane. It
-must not be expanded or preserved for compatibility.
-
-### Rejected product families
-
-- `surface` declarations and their repeated field/operation model;
-- generated collection/read/create/update/delete/action families;
-- operation-tag HTTP routes, Bearer-authenticated experimental serving, and the
-  generated TypeScript client;
-- `marrow serve`, `marrow client typescript`, and `init --client` as currently
-  implemented; and
-- the user-facing storage-cost model and hidden-scan terminology.
-
-### Transitional foundations
-
-- the tree-walking interpreter and optional executable-body model;
-- the resource/schema split and Rust-table standard library;
-- store-projected catalog identity, current `marrow.lock`, automatic baseline,
-  and current evolution lifecycle;
-- managed indexes and privileged `nextId` allocation;
-- durable writes outside an explicit outer transaction, nested transactions
-  joining an outer transaction, and current host-effect handling in transactions;
-- `ProjectSession` orchestration and the mixed compiler/runtime/store JSON model;
-- redb plus the current recovery wrapper and engine-private file knowledge; and
-- `marrow.json` is the current, transitional project model.
-
-These are current facts and remain documented while reachable. The refounding
-will remove their reference pages with their production code rather than keep a
-permanent legacy manual.
+- the `surface` stack (declarations, generated CRUD/collection/action families,
+  operation-tag HTTP routes, experimental serving, and the generated TypeScript
+  client), and the user-facing storage-cost model;
+- the tree-walking interpreter, `ProjectSession`, the resource/schema split, the
+  store-projected catalog and current evolution lifecycle, managed indexes and
+  `nextId`, and the mixed compiler/runtime/store JSON model;
+- the `check`/`run`/`test`/`data`/`doctor`/`evolve`/`serve`/`client`/`backup`/
+  `restore`/`init` command families and the store's logical/admission/catalog/
+  backup layers (the byte engine and its codecs are retained); and
+- the redb page-level recovery probe and the process-global panic-hook swap.
 
 ## Future: v0.1 beta
 

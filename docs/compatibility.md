@@ -55,6 +55,5 @@ The Rust crates in the workspace are internal implementation APIs. Linked-Rust
 entry invocation, runtime sessions, storage types, and JSON DTO modules are not
 stable embedding interfaces.
 
-The still-reachable surface/client/serve stack is legacy architecture and has
-no compatibility commitment. See [Legacy Architecture](legacy.md) and
-[Project Status](status.md).
+The prototype surface/client/serve stack was deleted at B00 and has no
+compatibility commitment. See [Project Status](status.md).

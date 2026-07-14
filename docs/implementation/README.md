@@ -45,7 +45,6 @@ source meaning.
 - [Lifecycle](lifecycle.md)
 - [Tooling](tooling.md)
 - [Testing](testing.md)
-- [Legacy implementation](legacy.md)
 
 ## Ownership rule
 

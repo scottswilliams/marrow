@@ -99,9 +99,9 @@ expected after a failed check.
 
 The `catalog/` pass reconciles source declarations with an accepted catalog
 snapshot or committed lock projection. It proposes stable `CatalogId` values,
-rename aliases, retirement, fingerprints, and catalog epochs. This is current
-behavior but not the target semantic-path architecture; see
-[Legacy implementation](legacy.md).
+rename aliases, retirement, fingerprints, and catalog epochs. This described
+the prototype, not the target semantic-path architecture; the prototype
+implementation was deleted at B00.
 
 ## Transitional store dependency
 

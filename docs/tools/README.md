@@ -19,6 +19,5 @@ keys and files are not command output contracts. Commands that intentionally
 scan a whole store say so; application code does not acquire a general data API
 through the administrative commands.
 
-The still-reachable surface/client/serve commands belong to
-[Legacy Architecture](../legacy.md). They are omitted from the current tool
-guides so their presence is not mistaken for architectural commitment.
+The prototype surface/client/serve commands were deleted at B00; see
+[Project status](../status.md).

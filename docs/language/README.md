@@ -112,5 +112,5 @@ write durable syntax without opening the configured persistent store. See
 
 The reference covers the current non-legacy `.mw` language and behavior
 available through the checker and runtime. Programs use typed paths, ordinary
-control flow, and explicit subtree traversal. Reachable legacy syntax is listed
-separately in [Legacy architecture](../legacy.md).
+control flow, and explicit subtree traversal. The prototype `surface` syntax
+was deleted at B00; see [Project status](../status.md).

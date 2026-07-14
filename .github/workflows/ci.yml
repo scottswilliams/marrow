@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [beta]
   pull_request:
 
 permissions:
@@ -29,11 +29,20 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # --all-features enables marrow-store's `native` (redb) backend so the
+      # native engine and its conformance suite are gated alongside the memory
+      # backend. The reduced workspace is exactly marrow-codes, marrow-syntax,
+      # marrow-store, and the thin marrow CLI.
       - name: Build
-        run: cargo build --workspace --all-targets --locked
+        run: cargo build --workspace --all-targets --all-features --locked
 
+      # Runs the retained-crate tests, including the standing anti-legacy tidy
+      # gate (marrow-codes) that asserts the workspace membership and the absence
+      # of every forbidden legacy family from the tracked source. The
+      # differential-oracle harness's binary-invoking test is #[ignore], so CI
+      # never requires the archived oracle.
       - name: Test
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --all-features --locked
 
       - name: Clippy and unsafe check
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -F unsafe-code
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -F unsafe-code

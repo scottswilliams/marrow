@@ -26,7 +26,7 @@ source roots, an optional default entry, storage, and test paths.
 | `store.backend` | `"memory"` or `"native"` | Required whenever `store` is present. |
 | `store.dataDir` | string | Required and non-empty for `native`; unused by `memory`. |
 | `tests` | array of strings | Optional; defaults to `[]`. |
-| `client` | string | Accepted only for the [legacy generated-client path](../legacy.md). |
+| `client` | string | Deleted at B00 with the prototype generated-client path. |
 
 Unknown fields are rejected at the top level and inside `run` and `store`.
 `run` and `store`, when present, must be objects. Malformed JSON and type

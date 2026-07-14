@@ -18,8 +18,8 @@ current binary; `marrow --version` prints the package version and engine profile
 | `evolve` | Preview or apply supported populated-data changes. | [Evolution Tools](evolution.md) |
 | `backup`, `restore` | Move durable state through a typed archive. | [Backup And Restore](backup-and-restore.md) |
 
-Implemented surface/client/serve paths are legacy and are inventoried only in
-[Legacy Architecture](../legacy.md).
+The prototype surface/client/serve paths were deleted at B00; see
+[Project status](../status.md).
 
 ## `marrow init`
 

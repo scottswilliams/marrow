@@ -17,19 +17,19 @@ effect visible. Durable code still has additional rules for presence, keyed
 children, transactions, bounded traversal, and failure.
 
 Marrow is language- and compiler-first. It is not a new query engine and has no
-supported public serving profile. The current implementation checks source and
-executes it with a tree-walking interpreter; it does not currently emit bytecode
-or native machine code. Reproducible, independently verified program images and
-a portable VM are future work.
-
-`marrow serve --remote` remains reachable legacy behavior. Its HTTP server is
-synchronous, does not provide TLS or compiler-integrated authorization, and is
-unsuitable for untrusted networks. It will be removed with the prototype
-surface and generated-client family.
+supported public serving profile. The project is refounding an entangled
+prototype into a v0.1 beta: at lane B00 the prototype's compiler, interpreter,
+and durable owners were deleted, leaving a retained core (the syntax owner, the
+diagnostic-code registry, and an ordered-byte storage engine) plus a thin CLI.
+The verticals below — a reproducible program image, an independent verifier, a
+bytecode VM, a path kernel, and the durable model — are being rebuilt lane by
+lane. A feature is absent until its lane lands it.
 
 ## Example
 
-This example is current Marrow and is checked in CI.
+This example shows the intended durable model. The retained parser accepts this
+syntax; the checker, VM, and durable runtime that give it meaning are being
+refounded, so it does not yet check or run on the beta line.
 
 ```mw
 module app::tasks
@@ -62,10 +62,10 @@ pub fn complete(id: Id(^tasks)): bool
 ```
 
 `resource` declarations, `nextId`, writes outside explicit transactions, and
-managed indexes are implemented prototype behavior. They remain documented in
-the current reference while reachable, but they are not assumptions for the
-v0.1 beta design. [Project status](docs/status.md) identifies current,
-transitional, and future work precisely.
+managed indexes were prototype behavior; their prototype implementations were
+deleted at B00 and are being refounded under the narrowed beta design. They are
+not assumptions for the v0.1 beta. [Project status](docs/status.md) identifies
+current and future work precisely.
 
 ## Purpose
 
@@ -89,21 +89,20 @@ the differentiator, not a substitute for those foundations.
 
 ## Current implementation
 
-Marrow is early and unreleased.
+Marrow is early and unreleased. The beta line began at lane B00 with a
+deliberate capability trough: the entangled prototype owners were deleted and
+the trustworthy decoupled parts retained.
 
 | Area | Current implementation |
 |---|---|
-| Front end | Native parser, formatter, modules, functions, resources, enums, control flow, static checking, and structured diagnostics |
-| Durable state | Typed hierarchical places, direct reads and writes, ordered traversal, transactions, managed indexes, inspection, backup, and restore |
-| Existing data | Accepted declaration identities and preview/apply workflows for supported populated-data changes |
-| Execution | Checked in-memory representation executed by a tree-walking interpreter |
-| Storage | Memory and redb implementations behind the current ordered-tree API |
-| Tooling | Source-built CLI for check, run, test, format, data, evolution, backup, restore, and experimental local serving/client generation |
+| Front end | Native lexer, parser, and formatter for `.mw` source with typed parse diagnostics |
+| CLI | `marrow fmt` over a single file, plus `--version`/`--help`; other command names report `cli.command_unsupported` until refounded |
+| Storage engine | A private ordered-byte engine contract with in-memory and redb backends under one conformance suite, plus the logical key/value/civil-date codecs, with no source-language consumer yet |
 
-The experimental surface/server/client and user-facing storage-cost models are
-legacy and will be removed. The checker/interpreter/catalog/redb stack is
-current but transitional: it establishes useful behavior and test evidence, not
-the final compiler architecture.
+The prototype checker, tree-walking interpreter, catalog, durable lifecycle, and
+the `surface`/server/client families were deleted at B00 and are being rebuilt
+as new owners. [Project status](docs/status.md) lists what returns through which
+lane.
 
 ## v0.1 direction
 
@@ -165,7 +164,7 @@ Start with [Installation](docs/install.md) and the
 - [Language reference](docs/language/) defines current `.mw` behavior.
 - [Tool reference](docs/tools/) and [Operations](docs/operations/) document the
   current CLI and store.
-- [Project status](docs/status.md) separates current, legacy, and future work.
+- [Project status](docs/status.md) separates current and future work.
 - [Vision](docs/vision.md) states the product direction and boundaries.
 - [Implementation guide](docs/implementation/) maps the Rust code that exists.
 - The documentation map links unimplemented direction without treating it as

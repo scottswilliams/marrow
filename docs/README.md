@@ -51,8 +51,6 @@ It is organized for lookup rather than sequential reading:
   code paths for contributors.
 - [Contributing](../CONTRIBUTING.md) gives focused and workspace verification
   commands.
-- [Legacy mechanisms](legacy.md) records implemented behavior that is being
-  removed and is intentionally absent from the main manual.
 - [Future direction](future/) collects unimplemented ideas. Future pages are
   neither current behavior nor implementation prerequisites.
 

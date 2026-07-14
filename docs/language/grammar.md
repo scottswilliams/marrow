@@ -2,9 +2,8 @@
 
 This page gives an EBNF summary of the current non-legacy `.mw` language. It
 describes source shape only; the other reference pages define name resolution,
-types, presence, effects, and runtime behavior. Reachable legacy `surface`
-syntax is intentionally excluded and is inventoried in
-[Legacy architecture](../legacy.md).
+types, presence, effects, and runtime behavior. The prototype `surface`
+syntax was deleted at B00 and is intentionally excluded.
 
 Quoted text is literal. `A?`, `A*`, and `A+` mean optional, zero or more, and one
 or more. `A | B` selects an alternative. The indentation lexer emits `INDENT`,

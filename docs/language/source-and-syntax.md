@@ -47,7 +47,7 @@ int bool string bytes decimal date instant duration sequence unknown Error Error
 the main reference. `merge` and `lock` are reserved statement heads that produce
 parser diagnostics. `journal`, `sensitive`, and `declassify` are held keywords,
 not current statement forms. These spellings are unavailable as ordinary
-identifiers; see [Legacy architecture](../legacy.md).
+identifiers.
 
 Standard-library path segments such as `std::text` are resolved as declared
 library names even when a segment resembles a type word.
