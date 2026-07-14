@@ -163,6 +163,10 @@ Static errors found while checking source.
             Code::CheckUnsupported,
             Code::CheckType,
             Code::CheckNameConflict,
+            Code::CheckModulePath,
+            Code::CheckImport,
+            Code::CheckVisibility,
+            Code::CheckRecursion,
         ]),
         r#"
 ### `image.*` — kind `artifact`

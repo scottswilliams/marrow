@@ -8,6 +8,8 @@
 //! and patched to instruction indices once the target position is known; the
 //! encoder rewrites indices to byte offsets.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use marrow_codes::Code;
 use marrow_image::{FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId};
 use marrow_syntax::{
@@ -148,25 +150,57 @@ enum DurTarget {
 /// A resolved function signature, keyed by index (the image FUNCTIONS position,
 /// which equals declaration order).
 pub(crate) struct FnSignature {
+    name: String,
+    /// The dotted module the function is declared in (path-derived).
+    module: String,
     index: u16,
     params: Vec<ScalarType>,
     ret: RetType,
+    public: bool,
 }
 
-/// The project's functions, resolved before body lowering so a call to a function
-/// declared later resolves. Names are unique project-wide (a duplicate is rejected
-/// before this is built).
+/// A successfully lowered function: its image index and the indices of the
+/// functions it calls directly (for check-time recursion detection).
+pub(crate) struct Lowered {
+    pub func: FuncId,
+    pub callees: Vec<u16>,
+}
+
+/// The outcome of resolving a call target against module scope.
+pub(crate) enum CallResolution<'a> {
+    /// A resolved callable signature.
+    Found(&'a FnSignature),
+    /// A function with the name exists in the target module but is not `pub`, so it
+    /// is not callable across the module boundary.
+    NotPublic,
+    /// No function with that name is reachable from the calling module.
+    NotFound,
+}
+
+/// The project's functions and the module scope a call resolves against: every
+/// function signature (resolved before body lowering so a forward call resolves),
+/// the set of module names, and each module's `use` bindings. Names are unique
+/// within a module (a duplicate is rejected before this is built).
 #[derive(Default)]
 pub(crate) struct FunctionRegistry {
-    sigs: Vec<(String, FnSignature)>,
+    sigs: Vec<FnSignature>,
+    modules: BTreeSet<String>,
+    /// `module -> [(final-segment binding, dotted target module)]`.
+    imports: BTreeMap<String, Vec<(String, String)>>,
 }
 
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
-    pub(crate) fn build(records: &RecordRegistry, functions: &[(String, &FunctionDecl)]) -> Self {
+    /// `functions` pairs each declaration with its dotted module name.
+    pub(crate) fn build(
+        records: &RecordRegistry,
+        functions: &[(String, &FunctionDecl)],
+        modules: BTreeSet<String>,
+        imports: BTreeMap<String, Vec<(String, String)>>,
+    ) -> Self {
         let mut sigs = Vec::with_capacity(functions.len());
-        for (index, (_file, function)) in functions.iter().enumerate() {
+        for (index, (module, function)) in functions.iter().enumerate() {
             let params = function
                 .params
                 .iter()
@@ -186,23 +220,69 @@ impl FunctionRegistry {
                     Some(ty) => RetType::Value(ty),
                 },
             };
-            sigs.push((
-                function.name.clone(),
-                FnSignature {
-                    index: index as u16,
-                    params,
-                    ret,
-                },
-            ));
+            sigs.push(FnSignature {
+                name: function.name.clone(),
+                module: module.clone(),
+                index: index as u16,
+                params,
+                ret,
+                public: function.public,
+            });
         }
-        Self { sigs }
+        Self {
+            sigs,
+            modules,
+            imports,
+        }
     }
 
-    fn by_name(&self, name: &str) -> Option<&FnSignature> {
+    /// Resolve an unqualified call from within `module`: a function of that name in
+    /// the same module.
+    fn same_module(&self, module: &str, name: &str) -> Option<&FnSignature> {
         self.sigs
             .iter()
-            .find(|(sig_name, _)| sig_name == name)
-            .map(|(_, sig)| sig)
+            .find(|sig| sig.name == name && sig.module == module)
+    }
+
+    /// Resolve a `::`-qualified call `prefix::item` from within `current`. A single
+    /// prefix segment binds through a `use` first, then a root-level module of the
+    /// same name; a multi-segment prefix names a fully-qualified module path. The
+    /// target must be `pub`, except a module qualifying its own function.
+    fn resolve_qualified(
+        &self,
+        current: &str,
+        prefix: &[String],
+        item: &str,
+    ) -> CallResolution<'_> {
+        let module = if let [single] = prefix {
+            if let Some((_, target)) = self
+                .imports
+                .get(current)
+                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single))
+            {
+                target.clone()
+            } else if self.modules.contains(single) {
+                single.clone()
+            } else {
+                return CallResolution::NotFound;
+            }
+        } else {
+            let dotted = prefix.join(".");
+            if self.modules.contains(&dotted) {
+                dotted
+            } else {
+                return CallResolution::NotFound;
+            }
+        };
+        match self
+            .sigs
+            .iter()
+            .find(|sig| sig.name == item && sig.module == module)
+        {
+            Some(sig) if sig.public || sig.module == current => CallResolution::Found(sig),
+            Some(_) => CallResolution::NotPublic,
+            None => CallResolution::NotFound,
+        }
     }
 }
 
@@ -228,8 +308,14 @@ pub(crate) struct FnLowerer<'a> {
     functions: &'a FunctionRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
+    /// The dotted module the function being lowered belongs to; unqualified calls
+    /// resolve within it.
+    module: &'a str,
     code: Vec<Instr>,
     spans: Vec<SpanEntry>,
+    /// The image indices of every function this body calls directly, in emission
+    /// order. The caller uses these to detect a recursive call cycle at check time.
+    calls: Vec<u16>,
     locals: Vec<Local>,
     loops: Vec<LoopCtx>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
@@ -240,9 +326,10 @@ pub(crate) struct FnLowerer<'a> {
 
 impl<'a> FnLowerer<'a> {
     /// Lower `function` and add it to the draft, returning its assigned [`FuncId`]
-    /// on success. Export minting is the caller's job: it holds the dotted module
-    /// name needed to compute the export's [`marrow_image::ExportId`]. A function
-    /// that fails to lower pushes its diagnostics and returns `None`.
+    /// and the indices of the functions it calls directly. Export minting is the
+    /// caller's job: it holds the dotted module name needed to compute the export's
+    /// [`marrow_image::ExportId`]. A function that fails to lower pushes its
+    /// diagnostics and returns `None`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
@@ -251,8 +338,9 @@ impl<'a> FnLowerer<'a> {
         functions: &'a FunctionRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
+        module: &'a str,
         function: &FunctionDecl,
-    ) -> Option<FuncId> {
+    ) -> Option<Lowered> {
         let ret = match &function.return_type {
             None => RetType::Unit,
             Some(annotation) => match resolve_type(records, annotation) {
@@ -275,8 +363,10 @@ impl<'a> FnLowerer<'a> {
             functions,
             diagnostics,
             file,
+            module,
             code: Vec::new(),
             spans: Vec::new(),
+            calls: Vec::new(),
             locals: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
@@ -349,7 +439,10 @@ impl<'a> FnLowerer<'a> {
             spans,
         });
 
-        Some(func_id)
+        Some(Lowered {
+            func: func_id,
+            callees: std::mem::take(&mut lowerer.calls),
+        })
     }
 
     // --- emission helpers ---
@@ -1251,10 +1344,24 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "this call"));
             return None;
         };
-        let [name] = segments.as_slice() else {
-            self.fail(unsupported(self.file, span, "this call"));
-            return None;
-        };
+        match segments.as_slice() {
+            [name] => self.lower_unqualified_call(name, args, span),
+            [prefix @ .., item] => self.lower_qualified_call(prefix, item, args, span),
+            [] => {
+                self.fail(unsupported(self.file, span, "this call"));
+                None
+            }
+        }
+    }
+
+    /// An unqualified call: a builtin, a constructor, or a function in the same
+    /// module. It never reaches another module — that requires a `::` qualifier.
+    fn lower_unqualified_call(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<CallResult> {
         if name == "exists" {
             return self.lower_exists(args, span).map(CallResult::Value);
         }
@@ -1263,12 +1370,48 @@ impl<'a> FnLowerer<'a> {
                 .lower_constructor(name, args, span)
                 .map(CallResult::Value);
         }
-        if let Some(sig) = self.functions.by_name(name) {
+        if let Some(sig) = self.functions.same_module(self.module, name) {
             let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
             return self.lower_function_call(index, &params, ret, args, span);
         }
         self.fail(name_error(self.file, span, name));
         None
+    }
+
+    /// A `::`-qualified call `prefix::item`: resolved against the calling module's
+    /// `use` bindings and the project module set, to a `pub` function.
+    fn lower_qualified_call(
+        &mut self,
+        prefix: &[String],
+        item: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<CallResult> {
+        match self.functions.resolve_qualified(self.module, prefix, item) {
+            CallResolution::Found(sig) => {
+                let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
+                self.lower_function_call(index, &params, ret, args, span)
+            }
+            CallResolution::NotPublic => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckVisibility.as_str(),
+                    self.file,
+                    span,
+                    format!("`{item}` is not `pub`, so it cannot be called from another module"),
+                ));
+                None
+            }
+            CallResolution::NotFound => {
+                let path = prefix
+                    .iter()
+                    .map(String::as_str)
+                    .chain(std::iter::once(item))
+                    .collect::<Vec<_>>()
+                    .join("::");
+                self.fail(name_error(self.file, span, &path));
+                None
+            }
+        }
     }
 
     /// Lower a direct function call: positional arguments matched to the callee's
@@ -1303,6 +1446,7 @@ impl<'a> FnLowerer<'a> {
             self.lower_as(&argument.value, LTy::bare_scalar(*param))?;
         }
         self.push(Instr::Call(index), span);
+        self.calls.push(index);
         Some(match ret {
             RetType::Unit => CallResult::Unit,
             RetType::Value(ty) => CallResult::Value(ty),

@@ -122,7 +122,11 @@ Static errors found while checking source.
 | `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see [execution limits](language/execution-limits.md). |
 | `check.unsupported` | A parsed construct is well-formed Marrow but outside the subset the beta line currently compiles. Its owning language capability is being refounded lane by lane and returns through a later one; until then the construct is absent by the capability trough, and the checker reports this at its span. |
 | `check.type` | An expression or declaration is not well-typed in the compiled subset: a return value whose type does not match the declared return type, an operator applied to the wrong operand type, a use of a name that is not in scope, or a value used where a different type is required. |
-| `check.name_conflict` | Two declarations collide on a name the compiler must resolve uniquely: two exported (`pub fn`) functions share a name, or two declarations share an identifier in the same scope. The message names the colliding declarations. |
+| `check.name_conflict` | Two declarations collide on a name the compiler must resolve uniquely: two functions in one module share a name, or two declarations share an identifier in the same scope. The message names the colliding declarations. |
+| `check.module_path` | A file's `module` header does not match the module name derived from its source-root-relative path. The path is the authority for module identity, so `src/shelf/books.mw` must declare `module shelf::books`; the message names the expected path. |
+| `check.import` | A `use` import cannot be resolved: it names a module the project does not contain, or two imports in one module bind the same final segment and are ambiguous. The message names the offending import. |
+| `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to expose it across the module boundary. |
+| `check.recursion` | A function is part of a direct or mutual recursion cycle. The compiled subset does not admit recursion; the call graph must be acyclic. The message names the cycle. This is reported at check time so the source, not the image, carries the diagnostic. |
 
 ### `image.*` — kind `artifact`
 

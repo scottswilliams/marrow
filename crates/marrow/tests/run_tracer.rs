@@ -284,6 +284,139 @@ fn a_qualified_export_in_a_second_module_runs() {
     assert_eq!(String::from_utf8_lossy(&start.stdout), "1\n");
 }
 
+// --- Module-scoped call resolution and `use` imports (C00). ---
+
+/// Write a `marrow.toml` and the named `(relative path, source)` modules under a
+/// fresh temp project, returning it.
+fn multi_module(name: &str, modules: &[(&str, &str)]) -> TempDir {
+    let temp = TempDir::new(name);
+    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
+    for (path, source) in modules {
+        write(&temp.join("src").join(path), source);
+    }
+    temp
+}
+
+/// The first diagnostic code from a failed `marrow run --format jsonl`.
+fn run_diagnostic_code(dir: &Path, export: &str) -> String {
+    let output = run_in(dir, &["run", export, "--format", "jsonl"]);
+    assert!(!output.status.success(), "expected failure: {output:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn a_use_import_resolves_a_cross_module_call() {
+    let temp = multi_module(
+        "use-import",
+        &[
+            (
+                "mathlib/ops.mw",
+                "module mathlib::ops\n\npub fn double(n: int): int\n    return n + n\n",
+            ),
+            (
+                "main.mw",
+                "module main\n\nuse mathlib::ops\n\npub fn run(): int\n    return ops::double(21)\n",
+            ),
+        ],
+    );
+    let output = run_in(&temp, &["run", "main.run"]);
+    assert!(
+        output.status.success(),
+        "cross-module call failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+#[test]
+fn a_fully_qualified_call_resolves_without_a_use() {
+    let temp = multi_module(
+        "fully-qualified",
+        &[
+            (
+                "mathlib/ops.mw",
+                "module mathlib::ops\n\npub fn triple(n: int): int\n    return n + n + n\n",
+            ),
+            (
+                "main.mw",
+                "module main\n\npub fn run(): int\n    return mathlib::ops::triple(4)\n",
+            ),
+        ],
+    );
+    let output = run_in(&temp, &["run", "main.run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "12\n");
+}
+
+#[test]
+fn a_same_name_function_in_another_module_does_not_conflict() {
+    // Two modules each define `helper`; an unqualified call binds the caller's own.
+    let temp = multi_module(
+        "same-name",
+        &[
+            ("a.mw", "module a\n\npub fn helper(): int\n    return 1\n"),
+            (
+                "b.mw",
+                "module b\n\nfn helper(): int\n    return 2\n\npub fn run(): int\n    return helper()\n",
+            ),
+        ],
+    );
+    let output = run_in(&temp, &["run", "b.run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+}
+
+#[test]
+fn calling_a_private_function_across_modules_is_a_visibility_error() {
+    let temp = multi_module(
+        "visibility",
+        &[
+            ("lib.mw", "module lib\n\nfn secret(): int\n    return 1\n"),
+            (
+                "main.mw",
+                "module main\n\npub fn run(): int\n    return lib::secret()\n",
+            ),
+        ],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.visibility"));
+}
+
+#[test]
+fn a_use_of_an_unknown_module_is_an_import_error() {
+    let temp = multi_module(
+        "unknown-import",
+        &[(
+            "main.mw",
+            "module main\n\nuse nope::missing\n\npub fn run(): int\n    return 1\n",
+        )],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
+}
+
+#[test]
+fn a_module_header_that_disagrees_with_its_path_is_rejected() {
+    let temp = multi_module(
+        "module-path",
+        &[(
+            "main.mw",
+            "module wrong\n\npub fn run(): int\n    return 1\n",
+        )],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.module_path"));
+}
+
+#[test]
+fn a_duplicate_function_name_in_one_module_conflicts() {
+    let temp = multi_module(
+        "dup-in-module",
+        &[(
+            "main.mw",
+            "module main\n\nfn helper(): int\n    return 1\n\nfn helper(): int\n    return 2\n\npub fn run(): int\n    return helper()\n",
+        )],
+    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.name_conflict"));
+}
+
 #[test]
 fn direct_calls_resolve_forward_and_compute() {
     let temp = TempDir::new("calls");
@@ -302,7 +435,10 @@ fn direct_calls_resolve_forward_and_compute() {
 }
 
 #[test]
-fn mutual_recursion_is_an_artifact_rejection() {
+fn mutual_recursion_is_a_check_time_diagnostic() {
+    // Recursion is caught at check time as a source diagnostic, before an image is
+    // produced. (The verifier still independently rejects a cyclic image it is
+    // handed; that is covered by the verifier's own hostile suite.)
     let temp = TempDir::new("recursion");
     project(
         &temp,
@@ -315,11 +451,24 @@ fn mutual_recursion_is_an_artifact_rejection() {
     let output = run_in(&temp, &["run", "ping", "--format", "jsonl"]);
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
+    assert!(stdout.contains("check.recursion"), "{output:?}");
+}
+
+#[test]
+fn direct_self_recursion_is_a_check_time_diagnostic() {
+    let temp = TempDir::new("self-recursion");
+    project(
+        &temp,
+        "pub fn loops(): int\n\
+         \x20   return loops()\n",
+    );
+    let output = run_in(&temp, &["run", "loops", "--format", "jsonl"]);
+    assert!(!output.status.success());
     assert!(
-        stdout.contains(r#""outcome":"artifact_rejected""#),
+        String::from_utf8_lossy(&output.stdout).contains("check.recursion"),
         "{output:?}"
     );
-    assert!(stdout.contains("image.closure"), "{output:?}");
 }
 
 // --- Durable tracer (slices K.6/K.7): the counter CLI travels the full path

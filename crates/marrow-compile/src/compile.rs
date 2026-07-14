@@ -6,6 +6,8 @@
 //! outside the current subset is a typed `check.unsupported` diagnostic, never a
 //! silent drop.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
@@ -43,6 +45,16 @@ struct Module {
     file: String,
     name: String,
     parsed: ParsedSource,
+}
+
+/// A lowered function's identity for recursion detection: its image index, the
+/// functions it calls directly, and where to report a cycle.
+struct LoweredFn {
+    index: u16,
+    file: String,
+    name: String,
+    span: SourceSpan,
+    callees: Vec<u16>,
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
@@ -87,22 +99,81 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
         return Err(diagnostics);
     }
 
-    // Function names must be unique project-wide so a `Call` resolves to one target
-    // (interim flat registry; module-scoped resolution lands later in C00). A
-    // duplicate is a conflict.
+    // The source-root-relative path is the authority for module identity. A file
+    // that also declares a `module` header must spell the same name (with `::` as
+    // the separator the dotted identity uses).
+    for module in &parsed {
+        if let Some(header) = &module.parsed.file.module {
+            let declared = header.name.replace("::", ".");
+            if declared != module.name {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckModulePath.as_str(),
+                    &module.file,
+                    header.span,
+                    format!(
+                        "module header `{}` does not match its path; expected `module {}`",
+                        header.name,
+                        module.name.replace('.', "::")
+                    ),
+                ));
+            }
+        }
+    }
+
+    // The set of module names, and each module's `use` bindings (final segment ->
+    // dotted target). A `use` must name a project module; two imports binding the
+    // same final segment in one module are ambiguous.
+    let module_names: BTreeSet<String> = parsed.iter().map(|module| module.name.clone()).collect();
+    let mut imports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for module in &parsed {
+        let bindings = imports.entry(module.name.clone()).or_default();
+        for use_decl in &module.parsed.file.uses {
+            let target = use_decl.name.replace("::", ".");
+            let segment = target
+                .rsplit('.')
+                .next()
+                .unwrap_or(target.as_str())
+                .to_string();
+            if !module_names.contains(&target) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckImport.as_str(),
+                    &module.file,
+                    use_decl.span,
+                    format!("no module `{}` in this project", use_decl.name),
+                ));
+                continue;
+            }
+            if bindings.iter().any(|(seg, _)| seg == &segment) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckImport.as_str(),
+                    &module.file,
+                    use_decl.span,
+                    format!("import `{segment}` is already bound by another `use` in this module"),
+                ));
+                continue;
+            }
+            bindings.push((segment, target));
+        }
+    }
+
+    // A module has at most one function with a given name, so an unqualified or
+    // qualified call resolves to one target.
+    reject_duplicate_functions(&parsed, &mut diagnostics);
+
+    // The function signatures paired with their dotted module, in declaration order
+    // (the order lowering assigns image indices).
     let functions: Vec<(String, &FunctionDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl {
-                    Some((module.file.clone(), function))
+                    Some((module.name.clone(), function))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    reject_duplicate_functions(&functions, &mut diagnostics);
 
     // Build the single project record type and the function signatures before body
     // lowering, so constructors, field reads, and forward calls resolve.
@@ -133,30 +204,40 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
         })
         .collect();
     let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
-    let signatures = FunctionRegistry::build(&records, &functions);
+    let signatures = FunctionRegistry::build(&records, &functions, module_names, imports);
 
     // Lower each function, in the same order the registry assigned indices, minting
-    // an export for each public function from its declaration path. Other
-    // declarations are handled above or not yet admitted.
+    // an export for each public function from its declaration path and recording its
+    // direct-call edges for recursion detection. Other declarations are handled
+    // above or not yet admitted.
     let mut exports: Vec<ExportEntry> = Vec::new();
+    let mut lowered: Vec<LoweredFn> = Vec::new();
     for module in &parsed {
         for declaration in &module.parsed.file.declarations {
             match declaration {
                 Declaration::Function(function) => {
-                    let func = FnLowerer::lower(
+                    let Some(result) = FnLowerer::lower(
                         &mut draft,
                         &records,
                         &durable,
                         &signatures,
                         &mut diagnostics,
                         &module.file,
+                        &module.name,
                         function,
-                    );
-                    if let Some(func) = func
-                        && function.public
-                    {
+                    ) else {
+                        continue;
+                    };
+                    lowered.push(LoweredFn {
+                        index: result.func.index(),
+                        file: module.file.clone(),
+                        name: function.name.clone(),
+                        span: function.span,
+                        callees: result.callees,
+                    });
+                    if function.public {
                         let id = ExportId::of_local(&module.name, &function.name);
-                        draft.add_export(id, func);
+                        draft.add_export(id, result.func);
                         exports.push(ExportEntry {
                             module: module.name.clone(),
                             item: function.name.clone(),
@@ -173,6 +254,15 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
                 )),
             }
         }
+    }
+
+    // The compiled subset does not admit recursion: the direct-call graph must be
+    // acyclic. Reported at check time so the source carries the diagnostic. The
+    // verifier independently rejects any cycle that still reaches it (image.closure),
+    // so this is a source-facing check, not the trust boundary. Only run it once
+    // every function lowered, so the indices are aligned.
+    if diagnostics.is_empty() {
+        reject_recursion(&lowered, &mut diagnostics);
     }
 
     if !diagnostics.is_empty() {
@@ -192,25 +282,77 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
 }
 
 /// Report a `check.name_conflict` for every function name declared more than once
-/// across the project (a `Call` must resolve to a unique target in the interim flat
-/// registry).
-fn reject_duplicate_functions(
-    functions: &[(String, &FunctionDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
-) {
-    let mut seen: Vec<&str> = Vec::new();
-    for (path, function) in functions {
-        if seen.contains(&function.name.as_str()) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                path,
-                function.span,
-                format!("a function named `{}` is already declared", function.name),
-            ));
-        } else {
-            seen.push(&function.name);
+/// within a single module (a `Call` must resolve to a unique target). Functions of
+/// the same name in different modules are distinct and do not conflict.
+fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut Vec<SourceDiagnostic>) {
+    for module in parsed {
+        let mut seen: Vec<&str> = Vec::new();
+        for declaration in &module.parsed.file.declarations {
+            let Declaration::Function(function) = declaration else {
+                continue;
+            };
+            if seen.contains(&function.name.as_str()) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckNameConflict.as_str(),
+                    &module.file,
+                    function.span,
+                    format!(
+                        "a function named `{}` is already declared in this module",
+                        function.name
+                    ),
+                ));
+            } else {
+                seen.push(&function.name);
+            }
         }
     }
+}
+
+/// Report `check.recursion` for every function that participates in a direct or
+/// mutual recursion cycle. A function is on a cycle exactly when it can reach
+/// itself by following direct calls, so each function is checked for reachability
+/// back to itself over the edge set.
+fn reject_recursion(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+    // Adjacency by image index. Indices are dense (0..lowered.len()) and each
+    // function appears once, so a plain vec keyed by index is exact.
+    let mut callees: Vec<&[u16]> = vec![&[]; lowered.len()];
+    for function in lowered {
+        if (function.index as usize) < callees.len() {
+            callees[function.index as usize] = &function.callees;
+        }
+    }
+    for function in lowered {
+        if reaches_self(function.index, &callees) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckRecursion.as_str(),
+                &function.file,
+                function.span,
+                format!("`{}` is part of a recursive call cycle", function.name),
+            ));
+        }
+    }
+}
+
+/// Whether `start` can reach itself by following direct calls.
+fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
+    let mut stack: Vec<u16> = callees
+        .get(start as usize)
+        .map(|targets| targets.to_vec())
+        .unwrap_or_default();
+    let mut visited = vec![false; callees.len()];
+    while let Some(node) = stack.pop() {
+        if node == start {
+            return true;
+        }
+        if (node as usize) >= visited.len() || visited[node as usize] {
+            continue;
+        }
+        visited[node as usize] = true;
+        if let Some(targets) = callees.get(node as usize) {
+            stack.extend_from_slice(targets);
+        }
+    }
+    false
 }
 
 fn declaration_span(declaration: &Declaration) -> SourceSpan {
