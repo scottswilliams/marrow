@@ -4,7 +4,7 @@ The installed command is `marrow`. A bare invocation and an unknown command are
 usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
-The beta line's CLI is deliberately thin. `init`, `fmt`, `--help`, and
+The beta line's CLI is deliberately thin. `init`, `fmt`, `run`, `--help`, and
 `--version` are the available commands; every other recognized command name
 belongs to a capability being refounded and reports the typed code
 `cli.command_unsupported` with exit `1`, so a script never mistakes absence for
@@ -17,7 +17,8 @@ direction.
 |---|---|
 | `init` | Create a new project directory (this page). |
 | `fmt` | Format a `.mw` file or every module of a project (this page). |
-| `check`, `run`, `test`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
+| `run` | Compile, verify, and run an exported function (this page). |
+| `check`, `test`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
 ## `marrow init`
 
@@ -52,6 +53,35 @@ Source that does not parse is left untouched and reported with located
 refused with `fmt.comment_loss` rather than published lossily. A directory whose
 manifest or source tree is invalid reports the matching `config.invalid` or
 `project.*` code.
+
+## `marrow run`
+
+```text
+marrow run <export> [--store <path>] [--format text | jsonl] [-- <args>...]
+```
+
+Runs one exported (`pub fn`) function of the [project](projects.md) at the
+working directory. The project is captured, compiled to a reproducible program
+image, and independently verified into a sealed image before the VM runs the
+export; the compiler opens no store and cannot mint a verified image. Arguments
+after `--` are decoded positionally against the export's scalar parameter types
+(`int`, `bool`, `string`).
+
+An export that reads or writes durable data requires `--store <path>`, an
+ordered-byte store that `run` opens (creating it on first write). A mutating
+export runs inside its single transaction; a read-only export observes one
+pinned snapshot. When the export has no durable demand, `--store` is unnecessary
+and unused.
+
+Output is text by default — the returned value, or `absent` for a vacant
+optional. `--format jsonl` prints one canonical JSON object: an outcome of
+`value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the
+four failure families distinct. A source diagnostic (`check.*`, `parse.*`), an
+image rejection (`image.*`), a source-mapped runtime fault (`run.*`), and an
+operational error (`store.*`, `io.*`) never collapse into one another.
+
+Exit `0` carries the value; exit `1` is any failure family; exit `2` is a usage
+error (an unknown export, a bad argument, or a missing `--store`).
 
 ## Usage and exit codes
 

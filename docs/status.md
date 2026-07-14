@@ -39,9 +39,30 @@ thin `marrow` CLI.
 - A private ordered-byte engine contract with in-memory and redb backends under
   one conformance suite. The engine orders opaque bytes; the logical
   key/value/civil-date codecs that give those bytes meaning are owned by the
-  path kernel (`marrow-kernel`). The engine has no source-language consumer on
-  the beta line yet; the compiler, path kernel, and runtime that drive it are
-  refounded starting at the thesis tracer lane.
+  path kernel (`marrow-kernel`), which is the engine's source-language consumer
+  through a narrow byte seam.
+
+### Compiler, image, verifier, VM, and path kernel
+
+A small typed program travels the full production path. The storeless compiler
+(`marrow-compile`) checks a growing subset and lowers to a reproducible program
+image (`marrow-image`); it opens no store and cannot mint a verified image. The
+independent verifier (`marrow-verify`) is the only image decoder and rejects a
+malformed or hostile image in bounded phases — envelope, table closure,
+per-function structure and types, call/effect closure with all-cycle rejection,
+and transaction-flow validation — before sealing a `VerifiedImage`. The stack VM
+(`marrow-vm`) runs only a sealed image, with source-mapped runtime faults under
+private bounds. Durable operations pass the stub path kernel (`marrow-kernel`),
+which resolves effective authority (verifier-derived demand intersected with a
+deployment ceiling and an invocation grant, before the first engine call),
+carries the durable operation algebra, and drives the ordered-byte engine over a
+versioned store profile with an in-transaction commit witness.
+
+`marrow run <export>` drives this path end to end: a small durable counter
+program can declare a keyed resource, read and write and iterate its entries
+inside one transaction, and survive a process restart on the redb backend. The
+admitted subset is narrow and grows lane by lane; a well-formed construct outside
+it is a typed `check.unsupported` diagnostic.
 
 ### Deleted at B00
 
@@ -95,11 +116,14 @@ unimplemented syntax or exact formats.
 ## Not current
 
 Marrow does not currently provide general-purpose language completeness,
-third-party packages, compiled images, an independent verifier or VM,
-compiler-integrated runtime path authority, executable/store binding, a
-supported packaged desktop application, public path publication, a supported
-served profile, concurrent multi-writer deployment, replication, high
-availability, signed releases, or institutional protocol/compliance evidence.
+third-party packages, a durable identity ledger or executable/store binding,
+online schema evolution, logical backup and restore, a supported packaged
+desktop application, public path publication, a supported served profile,
+concurrent multi-writer deployment, replication, high availability, signed
+releases, or institutional protocol/compliance evidence. The compiler, program
+image, verifier, VM, and path kernel are present but early: their admitted
+language subset is narrow and their durable identity, lifecycle, and authority
+attenuation are stubs with named refounding points.
 
 ## Current trust boundaries
 

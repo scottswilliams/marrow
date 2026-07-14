@@ -62,50 +62,50 @@ values. Not every failure is catchable. Failure to attach or validate durable
 data, detected corruption, and internal integrity failures terminate the
 operation instead of entering application recovery code.
 
-## Transaction Blocks
+## Transactions
+
+A mutating export owns exactly one explicit lexical `transaction` block. Every
+durable write reachable from the export sits inside that block, and the export's
+call graph joins it implicitly: a helper the export calls performs its writes
+inside the owner's transaction but cannot open or finish one of its own. A
+read-only export needs no transaction and observes one coherent snapshot for its
+whole call.
 
 ```mw
 module docs::transactions
 
-resource Account
-    required balance: int
+resource Counter
+    required value: int
 
-store ^accounts(id: int): Account
+store ^counters(name: string): Counter
 
-pub fn transfer(from: Id(^accounts), to: Id(^accounts), amount: int): bool
-    if const fromBalance = ^accounts(from).balance
-        if const toBalance = ^accounts(to).balance
-            transaction
-                ^accounts(from).balance = fromBalance - amount
-                ^accounts(to).balance = toBalance + amount
-            return true
-    return false
+pub fn bump(name: string)
+    transaction
+        const current = ^counters(name).value ?? 0
+        ^counters(name).value = current + 1
 ```
 
-The block stages durable writes. Reads in the same transaction observe earlier
-staged writes. When the block finishes without an escaping error, the outermost
-transaction commits all staged data and maintained index changes together.
+The block stages durable writes; reads in the same transaction observe earlier
+staged writes. When the block finishes, the transaction commits all staged
+changes together. A required field left unset when a staged entry commits rolls
+the transaction back with `run.required_missing` rather than committing a
+partial entry — so several required fields may be populated across separate
+statements in one transaction and validated together at commit.
 
-If an error escapes a transaction block, its durable changes roll back. A
-normal `return`, `break`, or `continue` commits before transferring control.
-Local variable assignments are ordinary interpreter state and are not rewound
-by durable rollback.
+The transaction ownership law is checked when the program image is verified: a
+transaction is opened exactly once and committed on every path, every mutation
+sits inside the region, and a transaction owner is never called. An image that
+violates the law is rejected with `image.flow` before it can run.
 
-## Nested Transactions
+## Indeterminate Commit
 
-A nested transaction joins its enclosing transaction. It does not commit
-independently. Successful inner work becomes durable only when the outermost
-block commits.
-
-An error that escapes a nested transaction aborts the joined outer transaction
-and propagates to a handler outside that outermost boundary. Catching an error
-inside the transaction before it escapes is ordinary control flow; the failed
-operation has no effect, and the transaction may continue when the fault is
-recoverable.
-
-Required-member validation for staged resource creation is performed at the
-outer commit. This permits several required fields to be populated across
-separate statements in one transaction.
+A pre-commit fault or a confirmed abort rolls the whole transaction back. A
+commit that does not confirm is *indeterminate*: the store handle is poisoned,
+every later operation fails with `run.commit`, and the process must exit and
+reopen the store. On reopen a recorded commit witness classifies the store as
+complete-new (the commit landed) or complete-old (it did not); the result is
+reported, never retried. Local variable assignments are ordinary state and are
+not rewound by durable rollback.
 
 ## Host Effects
 
