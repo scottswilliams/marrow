@@ -23,6 +23,7 @@ pub enum Family {
     Store,
     Io,
     Config,
+    Project,
 }
 
 impl Family {
@@ -37,6 +38,7 @@ impl Family {
             Self::Store => "store",
             Self::Io => "io",
             Self::Config => "config",
+            Self::Project => "project",
         }
     }
 
@@ -50,7 +52,7 @@ impl Family {
             Self::Value => "runtime",
             Self::Store => "storage",
             Self::Io => "io",
-            Self::Fmt | Self::Cli | Self::Config => "tooling",
+            Self::Fmt | Self::Cli | Self::Config | Self::Project => "tooling",
         }
     }
 }
@@ -156,10 +158,13 @@ codes! {
     StoreCursor => r#"store.cursor"#, Store, Error, NotApplicable, Active, r#"A bounded scan cursor does not belong to the scan being resumed."#;
     StoreTransaction => r#"store.transaction"#, Store, Error, NotApplicable, Active, r#"A transaction or snapshot operation was requested in an invalid store state."#;
     StoreReadOnly => r#"store.read_only"#, Store, Error, NotApplicable, Active, r#"A write-capability operation was requested through a read-only store handle."#;
-    IoRead => r#"io.read"#, Io, Error, Catchable, Active, r#"A read failed: a project source file or `marrow.json` could not be read, or `std::io::readText`/`readBytes` failed."#;
+    IoRead => r#"io.read"#, Io, Error, Catchable, Active, r#"A read failed: a project source file or `marrow.toml` could not be read, or `std::io::readText`/`readBytes` failed."#;
     IoThread => r#"io.thread"#, Io, Error, NotApplicable, Active, r#"The CLI could not spawn the worker thread it uses for parsing, checking, and running."#;
     IoWrite => r#"io.write"#, Io, Error, Catchable, Active, r#"`std::io::writeText`/`writeBytes` failed."#;
-    ConfigInvalid => r#"config.invalid"#, Config, Error, NotApplicable, Active, r#"`marrow.json` is malformed JSON, has an unknown key, is missing a required field, or names an unknown backend. A malformed-JSON or unknown-field fault carries its `marrow.json` line and column in `source_span`; validation faults with no single source point carry none."#;
+    ConfigInvalid => r#"config.invalid"#, Config, Error, NotApplicable, Active, r#"A configuration input is invalid: the project manifest `marrow.toml` is malformed TOML, declares an unknown key, or declares no supported `edition`; or a command argument is not valid UTF-8. A malformed-manifest fault carries its `marrow.toml` line and column in `source_span`; a validation fault with no single source point carries none."#;
+    ProjectSourcePath => r#"project.source_path"#, Project, Error, NotApplicable, Active, r#"A captured source file path is not a valid contained module identity: it is absolute, escapes the source root with `..`, is not a canonical forward-slash path, lives outside the fixed `src` source root, or is not a `.mw` file with a non-empty name."#;
+    ProjectModuleCollision => r#"project.module_collision"#, Project, Error, NotApplicable, Active, r#"Two captured source files collide on module identity: they derive the same module name, or their paths differ only in case and would name the same file on a case-insensitive filesystem. The message names both files."#;
+    ProjectCaptureLimit => r#"project.capture_limit"#, Project, Error, NotApplicable, Active, r#"A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. The bound guards the compiler against an unbounded project tree."#;
 }
 
 impl Code {

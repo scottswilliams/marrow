@@ -1,7 +1,7 @@
 # Packages
 
-This page is future direction. The current `marrow.json` project file and
-store-projected `marrow.lock` are not the package model.
+This page is future direction. The current `marrow.toml` project manifest is not
+the package model.
 
 ## Goal
 

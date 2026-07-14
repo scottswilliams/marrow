@@ -15,15 +15,21 @@ refounded lane by lane; a feature is absent until its lane lands it.
 
 ## Current
 
-The retained beta workspace is four crates: the diagnostic-code registry
+The retained beta workspace is five crates: the diagnostic-code registry
 (`marrow-codes`), the syntax owner (`marrow-syntax`), the ordered-byte storage
-engine (`marrow-store`), and a thin `marrow` CLI.
+engine (`marrow-store`), the pure project-input owner (`marrow-project`), and a
+thin `marrow` CLI.
 
 ### Language and tooling
 
 - Native lexer, parser, and formatter for `.mw` source, with typed parse
   diagnostics.
-- `marrow fmt` formats a single `.mw` file (`--check`/`--write`); `marrow
+- One pure project-input owner: the closed `marrow.toml` manifest schema
+  (required explicit `edition`), deterministic contained discovery over `src`,
+  path-derived module identity, and an immutable project input. See
+  [Projects](tools/projects.md).
+- `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
+  or every module of a project directory (`--check`/`--write`); `marrow
   --version` and `marrow --help`. Every other command name is recognized but
   reports `cli.command_unsupported` until its refounding lane lands.
 - Linux and macOS source builds with the pinned Rust toolchain.
@@ -50,8 +56,9 @@ lane, rebuilt as a new owner:
   store-projected catalog and current evolution lifecycle, managed indexes and
   `nextId`, and the mixed compiler/runtime/store JSON model;
 - the `check`/`run`/`test`/`data`/`doctor`/`evolve`/`serve`/`client`/`backup`/
-  `restore`/`init` command families and the store's logical/admission/catalog/
-  backup layers (the byte engine and its codecs are retained); and
+  `restore` command families and the store's logical/admission/catalog/
+  backup layers (the byte engine and its codecs are retained; `init` returns
+  refounded at B01 as a pure-project-owner scaffold with no store); and
 - the redb page-level recovery probe and the process-global panic-hook swap.
 
 ## Future: v0.1 beta

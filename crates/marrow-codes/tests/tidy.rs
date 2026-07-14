@@ -17,7 +17,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The exact set of workspace packages the beta line retains after B00.
-const RETAINED_MEMBERS: &[&str] = &["marrow", "marrow-codes", "marrow-store", "marrow-syntax"];
+const RETAINED_MEMBERS: &[&str] = &[
+    "marrow",
+    "marrow-codes",
+    "marrow-project",
+    "marrow-store",
+    "marrow-syntax",
+];
 
 /// Forbidden legacy families, spelled as the concrete identifiers or crate
 /// references that would appear in retained source if a deleted owner leaked
@@ -31,13 +37,11 @@ const FORBIDDEN_FAMILIES: &[&str] = &[
     "marrow_schema",
     "marrow_catalog",
     "marrow_json",
-    "marrow_project",
     "marrow-check",
     "marrow-run",
     "marrow-schema",
     "marrow-catalog",
     "marrow-json",
-    "marrow-project",
     // The surface construct: AST nodes, the keyword variant, the codes family,
     // and the wire ABI types all share the `Surface` identifier prefix.
     "Surface",

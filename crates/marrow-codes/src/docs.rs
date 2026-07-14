@@ -99,8 +99,9 @@ reports a `store.*` code:
 length/count that does not fit its `u32` field, a record/problem/index count
 overflow, or exhaustion of the `u64` commit-ID sequence.
 
-A command run against a project whose `marrow.json` is unreadable reports
-`io.read`; an invalid `marrow.json` reports `config.invalid`.
+A command run against a project whose `marrow.toml` is unreadable reports
+`io.read`; an invalid `marrow.toml` reports `config.invalid`, and a
+contained-discovery fault reports a `project.*` code.
 
 ## How `kind` Is Assigned
 
@@ -113,7 +114,7 @@ Tools derive `kind` from the first dotted segment of `code`:
 | `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| everything else (`cli`, `config`, `fmt`) | `tooling` |
+| everything else (`cli`, `config`, `fmt`, `project`) | `tooling` |
 
 ## Code Reference
 
@@ -198,7 +199,7 @@ closed with a typed code — never a process crash: a truncated or torn body is
 ### `io.*` — kind `io`
 
 I/O faults spanning the CLI, the durable store, and the `std::io` builtins. The
-CLI reports `io.read` when it cannot read a project file (e.g. `marrow.json`)
+CLI reports `io.read` when it cannot read a project file (e.g. `marrow.toml`)
 and `io.thread` when it cannot start its worker thread. The `std::io` builtins
 raise `io.read`/`io.write` as catchable `Error` values inside a running program.
 
@@ -209,12 +210,28 @@ raise `io.read`/`io.write` as catchable `Error` values inside a running program.
         r#"
 ### `config.*` — kind `tooling`
 
-Project-loading faults from `marrow.json`.
+Configuration faults, including an invalid project manifest (`marrow.toml`) and
+a non-UTF-8 command argument.
 
 | Code | Meaning |
 |---|---|"#
             .to_string(),
         rows(&[Code::ConfigInvalid]),
+        r#"
+### `project.*` — kind `tooling`
+
+Project-capture faults raised while discovering a project's source under `src`:
+an invalid contained path, a module-identity collision, or an exceeded capture
+bound.
+
+| Code | Meaning |
+|---|---|"#
+            .to_string(),
+        rows(&[
+            Code::ProjectSourcePath,
+            Code::ProjectModuleCollision,
+            Code::ProjectCaptureLimit,
+        ]),
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),
         r#"

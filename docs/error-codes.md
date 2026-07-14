@@ -64,8 +64,9 @@ reports a `store.*` code:
 length/count that does not fit its `u32` field, a record/problem/index count
 overflow, or exhaustion of the `u64` commit-ID sequence.
 
-A command run against a project whose `marrow.json` is unreadable reports
-`io.read`; an invalid `marrow.json` reports `config.invalid`.
+A command run against a project whose `marrow.toml` is unreadable reports
+`io.read`; an invalid `marrow.toml` reports `config.invalid`, and a
+contained-discovery fault reports a `project.*` code.
 
 ## How `kind` Is Assigned
 
@@ -78,7 +79,7 @@ Tools derive `kind` from the first dotted segment of `code`:
 | `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| everything else (`cli`, `config`, `fmt`) | `tooling` |
+| everything else (`cli`, `config`, `fmt`, `project`) | `tooling` |
 
 ## Code Reference
 
@@ -155,23 +156,36 @@ closed with a typed code — never a process crash: a truncated or torn body is
 ### `io.*` — kind `io`
 
 I/O faults spanning the CLI, the durable store, and the `std::io` builtins. The
-CLI reports `io.read` when it cannot read a project file (e.g. `marrow.json`)
+CLI reports `io.read` when it cannot read a project file (e.g. `marrow.toml`)
 and `io.thread` when it cannot start its worker thread. The `std::io` builtins
 raise `io.read`/`io.write` as catchable `Error` values inside a running program.
 
 | Code | Meaning |
 |---|---|
-| `io.read` | A read failed: a project source file or `marrow.json` could not be read, or `std::io::readText`/`readBytes` failed. |
+| `io.read` | A read failed: a project source file or `marrow.toml` could not be read, or `std::io::readText`/`readBytes` failed. |
 | `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
 | `io.write` | `std::io::writeText`/`writeBytes` failed. |
 
 ### `config.*` — kind `tooling`
 
-Project-loading faults from `marrow.json`.
+Configuration faults, including an invalid project manifest (`marrow.toml`) and
+a non-UTF-8 command argument.
 
 | Code | Meaning |
 |---|---|
-| `config.invalid` | `marrow.json` is malformed JSON, has an unknown key, is missing a required field, or names an unknown backend. A malformed-JSON or unknown-field fault carries its `marrow.json` line and column in `source_span`; validation faults with no single source point carry none. |
+| `config.invalid` | A configuration input is invalid: the project manifest `marrow.toml` is malformed TOML, declares an unknown key, or declares no supported `edition`; or a command argument is not valid UTF-8. A malformed-manifest fault carries its `marrow.toml` line and column in `source_span`; a validation fault with no single source point carries none. |
+
+### `project.*` — kind `tooling`
+
+Project-capture faults raised while discovering a project's source under `src`:
+an invalid contained path, a module-identity collision, or an exceeded capture
+bound.
+
+| Code | Meaning |
+|---|---|
+| `project.source_path` | A captured source file path is not a valid contained module identity: it is absolute, escapes the source root with `..`, is not a canonical forward-slash path, lives outside the fixed `src` source root, or is not a `.mw` file with a non-empty name. |
+| `project.module_collision` | Two captured source files collide on module identity: they derive the same module name, or their paths differ only in case and would name the same file on a case-insensitive filesystem. The message names both files. |
+| `project.capture_limit` | A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. The bound guards the compiler against an unbounded project tree. |
 
 ### Internal Codes
 

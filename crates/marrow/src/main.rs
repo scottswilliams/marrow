@@ -5,20 +5,25 @@ use std::process::ExitCode;
 use crate::term_style::{Stream, Style};
 
 mod cmd_fmt;
+mod cmd_init;
+mod project;
 mod term_style;
 
 const HELP: &str = "\
 Marrow
 
 Usage:
-  marrow fmt [--check | --write] <file.mw>
+  marrow init <projectdir>
+  marrow fmt [--check | --write] <file.mw | projectdir>
   marrow --version
   marrow --help
 
-This is the beta line's thin CLI. `fmt` formats a single Marrow source file
-through the retained formatter. The check, run, test, data, doctor, evolve,
-serve, client, backup, restore, and init commands are being refounded and
-return through their later lanes; invoking one reports cli.command_unsupported.
+This is the beta line's thin CLI. `init` creates a new project (a manifest and a
+contained src tree). `fmt` formats a single Marrow source file, or every module
+of a project directory, through the retained formatter. The check, run, test,
+data, doctor, evolve, serve, client, backup, and restore commands are being
+refounded and return through their later lanes; invoking one reports
+cli.command_unsupported.
 ";
 
 fn main() -> ExitCode {
@@ -65,12 +70,12 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
 /// distinct from an unknown-command usage error.
 const REFOUNDING_COMMANDS: &[&str] = &[
     "check", "run", "test", "data", "doctor", "evolve", "serve", "client", "backup", "restore",
-    "init",
 ];
 
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
         "fmt" => cmd_fmt::fmt(rest),
+        "init" => cmd_init::init(rest),
         "--help" | "-h" | "help" => {
             print!("{}", term_style::render_help(Stream::Stdout, HELP));
             ExitCode::SUCCESS

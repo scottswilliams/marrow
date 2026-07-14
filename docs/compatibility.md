@@ -32,10 +32,11 @@ the implementation and its documentation.
 
 ## Projects And Durable Data
 
-`marrow.json` and `marrow.lock` are current project artifacts. The live store is
-the authority for accepted durable identity; `marrow.lock` is its committed
-source-tree projection and can also seed an absent disposable store. Exact
-configuration behavior returns with the refounded project owner.
+`marrow.toml` is the current project manifest: a closed-schema TOML file whose
+only key is a required `edition`. Its schema and the path-derived module identity
+it anchors are described in [Projects](tools/projects.md). Durable-data project
+artifacts return with the refounded durable owners; there is no store on the beta
+line yet.
 
 Raw native-store files are private implementation data, not an interchange
 format. Move durable data through typed backup and restore. A restore validates

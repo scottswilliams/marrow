@@ -1,6 +1,6 @@
 [package]
-name = "marrow"
-description = "The Marrow command-line interface."
+name = "marrow-project"
+description = "Pure Marrow project-input owner: manifest schema, contained discovery, and the immutable ProjectInput."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,14 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "marrow"
-path = "src/main.rs"
-
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
-marrow-project = { path = "../marrow-project" }
-marrow-syntax = { path = "../marrow-syntax" }
+toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 
 [lints]
 workspace = true

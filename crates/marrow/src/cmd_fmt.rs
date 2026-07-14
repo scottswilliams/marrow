@@ -34,12 +34,12 @@ pub(crate) fn fmt(args: &[String]) -> ExitCode {
                 print!(
                     "\
 Usage:
-  marrow fmt [--check | --write] <file.mw>
+  marrow fmt [--check | --write] <file.mw | projectdir>
 
-Format a single Marrow source file. With no flag, print the formatted source to
-stdout. --check exits non-zero if the file is not already formatted; --write
-rewrites it in place. Whole-project formatting returns with the project owner on
-a later lane. `marrow fmt` does not read from stdin.
+Format a Marrow source file or every module of a project directory. For a single
+file with no flag, print the formatted source to stdout. --check exits non-zero
+if a file is not already formatted; --write rewrites it in place. For a project
+directory, no flag checks without writing. `marrow fmt` does not read from stdin.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -68,16 +68,10 @@ a later lane. `marrow fmt` does not read from stdin.
         return ExitCode::from(2);
     };
     let target_path = Path::new(&target);
-    // Whole-project formatting needs the project owner (source-root discovery),
-    // which the beta line refounds at B01. Until then the thin CLI formats one
-    // `.mw` file at a time; a directory target reports the typed not-yet-supported
-    // code rather than silently doing nothing.
+    // A directory target formats every module of the project through the captured
+    // `ProjectInput`, so file discovery and identity have exactly one owner.
     if target_path.is_dir() {
-        report_simple_error(
-            Code::CliCommandUnsupported.as_str(),
-            "formatting a project directory is not available on this beta line yet; pass a single .mw file",
-        );
-        return ExitCode::FAILURE;
+        return fmt_project(target_path, mode);
     }
     if let Err(error) = guard_regular_source_file(Path::new(&target)) {
         report_io_error(&target, &error);
@@ -93,6 +87,67 @@ a later lane. `marrow fmt` does not read from stdin.
     match fmt_one(&target, &source, mode) {
         Ok(FmtOutcome::Formatted) | Ok(FmtOutcome::Unchanged) => ExitCode::SUCCESS,
         Ok(FmtOutcome::NeedsFormatting) | Err(()) => ExitCode::FAILURE,
+    }
+}
+
+/// Format every module of the project rooted at `dir` through the captured
+/// `ProjectInput`. Print mode has no single output stream for a whole project, so
+/// it degrades to the non-destructive `--check` behavior; `--write` rewrites each
+/// unformatted module in place. The command fails if any module does not parse or,
+/// under check, is not already formatted.
+fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
+    let input = match crate::project::capture_project(dir) {
+        Ok(input) => input,
+        Err(failure) => {
+            render_capture_failure(&failure);
+            return ExitCode::FAILURE;
+        }
+    };
+    let mode = match mode {
+        FmtMode::Print => FmtMode::Check,
+        other => other,
+    };
+
+    let mut any_error = false;
+    let mut any_needs_formatting = false;
+    for module in input.modules() {
+        let file = dir.join(module.identity().as_str());
+        let label = file.display().to_string();
+        let Ok(source) = std::str::from_utf8(module.source()) else {
+            report_simple_error(
+                Code::IoRead.as_str(),
+                &format!("{label}: source is not valid UTF-8"),
+            );
+            any_error = true;
+            continue;
+        };
+        match fmt_one(&label, source, mode) {
+            Ok(FmtOutcome::Formatted | FmtOutcome::Unchanged) => {}
+            Ok(FmtOutcome::NeedsFormatting) => any_needs_formatting = true,
+            Err(()) => any_error = true,
+        }
+    }
+
+    if any_error || any_needs_formatting {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Render a project-capture failure as a typed line: a located manifest fault
+/// prints its `file:line:column`, and any other fault prints `code: message`.
+fn render_capture_failure(failure: &crate::project::CaptureFailure) {
+    use crate::term_style::{Stream, code_message};
+    match &failure.location {
+        Some(location) => eprintln!(
+            "{}:{}:{}: {}",
+            location.file,
+            location.line,
+            location.column,
+            code_message(Stream::Stderr, failure.code, &failure.message)
+        ),
+        None => report_simple_error(failure.code, &failure.message),
     }
 }
 
