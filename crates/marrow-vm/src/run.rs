@@ -14,9 +14,13 @@ use marrow_verify::{SealedConst, SealedFunction, SealedInstr, VerifiedImage};
 use crate::fault::RuntimeFault;
 use crate::value::Value;
 
-/// Per-invocation instruction budget (design §D). Bounds total work regardless of
-/// loop structure.
+/// Per-invocation instruction budget (design §D). Bounds total work across the
+/// whole call tree regardless of loop or call structure.
 const INSTRUCTION_BUDGET: u64 = 1 << 26;
+
+/// Maximum dynamic call depth (design §D). Static recursion is already rejected at
+/// verify, so this guards a pathologically deep non-recursive chain.
+const MAX_CALL_DEPTH: u32 = 64;
 
 /// Text-concatenation result ceiling (design §D). A private VM runtime bound: the
 /// VM has no edge to the image crate, so it owns this limit itself.
@@ -29,6 +33,19 @@ pub fn run(
     func_index: u16,
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
+    let mut budget = INSTRUCTION_BUDGET;
+    execute(image, func_index, args, 0, &mut budget)
+}
+
+/// Execute one frame. `depth` is the current call depth and `budget` is shared
+/// across the whole call tree so total work stays bounded.
+fn execute(
+    image: &VerifiedImage,
+    func_index: u16,
+    args: Vec<Value>,
+    depth: u32,
+    budget: &mut u64,
+) -> Result<Option<Value>, RuntimeFault> {
     let function = image.function(func_index);
     let mut locals: Vec<Option<Value>> = Vec::with_capacity(function.local_count() as usize);
     for arg in args {
@@ -38,13 +55,12 @@ pub fn run(
 
     let mut stack: Vec<Value> = Vec::with_capacity(function.max_stack());
     let mut pc = 0usize;
-    let mut budget = INSTRUCTION_BUDGET;
 
     loop {
-        if budget == 0 {
+        if *budget == 0 {
             return Err(fault(function, pc, Code::RunBudget.as_str()));
         }
-        budget -= 1;
+        *budget -= 1;
 
         match &function.instrs()[pc] {
             SealedInstr::ConstLoad(idx) => {
@@ -223,6 +239,19 @@ pub fn run(
                     pc = *target;
                 }
             },
+            SealedInstr::Call(target) => {
+                if depth + 1 > MAX_CALL_DEPTH {
+                    return Err(fault(function, pc, Code::RunCallDepth.as_str()));
+                }
+                let arg_count = image.function(*target).params().len();
+                let start = stack.len() - arg_count;
+                // a0 was pushed first, so the tail of the stack is a0..an-1 in order.
+                let call_args = stack.split_off(start);
+                if let Some(value) = execute(image, *target, call_args, depth + 1, budget)? {
+                    stack.push(value);
+                }
+                pc += 1;
+            }
         }
     }
 }

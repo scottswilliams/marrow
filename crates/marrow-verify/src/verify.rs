@@ -13,11 +13,11 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CONST_LOAD, OP_EQ_BOOL, OP_EQ_INT, OP_EQ_TEXT,
-    OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_NEG,
-    OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP,
-    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar,
-    TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_CALL, OP_CONST_LOAD, OP_EQ_BOOL, OP_EQ_INT,
+    OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL,
+    OP_INT_NEG, OP_INT_REM, OP_INT_SUB, OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET,
+    OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_VACANT_LOAD, OPTIONAL_FLAG,
+    Scalar, TAG_BOOL, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -634,13 +634,25 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 .collect(),
         })
         .collect();
+    // Function signatures feed the per-function `Call` type check (phase 3).
+    let signatures: Vec<FnSig> = decoded
+        .functions
+        .iter()
+        .map(|function| FnSig {
+            params: function.params.clone(),
+            ret: function.ret,
+        })
+        .collect();
     let mut functions = Vec::with_capacity(decoded.functions.len());
     for function in &decoded.functions {
-        functions.push(verify_function(function, &types, &decoded)?);
+        functions.push(verify_function(function, &types, &signatures, &decoded)?);
     }
-    // Phase 4/5 at the T01 storeless subset: no calls and no durable effects yet,
-    // so every export is read-only. Call-cycle and transaction-flow closure land
-    // with the call and durable slices.
+
+    // Phase 4: the call graph over the recorded direct calls must be acyclic
+    // (recursion is not admitted). Durable effect closure lands with the durable
+    // slice; at this subset every export is read-only.
+    reject_call_cycles(&functions)?;
+
     let exports = decoded
         .exports
         .iter()
@@ -659,14 +671,79 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     })
 }
 
+/// A callee's signature, consulted by the per-function `Call` type check.
+struct FnSig {
+    params: Vec<Scalar>,
+    ret: RetShape,
+}
+
+/// Phase 4: reject any cycle in the direct-call graph (recursion is not admitted).
+/// A three-colour DFS over the recorded calls; a back edge to a node on the current
+/// stack is a cycle.
+fn reject_call_cycles(functions: &[SealedFunction]) -> Result<(), VerifyRejection> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Colour {
+        White,
+        Gray,
+        Black,
+    }
+    let mut colour = vec![Colour::White; functions.len()];
+    // Iterative DFS: a frame is (node, next-child-cursor).
+    for start in 0..functions.len() {
+        if colour[start] != Colour::White {
+            continue;
+        }
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        colour[start] = Colour::Gray;
+        while let Some(&(node, cursor)) = stack.last() {
+            let callees: Vec<usize> = call_targets(&functions[node]);
+            if cursor < callees.len() {
+                stack.last_mut().expect("frame present").1 += 1;
+                let next = callees[cursor];
+                match colour[next] {
+                    Colour::Gray => {
+                        return Err(reject(
+                            VerifyPhase::Closure,
+                            "the call graph contains a cycle",
+                        ));
+                    }
+                    Colour::White => {
+                        colour[next] = Colour::Gray;
+                        stack.push((next, 0));
+                    }
+                    Colour::Black => {}
+                }
+            } else {
+                colour[node] = Colour::Black;
+                stack.pop();
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The direct-call targets of a sealed function, in tape order.
+fn call_targets(function: &SealedFunction) -> Vec<usize> {
+    function
+        .instrs()
+        .iter()
+        .filter_map(|instr| match instr {
+            SealedInstr::Call(target) => Some(*target as usize),
+            _ => None,
+        })
+        .collect()
+}
+
 fn verify_function(
     function: &DecodedFunction,
     types: &[SealedRecordType],
+    signatures: &[FnSig],
     decoded: &DecodedImage,
 ) -> Result<SealedFunction, VerifyRejection> {
     let mut decoded_code = decode_code(&function.code)?;
     resolve_jumps(&mut decoded_code)?;
-    let (instrs, max_stack) = check_flow(function, types, &decoded_code, &decoded.consts)?;
+    let (instrs, max_stack) =
+        check_flow(function, types, signatures, &decoded_code, &decoded.consts)?;
     let spans = map_spans(function, &decoded_code)?;
     Ok(SealedFunction {
         name: decoded.strings[function.name as usize].clone(),
@@ -719,6 +796,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_SOME_WRAP => SealedInstr::SomeWrap,
             OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
+            OP_CALL => SealedInstr::Call(operand_u16(&mut reader)?),
             _ => {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -816,6 +894,7 @@ struct Frame {
 fn check_flow(
     function: &DecodedFunction,
     types: &[SealedRecordType],
+    signatures: &[FnSig],
     code: &[Decoded],
     consts: &[SealedConst],
 ) -> Result<(Vec<SealedInstr>, usize), VerifyRejection> {
@@ -841,7 +920,14 @@ fn check_flow(
         let mut frame = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        let control = apply(function, types, &code[index].instr, consts, &mut frame)?;
+        let control = apply(
+            function,
+            types,
+            signatures,
+            &code[index].instr,
+            consts,
+            &mut frame,
+        )?;
         if frame.stack.len() > marrow_image::bounds::MAX_STACK_DEPTH {
             return Err(reject(
                 VerifyPhase::Function,
@@ -934,12 +1020,33 @@ fn propagate(
 fn apply(
     function: &DecodedFunction,
     types: &[SealedRecordType],
+    signatures: &[FnSig],
     instr: &SealedInstr,
     consts: &[SealedConst],
     frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
-    // Record/optional opcodes need the whole frame; the scalar opcodes work on the
-    // stack alone, borrowed here after the frame-level ones return.
+    // Record/optional/call opcodes need the whole frame or the signatures; the
+    // scalar opcodes work on the stack alone, borrowed here after these return.
+    if let SealedInstr::Call(target) = instr {
+        let sig = signatures.get(*target as usize).ok_or(reject(
+            VerifyPhase::Function,
+            "call target index out of range",
+        ))?;
+        // a0 is pushed first, so pop arguments in reverse parameter order.
+        for param in sig.params.iter().rev() {
+            let got = pop(&mut frame.stack)?;
+            if got != VType::bare_scalar(*param) {
+                return Err(reject(VerifyPhase::Function, "call argument type mismatch"));
+            }
+        }
+        match sig.ret {
+            RetShape::Unit => {}
+            RetShape::Scalar { scalar, optional } => {
+                frame.stack.push(VType::Scalar { scalar, optional });
+            }
+        }
+        return Ok(Control::Fallthrough);
+    }
     match instr {
         SealedInstr::RecordNew(ty) => {
             let record = types.get(*ty as usize).ok_or(reject(
@@ -1124,8 +1231,9 @@ fn apply(
         | SealedInstr::FieldGet(_)
         | SealedInstr::SomeWrap
         | SealedInstr::VacantLoad(_)
-        | SealedInstr::BranchPresent(_) => {
-            unreachable!("record and optional opcodes return from the frame-level match")
+        | SealedInstr::BranchPresent(_)
+        | SealedInstr::Call(_) => {
+            unreachable!("record, optional, and call opcodes return from the earlier matches")
         }
     }
 }

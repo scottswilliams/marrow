@@ -47,6 +47,13 @@ impl TypeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FuncId(pub(crate) u16);
 
+impl FuncId {
+    /// The raw function index, as carried in a `Call` operand and an export.
+    pub fn index(self) -> u16 {
+        self.0
+    }
+}
+
 /// A durable operation-site index (also the final container index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SiteId(pub(crate) u16);

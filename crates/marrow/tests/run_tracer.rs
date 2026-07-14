@@ -252,3 +252,41 @@ fn if_const_binds_a_present_optional() {
 fn an_absent_optional_return_renders_absent() {
     assert_eq!(run_records("maybe"), "absent\n");
 }
+
+#[test]
+fn direct_calls_resolve_forward_and_compute() {
+    let temp = TempDir::new("calls");
+    // `quad` is declared before `double`, exercising forward resolution.
+    project(
+        &temp,
+        "pub fn quad(): int\n\
+         \x20   return double(double(5))\n\
+         \n\
+         fn double(n: int): int\n\
+         \x20   return n + n\n",
+    );
+    let output = run_in(&temp, &["run", "quad"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "20\n");
+}
+
+#[test]
+fn mutual_recursion_is_an_artifact_rejection() {
+    let temp = TempDir::new("recursion");
+    project(
+        &temp,
+        "pub fn ping(): int\n\
+         \x20   return pong()\n\
+         \n\
+         fn pong(): int\n\
+         \x20   return ping()\n",
+    );
+    let output = run_in(&temp, &["run", "ping", "--format", "jsonl"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#""outcome":"artifact_rejected""#),
+        "{output:?}"
+    );
+    assert!(stdout.contains("image.closure"), "{output:?}");
+}

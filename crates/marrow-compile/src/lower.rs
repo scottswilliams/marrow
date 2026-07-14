@@ -104,11 +104,78 @@ enum Flow {
     Terminates,
 }
 
-/// The declared return shape of the function being lowered.
+/// The declared return shape of a function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RetType {
     Unit,
     Value(LTy),
+}
+
+/// The outcome of lowering a call: whether it yields a value or nothing.
+enum CallResult {
+    Unit,
+    Value(LTy),
+}
+
+/// A resolved function signature, keyed by index (the image FUNCTIONS position,
+/// which equals declaration order).
+pub(crate) struct FnSignature {
+    index: u16,
+    params: Vec<ScalarType>,
+    ret: RetType,
+}
+
+/// The project's functions, resolved before body lowering so a call to a function
+/// declared later resolves. Names are unique project-wide (a duplicate is rejected
+/// before this is built).
+#[derive(Default)]
+pub(crate) struct FunctionRegistry {
+    sigs: Vec<(String, FnSignature)>,
+}
+
+impl FunctionRegistry {
+    /// Resolve every function's signature in declaration order. The i-th function
+    /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
+    pub(crate) fn build(records: &RecordRegistry, functions: &[(String, &FunctionDecl)]) -> Self {
+        let mut sigs = Vec::with_capacity(functions.len());
+        for (index, (_file, function)) in functions.iter().enumerate() {
+            let params = function
+                .params
+                .iter()
+                .filter_map(|param| match &param.ty {
+                    TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
+                    _ => None,
+                })
+                .collect();
+            let ret = match &function.return_type {
+                None => RetType::Unit,
+                Some(annotation) => match resolve_type(records, annotation) {
+                    Some(LTy::Record { .. }) | None => {
+                        // A record or unsupported return; the function's own lowering
+                        // reports it. Record Unit here so indices stay aligned.
+                        RetType::Unit
+                    }
+                    Some(ty) => RetType::Value(ty),
+                },
+            };
+            sigs.push((
+                function.name.clone(),
+                FnSignature {
+                    index: index as u16,
+                    params,
+                    ret,
+                },
+            ));
+        }
+        Self { sigs }
+    }
+
+    fn by_name(&self, name: &str) -> Option<&FnSignature> {
+        self.sigs
+            .iter()
+            .find(|(sig_name, _)| sig_name == name)
+            .map(|(_, sig)| sig)
+    }
 }
 
 /// One in-scope local binding.
@@ -129,6 +196,7 @@ struct LoopCtx {
 pub(crate) struct FnLowerer<'a> {
     draft: &'a mut ImageDraft,
     records: &'a RecordRegistry,
+    functions: &'a FunctionRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
     code: Vec<Instr>,
@@ -146,6 +214,7 @@ impl<'a> FnLowerer<'a> {
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
         records: &'a RecordRegistry,
+        functions: &'a FunctionRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
         function: &FunctionDecl,
@@ -168,6 +237,7 @@ impl<'a> FnLowerer<'a> {
         let mut lowerer = FnLowerer {
             draft,
             records,
+            functions,
             diagnostics,
             file,
             code: Vec::new(),
@@ -377,7 +447,17 @@ impl<'a> FnLowerer<'a> {
             Statement::Break { span } => self.lower_break(*span),
             Statement::Continue { span } => self.lower_continue(*span),
             Statement::Expr { value, .. } => {
-                if self.lower_expr(value).is_some() {
+                // A call statement may return nothing (no `Pop`); any other expression
+                // statement produces a value that is discarded.
+                if let Expression::Call {
+                    callee, args, span, ..
+                } = value
+                {
+                    match self.lower_call_core(callee, args, *span) {
+                        Some(CallResult::Value(_)) => self.push(Instr::Pop, value.span()),
+                        Some(CallResult::Unit) | None => {}
+                    }
+                } else if self.lower_expr(value).is_some() {
                     self.push(Instr::Pop, value.span());
                 }
                 Flow::Fallthrough
@@ -804,7 +884,18 @@ impl<'a> FnLowerer<'a> {
             } => self.lower_binary(*op, left, right),
             Expression::Call {
                 callee, args, span, ..
-            } => self.lower_call(callee, args, *span),
+            } => match self.lower_call_core(callee, args, *span)? {
+                CallResult::Value(ty) => Some(ty),
+                CallResult::Unit => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *span,
+                        "this call returns nothing and has no value here".to_string(),
+                    ));
+                    None
+                }
+            },
             Expression::Field {
                 base, name, span, ..
             } => self.lower_field(base, name, *span),
@@ -995,14 +1086,14 @@ impl<'a> FnLowerer<'a> {
         Some(bool_ty)
     }
 
-    /// A parenthesized application at this slice is a record constructor
-    /// (`Note(title: t, ...)`); function calls land with the call slice.
-    fn lower_call(
+    /// A parenthesized application is a record constructor (`Note(title: t, ...)`)
+    /// or a direct function call.
+    fn lower_call_core(
         &mut self,
         callee: &Expression,
         args: &[Argument],
         span: SourceSpan,
-    ) -> Option<LTy> {
+    ) -> Option<CallResult> {
         let Expression::Name { segments, .. } = callee else {
             self.fail(unsupported(self.file, span, "this call"));
             return None;
@@ -1011,11 +1102,65 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "this call"));
             return None;
         };
-        let Some(record) = self.records.by_name(name) else {
-            self.fail(unsupported(self.file, span, "a function call"));
+        if self.records.by_name(name).is_some() {
+            return self
+                .lower_constructor(name, args, span)
+                .map(CallResult::Value);
+        }
+        if let Some(sig) = self.functions.by_name(name) {
+            let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
+            return self.lower_function_call(index, &params, ret, args, span);
+        }
+        self.fail(name_error(self.file, span, name));
+        None
+    }
+
+    /// Lower a direct function call: positional arguments matched to the callee's
+    /// bare scalar params, then `Call`.
+    fn lower_function_call(
+        &mut self,
+        index: u16,
+        params: &[ScalarType],
+        ret: RetType,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<CallResult> {
+        if args.len() != params.len() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("expected {} arguments, found {}", params.len(), args.len()),
+            ));
             return None;
-        };
-        let type_id = record.type_id;
+        }
+        for (argument, param) in args.iter().zip(params) {
+            if argument.name.is_some() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    "function arguments are positional".to_string(),
+                ));
+                return None;
+            }
+            self.lower_as(&argument.value, LTy::bare_scalar(*param))?;
+        }
+        self.push(Instr::Call(index), span);
+        Some(match ret {
+            RetType::Unit => CallResult::Unit,
+            RetType::Value(ty) => CallResult::Value(ty),
+        })
+    }
+
+    /// Lower a record constructor: each field's argument in declaration order.
+    fn lower_constructor(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let type_id = self.records.by_name(name)?.type_id;
 
         // Resolve each named argument against a field before emitting, so evaluation
         // order is the field declaration order (f0 pushed first).

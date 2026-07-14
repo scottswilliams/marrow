@@ -9,10 +9,12 @@
 use marrow_codes::Code;
 use marrow_image::{EncodedImage, ImageDraft};
 use marrow_project::ProjectInput;
-use marrow_syntax::{Declaration, ParsedSource, ResourceDecl, SourceSpan, parse_source};
+use marrow_syntax::{
+    Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, parse_source,
+};
 
 use crate::diag::SourceDiagnostic;
-use crate::lower::FnLowerer;
+use crate::lower::{FnLowerer, FunctionRegistry};
 use crate::record::RecordRegistry;
 
 /// Compile a captured project into canonical program-image bytes, or return the
@@ -52,12 +54,24 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
         return Err(diagnostics);
     }
 
-    // Export = project-unique `pub fn` name (interim mapping; `ExportId` lands at
-    // C00). A duplicate is a name conflict, detected before lowering.
-    reject_duplicate_exports(&parsed, &mut diagnostics);
+    // Function names must be unique project-wide so a `Call` resolves to one target
+    // (interim export mapping; `ExportId` lands at C00). A duplicate is a conflict.
+    let functions: Vec<(String, &FunctionDecl)> = parsed
+        .iter()
+        .flat_map(|(path, module)| {
+            module.file.declarations.iter().filter_map(move |decl| {
+                if let Declaration::Function(function) = decl {
+                    Some((path.clone(), function))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    reject_duplicate_functions(&functions, &mut diagnostics);
 
-    // Build the single project record type before lowering, so constructors and
-    // field reads resolve against it.
+    // Build the single project record type and the function signatures before body
+    // lowering, so constructors, field reads, and forward calls resolve.
     let mut draft = ImageDraft::new();
     let resources: Vec<(String, &ResourceDecl)> = parsed
         .iter()
@@ -72,14 +86,22 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
         })
         .collect();
     let records = RecordRegistry::build(&mut draft, &resources, &mut diagnostics);
+    let signatures = FunctionRegistry::build(&records, &functions);
 
-    // Lower each function. Resources are handled above; other declarations are not
-    // yet admitted.
+    // Lower each function, in the same order the registry assigned indices. Other
+    // declarations are handled above or not yet admitted.
     for (path, module) in &parsed {
         for declaration in &module.file.declarations {
             match declaration {
                 Declaration::Function(function) => {
-                    FnLowerer::lower(&mut draft, &records, &mut diagnostics, path, function);
+                    FnLowerer::lower(
+                        &mut draft,
+                        &records,
+                        &signatures,
+                        &mut diagnostics,
+                        path,
+                        function,
+                    );
                 }
                 Declaration::Resource(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
@@ -107,32 +129,24 @@ pub fn compile(project: &ProjectInput) -> Result<EncodedImage, Vec<SourceDiagnos
     })
 }
 
-/// Report a `check.name_conflict` for every `pub fn` name declared more than once
-/// across the project.
-fn reject_duplicate_exports(
-    parsed: &[(String, ParsedSource)],
+/// Report a `check.name_conflict` for every function name declared more than once
+/// across the project (a `Call`, and the interim export mapping, must resolve to a
+/// unique target).
+fn reject_duplicate_functions(
+    functions: &[(String, &FunctionDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
     let mut seen: Vec<&str> = Vec::new();
-    for (path, module) in parsed {
-        for declaration in &module.file.declarations {
-            if let Declaration::Function(function) = declaration
-                && function.public
-            {
-                if seen.contains(&function.name.as_str()) {
-                    diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckNameConflict.as_str(),
-                        path,
-                        function.span,
-                        format!(
-                            "a public function named `{}` is already declared",
-                            function.name
-                        ),
-                    ));
-                } else {
-                    seen.push(&function.name);
-                }
-            }
+    for (path, function) in functions {
+        if seen.contains(&function.name.as_str()) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                path,
+                function.span,
+                format!("a function named `{}` is already declared", function.name),
+            ));
+        } else {
+            seen.push(&function.name);
         }
     }
 }
