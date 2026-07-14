@@ -591,8 +591,10 @@ impl<'a> StmtParser<'a> {
             // so the enclosing statement's span does not extend over a following
             // sibling comment or statement and mis-claim it — which would drop that
             // sibling when the block is formatted. The point is the next token's
-            // start, or the end of the last consumed token at end of input; never a
-            // default zero position, which would invert the statement's span.
+            // start, or the end of the last consumed token at end of input. (An
+            // empty token list would fall back to a zero span, but a body is only
+            // parsed after its header keyword was consumed, so tokens is non-empty
+            // whenever this runs.)
             let point = match self.tokens.get(self.pos) {
                 Some(token) => SourceSpan {
                     end_byte: token.span.start_byte,

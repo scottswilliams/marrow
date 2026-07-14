@@ -258,9 +258,14 @@ fn seeded_random_mutation_pass_holds_the_total_invariants() {
 }
 
 fn seeded_random_mutation_body() {
-    // A fixed seed and iteration budget keep this reproducible and CI-bounded: a
-    // failure reproduces exactly from the seed, and no unbounded campaign runs.
-    const SEED: u64 = 0x5241_4d5f_4655_5a5a; // "RAM_FUZZ"
+    // A fixed default seed and iteration budget keep this reproducible and
+    // CI-bounded: a failure reproduces exactly from the seed, and no unbounded
+    // campaign runs. MARROW_FUZZ_SEED widens the search without editing code.
+    const DEFAULT_SEED: u64 = 0x5241_4d5f_4655_5a5a; // "RAM_FUZZ"
+    let seed: u64 = std::env::var("MARROW_FUZZ_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_SEED);
     const ITERATIONS: usize = 4_000;
     const MAX_MUTATIONS: usize = 24;
 
@@ -270,7 +275,7 @@ fn seeded_random_mutation_body() {
         .map(String::into_bytes)
         .collect();
 
-    let mut rng = SplitMix64::new(SEED);
+    let mut rng = SplitMix64::new(seed);
     let mut mutated_error = false;
     for _ in 0..ITERATIONS {
         let mut bytes = seeds[rng.below(seeds.len() as u64) as usize].clone();

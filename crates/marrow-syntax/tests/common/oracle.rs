@@ -132,8 +132,9 @@ fn has_comment_tokens(source: &str) -> bool {
 }
 
 /// The stronger formatter contract for a valid program: the canonical output
-/// preserves every comment (marker, text, placement) and the whole declaration
-/// tree. Structure is compared as span-stripped AST equality, since formatting
+/// preserves every comment (marker and normalized text compared directly;
+/// placement guarded by the structural fingerprint plus idempotence) and the
+/// whole declaration tree. Structure is compared as span-stripped AST equality, since formatting
 /// necessarily shifts byte positions. The caller guarantees `source` parses
 /// cleanly; a clean parse is asserted here so a silent regression to a malformed
 /// corpus entry cannot make this vacuous.
