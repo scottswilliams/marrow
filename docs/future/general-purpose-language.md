@@ -10,48 +10,49 @@ program. It should be able to define reusable modules and ordinary data types,
 transform local collections, use packages, call explicit host facilities,
 compile to the same image format, and run on the same VM as a durable program.
 
-The v0.1 direction includes algebraic data types and exhaustive patterns, real
-parametric functions and user types, lexical closures, generic local
-collections, eager higher-order helpers, lexical iteration, `Option`, `Result`,
-exact decimal arithmetic, and a small closed constraint vocabulary. Struct and
-algebraic-data-type values are dense. Expected parsing, validation, host, and
-business failures use ordinary typed values; verifier, integrity, authority,
-budget, arithmetic, and commit faults form a separate closed,
-source-uncatchable beta channel. Input-derived arithmetic uses ordinary checked
-operations when the program needs to report overflow or division failure as a
-typed result; faulting operators remain available for cases where failure is a
-program fault.
+The beta floor is an ordinary storeless language: algebraic data types with
+exhaustive patterns, real rank-1 parametric functions and types, generic local
+collections, modules, source tests, formatting, editor facts, `Option`,
+`Result`, and narrow temporal value types. Struct and algebraic-data-type
+values are dense. Expected parsing, validation, host, and business failures use
+ordinary typed values; verifier, integrity, authority, budget, arithmetic, and
+commit faults form a separate closed, source-uncatchable beta channel.
 
 ## Constraints
 
-- Generic bodies are checked parametrically rather than expanded into built-in
-  overload tables.
-- Function types preserve one finite inferred effect bound for higher-order
-  arguments without requiring ordinary source to repeat effect rows.
-- Runtime closure values cannot smuggle mutable, durable, host, transaction, or
-  authority handles.
-- Persistent local collections require capture-eligible stored components;
-  affine handles may be threaded as standalone generic state but are not
-  collection elements or values in the beta.
-- By-value affine calls consume their binding and must return an explicit
-  successor to continue; method spelling introduces no implicit borrow or
-  builtin-only receiver rule.
-- Evaluation order, faults, recursion, specialization, allocation, and aggregate
+- Values have ordinary high-level value semantics. Memory management is hidden
+  from source: there is no ownership or borrow annotation, no consume-and-return
+  successor obligation, and no first-class store, host, transaction, or
+  authority handle exposed as a source value.
+- Parametric bodies are checked once and monomorphized through a single lowering
+  rather than expanded into built-in overload tables. Constraints are limited to
+  the closed set of equality and ordering; there are no traits, dictionaries,
+  dynamic dispatch, higher-rank types, or higher-kinded types.
+- Generic local collections provide finite ordered lists and maps. A set type is
+  added only if a maintained program is materially worse without it.
+- Narrow temporal value types cover dates, instants, and durations. They carry
+  no ambient clock; the current time is an explicit host input rather than an
+  operation available to any pure function.
+- Default integer arithmetic faults on overflow. An adjacent explicit checked
+  form reports overflow and division failure as an ordinary typed result for
+  input-derived arithmetic that must handle it. The beta floor has no decimal or
+  floating-point type.
+- The beta rejects direct and mutual function recursion and recursive nominal
+  value layouts. Both remain deferred; recursive durable relationships use keys
+  in a finite branch topology rather than recursive value expansion.
+- Evaluation order, faults, specialization, allocation, and aggregate
   materialization have documented bounds.
-- A completed non-unit expression cannot be discarded in statement position,
-  bound by `let _ = expression`, or left in a named dead binding. This ordinary
-  rule applies equally to `Result`, collection results, durable mutation
-  outcomes, and prune progress; wildcard match subpatterns and wildcard
-  function parameters remain ordinary pattern vocabulary.
 - Storeless checking, compilation, tests, formatting, and editor facts never
   initialize or inspect a store.
 - Storeless host access uses bounded terminal and pre-opened UTF-8 text handles;
   importing a package supplies no ambient filesystem, network, clock, entropy,
   process, or compiler authority.
 
+Closures are deferred until a maintained program is materially worse without
+them; they are an evidence-driven addition, not a prerequisite for the floor.
 Higher-rank and higher-kinded types, polymorphic recursion, open-world
 instances, trait objects, macros, implicit coercions, and first-class lazy
-iterators are not required for the beta.
+iterators are not part of the beta.
 
 ## Evidence target
 
@@ -59,6 +60,9 @@ A useful command-line graph-reporting program must exercise these features
 through project initialization, check, format, source tests, build, run, exact
 Git acquisition, offline rebuild, the compiler, image verifier, VM, formatter,
 and LSP without a store or feature-specific escape hatch. Its generic graph
-types, parser, collection transforms, closures, and error values must be
-expressible by application and source-library code rather than privileged
-built-ins.
+types, parser, collection transforms, and error values must be expressible by
+application and source-library code rather than privileged built-ins.
+
+This page states direction. [Project status](../status.md) separates current,
+legacy, and future behavior; [durable programming](durable-programming.md)
+records the durable direction that reuses this same floor.

@@ -14,9 +14,10 @@ serializer, repository layer, or string-keyed database API.
 ## Language and compiler first
 
 Marrow's product boundary is one canonical language implementation: package
-graph, compiler, immutable program image, independent verifier, portable VM,
+graph, compiler, immutable program image, independent verifier, bytecode VM,
 path kernel, lifecycle, tools, and reference. It is not an abstract language
-standard whose usable implementations are left to database vendors.
+standard whose usable implementations are left to database vendors. The v0.1 beta
+qualifies one target rather than claiming a portable virtual machine.
 
 Storage substrates provide ordered bytes, snapshots, atomic transactions,
 durability, and native recovery behind a private boundary. They do not define
@@ -53,13 +54,16 @@ where they occur. Marrow should not become a query API, a handwritten effect or
 capability calculus, or a small pure language followed by a separate
 persistence sublanguage.
 
-Large durable programs should retain that shape. A bounded Branch page becomes
-an ordinary finite value that local loops, patterns, closures, and helpers can
-process directly. One transaction may apply complex multi-place business logic
-to a bounded batch. Work larger than one safe transaction uses application-
-owned typed progress and repeated batches, so restart and lost-result recovery
-remain explicit without replacing the domain program with a query planner,
-storage cursor, or repository callback API.
+Large durable programs should retain that shape. Traversal is ordinary nested
+`for` iteration over roots, branches, and narrow managed indexes with an explicit
+compile-time bound and explicit overflow handling; there is no public page,
+cursor, or resumable continuation value. One transaction may apply complex
+multi-place business logic to a bounded batch. Work larger than one safe
+transaction uses application-owned typed progress and repeated batches, so
+restart and lost-result recovery remain explicit without replacing the domain
+program with a query planner, storage cursor, or repository callback API. Closures
+and richer traversal forms are deferred until a maintained program is materially
+worse without them.
 
 ## Durable data as language data
 
@@ -70,8 +74,8 @@ physics permit it:
 - point reads, creation, replacement, and exact erasure address exact elements;
 - ordinary functions express business behavior;
 - a visible transaction groups atomic durable changes; and
-- application code maintains secondary access trees and allocation policy with
-  the same transaction semantics as primary state.
+- narrow compiler-maintained indexes and application-owned secondary trees give
+  additional access paths, maintained atomically with primary state.
 
 The language must not hide that durable data can be absent, larger than memory,
 contended, unavailable, or damaged. Ordered traversal is explicit and bounded.
@@ -109,9 +113,11 @@ The v0.1 beta should establish two independent acceptance programs:
 
 - a useful storeless command-line program exercises the ordinary language,
   package workflow, compiled image, verifier, VM, formatter, and editor facts;
-- a terminal-first local application exercises durable values, transactions,
-  ordered trees, executable/store binding, recovery, backup, and restore before
-  adding generated TypeScript bindings and a supervised desktop sidecar.
+- a personal local application exercises durable values, transactions, ordered
+  trees, narrow managed indexes, executable/store binding, recovery, backup, and
+  restore. Its durable model is proven terminal-first, and its release gate is
+  invocation through a generated strict TypeScript client supervised by an
+  Electron/Node application whose end user installs neither Rust nor a database.
 
 The later served profile should run the same images, durable declarations, and
 ordinary business functions under authenticated principal/client invocations.

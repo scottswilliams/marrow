@@ -5,55 +5,94 @@ store-projected `marrow.lock` are not the package model.
 
 ## Goal
 
-Marrow should have a small reproducible package workflow based on Git and local
-paths rather than a registry or semantic-version solver.
+Marrow should have a small reproducible package workflow based on local paths and
+exact Git edges rather than a registry or semantic-version solver.
 
-The intended artifacts are a source manifest, one complete exact dependency
-lock owned by the root package when dependencies exist, and a separate
-source-controlled ledger when declarations first need stable identity. A Git
-URL locates bytes; package lineage, exact content snapshot, dependency graph,
-and declaration identity remain distinct.
+Package identity is a pair of a stable package lineage and its semantic material.
+Lineage is a durable identity for a package across acquisitions. Material is the
+exact content that lineage resolves to in a given program image. Acquisition
+provenance — a locator, a revision, a working checkout, and timestamps — locates
+bytes and is recorded separately; it is not part of material. Semantic material
+should be a content identity over exactly what the package means to a consuming
+program — its manifest, language edition, import aliases, dependency edges, and
+source content — and exclude the package's own lineage, locator, and revision.
+The exact hashed payload is settled with a known-answer test when implemented.
+
 Initializing a storeless project should create only source and reproducibility
 artifacts. It should not create a store, catalog, backend selection, generated
 client, connection setting, or durable deployment.
 
+## Dependency edges
+
+Dependencies are exact and close the graph without a separate resolver.
+
+- A local path edge names another package by path for development-time use.
+- A public-HTTPS Git edge names a package by locator together with an exact full
+  commit identifier and the expected package lineage. There is no version range,
+  tag-following, or branch-tracking edge.
+- The exact transitive manifests reachable through these edges already determine
+  the complete dependency graph. Each edge resolves to one lineage at one
+  material.
+
+Because the graph is already closed by exact edges, there is no dependency lock
+file and no vendoring in the beta. A complete resolution lock or vendored source
+tree is deferred and earned only if a concrete moving-resolution case later
+requires one; neither is a beta requirement.
+
 ## Constraints
 
-- Explicit add, update, fetch, and vendor operations may use the network.
-  Normal check, build, test, format, run, and image loading do not.
+- Explicit add, update, and fetch operations may use the network. Normal check,
+  build, test, format, run, and image loading are network-denied and consume only
+  a verified local cache.
+- Acquired material is held in a rebuildable offline cache. Cache material is
+  untrusted and rehashed before use, so a verified cache reproduces the same
+  material offline.
 - Every source manifest explicitly declares its supported language edition;
   parsing does not inherit a moving toolchain default.
-- A Git dependency records the expected source-controlled package lineage as
-  well as its locator and immutable revision.
-- After an accepted root manifest or declaration-identity edit, a separate
-  network-free lock action rebinds the unchanged graph to the new root digests;
-  normal build commands never repair a stale lock implicitly.
-- One package lineage resolves to one exact snapshot in a program image.
 - Dependency aliases are explicit source identifiers used unchanged by imports;
   package names are metadata and are not normalized into aliases.
-- Cache and vendor material are untrusted and rehashed before use.
-- Importing a package grants no host access, creates no durable root, and runs no
-  initializer.
+- Importing a package grants no host access, creates no durable place, and runs
+  no initializer.
+- Dependency packages are pure. A dependency declares no durable roots, branches,
+  or indexes, performs no host imports, and cannot run build scripts, Git hooks,
+  compiler plugins, native setup, package plugins, or proc-macro equivalents.
 - Stable ledger entries are required only at public, durable, or generated-host
   identity boundaries; private implementation declarations remain image-local.
-- Dependencies cannot run build scripts, Git hooks, compiler plugins, native
-  setup, or proc-macro equivalents.
 - Content hashes establish exact-byte integrity and reproducibility, not author
   identity, review quality, or supply-chain trust.
 
-Development path overrides must be visibly marked and refused by a release-
-locked artifact policy. A release replaces them with reviewed exact Git
-snapshots; vendoring materializes an existing lock and does not silently turn a
-live path override into release provenance.
+## Resolution model
 
-Durable packages with abstract root requirements and application-owned mounts
-are later work. The beta package system can be useful and complete for pure
-libraries without solving reusable durable ownership.
+There is no registry, semantic-version solver, or workspace feature unification.
+A diamond in the graph deduplicates identical instances: two edges that resolve
+to the same lineage at the same material are one instance. One lineage appearing
+at two different materials is a conflict and is rejected rather than reconciled;
+the beta admits no solver and no multiple nominal worlds for a single lineage.
+
+Local path edges are a development-time convenience. A release should prefer exact
+Git edges so that its dependency provenance is reviewable and reacquirable.
+
+## Acquisition boundary
+
+Acquisition uses the installed system Git as a development-time tool. Marrow does
+not embed a Git implementation or define a custom transport. Acquisition is not
+claimed to be a sandbox or quota boundary against a hostile remote; it offers
+honest availability limits only, and integrity comes from rehashing material
+against its expected lineage and revision rather than from confining the fetch.
+
+Durable packages with abstract root requirements and application-owned mounts are
+later work. The beta package system can be useful and complete for pure libraries
+without solving reusable durable ownership.
 
 ## Evidence target
 
-The same locked program must build to identical image bytes from verified cache
-and vendor material, fail closed on corrupted or conflicting graphs, and run
-offline after explicit acquisition. Graph Report must use one real exact Git
-package through initialization, check, format, source tests, build, run, update,
-vendor, and offline rebuild without acquiring a store or ambient capability.
+The same graph must build to identical image bytes from a verified offline cache,
+fail closed on corrupted material or on one lineage at conflicting materials, and
+run offline after explicit acquisition. A graph exercise must use one real exact
+Git package through initialization, check, format, source tests, build, run, and
+update, and then rebuild offline from the verified cache alone, without acquiring
+a store or ambient capability.
+
+This page states direction, not implementation evidence. [Project
+status](../status.md) identifies what is current, legacy, and future; the
+[reference](../language/) defines only current behavior.

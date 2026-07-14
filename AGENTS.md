@@ -44,10 +44,11 @@ second production path to keep old docs or tests green.
 ## Product direction
 
 - The language must be useful for ordinary storeless programs. Algebraic data
-  types, real parametric functions and types, closures, generic collections,
-  modules, packages, formatting, tests, and editor support are foundations.
-- A light package system uses Git/path locators, an exact complete lock, a
-  separate stable-identity ledger, verified cache/vendor material, and no
+  types, real parametric functions and types, generic collections, modules,
+  packages, formatting, tests, and editor support are foundations; closures are
+  deferred until a maintained program is materially worse without them.
+- A light package system uses Git/path locators, exact pinned edges (no lock
+  file), a separate stable-identity ledger, a verified offline cache, and no
   dependency build scripts or ambient initialization.
 - Direct durable reads, writes, presence, explicit transactions, and bounded
   ordered traversal are language operations. There is no user query planner,

@@ -18,8 +18,9 @@ other pure behavior whose implementation does not need privileged runtime state.
 
 - Core package lineage and identity are toolchain-pinned and cannot be
   impersonated by source spelling.
-- Source helpers use the same generics, closures, effects, image, verifier, and
-  VM as application code.
+- Source helpers use the same rank-1 generics, effects, image, verifier, and VM
+  as application code, and only the implemented procedural floor; closures are not
+  a prerequisite and remain deferred.
 - Minimal VM intrinsics own only operations that cannot be expressed portably or
   cannot meet measured bounds in source.
 - Compiler facts remain compiler-owned; source tools may render them but cannot

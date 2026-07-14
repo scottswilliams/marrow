@@ -1,83 +1,95 @@
 # Local applications
 
 This page is future direction. Marrow does not currently ship a supported local
-sidecar, generated named-function boundary, or distributable application bundle.
+runner, generated named-function boundary, contained desktop renderer, or
+distributable application bundle.
 
 ## Goal
 
 The first durable product profile should be a terminal application using one
-compiled image, one exact bound store, and one process owner. A later local
-sidecar should expose only explicitly exported typed functions to a desktop
-renderer. The renderer receives no filesystem path, store handle, raw durable
-address, transaction object, ceiling, or maintenance authority.
+compiled image, one exact bound store, and one process owner, so the durable
+model is proven terminal-first. The v0.1 release gate for the personal local application is
+invocation through a generated strict TypeScript client supervised by an
+Electron/Node application. The generated client is the release gate rather than a
+later addition, and the end user installs neither Rust nor a database.
 
-The intended development loop compiles and verifies a candidate, shows package/
-API/effect/contract/binding consequences, and performs any approved activation
-while the single writer is quiesced. Source changes never silently reset a
-persistent store.
+Named typed exports are the boundary. Terminal and generated TypeScript clients
+call the same stable named business exports over one domain type graph. Marrow
+source receives no transport envelope, raw path, transaction object, authority
+token, or handwritten host data-transfer object. Adding the generated boundary
+must not change a business function.
 
-Terminal and generated TypeScript clients should call the same stable named
-business exports and one domain type graph. Marrow source should not receive a
-transport envelope, raw path, transaction object, retry token, authority token,
-or handwritten host DTO. Adding the generated boundary must not change a
-business function.
+The generated TypeScript client and the local wire run as an exact matched
+release pair. The transport is a supervised private Unix-domain-socket channel
+between a trusted supervisor — the Node main process or a command-line owner —
+and a no-shell child runner, established through a bounded handshake. Standard
+streams are drained byte logs, never protocol.
 
-Durable presence, domain results, finite pages, and a page export's bounded
-opaque continuation should be part of that shared detached type graph. The
-continuation uses a source-visible nominal brand for one named
-branch/direction/result contract and is validated by generated code. Its sealed
-generic representation has no public constructor; different page exports have
-different brands. Generated-code branding does not authenticate hostile wire
-bytes; runtime validation contains any structurally valid token within the
-named export's already accepted page region. This does not make general places
-serializable or carry read authority.
+Durable presence and domain results belong to the shared detached type graph.
+Potentially large branches are not exchanged as pages, cursors, or resumable
+continuations over the wire; bounded ordered traversal remains a runner-side
+language operation with an explicit compile-time bound and overflow handling. No
+page token, continuation, or cursor crosses the boundary.
+
+The desktop renderer is contained: context isolation, a sandboxed process, no
+remote content, and named preload methods only. It receives no filesystem path,
+store handle, raw durable address, transaction object, ceiling, or maintenance
+authority. Invocation authority is verified demand intersected with a deployment
+ceiling and export attenuation.
+
+The intended development loop compiles and verifies a candidate, shows package,
+API, effect, contract, and binding consequences, and performs any approved
+activation while the single writer is quiesced. Source changes never silently
+reset a persistent store.
 
 ## Acceptance applications
 
 Graph Report is the storeless acceptance program. Club Locker is an offline
-equipment-lending application with members, assets, unique tags, checkout/return
-history, application-owned counters and secondary trees, bounded pages, restart,
-backup, and restore. A generated client should acknowledge a normally decoded
-mutation reply through the host protocol before resolving its promise. A direct
-terminal instead acknowledges immediately after successful rendering and flush,
-then exits successfully only after that acknowledgement. Both are transport
-progress, not application ceremony. If the reply or acknowledgement is lost,
-the host classifies the single interrupted attempt against store-side truth and
-exposes its durable status. Read-only exact and paged exports remain available
-while that status is unaccepted, so the user can perform a typed state refresh
-before explicitly accepting the observation. The host must not replay the
-business action automatically. A later mutation or maintenance change waits
-for that acceptance. Status and acceptance controls carry no
-application arguments, result bytes, retry token, read authority, or executable
-refresh, and they never replay the business action.
+equipment-lending application with members, assets, unique tags, checkout and
+return history, application-owned counters and secondary trees, bounded ordered
+traversal, restart, backup, and restore.
 
-Missing or malformed delivery state must fail closed without making a valid
-store permanently unreadable. A recovery-only owner may inspect and logically
-back up current typed state after explicitly abandoning delivery knowledge, but
-mutation resumes only in a freshly restored deployment and store with a fresh
-empty delivery record.
+Replies are honest about interruption. A lost reply after a mutating invocation
+or a host handoff is reported as outcome-unknown and reconciled by an ordinary
+domain read against store-side truth; the observed state is either the complete
+prior state or the complete new state. There is no automatic replay, delivery
+ledger, exactly-once claim, or durable delivery record. Read-only exact exports
+remain available while an outcome is unknown, so the user performs an ordinary
+typed state refresh before continuing. The host does not replay a business action
+on the user's behalf.
 
 Club Locker should work from the terminal before TypeScript generation or UI
-framework work begins. The desktop shell exists to test the host seam, not to
-make Marrow a UI framework.
+framework work begins, and the generated TypeScript client supervised by the
+Electron shell is the profile's release gate. The desktop shell exists to test
+the host seam, not to make Marrow a UI framework.
 
 ## Distribution
 
-A release bundle for one qualified beta platform should pin the image,
-runtime/sidecar, selected private engine, generated client and renderer assets,
-provisioning policy, and application identity. Install, first provision, start,
-code update, explicit authority expansion, backup, restore, uninstall, and data
-retention need separate tested behavior. End users should not install Rust or a
+A release bundle for one qualified beta platform pins the program image, the
+runner, the selected private engine, the generated client and renderer assets,
+the provisioning policy, and the application identity. There is no separately
+installed database or daemon. Install, first provision, start, code update,
+explicit authority expansion, backup, restore, uninstall, and data retention
+each need separate tested behavior. End users install neither Rust nor a
 database.
 
 ## Evidence target
 
 One populated application must retain state across supported code and contract
-changes, crashes, lost replies, backup/restore, terminal and TypeScript calls,
-and clean-machine installation. Its business functions and durable model should
-later run under a served profile without being rewritten around transport or
-CRUD. Fresh application-developer walkthroughs must exercise checkout, exact
-erase versus bounded prune, live pages, effect broadening, and lost-reply
-reconciliation, including normal reply acknowledgement and a following
-mutation, lost acknowledgement, read-only refresh, and client death after
-acknowledgement, before the host protocol freezes.
+changes, crashes, lost replies, backup and restore, terminal and TypeScript
+calls, and clean-machine installation. A lost reply is reconciled by an ordinary
+domain read rather than by replay or a delivery record. The same business
+functions and durable model should later run under a served profile without being
+rewritten around transport or CRUD.
+
+Fresh application-developer walkthroughs must exercise checkout, exact erase
+versus broader subtree removal advanced by application-owned typed progress
+over repeated bounded batches, bounded traversal with overflow handling, effect
+broadening, and lost-reply reconciliation through an ordinary domain read —
+including a normal reply followed by a further mutation, an interrupted attempt
+whose outcome is unknown, and a read-only refresh before continuing — before the
+host protocol freezes.
+
+This page states direction. See the [vision](../vision.md) for product
+progression and [durable programming](durable-programming.md) for the durable
+model these applications exercise.

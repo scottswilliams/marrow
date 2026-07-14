@@ -23,6 +23,11 @@ identities remain separate:
 | Public path | Later external representation of selected behavior or addresses |
 | Physical key | Private kernel/engine encoding |
 
+The current language's `Id(^root)` value fits this taxonomy as a typed key
+value: it names one record within one root and instantiates a semantic path
+into a concrete address. It is not a declaration identity, a store identity, or
+a physical key.
+
 Private implementation helpers use image-local identity unless they cross a
 public, durable, wire, or accepted-authority boundary. Stable identities are not
 minted during check/build, derived from URLs or source order, or invented by a

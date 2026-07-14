@@ -37,8 +37,9 @@ the same Git revision and separates reachable behavior from direction.
 
 - `init`, `check`, `fmt`, `run`, `test`, `doctor`, `data`, `evolve`, `backup`,
   and `restore` command families.
-- Experimental `serve`, TypeScript client generation, and client scaffolding.
-- Text, JSON, and selected JSONL diagnostic/report forms.
+- Text, JSON, and selected JSONL diagnostic/report forms. (Experimental
+  `serve`, TypeScript client generation, and client scaffolding remain
+  reachable but are rejected product families; see Legacy below.)
 - A downstream language-server repository using current Marrow semantic APIs.
 - Linux and macOS source builds with the pinned Rust toolchain.
 
@@ -89,23 +90,28 @@ permanent legacy manual.
 
 The planned beta direction includes:
 
-- an ordinary storeless language floor with ADTs, exhaustive patterns, real
-  parametric functions/types, closures, generic local collections, modules,
-  packages, source tests, formatting, and editor facts;
-- `marrow.toml`, a complete exact package lock, a separate stable-identity
-  ledger, Git/path dependencies, verified offline cache, and vendoring;
-- one reproducible ProgramImage, independent bounded verifier, and portable VM;
-- ordinary dense types with closed durable/key representation, typed ordered
-  durable trees, explicit transactions, application-owned counters and
-  secondary trees, and bounded traversal;
+- an ordinary storeless language floor with algebraic data types, exhaustive
+  patterns, real rank-1 parametric functions and types, generic local
+  collections, modules, source tests, formatting, and editor facts; closures are
+  deferred until a maintained program needs them;
+- `marrow.toml` with exact path and Git dependency edges, a separate
+  stable-identity ledger, and a verified offline cache; no dependency lock or
+  vendoring unless a moving-resolution case earns one;
+- one reproducible ProgramImage, an independent bounded verifier, and a bytecode
+  VM qualified on one target;
+- closed value and durable representations — dense products and sparse resources
+  — with typed ordered durable trees, separate root and branch topology, narrow
+  compiler-maintained nonunique and unique indexes, explicit transactions,
+  application-owned counters and secondary trees, and bounded nested traversal;
 - compiler-described effects, exact accepted execution binding, and one
   authority-checking path kernel;
 - one qualified private native engine with no public backend choice;
 - StoreId, durable-contract and executable-binding generations, read-only
-  admission, crash-recoverable activation, narrow evolution, logical backup,
-  and fresh-store restore; and
-- a terminal-first local application, followed by named exported functions,
-  generated TypeScript bindings, and a supervised sidecar.
+  admission, crash-recoverable activation, metadata-only additive activation with
+  one bounded add-index transition, logical backup, and fresh-store restore; and
+- a personal local application whose durable model is proven terminal-first and
+  whose release gate is a generated strict TypeScript client supervised by an
+  Electron/Node process.
 
 [Future direction](future/) records goals and boundaries without defining
 unimplemented syntax or exact formats.
