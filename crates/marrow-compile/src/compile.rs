@@ -6,6 +6,7 @@
 //! outside the current subset is a typed `check.unsupported` diagnostic, never a
 //! silent drop.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
@@ -19,7 +20,10 @@ use marrow_syntax::{
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
-use crate::lower::{FnLowerer, FunctionRegistry, is_reserved_builtin_name, reserved_builtin_name};
+use crate::lower::{
+    FnLowerer, FunctionRegistry, GenericRegistry, MonoState, is_reserved_builtin_name,
+    reserved_builtin_name,
+};
 use crate::types::TypeRegistry;
 
 /// One resolved public export: its dotted module, its item name, and the stable
@@ -332,6 +336,23 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
     let signatures =
         FunctionRegistry::build(&records, &mut draft, &functions, module_names, imports);
+    // Generic functions are templates with no image index; they are monomorphized at
+    // each call site and once-checked below against their constraints.
+    let generic_functions: Vec<(String, String, &FunctionDecl)> = parsed
+        .iter()
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
+                if let Declaration::Function(function) = decl
+                    && !function.type_params.is_empty()
+                {
+                    Some((module.file.clone(), module.name.clone(), function))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    let generics = GenericRegistry::build(&generic_functions);
 
     // Module-private constants, evaluated before body lowering so a reference folds
     // to its value.
@@ -349,21 +370,62 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         .collect();
     let constants = ConstRegistry::build(&const_decls, &records, &mut diagnostics);
 
+    // Once-checked template pass: every generic function's body is type-checked once
+    // against its type parameters' constraints — independently of whether or how it
+    // is instantiated — so an unconstrained parameter used with `==`/`<`, or any
+    // other constraint violation, is caught here rather than per instantiation.
+    for template in generics.templates() {
+        FnLowerer::check_template(
+            &draft,
+            &records,
+            &durable,
+            &signatures,
+            &generics,
+            &constants,
+            &mut diagnostics,
+            template,
+        );
+    }
+
+    // Generic instances are image functions with no stable identity, indexed after
+    // every monomorphic function and test. `base` is that boundary; the shared
+    // `MonoState` assigns each distinct instance the next index from `base` in
+    // discovery order, so draining its queue in order appends them to the image in
+    // index order.
+    let test_count: u16 = if mode == TestMode::Include {
+        parsed
+            .iter()
+            .flat_map(|module| &module.parsed.file.declarations)
+            .filter(|decl| matches!(decl, Declaration::Test(_)))
+            .count() as u16
+    } else {
+        0
+    };
+    let base = signatures.concrete_count() + test_count;
+    let mono = RefCell::new(MonoState::new(base));
+
     // Lower each function, in the same order the registry assigned indices, minting
     // an export for each public function from its declaration path and recording its
     // direct-call edges for recursion detection. Other declarations are handled
-    // above or not yet admitted.
+    // above or not yet admitted. Generic templates are skipped here — they are
+    // monomorphized on demand and drained below.
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut lowered: Vec<LoweredFn> = Vec::new();
     for module in &parsed {
         for declaration in &module.parsed.file.declarations {
             match declaration {
+                Declaration::Function(function) if !function.type_params.is_empty() => {
+                    // A generic template is not lowered in place.
+                    let _ = function;
+                }
                 Declaration::Function(function) => {
                     let Some(result) = FnLowerer::lower(
                         &mut draft,
                         &records,
                         &durable,
                         &signatures,
+                        &generics,
+                        &mono,
                         &constants,
                         &mut diagnostics,
                         &module.file,
@@ -455,6 +517,8 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     &records,
                     &durable,
                     &signatures,
+                    &generics,
+                    &mono,
                     &constants,
                     &mut diagnostics,
                     &module.file,
@@ -484,11 +548,55 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         }
     }
 
+    // Drain the generic instantiation worklist: lower each monomorphized instance's
+    // body into the image, in the order the instances were minted (so each instance's
+    // image index equals the one the `MonoState` reserved). Lowering an instance body
+    // may mint further instances, which the loop continues to drain. Only run when the
+    // monomorphic pass is clean, so every function and test has already consumed its
+    // image index and instances append after them.
+    if diagnostics.is_empty() {
+        loop {
+            // Bind the pop to its own statement so the `borrow_mut` is released
+            // before lowering the instance body, which itself borrows the mono state.
+            let next = mono.borrow_mut().next_pending();
+            let Some((template_index, args, reserved)) = next else {
+                break;
+            };
+            let template = &generics.templates()[template_index];
+            let Some(result) = FnLowerer::lower_instance(
+                &mut draft,
+                &records,
+                &durable,
+                &signatures,
+                &generics,
+                &mono,
+                &constants,
+                &mut diagnostics,
+                template,
+                &args,
+            ) else {
+                continue;
+            };
+            debug_assert_eq!(
+                result.func.index(),
+                reserved,
+                "instance image index must match its reserved index"
+            );
+            lowered.push(LoweredFn {
+                index: result.func.index(),
+                file: template.source_file().to_string(),
+                name: template.name().to_string(),
+                span: template.span(),
+                callees: result.callees,
+            });
+        }
+    }
+
     // The compiled subset does not admit recursion: the direct-call graph must be
     // acyclic. Reported at check time so the source carries the diagnostic. The
     // verifier independently rejects any cycle that still reaches it (image.closure),
     // so this is a source-facing check, not the trust boundary. Only run it once
-    // every function and test lowered, so the indices are aligned.
+    // every function, test, and generic instance lowered, so the indices are aligned.
     if diagnostics.is_empty() {
         reject_recursion(&lowered, &mut diagnostics);
     }

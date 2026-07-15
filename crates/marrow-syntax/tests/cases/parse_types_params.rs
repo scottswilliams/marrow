@@ -135,6 +135,82 @@ fn rejects_user_defined_generics_on_functions() {
 }
 
 #[test]
+fn parses_bracket_generic_type_parameters() {
+    use marrow_syntax::{Declaration, TypeConstraint};
+
+    let parsed = parse_source(
+        "module app\nfn pick[T, U supports equality, V supports order](x: T): U?\n    return absent\n",
+    );
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let function = parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|decl| match decl {
+            Declaration::Function(function) => Some(function),
+            _ => None,
+        })
+        .expect("a function declaration");
+    let names: Vec<&str> = function
+        .type_params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    assert_eq!(names, ["T", "U", "V"]);
+    assert_eq!(function.type_params[0].constraint, None);
+    assert_eq!(
+        function.type_params[1].constraint,
+        Some(TypeConstraint::Equality)
+    );
+    assert_eq!(
+        function.type_params[2].constraint,
+        Some(TypeConstraint::Order)
+    );
+}
+
+#[test]
+fn rejects_malformed_type_parameter_lists() {
+    for (source, expected_message) in [
+        (
+            "module app\nfn f[](x: int)\n    return\n",
+            "names at least one",
+        ),
+        (
+            "module app\nfn f[T supports magic](x: T)\n    return\n",
+            "`supports equality` or `supports order`",
+        ),
+        (
+            "module app\nfn f[T supports](x: T)\n    return\n",
+            "`supports equality` or `supports order`",
+        ),
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.has_errors(), "{source:?}: {:#?}", parsed.diagnostics);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains(expected_message)),
+            "missing {expected_message:?} for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn formats_generic_function_headers() {
+    use marrow_syntax::format_source;
+
+    let source = "module app\n\nfn pick[T,U supports equality](x: T): U?\n    return absent\n";
+    let formatted = format_source(source);
+    assert_eq!(
+        formatted,
+        "module app\n\nfn pick[T, U supports equality](x: T): U?\n    return absent\n"
+    );
+    assert_eq!(format_source(&formatted), formatted, "idempotent");
+}
+
+#[test]
 fn parses_alias_declarations() {
     let parsed = parse_source("module app\nalias Count = int\nalias MaybeCount = Count?\n");
 

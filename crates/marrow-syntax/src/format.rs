@@ -714,13 +714,33 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
     out.push_str(&format!(
-        "{visibility}fn {}({}){}",
+        "{visibility}fn {}{}({}){}",
         decl.name,
+        format_type_params(&decl.type_params),
         format_params(&decl.params),
         format_type_annotation(&decl.return_type)
     ));
     append_body_block(&mut out, &format_block(source, &decl.body, 1));
     out
+}
+
+/// Render a generic type-parameter list. An empty list renders nothing (an
+/// ordinary monomorphic function); a non-empty one renders `[T, U supports order]`
+/// with each constraint spelled canonically.
+fn format_type_params(params: &[crate::TypeParamDecl]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let items = params
+        .iter()
+        .map(|param| match param.constraint {
+            None => param.name.clone(),
+            Some(crate::TypeConstraint::Equality) => format!("{} supports equality", param.name),
+            Some(crate::TypeConstraint::Order) => format!("{} supports order", param.name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{items}]")
 }
 
 fn format_test(source: &str, decl: &crate::TestDecl) -> String {

@@ -8,6 +8,7 @@
 //! and patched to instruction indices once the target position is known; the
 //! encoder rewrites indices to byte offsets.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
@@ -25,7 +26,7 @@ use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
     CollSpec, GArg, GenericInst, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK,
-    SupportSet, TypeRegistry,
+    SupportSet, TypeConstraint, TypeRegistry,
 };
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
@@ -68,6 +69,14 @@ enum LTy {
         idx: u16,
         optional: bool,
     },
+    /// An abstract generic type parameter, present only while the once-checked
+    /// template pass lowers a generic body against a throwaway draft. `index` is the
+    /// parameter's declaration position; its constraint is read from the lowerer's
+    /// type environment. A monomorphized instantiation never carries a `Param`.
+    Param {
+        index: u16,
+        optional: bool,
+    },
 }
 
 impl LTy {
@@ -85,7 +94,8 @@ impl LTy {
             | LTy::Record { optional, .. }
             | LTy::Struct { optional, .. }
             | LTy::Enum { optional, .. }
-            | LTy::Collection { optional, .. } => optional,
+            | LTy::Collection { optional, .. }
+            | LTy::Param { optional, .. } => optional,
         }
     }
 
@@ -101,6 +111,10 @@ impl LTy {
             LTy::Enum { ty, .. } => LTy::Enum { ty, optional: true },
             LTy::Collection { idx, .. } => LTy::Collection {
                 idx,
+                optional: true,
+            },
+            LTy::Param { index, .. } => LTy::Param {
+                index,
                 optional: true,
             },
         }
@@ -129,6 +143,21 @@ impl LTy {
                 idx,
                 optional: false,
             },
+            LTy::Param { index, .. } => LTy::Param {
+                index,
+                optional: false,
+            },
+        }
+    }
+
+    /// The abstract type-parameter index, if this is a bare one.
+    fn bare_param(self) -> Option<u16> {
+        match self {
+            LTy::Param {
+                index,
+                optional: false,
+            } => Some(index),
+            _ => None,
         }
     }
 
@@ -172,6 +201,7 @@ impl LTy {
                 (base, optional)
             }
             LTy::Collection { idx, optional } => (records.collection_spelling(idx), optional),
+            LTy::Param { index, optional } => (format!("type parameter #{index}"), optional),
         };
         if optional { format!("{base}?") } else { base }
     }
@@ -222,6 +252,10 @@ impl LTy {
                 idx,
                 optional: false,
             } => Some(GArg::Collection(idx)),
+            LTy::Param {
+                index,
+                optional: false,
+            } => Some(GArg::Param(index)),
             _ => None,
         }
     }
@@ -251,6 +285,12 @@ impl LTy {
                 optional,
             },
             LTy::Collection { idx, optional } => ImageType::Collection { idx, optional },
+            // Only reached in the discarded template-check draft; the sentinel keeps
+            // that throwaway image well-formed and is never encoded.
+            LTy::Param {
+                optional: false, ..
+            } => ImageType::scalar(Scalar::Int),
+            LTy::Param { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
         }
     }
 }
@@ -274,6 +314,10 @@ fn garg_to_lty(arg: GArg) -> LTy {
         },
         GArg::Collection(idx) => LTy::Collection {
             idx,
+            optional: false,
+        },
+        GArg::Param(index) => LTy::Param {
+            index,
             optional: false,
         },
     }
@@ -545,41 +589,57 @@ impl FunctionRegistry {
         imports: BTreeMap<String, Vec<(String, String)>>,
     ) -> Self {
         let mut sigs = Vec::with_capacity(functions.len());
-        for (index, (module, function)) in functions.iter().enumerate() {
-            // A generic param/return type instantiates its built-in enum into the
-            // draft here; the same instantiation is reused (never re-added) when the
-            // body lowers, since the registry caches by argument types.
+        // Only monomorphic functions take an image index and enter the signature
+        // table; a generic function is a template with no single image entry (its
+        // per-application instances are minted lazily), so it is skipped here and
+        // resolved through the separate [`GenericRegistry`]. The concrete index runs
+        // over non-generic functions only, matching the order [`FnLowerer::lower`]
+        // adds them into the image FUNCTIONS table.
+        let mut index: u16 = 0;
+        for (module, function) in functions {
+            if !function.type_params.is_empty() {
+                continue;
+            }
             let mut params = Vec::with_capacity(function.params.len());
             for param in &function.params {
-                if let Some(ty) = param_type(records, draft, &param.ty) {
+                if let Some(ty) = param_type(records, draft, &param.ty, TypeEnv::EMPTY) {
                     params.push(ty);
                 }
             }
             let ret = match &function.return_type {
                 None => RetType::Unit,
-                Some(annotation) => match resolve_type(records, draft, annotation) {
-                    Some(LTy::Record { .. }) | None => {
-                        // A resource-record or unsupported return; the function's own
-                        // lowering reports it. Record Unit here so indices stay aligned.
-                        RetType::Unit
+                Some(annotation) => {
+                    match resolve_type(records, draft, annotation, TypeEnv::EMPTY) {
+                        Some(LTy::Record { .. }) | None => {
+                            // A resource-record or unsupported return; the function's own
+                            // lowering reports it. Record Unit here so indices stay aligned.
+                            RetType::Unit
+                        }
+                        Some(ty) => RetType::Value(ty),
                     }
-                    Some(ty) => RetType::Value(ty),
-                },
+                }
             };
             sigs.push(FnSignature {
                 name: function.name.clone(),
                 module: module.clone(),
-                index: index as u16,
+                index,
                 params,
                 ret,
                 public: function.public,
             });
+            index += 1;
         }
         Self {
             sigs,
             modules,
             imports,
         }
+    }
+
+    /// The number of monomorphic functions, which is the number of image FUNCTIONS
+    /// entries lowered before tests and generic instantiations.
+    pub(crate) fn concrete_count(&self) -> u16 {
+        self.sigs.len() as u16
     }
 
     /// Resolve an unqualified call from within `module`: a function of that name in
@@ -630,6 +690,192 @@ impl FunctionRegistry {
             None => CallResolution::NotFound,
         }
     }
+
+    /// The dotted module a `::`-qualified prefix names from within `current`, shared
+    /// with generic-call resolution so both read module scope one way.
+    fn resolved_module(&self, current: &str, prefix: &[String]) -> Option<String> {
+        if let [single] = prefix {
+            if let Some((_, target)) = self
+                .imports
+                .get(current)
+                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single))
+            {
+                Some(target.clone())
+            } else if self.modules.contains(single) {
+                Some(single.clone())
+            } else {
+                None
+            }
+        } else {
+            let dotted = prefix.join(".");
+            self.modules.contains(&dotted).then_some(dotted)
+        }
+    }
+}
+
+/// One generic function template: the source declaration plus its type-parameter
+/// names and constraints, held for lazy monomorphization. A template has no image
+/// index; each concrete application is a distinct image function.
+pub(crate) struct GenericTemplate<'p> {
+    file: String,
+    module: String,
+    public: bool,
+    decl: &'p FunctionDecl,
+    type_params: Vec<(String, Option<TypeConstraint>)>,
+}
+
+/// The project's generic function templates and the module scope a generic call
+/// resolves against — the same visibility rules the [`FunctionRegistry`] applies to
+/// monomorphic functions, but keyed to templates rather than image indices.
+#[derive(Default)]
+pub(crate) struct GenericRegistry<'p> {
+    templates: Vec<GenericTemplate<'p>>,
+}
+
+impl<'p> GenericRegistry<'p> {
+    /// Collect every generic function (one carrying type parameters) as a template,
+    /// paired with its source file and dotted module name.
+    pub(crate) fn build(functions: &[(String, String, &'p FunctionDecl)]) -> Self {
+        let templates = functions
+            .iter()
+            .filter(|(_, _, function)| !function.type_params.is_empty())
+            .map(|(file, module, function)| GenericTemplate {
+                file: file.clone(),
+                module: module.clone(),
+                public: function.public,
+                decl: function,
+                type_params: function
+                    .type_params
+                    .iter()
+                    .map(|param| {
+                        (
+                            param.name.clone(),
+                            param.constraint.map(TypeConstraint::from_syntax),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
+        Self { templates }
+    }
+
+    /// The templates, for the once-checked template pass and instance draining.
+    pub(crate) fn templates(&self) -> &[GenericTemplate<'p>] {
+        &self.templates
+    }
+
+    /// The template index of an unqualified generic call `name` from `module`.
+    fn same_module(&self, module: &str, name: &str) -> Option<usize> {
+        self.templates
+            .iter()
+            .position(|template| template.decl.name == name && template.module == module)
+    }
+
+    /// The template named `item` in `module`, with its `pub` flag, for a qualified
+    /// generic call. The caller checks visibility against the calling module.
+    fn in_module(&self, module: &str, item: &str) -> Option<(usize, bool)> {
+        self.templates
+            .iter()
+            .position(|template| template.decl.name == item && template.module == module)
+            .map(|index| (index, self.templates[index].public))
+    }
+}
+
+impl<'p> GenericTemplate<'p> {
+    pub(crate) fn source_file(&self) -> &str {
+        &self.file
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.decl.name
+    }
+
+    pub(crate) fn span(&self) -> SourceSpan {
+        self.decl.span
+    }
+}
+
+/// The maximum number of distinct generic instantiations one program may mint. A
+/// well-typed program with an acyclic call graph produces a finite set; this bound
+/// (campaign law 9) fails a divergent monomorphization — a generic that recurses
+/// into itself over an ever-growing type — with a typed check error before the
+/// worklist allocates unboundedly, rather than looping.
+const MAX_INSTANTIATIONS: usize = 4096;
+
+/// One monomorphized instance awaiting body lowering: its template, the concrete
+/// arguments substituted for the type parameters (in declaration order), and the
+/// image function index reserved for it.
+struct PendingInstance {
+    template: usize,
+    args: Vec<GArg>,
+    func: u16,
+}
+
+/// The single owner of generic instantiation identity: the concrete instances
+/// minted so far (deduped by template and argument list) and the queue of instances
+/// whose bodies are not yet lowered. Image function indices for instances start at
+/// `base` (the count of monomorphic functions plus tests) and are assigned in
+/// discovery order, so draining the queue in order adds them to the image in
+/// index order. Interior-mutable, so a shared `&RefCell<MonoState>` mints instances
+/// during body lowering exactly as the type registry mints built-in generics.
+pub(crate) struct MonoState {
+    base: u16,
+    /// `(template index, concrete args) -> reserved image function index`.
+    table: Vec<(usize, Vec<GArg>, u16)>,
+    queue: std::collections::VecDeque<PendingInstance>,
+}
+
+impl MonoState {
+    pub(crate) fn new(base: u16) -> Self {
+        MonoState {
+            base,
+            table: Vec::new(),
+            queue: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// The reserved image function index for `(template, args)`, minting and enqueuing
+    /// a fresh instance on first request and reusing it thereafter. `None` once the
+    /// instantiation bound is exceeded.
+    fn instantiate(&mut self, template: usize, args: Vec<GArg>) -> Option<u16> {
+        if let Some((_, _, func)) = self
+            .table
+            .iter()
+            .find(|(t, a, _)| *t == template && *a == args)
+        {
+            return Some(*func);
+        }
+        if self.table.len() >= MAX_INSTANTIATIONS {
+            return None;
+        }
+        let func = self.base + self.table.len() as u16;
+        self.table.push((template, args.clone(), func));
+        self.queue.push_back(PendingInstance {
+            template,
+            args,
+            func,
+        });
+        Some(func)
+    }
+
+    /// The next instance awaiting body lowering: its template index, concrete
+    /// arguments, and reserved image function index. The driver drains these in
+    /// order, lowering each body (which may enqueue further instances).
+    pub(crate) fn next_pending(&mut self) -> Option<(usize, Vec<GArg>, u16)> {
+        self.queue
+            .pop_front()
+            .map(|pending| (pending.template, pending.args, pending.func))
+    }
+}
+
+/// Which lowering pass a body is in: an ordinary or instance body that emits an
+/// image function and monomorphizes its generic calls, or the once-checked template
+/// pass that lowers a generic body against abstract type parameters into a throwaway
+/// draft and only checks (never monomorphizes) the generic calls it makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LowerMode {
+    Concrete,
+    Template,
 }
 
 /// One in-scope local binding.
@@ -652,12 +898,24 @@ pub(crate) struct FnLowerer<'a> {
     records: &'a TypeRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
+    /// The generic function templates, for resolving a generic call target.
+    generics: &'a GenericRegistry<'a>,
+    /// The single instantiation owner, shared across every body so one concrete
+    /// application maps to one image function.
+    mono: &'a RefCell<MonoState>,
     consts: &'a ConstRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
     /// The dotted module the function being lowered belongs to; unqualified calls
     /// resolve within it.
     module: &'a str,
+    /// The type-parameter environment: empty for a monomorphic body, the abstract
+    /// parameters for the template pass, or the concrete substitutions for an
+    /// instance body.
+    type_env: Vec<TypeParamSlot>,
+    /// Whether this body emits an image function and monomorphizes, or is the
+    /// once-checked template pass over abstract parameters.
+    mode: LowerMode,
     code: Vec<Instr>,
     spans: Vec<SpanEntry>,
     /// The image indices of every function this body calls directly, in emission
@@ -683,6 +941,8 @@ impl<'a> FnLowerer<'a> {
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -695,10 +955,14 @@ impl<'a> FnLowerer<'a> {
             records,
             durable,
             functions,
+            generics,
+            mono,
             consts,
             diagnostics,
             file,
             module,
+            type_env: Vec::new(),
+            mode: LowerMode::Concrete,
             code: Vec::new(),
             spans: Vec::new(),
             calls: Vec::new(),
@@ -722,29 +986,169 @@ impl<'a> FnLowerer<'a> {
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
         module: &'a str,
         function: &FunctionDecl,
     ) -> Option<Lowered> {
-        let ret = match &function.return_type {
-            None => RetType::Unit,
-            Some(annotation) => match resolve_type(records, draft, annotation) {
-                Some(LTy::Record { .. }) => {
-                    diagnostics.push(unsupported(
-                        file,
-                        annotation.span(),
-                        "a resource return type",
-                    ));
-                    return None;
-                }
-                Some(ty) => RetType::Value(ty),
-                None => {
-                    diagnostics.push(unsupported(file, annotation.span(), "this return type"));
-                    return None;
-                }
-            },
+        Self::lower_with_env(
+            draft,
+            records,
+            durable,
+            functions,
+            generics,
+            mono,
+            consts,
+            diagnostics,
+            file,
+            module,
+            function,
+            Vec::new(),
+            LowerMode::Concrete,
+        )
+    }
+
+    /// Lower one monomorphized instance of a generic template: bind each type
+    /// parameter to its concrete argument, then lower the template body exactly like
+    /// an ordinary function into the real draft. The returned [`FuncId`] must equal
+    /// the index the [`MonoState`] reserved for this instance (asserted by the
+    /// driver), since instances are added to the image in the order they were minted.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lower_instance(
+        draft: &'a mut ImageDraft,
+        records: &'a TypeRegistry,
+        durable: &'a DurableRegistry,
+        functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        mono: &'a RefCell<MonoState>,
+        consts: &'a ConstRegistry,
+        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        template: &'a GenericTemplate<'a>,
+        args: &[GArg],
+    ) -> Option<Lowered> {
+        let type_env = template
+            .type_params
+            .iter()
+            .zip(args)
+            .map(|((name, _), arg)| TypeParamSlot {
+                name: name.clone(),
+                binding: ParamBinding::Concrete(*arg),
+            })
+            .collect();
+        Self::lower_with_env(
+            draft,
+            records,
+            durable,
+            functions,
+            generics,
+            mono,
+            consts,
+            diagnostics,
+            &template.file,
+            &template.module,
+            template.decl,
+            type_env,
+            LowerMode::Concrete,
+        )
+    }
+
+    /// Run the once-checked template pass over a generic function: lower its body
+    /// against abstract type parameters (each admitting only its declared
+    /// constraint) into a throwaway draft paired with an isolated registry clone, so
+    /// the body is type-checked once — including rejecting `==`/`<` on an
+    /// unconstrained parameter — independently of whether or how it is instantiated.
+    /// Only its diagnostics are kept; the emitted code and throwaway image are
+    /// discarded.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn check_template(
+        draft: &ImageDraft,
+        records: &TypeRegistry,
+        durable: &DurableRegistry,
+        functions: &FunctionRegistry,
+        generics: &GenericRegistry,
+        consts: &ConstRegistry,
+        diagnostics: &mut Vec<SourceDiagnostic>,
+        template: &GenericTemplate,
+    ) {
+        let file = &template.file;
+        let module = &template.module;
+        // Clone the registry and the in-progress draft together so the template body
+        // sees every already-minted type at its real index (a concrete callee's
+        // signature stays consistent), while abstract-parameter instantiations and
+        // the emitted code land only in the discarded clones.
+        let check_records = records.clone_for_generic_check();
+        let mut throwaway = draft.clone();
+        let throwaway_mono = RefCell::new(MonoState::new(0));
+        // Each parameter's position in this vector is its abstract `LTy::Param`
+        // index, and its constraint is read back from here by `constraint_at`.
+        let type_env = template
+            .type_params
+            .iter()
+            .map(|(name, constraint)| TypeParamSlot {
+                name: name.clone(),
+                binding: ParamBinding::Abstract(*constraint),
+            })
+            .collect::<Vec<_>>();
+        FnLowerer::lower_with_env(
+            &mut throwaway,
+            &check_records,
+            durable,
+            functions,
+            generics,
+            &throwaway_mono,
+            consts,
+            diagnostics,
+            file,
+            module,
+            template.decl,
+            type_env,
+            LowerMode::Template,
+        );
+    }
+
+    /// The shared driver for an ordinary function, a generic instance, and the
+    /// template pass: resolve the return type in the type environment, bind the
+    /// value parameters, lower the body, and (for an emitting pass) add the image
+    /// function. The `type_env` and `mode` distinguish the three.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_with_env(
+        draft: &'a mut ImageDraft,
+        records: &'a TypeRegistry,
+        durable: &'a DurableRegistry,
+        functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        mono: &'a RefCell<MonoState>,
+        consts: &'a ConstRegistry,
+        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        file: &'a str,
+        module: &'a str,
+        function: &FunctionDecl,
+        type_env: Vec<TypeParamSlot>,
+        mode: LowerMode,
+    ) -> Option<Lowered> {
+        let ret = {
+            let env = TypeEnv { params: &type_env };
+            match &function.return_type {
+                None => RetType::Unit,
+                Some(annotation) => match resolve_type(records, draft, annotation, env) {
+                    Some(LTy::Record { .. }) => {
+                        diagnostics.push(unsupported(
+                            file,
+                            annotation.span(),
+                            "a resource return type",
+                        ));
+                        return None;
+                    }
+                    Some(ty) => RetType::Value(ty),
+                    None => {
+                        diagnostics.push(unsupported(file, annotation.span(), "this return type"));
+                        return None;
+                    }
+                },
+            }
         };
 
         let mut lowerer = FnLowerer::new(
@@ -752,6 +1156,8 @@ impl<'a> FnLowerer<'a> {
             records,
             durable,
             functions,
+            generics,
+            mono,
             consts,
             diagnostics,
             file,
@@ -759,6 +1165,8 @@ impl<'a> FnLowerer<'a> {
             ret,
             BodyKind::Function,
         );
+        lowerer.type_env = type_env;
+        lowerer.mode = mode;
 
         // Params occupy the first slots, pre-initialized to their type: a bare
         // scalar, a bare nominal (int-shaped), or a bare struct record ref.
@@ -835,6 +1243,8 @@ impl<'a> FnLowerer<'a> {
         records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -847,6 +1257,8 @@ impl<'a> FnLowerer<'a> {
             records,
             durable,
             functions,
+            generics,
+            mono,
             consts,
             diagnostics,
             file,
@@ -2291,26 +2703,22 @@ impl<'a> FnLowerer<'a> {
             return self.lower_collection_ctor(head, expr.span(), expected);
         }
         if let Expression::Absent { span } = expr {
-            let vacant = match expected {
-                LTy::Scalar {
-                    scalar,
-                    optional: true,
-                } => ImageType::opt_scalar(scalar.image()),
-                LTy::Nominal { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
-                _ => {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        *span,
-                        format!(
-                            "`absent` needs an optional type, found {}",
-                            expected.spelling(self.records)
-                        ),
-                    ));
-                    return None;
-                }
-            };
-            self.push(Instr::VacantLoad(vacant), *span);
+            // `absent` supplies the vacant value of any optional type, including an
+            // optional generic parameter (`T?`) in a template body; the image vacant
+            // carries the expected optional's image shape.
+            if !expected.is_optional() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    *span,
+                    format!(
+                        "`absent` needs an optional type, found {}",
+                        expected.spelling(self.records)
+                    ),
+                ));
+                return None;
+            }
+            self.push(Instr::VacantLoad(expected.image()), *span);
             return Some(());
         }
         let got = self.lower_expr(expr)?;
@@ -2521,6 +2929,13 @@ impl<'a> FnLowerer<'a> {
         );
         let right_ty = self.lower_expr(right)?;
         let span = right.span();
+        // An abstract type parameter (template pass only) admits `==`/`!=` when it
+        // supports equality and `<`/`<=`/`>`/`>=` when it supports order; every other
+        // operator over it is rejected. An unconstrained parameter admits neither, so
+        // it falls through to the standard operator error.
+        if left_ty.bare_param().is_some() || right_ty.bare_param().is_some() {
+            return self.lower_param_binary(op, left_ty, right_ty, span);
+        }
         if left_ty.bare_nominal().is_some() || right_ty.bare_nominal().is_some() {
             return self.lower_nominal_binary(op, left_ty, right_ty, right_is_one, span);
         }
@@ -2739,6 +3154,81 @@ impl<'a> FnLowerer<'a> {
                 None
             }
         }
+    }
+
+    /// Lower `==`/`!=` and the ordering operators over an abstract type parameter,
+    /// reached only in the template pass. Both operands must be the same type
+    /// parameter (two distinct parameters are distinct opaque types). Equality is
+    /// admitted when the parameter's constraint licenses it (`supports equality`, or
+    /// `supports order`, which subsumes equality); ordering requires `supports
+    /// order`. Any other operator, an unconstrained parameter, or a mismatch is the
+    /// standard operator error. The emitted instruction is a stack-shape placeholder:
+    /// the template pass discards its code, and a monomorphized instance re-lowers
+    /// the body over the concrete type, emitting the real comparison.
+    fn lower_param_binary(
+        &mut self,
+        op: BinaryOp,
+        left_ty: LTy,
+        right_ty: LTy,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
+        let same_param = left_ty.bare_param().is_some() && left_ty == right_ty;
+        let constraint = left_ty
+            .bare_param()
+            .and_then(|index| self.type_param_constraint(index));
+        let admitted = match op {
+            BinaryOp::Equal | BinaryOp::NotEqual => {
+                constraint.is_some_and(TypeConstraint::admits_equality)
+            }
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                constraint.is_some_and(TypeConstraint::admits_order)
+            }
+            _ => false,
+        };
+        if same_param && admitted {
+            // Placeholder with the right stack shape (pop two, push one bool); the
+            // code is discarded by the template pass.
+            self.push(Instr::EqInt, span);
+            return Some(bool_ty);
+        }
+        if same_param {
+            let want = match op {
+                BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual => "order",
+                _ => "equality",
+            };
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "operator `{}` needs the type parameter to `supports {want}`",
+                    operator_symbol(op)
+                ),
+            ));
+            return None;
+        }
+        self.fail(binary_error(
+            self.records,
+            self.file,
+            span,
+            op,
+            left_ty,
+            right_ty,
+        ));
+        None
+    }
+
+    /// The constraint on the abstract type parameter at `index`, in the template
+    /// pass. `None` outside that pass or for an unconstrained parameter.
+    fn type_param_constraint(&self, index: u16) -> Option<TypeConstraint> {
+        let env = TypeEnv {
+            params: &self.type_env,
+        };
+        env.constraint_at(index)
     }
 
     fn nominal_supports(&self, ty: LTy) -> SupportSet {
@@ -2988,6 +3478,12 @@ impl<'a> FnLowerer<'a> {
             let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
             return self.lower_function_call(index, &params, ret, args, span);
         }
+        // A same-module generic function is monomorphized at the call site (its type
+        // arguments inferred from the arguments), resolved before the collection
+        // fallbacks so a generic named `get`/`append`/... shadows them.
+        if let Some(template) = self.generics.same_module(self.module, name) {
+            return self.lower_generic_call(template, args, span);
+        }
         // The procedural collection operations resolve last, so a same-module
         // function of the same common name shadows them.
         if let Some(result) = self.lower_collection_fallback(name, args, span) {
@@ -3041,6 +3537,24 @@ impl<'a> FnLowerer<'a> {
                 None
             }
             CallResolution::NotFound => {
+                // A qualified generic function is resolved through the same module
+                // scope and monomorphized, after the monomorphic table misses.
+                if let Some(module) = self.functions.resolved_module(self.module, prefix)
+                    && let Some((template, public)) = self.generics.in_module(&module, item)
+                {
+                    if !public && module != self.module {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckVisibility.as_str(),
+                            self.file,
+                            span,
+                            format!(
+                                "`{item}` is not `pub`, so it cannot be called from another module"
+                            ),
+                        ));
+                        return None;
+                    }
+                    return self.lower_generic_call(template, args, span);
+                }
                 let path = prefix
                     .iter()
                     .map(String::as_str)
@@ -3090,6 +3604,187 @@ impl<'a> FnLowerer<'a> {
             RetType::Unit => CallResult::Unit,
             RetType::Value(ty) => CallResult::Value(ty),
         })
+    }
+
+    /// Lower a call to a generic function: infer each type argument from the call's
+    /// arguments, revalidate the type-parameter constraints against the inferred
+    /// concrete types, monomorphize one image function for the exact argument list,
+    /// and emit a call to it. A type parameter that no argument determines, an
+    /// argument whose type does not match the parameter shape, or an inferred type
+    /// that violates a constraint is a typed `check.type`. Inference is exact: a
+    /// generic argument matches the parameter type structurally with no implicit
+    /// bare-to-optional widening.
+    fn lower_generic_call(
+        &mut self,
+        template_index: usize,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<CallResult> {
+        let template: &'a GenericTemplate<'a> = &self.generics.templates[template_index];
+        let params = &template.decl.params;
+        if args.len() != params.len() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("expected {} arguments, found {}", params.len(), args.len()),
+            ));
+            return None;
+        }
+        let mut subst: Vec<Option<GArg>> = vec![None; template.type_params.len()];
+        for (argument, param) in args.iter().zip(params) {
+            if argument.name.is_some() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    "function arguments are positional".to_string(),
+                ));
+                return None;
+            }
+            let got = self.lower_expr(&argument.value)?;
+            let expanded = self.records.expand(&param.ty);
+            if let Err(message) = unify_type_param(
+                self.records,
+                &template.type_params,
+                &expanded,
+                got,
+                &mut subst,
+            ) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    message,
+                ));
+                return None;
+            }
+        }
+        // Every type parameter must be determined by an argument: there is no
+        // explicit instantiation syntax, so an undetermined parameter cannot be
+        // resolved and the call is rejected at its site.
+        let mut concrete = Vec::with_capacity(subst.len());
+        for (slot, (name, _)) in subst.iter().zip(&template.type_params) {
+            match slot {
+                Some(arg) => concrete.push(*arg),
+                None => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!(
+                            "cannot infer type parameter `{name}` of `{}`; \
+                             pass an argument whose type determines it",
+                            template.decl.name
+                        ),
+                    ));
+                    return None;
+                }
+            }
+        }
+        // Per-application constraint revalidation: the concrete type substituted for
+        // each constrained parameter must support the constraint's operators.
+        for ((name, constraint), arg) in template.type_params.iter().zip(&concrete) {
+            let Some(constraint) = constraint else {
+                continue;
+            };
+            let satisfied = match arg {
+                // In the template pass an argument may itself be an abstract
+                // parameter; it satisfies the constraint when its own constraint does.
+                GArg::Param(index) => {
+                    self.type_param_constraint(*index)
+                        .is_some_and(|outer| match constraint {
+                            TypeConstraint::Equality => outer.admits_equality(),
+                            TypeConstraint::Order => outer.admits_order(),
+                        })
+                }
+                other => other.satisfies(*constraint),
+            };
+            if !satisfied {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "type parameter `{name}` of `{}` is instantiated with `{}`, \
+                         which does not `supports {}`",
+                        template.decl.name,
+                        garg_to_lty(*arg).spelling(self.records),
+                        constraint.spelling(),
+                    ),
+                ));
+                return None;
+            }
+        }
+        // Resolve the return type against the concrete substitution, minting any
+        // collection/enum instantiation the return shape needs into the draft (the
+        // real draft for an instance, the throwaway draft for the template pass).
+        let ret = self.resolve_generic_return(template, &concrete);
+        match self.mode {
+            LowerMode::Template => {
+                // The once-checked pass validates the call shape but cannot
+                // monomorphize an abstract instantiation; a placeholder keeps the
+                // discarded stream value-shaped.
+                if let RetType::Value(_) = ret {
+                    let zero = self.draft.intern_int(0);
+                    self.push(Instr::ConstLoad(zero.index()), span);
+                }
+                Some(match ret {
+                    RetType::Unit => CallResult::Unit,
+                    RetType::Value(ty) => CallResult::Value(ty),
+                })
+            }
+            LowerMode::Concrete => {
+                let func = match self.mono.borrow_mut().instantiate(template_index, concrete) {
+                    Some(func) => func,
+                    None => {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckInstantiationLimit.as_str(),
+                            self.file,
+                            span,
+                            format!(
+                                "monomorphizing this program requires more than {MAX_INSTANTIATIONS} \
+                                 generic instantiations; a generic function likely recurses over an \
+                                 ever-growing type"
+                            ),
+                        ));
+                        return None;
+                    }
+                };
+                self.push(Instr::Call(func), span);
+                self.calls.push(func);
+                Some(match ret {
+                    RetType::Unit => CallResult::Unit,
+                    RetType::Value(ty) => CallResult::Value(ty),
+                })
+            }
+        }
+    }
+
+    /// Resolve a generic template's return type under a concrete substitution,
+    /// minting any instantiation it needs into the current draft.
+    fn resolve_generic_return(&mut self, template: &GenericTemplate, concrete: &[GArg]) -> RetType {
+        let Some(annotation) = &template.decl.return_type else {
+            return RetType::Unit;
+        };
+        let env: Vec<TypeParamSlot> = template
+            .type_params
+            .iter()
+            .zip(concrete)
+            .map(|((name, _), arg)| TypeParamSlot {
+                name: name.clone(),
+                binding: ParamBinding::Concrete(*arg),
+            })
+            .collect();
+        match resolve_type(
+            self.records,
+            self.draft,
+            annotation,
+            TypeEnv { params: &env },
+        ) {
+            Some(LTy::Record { .. }) | None => RetType::Unit,
+            Some(ty) => RetType::Value(ty),
+        }
     }
 
     /// Lower a nominal construction `Age(n)`: coerce the one positional argument
@@ -4420,11 +5115,17 @@ impl<'a> FnLowerer<'a> {
     // --- type resolution ---
 
     fn resolve(&mut self, annotation: &TypeExpr) -> Option<LTy> {
-        resolve_type(self.records, self.draft, annotation)
+        let env = TypeEnv {
+            params: &self.type_env,
+        };
+        resolve_type(self.records, self.draft, annotation, env)
     }
 
     fn param_type(&mut self, ty: &TypeExpr) -> Option<LTy> {
-        match param_type(self.records, self.draft, ty) {
+        let env = TypeEnv {
+            params: &self.type_env,
+        };
+        match param_type(self.records, self.draft, ty, env) {
             Some(param) => Some(param),
             None => {
                 self.fail(unsupported(self.file, ty.span(), "this parameter type"));
@@ -4434,12 +5135,63 @@ impl<'a> FnLowerer<'a> {
     }
 }
 
+/// A generic type parameter's binding in the body being lowered.
+#[derive(Clone, Copy)]
+enum ParamBinding {
+    /// The once-checked template pass: an opaque type admitting only its declared
+    /// constraint's operators.
+    Abstract(Option<TypeConstraint>),
+    /// A monomorphized instantiation: the concrete value type the parameter denotes.
+    Concrete(GArg),
+}
+
+/// One declared type parameter in the body being lowered: its source name and how
+/// a use of that name resolves.
+struct TypeParamSlot {
+    name: String,
+    binding: ParamBinding,
+}
+
+/// The type-parameter environment threaded through type resolution. An empty
+/// environment is an ordinary monomorphic body; a non-empty one resolves a use of
+/// a type-parameter name to an abstract [`LTy::Param`] (template pass) or the bound
+/// concrete type (instantiation), before scalar/named-type classification.
+#[derive(Clone, Copy)]
+struct TypeEnv<'a> {
+    params: &'a [TypeParamSlot],
+}
+
+impl TypeEnv<'_> {
+    const EMPTY: TypeEnv<'static> = TypeEnv { params: &[] };
+
+    /// The declaration index and binding of the type parameter named `name`.
+    fn lookup(&self, name: &str) -> Option<(u16, ParamBinding)> {
+        self.params
+            .iter()
+            .position(|slot| slot.name == name)
+            .map(|index| (index as u16, self.params[index].binding))
+    }
+
+    /// The constraint on the type parameter at `index`, in the abstract pass.
+    fn constraint_at(&self, index: u16) -> Option<TypeConstraint> {
+        match self.params.get(index as usize).map(|slot| slot.binding) {
+            Some(ParamBinding::Abstract(constraint)) => constraint,
+            _ => None,
+        }
+    }
+}
+
 /// Resolve a parameter annotation to its lowered type: a bare scalar, a bare
 /// nominal, or a bare `struct` value. Optionals, the durable resource record, and
 /// unresolved names are outside the parameter subset. One owner for signature
 /// building and body lowering, so the two can never disagree on a parameter's type.
-fn param_type(records: &TypeRegistry, draft: &mut ImageDraft, ty: &TypeExpr) -> Option<LTy> {
-    match resolve_type(records, draft, ty) {
+fn param_type(
+    records: &TypeRegistry,
+    draft: &mut ImageDraft,
+    ty: &TypeExpr,
+    env: TypeEnv,
+) -> Option<LTy> {
+    match resolve_type(records, draft, ty, env) {
         Some(
             param @ (LTy::Scalar {
                 optional: false, ..
@@ -4451,6 +5203,16 @@ fn param_type(records: &TypeRegistry, draft: &mut ImageDraft, ty: &TypeExpr) -> 
                 optional: false, ..
             }
             | LTy::Enum {
+                optional: false, ..
+            }
+            // A finite collection is a by-value value type, admitted as a parameter
+            // (its element/key/value types may themselves be type parameters).
+            | LTy::Collection {
+                optional: false, ..
+            }
+            // A generic parameter is admitted as a value parameter; the collection
+            // element/value positions admit it through `resolve_generic`.
+            | LTy::Param {
                 optional: false, ..
             }),
         ) => Some(param),
@@ -4466,17 +5228,30 @@ fn resolve_type(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
     annotation: &TypeExpr,
+    env: TypeEnv,
 ) -> Option<LTy> {
-    resolve_expanded(records, draft, &records.expand(annotation))
+    resolve_expanded(records, draft, &records.expand(annotation), env)
 }
 
 fn resolve_expanded(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
     annotation: &TypeExpr,
+    env: TypeEnv,
 ) -> Option<LTy> {
     match annotation {
         TypeExpr::Name { text, .. } => {
+            // A type-parameter name resolves before scalar/named-type classification,
+            // so a parameter cannot be shadowed by a same-named scalar spelling.
+            if let Some((index, binding)) = env.lookup(text) {
+                return Some(match binding {
+                    ParamBinding::Abstract(_) => LTy::Param {
+                        index,
+                        optional: false,
+                    },
+                    ParamBinding::Concrete(arg) => garg_to_lty(arg),
+                });
+            }
             if let Some(scalar) = ScalarType::from_spelling(text) {
                 Some(LTy::bare_scalar(scalar))
             } else if let Some((id, _)) = records.nominal_by_name(text) {
@@ -4502,14 +5277,14 @@ fn resolve_expanded(
             }
         }
         TypeExpr::Optional { inner, .. } => {
-            let inner = resolve_expanded(records, draft, inner)?;
+            let inner = resolve_expanded(records, draft, inner, env)?;
             if inner.is_optional() {
                 None
             } else {
                 Some(inner.to_optional())
             }
         }
-        TypeExpr::Apply { head, args, .. } => resolve_generic(records, draft, head, args),
+        TypeExpr::Apply { head, args, .. } => resolve_generic(records, draft, head, args, env),
         _ => None,
     }
 }
@@ -4524,11 +5299,12 @@ fn resolve_generic(
     draft: &mut ImageDraft,
     head: &str,
     args: &[TypeExpr],
+    env: TypeEnv,
 ) -> Option<LTy> {
     match head {
         "Option" => {
             let [arg] = args else { return None };
-            let inner = resolve_expanded(records, draft, arg)?.as_garg()?;
+            let inner = resolve_expanded(records, draft, arg, env)?.as_garg()?;
             Some(LTy::Enum {
                 ty: records.instantiate_option(draft, inner),
                 optional: false,
@@ -4536,8 +5312,8 @@ fn resolve_generic(
         }
         "Result" => {
             let [ok, err] = args else { return None };
-            let ok = resolve_expanded(records, draft, ok)?.as_garg()?;
-            let err = resolve_expanded(records, draft, err)?.as_garg()?;
+            let ok = resolve_expanded(records, draft, ok, env)?.as_garg()?;
+            let err = resolve_expanded(records, draft, err, env)?.as_garg()?;
             Some(LTy::Enum {
                 ty: records.instantiate_result(draft, ok, err),
                 optional: false,
@@ -4545,7 +5321,7 @@ fn resolve_generic(
         }
         "List" => {
             let [elem] = args else { return None };
-            let elem = resolve_expanded(records, draft, elem)?.as_garg()?;
+            let elem = resolve_expanded(records, draft, elem, env)?.as_garg()?;
             Some(LTy::Collection {
                 idx: records.instantiate_list(draft, elem),
                 optional: false,
@@ -4553,17 +5329,199 @@ fn resolve_generic(
         }
         "Map" => {
             let [key, value] = args else { return None };
-            let key = resolve_expanded(records, draft, key)?.as_garg()?;
+            let key = resolve_expanded(records, draft, key, env)?.as_garg()?;
+            // A type parameter is not admitted as a map key: keys are drawn from the
+            // durable-key scalar family, and a generic key would need an order
+            // constraint the collection contract does not model here.
             if !key.is_key_type() {
                 return None;
             }
-            let value = resolve_expanded(records, draft, value)?.as_garg()?;
+            let value = resolve_expanded(records, draft, value, env)?.as_garg()?;
             Some(LTy::Collection {
                 idx: records.instantiate_map(draft, key, value),
                 optional: false,
             })
         }
         _ => None,
+    }
+}
+
+/// Structurally unify a generic parameter's declared type against an argument's
+/// inferred type, binding each type parameter to the concrete value type filling
+/// its position. `annotation` is already alias-expanded. Inference is exact: a bare
+/// parameter position requires a bare argument (no implicit bare-to-optional
+/// widening), and a concrete named position requires an exactly matching argument. A
+/// conflicting binding or a shape mismatch is an error the caller reports.
+fn unify_type_param(
+    records: &TypeRegistry,
+    type_params: &[(String, Option<TypeConstraint>)],
+    annotation: &TypeExpr,
+    got: LTy,
+    subst: &mut [Option<GArg>],
+) -> Result<(), String> {
+    match annotation {
+        TypeExpr::Name { text, .. } => {
+            if let Some(index) = type_params.iter().position(|(name, _)| name == text) {
+                if got.is_optional() {
+                    return Err(format!(
+                        "type parameter `{text}` matches a bare value, but the argument is `{}`",
+                        got.spelling(records)
+                    ));
+                }
+                let arg = got.as_garg().ok_or_else(|| {
+                    format!(
+                        "`{}` is not a value type that can instantiate `{text}`",
+                        got.spelling(records)
+                    )
+                })?;
+                match subst[index] {
+                    None => subst[index] = Some(arg),
+                    Some(previous) if previous == arg => {}
+                    Some(previous) => {
+                        return Err(format!(
+                            "type parameter `{text}` is inferred as both `{}` and `{}`",
+                            garg_to_lty(previous).spelling(records),
+                            garg_to_lty(arg).spelling(records)
+                        ));
+                    }
+                }
+                Ok(())
+            } else {
+                match named_type(records, text) {
+                    Some(expected) if expected == got => Ok(()),
+                    Some(expected) => Err(format!(
+                        "expected `{}`, found `{}`",
+                        expected.spelling(records),
+                        got.spelling(records)
+                    )),
+                    None => Err(format!("unknown type `{text}` in a generic parameter")),
+                }
+            }
+        }
+        TypeExpr::Optional { inner, .. } => {
+            if !got.is_optional() {
+                return Err(format!(
+                    "expected an optional argument, found `{}`",
+                    got.spelling(records)
+                ));
+            }
+            unify_type_param(records, type_params, inner, got.to_bare(), subst)
+        }
+        TypeExpr::Apply { head, args, .. } => {
+            unify_apply(records, type_params, head, args, got, subst)
+        }
+        _ => Err("this parameter type is not supported for generic inference".to_string()),
+    }
+}
+
+/// Unify a built-in generic parameter application (`List`/`Map`/`Option`/`Result`)
+/// against an argument, recursing into the argument's element/key/value/payload
+/// types.
+fn unify_apply(
+    records: &TypeRegistry,
+    type_params: &[(String, Option<TypeConstraint>)],
+    head: &str,
+    args: &[TypeExpr],
+    got: LTy,
+    subst: &mut [Option<GArg>],
+) -> Result<(), String> {
+    let mismatch = |what: &str| format!("expected a {what}, found `{}`", got.spelling(records));
+    match head {
+        "List" => {
+            let [elem] = args else {
+                return Err("`List` takes one type argument".to_string());
+            };
+            let LTy::Collection {
+                idx,
+                optional: false,
+            } = got
+            else {
+                return Err(mismatch("List"));
+            };
+            match records.collection_spec(idx) {
+                CollSpec::List { elem: got_elem } => {
+                    unify_type_param(records, type_params, elem, garg_to_lty(got_elem), subst)
+                }
+                CollSpec::Map { .. } => Err(mismatch("List")),
+            }
+        }
+        "Map" => {
+            let [key, value] = args else {
+                return Err("`Map` takes two type arguments".to_string());
+            };
+            let LTy::Collection {
+                idx,
+                optional: false,
+            } = got
+            else {
+                return Err(mismatch("Map"));
+            };
+            match records.collection_spec(idx) {
+                CollSpec::Map {
+                    key: got_key,
+                    value: got_value,
+                } => {
+                    unify_type_param(records, type_params, key, garg_to_lty(got_key), subst)?;
+                    unify_type_param(records, type_params, value, garg_to_lty(got_value), subst)
+                }
+                CollSpec::List { .. } => Err(mismatch("Map")),
+            }
+        }
+        "Option" => {
+            let [inner] = args else {
+                return Err("`Option` takes one type argument".to_string());
+            };
+            match got.bare_enum().and_then(|id| records.generic_inst(id)) {
+                Some(GenericInst::Option(arg)) => {
+                    unify_type_param(records, type_params, inner, garg_to_lty(arg), subst)
+                }
+                _ => Err(mismatch("Option")),
+            }
+        }
+        "Result" => {
+            let [ok, err] = args else {
+                return Err("`Result` takes two type arguments".to_string());
+            };
+            match got.bare_enum().and_then(|id| records.generic_inst(id)) {
+                Some(GenericInst::Result(ok_arg, err_arg)) => {
+                    unify_type_param(records, type_params, ok, garg_to_lty(ok_arg), subst)?;
+                    unify_type_param(records, type_params, err, garg_to_lty(err_arg), subst)
+                }
+                _ => Err(mismatch("Result")),
+            }
+        }
+        _ => Err(format!(
+            "`{head}` is not a generic type usable in a parameter"
+        )),
+    }
+}
+
+/// Resolve a concrete named type (a scalar spelling or a declared nominal/struct/
+/// enum/record) to its bare lowered type without minting into any draft, for
+/// exact-match generic inference.
+fn named_type(records: &TypeRegistry, text: &str) -> Option<LTy> {
+    if let Some(scalar) = ScalarType::from_spelling(text) {
+        Some(LTy::bare_scalar(scalar))
+    } else if let Some((id, _)) = records.nominal_by_name(text) {
+        Some(LTy::Nominal {
+            id,
+            optional: false,
+        })
+    } else if let Some(info) = records.struct_by_name(text) {
+        Some(LTy::Struct {
+            ty: info.type_id,
+            optional: false,
+        })
+    } else if let Some(info) = records.enum_by_name(text) {
+        Some(LTy::Enum {
+            ty: info.enum_id,
+            optional: false,
+        })
+    } else {
+        records.by_name(text).map(|record| LTy::Record {
+            ty: record.type_id,
+            optional: false,
+        })
     }
 }
 

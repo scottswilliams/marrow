@@ -3,10 +3,10 @@
 //! the way a comma does.
 
 use super::head::parse_key_params_tokens;
-use super::tokens::{doc_comment_text, find_top_level_equal, parse_type};
+use super::tokens::{doc_comment_text, find_top_level_equal, parse_type, split_top_level_commas};
 use super::{FunctionHead, ParseError, ParseResult};
-use crate::ast::{KeyParam, ParamDecl};
-use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax};
+use crate::ast::{KeyParam, ParamDecl, TypeConstraint, TypeParamDecl};
+use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax};
 use crate::token::{Keyword, Token, TokenKind};
 
 /// Parse a function header's tokens: `pub? fn name(params) (: return)?`.
@@ -62,9 +62,25 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Less)) {
         return Err(ParseError::new(
             ParseDiagnosticReason::Unsupported(UnsupportedSyntax::UserDefinedGenerics),
-            "user-defined generics are not used in Marrow",
+            "generic type parameters are written `fn name[T](...)`, not with `<...>`",
         ));
     }
+    // Optional generic type-parameter list, `[T, U supports order]`, before the
+    // value-parameter list. The same bracket convention spells a type application
+    // (`List[T]`), so a leading `[` after the name introduces the type parameters.
+    let (type_params, rest) = if matches!(
+        rest.first().map(|token| token.kind),
+        Some(TokenKind::LeftBracket)
+    ) {
+        let close = match_bracket(rest).ok_or(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+            "expected `]` to close the type-parameter list",
+        ))?;
+        let params = parse_type_params_tokens(source, &rest[1..close])?;
+        (params, &rest[close + 1..])
+    } else {
+        (Vec::new(), rest)
+    };
     if !matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::LeftParen)
@@ -108,9 +124,119 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     Ok(FunctionHead {
         public,
         name,
+        type_params,
         params,
         return_type,
     })
+}
+
+/// Parse a generic type-parameter list's inner tokens (between `[` and `]`): a
+/// comma-separated list of `Name` items, each optionally carrying one closed
+/// constraint (`Name supports equality` / `Name supports order`). An empty list,
+/// a missing name, a repeated `supports`, or an unknown capability is a pointed
+/// parse error so a malformed header does not silently drop type parameters.
+fn parse_type_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<TypeParamDecl>> {
+    if inner.is_empty() {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+            "a type-parameter list names at least one type, `[T]`",
+        ));
+    }
+    let mut params = Vec::new();
+    for group in split_top_level_commas(inner) {
+        let name_token = match group.first() {
+            Some(token) if token.kind == TokenKind::Identifier => token,
+            other => {
+                return Err(other.map_or(
+                    ParseError::new(
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+                        "expected a type-parameter name",
+                    ),
+                    |token| {
+                        ParseError::at(
+                            token.span,
+                            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+                            "expected a type-parameter name",
+                        )
+                    },
+                ));
+            }
+        };
+        let name = name_token.text(source).to_string();
+        let constraint = match &group[1..] {
+            [] => None,
+            [supports, capability] if supports.kind == TokenKind::Keyword(Keyword::Supports) => {
+                Some(parse_type_constraint(source, capability)?)
+            }
+            [supports, ..] if supports.kind == TokenKind::Keyword(Keyword::Supports) => {
+                return Err(ParseError::at(
+                    supports.span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+                    "a type-parameter constraint is `supports equality` or `supports order`",
+                ));
+            }
+            [extra, ..] => {
+                return Err(ParseError::at(
+                    extra.span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+                    "a type parameter is a name optionally followed by `supports equality` or \
+                     `supports order`",
+                ));
+            }
+        };
+        let span = group.last().map_or(name_token.span, |last| SourceSpan {
+            start_byte: name_token.span.start_byte,
+            end_byte: last.span.end_byte,
+            line: name_token.span.line,
+            column: name_token.span.column,
+        });
+        params.push(TypeParamDecl {
+            name,
+            name_span: name_token.span,
+            constraint,
+            span,
+        });
+    }
+    Ok(params)
+}
+
+/// Parse the capability word after `supports` in a type-parameter constraint. The
+/// set is closed: only `equality` and `order` are admitted.
+fn parse_type_constraint(source: &str, token: &Token) -> ParseResult<TypeConstraint> {
+    if token.kind != TokenKind::Identifier {
+        return Err(ParseError::at(
+            token.span,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+            "a type-parameter constraint is `supports equality` or `supports order`",
+        ));
+    }
+    match token.text(source) {
+        "equality" => Ok(TypeConstraint::Equality),
+        "order" => Ok(TypeConstraint::Order),
+        _ => Err(ParseError::at(
+            token.span,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+            "a type-parameter constraint is `supports equality` or `supports order`",
+        )),
+    }
+}
+
+/// Index of the `]` matching the leading `[` of `tokens`, if balanced.
+fn match_bracket(tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightBracket => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse a `name: type` parameter list. Parameters are separated by

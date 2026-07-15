@@ -52,6 +52,12 @@ pub(crate) enum GArg {
     /// table (`CollSpec`), so a nested collection or a nominal element keeps its
     /// source identity even though the image erases a nominal element to `int`.
     Collection(u16),
+    /// An abstract generic type parameter by its declaration index, present only
+    /// during the once-checked template pass of a generic function. A monomorphized
+    /// instantiation carries no `Param`: every parameter is substituted by its
+    /// concrete argument first. `image()` returns a sentinel that only ever reaches
+    /// the throwaway draft the template pass discards.
+    Param(u16),
 }
 
 impl GArg {
@@ -74,6 +80,10 @@ impl GArg {
                 idx,
                 optional: false,
             },
+            // A `Param` only exists inside the discarded template-check draft; the
+            // sentinel keeps that throwaway image well-formed and is never encoded
+            // or run. A real image carries the substituted concrete type instead.
+            GArg::Param(_) => ImageType::scalar(Scalar::Int),
         }
     }
 
@@ -98,7 +108,62 @@ impl GArg {
                 ScalarType::Int | ScalarType::Bool | ScalarType::Text | ScalarType::Bytes
             ),
             GArg::Nominal(_) => true,
-            GArg::Struct(_) | GArg::Enum(_) | GArg::Collection(_) => false,
+            GArg::Struct(_) | GArg::Enum(_) | GArg::Collection(_) | GArg::Param(_) => false,
+        }
+    }
+
+    /// Whether a concrete argument supports the given generic constraint, checked
+    /// at every application of a constrained generic. The equality domain is every
+    /// type the `==`/`!=` operator admits (scalar, nominal, enum); the order domain
+    /// is every type the `<`/`>` operators admit (`int`/`text`/`bytes` and nominal
+    /// int). A struct or collection supports neither; `bool` and an enum support
+    /// equality but not order. `Param` never reaches a concrete revalidation.
+    pub(crate) fn satisfies(self, constraint: TypeConstraint) -> bool {
+        match constraint {
+            TypeConstraint::Equality => {
+                matches!(self, GArg::Scalar(_) | GArg::Nominal(_) | GArg::Enum(_))
+            }
+            TypeConstraint::Order => matches!(
+                self,
+                GArg::Scalar(ScalarType::Int | ScalarType::Text | ScalarType::Bytes)
+                    | GArg::Nominal(_)
+            ),
+        }
+    }
+}
+
+/// The closed generic type-parameter constraint set, mirroring
+/// [`marrow_syntax::TypeConstraint`] as a checker-owned fact. `Order` also licenses
+/// equality (every orderable type compares for equality), so an order-constrained
+/// parameter admits `==` as well as `<`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeConstraint {
+    Equality,
+    Order,
+}
+
+impl TypeConstraint {
+    pub(crate) fn from_syntax(constraint: marrow_syntax::TypeConstraint) -> Self {
+        match constraint {
+            marrow_syntax::TypeConstraint::Equality => TypeConstraint::Equality,
+            marrow_syntax::TypeConstraint::Order => TypeConstraint::Order,
+        }
+    }
+
+    /// Whether this constraint licenses `==`/`!=` over the parameter.
+    pub(crate) fn admits_equality(self) -> bool {
+        matches!(self, TypeConstraint::Equality | TypeConstraint::Order)
+    }
+
+    /// Whether this constraint licenses `<`/`<=`/`>`/`>=` over the parameter.
+    pub(crate) fn admits_order(self) -> bool {
+        matches!(self, TypeConstraint::Order)
+    }
+
+    pub(crate) fn spelling(self) -> &'static str {
+        match self {
+            TypeConstraint::Equality => "equality",
+            TypeConstraint::Order => "order",
         }
     }
 }
@@ -139,7 +204,7 @@ pub(crate) fn is_reserved_type_name(name: &str) -> bool {
 /// shared `&TypeRegistry` can mint a fresh instantiation into the image draft the
 /// first time a concrete `Option`/`Result` is used, while every later use of the
 /// same argument reuses the same image enum index.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Generics {
     options: Vec<(GArg, EnumId)>,
     results: Vec<(GArg, GArg, EnumId)>,
@@ -159,6 +224,7 @@ pub(crate) struct SupportSet {
 
 /// One nominal type: a distinct int-based type whose every value lies in the
 /// inclusive interval `[lo, hi]`.
+#[derive(Clone)]
 pub(crate) struct NominalInfo {
     pub(crate) name: String,
     pub(crate) lo: i64,
@@ -171,6 +237,7 @@ pub(crate) struct NominalInfo {
 /// (`Option`/`Result`/a user `enum`) local value; a struct field may additionally be
 /// another struct or a nominal. Nesting is admitted behind the value-graph
 /// acyclicity proof.
+#[derive(Clone)]
 pub(crate) struct FieldInfo {
     pub(crate) name: String,
     pub(crate) ty: GArg,
@@ -178,6 +245,7 @@ pub(crate) struct FieldInfo {
 }
 
 /// The project's single record type.
+#[derive(Clone)]
 pub(crate) struct RecordInfo {
     pub(crate) type_id: TypeId,
     pub(crate) name: String,
@@ -195,6 +263,7 @@ impl RecordInfo {
 /// the single canonical product-leaf order owner — but is a distinct value type:
 /// non-durable, constructed and read by value, every field required. A struct is
 /// admitted as a parameter and a return type (carried as an `ImageType::Record`).
+#[derive(Clone)]
 pub(crate) struct StructInfo {
     pub(crate) type_id: TypeId,
     pub(crate) name: String,
@@ -210,12 +279,14 @@ impl StructInfo {
 /// One enum-variant payload leaf: a named scalar carried by that variant, in
 /// declaration order. The name is used for named construction; the image records
 /// only the scalar.
+#[derive(Clone)]
 pub(crate) struct EnumPayloadInfo {
     pub(crate) name: String,
     pub(crate) scalar: ScalarType,
 }
 
 /// One selectable enum variant: its member name and dense scalar payload.
+#[derive(Clone)]
 pub(crate) struct VariantInfo {
     pub(crate) name: String,
     pub(crate) payload: Vec<EnumPayloadInfo>,
@@ -224,6 +295,7 @@ pub(crate) struct VariantInfo {
 /// One closed flat enum value type. It lowers to an image [`EnumTypeDef`]; its
 /// distinct nominal identity lives here. Hierarchical categories are deferred, so
 /// every variant is a selectable leaf.
+#[derive(Clone)]
 pub(crate) struct EnumInfo {
     pub(crate) enum_id: EnumId,
     pub(crate) name: String,
@@ -598,6 +670,26 @@ impl TypeRegistry {
         reject_value_cycles(&registry, structs, resources, diagnostics);
         validate_alias_targets(&registry, aliases, diagnostics);
         registry
+    }
+
+    /// A full copy of this registry, including the collection and built-in-generic
+    /// instantiation tables. The once-checked template pass of a generic function
+    /// runs against this clone paired with a clone of the in-progress
+    /// [`ImageDraft`], so it sees every already-minted collection/enum at the same
+    /// index the real image records — a concrete function signature it references
+    /// stays consistent — while any new instantiation it mints over abstract type
+    /// parameters lands only in the discarded clones. The pass discards its emitted
+    /// code, so nothing crosses back into the real image.
+    pub(crate) fn clone_for_generic_check(&self) -> Self {
+        Self {
+            aliases: self.aliases.clone(),
+            nominals: self.nominals.clone(),
+            structs: self.structs.clone(),
+            enums: self.enums.clone(),
+            record: self.record.clone(),
+            generics: RefCell::new(self.generics.borrow().clone()),
+            collections: RefCell::new(self.collections.borrow().clone()),
+        }
     }
 }
 
@@ -1554,7 +1646,9 @@ impl ValueGraph {
             // A collection is a finite value (an empty list/map terminates), so a
             // field reached only through one is not an infinite value: it adds no
             // containment edge, and `struct Node { kids: List[Node] }` is admitted.
-            GArg::Scalar(_) | GArg::Nominal(_) | GArg::Collection(_) => None,
+            // A `Param` never enters the real registry's value graph (the cycle
+            // check runs only on concrete named types).
+            GArg::Scalar(_) | GArg::Nominal(_) | GArg::Collection(_) | GArg::Param(_) => None,
         };
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
         for (from, node) in nodes.iter().enumerate() {
@@ -1668,6 +1762,9 @@ fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
                 .unwrap_or_else(|| "enum".to_string()),
         },
         GArg::Collection(idx) => registry.collection_spelling(idx),
+        // A `Param` never enters the real registry's cycle labels; it only exists
+        // in the discarded template-check draft.
+        GArg::Param(index) => format!("<type parameter {index}>"),
     }
 }
 

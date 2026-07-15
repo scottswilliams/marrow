@@ -50,6 +50,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn build(): List[int]\n    var xs: List[int] = List()\n    xs = append(xs, 1)\n    for x in xs\n        print($\"{x}\")\n    return xs\n",
         "module app\n\nfn score(): Map[string, int]\n    var m: Map[string, List[int]] = Map()\n    m = insert(m, \"a\", List())\n    for k, v in m\n        print(k)\n    return get(m, \"a\")\n",
         "module app\n\nfn amounts(): int?\n    return absent\n",
+        "module app\n\nfn identity[T](x: T): T\n    return x\n",
+        "module app\n\npub fn firstOf[T supports equality, U supports order](xs: List[T], k: U): T?\n    return first(xs)\n",
         "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    default Book.author = \"unknown\"\n    retire ^books.byTitle\n    transform Book.shelf\n        return ^books(1).shelf\n",
         "module app\n\nfn compound()\n    var total: int = 0\n    total += 1\n    total *= 2\n",
         "module app\n\nfn strings()\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n",

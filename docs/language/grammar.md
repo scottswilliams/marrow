@@ -144,11 +144,13 @@ hierarchical enums are future.
 ## Functions
 
 ```ebnf
-function_decl   = visibility?, "fn", identifier,
+function_decl   = visibility?, "fn", identifier, type_params?,
                   "(", param_list?, ")", return_type?,
                   NEWLINE, block ;
 
 visibility      = "pub" ;
+type_params     = "[", type_param, {",", type_param}, "]" ;
+type_param      = identifier, ("supports", ("equality" | "order"))? ;
 param_list      = param_decl, {",", param_decl}, ","? ;
 param_decl      = {doc_comment}, identifier, key_params?,
                   type_annotation ;
@@ -157,7 +159,10 @@ block           = INDENT, statement+, DEDENT ;
 ```
 
 Line breaks may separate parameters in a multiline list. A keyed parameter uses
-the same `key_params` shape as a keyed local declaration.
+the same `key_params` shape as a keyed local declaration. An optional
+`type_params` list declares rank-1 generic type parameters, each usable as a type
+in the body and optionally carrying one closed `supports equality`/`supports
+order` constraint; see [functions](modules-and-functions.md#generic-functions).
 
 ## Evolution
 

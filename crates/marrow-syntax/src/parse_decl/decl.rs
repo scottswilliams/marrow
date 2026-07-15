@@ -810,6 +810,7 @@ impl<'a> DeclParser<'a> {
                 FunctionHead {
                     public: false,
                     name: String::new(),
+                    type_params: Vec::new(),
                     params: Vec::new(),
                     return_type: None,
                 }
@@ -833,6 +834,7 @@ impl<'a> DeclParser<'a> {
             docs,
             public: head.public,
             name: head.name,
+            type_params: head.type_params,
             params: head.params,
             return_type: head.return_type,
             body,

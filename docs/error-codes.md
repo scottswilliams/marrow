@@ -130,6 +130,7 @@ Static errors found while checking source.
 | `check.assert_outside_test` | An `assert` statement appears outside a `test` declaration. `assert` is the test-owned assertion: it is legal only inside a `test "name"` body, never in an ordinary function. Move the assertion into a test, or use `unreachable("...")` for an in-program invariant fault. |
 | `check.match_nonexhaustive` | A `match` over an enum does not cover every selectable member of that enum. A flat enum's `match` must have exactly one arm per member and no wildcard arm; the message names the missing members. Add an arm for each uncovered member. |
 | `check.match_arm` | A `match` arm is not well-formed against its scrutinee enum: it names a member the enum does not declare, repeats a member another arm already covers, binds a number of payload names that does not match the member's payload, or the scrutinee is not an enum value. The message names the offending arm. |
+| `check.instantiation_limit` | Monomorphizing a program requires more distinct generic instantiations than the fixed limit (4096). A well-typed program with an acyclic call graph mints finitely many instances; this bound (campaign law 9) fails a divergent monomorphization — typically a generic function that calls itself over an ever-growing type — with a typed error before the instantiation worklist allocates unboundedly. |
 
 ### `image.*` — kind `artifact`
 

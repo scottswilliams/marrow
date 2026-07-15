@@ -252,7 +252,12 @@ impl std::fmt::Display for ImageBuildError {
 impl std::error::Error for ImageBuildError {}
 
 /// The mutable image builder.
-#[derive(Debug, Default)]
+///
+/// `Clone` supports the compiler's once-checked generic template pass, which lowers
+/// a generic body against a throwaway copy of the in-progress draft so its emitted
+/// code and any abstract-parameter instantiations are discarded without disturbing
+/// the real image or its type indices.
+#[derive(Debug, Default, Clone)]
 pub struct ImageDraft {
     strings: Vec<String>,
     consts: Vec<ConstValue>,

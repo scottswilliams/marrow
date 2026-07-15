@@ -170,6 +170,7 @@ Static errors found while checking source.
             Code::CheckAssertOutsideTest,
             Code::CheckMatchNonexhaustive,
             Code::CheckMatchArm,
+            Code::CheckInstantiationLimit,
         ]),
         r#"
 ### `image.*` — kind `artifact`

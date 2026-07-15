@@ -572,10 +572,35 @@ pub struct FunctionDecl {
     pub docs: Vec<String>,
     pub public: bool,
     pub name: String,
+    /// Declared generic type parameters, `[T, U supports equality]`, empty for an
+    /// ordinary monomorphic function. Each parameter names a type usable in the
+    /// parameter, return, and local annotations of the body.
+    pub type_params: Vec<TypeParamDecl>,
     pub params: Vec<ParamDecl>,
     pub return_type: Option<TypeExpr>,
     pub body: Block,
     pub span: SourceSpan,
+}
+
+/// One declared generic type parameter on a function: a name, optionally carrying
+/// one closed constraint (`T supports equality` / `T supports order`). The parser
+/// captures the spelling; the checker enforces that the constraint licenses the
+/// corresponding operator over the parameter and revalidates it per application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParamDecl {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub constraint: Option<TypeConstraint>,
+    pub span: SourceSpan,
+}
+
+/// The closed set of generic type-parameter constraints. `Equality` admits `==`/
+/// `!=` over the parameter; `Order` admits `<`/`<=`/`>`/`>=` (and, being a superset
+/// need, is checked independently). An unconstrained parameter admits neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeConstraint {
+    Equality,
+    Order,
 }
 
 /// An enum: a named, fixed set of member values, generalizing `bool`. Members may

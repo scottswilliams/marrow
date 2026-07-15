@@ -71,10 +71,74 @@ Parameters are named and typed. An omitted return type means the function
 returns no value. Every reachable path of a value-returning function must
 return. An optional return `T?` may return either `T` or `absent`.
 
-Marrow does not overload functions and has no user-defined generic functions.
-A module has at most one function with a given name. Recursion is not admitted:
-a function may not call itself, directly or through a cycle of other functions;
-the direct-call graph is acyclic.
+Marrow does not overload functions. A module has at most one function with a
+given name. Recursion is not admitted: a function may not call itself, directly
+or through a cycle of other functions; the direct-call graph is acyclic.
+
+## Generic Functions
+
+A function may declare rank-1 generic type parameters in a bracket list after its
+name, written with the same bracket convention type applications use
+(`List[T]`). Each parameter names a type usable in the parameter, return, and
+local annotations of the body.
+
+```mw
+module docs::generics
+
+fn identity[T](x: T): T
+    return x
+
+fn first[T](xs: List[T]): T?
+    for x in xs
+        return x
+    return absent
+```
+
+Type arguments are inferred from the call's arguments; there is no explicit
+instantiation syntax. A type parameter that no argument determines cannot be
+inferred and is a `check.type` error at the call site. Each distinct set of
+inferred type arguments produces one monomorphized instance; instances are
+internal image functions with no stable identity, and a generic function is not
+itself an invocable export.
+
+A bare type parameter is opaque: the body may pass it, return it, bind it, and
+store it in a `List`/`Map`, but it admits no operators of its own. A parameter may
+carry one closed constraint that licenses a family of operators over it:
+
+| Constraint | Licenses | Concrete types that satisfy it |
+|---|---|---|
+| `supports equality` | `==` and `!=` | `int`, `bool`, `string`, `bytes`, nominal types, enums |
+| `supports order` | `<`, `<=`, `>`, `>=` (and equality) | `int`, `string`, `bytes`, nominal types |
+
+```mw
+module docs::constrained
+
+fn includes[T supports equality](xs: List[T], target: T): bool
+    for x in xs
+        if x == target
+            return true
+    return false
+
+fn firstBigger[T supports order](xs: List[T], threshold: T): T?
+    for x in xs
+        if x > threshold
+            return x
+    return absent
+```
+
+A generic body is checked once against its parameters' constraints, so using an
+operator a parameter does not support — `==` on an unconstrained parameter, or
+`<` on one constrained only by equality — is a `check.type` error whether or not
+the function is ever called. Each application then revalidates that the concrete
+type actually supports the constraint, so instantiating an order-constrained
+parameter with a type that has no order (such as `bool`) is a `check.type` error
+at the call site.
+
+Generic type parameters apply to functions only: there are no generic resources,
+places, or host imports, and a type parameter may not be a `Map` key. Because the
+call graph is acyclic, monomorphization always terminates; a bound
+(`check.instantiation_limit`) fails a program whose monomorphization would
+otherwise diverge.
 
 ## Parameters Are By Value
 
