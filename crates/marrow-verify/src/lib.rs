@@ -15,9 +15,10 @@ mod verify;
 mod vtype;
 
 pub use marrow_image::{
-    DemandAtom, DemandSetId, DurableContractId, DurableIndexComponent, ExportDemand, ExportId,
-    ImageId, ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode, SemanticNodeKind,
-    SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    CeilingDescriptor, CeilingId, DemandAtom, DemandSetId, DurableContractId,
+    DurableIndexComponent, ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes,
+    OperationClass, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
+    SemanticStepKind, SemanticTarget,
 };
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{

@@ -222,20 +222,37 @@ impl ExportDemand {
         )
     }
 
-    /// The stable 32-byte identity of this demand set.
-    pub fn demand_set_id(&self) -> DemandSetId {
+    /// The canonical atom-set payload: `LP(lineage) ‖ u32_be(atom_count) ‖ atom*`
+    /// over the sorted, deduplicated atoms. This is the single owner of the atom-set
+    /// byte spelling; both the [`DemandSetId`] and the deployment
+    /// [`CeilingId`](crate::CeilingId) frame it under their own domain-separation
+    /// `kind`, so the two identities can never collide over the same atom set.
+    pub(crate) fn atom_set_payload(&self) -> Vec<u8> {
         let mut payload: Vec<u8> = Vec::new();
         push_lp(&mut payload, LOCAL_ROOT_LINEAGE);
         payload.extend_from_slice(&(self.atoms.len() as u32).to_be_bytes());
         for atom in &self.atoms {
             push_lp(&mut payload, &atom.encode_body());
         }
-        let mut hasher = Sha256::new();
-        hasher.update(DEMAND_SET_KIND);
-        hasher.update((payload.len() as u64).to_be_bytes());
-        hasher.update(&payload);
-        DemandSetId(hasher.finalize().into())
+        payload
     }
+
+    /// The stable 32-byte identity of this demand set.
+    pub fn demand_set_id(&self) -> DemandSetId {
+        DemandSetId(frame_id(DEMAND_SET_KIND, &self.atom_set_payload()))
+    }
+}
+
+/// The domain-separated, length-delimited identity framing shared by every atom-set
+/// identity: `SHA-256( kind ‖ u64_be(len(payload)) ‖ payload )`. The `kind` supplies
+/// domain separation, so the same payload frames to distinct ids under distinct
+/// kinds.
+pub(crate) fn frame_id(kind: &[u8], payload: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(kind);
+    hasher.update((payload.len() as u64).to_be_bytes());
+    hasher.update(payload);
+    hasher.finalize().into()
 }
 
 /// The stable 32-byte identity of an export's demand set. Separate from the export's

@@ -18,7 +18,8 @@ use marrow_kernel::durable::{
     SiteTarget, StoreSchema,
 };
 use marrow_verify::{
-    ImageType, Scalar, SealedSite, SealedSiteTarget, SealedTestEntry, VerifiedImage,
+    CeilingDescriptor, ImageType, Scalar, SealedSite, SealedSiteTarget, SealedTestEntry,
+    VerifiedImage,
 };
 
 use crate::fault::RuntimeFault;
@@ -46,8 +47,16 @@ pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> Durab
         return DurableRun::Parked;
     };
 
-    let union = image.test_demand_union();
-    let ceiling = DeploymentCeiling::from_coverage(coverage(union.reads(), union.writes()));
+    // The deployment ceiling admits exactly the test-image demand union. Building the
+    // descriptor from that union derives both the read/write coverage the kernel
+    // checks and the 32-byte ceiling-id binding token from the same verified atoms,
+    // so a wider ceiling would carry a different id — the ceiling is bound to the
+    // verified image, never supplied independently.
+    let ceiling_descriptor = CeilingDescriptor::from_demand_union(image.test_demand_union());
+    let ceiling = DeploymentCeiling::new(
+        coverage(ceiling_descriptor.reads(), ceiling_descriptor.writes()),
+        *ceiling_descriptor.ceiling_id().bytes(),
+    );
     let mut attachment = match EphemeralAttachment::mint(schema, sites, ceiling) {
         Ok(attachment) => attachment,
         Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),

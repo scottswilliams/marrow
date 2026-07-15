@@ -44,24 +44,41 @@ impl AttachmentId {
 }
 
 /// The deployment ceiling an ephemeral attachment is bounded by: the read/write
-/// coverage the path kernel admits before intersecting the per-invocation grant.
-/// E01 carries the read/write projection of the image's demand union; a later lane
-/// adds the sorted-deduplicated atom descriptor and its stable identity.
+/// coverage the path kernel admits before intersecting the per-invocation grant,
+/// carried alongside the 32-byte `ceiling_id` binding token minted by the image-side
+/// ceiling-descriptor owner (`marrow_image::CeilingDescriptor`). The kernel treats
+/// the id as opaque — it never recomputes it and needs no image dependency — but
+/// records it so a minted attachment is bound to the exact ceiling it was minted
+/// under; the recompute-and-compare against the verified image's demand union lives
+/// in the attach path, where the image is in scope. The read/write coverage is the
+/// projection the T01 store ceiling checks; a path-granular atom-level ceiling is a
+/// later lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeploymentCeiling {
     coverage: DemandCoverage,
+    ceiling_id: [u8; 32],
 }
 
 impl DeploymentCeiling {
-    /// A ceiling from an explicit read/write coverage — the projection of the
-    /// image's demand union the store ceiling checks today.
-    pub fn from_coverage(coverage: DemandCoverage) -> Self {
-        Self { coverage }
+    /// A ceiling from an explicit read/write coverage and the 32-byte ceiling-id
+    /// binding token. The attach path derives both from the verified image's demand
+    /// union, so the coverage the kernel checks and the id it binds move together —
+    /// widening the coverage would change the id.
+    pub fn new(coverage: DemandCoverage, ceiling_id: [u8; 32]) -> Self {
+        Self {
+            coverage,
+            ceiling_id,
+        }
     }
 
     /// The read/write coverage this ceiling admits.
     pub fn coverage(&self) -> DemandCoverage {
         self.coverage
+    }
+
+    /// The 32-byte ceiling-id binding token this ceiling carries.
+    pub fn ceiling_id(&self) -> [u8; 32] {
+        self.ceiling_id
     }
 }
 
@@ -78,6 +95,10 @@ pub enum AttachError {
 /// it. Dropping the attachment discards all its data.
 pub struct EphemeralAttachment {
     id: AttachmentId,
+    /// The ceiling-id binding token: the attachment is bound to the exact deployment
+    /// ceiling it was minted under, so its recorded authority bound cannot be swapped
+    /// for a wider ceiling after minting.
+    ceiling_id: [u8; 32],
     store: DurableStore<MemoryEngine>,
 }
 
@@ -99,12 +120,21 @@ impl EphemeralAttachment {
             sites,
             ceiling.coverage(),
         );
-        Ok(Self { id, store })
+        Ok(Self {
+            id,
+            ceiling_id: ceiling.ceiling_id(),
+            store,
+        })
     }
 
     /// This attachment's nonforgeable identity.
     pub fn id(&self) -> AttachmentId {
         self.id
+    }
+
+    /// The ceiling-id binding token this attachment was minted under.
+    pub fn ceiling_id(&self) -> [u8; 32] {
+        self.ceiling_id
     }
 
     /// Open a read session for a read-only invocation, resolving authority against
@@ -187,11 +217,16 @@ mod tests {
         }]
     }
 
+    /// A read-only ceiling with a fixed id byte pattern; the kernel treats the id as
+    /// opaque, so the exact bytes only matter for the binding-token assertions.
     fn read_only() -> DeploymentCeiling {
-        DeploymentCeiling::from_coverage(DemandCoverage {
-            read: true,
-            write: false,
-        })
+        DeploymentCeiling::new(
+            DemandCoverage {
+                read: true,
+                write: false,
+            },
+            [0x11; 32],
+        )
     }
 
     #[test]
@@ -213,6 +248,40 @@ mod tests {
             },
         );
         assert!(matches!(denied, Err(SessionError::Denied)));
+    }
+
+    #[test]
+    fn the_mint_binds_the_ceiling_id() {
+        // A ceiling carries an id token; the attachment records it, so a store is
+        // bound to the exact ceiling it was minted under. Two distinct ceilings mint
+        // attachments that report distinct ids.
+        let a = EphemeralAttachment::mint(
+            schema(),
+            sites(),
+            DeploymentCeiling::new(
+                DemandCoverage {
+                    read: true,
+                    write: false,
+                },
+                [0x22; 32],
+            ),
+        )
+        .expect("mint");
+        assert_eq!(a.ceiling_id(), [0x22; 32]);
+
+        let b = EphemeralAttachment::mint(
+            schema(),
+            sites(),
+            DeploymentCeiling::new(
+                DemandCoverage {
+                    read: true,
+                    write: true,
+                },
+                [0x33; 32],
+            ),
+        )
+        .expect("mint");
+        assert_ne!(a.ceiling_id(), b.ceiling_id());
     }
 
     #[test]
