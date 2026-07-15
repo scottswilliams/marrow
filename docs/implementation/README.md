@@ -22,7 +22,7 @@ through which direction.
 | `marrow-codes` | Typed diagnostic-code registry and generated code reference | — |
 | `marrow-project` | Pure project-input owner: manifest schema, contained discovery, the `marrow.ids` durable-identity ledger, immutable captured input | — |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics | [Syntax](syntax.md) |
-| `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft | — |
+| `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft: it emits the whole durable graph's operation sites and lowers named `place` bindings with a once-evaluated key tuple and structured present-entry analysis | — |
 | `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest; a durable graph node's derived semantic path and a durable operation site's closed whole-payload/field-leaf target | — |
 | `marrow-verify` | The only image decoder and the phased verifier producing the sealed `VerifiedImage`; it resolves each operation site's semantic path against its own reconstructed node set and re-derives the site rather than trusting a compiler-side summary | — |
 | `marrow-vm` | Stack VM over the sealed instruction tape, with source-mapped runtime faults | — |

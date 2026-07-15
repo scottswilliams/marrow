@@ -817,6 +817,131 @@ fn an_opcode_over_a_parked_branch_field_site_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
+/// A site path of exactly `n` steps: `Application`, `Placement`, then `n - 2` field
+/// steps carrying the distinctive id `0x91` so the first step can be located in the
+/// encoded bytes. The intermediate kinds are irrelevant to the length bound.
+fn n_step_field_path(n: usize) -> SemanticPath {
+    let mut steps = vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        ),
+    ];
+    while steps.len() < n {
+        steps.push(SemanticStep::new(
+            SemanticStepKind::Field,
+            LedgerIdBytes::from_bytes([0x91; 16]),
+        ));
+    }
+    SemanticPath::from_steps(steps)
+}
+
+#[test]
+fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
+    // A site path of exactly MAX_SITE_PATH_STEPS is admitted by the length gate (the
+    // encoder builds it and the verifier's length check passes); it then fails only at
+    // node resolution — `image.table` "names no graph node", not "too deep". This pins
+    // the bound as inclusive at the maximum concrete-address depth.
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    draft.add_site(SiteDef::field_leaf(n_step_field_path(
+        marrow_image::bounds::MAX_SITE_PATH_STEPS,
+    )));
+    let bytes = finish_two_key(
+        draft,
+        vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
+    );
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn a_site_path_past_the_maximum_depth_is_refused_by_the_encoder() {
+    // One step deeper than the bound: the encoder refuses to build the image, so an
+    // over-deep site path can never be produced through the production path.
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    draft.add_site(SiteDef::field_leaf(n_step_field_path(
+        marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
+    )));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Text),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    assert!(
+        matches!(
+            draft.encode(),
+            Err(marrow_image::ImageBuildError::SitePathTooDeep)
+        ),
+        "the encoder refuses a site path past the maximum depth"
+    );
+}
+
+#[test]
+fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
+    // Defense in depth for the branch the encoder guards: take the at-bound image,
+    // bump only the forged site's step-count byte to one past the bound, and rehash.
+    // The verifier's own length check trips before it decodes any step —
+    // `image.table` "durable site path too deep" — so a forged image cannot smuggle an
+    // unbounded path past the container.
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    draft.add_site(SiteDef::field_leaf(n_step_field_path(
+        marrow_image::bounds::MAX_SITE_PATH_STEPS,
+    )));
+    let mut bytes = finish_two_key(
+        draft,
+        vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
+    );
+    // The forged site is the only one whose first step carries id 0x91; its step-count
+    // byte immediately precedes that step's kind byte (`Application` = ledger kind 0).
+    let first_step: [u8; 17] = {
+        let mut pattern = [0u8; 17];
+        pattern[0] = SemanticStepKind::Application.ledger_kind();
+        pattern[1..].copy_from_slice(&APPLICATION_ID);
+        pattern
+    };
+    // Find the forged path by its distinctive 0x91 field id, then walk back to the
+    // Application step that opens the same path.
+    let field_at = bytes
+        .windows(16)
+        .position(|w| w == [0x91; 16])
+        .expect("the forged deep path is present");
+    let step_kind_at = bytes[..field_at]
+        .windows(17)
+        .rposition(|w| w == first_step)
+        .expect("the forged path opens with an Application step");
+    assert_eq!(
+        bytes[step_kind_at - 1],
+        marrow_image::bounds::MAX_SITE_PATH_STEPS as u8,
+        "the byte before the path is its step count",
+    );
+    bytes[step_kind_at - 1] = (marrow_image::bounds::MAX_SITE_PATH_STEPS + 1) as u8;
+    rehash(&mut bytes);
+    let rejection = verify(&bytes).expect_err("the forged over-deep path must reject");
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "durable site path too deep",
+        "the length gate trips before any step is decoded",
+    );
+}
+
 /// The tracer durable schema plus a verifying `put` export, with `extra` appended to
 /// the site table. The image carries an encoder-computed digest, so any rejection is
 /// the site table's own resolution, not a stale digest.

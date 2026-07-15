@@ -166,6 +166,24 @@ fn a_rename_with_a_moved_anchor_preserves_every_semantic_path() {
 }
 
 #[test]
+fn a_branch_rename_with_a_moved_anchor_preserves_every_semantic_path() {
+    let base = node_fingerprints(LIBRARY_SOURCE, LIBRARY_IDS);
+
+    // Rename the keyed `notes` branch to `remarks`, moving the branch anchor and all
+    // of its members' anchors (branch, key, and both fields) while their ids stay.
+    // A branch is a keyed placement, so this exercises the placement-step rename that
+    // the group-rename case does not; paths follow ids, so every node's path is
+    // unchanged.
+    let renamed_source = LIBRARY_SOURCE.replace("notes", "remarks");
+    let renamed_ids = LIBRARY_IDS.replace("Book.notes", "Book.remarks");
+    assert_eq!(
+        base,
+        node_fingerprints(&renamed_source, &renamed_ids),
+        "a branch rename whose anchors moved (ids unchanged) preserves every semantic path"
+    );
+}
+
+#[test]
 fn re_minting_a_group_id_changes_exactly_the_paths_through_it() {
     let base = node_fingerprints(LIBRARY_SOURCE, LIBRARY_IDS);
     // Re-mint the `details` group id: the group node and its nested field node move

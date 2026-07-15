@@ -1,4 +1,4 @@
-//! The derived stable semantic path of a durable graph node (D02).
+//! The derived stable semantic path of a durable graph node.
 //!
 //! Every node of a program's durable graph — a root placement, a static `group`
 //! namespace, a keyed `branch` placement, and each stored field — has a derived
@@ -10,7 +10,7 @@
 //! exactly the paths that pass through it. Two nodes are the same place iff their
 //! chains are equal.
 //!
-//! This is the D02 stable path identity. It is derived from the same durable member
+//! The path is the stable identity. It is derived from the same durable member
 //! tree that backs the [`crate::DurableContractDescriptor`] over ledger ids, so the
 //! compiler and the verifier reconstruct identical paths from the same graph. There
 //! is deliberately no separate hashed `PathId`: the ledger-id chain is itself the

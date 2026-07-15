@@ -353,6 +353,42 @@ fn the_presence_fact_does_not_outlive_its_block() {
     assert_eq!(count_bare(instrs), 1, "the post-block set is bare");
 }
 
+/// Two places over distinct entries, each guarded and set in its own block,
+/// interleaved: the presence fact is keyed to the place it was proven for, so inside
+/// `if exists(p)` only the set through `p` is strict — a set through the co-resident,
+/// unguarded `q` stays bare — and the mirror holds inside `if exists(q)`. The two
+/// facts never merge across places, and neither survives past its own block.
+#[test]
+fn interleaved_guarded_places_keep_independent_presence_facts() {
+    let source = format!(
+        "{HEADER}\
+         pub fn tag(a: int, b: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(a)\n\
+         \x20       place q = ^counters(b)\n\
+         \x20       if exists(p)\n\
+         \x20           p.label = \"p-strict\"\n\
+         \x20           q.label = \"q-bare\"\n\
+         \x20       if exists(q)\n\
+         \x20           q.label = \"q-strict\"\n\
+         \x20           p.label = \"p-bare\"\n"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "tag");
+    // Two strict sets (p in its guard, q in its guard); two bare sets (the
+    // co-resident place in each block, whose fact is not proven there).
+    assert_eq!(
+        count_strict(instrs),
+        2,
+        "each place is strict only inside its own guard"
+    );
+    assert_eq!(
+        count_bare(instrs),
+        2,
+        "a co-resident place's set is bare; one place's fact never covers another"
+    );
+}
+
 // --- Scope and type rules. ---
 
 /// A `place` must name a whole durable entry address. A non-durable value, a
