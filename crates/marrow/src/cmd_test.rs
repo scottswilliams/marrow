@@ -38,7 +38,10 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         Err(failure) => {
             return emit_records(
                 args.format,
-                &[Record::OperationalError { code: failure.code }],
+                &[Record::OperationalError {
+                    code: failure.code,
+                    detail: Some(failure.message),
+                }],
                 ExitCode::FAILURE,
             );
         }

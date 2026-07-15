@@ -36,8 +36,14 @@ pub(crate) enum Record {
         column: u32,
         detail: Option<String>,
     },
-    /// Family 4: an owner-local operational error (CLI/store/io).
-    OperationalError { code: &'static str },
+    /// Family 4: an owner-local operational error (CLI/store/io). `detail` is the
+    /// typed human message (e.g. the file and reason a `marrow.ids` read was
+    /// rejected), surfaced in text output only; the KAT-frozen JSONL surface stays
+    /// the code alone.
+    OperationalError {
+        code: &'static str,
+        detail: Option<String>,
+    },
 }
 
 impl Record {
@@ -58,9 +64,11 @@ impl Record {
                 Some(text) => format!("{code} at {line}:{column}: {text}"),
                 None => format!("{code} at {line}:{column}"),
             },
-            Record::ArtifactRejected { code } | Record::OperationalError { code } => {
-                code.to_string()
-            }
+            Record::ArtifactRejected { code } => code.to_string(),
+            Record::OperationalError { code, detail } => match detail {
+                Some(text) => format!("{code}: {text}"),
+                None => code.to_string(),
+            },
         }
     }
 
@@ -72,6 +80,7 @@ impl Record {
                 Ok(data) => format!(r#"{{"data":{data},"kind":"run","outcome":"value"}}"#),
                 Err(()) => Record::OperationalError {
                     code: marrow_codes::Code::IoWrite.as_str(),
+                    detail: None,
                 }
                 .to_jsonl(types, enums),
             },
@@ -91,7 +100,7 @@ impl Record {
                 json_string(code),
                 span_object(*line, *column)
             ),
-            Record::OperationalError { code } => format!(
+            Record::OperationalError { code, .. } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
                 json_string(code)
             ),
@@ -526,9 +535,30 @@ mod tests {
             .contains(r#""outcome":"fault""#)
         );
         assert!(
-            Record::OperationalError { code: "store.io" }
-                .to_jsonl(&[], &[])
-                .contains(r#""outcome":"error""#)
+            Record::OperationalError {
+                code: "store.io",
+                detail: None,
+            }
+            .to_jsonl(&[], &[])
+            .contains(r#""outcome":"error""#)
+        );
+    }
+
+    /// A typed operational message names the file and reason in text output but never
+    /// reaches the KAT-frozen JSONL surface, which stays the code alone.
+    #[test]
+    fn operational_detail_is_text_only() {
+        let record = Record::OperationalError {
+            code: "project.ids_corrupt",
+            detail: Some("marrow.ids: unresolved Git conflict markers".to_string()),
+        };
+        assert_eq!(
+            record.to_text(&[], &[]),
+            "project.ids_corrupt: marrow.ids: unresolved Git conflict markers"
+        );
+        assert_eq!(
+            record.to_jsonl(&[], &[]),
+            r#"{"code":"project.ids_corrupt","kind":"run","outcome":"error"}"#
         );
     }
 

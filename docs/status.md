@@ -76,8 +76,10 @@ complete entropy-minted identity in the committed machine-written `marrow.ids`
 ledger (minted by `marrow run`, required by every path, tombstoned on
 retirement), and the program's durable graph carries a stable 32-byte
 durable-contract identity computed over those ledger ids and the graph shape
-(including key-column order) — so a rename preserves durable identity — which the
-verifier independently recomputes from the image and rejects on mismatch. The
+(including key-column order) — so an anchor move preserves durable identity (the
+ledger-model property; a rename becomes an anchor move under the future apply
+action, while the additive-only `run` mint does not) — which the verifier
+independently recomputes from the image and rejects on mismatch. The
 compiler fully lowers operations over the single-column keyed root; singleton,
 composite-key, group/branch, and widened-field roots declare and verify their
 identity but their operations are not yet lowered. The admitted subset is narrow

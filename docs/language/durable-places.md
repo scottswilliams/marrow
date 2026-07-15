@@ -121,8 +121,19 @@ development it is invisible: the first `marrow run` over a fresh durable
 declaration mints its identities, and the file is committed with the source so
 every later build, clone, and checkout reuses them. A durable declaration with
 no ledger identity does not compile — the typed `check.durable_identity`
-diagnostic names the missing identity — and a retired identity is never reused:
-deleting a declaration and re-adding its name mints a fresh identity.
+diagnostic names the missing identity.
+
+In the ledger model a retired identity is recorded as a tombstone and is never
+reused, so removing a declaration and re-adding its name yields a fresh
+identity. The only mint that exists today, `marrow run`, is additive-only: it
+mints a row for each anchor that lacks one and never tombstones. So under the
+current mint a rename mints a fresh identity for the new name and leaves the old
+row live and orphaned, and deleting a declaration then re-adding the same path
+readopts the old identity. This is harmless in the current trough — no
+persistent store is reachable, so no stored data is bound to a stale or readopted
+identity. The accepted apply action (future) is what classifies a rename as an
+anchor move, records a genuine removal as a tombstone, and surfaces an orphaned
+row.
 
 A program's whole durable graph additionally carries a stable 32-byte
 **durable-contract identity**, computed over the graph's ledger ids and shape:
@@ -142,11 +153,14 @@ the resolved
 graph and records it in the program image; the independent verifier rebuilds
 the descriptor from the image tables, recomputes the identity, and rejects any
 image whose recorded identity does not match its graph. Because the descriptor
-carries ledger ids rather than names, renaming a root or field preserves the
-durable identity (the ledger anchor moves; the id stays), while every semantic
-change — a changed key type, a field made required, a field added or removed,
-or a delete-then-re-add — changes it. Spelling and declaration order that leave
-the graph unchanged leave the identity unchanged. Operation sites — the
+carries ledger ids rather than names, an anchor move preserves the durable
+identity — the ledger anchor moves, the id stays — while every semantic change (a
+changed key type, a field made required, a field added or removed, or a
+delete-then-re-add onto a fresh id) changes it. These are ledger-model properties
+the conformance tests pin. Spelling and declaration order that leave the graph
+unchanged leave the identity unchanged. A rename becomes an anchor move only under
+the accepted apply action (future); the additive-only `run` mint instead leaves a
+renamed declaration's old row live, as described above. Operation sites — the
 individual read and write points over the graph — are not part of the identity,
 so adding or removing one leaves it stable.
 

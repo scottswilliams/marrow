@@ -83,13 +83,19 @@ branches), a truncated file, or any other damage is rejected whole with
 `project.ids_corrupt`; restore the file from version control rather than
 repairing it by hand.
 
-The ledger is append-only about the past: a retired identity is recorded as a
-tombstone and is never reissued, so deleting a durable declaration and re-adding
-its name yields a fresh identity rather than silently adopting old data. In
-ordinary development the ledger is invisible — [`marrow run`](cli.md)
-mints missing identities automatically; every other command requires them to be
-present and fails precisely with `check.durable_identity` when one is missing.
-A storeless project has no `marrow.ids`.
+In the ledger model the ledger is append-only about the past: a retired identity
+is recorded as a tombstone and is never reissued, so removing a durable
+declaration and re-adding its name yields a fresh identity rather than silently
+adopting old data. Recording a removal as a tombstone is the accepted apply
+action's job (future). The only mint today, [`marrow run`](cli.md), is
+additive-only — it adds a row for each missing anchor and never tombstones, so
+deleting a declaration and re-adding the same path readopts the old id, and a
+rename leaves the old row live and orphaned. This is harmless in the current
+trough, where no persistent store is reachable. In ordinary development the
+ledger is invisible — `marrow run` mints missing identities automatically; every
+other command requires them to be present and fails precisely with
+`check.durable_identity` when one is missing. A storeless project has no
+`marrow.ids`.
 
 ## Creating a project
 

@@ -79,7 +79,10 @@ ephemeral-memory preview and later the persistent companion path; see
 When a fresh durable declaration has no identity in the project's
 [identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
 entropy and publishes the updated `marrow.ids` atomically before compiling
-again — commit that file — and then parks the durable export. This convenience is
+again — commit that file — and then parks the durable export. Because an identity
+is durable once minted, `run` mints and persists it even when the program still
+has unrelated errors: the mint is not gated on an otherwise-clean compile, and
+the recompile then reports whatever genuinely remains. This convenience is
 `run`-only (every other command fails precisely with `check.durable_identity`)
 and is superseded by the accepted change-review `apply` action when that lane
 lands; a retired identity is never minted over.

@@ -261,10 +261,14 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
     fs::write(temp.join("marrow.ids"), &conflicted).unwrap();
     let output = run_in(&temp, &["test"]);
     assert!(!output.status.success());
+    let rendered = combined(&output);
+    assert!(rendered.contains("project.ids_corrupt"), "{rendered}");
+    // The text channel carries the typed message, so a corrupt artifact names the
+    // file and the reason rather than only the bare code.
     assert!(
-        combined(&output).contains("project.ids_corrupt"),
-        "{}",
-        combined(&output)
+        rendered.contains("marrow.ids is corrupt")
+            && rendered.contains("unresolved Git conflict markers"),
+        "text output must name the file and reason: {rendered}"
     );
 
     // A textual merge that kept both branches' mints for one anchor.

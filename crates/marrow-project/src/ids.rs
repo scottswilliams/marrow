@@ -289,7 +289,7 @@ impl IdentityLedger {
         }
         let text = std::str::from_utf8(bytes)
             .map_err(|_| IdsError::new(IdsErrorKind::Malformed, "artifact is not UTF-8"))?;
-        for marker in ["<<<<<<< ", "======="] {
+        for marker in ["<<<<<<< ", "=======", ">>>>>>> "] {
             if text.lines().any(|line| line.starts_with(marker)) {
                 return Err(IdsError::new(
                     IdsErrorKind::ConflictMarker,
@@ -681,13 +681,16 @@ mod tests {
     #[test]
     fn conflict_markers_and_torn_files_reject_whole() {
         let base = String::from_utf8(counter_ledger().to_bytes()).unwrap();
-        let conflicted = base.replace("high-water", "<<<<<<< ours\nhigh-water");
-        assert_eq!(
-            IdentityLedger::parse(conflicted.as_bytes())
-                .unwrap_err()
-                .kind,
-            IdsErrorKind::ConflictMarker
-        );
+        for marker in ["<<<<<<< ours", "=======", ">>>>>>> theirs"] {
+            let conflicted = base.replace("high-water", &format!("{marker}\nhigh-water"));
+            assert_eq!(
+                IdentityLedger::parse(conflicted.as_bytes())
+                    .unwrap_err()
+                    .kind,
+                IdsErrorKind::ConflictMarker,
+                "marker {marker:?} must reject as a conflict"
+            );
+        }
 
         // A torn write loses the tail: no end marker, rejected whole.
         let torn = base.replace("end\n", "");

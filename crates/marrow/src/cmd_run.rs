@@ -50,7 +50,10 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         Err(failure) => {
             return emit(
                 args.format,
-                &[Record::OperationalError { code: failure.code }],
+                &[Record::OperationalError {
+                    code: failure.code,
+                    detail: Some(failure.message),
+                }],
                 &[],
                 &[],
                 ExitCode::FAILURE,
@@ -70,7 +73,10 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                     Err(failure) => {
                         return emit(
                             args.format,
-                            &[Record::OperationalError { code: failure.code }],
+                            &[Record::OperationalError {
+                                code: failure.code,
+                                detail: Some(failure.message),
+                            }],
                             &[],
                             &[],
                             ExitCode::FAILURE,
@@ -102,7 +108,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
             MintOutcome::Failed(code) => {
                 return emit(
                     args.format,
-                    &[Record::OperationalError { code }],
+                    &[Record::OperationalError { code, detail: None }],
                     &[],
                     &[],
                     ExitCode::FAILURE,
@@ -155,6 +161,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
             args.format,
             &[Record::OperationalError {
                 code: marrow_codes::Code::CliDurableUnsupported.as_str(),
+                detail: None,
             }],
             &[],
             &[],
