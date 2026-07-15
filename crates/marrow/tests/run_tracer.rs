@@ -231,6 +231,50 @@ fn scalar_conversions_travel_the_full_path() {
     assert_eq!(String::from_utf8_lossy(&by.stdout), "0x6869\n");
 }
 
+/// A terminal value literal must be in canonical form: the `bytes` decoder admits
+/// only a `0x`-prefixed even-length lowercase-hex string, and the `bool` decoder
+/// only `true`/`false`. A noncanonical spelling — uppercase hex, a missing `0x`
+/// prefix, an odd hex length, or `1` for a bool — is a usage error (exit 2), never
+/// a silent coercion.
+#[test]
+fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
+    let temp = TempDir::new("noncanonical");
+    project(
+        &temp,
+        "pub fn firstByte(b: bytes): int\n\
+         \x20   return 0\n\
+         \n\
+         pub fn flag(b: bool): bool\n\
+         \x20   return b\n",
+    );
+    for (export, arg) in [
+        ("firstByte", "0xAB"),  // uppercase hex
+        ("firstByte", "abcd"),  // missing 0x prefix
+        ("firstByte", "0xabc"), // odd length
+        ("flag", "1"),          // bool spelled as an int
+        ("flag", "True"),       // bool wrong case
+    ] {
+        let output = run_in(&temp, &["run", export, "--", arg]);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{export} {arg:?} must be a usage error: {output:?}"
+        );
+    }
+    // The canonical forms are accepted, so the rejection is of the spelling, not
+    // the type.
+    assert!(
+        run_in(&temp, &["run", "firstByte", "--", "0xabcd"])
+            .status
+            .success()
+    );
+    assert!(
+        run_in(&temp, &["run", "flag", "--", "false"])
+            .status
+            .success()
+    );
+}
+
 /// A non-terminating loop exhausts the per-invocation instruction budget and
 /// faults with `run.budget` — the VM's dynamic-limit backstop — rather than running
 /// forever. There is no runner or environment override.
