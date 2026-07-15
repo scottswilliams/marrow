@@ -2,10 +2,13 @@
 //!
 //! Discover `test "name"` declarations from the captured project, compile them
 //! into a separately verified image carrying the closed TEST-ENTRY table, and run
-//! each storeless through the VM with no store attachment. A passing test reports
-//! `passed`; a false `assert` (`run.assert`) reports `failed`; any other runtime
-//! fault reports `errored`. Output is a typed `kind: "test"` JSONL stream ending in
-//! a summary, or human text. The command exits nonzero when any test fails or errors.
+//! each through the VM. A storeless test (empty reconstructed demand) runs with no
+//! session; a durable test runs against its own fresh ephemeral-memory attachment
+//! bounded by the test-image demand union, so tests never observe one another's
+//! writes. A passing test reports `passed`; a false `assert` (`run.assert`) reports
+//! `failed`; any other runtime fault reports `errored`. Output is a typed
+//! `kind: "test"` JSONL stream ending in a summary, or human text. The command
+//! exits nonzero when any test fails or errors.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -97,51 +100,35 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             .find(|test| test.name == entry.name())
             .expect("compiler and image agree on the test set");
 
-        // A durable test entry — one whose reconstructed demand is nonempty — cannot
-        // run yet: ephemeral-memory durable execution returns at E01, which mints a
-        // fresh test attachment bounded by the test-image demand union. In the
-        // trough its demand is recorded (so E01 can bound authority) but the test is
-        // reported as the durable trough rather than run storeless.
-        if !entry.demand().is_empty() {
-            errored += 1;
-            records.push(TestRecord {
-                name: entry.name().to_string(),
-                file: meta.file.clone(),
-                decl_line: meta.line,
-                decl_column: meta.column,
-                outcome: TestOutcome::Errored {
+        // Family 3: a source-mapped runtime fault, or a pass. A storeless test (empty
+        // reconstructed demand) runs with no session; a durable test runs against its
+        // own fresh ephemeral-memory attachment bounded by the test-image demand
+        // union, so tests never observe one another's writes. A durable shape the
+        // ephemeral read kernel does not yet execute is reported as the trough.
+        let outcome = if entry.demand().is_empty() {
+            classify(marrow_vm::run(&image, entry.func(), Vec::new()))
+        } else {
+            match marrow_vm::run_durable_test(&image, entry) {
+                marrow_vm::DurableRun::Ran(result) => classify(result),
+                // A durable shape the ephemeral read kernel does not yet execute, or
+                // an operational mint failure, reports at the test's declaration.
+                marrow_vm::DurableRun::Parked => TestOutcome::Errored {
                     code: Code::CliDurableUnsupported.as_str(),
                     line: meta.line,
                     column: meta.column,
                 },
-            });
-            continue;
-        }
-
-        // Family 3: a source-mapped runtime fault, or a pass. A storeless test runs
-        // with no session.
-        let outcome = match marrow_vm::run(&image, entry.func(), Vec::new()) {
-            Ok(_) => {
-                passed += 1;
-                TestOutcome::Passed
-            }
-            Err(fault) if fault.code() == Code::RunAssert.as_str() => {
-                failed += 1;
-                TestOutcome::Failed {
-                    code: fault.code(),
-                    line: fault.line(),
-                    column: fault.column(),
-                }
-            }
-            Err(fault) => {
-                errored += 1;
-                TestOutcome::Errored {
-                    code: fault.code(),
-                    line: fault.line(),
-                    column: fault.column(),
-                }
+                marrow_vm::DurableRun::Failed(code) => TestOutcome::Errored {
+                    code,
+                    line: meta.line,
+                    column: meta.column,
+                },
             }
         };
+        match &outcome {
+            TestOutcome::Passed => passed += 1,
+            TestOutcome::Failed { .. } => failed += 1,
+            TestOutcome::Errored { .. } => errored += 1,
+        }
         records.push(TestRecord {
             name: entry.name().to_string(),
             file: meta.file.clone(),
@@ -169,6 +156,25 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     };
     emit_tests(args.format, &records, &summary, exit)
+}
+
+/// Classify a VM run result into a test outcome: a value or unit return passes, a
+/// false `assert` (`run.assert`) fails, and any other source-mapped runtime fault
+/// errors.
+fn classify(result: Result<Option<marrow_vm::Value>, marrow_vm::RuntimeFault>) -> TestOutcome {
+    match result {
+        Ok(_) => TestOutcome::Passed,
+        Err(fault) if fault.code() == Code::RunAssert.as_str() => TestOutcome::Failed {
+            code: fault.code(),
+            line: fault.line(),
+            column: fault.column(),
+        },
+        Err(fault) => TestOutcome::Errored {
+            code: fault.code(),
+            line: fault.line(),
+            column: fault.column(),
+        },
+    }
 }
 
 fn parse_args(rest: &[String]) -> Result<TestArgs, ExitCode> {

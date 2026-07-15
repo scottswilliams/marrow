@@ -6,11 +6,12 @@
 //! surfaces as its own typed [`Record`]; the value or the first failure sets the
 //! exit code.
 //!
-//! Durable execution is in the trough. A durable export (nonempty verified demand)
-//! compiles, verifies, and completes its identity here, but the CLI no longer opens
-//! a store — T01's in-process open died at D00. The export is reported with the
-//! typed `cli.durable_unsupported` outcome; durable execution returns as the
-//! ephemeral-memory preview (E01) and later the persistent companion path (F02b).
+//! Durable execution is in the trough for `run`. A durable export (nonempty
+//! verified demand) compiles, verifies, and completes its identity here, but the CLI
+//! opens no store — T01's in-process open died at D00. The export is reported with
+//! the typed `cli.durable_unsupported` outcome; durable `run` returns with the
+//! persistent companion path (F02b). (Durable source *tests* already run against a
+//! fresh ephemeral-memory attachment through `marrow test`; `run` does not attach.)
 //! A fresh durable declaration with no ledger identity is still minted here — `run`
 //! is the one convenience mint action; see [`mint_missing_identities`].
 
@@ -151,11 +152,11 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     let func_index = export.function();
     let demand = export.demand();
 
-    // Durable execution is in the trough: T01's in-process store open died at D00.
-    // The export has compiled, verified, and completed its identity, but the CLI no
-    // longer opens a store, so a durable export (nonempty demand) is reported with
-    // the typed trough outcome rather than run. Durable execution returns as the
-    // ephemeral-memory preview (E01) and later the persistent companion path (F02b).
+    // Durable execution is in the trough for `run`: T01's in-process store open died
+    // at D00. The export has compiled, verified, and completed its identity, but the
+    // CLI opens no store, so a durable export (nonempty demand) is reported with the
+    // typed trough outcome rather than run. Durable `run` returns with the persistent
+    // companion path (F02b); durable source tests already run through `marrow test`.
     if !demand.is_empty() {
         return emit(
             args.format,

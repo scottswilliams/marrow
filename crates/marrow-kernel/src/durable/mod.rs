@@ -10,10 +10,12 @@
 //! open dies at D00, the name-keyed cells and profile `0x01` are refounded at
 //! D00/E01, and the commit witness is absorbed into the engine contract at E00.
 
+mod attach;
 mod physical;
 mod profile;
 mod store;
 
+pub use attach::{AttachError, AttachmentId, DeploymentCeiling, EphemeralAttachment};
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
 use marrow_store::StoreError;

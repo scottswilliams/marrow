@@ -135,13 +135,13 @@ const COUNTERS_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-/// A durable test — one whose body reads durable data — verifies and records its
-/// demand, but cannot run in the durable trough: `marrow test` reports it as the
-/// typed durable-unsupported outcome rather than running it storeless (which would
-/// have no session). Ephemeral durable test execution returns at E01. A storeless
-/// test in the same project still runs and passes.
+/// A durable test — one whose body reads durable data — now runs against a fresh
+/// ephemeral-memory attachment (E01): its reconstructed demand bounds the test
+/// attachment's ceiling, and the read kernel drives the store. On a freshly minted
+/// empty attachment `exists(^counters(1))` is false, so the probe passes. The
+/// storeless test in the same project runs and passes too.
 #[test]
-fn a_durable_test_reports_the_trough_outcome() {
+fn a_durable_read_test_runs_against_a_fresh_attachment() {
     let temp = TempDir::new("durable-test");
     project(
         &temp,
@@ -161,8 +161,8 @@ fn a_durable_test_reports_the_trough_outcome() {
 
     let output = run_in(&temp, &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The durable test cannot run in the trough, so the command exits nonzero.
-    assert!(!output.status.success(), "{output:?}");
+    // Every test passes, so the command exits zero.
+    assert!(output.status.success(), "{output:?}");
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
 
     let storeless = lines
@@ -175,8 +175,39 @@ fn a_durable_test_reports_the_trough_outcome() {
         .iter()
         .find(|l| l.contains(r#""name":"durable probe""#))
         .unwrap_or_else(|| panic!("no durable record: {stdout}"));
-    assert!(durable.contains(r#""outcome":"errored""#), "{durable}");
-    assert!(durable.contains("cli.durable_unsupported"), "{durable}");
+    assert!(durable.contains(r#""outcome":"passed""#), "{durable}");
+    assert!(!stdout.contains("cli.durable_unsupported"), "{stdout}");
+}
+
+/// A durable test that asserts against durable state observes an empty store and a
+/// false-expecting probe — the failing-assert path through the durable attachment
+/// reports `failed` with `run.assert`, distinct from an operational error. Proves
+/// the read kernel's runtime fault reaches the test report.
+#[test]
+fn a_failing_durable_assert_reports_run_assert() {
+    let temp = TempDir::new("durable-fail");
+    project(
+        &temp,
+        "resource Counter\n\
+         \x20   required value: int\n\
+         \x20   label: string\n\
+         \n\
+         store ^counters(id: int): Counter\n\
+         \n\
+         test \"present on empty\"\n\
+         \x20   assert exists(^counters(1))\n",
+    );
+    write(&temp.join("marrow.ids"), COUNTERS_IDS);
+
+    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{output:?}");
+    let durable = stdout
+        .lines()
+        .find(|l| l.contains(r#""name":"present on empty""#))
+        .unwrap_or_else(|| panic!("no durable record: {stdout}"));
+    assert!(durable.contains(r#""outcome":"failed""#), "{durable}");
+    assert!(durable.contains("run.assert"), "{durable}");
 }
 
 /// `--filter` selects tests by a substring of their name and fails when none match.

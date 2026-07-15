@@ -8,10 +8,12 @@
 //! private bounds. Durable operations route through the path kernel, wired in with
 //! the durable slices.
 
+mod attach;
 mod fault;
 mod run;
 mod value;
 
+pub use attach::{DurableRun, run_durable_test};
 pub use fault::RuntimeFault;
 pub use run::{run, run_durable};
 pub use value::Value;

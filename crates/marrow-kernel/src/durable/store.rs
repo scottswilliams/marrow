@@ -94,21 +94,42 @@ pub struct DurableStore<E: ByteEngine> {
     engine: E,
     schema: StoreSchema,
     sites: Vec<SiteSpec>,
-    /// Whether the opened handle permits writes: the store ceiling's write atom.
-    ceiling_writable: bool,
+    /// The store's deployment ceiling: the read/write coverage this handle admits,
+    /// intersected with each invocation's grant before the first engine call. For a
+    /// native handle it is the handle's own write capability; an ephemeral
+    /// attachment supplies an explicit coverage bounded by its image demand union,
+    /// so a read-only union cannot open a write session even over a writable engine.
+    ceiling: DemandCoverage,
     poisoned: bool,
 }
 
 impl<E: ByteEngine> DurableStore<E> {
     /// Build a store over an already-open engine, minting the store ceiling from the
-    /// handle's write capability.
+    /// handle's write capability. The native/tracer caller; an ephemeral attachment
+    /// uses [`Self::from_engine_with_ceiling`] to bound the ceiling by image demand.
     pub fn from_engine(engine: E, schema: StoreSchema, sites: Vec<SiteSpec>) -> Self {
-        let ceiling_writable = engine.require_write_access("open").is_ok();
+        let ceiling = DemandCoverage {
+            read: true,
+            write: engine.require_write_access("open").is_ok(),
+        };
+        Self::from_engine_with_ceiling(engine, schema, sites, ceiling)
+    }
+
+    /// Build a store over an already-open engine with an explicit deployment
+    /// ceiling. The ephemeral-attachment caller bounds the ceiling by the image's
+    /// demand union, so authority never exceeds what the compiler described even
+    /// when the backing engine is unconditionally writable.
+    pub fn from_engine_with_ceiling(
+        engine: E,
+        schema: StoreSchema,
+        sites: Vec<SiteSpec>,
+        ceiling: DemandCoverage,
+    ) -> Self {
         Self {
             engine,
             schema,
             sites,
-            ceiling_writable,
+            ceiling,
             poisoned: false,
         }
     }
@@ -166,8 +187,7 @@ impl<E: ByteEngine> DurableStore<E> {
         grant: InvocationGrant,
         demand: DemandCoverage,
     ) -> Result<ReadSession<'_, E>, SessionError> {
-        resolve_authority(demand, self.ceiling_writable, grant)
-            .map_err(|Denied| SessionError::Denied)?;
+        resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let view = self.engine.read_view().map_err(SessionError::Engine)?;
@@ -185,8 +205,7 @@ impl<E: ByteEngine> DurableStore<E> {
         grant: InvocationGrant,
         demand: DemandCoverage,
     ) -> Result<TxnSession<'_, E>, SessionError> {
-        resolve_authority(demand, self.ceiling_writable, grant)
-            .map_err(|Denied| SessionError::Denied)?;
+        resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let descriptor = profile::descriptor(&self.schema);
@@ -225,16 +244,16 @@ impl<E: ByteEngine> DurableStore<E> {
 const PROFILE: &str = "profile";
 const WITNESS: &str = "witness";
 
-/// Resolve effective authority: `demand ⊆ ceiling ∩ grant`. Demand never grants;
-/// it is only checked. The store ceiling permits reads unconditionally and writes
-/// only when the handle is writable.
+/// Resolve effective authority: `demand ⊆ ceiling ∩ grant`. Demand never grants; it
+/// is only checked. Each coverage atom the demand requires must be permitted by both
+/// the deployment ceiling and the invocation grant.
 fn resolve_authority(
     demand: DemandCoverage,
-    ceiling_writable: bool,
+    ceiling: DemandCoverage,
     grant: InvocationGrant,
 ) -> Result<(), Denied> {
-    let read_ok = !demand.read || grant.read;
-    let write_ok = !demand.write || (ceiling_writable && grant.write);
+    let read_ok = !demand.read || (ceiling.read && grant.read);
+    let write_ok = !demand.write || (ceiling.write && grant.write);
     if read_ok && write_ok {
         Ok(())
     } else {
