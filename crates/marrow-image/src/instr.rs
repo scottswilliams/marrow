@@ -73,6 +73,8 @@ pub const OP_ENUM_CONSTRUCT: u8 = 0x24;
 pub const OP_ENUM_TAG: u8 = 0x25;
 pub const OP_ENUM_PAYLOAD_GET: u8 = 0x26;
 pub const OP_EQ_ENUM: u8 = 0x27;
+pub const OP_FIELD_SET: u8 = 0x28;
+pub const OP_FIELD_UNSET: u8 = 0x29;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
 pub const OP_DUR_READ_ENTRY: u8 = 0x32;
@@ -159,6 +161,16 @@ pub enum Instr {
     },
     RecordNew(u16),
     FieldGet(u16),
+    /// Pop a value and a bare record, store the value into the record's field
+    /// `_0` slot (present), and push the updated record. Local product mutation:
+    /// `r.f = v` sets the slot present with the bare field value, for a required
+    /// or a sparse field alike. The one owner of the record representation is the
+    /// runtime `Value::Record` slot vector, which this rewrites functionally.
+    FieldSet(u16),
+    /// Pop a bare record, clear its field `_0` slot to vacant, and push the
+    /// updated record. `unset r.f` clears a sparse field; the verifier proves the
+    /// field is sparse (a required field is never unset).
+    FieldUnset(u16),
     SomeWrap,
     VacantLoad(ImageType),
     /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
@@ -249,6 +261,8 @@ impl Instr {
             Instr::RangeGuard { .. } => OP_RANGE_GUARD,
             Instr::RecordNew(_) => OP_RECORD_NEW,
             Instr::FieldGet(_) => OP_FIELD_GET,
+            Instr::FieldSet(_) => OP_FIELD_SET,
+            Instr::FieldUnset(_) => OP_FIELD_UNSET,
             Instr::SomeWrap => OP_SOME_WRAP,
             Instr::VacantLoad(_) => OP_VACANT_LOAD,
             Instr::EnumConstruct { .. } => OP_ENUM_CONSTRUCT,
@@ -280,6 +294,8 @@ impl Instr {
             | Instr::Call(_)
             | Instr::RecordNew(_)
             | Instr::FieldGet(_)
+            | Instr::FieldSet(_)
+            | Instr::FieldUnset(_)
             | Instr::DurExists(_)
             | Instr::DurReadField(_)
             | Instr::DurReadEntry(_)
@@ -299,10 +315,10 @@ impl Instr {
             | Instr::IntNegChecked(_)
             | Instr::IntDivChecked(_)
             | Instr::IntRemChecked(_) => 4,
-            // A `ImageType` operand is a 1-byte tag; the only draft producer of a
-            // `VacantLoad` uses an optional scalar, which never carries a record
-            // index, so the operand is exactly one byte.
-            Instr::VacantLoad(_) => 1,
+            // A `VacantLoad` operand is a full optional `ImageType`: one tag byte
+            // for an optional scalar, or a tag plus a big-endian `u16` index for an
+            // optional enum (a defaulted sparse enum field).
+            Instr::VacantLoad(ty) => ty.encoded_len(),
             // Two big-endian `i64` interval bounds.
             Instr::RangeGuard { .. } => 16,
             // Two big-endian `u16` operands.

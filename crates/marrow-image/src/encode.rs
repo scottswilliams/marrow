@@ -173,7 +173,7 @@ impl ImageDraft {
             push_u16(&mut body, record.fields.len() as u16);
             for field in &record.fields {
                 push_u16(&mut body, str_map[field.name.raw() as usize]);
-                ImageType::scalar(field.ty).encode(&mut body);
+                field.ty.encode(&mut body);
                 body.push(u8::from(field.required));
             }
         }
@@ -344,7 +344,9 @@ fn encode_code(
             Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(&mut out, *l),
             Instr::Call(f) => push_u16(&mut out, *f),
             Instr::RecordNew(t) => push_u16(&mut out, *t),
-            Instr::FieldGet(f) => push_u16(&mut out, *f),
+            Instr::FieldGet(f) | Instr::FieldSet(f) | Instr::FieldUnset(f) => {
+                push_u16(&mut out, *f)
+            }
             Instr::DurExists(s)
             | Instr::DurReadField(s)
             | Instr::DurReadEntry(s)

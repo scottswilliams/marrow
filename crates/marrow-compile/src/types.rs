@@ -47,10 +47,10 @@ pub(crate) enum GArg {
 }
 
 impl GArg {
-    /// The image type this argument monomorphizes to as an enum payload leaf. A
-    /// nominal erases to its base `int` (its interval is carried by guards, not the
-    /// image), matching how a nominal is recorded everywhere else.
-    fn image(self) -> ImageType {
+    /// The image type this argument monomorphizes to as an enum payload leaf or a
+    /// record field. A nominal erases to its base `int` (its interval is carried by
+    /// guards, not the image), matching how a nominal is recorded everywhere else.
+    pub(crate) fn image(self) -> ImageType {
         match self {
             GArg::Scalar(scalar) => ImageType::scalar(scalar.image()),
             GArg::Nominal(_) => ImageType::scalar(Scalar::Int),
@@ -62,6 +62,16 @@ impl GArg {
                 idx: id.index(),
                 optional: false,
             },
+        }
+    }
+
+    /// The scalar this argument denotes, if it is one. `None` for a nominal,
+    /// struct, or enum argument — the callers that need a durable scalar field
+    /// use this to reject a non-scalar field.
+    pub(crate) fn as_scalar(self) -> Option<ScalarType> {
+        match self {
+            GArg::Scalar(scalar) => Some(scalar),
+            _ => None,
         }
     }
 }
@@ -119,10 +129,12 @@ pub(crate) struct NominalInfo {
     pub(crate) supports: SupportSet,
 }
 
-/// One resolved record field, in declaration order.
+/// One resolved record field, in declaration order. The field type is a bare
+/// value type: a scalar (durable-storable) or a built-in `Option`/`Result` value
+/// type for a local-only value field. Struct fields are always scalar.
 pub(crate) struct FieldInfo {
     pub(crate) name: String,
-    pub(crate) scalar: ScalarType,
+    pub(crate) ty: GArg,
     pub(crate) required: bool,
 }
 
@@ -293,6 +305,53 @@ impl TypeRegistry {
         id
     }
 
+    /// Resolve a type annotation to a bare value type (a [`GArg`]), monomorphizing
+    /// an `Option`/`Result` application into `draft` on first use. `None` for an
+    /// optional, a sequence, the resource record, or a name not yet declared as a
+    /// value type. Resource field-type resolution uses this to admit a scalar or a
+    /// built-in `Option`/`Result` field; because the record builds before the enum
+    /// table, a name resolving to a user `enum` is not yet visible here.
+    pub(crate) fn resolve_garg(
+        &self,
+        draft: &mut ImageDraft,
+        annotation: &TypeExpr,
+    ) -> Option<GArg> {
+        self.resolve_garg_expanded(draft, &self.expand(annotation))
+    }
+
+    fn resolve_garg_expanded(&self, draft: &mut ImageDraft, ty: &TypeExpr) -> Option<GArg> {
+        match ty {
+            TypeExpr::Name { text, .. } => {
+                if let Some(scalar) = ScalarType::from_spelling(text) {
+                    Some(GArg::Scalar(scalar))
+                } else if let Some((id, _)) = self.nominal_by_name(text) {
+                    Some(GArg::Nominal(id))
+                } else if let Some(info) = self.struct_by_name(text) {
+                    Some(GArg::Struct(info.type_id))
+                } else {
+                    self.enum_by_name(text).map(|info| GArg::Enum(info.enum_id))
+                }
+            }
+            TypeExpr::Apply { head, args, .. } => match head.as_str() {
+                "Option" => {
+                    let [arg] = args.as_slice() else { return None };
+                    let inner = self.resolve_garg(draft, arg)?;
+                    Some(GArg::Enum(self.instantiate_option(draft, inner)))
+                }
+                "Result" => {
+                    let [ok, err] = args.as_slice() else {
+                        return None;
+                    };
+                    let ok = self.resolve_garg(draft, ok)?;
+                    let err = self.resolve_garg(draft, err)?;
+                    Some(GArg::Enum(self.instantiate_result(draft, ok, err)))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The built-in instantiation an image enum index came from, or `None` for a
     /// user-declared `enum`.
     pub(crate) fn generic_inst(&self, id: EnumId) -> Option<GenericInst> {
@@ -396,7 +455,9 @@ impl TypeRegistry {
         // project's durable root and sites keep the same record index whether or
         // not dense structs are also declared. Enums take a separate index space
         // (the ENUMS table), so they build last (alias -> nominal -> record ->
-        // struct -> enum).
+        // struct -> enum). A resource field may still name a built-in
+        // `Option`/`Result` value type: those monomorphize lazily into the draft at
+        // field resolution, independent of build order.
         registry.record = build_record(draft, &registry, resources, diagnostics);
         registry.structs = build_structs(draft, &registry, structs, resources, diagnostics);
         registry.enums = build_enums(draft, &registry, enums, resources, diagnostics);
@@ -907,12 +968,12 @@ fn struct_fields(
         let field_name_id = draft.intern_string(&field.name);
         field_defs.push(FieldDef {
             name: field_name_id,
-            ty: scalar.image(),
+            ty: ImageType::scalar(scalar.image()),
             required: true,
         });
         fields.push(FieldInfo {
             name: field.name.clone(),
-            scalar,
+            ty: GArg::Scalar(scalar),
             required: true,
         });
     }
@@ -1116,19 +1177,25 @@ fn build_record(
             diagnostics.push(unsupported(file, field.span, "a keyed field"));
             continue;
         }
-        let Some(scalar) = scalar_of(&registry.expand(&field.ty)) else {
-            diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
-            continue;
+        // A field is a scalar (durable-storable) or a closed enum
+        // (`Option`/`Result`) local-only value. A nominal, struct, or unknown
+        // spelling is not an admitted field type.
+        let field_ty = match registry.resolve_garg(draft, &field.ty) {
+            Some(ty @ (GArg::Scalar(_) | GArg::Enum(_))) => ty,
+            _ => {
+                diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
+                continue;
+            }
         };
         let field_name_id = draft.intern_string(&field.name);
         field_defs.push(FieldDef {
             name: field_name_id,
-            ty: scalar.image(),
+            ty: field_ty.image(),
             required: field.required,
         });
         fields.push(FieldInfo {
             name: field.name.clone(),
-            scalar,
+            ty: field_ty,
             required: field.required,
         });
     }

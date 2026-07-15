@@ -105,6 +105,25 @@ impl DurableRegistry {
             return Self::default();
         };
 
+        // Durable storage is scalar-leaf; a resource carrying an enum-valued field
+        // has no store representation, so it cannot back a `store`.
+        if let Some(field) = record
+            .fields
+            .iter()
+            .find(|field| field.ty.as_scalar().is_none())
+        {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                file,
+                store.span,
+                format!(
+                    "a stored resource has only scalar fields; `{}` is not a scalar",
+                    field.name
+                ),
+            ));
+            return Self::default();
+        }
+
         let root_name = draft.intern_string(&store.root.root);
         draft.add_root(RootDef {
             name: root_name,
@@ -131,7 +150,10 @@ impl DurableRegistry {
                 DurableField {
                     name: field.name.clone(),
                     site,
-                    scalar: field.scalar,
+                    scalar: field
+                        .ty
+                        .as_scalar()
+                        .expect("a stored resource field is a scalar"),
                     required: field.required,
                 }
             })

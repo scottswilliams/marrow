@@ -22,12 +22,12 @@ fn note_type(draft: &mut ImageDraft) -> u16 {
         fields: vec![
             FieldDef {
                 name: value,
-                ty: Scalar::Int,
+                ty: ImageType::scalar(Scalar::Int),
                 required: true,
             },
             FieldDef {
                 name: label,
-                ty: Scalar::Text,
+                ty: ImageType::scalar(Scalar::Text),
                 required: false,
             },
         ],
@@ -159,6 +159,125 @@ fn optional_into_a_bare_consumer_rejects() {
                 Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)),
                 Instr::ConstLoad(one.index()),
                 Instr::IntAdd,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Err("image.function".to_string()));
+}
+
+// --- Local product mutation: FieldSet / FieldUnset (C02 V5). ---
+
+#[test]
+fn field_set_stores_a_value_present() {
+    // let n = Note(value: 5, label: absent); n.label = "hi"; n.label == "hi"
+    let result = build_and_run(|draft| {
+        let ty = note_type(draft);
+        let five = draft.intern_int(5);
+        let hi = draft.intern_text("hi");
+        (
+            ImageType::opt_scalar(Scalar::Text),
+            vec![
+                Instr::ConstLoad(five.index()),
+                Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
+                Instr::RecordNew(ty),
+                Instr::ConstLoad(hi.index()),
+                Instr::FieldSet(1),
+                Instr::FieldGet(1),
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(
+        result,
+        Ok(Some(Value::Optional(Some(Box::new(Value::Text(
+            "hi".into()
+        ))))))
+    );
+}
+
+#[test]
+fn field_unset_clears_a_present_sparse_field() {
+    // let n = Note(value: 5, label: "hi"); unset n.label; n.label == absent
+    let result = build_and_run(|draft| {
+        let ty = note_type(draft);
+        let five = draft.intern_int(5);
+        let hi = draft.intern_text("hi");
+        (
+            ImageType::opt_scalar(Scalar::Text),
+            vec![
+                Instr::ConstLoad(five.index()),
+                Instr::ConstLoad(hi.index()),
+                Instr::SomeWrap,
+                Instr::RecordNew(ty),
+                Instr::FieldUnset(1),
+                Instr::FieldGet(1),
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Ok(Some(Value::Optional(None))));
+}
+
+#[test]
+fn field_unset_on_a_required_field_rejects() {
+    // A hostile image unsetting a required field (index 0) rejects at verify: a
+    // required field is never vacant.
+    let result = build_and_run(|draft| {
+        let ty = note_type(draft);
+        let five = draft.intern_int(5);
+        (
+            ImageType::Unit,
+            vec![
+                Instr::ConstLoad(five.index()),
+                Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
+                Instr::RecordNew(ty),
+                Instr::FieldUnset(0),
+                Instr::Pop,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Err("image.function".to_string()));
+}
+
+#[test]
+fn field_set_with_a_wrong_typed_operand_rejects() {
+    // Setting the text field (index 1) with an int operand is a verify type error.
+    let result = build_and_run(|draft| {
+        let ty = note_type(draft);
+        let five = draft.intern_int(5);
+        (
+            ImageType::Unit,
+            vec![
+                Instr::ConstLoad(five.index()),
+                Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
+                Instr::RecordNew(ty),
+                Instr::ConstLoad(five.index()),
+                Instr::FieldSet(1),
+                Instr::Pop,
+                Instr::Return,
+            ],
+        )
+    });
+    assert_eq!(result, Err("image.function".to_string()));
+}
+
+#[test]
+fn field_set_with_an_out_of_range_field_index_rejects() {
+    // A field index past the record's field list is a verify error.
+    let result = build_and_run(|draft| {
+        let ty = note_type(draft);
+        let five = draft.intern_int(5);
+        (
+            ImageType::Unit,
+            vec![
+                Instr::ConstLoad(five.index()),
+                Instr::VacantLoad(ImageType::opt_scalar(Scalar::Text)),
+                Instr::RecordNew(ty),
+                Instr::ConstLoad(five.index()),
+                Instr::FieldSet(9),
+                Instr::Pop,
                 Instr::Return,
             ],
         )

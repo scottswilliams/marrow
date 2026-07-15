@@ -94,11 +94,19 @@ pub enum SealedInstr {
     /// Read field `_0` of the record on the stack; required-ness comes from the
     /// record value's sealed type (bare value vs optional).
     FieldGet(u16),
+    /// `[record, value] → [record]`: store the bare value into field `_0`'s slot
+    /// present, returning the updated record. Local product assignment.
+    FieldSet(u16),
+    /// `[record] → [record]`: clear field `_0`'s slot to vacant, returning the
+    /// updated record. Only a sparse field is unset (the verifier proves it).
+    FieldUnset(u16),
     /// Coerce a bare value into an optional (`Some`).
     SomeWrap,
-    /// Push a vacant optional of the given scalar type. The runtime pushes only the
-    /// vacant marker; the scalar records the verifier-checked operand type.
-    VacantLoad(Scalar),
+    /// Push a vacant optional of the given optional type (a scalar or an enum).
+    /// The runtime pushes only the vacant marker; the operand records the
+    /// verifier-checked type — an optional scalar, or an optional enum for a
+    /// defaulted sparse enum field.
+    VacantLoad(ImageType),
     /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
     /// popped in reverse (p0 pushed first).
     EnumConstruct {
@@ -217,12 +225,14 @@ impl SealedRoot {
     }
 }
 
-/// A sealed record field: its name, scalar type, and whether it is required. The
-/// name is carried so the path kernel can key physical field leaves.
+/// A sealed record field: its name, bare value type, and whether it is required.
+/// The type is a scalar for a durable-storable field or a closed enum for a
+/// local-only value field. The name is carried so the path kernel can key
+/// physical field leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedField {
     pub name: Rc<str>,
-    pub scalar: Scalar,
+    pub ty: ImageType,
     pub required: bool,
 }
 

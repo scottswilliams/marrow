@@ -966,6 +966,10 @@ impl<'a> FnLowerer<'a> {
                 self.lower_durable_delete(path, *span);
                 Flow::Fallthrough
             }
+            Statement::Unset { place, span } => {
+                self.lower_unset(place, *span);
+                Flow::Fallthrough
+            }
             Statement::Assert { value, span } => {
                 self.lower_assert(value, *span);
                 Flow::Fallthrough
@@ -1043,6 +1047,15 @@ impl<'a> FnLowerer<'a> {
             }
             return;
         }
+        // `local.field = value`: a local product mutation. The base names a mutable
+        // local record/struct; the assignment sets the field slot present.
+        if let Expression::Field {
+            base, name, span, ..
+        } = target
+        {
+            self.lower_local_field_assign(base, name, *span, value);
+            return;
+        }
         let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
             return;
         };
@@ -1059,6 +1072,96 @@ impl<'a> FnLowerer<'a> {
             return;
         }
         self.push(Instr::LocalSet(slot), value.span());
+    }
+
+    /// Lower `local.field = value`: load the local product, coerce `value` to the
+    /// field's bare value type, store it into the field slot present, and write the
+    /// local back. A required or a sparse field alike becomes present; `unset`
+    /// clears a sparse field. The base must be a mutable local.
+    fn lower_local_field_assign(
+        &mut self,
+        base: &Expression,
+        field_name: &str,
+        span: SourceSpan,
+        value: &Expression,
+    ) {
+        let Some((slot, base_ty, mutable, base_span, base_local)) = self.resolve_place(base) else {
+            return;
+        };
+        if !mutable {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                base_span,
+                format!("`{base_local}` is a `const` and cannot be reassigned"),
+            ));
+            return;
+        }
+        let Some((index, field_ty, _required)) =
+            self.resolve_product_field(base_ty, field_name, base_span, span)
+        else {
+            return;
+        };
+        self.push(Instr::LocalGet(slot), span);
+        if self.lower_as(value, garg_to_lty(field_ty)).is_none() {
+            return;
+        }
+        self.push(Instr::FieldSet(index), span);
+        self.push(Instr::LocalSet(slot), span);
+    }
+
+    /// Lower `unset local.field`: clear a sparse field of a local product to
+    /// absent. A required field cannot be unset (`check.type`); a durable place uses
+    /// `delete`, not `unset`; a non-field place is unsupported.
+    fn lower_unset(&mut self, place: &Expression, span: SourceSpan) {
+        if Self::durable_shape(place).is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`unset` clears a local field; use `delete` for a durable place".to_string(),
+            ));
+            return;
+        }
+        let Expression::Field {
+            base,
+            name,
+            span: field_span,
+            ..
+        } = place
+        else {
+            self.fail(unsupported(self.file, span, "this `unset` target"));
+            return;
+        };
+        let Some((slot, base_ty, mutable, base_span, base_local)) = self.resolve_place(base) else {
+            return;
+        };
+        if !mutable {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                base_span,
+                format!("`{base_local}` is a `const` and cannot be modified"),
+            ));
+            return;
+        }
+        let Some((index, _field_ty, required)) =
+            self.resolve_product_field(base_ty, name, base_span, *field_span)
+        else {
+            return;
+        };
+        if required {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                *field_span,
+                format!("`{name}` is a required field and cannot be unset"),
+            ));
+            return;
+        }
+        self.push(Instr::LocalGet(slot), span);
+        self.push(Instr::FieldUnset(index), span);
+        self.push(Instr::LocalSet(slot), span);
     }
 
     fn lower_compound_assign(&mut self, target: &Expression, op: BinaryOp, value: &Expression) {
@@ -2766,22 +2869,19 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        let field_plan: Vec<(String, ScalarType, bool)> = self
+        let field_plan: Vec<(String, GArg, bool)> = self
             .records
             .by_name(name)?
             .fields
             .iter()
-            .map(|field| (field.name.clone(), field.scalar, field.required))
+            .map(|field| (field.name.clone(), field.ty, field.required))
             .collect();
-        for (field_name, scalar, required) in field_plan {
+        for (field_name, field_ty, required) in field_plan {
             let arg = args
                 .iter()
                 .find(|a| a.name.as_deref() == Some(field_name.as_str()));
-            let expected = if required {
-                LTy::bare_scalar(scalar)
-            } else {
-                LTy::bare_scalar(scalar).to_optional()
-            };
+            let bare = garg_to_lty(field_ty);
+            let expected = if required { bare } else { bare.to_optional() };
             match arg {
                 Some(argument) => {
                     self.lower_as(&argument.value, expected)?;
@@ -2796,10 +2896,9 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 }
                 None => {
-                    self.push(
-                        Instr::VacantLoad(ImageType::opt_scalar(scalar.image())),
-                        span,
-                    );
+                    // A sparse field defaults to vacant: a typed vacant optional of
+                    // the field's value type.
+                    self.push(Instr::VacantLoad(bare.to_optional().image()), span);
                 }
             }
         }
@@ -2860,20 +2959,20 @@ impl<'a> FnLowerer<'a> {
             return None;
         }
 
-        let field_plan: Vec<(String, ScalarType)> = self
+        let field_plan: Vec<(String, GArg)> = self
             .records
             .struct_by_name(name)?
             .fields
             .iter()
-            .map(|field| (field.name.clone(), field.scalar))
+            .map(|field| (field.name.clone(), field.ty))
             .collect();
-        for (field_name, scalar) in field_plan {
+        for (field_name, field_ty) in field_plan {
             let arg = args
                 .iter()
                 .find(|a| a.name.as_deref() == Some(field_name.as_str()));
             match arg {
                 Some(argument) => {
-                    self.lower_as(&argument.value, LTy::bare_scalar(scalar))?;
+                    self.lower_as(&argument.value, garg_to_lty(field_ty))?;
                 }
                 None => {
                     self.fail(SourceDiagnostic::at(
@@ -3260,25 +3359,43 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_field(&mut self, base: &Expression, name: &str, span: SourceSpan) -> Option<LTy> {
         let base_ty = self.lower_expr(base)?;
-        let (index, scalar, required) = match base_ty {
+        let (index, field_ty, required) =
+            self.resolve_product_field(base_ty, name, base.span(), span)?;
+        self.push(Instr::FieldGet(index), span);
+        let bare = garg_to_lty(field_ty);
+        Some(if required { bare } else { bare.to_optional() })
+    }
+
+    /// Resolve `name` against a bare product (`record` or `struct`) value type to
+    /// its slot index, bare value type, and required flag. The one owner of product
+    /// field resolution, shared by field reads, assignments, and `unset`.
+    /// `base_span` locates a non-product base; `field_span` locates an unknown field.
+    fn resolve_product_field(
+        &mut self,
+        base_ty: LTy,
+        name: &str,
+        base_span: SourceSpan,
+        field_span: SourceSpan,
+    ) -> Option<(u16, GArg, bool)> {
+        match base_ty {
             LTy::Record {
                 ty,
                 optional: false,
             } => {
                 let Some(record) = self.records.by_name_for_type(ty) else {
-                    self.fail(unsupported(self.file, span, "this field access"));
+                    self.fail(unsupported(self.file, field_span, "this field access"));
                     return None;
                 };
                 let Some((index, field)) = record.field(name) else {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         self.file,
-                        span,
+                        field_span,
                         format!("record has no field `{name}`"),
                     ));
                     return None;
                 };
-                (index, field.scalar, field.required)
+                Some((index, field.ty, field.required))
             }
             LTy::Struct {
                 ty,
@@ -3292,32 +3409,26 @@ impl<'a> FnLowerer<'a> {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         self.file,
-                        span,
+                        field_span,
                         format!("`{}` has no field `{name}`", info.name),
                     ));
                     return None;
                 };
-                (index, field.scalar, field.required)
+                Some((index, field.ty, field.required))
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
-                    base.span(),
+                    base_span,
                     format!(
                         "field access needs a record or struct, found {}",
                         base_ty.spelling(self.records)
                     ),
                 ));
-                return None;
+                None
             }
-        };
-        self.push(Instr::FieldGet(index), span);
-        Some(if required {
-            LTy::bare_scalar(scalar)
-        } else {
-            LTy::bare_scalar(scalar).to_optional()
-        })
+        }
     }
 
     // --- durable places (design §D) ---

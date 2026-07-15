@@ -75,6 +75,13 @@ pub(super) fn parse_simple_statement(
                 path: value,
             })
         }
+        TokenKind::Keyword(Keyword::Unset) => {
+            let place = expr_of_after(source, &line[1..], first.span, diagnostics)?;
+            Some(Statement::Unset {
+                span: join_spans(first.span, place.span()),
+                place,
+            })
+        }
         TokenKind::Keyword(Keyword::Merge) => {
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,

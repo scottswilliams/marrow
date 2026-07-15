@@ -87,6 +87,15 @@ impl ImageType {
         }
     }
 
+    /// The number of bytes [`ImageType::encode`] appends: one tag byte, plus a
+    /// big-endian `u16` index for a record or enum base.
+    pub(crate) fn encoded_len(self) -> usize {
+        match self {
+            ImageType::Unit | ImageType::Scalar { .. } => 1,
+            ImageType::Record { .. } | ImageType::Enum { .. } => 3,
+        }
+    }
+
     /// Append the canonical `ImageType` bytes: one tag byte, plus a big-endian `u16`
     /// record index when the base is a record.
     pub(crate) fn encode(self, out: &mut Vec<u8>) {

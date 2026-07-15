@@ -1033,6 +1033,9 @@ fn format_statement_with_comments(
         Statement::Delete { path, .. } => {
             format!("{pad}delete {}", format_expression_at(path, level))
         }
+        Statement::Unset { place, .. } => {
+            format!("{pad}unset {}", format_expression_at(place, level))
+        }
         Statement::Return { value, .. } => match value {
             Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
             None => format!("{pad}return"),

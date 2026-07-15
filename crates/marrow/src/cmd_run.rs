@@ -261,7 +261,11 @@ fn build_schema(image: &VerifiedImage) -> StoreSchema {
             .iter()
             .map(|field| FieldSchema {
                 name: field.name.to_string(),
-                kind: scalar_kind(field.scalar),
+                // A durable root record is verified to carry only scalar fields.
+                kind: match field.ty {
+                    ImageType::Scalar { scalar, .. } => scalar_kind(scalar),
+                    _ => unreachable!("a durable field is a scalar"),
+                },
                 required: field.required,
             })
             .collect(),

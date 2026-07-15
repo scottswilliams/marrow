@@ -9,8 +9,8 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, RootDef,
-    Scalar, SiteDef, SiteTarget, SpanEntry, image_id,
+    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr,
+    RecordTypeDef, RootDef, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -323,12 +323,12 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
         fields: vec![
             FieldDef {
                 name: value,
-                ty: Scalar::Int,
+                ty: ImageType::scalar(Scalar::Int),
                 required: true,
             },
             FieldDef {
                 name: label,
-                ty: Scalar::Text,
+                ty: ImageType::scalar(Scalar::Text),
                 required: false,
             },
         ],
@@ -1017,7 +1017,7 @@ fn record_param_and_return_refs_verify() {
         name: field,
         fields: vec![FieldDef {
             name: field,
-            ty: Scalar::Int,
+            ty: ImageType::scalar(Scalar::Int),
             required: true,
         }],
     });
@@ -1123,5 +1123,174 @@ fn optional_parameter_type_rejects() {
         code,
     });
     draft.add_export(ExportId::of_local("", "f"), f);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+}
+
+// --- record field-type table hostiles (C02 V5: fields are bare scalar or enum). ---
+
+/// Build a minimal image whose single record type's fields come from `fields`,
+/// plus a trivial `fn f(): int` export. The record table decodes before the
+/// function, so a malformed field type rejects at the table phase.
+fn record_table_image(fields: impl FnOnce(&mut ImageDraft) -> Vec<FieldDef>) -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let rname = draft.intern_string("R");
+    let field_defs = fields(&mut draft);
+    draft.add_record_type(RecordTypeDef {
+        name: rname,
+        fields: field_defs,
+    });
+    let zero = draft.intern_int(0);
+    let fname = draft.intern_string("f");
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: fname,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn record_field_with_optional_type_rejects() {
+    // A field type is bare; an optional flag on it rejects at the table phase.
+    let bytes = record_table_image(|draft| {
+        let name = draft.intern_string("x");
+        vec![FieldDef {
+            name,
+            ty: ImageType::opt_scalar(Scalar::Int),
+            required: true,
+        }]
+    });
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn record_field_with_out_of_range_enum_index_rejects() {
+    // An enum-typed field naming an index past the (empty) enum table rejects.
+    let bytes = record_table_image(|draft| {
+        let name = draft.intern_string("x");
+        vec![FieldDef {
+            name,
+            ty: ImageType::Enum {
+                idx: 3,
+                optional: false,
+            },
+            required: true,
+        }]
+    });
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn value_type_cycle_through_a_record_field_rejects() {
+    // Record R (idx 0) has an enum field E (idx 0), whose one variant carries a
+    // Record(0) payload: a value type that contains itself. The combined
+    // record+enum acyclicity pass rejects it.
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let rname = draft.intern_string("R");
+    let ename = draft.intern_string("E");
+    let vname = draft.intern_string("wrap");
+    let fname = draft.intern_string("inner");
+    draft.add_record_type(RecordTypeDef {
+        name: rname,
+        fields: vec![FieldDef {
+            name: fname,
+            ty: ImageType::Enum {
+                idx: 0,
+                optional: false,
+            },
+            required: true,
+        }],
+    });
+    draft.add_enum_type(EnumTypeDef {
+        name: ename,
+        variants: vec![VariantDef {
+            name: vname,
+            category: false,
+            payload: vec![ImageType::Record {
+                idx: 0,
+                optional: false,
+            }],
+        }],
+    });
+    let zero = draft.intern_int(0);
+    let f = draft.intern_string("f");
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: f,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+}
+
+#[test]
+fn durable_root_with_a_non_scalar_field_rejects() {
+    // A durable root record carrying an enum-valued field has no store
+    // representation, so the durable table rejects it.
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let rname = draft.intern_string("R");
+    let ename = draft.intern_string("E");
+    let vname = draft.intern_string("only");
+    let idn = draft.intern_string("id");
+    let tagn = draft.intern_string("tag");
+    draft.add_enum_type(EnumTypeDef {
+        name: ename,
+        variants: vec![VariantDef {
+            name: vname,
+            category: false,
+            payload: Vec::new(),
+        }],
+    });
+    let rec = draft.add_record_type(RecordTypeDef {
+        name: rname,
+        fields: vec![
+            FieldDef {
+                name: idn,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: tagn,
+                ty: ImageType::Enum {
+                    idx: 0,
+                    optional: false,
+                },
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("boxes");
+    draft.add_root(RootDef {
+        name: root,
+        key: Scalar::Int,
+        record: rec,
+    });
+    let zero = draft.intern_int(0);
+    let f = draft.intern_string("f");
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: f,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }

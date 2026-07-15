@@ -78,11 +78,14 @@ impl SiteId {
     }
 }
 
-/// One record field.
+/// One record field. Its type is a bare (non-optional) [`ImageType`]: a scalar
+/// for a durable-storable field, or a closed enum (`Option`/`Result`/a user
+/// `enum`) for a local-only value field. Sparseness is the field's `required`
+/// flag, not an optional wrapper on the type.
 #[derive(Debug, Clone)]
 pub struct FieldDef {
     pub name: StrId,
-    pub ty: Scalar,
+    pub ty: ImageType,
     pub required: bool,
 }
 

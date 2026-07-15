@@ -686,6 +686,13 @@ pub enum Statement {
         path: Expression,
         span: SourceSpan,
     },
+    /// `unset place`: clear a local product's sparse field to absent. The `place`
+    /// is a field access on a local (`r.note`); the checker rejects a required
+    /// field, a non-field place, and a durable place.
+    Unset {
+        place: Expression,
+        span: SourceSpan,
+    },
     Return {
         value: Option<Expression>,
         span: SourceSpan,
@@ -858,6 +865,7 @@ impl Statement {
             | Self::Assign { span, .. }
             | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
+            | Self::Unset { span, .. }
             | Self::Return { span, .. }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }

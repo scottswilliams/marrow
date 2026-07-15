@@ -19,14 +19,14 @@ use marrow_image::{
     OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
     OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_ENUM_CONSTRUCT,
     OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_ENUM, OP_EQ_INT, OP_EQ_TEXT,
-    OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE,
-    OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
-    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
-    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
-    OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
-    OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_ENUM, TAG_INT, TAG_RECORD,
-    TAG_TEXT, TAG_UNIT, image_id,
+    OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
+    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
+    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
+    OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
+    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
+    OP_TEXT_IS_EMPTY, OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT,
+    OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_ENUM, TAG_INT,
+    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -67,7 +67,10 @@ struct DecodedRecordType {
 
 struct DecodedField {
     name: u16,
-    ty: Scalar,
+    /// A bare (non-optional) type: a scalar for a durable-storable field, or a
+    /// closed enum for a local-only value field. The enum index is bounds-checked
+    /// against the ENUMS table after it decodes (`validate_record_field_enums`).
+    ty: ImageType,
     required: bool,
 }
 
@@ -201,6 +204,8 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let strings = decode_strings(sections[0].1)?;
     let types = decode_types(sections[1].1, strings.len())?;
     let enums = decode_enums(sections[8].1, strings.len(), types.len())?;
+    validate_record_field_enums(&types, enums.len())?;
+    reject_value_type_cycles(&types, &enums)?;
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(sections[4].1, strings.len(), types.len(), enums.len())?;
@@ -372,10 +377,7 @@ fn decode_types(
             let tag = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short field type"))?;
-            let ty = decode_bare_scalar(tag).ok_or(reject(
-                VerifyPhase::Table,
-                "field type must be a bare scalar",
-            ))?;
+            let ty = decode_record_field_type(tag, &mut reader)?;
             let required_byte = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short field required flag"))?;
@@ -496,7 +498,6 @@ fn decode_enums(
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in enum table"));
     }
-    reject_enum_payload_cycles(&enums)?;
     Ok(enums)
 }
 
@@ -557,34 +558,108 @@ fn decode_bare_payload_type(
     }
 }
 
-/// Reject any cycle in the enum-payload reference graph: an enum whose payload
-/// (directly or transitively) contains itself would be an infinite value type.
-/// Records reference only scalars, so only enum→enum payload edges can form a
-/// cycle. A three-colour DFS over those edges; a back edge to a node on the
+/// Decode a record field type: a bare scalar or a bare enum. A field is a scalar
+/// leaf (durable-storable) or a closed enum value (local-only); it is never
+/// optional (sparseness is the `required` flag) and never a directly nested
+/// record. The enum index is only read here; `validate_record_field_enums`
+/// bounds-checks it once the ENUMS table has decoded.
+fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, VerifyRejection> {
+    if tag & OPTIONAL_FLAG != 0 {
+        return Err(reject(
+            VerifyPhase::Table,
+            "record field type cannot be optional",
+        ));
+    }
+    match tag {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
+            decode_bare_scalar(tag).expect("scalar base"),
+        )),
+        TAG_ENUM => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short field enum index"))?;
+            Ok(ImageType::Enum {
+                idx,
+                optional: false,
+            })
+        }
+        _ => Err(reject(
+            VerifyPhase::Table,
+            "record field type must be a bare scalar or enum",
+        )),
+    }
+}
+
+/// Bounds-check every enum-typed record field against the decoded ENUMS table.
+/// The field decoder reads the enum index before the table exists, so this runs
+/// once both tables are decoded.
+fn validate_record_field_enums(
+    types: &[DecodedRecordType],
+    enum_count: usize,
+) -> Result<(), VerifyRejection> {
+    for record in types {
+        for field in &record.fields {
+            if let ImageType::Enum { idx, .. } = field.ty
+                && idx as usize >= enum_count
+            {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "record field enum index out of range",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reject any cycle in the combined value-type reference graph over records and
+/// enums: a record field may reference an enum, and an enum payload leaf may
+/// reference a record or another enum, so a value type that (directly or
+/// transitively) contains itself would be infinite. Records occupy node indices
+/// `0..R` and enums `R..R+E`. A three-colour DFS; a back edge to a node on the
 /// current stack is a cycle.
-fn reject_enum_payload_cycles(enums: &[DecodedEnum]) -> Result<(), VerifyRejection> {
+fn reject_value_type_cycles(
+    types: &[DecodedRecordType],
+    enums: &[DecodedEnum],
+) -> Result<(), VerifyRejection> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Colour {
         White,
         Gray,
         Black,
     }
-    let edges: Vec<Vec<usize>> = enums
-        .iter()
-        .map(|enum_def| {
+    let record_count = types.len();
+    let enum_node = |idx: u16| record_count + idx as usize;
+    let mut edges: Vec<Vec<usize>> = Vec::with_capacity(record_count + enums.len());
+    for record in types {
+        edges.push(
+            record
+                .fields
+                .iter()
+                .filter_map(|field| match field.ty {
+                    ImageType::Enum { idx, .. } => Some(enum_node(idx)),
+                    _ => None,
+                })
+                .collect(),
+        );
+    }
+    for enum_def in enums {
+        edges.push(
             enum_def
                 .variants
                 .iter()
                 .flat_map(|variant| variant.payload.iter())
                 .filter_map(|ty| match ty {
-                    ImageType::Enum { idx, .. } => Some(*idx as usize),
+                    ImageType::Enum { idx, .. } => Some(enum_node(*idx)),
+                    ImageType::Record { idx, .. } => Some(*idx as usize),
                     _ => None,
                 })
-                .collect()
-        })
-        .collect();
-    let mut colour = vec![Colour::White; enums.len()];
-    for start in 0..enums.len() {
+                .collect(),
+        );
+    }
+    let node_count = edges.len();
+    let mut colour = vec![Colour::White; node_count];
+    for start in 0..node_count {
         if colour[start] != Colour::White {
             continue;
         }
@@ -598,7 +673,7 @@ fn reject_enum_payload_cycles(enums: &[DecodedEnum]) -> Result<(), VerifyRejecti
                     Colour::Gray => {
                         return Err(reject(
                             VerifyPhase::Table,
-                            "the enum payload graph contains a cycle",
+                            "the value type graph contains a cycle",
                         ));
                     }
                     Colour::White => {
@@ -657,6 +732,19 @@ fn decode_durable(
             return Err(reject(
                 VerifyPhase::Table,
                 "root record type index out of range",
+            ));
+        }
+        // A durable record is stored as scalar leaves; a non-scalar (enum) field
+        // has no store representation, so a resource carrying one cannot be a
+        // durable root. This keeps the store-schema projection total.
+        if types[record as usize]
+            .fields
+            .iter()
+            .any(|field| !matches!(field.ty, ImageType::Scalar { .. }))
+        {
+            return Err(reject(
+                VerifyPhase::Table,
+                "a durable root record must have only scalar fields",
             ));
         }
         roots.push(DecodedRoot { name, key, record });
@@ -1093,7 +1181,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 .iter()
                 .map(|field| SealedField {
                     name: decoded.strings[field.name as usize].clone(),
-                    scalar: field.ty,
+                    ty: field.ty,
                     required: field.required,
                 })
                 .collect(),
@@ -1689,8 +1777,10 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_TEXT_TRIM => SealedInstr::TextTrim,
             OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
             OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
+            OP_FIELD_SET => SealedInstr::FieldSet(operand_u16(&mut reader)?),
+            OP_FIELD_UNSET => SealedInstr::FieldUnset(operand_u16(&mut reader)?),
             OP_SOME_WRAP => SealedInstr::SomeWrap,
-            OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
+            OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_vacant_operand(&mut reader)?),
             OP_ENUM_CONSTRUCT => SealedInstr::EnumConstruct {
                 enum_idx: operand_u16(&mut reader)?,
                 variant: operand_u16(&mut reader)?,
@@ -1747,9 +1837,10 @@ fn operand_i64(reader: &mut Reader) -> Result<i64, VerifyRejection> {
         .ok_or(reject(VerifyPhase::Function, "short i64 operand"))
 }
 
-/// Decode a `VacantLoad` operand: a single type-ref tag that must be an optional
-/// scalar (design §C, §D `VacantLoad`).
-fn decode_optional_scalar_operand(reader: &mut Reader) -> Result<Scalar, VerifyRejection> {
+/// Decode a `VacantLoad` operand: a full optional type-ref — an optional scalar
+/// (one byte) or an optional enum (a tag plus a big-endian `u16` index, the enum
+/// bounds-checked in the abstract interpreter). Design §C, §D `VacantLoad`.
+fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejection> {
     let tag = reader
         .u8()
         .ok_or(reject(VerifyPhase::Function, "short vacant-load operand"))?;
@@ -1759,10 +1850,27 @@ fn decode_optional_scalar_operand(reader: &mut Reader) -> Result<Scalar, VerifyR
             "vacant-load operand must be optional",
         ));
     }
-    decode_bare_scalar(tag & !OPTIONAL_FLAG).ok_or(reject(
-        VerifyPhase::Function,
-        "vacant-load operand must be an optional scalar",
-    ))
+    let base = tag & !OPTIONAL_FLAG;
+    match base {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::Scalar {
+            scalar: decode_bare_scalar(base).expect("scalar base"),
+            optional: true,
+        }),
+        TAG_ENUM => {
+            let idx = reader.u16().ok_or(reject(
+                VerifyPhase::Function,
+                "short vacant-load enum index",
+            ))?;
+            Ok(ImageType::Enum {
+                idx,
+                optional: true,
+            })
+        }
+        _ => Err(reject(
+            VerifyPhase::Function,
+            "vacant-load operand must be an optional scalar or enum",
+        )),
+    }
 }
 
 /// Rewrite jump operands from container byte offsets to tape indices, rejecting a
@@ -1992,10 +2100,11 @@ fn apply(
             ))?;
             // f0 is pushed first, so pop fields in reverse declaration order.
             for field in record.fields.iter().rev() {
+                let bare = VType::from_image(field.ty).expect("a record field type is never unit");
                 let want = if field.required {
-                    VType::bare_scalar(field.scalar)
+                    bare
                 } else {
-                    VType::bare_scalar(field.scalar).to_optional()
+                    bare.to_optional()
                 };
                 let got = pop(&mut frame.stack)?;
                 if got != want {
@@ -2028,12 +2137,75 @@ fn apply(
                 .fields
                 .get(*field as usize)
                 .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+            let bare = VType::from_image(field_def.ty).expect("a record field type is never unit");
             let result = if field_def.required {
-                VType::bare_scalar(field_def.scalar)
+                bare
             } else {
-                VType::bare_scalar(field_def.scalar).to_optional()
+                bare.to_optional()
             };
             frame.stack.push(result);
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::FieldSet(field) => {
+            // `[record, value] → [record]`: store a bare field value present.
+            let value = pop(&mut frame.stack)?;
+            let record = pop(&mut frame.stack)?;
+            let VType::Record {
+                idx,
+                optional: false,
+            } = record
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "field set requires a bare record",
+                ));
+            };
+            let record_type = types.get(idx as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "record type index out of range",
+            ))?;
+            let field_def = record_type
+                .fields
+                .get(*field as usize)
+                .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+            let want = VType::from_image(field_def.ty).expect("a record field type is never unit");
+            if value != want {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "field set operand type mismatch",
+                ));
+            }
+            frame.stack.push(VType::bare_record(idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::FieldUnset(field) => {
+            // `[record] → [record]`: clear a sparse field to vacant.
+            let record = pop(&mut frame.stack)?;
+            let VType::Record {
+                idx,
+                optional: false,
+            } = record
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "field unset requires a bare record",
+                ));
+            };
+            let record_type = types.get(idx as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "record type index out of range",
+            ))?;
+            let field_def = record_type
+                .fields
+                .get(*field as usize)
+                .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+            if field_def.required {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "a required field cannot be unset",
+                ));
+            }
+            frame.stack.push(VType::bare_record(idx));
             return Ok(Control::Fallthrough);
         }
         SealedInstr::SomeWrap => {
@@ -2047,8 +2219,19 @@ fn apply(
             frame.stack.push(value.to_optional());
             return Ok(Control::Fallthrough);
         }
-        SealedInstr::VacantLoad(scalar) => {
-            frame.stack.push(VType::bare_scalar(*scalar).to_optional());
+        SealedInstr::VacantLoad(ty) => {
+            // An enum operand names a value type; bounds-check it against the table.
+            if let ImageType::Enum { idx, .. } = ty
+                && ctx.enums.get(*idx as usize).is_none()
+            {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "vacant-load enum index out of range",
+                ));
+            }
+            frame
+                .stack
+                .push(VType::from_image(*ty).expect("vacant-load operand is optional"));
             return Ok(Control::Fallthrough);
         }
         SealedInstr::BranchPresent(target) => {
@@ -2359,6 +2542,8 @@ fn apply(
         }
         SealedInstr::RecordNew(_)
         | SealedInstr::FieldGet(_)
+        | SealedInstr::FieldSet(_)
+        | SealedInstr::FieldUnset(_)
         | SealedInstr::SomeWrap
         | SealedInstr::VacantLoad(_)
         | SealedInstr::BranchPresent(_)
@@ -2439,7 +2624,7 @@ fn apply_durable(
         }
         SealedInstr::DurReadField(_) => {
             let field = field_of(ctx, site, root)?;
-            let value = VType::bare_scalar(field.scalar).to_optional();
+            let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, key_ty)?;
             stack.push(value);
         }
@@ -2456,7 +2641,7 @@ fn apply_durable(
                     "set-required targets a sparse field",
                 ));
             }
-            let value = VType::bare_scalar(field.scalar);
+            let value = durable_field_vtype(field);
             expect(pop(stack)?, value)?;
             expect(pop(stack)?, key_ty)?;
         }
@@ -2468,7 +2653,7 @@ fn apply_durable(
                     "set-sparse targets a required field",
                 ));
             }
-            let value = VType::bare_scalar(field.scalar).to_optional();
+            let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, value)?;
             expect(pop(stack)?, key_ty)?;
         }
@@ -2522,6 +2707,12 @@ fn field_of<'a>(
             VerifyPhase::Function,
             "site field index out of range",
         ))
+}
+
+/// The bare value type of a durable field. A durable root record is verified to
+/// carry only scalar fields, so the field type is always a bare scalar here.
+fn durable_field_vtype(field: &SealedField) -> VType {
+    VType::from_image(field.ty).expect("a durable field type is a bare scalar")
 }
 
 /// Require an entry-target site.

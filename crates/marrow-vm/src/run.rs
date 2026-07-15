@@ -378,6 +378,21 @@ fn execute<'s>(
                 }
                 pc += 1;
             }
+            SealedInstr::FieldSet(field) => {
+                // `[record, value] → [record']`: store the bare value present.
+                let value = pop(&mut stack);
+                let (ty, mut slots) = as_record(pop(&mut stack));
+                slots[*field as usize] = Some(value);
+                stack.push(Value::Record(ty, slots));
+                pc += 1;
+            }
+            SealedInstr::FieldUnset(field) => {
+                // `[record] → [record']`: clear the sparse field to vacant.
+                let (ty, mut slots) = as_record(pop(&mut stack));
+                slots[*field as usize] = None;
+                stack.push(Value::Record(ty, slots));
+                pc += 1;
+            }
             SealedInstr::SomeWrap => {
                 let value = pop(&mut stack);
                 stack.push(Value::Optional(Some(Box::new(value))));

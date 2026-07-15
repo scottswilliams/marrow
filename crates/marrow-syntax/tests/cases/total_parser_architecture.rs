@@ -136,6 +136,7 @@ fn stmt_has_error(stmt: &Statement) -> bool {
             expr_has_error(target) || expr_has_error(value)
         }
         Statement::Delete { path, .. } => expr_has_error(path),
+        Statement::Unset { place, .. } => expr_has_error(place),
         Statement::If {
             condition,
             then_block,

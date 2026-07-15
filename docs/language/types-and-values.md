@@ -356,6 +356,35 @@ separately and are not materialized as part of a local resource value.
 Resource values are copied by value through local bindings, parameters, and
 returns. See [Resources](resources.md).
 
+A resource value held in a local can be read and, when the binding is a `var`,
+mutated field by field. Reading a required field yields its bare value; reading a
+sparse field yields `T?` — present when the field holds a value, absent otherwise.
+Assigning a field, required or sparse, sets it present to the assigned value.
+`unset place` clears a sparse field back to absent, where `place` is a field
+access on a local product (`r.note`); a required field cannot be unset, and a
+durable place is erased with `delete`, not `unset`. Because a sparse field is
+absent or a present value — never a stored empty — a sparse field typed
+`Option[string]` keeps its three states distinct: absent (unset), a present
+`Option` `none`, and a present `Option` `some(v)`.
+
+```mw
+module docs::sparselocal
+
+resource Box
+    required id: int
+    note: string
+
+pub fn label(): string
+    var b = Box(id: 1)
+    b.note = "draft"
+    unset b.note
+    return b.note ?? "unlabeled"
+```
+
+A field type is a scalar or a built-in `Option`/`Result` value type. A resource
+backing a `store` has only scalar fields, since durable storage records scalar
+leaves.
+
 ## Structs
 
 A `struct` declares a dense product value type. Every field is required, held
