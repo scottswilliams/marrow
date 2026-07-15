@@ -16,10 +16,10 @@
 use std::collections::BTreeMap;
 
 use marrow_codes::Code;
-use marrow_image::{FieldDef, ImageDraft, RecordTypeDef, TypeId};
+use marrow_image::{EnumId, EnumTypeDef, FieldDef, ImageDraft, RecordTypeDef, TypeId, VariantDef};
 use marrow_syntax::{
-    AliasDecl, Expression, LiteralKind, NominalDecl, ResourceDecl, ResourceMember, SourceSpan,
-    StructDecl, TypeExpr, UnaryOp, range_expr,
+    AliasDecl, EnumDecl, EnumMember, Expression, LiteralKind, NominalDecl, ResourceDecl,
+    ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -87,6 +87,40 @@ impl StructInfo {
     }
 }
 
+/// One enum-variant payload leaf: a named scalar carried by that variant, in
+/// declaration order. The name is used for named construction; the image records
+/// only the scalar.
+pub(crate) struct EnumPayloadInfo {
+    pub(crate) name: String,
+    pub(crate) scalar: ScalarType,
+}
+
+/// One selectable enum variant: its member name and dense scalar payload.
+pub(crate) struct VariantInfo {
+    pub(crate) name: String,
+    pub(crate) payload: Vec<EnumPayloadInfo>,
+}
+
+/// One closed flat enum value type. It lowers to an image [`EnumTypeDef`]; its
+/// distinct nominal identity lives here. Hierarchical categories are deferred, so
+/// every variant is a selectable leaf.
+pub(crate) struct EnumInfo {
+    pub(crate) enum_id: EnumId,
+    pub(crate) name: String,
+    pub(crate) variants: Vec<VariantInfo>,
+}
+
+impl EnumInfo {
+    /// The index and info of the variant named `name` in declaration order.
+    pub(crate) fn variant(&self, name: &str) -> Option<(u16, &VariantInfo)> {
+        self.variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.name == name)
+            .map(|(index, variant)| (index as u16, variant))
+    }
+}
+
 /// The index and info of the field named `name` in declaration order, shared by
 /// the resource record and the dense struct so field lookup has one owner.
 fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f FieldInfo)> {
@@ -106,6 +140,7 @@ pub(crate) struct TypeRegistry {
     aliases: BTreeMap<String, TypeExpr>,
     nominals: Vec<NominalInfo>,
     structs: Vec<StructInfo>,
+    enums: Vec<EnumInfo>,
     record: Option<RecordInfo>,
 }
 
@@ -120,6 +155,14 @@ impl TypeRegistry {
 
     pub(crate) fn struct_by_type(&self, ty: TypeId) -> Option<&StructInfo> {
         self.structs.iter().find(|info| info.type_id == ty)
+    }
+
+    pub(crate) fn enum_by_name(&self, name: &str) -> Option<&EnumInfo> {
+        self.enums.iter().find(|info| info.name == name)
+    }
+
+    pub(crate) fn enum_by_id(&self, id: EnumId) -> Option<&EnumInfo> {
+        self.enums.iter().find(|info| info.enum_id == id)
     }
 
     pub(crate) fn nominal_by_name(&self, name: &str) -> Option<(NominalId, &NominalInfo)> {
@@ -165,26 +208,33 @@ impl TypeRegistry {
     /// against the known types), then the one admitted record type, whose field
     /// annotations resolve through the aliases. More than one resource, groups,
     /// keyed fields, or non-scalar field types are rejected.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut ImageDraft,
         aliases: &[(String, &AliasDecl)],
         nominals: &[(String, &NominalDecl)],
         structs: &[(String, &StructDecl)],
+        enums: &[(String, &EnumDecl)],
         resources: &[(String, &ResourceDecl)],
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
         let mut registry = Self {
-            aliases: build_alias_table(aliases, resources, structs, diagnostics),
+            aliases: build_alias_table(aliases, resources, structs, enums, diagnostics),
             nominals: Vec::new(),
             structs: Vec::new(),
+            enums: Vec::new(),
             record: None,
         };
-        registry.nominals = build_nominals(&registry, nominals, resources, structs, diagnostics);
+        registry.nominals =
+            build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
         // The resource record takes its image type index before the structs, so a
         // project's durable root and sites keep the same record index whether or
-        // not dense structs are also declared.
+        // not dense structs are also declared. Enums take a separate index space
+        // (the ENUMS table), so they build last (alias -> nominal -> record ->
+        // struct -> enum).
         registry.record = build_record(draft, &registry, resources, diagnostics);
         registry.structs = build_structs(draft, &registry, structs, resources, diagnostics);
+        registry.enums = build_enums(draft, &registry, enums, resources, diagnostics);
         validate_alias_targets(&registry, aliases, diagnostics);
         registry
     }
@@ -198,6 +248,7 @@ fn build_alias_table(
     aliases: &[(String, &AliasDecl)],
     resources: &[(String, &ResourceDecl)],
     structs: &[(String, &StructDecl)],
+    enums: &[(String, &EnumDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> BTreeMap<String, TypeExpr> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
@@ -232,6 +283,15 @@ fn build_alias_table(
                 file,
                 decl.name_span,
                 format!("`{}` is already declared as a struct", decl.name),
+            ));
+            continue;
+        }
+        if enums.iter().any(|(_, item)| item.name == decl.name) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as an enum", decl.name),
             ));
             continue;
         }
@@ -349,6 +409,7 @@ fn validate_alias_targets(
                     && registry.by_name(text).is_none()
                     && registry.nominal_by_name(text).is_none()
                     && registry.struct_by_name(text).is_none()
+                    && registry.enum_by_name(text).is_none()
                 {
                     diagnostics.push(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -374,11 +435,13 @@ fn validate_alias_targets(
 /// `check.type`; the capability list must draw from the closed set without
 /// repeats. A declaration with a defect is dropped whole rather than admitted
 /// half-checked.
+#[allow(clippy::too_many_arguments)]
 fn build_nominals(
     registry: &TypeRegistry,
     nominals: &[(String, &NominalDecl)],
     resources: &[(String, &ResourceDecl)],
     structs: &[(String, &StructDecl)],
+    enums: &[(String, &EnumDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Vec<NominalInfo> {
     let mut built: Vec<NominalInfo> = Vec::new();
@@ -396,6 +459,7 @@ fn build_nominals(
                 .iter()
                 .any(|(_, resource)| resource.name == decl.name)
             || structs.iter().any(|(_, item)| item.name == decl.name)
+            || enums.iter().any(|(_, item)| item.name == decl.name)
             || built.iter().any(|info| info.name == decl.name)
         {
             diagnostics.push(SourceDiagnostic::at(
@@ -666,6 +730,163 @@ fn struct_fields(
         });
     }
     ok.then_some((fields, field_defs))
+}
+
+/// Build the closed flat enum types. Each becomes an image [`EnumTypeDef`]. A name
+/// collision with a scalar, alias, nominal, resource, struct, or earlier enum is a
+/// `check.name_conflict`. Hierarchy is deferred: a `category` member or a member
+/// with nested members is `check.unsupported`. A member's payload is the dense
+/// `name: Type` form over bare scalars; an optional or non-scalar payload type is
+/// `check.unsupported`. A declaration with a defect is dropped whole rather than
+/// admitted half-checked, so a later match cannot resolve against a broken enum.
+fn build_enums(
+    draft: &mut ImageDraft,
+    registry: &TypeRegistry,
+    enums: &[(String, &EnumDecl)],
+    resources: &[(String, &ResourceDecl)],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Vec<EnumInfo> {
+    let mut built: Vec<EnumInfo> = Vec::new();
+    for (file, decl) in enums {
+        if ScalarType::from_spelling(&decl.name).is_some()
+            || registry.aliases.contains_key(&decl.name)
+            || registry.nominal_by_name(&decl.name).is_some()
+            || registry.struct_by_name(&decl.name).is_some()
+            || resources
+                .iter()
+                .any(|(_, resource)| resource.name == decl.name)
+            || built.iter().any(|info| info.name == decl.name)
+        {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as a type", decl.name),
+            ));
+            continue;
+        }
+        let Some((variants, variant_defs)) =
+            enum_variants(draft, registry, file, decl, diagnostics)
+        else {
+            continue;
+        };
+        let name_id = draft.intern_string(&decl.name);
+        let enum_id = draft.add_enum_type(EnumTypeDef {
+            name: name_id,
+            variants: variant_defs,
+        });
+        built.push(EnumInfo {
+            enum_id,
+            name: decl.name.clone(),
+            variants,
+        });
+    }
+    built
+}
+
+/// Resolve an enum's members to its selectable variants and their image
+/// definitions, or `None` if any member is unsupported. On the flat line every
+/// member is a leaf: a `category` member or one with nested members is deferred.
+fn enum_variants(
+    draft: &mut ImageDraft,
+    registry: &TypeRegistry,
+    file: &str,
+    decl: &EnumDecl,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<(Vec<VariantInfo>, Vec<VariantDef>)> {
+    let mut variants = Vec::new();
+    let mut variant_defs = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut ok = true;
+    for member in &decl.members {
+        if member.category {
+            diagnostics.push(unsupported(
+                file,
+                member.span,
+                "a `category` enum member (hierarchical enums are deferred)",
+            ));
+            ok = false;
+            continue;
+        }
+        if !member.members.is_empty() {
+            diagnostics.push(unsupported(
+                file,
+                member.span,
+                "a nested enum member (hierarchical enums are deferred)",
+            ));
+            ok = false;
+            continue;
+        }
+        if seen.contains(&member.name) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                member.name_span,
+                format!("enum member `{}` is already declared", member.name),
+            ));
+            ok = false;
+            continue;
+        }
+        seen.push(member.name.clone());
+        let Some((payload, payload_scalars)) = enum_payload(registry, file, member, diagnostics)
+        else {
+            ok = false;
+            continue;
+        };
+        let name_id = draft.intern_string(&member.name);
+        variant_defs.push(VariantDef {
+            name: name_id,
+            category: false,
+            payload: payload_scalars
+                .iter()
+                .map(|scalar| scalar.image())
+                .collect(),
+        });
+        variants.push(VariantInfo {
+            name: member.name.clone(),
+            payload,
+        });
+    }
+    ok.then_some((variants, variant_defs))
+}
+
+/// Resolve one member's payload fields to their scalars and info, or `None` when
+/// a field is not the bare `name: scalar` form.
+fn enum_payload(
+    registry: &TypeRegistry,
+    file: &str,
+    member: &EnumMember,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<(Vec<EnumPayloadInfo>, Vec<ScalarType>)> {
+    let mut payload = Vec::new();
+    let mut scalars = Vec::new();
+    let mut ok = true;
+    for field in &member.payload {
+        if matches!(registry.expand(&field.ty), TypeExpr::Optional { .. }) {
+            diagnostics.push(unsupported(
+                file,
+                field.ty.span(),
+                "an optional enum payload field type",
+            ));
+            ok = false;
+            continue;
+        }
+        let Some(scalar) = scalar_of(&registry.expand(&field.ty)) else {
+            diagnostics.push(unsupported(
+                file,
+                field.ty.span(),
+                "this enum payload field type",
+            ));
+            ok = false;
+            continue;
+        };
+        payload.push(EnumPayloadInfo {
+            name: field.name.clone(),
+            scalar,
+        });
+        scalars.push(scalar);
+    }
+    ok.then_some((payload, scalars))
 }
 
 /// Build the one admitted record type, resolving field annotations through the

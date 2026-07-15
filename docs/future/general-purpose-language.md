@@ -37,6 +37,12 @@ commit faults form a separate closed, source-uncatchable beta channel.
   form reports overflow and division failure as an ordinary typed result for
   input-derived arithmetic that must handle it. The beta floor has no decimal or
   floating-point type.
+- The current enum is a flat closed set of members, each bare or carrying a
+  dense typed payload, matched exhaustively with no wildcard arm. Hierarchical
+  enums — `category` members that group descendants, qualified arms such as
+  `cat::tiger`, and the `is` subtree-membership operator — are a deferred slice;
+  the parser accepts the `category` and nesting syntax, but the checker rejects
+  it until that slice lands.
 - The beta rejects direct and mutual function recursion and recursive nominal
   value layouts. Both remain deferred; recursive durable relationships use keys
   in a finite branch topology rather than recursive value expansion.

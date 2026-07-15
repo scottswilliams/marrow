@@ -240,10 +240,23 @@ impl<'a> ExprParser<'a> {
     /// construct the parser reached), or at end of input when none remains, and
     /// return the error node for it.
     fn nesting_limit_error(&mut self) -> Expression {
+        // Anchor at the next unconsumed token; at end of input fall back to the last
+        // real token (a paren bomb consumes everything before hitting the limit).
+        // A 1-based `(1, 1)` guards the theoretical empty-stream case so the reported
+        // span is never the all-zero default, which violates the 1-based invariant.
         let span = self
             .tokens
             .get(self.pos)
-            .map_or_else(SourceSpan::default, |token| token.span);
+            .or_else(|| self.tokens.last())
+            .map_or(
+                SourceSpan {
+                    start_byte: 0,
+                    end_byte: 0,
+                    line: 1,
+                    column: 1,
+                },
+                |token| token.span,
+            );
         self.diagnostics.push(Diagnostic {
             code: NESTING_LIMIT,
             reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),

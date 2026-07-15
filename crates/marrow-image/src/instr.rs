@@ -69,6 +69,10 @@ pub const OP_RECORD_NEW: u8 = 0x20;
 pub const OP_FIELD_GET: u8 = 0x21;
 pub const OP_SOME_WRAP: u8 = 0x22;
 pub const OP_VACANT_LOAD: u8 = 0x23;
+pub const OP_ENUM_CONSTRUCT: u8 = 0x24;
+pub const OP_ENUM_TAG: u8 = 0x25;
+pub const OP_ENUM_PAYLOAD_GET: u8 = 0x26;
+pub const OP_EQ_ENUM: u8 = 0x27;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
 pub const OP_DUR_READ_ENTRY: u8 = 0x32;
@@ -157,6 +161,26 @@ pub enum Instr {
     FieldGet(u16),
     SomeWrap,
     VacantLoad(ImageType),
+    /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
+    /// popped in reverse (p0 pushed first). Operands: `u16 enum_idx ‖ u16 variant`.
+    EnumConstruct {
+        enum_idx: u16,
+        variant: u16,
+    },
+    /// Pop an enum value and push its variant index as a bare int. The one match
+    /// primitive: a branch chain over the tag dispatches the arms.
+    EnumTag,
+    /// Read payload leaf `field` of `variant` from the enum value on the stack,
+    /// pushing its bare scalar. Operands: `u16 variant ‖ u16 field`. The variant
+    /// operand types the leaf; the VM faults (defense in depth) if the runtime
+    /// value carries a different variant, so a hostile image cannot confuse types.
+    EnumPayloadGet {
+        variant: u16,
+        field: u16,
+    },
+    /// `E, E → bool`: exact equality of two values of the same enum (variant and
+    /// payload).
+    EqEnum,
     DurExists(u16),
     DurReadField(u16),
     DurReadEntry(u16),
@@ -227,6 +251,10 @@ impl Instr {
             Instr::FieldGet(_) => OP_FIELD_GET,
             Instr::SomeWrap => OP_SOME_WRAP,
             Instr::VacantLoad(_) => OP_VACANT_LOAD,
+            Instr::EnumConstruct { .. } => OP_ENUM_CONSTRUCT,
+            Instr::EnumTag => OP_ENUM_TAG,
+            Instr::EnumPayloadGet { .. } => OP_ENUM_PAYLOAD_GET,
+            Instr::EqEnum => OP_EQ_ENUM,
             Instr::DurExists(_) => OP_DUR_EXISTS,
             Instr::DurReadField(_) => OP_DUR_READ_FIELD,
             Instr::DurReadEntry(_) => OP_DUR_READ_ENTRY,
@@ -277,6 +305,8 @@ impl Instr {
             Instr::VacantLoad(_) => 1,
             // Two big-endian `i64` interval bounds.
             Instr::RangeGuard { .. } => 16,
+            // Two big-endian `u16` operands.
+            Instr::EnumConstruct { .. } | Instr::EnumPayloadGet { .. } => 4,
             _ => 0,
         }
     }

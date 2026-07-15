@@ -26,6 +26,7 @@ pub const TAG_BOOL: u8 = 0x02;
 pub const TAG_TEXT: u8 = 0x03;
 pub const TAG_RECORD: u8 = 0x04;
 pub const TAG_BYTES: u8 = 0x05;
+pub const TAG_ENUM: u8 = 0x06;
 
 /// The optional-wrapper flag bit.
 pub const OPTIONAL_FLAG: u8 = 0x80;
@@ -46,8 +47,20 @@ impl Scalar {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageType {
     Unit,
-    Scalar { scalar: Scalar, optional: bool },
-    Record { idx: u16, optional: bool },
+    Scalar {
+        scalar: Scalar,
+        optional: bool,
+    },
+    Record {
+        idx: u16,
+        optional: bool,
+    },
+    /// A closed enum value, by ENUMS-table index. Mirrors `Record`: a one-byte
+    /// tag plus a big-endian `u16` index.
+    Enum {
+        idx: u16,
+        optional: bool,
+    },
 }
 
 impl ImageType {
@@ -68,7 +81,9 @@ impl ImageType {
     pub const fn is_optional(self) -> bool {
         match self {
             ImageType::Unit => false,
-            ImageType::Scalar { optional, .. } | ImageType::Record { optional, .. } => optional,
+            ImageType::Scalar { optional, .. }
+            | ImageType::Record { optional, .. }
+            | ImageType::Enum { optional, .. } => optional,
         }
     }
 
@@ -82,6 +97,10 @@ impl ImageType {
             }
             ImageType::Record { idx, optional } => {
                 out.push(TAG_RECORD | if optional { OPTIONAL_FLAG } else { 0 });
+                out.extend_from_slice(&idx.to_be_bytes());
+            }
+            ImageType::Enum { idx, optional } => {
+                out.push(TAG_ENUM | if optional { OPTIONAL_FLAG } else { 0 });
                 out.extend_from_slice(&idx.to_be_bytes());
             }
         }

@@ -20,6 +20,13 @@ pub const MAX_STRING_BYTES: usize = 4 * 1024;
 pub const MAX_TYPES: usize = 64;
 pub const MAX_FIELDS: usize = 64;
 
+/// Closed enum value types, variants per enum, and dense scalar payload fields
+/// per variant. A flat enum's variants are its selectable members; each carries
+/// at most `MAX_PAYLOAD_FIELDS` bare-scalar payload leaves in declaration order.
+pub const MAX_ENUMS: usize = 64;
+pub const MAX_VARIANTS: usize = 256;
+pub const MAX_PAYLOAD_FIELDS: usize = 64;
+
 /// Durable roots (0 or 1) and operation sites.
 pub const MAX_ROOTS: usize = 1;
 pub const MAX_SITES: usize = 64;

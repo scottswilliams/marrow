@@ -127,11 +127,17 @@ until their lanes land.
 
 ## Nominal Values
 
-An enum value belongs to one declared enum and names one of its members.
-`Id(^root)` identifies an entry under one declared store root. These are nominal
-values rather than primitive scalars: values from different enum declarations
-or store roots are different types even when their stored representations have
-the same shape.
+An enum value belongs to one declared closed enum and selects one of its
+members. A member is bare (`Color::red`) or carries a dense typed payload
+(`Shape::circle(radius: 3)`); the payload fields are named at construction and
+bound positionally by a `match`. `==` and `!=` are exact enum equality (the same
+member with equal payload), and a `match` covers every member exactly once with
+no wildcard arm. Enums are described under
+[Enum matching](control-flow.md#enum-matching); hierarchical `category` enums and
+the `is` operator are future. `Id(^root)` identifies an entry under one declared
+store root. These are nominal values rather than primitive scalars: values from
+different enum declarations or store roots are different types even when their
+stored representations have the same shape.
 
 `unknown` is an explicit dynamic boundary. A local `unknown` binding can carry a
 value whose static shape is unresolved, but operations that require a concrete
@@ -156,7 +162,6 @@ numeric types implicitly.
 | `==`, `!=` | matching scalars, the same enum type, or identities for the same store root | `bool` |
 | `and`, `or` | `bool` and `bool` | `bool` |
 | `optional ?? fallback` | compatible present-arm types | presence follows the fallback |
-| `value is Enum::member` | an enum value and one member or category of that enum | `bool` |
 
 `int / int` is integer division truncated toward zero, paired with the `int % int`
 remainder so that `a == (a / b) * b + a % b`. A zero divisor raises

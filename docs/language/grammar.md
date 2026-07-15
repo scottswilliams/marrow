@@ -129,9 +129,17 @@ struct_field    = {doc_comment}, identifier, type_annotation, NEWLINE ;
 enum_decl       = visibility?, "enum", identifier, NEWLINE,
                   INDENT, enum_member+, DEDENT ;
 
-enum_member     = {doc_comment}, "category"?, identifier, NEWLINE,
+enum_member     = {doc_comment}, "category"?, identifier, payload?, NEWLINE,
                   (INDENT, enum_member+, DEDENT)? ;
+
+payload         = "(", payload_field, {",", payload_field}, ","?, ")" ;
+payload_field   = identifier, ":", type ;
 ```
+
+A member with a `payload` is a payload variant; a bare member carries no payload.
+The `category` modifier and nested members are parsed but currently rejected by
+the checker (`check.unsupported`): the flat enum is the current form and
+hierarchical enums are future.
 
 ## Functions
 
@@ -258,7 +266,8 @@ for_binding     = identifier, {",", identifier} ;
 
 match_stmt      = "match", expression, NEWLINE,
                   INDENT, match_arm+, DEDENT ;
-match_arm       = identifier, {"::", identifier}, NEWLINE, block ;
+match_arm       = identifier, {"::", identifier}, arm_bindings?, NEWLINE, block ;
+arm_bindings    = "(", identifier, {",", identifier}, ","?, ")" ;
 ```
 
 `by` is contextual in a `for` head. `category` is contextual in an enum body.

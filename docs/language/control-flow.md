@@ -165,53 +165,57 @@ is a compile error.
 
 ## Enum Matching
 
-An enum is a nominal set of declared members:
+A closed enum is a nominal set of declared members. A member may be bare or
+carry a dense typed payload written as `name(field: Type, ...)`; a payload field
+type is any scalar (through an alias if desired):
 
 ```mw
 module docs::matching
 
-pub enum Status
-    active
-    archived
-    banned
+enum Shape
+    dot
+    circle(radius: int)
+    rect(width: int, height: int)
 
-fn label(status: Status): string
-    match status
-        active
-            return "active"
-        archived
-            return "archived"
-        banned
-            return "banned"
+fn area(s: Shape): int
+    match s
+        dot
+            return 0
+        circle(r)
+            return r * r
+        rect(w, h)
+            return w * h
 
-pub fn show(status: Status)
-    print(label(status))
+pub fn describe(s: Shape): int
+    return area(s)
 ```
 
-An arm names a member relative to the scrutinee enum. A `match` must cover every
-selectable member exactly once; there is no wildcard arm.
+An enum value is constructed as `Enum::member` for a bare member and
+`Enum::member(field: value, ...)` for a payload member (arguments are named). A
+`match` dispatches on the scrutinee's member. Each arm names one member relative
+to the scrutinee enum; a payload member's arm binds its payload positionally
+(`circle(r)`) or omits the bindings to ignore the payload (`circle`). A `match`
+must cover every member exactly once and has no wildcard arm; a missing member
+is `check.match_nonexhaustive` and a malformed arm is `check.match_arm`.
 
-Enum members may form a hierarchy. A parent with children is declared
-`category` and is not itself a selectable value:
+`==` and `!=` are exact enum equality — the same member with equal payload:
 
-```text
-enum Animal
-    category cat
-        tiger
-        housecat
-    dog
+```mw
+module docs::equality
+
+enum Color
+    red
+    green
+
+fn same(a: Color, b: Color): bool
+    return a == b
 ```
 
-An arm naming a category covers all selectable descendants. A qualified arm
-such as `cat::tiger` selects one descendant. The `is` operator tests membership
-in a member subtree:
-
-```text
-if animal is Animal::cat
-    print("cat")
-```
-
-`==` remains exact enum-member equality.
+Hierarchical enums — `category` members that group descendants, qualified arms
+such as `cat::tiger`, and the `is` subtree-membership operator — are a future
+direction (see [`future/general-purpose-language.md`](../future/general-purpose-language.md)).
+On the current line every member is a selectable leaf and the checker rejects a
+`category` or nested member as `check.unsupported`.
 
 ## `try` And `transaction`
 

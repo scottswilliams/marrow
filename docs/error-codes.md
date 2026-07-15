@@ -128,6 +128,8 @@ Static errors found while checking source.
 | `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to expose it across the module boundary. |
 | `check.recursion` | A definition is part of a cycle the language requires to be acyclic: a function on a direct or mutual recursion cycle (the compiled subset does not admit recursion), or a type alias whose expansion reaches itself. The message names the cycle. This is reported at check time so the source, not the image, carries the diagnostic. |
 | `check.assert_outside_test` | An `assert` statement appears outside a `test` declaration. `assert` is the test-owned assertion: it is legal only inside a `test "name"` body, never in an ordinary function. Move the assertion into a test, or use `unreachable("...")` for an in-program invariant fault. |
+| `check.match_nonexhaustive` | A `match` over an enum does not cover every selectable member of that enum. A flat enum's `match` must have exactly one arm per member and no wildcard arm; the message names the missing members. Add an arm for each uncovered member. |
+| `check.match_arm` | A `match` arm is not well-formed against its scrutinee enum: it names a member the enum does not declare, repeats a member another arm already covers, binds a number of payload names that does not match the member's payload, or the scrutinee is not an enum value. The message names the offending arm. |
 
 ### `image.*` — kind `artifact`
 
@@ -241,8 +243,8 @@ bound.
 
 These codes are emitted only by implementation-maintainer surfaces or as
 defense-in-depth fail-closed guards over invariants the surrounding layers
-already close. They are not ordinary user-facing diagnostics. None are defined
-in the current build.
+already close. They are not ordinary user-facing diagnostics.
 
 | Code | Meaning |
 |---|---|
+| `run.enum_variant` | A defense-in-depth guard: a bytecode enum-payload read named a variant the running enum value did not select. The compiler dispatches on the enum tag before extracting a variant's payload, so ordinary compiled programs never reach this; it fails an image closed rather than reading a differently-typed payload leaf when a hand-built or corrupted image extracts the wrong variant. Mapped to the operation's source span and not catchable inside the program. |

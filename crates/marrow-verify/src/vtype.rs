@@ -10,6 +10,7 @@ use crate::sealed::RetShape;
 pub(crate) enum VType {
     Scalar { scalar: Scalar, optional: bool },
     Record { idx: u16, optional: bool },
+    Enum { idx: u16, optional: bool },
 }
 
 impl VType {
@@ -27,6 +28,13 @@ impl VType {
         }
     }
 
+    pub(crate) fn bare_enum(idx: u16) -> Self {
+        VType::Enum {
+            idx,
+            optional: false,
+        }
+    }
+
     /// The stack type for an image type reference (a parameter type), or `None` for
     /// `Unit`, which is never a parameter or local type. Records carry their sealed
     /// type index; the verifier proved it in range at decode.
@@ -35,12 +43,15 @@ impl VType {
             ImageType::Unit => None,
             ImageType::Scalar { scalar, optional } => Some(VType::Scalar { scalar, optional }),
             ImageType::Record { idx, optional } => Some(VType::Record { idx, optional }),
+            ImageType::Enum { idx, optional } => Some(VType::Enum { idx, optional }),
         }
     }
 
     pub(crate) fn is_optional(self) -> bool {
         match self {
-            VType::Scalar { optional, .. } | VType::Record { optional, .. } => optional,
+            VType::Scalar { optional, .. }
+            | VType::Record { optional, .. }
+            | VType::Enum { optional, .. } => optional,
         }
     }
 
@@ -55,6 +66,10 @@ impl VType {
                 idx,
                 optional: false,
             },
+            VType::Enum { idx, .. } => VType::Enum {
+                idx,
+                optional: false,
+            },
         }
     }
 
@@ -66,6 +81,10 @@ impl VType {
                 optional: true,
             },
             VType::Record { idx, .. } => VType::Record {
+                idx,
+                optional: true,
+            },
+            VType::Enum { idx, .. } => VType::Enum {
                 idx,
                 optional: true,
             },
@@ -85,6 +104,13 @@ impl VType {
             (
                 VType::Record { idx, optional },
                 RetShape::Record {
+                    idx: want,
+                    optional: want_opt,
+                },
+            ) => idx == want && optional == want_opt,
+            (
+                VType::Enum { idx, optional },
+                RetShape::Enum {
                     idx: want,
                     optional: want_opt,
                 },

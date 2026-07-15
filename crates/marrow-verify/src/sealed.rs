@@ -99,6 +99,23 @@ pub enum SealedInstr {
     /// Push a vacant optional of the given scalar type. The runtime pushes only the
     /// vacant marker; the scalar records the verifier-checked operand type.
     VacantLoad(Scalar),
+    /// Construct enum `enum_idx`'s variant `variant` from its dense scalar payload
+    /// popped in reverse (p0 pushed first).
+    EnumConstruct {
+        enum_idx: u16,
+        variant: u16,
+    },
+    /// Pop an enum value and push its variant index as a bare int.
+    EnumTag,
+    /// Read payload leaf `field` of `variant` from the enum value on the stack,
+    /// pushing its bare scalar. The variant operand types the leaf; the VM faults
+    /// if the runtime value carries a different variant.
+    EnumPayloadGet {
+        variant: u16,
+        field: u16,
+    },
+    /// `E, E → bool`: exact equality of two values of the same enum.
+    EqEnum,
     /// Pop an optional; if present, push its bare value and fall through, else jump
     /// to this tape index. The only way to obtain a bare value from an optional.
     BranchPresent(usize),
@@ -221,6 +238,32 @@ impl SealedRecordType {
     }
 }
 
+/// One sealed enum variant: its member name, `category` flag, and dense scalar
+/// payload in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedVariant {
+    pub name: Rc<str>,
+    pub category: bool,
+    pub payload: Vec<Scalar>,
+}
+
+/// A sealed enum type: an ordered variant list in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedEnumType {
+    pub(crate) name: Rc<str>,
+    pub(crate) variants: Vec<SealedVariant>,
+}
+
+impl SealedEnumType {
+    /// The enum's declared name, used to render an enum value.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn variants(&self) -> &[SealedVariant] {
+        &self.variants
+    }
+}
+
 /// A function's return shape, used to check `Return` and to render the result. A
 /// record return names a sealed record type by index (a dense `struct` value); the
 /// verifier proved the index in range.
@@ -229,6 +272,7 @@ pub enum RetShape {
     Unit,
     Scalar { scalar: Scalar, optional: bool },
     Record { idx: u16, optional: bool },
+    Enum { idx: u16, optional: bool },
 }
 
 /// A source-position row: the instruction it maps and its 1-based line/column.
@@ -359,6 +403,7 @@ impl SealedTestEntry {
 pub struct VerifiedImage {
     pub(crate) image_id: ImageId,
     pub(crate) types: Vec<SealedRecordType>,
+    pub(crate) enums: Vec<SealedEnumType>,
     pub(crate) roots: Vec<SealedRoot>,
     pub(crate) sites: Vec<SealedSite>,
     pub(crate) consts: Vec<SealedConst>,
@@ -380,6 +425,12 @@ impl VerifiedImage {
     /// CLI to render a returned record value's field names.
     pub fn record_types(&self) -> &[SealedRecordType] {
         &self.types
+    }
+
+    /// The sealed enum types, indexed by image enum index. Consumed by the CLI to
+    /// render an enum value's declared and variant names.
+    pub fn enums(&self) -> &[SealedEnumType] {
+        &self.enums
     }
 
     /// The durable roots (0 or 1 at v0).

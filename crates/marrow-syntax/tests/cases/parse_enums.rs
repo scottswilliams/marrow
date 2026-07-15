@@ -64,8 +64,23 @@ fn rejects_an_enum_member_with_a_type_annotation() {
 }
 
 #[test]
-fn rejects_an_enum_member_with_parameters() {
-    let parsed = parse_source("module app\nenum Status\n    active(x: int)\n");
+fn parses_a_payload_member() {
+    let parsed = parse_source(
+        "module app\nenum Shape\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let shape = parsed.file.enum_decl("Shape").expect("Shape enum");
+    assert_eq!(member_names(shape), ["dot", "circle", "rect"]);
+    assert!(shape.members[0].payload.is_empty(), "dot has no payload");
+    let circle = &shape.members[1];
+    let fields: Vec<&str> = circle.payload.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(fields, ["radius"]);
+    assert_eq!(shape.members[2].payload.len(), 2);
+}
+
+#[test]
+fn rejects_an_enum_member_with_an_empty_payload() {
+    let parsed = parse_source("module app\nenum Status\n    active()\n");
     assert!(parsed.has_errors());
     assert!(
         parsed
@@ -75,6 +90,14 @@ fn rejects_an_enum_member_with_parameters() {
         "{:#?}",
         parsed.diagnostics
     );
+}
+
+#[test]
+fn round_trips_a_payload_enum_through_the_formatter() {
+    let source = "enum Shape\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)";
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert_eq!(marrow_syntax::format_source(source), format!("{source}\n"));
 }
 
 #[test]

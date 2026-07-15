@@ -11,10 +11,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
-use marrow_image::{FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId};
+use marrow_image::{
+    EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId,
+};
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, FunctionDecl, LiteralKind,
-    SourceSpan, Statement, TypeExpr, UnaryOp, decode_string_literal,
+    MatchArm, SourceSpan, Statement, TypeExpr, UnaryOp, decode_string_literal,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -48,6 +50,13 @@ enum LTy {
         ty: TypeId,
         optional: bool,
     },
+    /// A closed enum value, image-`Enum`- and runtime-`Value::Enum`-shaped. Like
+    /// the other nominal products it is a distinct value type; the `EnumId` names
+    /// its image ENUMS-table entry.
+    Enum {
+        ty: EnumId,
+        optional: bool,
+    },
 }
 
 impl LTy {
@@ -63,7 +72,8 @@ impl LTy {
             LTy::Scalar { optional, .. }
             | LTy::Nominal { optional, .. }
             | LTy::Record { optional, .. }
-            | LTy::Struct { optional, .. } => optional,
+            | LTy::Struct { optional, .. }
+            | LTy::Enum { optional, .. } => optional,
         }
     }
 
@@ -76,6 +86,7 @@ impl LTy {
             LTy::Nominal { id, .. } => LTy::Nominal { id, optional: true },
             LTy::Record { ty, .. } => LTy::Record { ty, optional: true },
             LTy::Struct { ty, .. } => LTy::Struct { ty, optional: true },
+            LTy::Enum { ty, .. } => LTy::Enum { ty, optional: true },
         }
     }
 
@@ -91,6 +102,10 @@ impl LTy {
                 optional: false,
             },
             LTy::Struct { ty, .. } => LTy::Struct {
+                ty,
+                optional: false,
+            },
+            LTy::Enum { ty, .. } => LTy::Enum {
                 ty,
                 optional: false,
             },
@@ -119,6 +134,13 @@ impl LTy {
                     .unwrap_or_else(|| "struct".to_string()),
                 optional,
             ),
+            LTy::Enum { ty, optional } => (
+                records
+                    .enum_by_id(ty)
+                    .map(|info| info.name.clone())
+                    .unwrap_or_else(|| "enum".to_string()),
+                optional,
+            ),
         };
         if optional { format!("{base}?") } else { base }
     }
@@ -130,6 +152,17 @@ impl LTy {
                 id,
                 optional: false,
             } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The bare enum identity, if this is one.
+    fn bare_enum(self) -> Option<EnumId> {
+        match self {
+            LTy::Enum {
+                ty,
+                optional: false,
+            } => Some(ty),
             _ => None,
         }
     }
@@ -151,6 +184,10 @@ impl LTy {
             } => ImageType::scalar(Scalar::Int),
             LTy::Nominal { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
             LTy::Record { ty, optional } | LTy::Struct { ty, optional } => ImageType::Record {
+                idx: ty.index(),
+                optional,
+            },
+            LTy::Enum { ty, optional } => ImageType::Enum {
                 idx: ty.index(),
                 optional,
             },
@@ -823,6 +860,11 @@ impl<'a> FnLowerer<'a> {
                 self.lower_assert(value, *span);
                 Flow::Fallthrough
             }
+            Statement::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.lower_match(scrutinee, arms, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this statement"));
                 Flow::Fallthrough
@@ -1138,6 +1180,182 @@ impl<'a> FnLowerer<'a> {
         self.patch_all(end_jumps, end);
 
         if then_flow == Flow::Terminates && else_flow == Flow::Terminates {
+            Flow::Terminates
+        } else {
+            Flow::Fallthrough
+        }
+    }
+
+    /// Lower a `match` over a flat enum scrutinee (design §B). The scrutinee is
+    /// evaluated once into a fresh local; the arms dispatch through a branch chain
+    /// over the enum tag (`EnumTag` + `EqInt` + `JumpIfFalse`), the simplest form
+    /// the verifier admits without a tag-switch opcode. The match must cover every
+    /// member exactly once with no wildcard arm; exhaustiveness is a check-time
+    /// rule, not an image invariant. Because the match is exhaustive, the last arm
+    /// in source order runs unconditionally (no test): every other member is caught
+    /// by an earlier arm, so only its own member reaches it, which also makes its
+    /// positional payload reads (`EnumPayloadGet`) sound.
+    fn lower_match(&mut self, scrutinee: &Expression, arms: &[MatchArm], span: SourceSpan) -> Flow {
+        let Some(scrut_ty) = self.lower_expr(scrutinee) else {
+            return Flow::Fallthrough;
+        };
+        let Some(enum_id) = scrut_ty.bare_enum() else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckMatchArm.as_str(),
+                self.file,
+                scrutinee.span(),
+                format!(
+                    "`match` needs an enum value, found {}",
+                    scrut_ty.spelling(self.records)
+                ),
+            ));
+            return Flow::Fallthrough;
+        };
+        // The scrutinee's variants: name plus payload scalar list, owned so the arm
+        // loop can borrow `self` mutably while resolving each arm.
+        let variants: Vec<(String, Vec<ScalarType>)> = self
+            .records
+            .enum_by_id(enum_id)
+            .expect("a bare enum resolves to enum info")
+            .variants
+            .iter()
+            .map(|variant| {
+                (
+                    variant.name.clone(),
+                    variant.payload.iter().map(|field| field.scalar).collect(),
+                )
+            })
+            .collect();
+
+        let scrut_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(scrut_slot), span);
+
+        let mut covered = vec![false; variants.len()];
+        let mut end_jumps: Vec<usize> = Vec::new();
+        let mut all_terminate = true;
+        let mut any_arm = false;
+        let arm_count = arms.len();
+
+        for (position, arm) in arms.iter().enumerate() {
+            let is_last = position + 1 == arm_count;
+            let [member] = arm.path.as_slice() else {
+                self.fail(unsupported(
+                    self.file,
+                    arm.span,
+                    "a hierarchical (`::`) match arm",
+                ));
+                continue;
+            };
+            let Some(variant_index) = variants.iter().position(|(name, _)| name == member) else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckMatchArm.as_str(),
+                    self.file,
+                    arm.span,
+                    format!(
+                        "`{member}` is not a member of enum `{}`",
+                        self.records
+                            .enum_by_id(enum_id)
+                            .expect("enum resolved")
+                            .name
+                    ),
+                ));
+                continue;
+            };
+            if covered[variant_index] {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckMatchArm.as_str(),
+                    self.file,
+                    arm.span,
+                    format!("member `{member}` is already covered by an earlier arm"),
+                ));
+                continue;
+            }
+            covered[variant_index] = true;
+            any_arm = true;
+            let payload = variants[variant_index].1.clone();
+            if !arm.bindings.is_empty() && arm.bindings.len() != payload.len() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckMatchArm.as_str(),
+                    self.file,
+                    arm.span,
+                    format!(
+                        "member `{member}` carries {} payload field(s), but the arm binds {}",
+                        payload.len(),
+                        arm.bindings.len()
+                    ),
+                ));
+                continue;
+            }
+
+            // Non-last arms test the tag and skip to the next arm on a mismatch;
+            // the exhaustive last arm runs unconditionally.
+            let to_next = if is_last {
+                None
+            } else {
+                self.push(Instr::LocalGet(scrut_slot), arm.span);
+                self.push(Instr::EnumTag, arm.span);
+                let konst = self.draft.intern_int(variant_index as i64);
+                self.push(Instr::ConstLoad(konst.index()), arm.span);
+                self.push(Instr::EqInt, arm.span);
+                Some(self.push_jif(arm.span))
+            };
+
+            // Bind the payload positionally into fresh locals scoped to the arm.
+            let mark = self.locals.len();
+            for (field, (binding, scalar)) in arm.bindings.iter().zip(&payload).enumerate() {
+                let slot = self.alloc_slot();
+                self.push(Instr::LocalGet(scrut_slot), binding.span);
+                self.push(
+                    Instr::EnumPayloadGet {
+                        variant: variant_index as u16,
+                        field: field as u16,
+                    },
+                    binding.span,
+                );
+                self.push(Instr::LocalSet(slot), binding.span);
+                self.locals.push(Local {
+                    name: binding.name.clone(),
+                    ty: LTy::bare_scalar(*scalar),
+                    mutable: false,
+                    slot,
+                });
+            }
+            let flow = self.lower_block(&arm.block);
+            self.locals.truncate(mark);
+            all_terminate &= flow == Flow::Terminates;
+            if flow == Flow::Fallthrough && !is_last {
+                end_jumps.push(self.push_jump(arm.block.span));
+            }
+            if let Some(to_next) = to_next {
+                let next = self.here();
+                self.patch(to_next, next);
+            }
+        }
+
+        // Exhaustiveness: every member covered exactly once, no wildcard arm.
+        let missing: Vec<&str> = variants
+            .iter()
+            .zip(&covered)
+            .filter(|(_, covered)| !**covered)
+            .map(|((name, _), _)| name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckMatchNonexhaustive.as_str(),
+                self.file,
+                span,
+                format!(
+                    "`match` does not cover every member; missing: {}",
+                    missing.join(", ")
+                ),
+            ));
+        }
+
+        let end = self.here();
+        self.patch_all(end_jumps, end);
+        // The match terminates only when it is exhaustive (so the unconditional last
+        // arm is reached) and every arm diverges.
+        if any_arm && missing.is_empty() && all_terminate {
             Flow::Terminates
         } else {
             Flow::Fallthrough
@@ -1587,24 +1805,30 @@ impl<'a> FnLowerer<'a> {
         }
         match expr {
             Expression::Literal { kind, text, span } => self.lower_literal(*kind, text, *span),
-            Expression::Name { segments, span, .. } => {
-                let [name] = segments.as_slice() else {
+            Expression::Name { segments, span, .. } => match segments.as_slice() {
+                [name] => {
+                    if let Some(local) = self.lookup(name) {
+                        let (slot, ty) = (local.slot, local.ty);
+                        self.push(Instr::LocalGet(slot), *span);
+                        return Some(ty);
+                    }
+                    // A module-private constant, folded to a constant load. Locals
+                    // and parameters shadow it (checked first).
+                    if let Some(value) = self.consts.get(self.module, name).cloned() {
+                        return Some(self.lower_const_value(&value, *span));
+                    }
+                    self.fail(name_error(self.file, *span, name));
+                    None
+                }
+                // `Enum::member` for a payloadless member is an enum value.
+                [enum_name, variant] if self.records.enum_by_name(enum_name).is_some() => {
+                    self.lower_enum_construct(enum_name, variant, &[], *span)
+                }
+                _ => {
                     self.fail(unsupported(self.file, *span, "a qualified name"));
-                    return None;
-                };
-                if let Some(local) = self.lookup(name) {
-                    let (slot, ty) = (local.slot, local.ty);
-                    self.push(Instr::LocalGet(slot), *span);
-                    return Some(ty);
+                    None
                 }
-                // A module-private constant, folded to a constant load. Locals and
-                // parameters shadow it (checked first).
-                if let Some(value) = self.consts.get(self.module, name).cloned() {
-                    return Some(self.lower_const_value(&value, *span));
-                }
-                self.fail(name_error(self.file, *span, name));
-                None
-            }
+            },
             Expression::Absent { span } => {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -1752,6 +1976,9 @@ impl<'a> FnLowerer<'a> {
         let span = right.span();
         if left_ty.bare_nominal().is_some() || right_ty.bare_nominal().is_some() {
             return self.lower_nominal_binary(op, left_ty, right_ty, right_is_one, span);
+        }
+        if left_ty.bare_enum().is_some() || right_ty.bare_enum().is_some() {
+            return self.lower_enum_binary(op, left_ty, right_ty, span);
         }
         let (Some(left), Some(right_scalar)) =
             (left_ty.bare_scalar_type(), right_ty.bare_scalar_type())
@@ -1930,6 +2157,43 @@ impl<'a> FnLowerer<'a> {
         Some(nominal)
     }
 
+    /// Lower `==`/`!=` on two values of the same enum to `EqEnum` (exact variant
+    /// and payload equality). Any other operator, or two different enums, is a
+    /// typed diagnostic — an enum has no ordering.
+    fn lower_enum_binary(
+        &mut self,
+        op: BinaryOp,
+        left_ty: LTy,
+        right_ty: LTy,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
+        let same_enum =
+            left_ty.bare_enum().is_some() && left_ty.bare_enum() == right_ty.bare_enum();
+        match op {
+            BinaryOp::Equal if same_enum => {
+                self.push(Instr::EqEnum, span);
+                Some(bool_ty)
+            }
+            BinaryOp::NotEqual if same_enum => {
+                self.push(Instr::EqEnum, span);
+                self.push(Instr::BoolNot, span);
+                Some(bool_ty)
+            }
+            _ => {
+                self.fail(binary_error(
+                    self.records,
+                    self.file,
+                    span,
+                    op,
+                    left_ty,
+                    right_ty,
+                ));
+                None
+            }
+        }
+    }
+
     fn nominal_supports(&self, ty: LTy) -> SupportSet {
         let id = ty.bare_nominal().expect("caller classified a nominal");
         self.records.nominal(id).supports
@@ -2073,6 +2337,10 @@ impl<'a> FnLowerer<'a> {
         };
         match segments.as_slice() {
             [name] => self.lower_unqualified_call(name, args, span),
+            // `Enum::member(payload...)` constructs a payload-carrying enum value.
+            [enum_name, item] if self.records.enum_by_name(enum_name).is_some() => self
+                .lower_enum_construct(enum_name, item, args, span)
+                .map(CallResult::Value),
             [prefix @ .., item] => self.lower_qualified_call(prefix, item, args, span),
             [] => {
                 self.fail(unsupported(self.file, span, "this call"));
@@ -2453,6 +2721,125 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::RecordNew(type_id.index()), span);
         Some(LTy::Struct {
             ty: type_id,
+            optional: false,
+        })
+    }
+
+    /// Lower an enum construction `Enum::member` or `Enum::member(field: v, ...)`.
+    /// A payloadless member takes no arguments; a payload member takes the exact
+    /// named payload set, each coerced to its declared scalar in payload
+    /// declaration order (p0 pushed first), then `EnumConstruct`.
+    fn lower_enum_construct(
+        &mut self,
+        enum_name: &str,
+        variant_name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let (enum_id, variant_index) = {
+            let info = self.records.enum_by_name(enum_name)?;
+            let Some((index, _)) = info.variant(variant_name) else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("enum `{enum_name}` has no member `{variant_name}`"),
+                ));
+                return None;
+            };
+            (info.enum_id, index)
+        };
+        // The payload plan, resolved before emission so evaluation order is the
+        // payload declaration order.
+        let plan: Vec<(String, ScalarType)> = self
+            .records
+            .enum_by_name(enum_name)?
+            .variant(variant_name)?
+            .1
+            .payload
+            .iter()
+            .map(|field| (field.name.clone(), field.scalar))
+            .collect();
+
+        if plan.is_empty() {
+            if !args.is_empty() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("`{enum_name}::{variant_name}` carries no payload"),
+                ));
+                return None;
+            }
+        } else {
+            let mut ok = true;
+            let mut seen: BTreeSet<&str> = BTreeSet::new();
+            for argument in args {
+                let Some(arg_name) = &argument.name else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        argument.value.span(),
+                        format!(
+                            "`{enum_name}::{variant_name}` payload fields are named, as \
+                             `{variant_name}(field: value, ...)`"
+                        ),
+                    ));
+                    ok = false;
+                    continue;
+                };
+                if !plan.iter().any(|(name, _)| name == arg_name) {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        argument.value.span(),
+                        format!("`{enum_name}::{variant_name}` has no payload field `{arg_name}`"),
+                    ));
+                    ok = false;
+                    continue;
+                }
+                if !seen.insert(arg_name.as_str()) {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        argument.value.span(),
+                        format!("payload field `{arg_name}` is set more than once"),
+                    ));
+                    ok = false;
+                }
+            }
+            if !ok {
+                return None;
+            }
+            for (field_name, scalar) in &plan {
+                let arg = args
+                    .iter()
+                    .find(|a| a.name.as_deref() == Some(field_name.as_str()));
+                match arg {
+                    Some(argument) => {
+                        self.lower_as(&argument.value, LTy::bare_scalar(*scalar))?;
+                    }
+                    None => {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            span,
+                            format!("missing payload field `{field_name}`"),
+                        ));
+                        return None;
+                    }
+                }
+            }
+        }
+        self.push(
+            Instr::EnumConstruct {
+                enum_idx: enum_id.index(),
+                variant: variant_index,
+            },
+            span,
+        );
+        Some(LTy::Enum {
+            ty: enum_id,
             optional: false,
         })
     }
@@ -2975,6 +3362,9 @@ fn param_type(records: &TypeRegistry, ty: &TypeExpr) -> Option<LTy> {
             }
             | LTy::Struct {
                 optional: false, ..
+            }
+            | LTy::Enum {
+                optional: false, ..
             }),
         ) => Some(param),
         _ => None,
@@ -3002,6 +3392,11 @@ fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy
             } else if let Some(info) = records.struct_by_name(text) {
                 Some(LTy::Struct {
                     ty: info.type_id,
+                    optional: false,
+                })
+            } else if let Some(info) = records.enum_by_name(text) {
+                Some(LTy::Enum {
+                    ty: info.enum_id,
                     optional: false,
                 })
             } else {

@@ -12,8 +12,8 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
-    AliasDecl, ConstDecl, Declaration, FunctionDecl, NominalDecl, ParsedSource, ResourceDecl,
-    SourceSpan, StoreDecl, StructDecl, parse_source,
+    AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ParsedSource,
+    ResourceDecl, SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -296,11 +296,24 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
+    let enums: Vec<(String, &EnumDecl)> = parsed
+        .iter()
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
+                if let Declaration::Enum(item) = decl {
+                    Some((module.file.clone(), item))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
     let records = TypeRegistry::build(
         &mut draft,
         &aliases,
         &nominals,
         &structs,
+        &enums,
         &resources,
         &mut diagnostics,
     );
@@ -403,6 +416,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 | Declaration::Const(_)
                 | Declaration::Resource(_)
                 | Declaration::Struct(_)
+                | Declaration::Enum(_)
                 | Declaration::Store(_)
                 | Declaration::Test(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(

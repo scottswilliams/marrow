@@ -18,7 +18,9 @@ use marrow_kernel::durable::{
     DurableStore, ExportDemand, FieldSchema, InvocationGrant, SessionError, SiteSpec,
     SiteTarget as KernelSiteTarget, StoreSchema,
 };
-use marrow_verify::{ImageType, Scalar, SealedRecordType, SealedSiteTarget, VerifiedImage};
+use marrow_verify::{
+    ImageType, Scalar, SealedEnumType, SealedRecordType, SealedSiteTarget, VerifiedImage,
+};
 use marrow_vm::Value;
 
 use crate::outcome::Record;
@@ -51,6 +53,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                 args.format,
                 &[Record::OperationalError { code: failure.code }],
                 &[],
+                &[],
                 ExitCode::FAILURE,
             );
         }
@@ -68,7 +71,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                     column: diagnostic.column,
                 })
                 .collect();
-            return emit(args.format, &records, &[], ExitCode::FAILURE);
+            return emit(args.format, &records, &[], &[], ExitCode::FAILURE);
         }
     };
 
@@ -90,6 +93,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                 &[Record::ArtifactRejected {
                     code: rejection.code(),
                 }],
+                &[],
                 &[],
                 ExitCode::FAILURE,
             );
@@ -127,7 +131,13 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         Record::Value(_) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     };
-    emit(args.format, &[record], image.record_types(), exit)
+    emit(
+        args.format,
+        &[record],
+        image.record_types(),
+        image.enums(),
+        exit,
+    )
 }
 
 /// Resolve a caller-supplied export path to its [`ExportId`] through the compiler's
@@ -397,13 +407,14 @@ fn emit(
     format: Format,
     records: &[Record],
     types: &[SealedRecordType],
+    enums: &[SealedEnumType],
     exit: ExitCode,
 ) -> ExitCode {
     for record in records {
         match format {
-            Format::Jsonl => println!("{}", record.to_jsonl(types)),
+            Format::Jsonl => println!("{}", record.to_jsonl(types, enums)),
             Format::Text => {
-                let text = record.to_text(types);
+                let text = record.to_text(types, enums);
                 if !text.is_empty() {
                     println!("{text}");
                 }

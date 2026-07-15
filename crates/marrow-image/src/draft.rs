@@ -44,6 +44,18 @@ impl TypeId {
     }
 }
 
+/// An enum-type index (also the final container index; enums keep insertion order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnumId(pub(crate) u16);
+
+impl EnumId {
+    /// The raw enum-type index, as carried in `EnumConstruct`/`EnumTag`/
+    /// `EnumPayloadGet`/`EqEnum` operands and in an `ImageType::Enum`.
+    pub fn index(self) -> u16 {
+        self.0
+    }
+}
+
 /// A function index (also the final container index; functions keep insertion order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FuncId(pub(crate) u16);
@@ -79,6 +91,25 @@ pub struct FieldDef {
 pub struct RecordTypeDef {
     pub name: StrId,
     pub fields: Vec<FieldDef>,
+}
+
+/// One enum variant: a member name, a `category` flag reserving the hierarchy
+/// seam (always a leaf on the current flat line — the checker rejects category
+/// members), and its ordered dense scalar payload (empty for a payloadless
+/// member). Payload order is the declaration order — the canonical product-leaf
+/// order the checker owns.
+#[derive(Debug, Clone)]
+pub struct VariantDef {
+    pub name: StrId,
+    pub category: bool,
+    pub payload: Vec<Scalar>,
+}
+
+/// A closed enum type: an ordered variant list in declaration order.
+#[derive(Debug, Clone)]
+pub struct EnumTypeDef {
+    pub name: StrId,
+    pub variants: Vec<VariantDef>,
 }
 
 /// A durable root: one keyed placement of a record type.
@@ -164,6 +195,9 @@ pub enum ImageBuildError {
     TooManyConsts,
     TooManyTypes,
     TooManyFields,
+    TooManyEnums,
+    TooManyVariants,
+    TooManyPayloadFields,
     TooManyRoots,
     TooManySites,
     TooManyFunctions,
@@ -191,6 +225,7 @@ pub struct ImageDraft {
     strings: Vec<String>,
     consts: Vec<ConstValue>,
     types: Vec<RecordTypeDef>,
+    enums: Vec<EnumTypeDef>,
     roots: Vec<RootDef>,
     sites: Vec<SiteDef>,
     functions: Vec<FunctionDef>,
@@ -247,6 +282,12 @@ impl ImageDraft {
         id
     }
 
+    pub fn add_enum_type(&mut self, def: EnumTypeDef) -> EnumId {
+        let id = EnumId(self.enums.len() as u16);
+        self.enums.push(def);
+        id
+    }
+
     pub fn add_root(&mut self, def: RootDef) {
         self.roots.push(def);
     }
@@ -286,6 +327,9 @@ impl ImageDraft {
     }
     pub(crate) fn types(&self) -> &[RecordTypeDef] {
         &self.types
+    }
+    pub(crate) fn enums(&self) -> &[EnumTypeDef] {
+        &self.enums
     }
     pub(crate) fn roots(&self) -> &[RootDef] {
         &self.roots

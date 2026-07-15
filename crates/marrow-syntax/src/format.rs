@@ -427,8 +427,21 @@ fn format_enum(source: &str, decl: &EnumDecl) -> String {
 fn format_enum_member(source: &str, member: &EnumMember, level: usize) -> String {
     let mut out = format_docs(&member.docs, level);
     let category = if member.category { "category " } else { "" };
+    let payload = if member.payload.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "({})",
+            member
+                .payload
+                .iter()
+                .map(|field| format!("{}: {}", field.name, field.ty))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     out.push_str(&format!(
-        "{}{category}{}",
+        "{}{category}{}{payload}",
         INDENT.repeat(level),
         member.name
     ));
@@ -1386,7 +1399,19 @@ fn format_match(
         if i > 0 && !emitted_leading && blank_line_precedes(ctx.source, arm.span.start_byte) {
             out.push('\n');
         }
-        let mut header = format!("{arm_pad}{}", arm.path.join("::"));
+        let bindings = if arm.bindings.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "({})",
+                arm.bindings
+                    .iter()
+                    .map(|binding| binding.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let mut header = format!("{arm_pad}{}{bindings}", arm.path.join("::"));
         if let Some(comment) = comments.peek().copied()
             && trailing_comment_between(comment, arm.span.start_byte, arm.block.span.start_byte)
         {

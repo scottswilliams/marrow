@@ -466,7 +466,7 @@ fn collect_declaration_suppression(
         Declaration::Enum(enum_decl) => {
             declarations.push(enum_decl.span);
             for member in &enum_decl.members {
-                collect_enum_member_suppression(member, declarations);
+                collect_enum_member_suppression(member, type_refs, declarations);
             }
         }
         Declaration::Evolve(evolve) => {
@@ -502,10 +502,17 @@ fn collect_resource_member_suppression(
     }
 }
 
-fn collect_enum_member_suppression(member: &EnumMember, declarations: &mut ByteRanges) {
+fn collect_enum_member_suppression(
+    member: &EnumMember,
+    type_refs: &mut ByteRanges,
+    declarations: &mut ByteRanges,
+) {
     declarations.push(member.span);
+    for field in &member.payload {
+        type_refs.push(field.ty.span());
+    }
     for member in &member.members {
-        collect_enum_member_suppression(member, declarations);
+        collect_enum_member_suppression(member, type_refs, declarations);
     }
 }
 

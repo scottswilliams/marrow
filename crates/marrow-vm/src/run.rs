@@ -387,6 +387,42 @@ fn execute<'s>(
                 stack.push(Value::Optional(None));
                 pc += 1;
             }
+            SealedInstr::EnumConstruct { enum_idx, variant } => {
+                let arity = image.enums()[*enum_idx as usize].variants()[*variant as usize]
+                    .payload
+                    .len();
+                // p0 was pushed first, so the popped values fill slots in reverse.
+                let mut payload: Vec<Value> = vec![Value::Bool(false); arity];
+                for slot in payload.iter_mut().rev() {
+                    *slot = pop(&mut stack);
+                }
+                stack.push(Value::Enum(*enum_idx, *variant, payload.into_boxed_slice()));
+                pc += 1;
+            }
+            SealedInstr::EnumTag => {
+                let (_, variant, _) = as_enum(pop(&mut stack));
+                stack.push(Value::Int(i64::from(variant)));
+                pc += 1;
+            }
+            SealedInstr::EnumPayloadGet { variant, field } => {
+                let (_, actual_variant, payload) = as_enum(pop(&mut stack));
+                // The verifier typed the pushed leaf against the operand variant but
+                // could not prove the runtime variant, so guard it: a hostile image
+                // extracting the wrong variant's payload faults rather than pushing a
+                // wrongly-typed value. Compiler output dispatches on the tag first,
+                // so this never fires in practice.
+                if actual_variant != *variant {
+                    return Err(fault(function, pc, Code::RunEnumVariant.as_str()));
+                }
+                stack.push(payload[*field as usize].clone());
+                pc += 1;
+            }
+            SealedInstr::EqEnum => {
+                let b = pop(&mut stack);
+                let a = pop(&mut stack);
+                stack.push(Value::Bool(a == b));
+                pc += 1;
+            }
             SealedInstr::BranchPresent(target) => match as_optional(pop(&mut stack)) {
                 Some(inner) => {
                     stack.push(inner);
@@ -650,6 +686,13 @@ fn as_record(value: Value) -> (u16, Box<[Option<Value>]>) {
     match value {
         Value::Record(ty, slots) => (ty, slots),
         _ => unreachable!("verifier proved a record operand"),
+    }
+}
+
+fn as_enum(value: Value) -> (u16, u16, Box<[Value]>) {
+    match value {
+        Value::Enum(ty, variant, payload) => (ty, variant, payload),
+        _ => unreachable!("verifier proved an enum operand"),
     }
 }
 

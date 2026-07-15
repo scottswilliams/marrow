@@ -168,6 +168,8 @@ Static errors found while checking source.
             Code::CheckVisibility,
             Code::CheckRecursion,
             Code::CheckAssertOutsideTest,
+            Code::CheckMatchNonexhaustive,
+            Code::CheckMatchArm,
         ]),
         r#"
 ### `image.*` — kind `artifact`
@@ -295,8 +297,7 @@ bound.
         r#"
 These codes are emitted only by implementation-maintainer surfaces or as
 defense-in-depth fail-closed guards over invariants the surrounding layers
-already close. They are not ordinary user-facing diagnostics. None are defined
-in the current build.
+already close. They are not ordinary user-facing diagnostics.
 
 | Code | Meaning |
 |---|---|"#

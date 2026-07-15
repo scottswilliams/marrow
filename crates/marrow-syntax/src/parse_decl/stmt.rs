@@ -3,7 +3,7 @@
 //! `for`, `try`, `match`) and their nested blocks, keeping layout tokens so a
 //! statement may span several physical lines inside open delimiters.
 
-use super::head::arm_member_path;
+use super::head::arm_pattern;
 use super::statement_lines::{
     parse_catch_header, parse_for_header, parse_if_const_head, parse_simple_statement,
 };
@@ -12,8 +12,8 @@ use super::tokens::{
     line_end, line_span_or, parse_type, push_parse_error,
 };
 use crate::ast::{
-    Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf, Expression,
-    MatchArm, Statement, TypeExpr,
+    ArmBinding, Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf,
+    Expression, MatchArm, Statement, TypeExpr,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -526,19 +526,24 @@ impl<'a> StmtParser<'a> {
         let start = self.tokens[self.pos].span;
         let header = self.take_line();
         let span = line_span_or(header, start);
-        let Some((path, path_spans)) = arm_member_path(self.source, header) else {
+        let Some(pattern) = arm_pattern(self.source, header) else {
             self.error_span_reason(
                 span,
                 ParseDiagnosticReason::MatchArmMemberPath,
-                "a match arm is a member path relative to the enum",
+                "a match arm is a member path relative to the enum, with optional payload bindings",
             );
             self.skip_block_if_indented();
             return None;
         };
         let block = self.block_body();
         Some(MatchArm {
-            path,
-            path_spans,
+            path: pattern.path,
+            path_spans: pattern.path_spans,
+            bindings: pattern
+                .bindings
+                .into_iter()
+                .map(|(name, span)| ArmBinding { name, span })
+                .collect(),
             span: join_spans(span, block.span),
             block,
         })

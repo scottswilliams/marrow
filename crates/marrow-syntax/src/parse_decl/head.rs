@@ -5,7 +5,7 @@
 use super::params::match_paren;
 use super::tokens::{line_span_or, parse_type, split_top_level_commas, strip_comment_tokens};
 use super::{MemberHead, ParseError, ParseResult};
-use crate::ast::{IndexDecl, KeyParam, SavedRoot};
+use crate::ast::{EnumPayloadField, IndexDecl, KeyParam, SavedRoot};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -55,16 +55,21 @@ pub(super) fn parse_enum_head(
     Ok((public, name, name_span))
 }
 
-/// The name and category flag of an enum member from its header tokens: a bare
-/// identifier, optionally led by a contextual `category` word that marks it a
-/// grouping node. `category` is recognized positionally as the header lead, so it
-/// never collides with `category` used as an ordinary identifier elsewhere.
-/// Anything else — a type annotation, key parameters, or extra tokens — is the
-/// resource-member surface, which an enum member does not have.
-pub(super) fn enum_member_name(
-    source: &str,
-    tokens: &[Token],
-) -> ParseResult<(String, bool, SourceSpan)> {
+/// A parsed enum member header: the member name and category flag plus its dense
+/// payload fields (empty for a bare member).
+pub(super) struct EnumMemberHead {
+    pub name: String,
+    pub category: bool,
+    pub name_span: SourceSpan,
+    pub payload: Vec<EnumPayloadField>,
+}
+
+/// The name, category flag, and payload of an enum member from its header tokens:
+/// a bare identifier optionally led by a contextual `category` word, optionally
+/// followed by a parenthesized `name: Type` payload list. `category` is recognized
+/// positionally as the header lead, so it never collides with `category` used as
+/// an ordinary identifier elsewhere.
+pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<EnumMemberHead> {
     let (category, rest) = match tokens.first() {
         Some(token)
             if token.kind == TokenKind::Identifier
@@ -75,19 +80,113 @@ pub(super) fn enum_member_name(
         }
         _ => (false, tokens),
     };
-    match rest {
-        [token] if token.kind == TokenKind::Identifier => {
-            Ok((token.text(source).to_string(), category, token.span))
+    let (name, name_span) = match rest.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
         }
-        [_] => Err(ParseError::new(
-            ParseDiagnosticReason::EnumMemberMustBeBareName,
-            "expected an enum member name",
-        )),
-        _ => Err(ParseError::new(
-            ParseDiagnosticReason::EnumMemberMustBeBareName,
-            "an enum member is a bare name; it takes no type or parameters",
-        )),
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::EnumMemberMustBeBareName,
+                "expected an enum member name",
+            ));
+        }
+    };
+    let rest = &rest[1..];
+    // A bare member ends at its name; a payload member follows the name with a
+    // parenthesized `name: Type` list and nothing else.
+    if rest.is_empty() {
+        return Ok(EnumMemberHead {
+            name,
+            category,
+            name_span,
+            payload: Vec::new(),
+        });
     }
+    if !matches!(
+        rest.first().map(|token| token.kind),
+        Some(TokenKind::LeftParen)
+    ) {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::EnumMemberMustBeBareName,
+            "an enum member is a bare name or a payload member `name(field: Type, ...)`",
+        ));
+    }
+    let close = match_paren(rest).ok_or(ParseError::new(
+        ParseDiagnosticReason::EnumMemberMustBeBareName,
+        "expected a closing `)` in the enum member payload",
+    ))?;
+    if rest.len() != close + 1 {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::EnumMemberMustBeBareName,
+            "an enum member payload takes nothing after its `)`",
+        ));
+    }
+    let payload = parse_enum_payload_tokens(source, &rest[1..close])?;
+    Ok(EnumMemberHead {
+        name,
+        category,
+        name_span,
+        payload,
+    })
+}
+
+/// Parse the inside of an enum member payload list: a comma-separated run of
+/// `name: Type` fields. An empty payload (`circle()`) is rejected — a payload
+/// member declares at least one field.
+fn parse_enum_payload_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<EnumPayloadField>> {
+    if inner.is_empty() {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::EnumMemberMustBeBareName,
+            "an enum member payload declares at least one `name: Type` field",
+        ));
+    }
+    let mut fields = Vec::new();
+    for group in split_top_level_commas(inner) {
+        if group.is_empty() {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::EnumMemberMustBeBareName,
+                "an enum member payload field is `name: Type`",
+            ));
+        }
+        let (name, name_span) = match group.first() {
+            Some(token) if token.kind == TokenKind::Identifier => {
+                (token.text(source).to_string(), token.span)
+            }
+            _ => {
+                return Err(ParseError::new(
+                    ParseDiagnosticReason::EnumMemberMustBeBareName,
+                    "an enum member payload field is `name: Type`",
+                ));
+            }
+        };
+        if !matches!(group.get(1).map(|token| token.kind), Some(TokenKind::Colon)) {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::EnumMemberMustBeBareName,
+                "an enum member payload field is `name: Type`",
+            ));
+        }
+        let ty_tokens = &group[2..];
+        if ty_tokens.is_empty() {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FieldType),
+                "expected payload field type after `:`",
+            ));
+        }
+        let ty = parse_type(
+            source,
+            ty_tokens,
+            ExpectedSyntax::FieldType,
+            "expected payload field type after `:`",
+        )?;
+        let span = join_spans(name_span, ty.span());
+        fields.push(EnumPayloadField {
+            name,
+            name_span,
+            ty,
+            span,
+        });
+    }
+    Ok(fields)
 }
 
 /// The `::`-separated identifier segments of a match-arm header, or `None` when
@@ -120,6 +219,61 @@ pub(super) fn arm_member_path(
         return None;
     }
     Some((segments, spans))
+}
+
+/// A parsed match-arm header: the member path relative to the scrutinee enum and
+/// its positional payload bindings (empty for a bare arm).
+pub(super) struct ArmPattern {
+    pub path: Vec<String>,
+    pub path_spans: Vec<SourceSpan>,
+    pub bindings: Vec<(String, SourceSpan)>,
+}
+
+/// Parse a match-arm header: a member path optionally followed by a positional
+/// binding list `(a, b, ...)`. Returns `None` when the header is not a member
+/// path or the binding list is malformed, so the caller reports one arm error.
+pub(super) fn arm_pattern(source: &str, tokens: &[Token]) -> Option<ArmPattern> {
+    // Split off a trailing `(...)` binding list, if any. The path is everything
+    // before the first top-level `(`.
+    let paren = tokens
+        .iter()
+        .position(|token| token.kind == TokenKind::LeftParen);
+    let (path_tokens, bindings) = match paren {
+        None => (tokens, Vec::new()),
+        Some(open) => {
+            let close = match_paren(&tokens[open..])? + open;
+            // Nothing may follow the binding list.
+            if close + 1 != tokens.len() {
+                return None;
+            }
+            let bindings = parse_arm_bindings(source, &tokens[open + 1..close])?;
+            (&tokens[..open], bindings)
+        }
+    };
+    let (path, path_spans) = arm_member_path(source, path_tokens)?;
+    Some(ArmPattern {
+        path,
+        path_spans,
+        bindings,
+    })
+}
+
+/// Parse the inside of a match-arm binding list: a comma-separated run of bare
+/// identifiers. An empty list (`circle()`) is rejected.
+fn parse_arm_bindings(source: &str, inner: &[Token]) -> Option<Vec<(String, SourceSpan)>> {
+    if inner.is_empty() {
+        return None;
+    }
+    let mut bindings = Vec::new();
+    for group in split_top_level_commas(inner) {
+        match group {
+            [token] if token.kind == TokenKind::Identifier => {
+                bindings.push((token.text(source).to_string(), token.span));
+            }
+            _ => return None,
+        }
+    }
+    Some(bindings)
 }
 
 /// Parse a resource header's tokens after the `resource` keyword: `Name`.

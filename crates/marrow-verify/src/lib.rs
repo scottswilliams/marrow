@@ -17,8 +17,8 @@ mod vtype;
 pub use marrow_image::{ExportId, ImageId, ImageType, Scalar};
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{
-    Demand, RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
-    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SpanRow,
-    VerifiedImage,
+    Demand, RetShape, SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction,
+    SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry,
+    SealedVariant, SpanRow, VerifiedImage,
 };
 pub use verify::verify;

@@ -186,7 +186,7 @@ impl<'a> DeclParser<'a> {
                     let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
                     comments.extend(trailing_comment);
                     match enum_member_name(self.source, header) {
-                        Ok((name, category, name_span)) => {
+                        Ok(head) => {
                             // A member's children are the indented block that
                             // immediately follows its header, parsed by the same
                             // routine and attached, so members nest to any depth.
@@ -198,9 +198,10 @@ impl<'a> DeclParser<'a> {
                                 };
                             members.push(EnumMember {
                                 docs: member_docs,
-                                name,
-                                name_span,
-                                category,
+                                name: head.name,
+                                name_span: head.name_span,
+                                category: head.category,
+                                payload: head.payload,
                                 members: nested,
                                 comments: nested_comments,
                                 span,

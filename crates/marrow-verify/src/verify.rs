@@ -17,23 +17,24 @@ use marrow_image::{
     OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
     OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
     OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
-    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL, OP_EQ_BYTES,
-    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
-    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
-    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
-    OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
-    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
-    OP_TEXT_IS_EMPTY, OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT,
-    OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_INT,
-    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_ENUM_CONSTRUCT,
+    OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_ENUM, OP_EQ_INT, OP_EQ_TEXT,
+    OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE,
+    OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
+    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
+    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
+    OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
+    OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_ENUM, TAG_INT, TAG_RECORD,
+    TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    Demand, RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
-    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SpanRow,
-    VerifiedImage,
+    Demand, RetShape, SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction,
+    SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry,
+    SealedVariant, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -70,6 +71,20 @@ struct DecodedField {
     required: bool,
 }
 
+/// A decoded enum type: name string index and its ordered variants.
+struct DecodedEnum {
+    name: u16,
+    variants: Vec<DecodedVariant>,
+}
+
+/// A decoded enum variant: name string index, `category` flag, and dense scalar
+/// payload in declaration order.
+struct DecodedVariant {
+    name: u16,
+    category: bool,
+    payload: Vec<Scalar>,
+}
+
 /// A decoded durable root: name string index, key scalar, and record type index.
 struct DecodedRoot {
     name: u16,
@@ -97,6 +112,7 @@ struct DecodedImage {
     image_id: ImageId,
     strings: Vec<Rc<str>>,
     types: Vec<DecodedRecordType>,
+    enums: Vec<DecodedEnum>,
     roots: Vec<DecodedRoot>,
     sites: Vec<DecodedSite>,
     consts: Vec<SealedConst>,
@@ -139,12 +155,12 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let section_count = reader
         .u8()
         .ok_or(reject(VerifyPhase::Envelope, "short section count"))?;
-    if section_count != 8 {
-        return Err(reject(VerifyPhase::Envelope, "section count must be 8"));
+    if section_count != 9 {
+        return Err(reject(VerifyPhase::Envelope, "section count must be 9"));
     }
-    let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(8);
+    let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(9);
     let mut last_id = 0u8;
-    for _ in 0..8 {
+    for _ in 0..9 {
         let id = reader
             .u8()
             .ok_or(reject(VerifyPhase::Envelope, "short section id"))?;
@@ -170,12 +186,12 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
             "trailing bytes after sections",
         ));
     }
-    // Section ids strictly ascend and there are exactly 8, so they are exactly 1..8.
+    // Section ids strictly ascend and there are exactly 9, so they are exactly 1..9.
     for (index, (id, _)) in sections.iter().enumerate() {
         if *id != (index as u8 + 1) {
             return Err(reject(
                 VerifyPhase::Envelope,
-                "section ids must be exactly 1..8",
+                "section ids must be exactly 1..9",
             ));
         }
     }
@@ -184,9 +200,10 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     // order, so they are attached to the already-decoded function list.
     let strings = decode_strings(sections[0].1)?;
     let types = decode_types(sections[1].1, strings.len())?;
+    let enums = decode_enums(sections[8].1, strings.len())?;
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
-    let mut functions = decode_functions(sections[4].1, strings.len(), types.len())?;
+    let mut functions = decode_functions(sections[4].1, strings.len(), types.len(), enums.len())?;
     let exports = decode_exports(sections[5].1, functions.len())?;
     decode_spans(sections[6].1, &mut functions)?;
     let test_entries = decode_test_entries(sections[7].1, strings.len(), functions.len())?;
@@ -195,6 +212,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         image_id: image_id(payload),
         strings,
         types,
+        enums,
         roots,
         sites,
         consts,
@@ -385,6 +403,94 @@ fn decode_types(
     Ok(types)
 }
 
+/// Decode the ENUMS table (section 0x09): a count, then per enum its name string
+/// index, a variant count, and per variant a name string index, a `category` flag
+/// byte, a payload count, and one bare-scalar tag per payload leaf. Variant names
+/// are unique within an enum; payload leaves must be bare scalars.
+fn decode_enums(body: &[u8], string_count: usize) -> Result<Vec<DecodedEnum>, VerifyRejection> {
+    let mut reader = Reader::new(body);
+    let count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short enum count"))? as usize;
+    if count > marrow_image::bounds::MAX_ENUMS {
+        return Err(reject(VerifyPhase::Table, "too many enums"));
+    }
+    let mut enums = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short enum name"))?;
+        if name as usize >= string_count {
+            return Err(reject(VerifyPhase::Table, "enum name index out of range"));
+        }
+        let variant_count = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short variant count"))?
+            as usize;
+        if variant_count > marrow_image::bounds::MAX_VARIANTS {
+            return Err(reject(VerifyPhase::Table, "too many enum variants"));
+        }
+        let mut variants = Vec::with_capacity(variant_count);
+        let mut seen_names: Vec<u16> = Vec::with_capacity(variant_count);
+        for _ in 0..variant_count {
+            let vname = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short variant name"))?;
+            if vname as usize >= string_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "variant name index out of range",
+                ));
+            }
+            if seen_names.contains(&vname) {
+                return Err(reject(VerifyPhase::Table, "duplicate variant name in enum"));
+            }
+            seen_names.push(vname);
+            let category_byte = reader
+                .u8()
+                .ok_or(reject(VerifyPhase::Table, "short variant category flag"))?;
+            let category = match category_byte {
+                0 => false,
+                1 => true,
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "variant category flag must be 0 or 1",
+                    ));
+                }
+            };
+            let payload_count = reader
+                .u8()
+                .ok_or(reject(VerifyPhase::Table, "short payload count"))?
+                as usize;
+            if payload_count > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
+                return Err(reject(VerifyPhase::Table, "too many payload fields"));
+            }
+            let mut payload = Vec::with_capacity(payload_count);
+            for _ in 0..payload_count {
+                let tag = reader
+                    .u8()
+                    .ok_or(reject(VerifyPhase::Table, "short payload type"))?;
+                let scalar = decode_bare_scalar(tag).ok_or(reject(
+                    VerifyPhase::Table,
+                    "payload type must be a bare scalar",
+                ))?;
+                payload.push(scalar);
+            }
+            variants.push(DecodedVariant {
+                name: vname,
+                category,
+                payload,
+            });
+        }
+        enums.push(DecodedEnum { name, variants });
+    }
+    if !reader.is_empty() {
+        return Err(reject(VerifyPhase::Table, "trailing bytes in enum table"));
+    }
+    Ok(enums)
+}
+
 /// Decode the DURABLE table (design §C 0x03): 0 or 1 roots, then the operation
 /// sites, revalidating every site against the roots and record types.
 fn decode_durable(
@@ -553,6 +659,7 @@ fn decode_type_ref_ret(
     tag: u8,
     reader: &mut Reader,
     type_count: usize,
+    enum_count: usize,
 ) -> Result<RetShape, VerifyRejection> {
     let optional = tag & OPTIONAL_FLAG != 0;
     let base = tag & !OPTIONAL_FLAG;
@@ -579,6 +686,18 @@ fn decode_type_ref_ret(
             }
             Ok(RetShape::Record { idx, optional })
         }
+        TAG_ENUM => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short enum return type index"))?;
+            if idx as usize >= enum_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "enum return type index out of range",
+                ));
+            }
+            Ok(RetShape::Enum { idx, optional })
+        }
         _ => Err(reject(VerifyPhase::Table, "unknown return type tag")),
     }
 }
@@ -590,6 +709,7 @@ fn decode_param_ref(
     tag: u8,
     reader: &mut Reader,
     type_count: usize,
+    enum_count: usize,
 ) -> Result<ImageType, VerifyRejection> {
     if tag & OPTIONAL_FLAG != 0 {
         return Err(reject(
@@ -616,9 +736,24 @@ fn decode_param_ref(
                 optional: false,
             })
         }
+        TAG_ENUM => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short enum param type index"))?;
+            if idx as usize >= enum_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "enum param type index out of range",
+                ));
+            }
+            Ok(ImageType::Enum {
+                idx,
+                optional: false,
+            })
+        }
         _ => Err(reject(
             VerifyPhase::Table,
-            "param type must be a bare scalar or record",
+            "param type must be a bare scalar, record, or enum",
         )),
     }
 }
@@ -627,6 +762,7 @@ fn decode_functions(
     body: &[u8],
     string_count: usize,
     type_count: usize,
+    enum_count: usize,
 ) -> Result<Vec<DecodedFunction>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
@@ -661,12 +797,12 @@ fn decode_functions(
             let tag = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short param type"))?;
-            params.push(decode_param_ref(tag, &mut reader, type_count)?);
+            params.push(decode_param_ref(tag, &mut reader, type_count, enum_count)?);
         }
         let ret_tag = reader
             .u8()
             .ok_or(reject(VerifyPhase::Table, "short return type"))?;
-        let ret = decode_type_ref_ret(ret_tag, &mut reader, type_count)?;
+        let ret = decode_type_ref_ret(ret_tag, &mut reader, type_count, enum_count)?;
         let local_count = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short local count"))?;
@@ -838,6 +974,22 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 .collect(),
         })
         .collect();
+    let enums: Vec<SealedEnumType> = decoded
+        .enums
+        .iter()
+        .map(|enum_def| SealedEnumType {
+            name: decoded.strings[enum_def.name as usize].clone(),
+            variants: enum_def
+                .variants
+                .iter()
+                .map(|variant| SealedVariant {
+                    name: decoded.strings[variant.name as usize].clone(),
+                    category: variant.category,
+                    payload: variant.payload.clone(),
+                })
+                .collect(),
+        })
+        .collect();
     let roots: Vec<SealedRoot> = decoded
         .roots
         .iter()
@@ -866,6 +1018,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .collect();
     let ctx = Ctx {
         types: &types,
+        enums: &enums,
         roots: &roots,
         sites: &sites,
         signatures: &signatures,
@@ -914,6 +1067,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     Ok(VerifiedImage {
         image_id: decoded.image_id,
         types,
+        enums,
         roots,
         sites,
         consts: decoded.consts,
@@ -1016,6 +1170,7 @@ fn check_test_entries(
 /// The sealed tables the per-function checks consult.
 struct Ctx<'a> {
     types: &'a [SealedRecordType],
+    enums: &'a [SealedEnumType],
     roots: &'a [SealedRoot],
     sites: &'a [SealedSite],
     signatures: &'a [FnSig],
@@ -1411,6 +1566,16 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
             OP_SOME_WRAP => SealedInstr::SomeWrap,
             OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
+            OP_ENUM_CONSTRUCT => SealedInstr::EnumConstruct {
+                enum_idx: operand_u16(&mut reader)?,
+                variant: operand_u16(&mut reader)?,
+            },
+            OP_ENUM_TAG => SealedInstr::EnumTag,
+            OP_ENUM_PAYLOAD_GET => SealedInstr::EnumPayloadGet {
+                variant: operand_u16(&mut reader)?,
+                field: operand_u16(&mut reader)?,
+            },
+            OP_EQ_ENUM => SealedInstr::EqEnum,
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
             OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(&mut reader)?),
             OP_ASSERT => SealedInstr::Assert,
@@ -1688,6 +1853,9 @@ fn apply(
             RetShape::Record { idx, optional } => {
                 frame.stack.push(VType::Record { idx, optional });
             }
+            RetShape::Enum { idx, optional } => {
+                frame.stack.push(VType::Enum { idx, optional });
+            }
         }
         return Ok(Control::Fallthrough);
     }
@@ -1770,6 +1938,103 @@ fn apply(
                 target: *target,
                 present: value.to_bare(),
             });
+        }
+        SealedInstr::EnumConstruct { enum_idx, variant } => {
+            let enum_def = ctx.enums.get(*enum_idx as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "enum type index out of range",
+            ))?;
+            let variant_def = enum_def.variants().get(*variant as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "enum variant index out of range",
+            ))?;
+            // p0 is pushed first, so pop the payload in reverse declaration order.
+            for scalar in variant_def.payload.iter().rev() {
+                let got = pop(&mut frame.stack)?;
+                if got != VType::bare_scalar(*scalar) {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "enum payload operand type mismatch",
+                    ));
+                }
+            }
+            frame.stack.push(VType::bare_enum(*enum_idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::EnumTag => {
+            let value = pop(&mut frame.stack)?;
+            if !matches!(
+                value,
+                VType::Enum {
+                    optional: false,
+                    ..
+                }
+            ) {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "enum-tag requires a bare enum",
+                ));
+            }
+            frame.stack.push(VType::bare_scalar(Scalar::Int));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::EnumPayloadGet { variant, field } => {
+            let value = pop(&mut frame.stack)?;
+            let VType::Enum {
+                idx,
+                optional: false,
+            } = value
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "enum-payload-get requires a bare enum",
+                ));
+            };
+            let enum_def = ctx.enums.get(idx as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "enum type index out of range",
+            ))?;
+            let variant_def = enum_def.variants().get(*variant as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "enum variant index out of range",
+            ))?;
+            // The variant operand types the payload leaf; the VM faults if the
+            // runtime value carries a different variant, so the pushed type is
+            // never observed on a mismatch.
+            let scalar = variant_def.payload.get(*field as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "enum payload field index out of range",
+            ))?;
+            frame.stack.push(VType::bare_scalar(*scalar));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::EqEnum => {
+            let right = pop(&mut frame.stack)?;
+            let left = pop(&mut frame.stack)?;
+            let (
+                VType::Enum {
+                    idx: r,
+                    optional: false,
+                },
+                VType::Enum {
+                    idx: l,
+                    optional: false,
+                },
+            ) = (right, left)
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "enum equality requires two bare enums",
+                ));
+            };
+            if l != r {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "enum equality operands are different enums",
+                ));
+            }
+            frame.stack.push(VType::bare_scalar(Scalar::Bool));
+            return Ok(Control::Fallthrough);
         }
         _ => {}
     }
@@ -1969,6 +2234,10 @@ fn apply(
         | SealedInstr::SomeWrap
         | SealedInstr::VacantLoad(_)
         | SealedInstr::BranchPresent(_)
+        | SealedInstr::EnumConstruct { .. }
+        | SealedInstr::EnumTag
+        | SealedInstr::EnumPayloadGet { .. }
+        | SealedInstr::EqEnum
         | SealedInstr::Call(_)
         | SealedInstr::DurExists(_)
         | SealedInstr::DurReadField(_)

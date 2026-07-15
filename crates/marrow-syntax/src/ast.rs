@@ -583,16 +583,30 @@ pub struct EnumDecl {
     pub span: SourceSpan,
 }
 
-/// One enum member: a bare identifier, optionally with nested members under it.
-/// A `category` member groups its descendants and is not selectable as a value.
+/// One enum member: a bare identifier, optionally carrying a parenthesized dense
+/// payload (`circle(radius: int)`) and/or nested members under it. A `category`
+/// member groups its descendants and is not selectable as a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMember {
     pub docs: Vec<String>,
     pub name: String,
     pub name_span: SourceSpan,
     pub category: bool,
+    /// The member's dense payload fields, in declaration order (empty for a
+    /// payloadless member). Each is the bare `name: Type` form.
+    pub payload: Vec<EnumPayloadField>,
     pub members: Vec<EnumMember>,
     pub comments: Vec<Comment>,
+    pub span: SourceSpan,
+}
+
+/// One payload field of an enum member: a named, typed leaf carried by that
+/// variant, as `name: Type`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumPayloadField {
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub ty: TypeExpr,
     pub span: SourceSpan,
 }
 
@@ -785,7 +799,18 @@ pub enum CheckedBind {
 pub struct MatchArm {
     pub path: Vec<String>,
     pub path_spans: Vec<SourceSpan>,
+    /// Positional payload bindings the arm introduces (`circle(r)` binds `r`),
+    /// empty for a bare arm. The checker matches them against the member's payload
+    /// arity and binds each to a fresh local in payload declaration order.
+    pub bindings: Vec<ArmBinding>,
     pub block: Block,
+    pub span: SourceSpan,
+}
+
+/// One positional payload binding in a `match` arm header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmBinding {
+    pub name: String,
     pub span: SourceSpan,
 }
 

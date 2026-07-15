@@ -15,7 +15,7 @@ use crate::ty::ImageType;
 /// Container magic and version.
 const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
-const SECTION_COUNT: u8 = 8;
+const SECTION_COUNT: u8 = 9;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -45,6 +45,7 @@ impl ImageDraft {
         push_section(&mut tail, 0x06, self.encode_exports())?;
         push_section(&mut tail, 0x07, self.encode_spans(&function_offsets.per_fn))?;
         push_section(&mut tail, 0x08, self.encode_test_entries(&str_map))?;
+        push_section(&mut tail, 0x09, self.encode_enums(&str_map))?;
 
         let id = image_id(&tail);
         let mut bytes = Vec::with_capacity(37 + tail.len());
@@ -80,6 +81,19 @@ impl ImageDraft {
         for record in self.types() {
             if record.fields.len() > bounds::MAX_FIELDS {
                 return Err(ImageBuildError::TooManyFields);
+            }
+        }
+        if self.enums().len() > bounds::MAX_ENUMS {
+            return Err(ImageBuildError::TooManyEnums);
+        }
+        for enum_def in self.enums() {
+            if enum_def.variants.len() > bounds::MAX_VARIANTS {
+                return Err(ImageBuildError::TooManyVariants);
+            }
+            for variant in &enum_def.variants {
+                if variant.payload.len() > bounds::MAX_PAYLOAD_FIELDS {
+                    return Err(ImageBuildError::TooManyPayloadFields);
+                }
             }
         }
         if self.roots().len() > bounds::MAX_ROOTS {
@@ -161,6 +175,28 @@ impl ImageDraft {
                 push_u16(&mut body, str_map[field.name.raw() as usize]);
                 ImageType::scalar(field.ty).encode(&mut body);
                 body.push(u8::from(field.required));
+            }
+        }
+        body
+    }
+
+    /// Encode the ENUMS table (section 0x09): a count, then per enum its name
+    /// string index, a variant count, and per variant a name string index, a
+    /// `category` flag byte, a payload count, and one bare-scalar tag per payload
+    /// leaf in declaration order.
+    fn encode_enums(&self, str_map: &[u16]) -> Vec<u8> {
+        let mut body = Vec::new();
+        push_u16(&mut body, self.enums().len() as u16);
+        for enum_def in self.enums() {
+            push_u16(&mut body, str_map[enum_def.name.raw() as usize]);
+            push_u16(&mut body, enum_def.variants.len() as u16);
+            for variant in &enum_def.variants {
+                push_u16(&mut body, str_map[variant.name.raw() as usize]);
+                body.push(u8::from(variant.category));
+                body.push(variant.payload.len() as u8);
+                for scalar in &variant.payload {
+                    ImageType::scalar(*scalar).encode(&mut body);
+                }
             }
         }
         body
@@ -337,6 +373,14 @@ fn encode_code(
             Instr::RangeGuard { lo, hi } => {
                 out.extend_from_slice(&lo.to_be_bytes());
                 out.extend_from_slice(&hi.to_be_bytes());
+            }
+            Instr::EnumConstruct { enum_idx, variant } => {
+                push_u16(&mut out, *enum_idx);
+                push_u16(&mut out, *variant);
+            }
+            Instr::EnumPayloadGet { variant, field } => {
+                push_u16(&mut out, *variant);
+                push_u16(&mut out, *field);
             }
             _ => {}
         }

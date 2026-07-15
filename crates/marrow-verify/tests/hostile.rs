@@ -69,11 +69,11 @@ fn code_of(bytes: &[u8]) -> String {
         .unwrap_or_else(|| "VERIFIED".to_string())
 }
 
-/// The eight section frames as `(id, body_offset, body_len)` (header is 38 bytes).
+/// The nine section frames as `(id, body_offset, body_len)` (header is 38 bytes).
 fn sections(bytes: &[u8]) -> Vec<(u8, usize, usize)> {
     let mut out = Vec::new();
     let mut off = 38usize;
-    for _ in 0..8 {
+    for _ in 0..9 {
         let id = bytes[off];
         off += 1;
         let len = u32::from_be_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
