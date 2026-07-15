@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use marrow_store::{ByteEngine, CommitOutcome, ReadView, StoreError, WriteTxn};
 
 use super::physical::{self, CellKind};
+use super::plan::{CellWrite, Planner};
 use super::profile;
 use super::{
     AuthTarget, AuthorizedSite, CommitResult, CreateOutcome, DemandCoverage, Denied, EntryValue,
@@ -446,6 +447,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     /// gets its marker (created at commit).
     fn reconcile(&mut self) -> Result<(), CommitResult> {
         let root = self.schema.root_name.clone();
+        let planner = Planner::new(&root, self.schema);
         let staged: Vec<KeyScalar> = self
             .pending
             .iter()
@@ -456,14 +458,14 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             })
             .collect();
         for key in staged {
-            let marker_key = physical::marker_key(&root, &key);
+            let marker_key = planner.marker(&key);
             let marker_present = read_raw(self.txn(), &marker_key)
                 .map_err(|_| CommitResult::CommitFault)?
                 .is_some();
             let mut any_leaf = false;
             let mut missing_required: Option<String> = None;
             for field in &self.schema.fields {
-                let leaf = physical::field_leaf_key(&root, &key, &field.name);
+                let leaf = planner.field_leaf(&key, &field.name);
                 let present = read_raw(self.txn(), &leaf)
                     .map_err(|_| CommitResult::CommitFault)?
                     .is_some();
@@ -575,11 +577,12 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         key: KeyScalar,
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
-        let marker_key = physical::marker_key(&site.root, &key);
-        if read_raw(self.txn(), &marker_key)?.is_some() {
+        let planner = Planner::new(&site.root, self.schema);
+        if read_raw(self.txn(), &planner.marker(&key))?.is_some() {
             return Ok(CreateOutcome::AlreadyPresent);
         }
-        self.write_entry(&site.root, &key, &entry)?;
+        let ops = planner.write_entry(&key, &entry)?;
+        self.apply(ops)?;
         Ok(CreateOutcome::Created)
     }
     fn replace_entry(
@@ -588,15 +591,15 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         key: KeyScalar,
         entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
-        let marker_key = physical::marker_key(&site.root, &key);
-        if read_raw(self.txn(), &marker_key)?.is_none() {
+        let planner = Planner::new(&site.root, self.schema);
+        if read_raw(self.txn(), &planner.marker(&key))?.is_none() {
             return Ok(ReplaceOutcome::Missing);
         }
-        // Exact replacement: remove the entry's marker and every field leaf by
-        // exact key, then rewrite it, so unlisted sparse leaves do not survive.
-        // The engine has no prefix delete; the kernel knows the entry's cells.
-        self.remove_entry_cells(&site.root, &key)?;
-        self.write_entry(&site.root, &key, &entry)?;
+        // Exact replacement through the one consequence planner: remove the entry's
+        // cells, then write the new payload, so unlisted sparse leaves do not survive.
+        let mut ops = planner.erase_entry(&key);
+        ops.extend(planner.write_entry(&key, &entry)?);
+        self.apply(ops)?;
         Ok(ReplaceOutcome::Replaced)
     }
     fn erase_field(
@@ -619,10 +622,12 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<EraseOutcome, KernelFault> {
-        let marker_key = physical::marker_key(&site.root, &key);
-        let existed = read_raw(self.txn(), &marker_key)?.is_some();
-        // Exact-cells removal of the whole entry: marker plus every field leaf.
-        self.remove_entry_cells(&site.root, &key)?;
+        let planner = Planner::new(&site.root, self.schema);
+        let existed = read_raw(self.txn(), &planner.marker(&key))?.is_some();
+        // Whole-entry removal through the consequence planner: marker plus every
+        // field leaf, by exact key.
+        let ops = planner.erase_entry(&key);
+        self.apply(ops)?;
         Ok(if existed {
             EraseOutcome::Erased
         } else {
@@ -635,43 +640,21 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
 }
 
 impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
-    /// Write an entry's marker and every present field leaf.
-    fn write_entry(
-        &mut self,
-        root: &str,
-        key: &KeyScalar,
-        entry: &EntryValue,
-    ) -> Result<(), KernelFault> {
-        let mut writes: Vec<(Vec<u8>, Vec<u8>)> = vec![(
-            physical::marker_key(root, key),
-            physical::MARKER_VALUE.to_vec(),
-        )];
-        for (index, slot) in entry.fields.iter().enumerate() {
-            if let Some(value) = slot {
-                let name = &self.schema.fields[index].name;
-                let leaf = physical::field_leaf_key(root, key, name);
-                let bytes = encode_value(value).map_err(|_| KernelFault::ValueRange)?;
-                writes.push((leaf, bytes));
+    /// Apply an ordered cell plan the consequence planner produced. Every write and
+    /// removal rides this session's engine transaction, so the whole plan commits or
+    /// rolls back as one unit with the rest of the transaction.
+    fn apply(&mut self, ops: Vec<CellWrite>) -> Result<(), KernelFault> {
+        for op in ops {
+            match op {
+                CellWrite::Put(key, value) => {
+                    self.txn_mut()
+                        .put(&key, value)
+                        .map_err(KernelFault::Engine)?;
+                }
+                CellWrite::Remove(key) => {
+                    self.txn_mut().remove(&key).map_err(KernelFault::Engine)?;
+                }
             }
-        }
-        for (physical_key, value) in writes {
-            self.txn_mut()
-                .put(&physical_key, value)
-                .map_err(KernelFault::Engine)?;
-        }
-        Ok(())
-    }
-
-    /// Remove every cell of an entry — its marker and one field leaf per schema
-    /// field — by exact key. The engine offers only point removal, so the kernel
-    /// enumerates the entry's cells from the schema rather than deleting a prefix.
-    fn remove_entry_cells(&mut self, root: &str, key: &KeyScalar) -> Result<(), KernelFault> {
-        let mut cells = vec![physical::marker_key(root, key)];
-        for field in &self.schema.fields {
-            cells.push(physical::field_leaf_key(root, key, &field.name));
-        }
-        for cell in cells {
-            self.txn_mut().remove(&cell).map_err(KernelFault::Engine)?;
         }
         Ok(())
     }
@@ -736,13 +719,13 @@ fn op_read_entry<V: ReadView>(
     site: &AuthorizedSite,
     key: &KeyScalar,
 ) -> Result<Option<EntryValue>, KernelFault> {
-    let marker = physical::marker_key(&site.root, key);
-    if read_raw(cells, &marker)?.is_none() {
+    let planner = Planner::new(&site.root, schema);
+    if read_raw(cells, &planner.marker(key))?.is_none() {
         return Ok(None);
     }
     let mut fields = Vec::with_capacity(schema.fields.len());
     for field in &schema.fields {
-        let leaf = physical::field_leaf_key(&site.root, key, &field.name);
+        let leaf = planner.field_leaf(key, &field.name);
         match read_raw(cells, &leaf)? {
             None => {
                 // A present marker with a missing required field is a marker/field

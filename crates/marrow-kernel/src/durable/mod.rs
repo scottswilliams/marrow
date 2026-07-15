@@ -16,6 +16,7 @@
 
 mod attach;
 mod physical;
+mod plan;
 mod profile;
 mod store;
 
