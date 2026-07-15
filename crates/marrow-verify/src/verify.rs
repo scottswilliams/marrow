@@ -25,10 +25,10 @@ use marrow_image::{
     OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
     OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
     OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE,
-    OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
-    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_ENUM, TAG_INT, TAG_RECORD,
-    TAG_TEXT, TAG_UNIT, image_id,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
+    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
+    TAG_COLLECTION, TAG_ENUM, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -2008,6 +2008,9 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_TEXT_IS_EMPTY => SealedInstr::TextIsEmpty,
             OP_TEXT_CONTAINS => SealedInstr::TextContains,
             OP_TEXT_TRIM => SealedInstr::TextTrim,
+            OP_TEXT_SPLIT => SealedInstr::TextSplit(operand_u16(&mut reader)?),
+            OP_TEXT_LINES => SealedInstr::TextLines(operand_u16(&mut reader)?),
+            OP_TEXT_JOIN => SealedInstr::TextJoin,
             OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
             OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
             OP_FIELD_SET => SealedInstr::FieldSet(operand_u16(&mut reader)?),
@@ -2719,6 +2722,29 @@ fn apply(
                 .push(VType::from_image(value_ty).expect("a map value type is never unit"));
             return Ok(Control::Fallthrough);
         }
+        SealedInstr::TextSplit(idx) => {
+            // `split(text, sep): List[string]`: separator then text on the stack.
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+            list_of_string(ctx, *idx)?;
+            frame.stack.push(VType::bare_collection(*idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::TextLines(idx) => {
+            // `lines(text): List[string]`.
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+            list_of_string(ctx, *idx)?;
+            frame.stack.push(VType::bare_collection(*idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::TextJoin => {
+            // `join(List[string], sep): string`: separator then list on the stack.
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+            let (idx, _) = list_elem(ctx, pop(&mut frame.stack)?)?;
+            list_of_string(ctx, idx)?;
+            frame.stack.push(VType::bare_scalar(Scalar::Text));
+            return Ok(Control::Fallthrough);
+        }
         _ => {}
     }
 
@@ -2945,9 +2971,12 @@ fn apply(
         | SealedInstr::MapGet
         | SealedInstr::MapLen
         | SealedInstr::MapKeyAt
-        | SealedInstr::MapValueAt => {
+        | SealedInstr::MapValueAt
+        | SealedInstr::TextSplit(_)
+        | SealedInstr::TextLines(_)
+        | SealedInstr::TextJoin => {
             unreachable!(
-                "record, optional, call, durable, and collection opcodes return from the earlier matches"
+                "record, optional, call, durable, collection, and text-collection opcodes return from the earlier matches"
             )
         }
     }
@@ -2968,6 +2997,21 @@ fn list_elem(ctx: &Ctx, value: VType) -> Result<(u16, ImageType), VerifyRejectio
         _ => Err(reject(
             VerifyPhase::Function,
             "collection index does not name a list type",
+        )),
+    }
+}
+
+/// Prove COLLTYPES index `idx` names a `List[string]`, the only collection the
+/// text-floor `split`/`lines`/`join` opcodes produce or consume. A hand-built image
+/// naming any other collection there is rejected.
+fn list_of_string(ctx: &Ctx, idx: u16) -> Result<(), VerifyRejection> {
+    match ctx.collections.get(idx as usize) {
+        Some(SealedCollectionType::List { elem }) if *elem == ImageType::scalar(Scalar::Text) => {
+            Ok(())
+        }
+        _ => Err(reject(
+            VerifyPhase::Function,
+            "text split/lines/join collection index does not name a list of string",
         )),
     }
 }

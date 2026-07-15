@@ -100,6 +100,13 @@ pub const OP_MAP_GET: u8 = 0x96;
 pub const OP_MAP_LEN: u8 = 0x97;
 pub const OP_MAP_KEY_AT: u8 = 0x98;
 pub const OP_MAP_VALUE_AT: u8 = 0x99;
+// Collection-returning text floor. `split`/`lines` produce a `List[string]` of the
+// COLLTYPES index their operand names; `join` consumes one and produces a string.
+// Split/lines results honor the same `run.collection_limit` length/aggregate bounds
+// as `append`; `join` honors the `run.text_limit` concatenation ceiling.
+pub const OP_TEXT_SPLIT: u8 = 0x9A;
+pub const OP_TEXT_LINES: u8 = 0x9B;
+pub const OP_TEXT_JOIN: u8 = 0x9C;
 
 /// A draft instruction. Jump targets are instruction indices into the function's
 /// own instruction list; the encoder rewrites them to container byte offsets.
@@ -155,6 +162,14 @@ pub enum Instr {
     TextIsEmpty,
     TextContains,
     TextTrim,
+    /// The collection-returning text floor. `split`/`lines` split a string into a
+    /// `List[string]` of the COLLTYPES index `_0` (which names a `List[string]`),
+    /// honoring the `run.collection_limit` bounds; `join` concatenates a
+    /// `List[string]` with a separator into a string, honoring the `run.text_limit`
+    /// ceiling.
+    TextSplit(u16),
+    TextLines(u16),
+    TextJoin,
     /// Checked arithmetic: `_0` is the fault-handler target (instruction index in
     /// the draft, rewritten to a byte offset by the encoder). On overflow the op
     /// jumps to the target instead of faulting; otherwise it pushes the result.
@@ -290,6 +305,9 @@ impl Instr {
             Instr::TextIsEmpty => OP_TEXT_IS_EMPTY,
             Instr::TextContains => OP_TEXT_CONTAINS,
             Instr::TextTrim => OP_TEXT_TRIM,
+            Instr::TextSplit(_) => OP_TEXT_SPLIT,
+            Instr::TextLines(_) => OP_TEXT_LINES,
+            Instr::TextJoin => OP_TEXT_JOIN,
             Instr::IntAddChecked(_) => OP_INT_ADD_CHECKED,
             Instr::IntSubChecked(_) => OP_INT_SUB_CHECKED,
             Instr::IntMulChecked(_) => OP_INT_MUL_CHECKED,
@@ -355,7 +373,9 @@ impl Instr {
             | Instr::DurEraseEntry(_)
             | Instr::DurNextKey(_)
             | Instr::ListNew(_)
-            | Instr::MapNew(_) => 2,
+            | Instr::MapNew(_)
+            | Instr::TextSplit(_)
+            | Instr::TextLines(_) => 2,
             Instr::Jump(_)
             | Instr::JumpIfFalse(_)
             | Instr::BranchPresent(_)

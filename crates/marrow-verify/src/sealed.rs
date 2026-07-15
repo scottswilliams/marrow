@@ -71,6 +71,14 @@ pub enum SealedInstr {
     TextIsEmpty,
     TextContains,
     TextTrim,
+    /// The collection-returning text floor. `split`/`lines` produce a `List[string]`
+    /// of COLLTYPES index `_0` (which the verifier proves names a `List[string]`),
+    /// faulting `run.collection_limit` on a bound excess; `join` concatenates a
+    /// `List[string]` with a separator into a string, faulting `run.text_limit` on a
+    /// concatenation-ceiling excess.
+    TextSplit(u16),
+    TextLines(u16),
+    TextJoin,
     /// Checked arithmetic: `_0` is the fault-handler tape index. On overflow the op
     /// transfers there (carrying the post-pop stack) instead of faulting; otherwise
     /// it pushes the int result and falls through.

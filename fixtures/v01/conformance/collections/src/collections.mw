@@ -102,6 +102,37 @@ test "a map value may itself be a list"
     else
         assert false
 
+test "split divides a string into a list of substrings"
+    const parts = split("a,b,c", ",")
+    assert length(parts) == 3
+    assert join(parts, "|") == "a|b|c"
+    ; An empty separator yields the whole string as one element.
+    const whole = split("abc", "")
+    assert length(whole) == 1
+    assert join(whole, "|") == "abc"
+
+test "lines splits a string on line feeds"
+    const ls = lines("one\ntwo\nthree")
+    assert length(ls) == 3
+    assert join(ls, "|") == "one|two|three"
+    ; A trailing line feed does not add an empty final line.
+    const trailing = lines("a\nb\n")
+    assert length(trailing) == 2
+    assert join(trailing, "|") == "a|b"
+
+test "join concatenates a list of string with a separator"
+    var xs: List[string] = List()
+    xs = append(xs, "a")
+    xs = append(xs, "b")
+    xs = append(xs, "c")
+    assert join(xs, "-") == "a-b-c"
+    ; Joining the empty list is the empty string.
+    const empty: List[string] = List()
+    assert join(empty, ",") == ""
+
+test "split then join round-trips through the separator"
+    assert join(split("x:y:z", ":"), ":") == "x:y:z"
+
 ; A runtime export driven by `marrow run` to exercise the law-9 aggregate-byte
 ; bound: appending a 64 KiB string enough times pushes the list past the 1 MiB
 ; aggregate limit and faults `run.collection_limit`.
@@ -117,6 +148,25 @@ pub fn overflowAggregate(): int
         xs = append(xs, big)
         appended = appended + 1
     return length(xs)
+
+; A runtime export driven by `marrow run` to exercise the `run.text_limit` ceiling
+; on `join`: a list within the collection bounds whose joined text exceeds the 64 KiB
+; concatenation ceiling faults rather than materializing an unbounded string.
+pub fn overflowJoin(): int
+    var big: string = "x"
+    var doublings: int = 0
+    while doublings < 13
+        big = big + big
+        doublings = doublings + 1
+    var xs: List[string] = List()
+    var appended: int = 0
+    while appended < 16
+        xs = append(xs, big)
+        appended = appended + 1
+    const whole = join(xs, "")
+    if isEmpty(whole)
+        return 0
+    return 1
 
 test "a list of enum values iterates by value"
     var cs: List[Color] = List()

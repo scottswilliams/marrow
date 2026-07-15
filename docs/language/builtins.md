@@ -62,12 +62,25 @@ whole text floor; there is no general string library.
 | `isEmpty(text): bool` | Whether `text` is the empty string |
 | `contains(haystack, needle): bool` | Whether `haystack` contains `needle` as a substring |
 | `trim(text): string` | `text` with leading and trailing Unicode whitespace removed |
+| `split(text, separator): List[string]` | The substrings of `text` separated by each non-overlapping occurrence of `separator`, in order; an empty separator yields the single-element list `[text]` |
+| `lines(text): List[string]` | The lines of `text`, split on line feeds with a carriage return before a line feed removed; a final line terminator adds no trailing empty line |
+| `join(parts: List[string], separator): string` | The `parts` concatenated in order with `separator` between adjacent elements |
+
+`split` and `lines` return a `List[string]`; the result honors the same length and
+aggregate-size bounds as any list (see [Execution limits](execution-limits.md)). `join`
+honors the string concatenation ceiling.
 
 ```mw
 module docs::text_floor
 
 pub fn isBlank(s: string): bool
     return isEmpty(trim(s))
+
+pub fn fieldCount(row: string): int
+    return length(split(row, ","))
+
+pub fn rejoin(row: string): string
+    return join(split(row, ","), ";")
 ```
 
 ## Collections

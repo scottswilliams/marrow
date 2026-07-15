@@ -181,3 +181,108 @@ fn a_map_key_that_is_not_a_scalar_rejects() {
     let rejection = verify(&bytes).expect_err("a non-scalar map key rejects");
     assert_eq!(rejection.code(), "image.table");
 }
+
+const LIST_STR: CollectionTypeDef = CollectionTypeDef::List {
+    elem: ImageType::Scalar {
+        scalar: Scalar::Text,
+        optional: false,
+    },
+};
+
+#[test]
+fn a_well_formed_text_split_join_program_verifies() {
+    // `join(split(text, sep), sep)` over a `List[string]`: split consumes two texts
+    // and yields the list, join consumes the list and a text and yields a text.
+    let mut draft = ImageDraft::new();
+    draft.add_collection_type(LIST_STR);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let hay = draft.intern_text("a,b,c");
+    let sep = draft.intern_text(",");
+    let code = vec![
+        Instr::ConstLoad(hay.index()),
+        Instr::ConstLoad(sep.index()),
+        Instr::TextSplit(0),
+        Instr::ConstLoad(sep.index()),
+        Instr::TextJoin,
+        Instr::Return,
+    ];
+    let spans = spans(&code);
+    let main = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Text),
+        local_count: 0,
+        code,
+        spans,
+    });
+    draft.add_export(ExportId::of_local("", "main"), main);
+    let bytes = draft.encode().expect("encode").bytes;
+    verify(&bytes).expect("a well-formed split/join image verifies");
+}
+
+#[test]
+fn a_text_split_naming_a_non_string_list_rejects() {
+    // `TextSplit(0)` names a `List[int]`, but the text floor produces only a
+    // `List[string]`; the hostile image is rejected rather than run.
+    let mut draft = ImageDraft::new();
+    draft.add_collection_type(LIST_INT);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let hay = draft.intern_text("a,b");
+    let sep = draft.intern_text(",");
+    let code = vec![
+        Instr::ConstLoad(hay.index()),
+        Instr::ConstLoad(sep.index()),
+        Instr::TextSplit(0),
+        Instr::Return,
+    ];
+    let spans = spans(&code);
+    let main = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Collection {
+            idx: 0,
+            optional: false,
+        },
+        local_count: 0,
+        code,
+        spans,
+    });
+    draft.add_export(ExportId::of_local("", "main"), main);
+    let bytes = draft.encode().expect("encode").bytes;
+    let rejection = verify(&bytes).expect_err("split naming a List[int] rejects");
+    assert_eq!(rejection.code(), "image.function");
+}
+
+#[test]
+fn a_text_join_on_a_non_string_list_rejects() {
+    // `TextJoin` requires a `List[string]`; a `List[int]` operand is rejected.
+    let mut draft = ImageDraft::new();
+    draft.add_collection_type(LIST_INT);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let sep = draft.intern_text(",");
+    let code = vec![
+        Instr::ListNew(0),
+        Instr::ConstLoad(sep.index()),
+        Instr::TextJoin,
+        Instr::Return,
+    ];
+    let spans = spans(&code);
+    let main = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Text),
+        local_count: 0,
+        code,
+        spans,
+    });
+    draft.add_export(ExportId::of_local("", "main"), main);
+    let bytes = draft.encode().expect("encode").bytes;
+    let rejection = verify(&bytes).expect_err("join on a List[int] rejects");
+    assert_eq!(rejection.code(), "image.function");
+}

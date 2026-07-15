@@ -371,7 +371,9 @@ fn encode_code(
             Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(&mut out, *l),
             Instr::Call(f) => push_u16(&mut out, *f),
             Instr::RecordNew(t) => push_u16(&mut out, *t),
-            Instr::ListNew(c) | Instr::MapNew(c) => push_u16(&mut out, *c),
+            Instr::ListNew(c) | Instr::MapNew(c) | Instr::TextSplit(c) | Instr::TextLines(c) => {
+                push_u16(&mut out, *c)
+            }
             Instr::FieldGet(f) | Instr::FieldSet(f) | Instr::FieldUnset(f) => {
                 push_u16(&mut out, *f)
             }

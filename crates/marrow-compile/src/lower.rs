@@ -343,8 +343,9 @@ impl CtorKind {
 /// A value-level built-in the compiler intercepts before user resolution: the
 /// `Option`/`Result` constructors (`none`/`some`/`ok`/`err`), the presence test
 /// (`exists`), the divergence marker (`unreachable`), and the pure text floor
-/// (`isEmpty`/`contains`/`trim`). None of these spellings is a keyword, so the
-/// parser admits them as identifiers; the reservation is enforced here instead.
+/// (`isEmpty`/`contains`/`trim`/`split`/`lines`/`join`). None of these spellings is
+/// a keyword, so the parser admits them as identifiers; the reservation is enforced
+/// here instead.
 ///
 /// This enum is the single owner of that name set. Call interception dispatches
 /// on `from_name` (see `lower_unqualified_call`), and declaration rejection
@@ -363,6 +364,14 @@ enum Builtin {
     IsEmpty,
     Contains,
     Trim,
+    /// The collection-returning text floor: `split(text, sep): List[string]`,
+    /// `lines(text): List[string]`, `join(List[string], sep): string`. Like the rest
+    /// of the floor these are reserved, so a colliding value declaration is rejected;
+    /// they mint the `List[string]` COLLTYPES instantiation their result or argument
+    /// names.
+    Split,
+    Lines,
+    Join,
     /// The empty-collection constructors `List()`/`Map()`, type-directed by the
     /// expected type. They are reserved (blocking a colliding value declaration)
     /// because a bare `List`/`Map` at a use site is always the built-in constructor.
@@ -386,6 +395,9 @@ impl Builtin {
             "isEmpty" => Builtin::IsEmpty,
             "contains" => Builtin::Contains,
             "trim" => Builtin::Trim,
+            "split" => Builtin::Split,
+            "lines" => Builtin::Lines,
+            "join" => Builtin::Join,
             "List" => Builtin::List,
             "Map" => Builtin::Map,
             _ => return None,
@@ -3312,6 +3324,11 @@ impl<'a> FnLowerer<'a> {
                 Builtin::Contains | Builtin::Trim => self
                     .lower_text_builtin(name, args, span)
                     .map(CallResult::Value),
+                // `split`/`lines` return a `List[string]`; `join` consumes one.
+                Builtin::Split | Builtin::Lines => self
+                    .lower_text_split(name, args, span)
+                    .map(CallResult::Value),
+                Builtin::Join => self.lower_text_join(args, span).map(CallResult::Value),
                 // `List()`/`Map()` are the empty-collection constructors; they infer
                 // nothing on their own, so they need an expected List/Map type (an
                 // annotation, argument, return, or coerced position).
@@ -4872,6 +4889,75 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(instr, span);
         Some(result)
+    }
+
+    /// Lower a collection-returning text-floor call: `split(text, sep): List[string]`
+    /// or `lines(text): List[string]`. Both mint (and reuse) the one `List[string]`
+    /// COLLTYPES instantiation and emit the split/lines opcode carrying it; the VM
+    /// bounds the result by the same law-9 collection limits `append` observes.
+    fn lower_text_split(&mut self, name: &str, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let text = LTy::bare_scalar(ScalarType::Text);
+        let arity = if name == "split" { 2 } else { 1 };
+        if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` takes {arity} positional string argument(s)"),
+            ));
+            return None;
+        }
+        for arg in args {
+            self.lower_as(&arg.value, text)?;
+        }
+        let idx = self
+            .records
+            .instantiate_list(self.draft, GArg::Scalar(ScalarType::Text));
+        let instr = if name == "split" {
+            Instr::TextSplit(idx)
+        } else {
+            Instr::TextLines(idx)
+        };
+        self.push(instr, span);
+        Some(LTy::Collection {
+            idx,
+            optional: false,
+        })
+    }
+
+    /// Lower `join(parts: List[string], sep: string): string`: concatenate the list's
+    /// text elements with a separator. A first argument that is not a `List[string]`
+    /// is a typed diagnostic; the VM bounds the result by the `run.text_limit`
+    /// concatenation ceiling.
+    fn lower_text_join(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let text = LTy::bare_scalar(ScalarType::Text);
+        if args.len() != 2 || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`join` takes 2 positional argument(s): a list of string and a separator"
+                    .to_string(),
+            ));
+            return None;
+        }
+        let idx = self.collection_arg(&args[0].value)?;
+        match self.records.collection_spec(idx) {
+            CollSpec::List {
+                elem: GArg::Scalar(ScalarType::Text),
+            } => {}
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    args[0].value.span(),
+                    "`join` on this type (it joins a list of string)",
+                ));
+                return None;
+            }
+        }
+        self.lower_as(&args[1].value, text)?;
+        self.push(Instr::TextJoin, span);
+        Some(text)
     }
 
     /// Lower an empty-collection constructor `List()`/`Map()` against the expected

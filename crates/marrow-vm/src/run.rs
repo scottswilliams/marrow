@@ -360,6 +360,66 @@ fn execute<'s>(
                 stack.push(Value::Text(Rc::from(s.trim())));
                 pc += 1;
             }
+            SealedInstr::TextSplit(idx) => {
+                // `split(text, sep)`: the substrings of `text` separated by each
+                // non-overlapping occurrence of `sep`, in order. An empty separator
+                // yields the single-element list `[text]` rather than splitting
+                // between every character.
+                let sep = as_text(pop(&mut stack));
+                let text = as_text(pop(&mut stack));
+                let pieces: Vec<Value> = if sep.is_empty() {
+                    vec![Value::Text(text)]
+                } else {
+                    text.split(sep.as_ref())
+                        .map(|piece| Value::Text(Rc::from(piece)))
+                        .collect()
+                };
+                let items = bounded_text_list(pieces)
+                    .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
+                stack.push(Value::List(*idx, Rc::new(items)));
+                pc += 1;
+            }
+            SealedInstr::TextLines(idx) => {
+                // `lines(text)`: the lines of `text`, split on line feeds with a
+                // carriage return before a line feed removed; a final line
+                // terminator does not produce a trailing empty line (Rust
+                // `str::lines` semantics).
+                let text = as_text(pop(&mut stack));
+                let pieces: Vec<Value> = text
+                    .lines()
+                    .map(|line| Value::Text(Rc::from(line)))
+                    .collect();
+                let items = bounded_text_list(pieces)
+                    .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
+                stack.push(Value::List(*idx, Rc::new(items)));
+                pc += 1;
+            }
+            SealedInstr::TextJoin => {
+                // `join(list, sep)`: concatenate the list's text elements in order,
+                // inserting `sep` between adjacent elements, faulting `run.text_limit`
+                // on a concatenation-ceiling excess.
+                let sep = as_text(pop(&mut stack));
+                let (_, items) = as_list(pop(&mut stack));
+                let mut joined = String::new();
+                for (position, item) in items.iter().enumerate() {
+                    let piece = match item {
+                        Value::Text(text) => text,
+                        _ => unreachable!("verifier proved a list of string"),
+                    };
+                    if position > 0 {
+                        if joined.len() + sep.len() > MAX_TEXT_BYTES {
+                            return Err(fault(function, pc, Code::RunTextLimit.as_str()));
+                        }
+                        joined.push_str(&sep);
+                    }
+                    if joined.len() + piece.len() > MAX_TEXT_BYTES {
+                        return Err(fault(function, pc, Code::RunTextLimit.as_str()));
+                    }
+                    joined.push_str(piece);
+                }
+                stack.push(Value::Text(joined.into()));
+                pc += 1;
+            }
             SealedInstr::RecordNew(ty) => {
                 let fields = image.record_type(*ty).fields();
                 // f0 was pushed first, so the popped values fill slots in reverse.
@@ -818,6 +878,18 @@ fn as_map(value: Value) -> (u16, Rc<Vec<(KeyScalar, Value)>>) {
         Value::Map(idx, entries) => (idx, entries),
         _ => unreachable!("verifier proved a map operand"),
     }
+}
+
+/// Admit a text-floor split/lines result only within the same law-9 collection
+/// bounds `append` enforces: at most `MAX_COLLECTION_LEN` elements and
+/// `MAX_AGGREGATE_BYTES` of aggregate value size. Returns `None` on a bound excess so
+/// the caller faults `run.collection_limit` rather than materializing an unbounded
+/// list.
+fn bounded_text_list(items: Vec<Value>) -> Option<Vec<Value>> {
+    if items.len() > MAX_COLLECTION_LEN || list_bytes(&items) > MAX_AGGREGATE_BYTES {
+        return None;
+    }
+    Some(items)
 }
 
 /// The aggregate value size of a list, used for the law-9 byte bound. Measured, not

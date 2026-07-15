@@ -10,6 +10,7 @@
 
 use std::rc::Rc;
 
+use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::equality::{ValueDomain, value_equality};
 use marrow_vm::Value;
@@ -36,13 +37,22 @@ fn to_domain(value: &Value) -> ValueDomain {
             payload: payload.iter().map(to_domain).collect(),
         },
         Value::Optional(_) => {
-            unreachable!("a top-level optional is outside the C02 equality domain")
+            unreachable!("a top-level optional is outside the equality domain")
         }
-        Value::List(..) | Value::Map(..) => {
-            unreachable!(
-                "collections have no `==` operator, so they are outside the equality domain"
-            )
-        }
+        // No top-level `collection == collection` operator exists, but a collection
+        // reached inside a compared struct or enum payload participates in that
+        // aggregate's structural equality, so the domain must project it.
+        Value::List(idx, items) => ValueDomain::List {
+            idx: *idx,
+            items: items.iter().map(to_domain).collect(),
+        },
+        Value::Map(idx, entries) => ValueDomain::Map {
+            idx: *idx,
+            entries: entries
+                .iter()
+                .map(|(key, value)| (key.clone(), to_domain(value)))
+                .collect(),
+        },
     }
 }
 
@@ -105,6 +115,59 @@ fn corpus() -> Vec<Value> {
                     Some(Value::Bool(false)),
                 ]),
             )]),
+        ),
+        // Collections: reached inside a compared aggregate in real programs, so the
+        // relation must recurse through them. Lists differing by element, order,
+        // length, and instantiation index; the empty list; a list of structs holding
+        // Options; and maps differing by value, key, and enum-valued payload.
+        Value::List(7, Rc::new(vec![Value::Int(1), Value::Int(2)])),
+        Value::List(7, Rc::new(vec![Value::Int(2), Value::Int(1)])),
+        Value::List(7, Rc::new(vec![Value::Int(1)])),
+        Value::List(7, Rc::new(vec![])),
+        // A different list instantiation with equal elements: unequal by index.
+        Value::List(8, Rc::new(vec![Value::Int(1), Value::Int(2)])),
+        // A list of structs, each holding an Option leaf: recursion through list,
+        // product, and sum. The two members differ only in the inner Option presence.
+        Value::List(
+            9,
+            Rc::new(vec![Value::Record(
+                2,
+                Box::new([Some(Value::Enum(3, 1, Box::new([Value::Int(5)])))]),
+            )]),
+        ),
+        Value::List(
+            9,
+            Rc::new(vec![Value::Record(
+                2,
+                Box::new([Some(Value::Enum(3, 0, Box::new([])))]),
+            )]),
+        ),
+        // Maps in ascending key order, differing by a value and by a key.
+        Value::Map(
+            10,
+            Rc::new(vec![
+                (KeyScalar::Str("ada".into()), Value::Int(10)),
+                (KeyScalar::Str("grace".into()), Value::Int(12)),
+            ]),
+        ),
+        Value::Map(
+            10,
+            Rc::new(vec![
+                (KeyScalar::Str("ada".into()), Value::Int(10)),
+                (KeyScalar::Str("grace".into()), Value::Int(99)),
+            ]),
+        ),
+        // A map with enum values: recursion reaches the sum payload.
+        Value::Map(
+            11,
+            Rc::new(vec![(
+                KeyScalar::Int(1),
+                Value::Enum(3, 1, Box::new([Value::Int(7)])),
+            )]),
+        ),
+        Value::Map(
+            11,
+            Rc::new(vec![(KeyScalar::Int(1), Value::Enum(3, 0, Box::new([])))]),
         ),
     ]
 }
