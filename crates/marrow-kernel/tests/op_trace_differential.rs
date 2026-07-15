@@ -262,6 +262,100 @@ fn memory_and_redb_agree_on_the_operation_trace() {
     );
 }
 
+/// The strict present-entry sparse set (`set_sparse_present`) sets a leaf of an
+/// entry the caller proved present. Over both engines it must set the leaf exactly
+/// like `set_sparse` and leave the same final state; on an absent marker it faults
+/// `Corruption` (the marker law: a leaf never implies an absent entry into being).
+#[test]
+fn set_sparse_present_agrees_across_engines() {
+    fn probe<E: ByteEngine>(mut store: DurableStore<E>) -> (Presence, Dump) {
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write())
+                .expect("txn");
+            let e = txn.site(ENTRY);
+            let label = txn.site(LABEL);
+            txn.create_entry(&e, key("p"), entry(7, None)).unwrap();
+            // The entry is present in the staged view, so the strict set assumes the
+            // marker and writes the leaf.
+            txn.set_sparse_present(&label, key("p"), Some(RuntimeScalar::Str("strict".into())))
+                .unwrap();
+            // A strict clear of a present entry removes the leaf without touching the
+            // marker.
+            txn.create_entry(&e, key("q"), entry(8, Some("x"))).unwrap();
+            txn.set_sparse_present(&label, key("q"), None).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut reader = store
+            .read_session(InvocationGrant::full_store(), read())
+            .expect("read");
+        let e = reader.site(ENTRY);
+        let value = reader.site(VALUE);
+        let label = reader.site(LABEL);
+        let presence = reader.presence(&e, key("p")).unwrap();
+        let mut dump: Dump = Vec::new();
+        let mut cursor = None;
+        while let NextKey::Next(k) = reader.next_key(&e, cursor.clone()).unwrap() {
+            let name = match &k {
+                KeyScalar::Str(name) => name.clone(),
+                other => panic!("unexpected key kind {other:?}"),
+            };
+            let v = reader
+                .read_field(&value, k.clone())
+                .unwrap()
+                .map(|s| match s {
+                    RuntimeScalar::Int(v) => v,
+                    other => panic!("unexpected value {other:?}"),
+                });
+            let l = reader
+                .read_field(&label, k.clone())
+                .unwrap()
+                .map(|s| match s {
+                    RuntimeScalar::Str(s) => s,
+                    other => panic!("unexpected label {other:?}"),
+                });
+            dump.push((name, v, l));
+            cursor = Some(k);
+        }
+        (presence, dump)
+    }
+
+    let (mem_presence, mem_dump) = probe(DurableStore::from_engine(
+        MemoryEngine::new(),
+        schema(),
+        sites(),
+    ));
+    let temp = TempDir::new("strict");
+    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let (redb_presence, redb_dump) = probe(DurableStore::from_engine(native, schema(), sites()));
+
+    assert_eq!(mem_presence, redb_presence);
+    assert_eq!(mem_dump, redb_dump, "backends disagree on strict-set state");
+    assert_eq!(
+        mem_dump,
+        vec![
+            ("p".to_string(), Some(7), Some("strict".to_string())),
+            ("q".to_string(), Some(8), None),
+        ]
+    );
+}
+
+/// A strict set whose entry marker is absent is corruption, never implicit
+/// creation. The compiler's presence proof makes this unreachable; the kernel
+/// asserts it as defense in depth.
+#[test]
+fn set_sparse_present_on_an_absent_marker_is_corruption() {
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut txn = store
+        .txn_session(InvocationGrant::full_store(), write())
+        .expect("txn");
+    let label = txn.site(LABEL);
+    assert_eq!(
+        txn.set_sparse_present(&label, key("missing"), Some(RuntimeScalar::Str("x".into()))),
+        Err(marrow_kernel::durable::KernelFault::Corruption)
+    );
+}
+
 #[test]
 fn rollback_discards_staged_writes_on_both_backends() {
     fn probe<E: ByteEngine>(mut store: DurableStore<E>) -> Presence {

@@ -738,6 +738,24 @@ fn execute<'s>(
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
+            SealedInstr::DurSetSparsePresent { site, key_slot } => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let value = as_optional(pop(&mut stack)).map(value_to_scalar);
+                // The strict form reads its entry key from the place's pre-evaluated
+                // slot; the verifier proved the slot definitely initialized here.
+                let key = value_to_key(
+                    locals[*key_slot as usize]
+                        .clone()
+                        .expect("verifier proved definite init of the place key slot"),
+                );
+                durable
+                    .set_sparse_present(&authorized, key, value)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
             SealedInstr::DurCreateEntry(site) => {
                 let durable = session
                     .as_deref_mut()

@@ -85,6 +85,7 @@ pub const OP_DUR_REPLACE_ENTRY: u8 = 0x36;
 pub const OP_DUR_ERASE_FIELD: u8 = 0x37;
 pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
 pub const OP_DUR_NEXT_KEY: u8 = 0x39;
+pub const OP_DUR_SET_SPARSE_PRESENT: u8 = 0x3A;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
 pub const OP_TXN_COMMIT: u8 = 0x3D;
 // Finite collection values (design §D collections). Element/key/value shapes come
@@ -285,6 +286,17 @@ pub enum Instr {
     DurReadEntry(u16),
     DurSetRequired(u16),
     DurSetSparse(u16),
+    /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
+    /// entry key from local slot `key_slot` and asserting the containing entry is
+    /// present. The strict form of a sparse-field set: emitted only for a set through
+    /// a `place` binding a presence fact dominates, so the key is the place's one
+    /// pre-evaluated slot rather than a stack operand. The compiler proves the entry
+    /// present; the runtime faults `run.corruption` if the marker is absent (defense
+    /// in depth over the trust boundary).
+    DurSetSparsePresent {
+        site: u16,
+        key_slot: u16,
+    },
     DurCreateEntry(u16),
     DurReplaceEntry(u16),
     DurEraseField(u16),
@@ -410,6 +422,7 @@ impl Instr {
             Instr::DurReadEntry(_) => OP_DUR_READ_ENTRY,
             Instr::DurSetRequired(_) => OP_DUR_SET_REQUIRED,
             Instr::DurSetSparse(_) => OP_DUR_SET_SPARSE,
+            Instr::DurSetSparsePresent { .. } => OP_DUR_SET_SPARSE_PRESENT,
             Instr::DurCreateEntry(_) => OP_DUR_CREATE_ENTRY,
             Instr::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
             Instr::DurEraseField(_) => OP_DUR_ERASE_FIELD,
@@ -472,7 +485,9 @@ impl Instr {
             // Two big-endian `i64` interval bounds.
             Instr::RangeGuard { .. } => 16,
             // Two big-endian `u16` operands.
-            Instr::EnumConstruct { .. } | Instr::EnumPayloadGet { .. } => 4,
+            Instr::EnumConstruct { .. }
+            | Instr::EnumPayloadGet { .. }
+            | Instr::DurSetSparsePresent { .. } => 4,
             _ => 0,
         }
     }

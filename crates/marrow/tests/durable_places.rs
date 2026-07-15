@@ -215,6 +215,144 @@ fn a_place_reused_across_writes_evaluates_its_key_once() {
     );
 }
 
+// --- Structured presence analysis: the strict present-entry sparse set. ---
+
+fn count_strict(instrs: &[SealedInstr]) -> usize {
+    instrs
+        .iter()
+        .filter(|i| matches!(i, SealedInstr::DurSetSparsePresent { .. }))
+        .count()
+}
+
+fn count_bare(instrs: &[SealedInstr]) -> usize {
+    instrs
+        .iter()
+        .filter(|i| matches!(i, SealedInstr::DurSetSparse(_)))
+        .count()
+}
+
+/// A sparse-field set through a `place` dominated by an `exists(p)` guard lowers to
+/// the strict present-entry form (`DurSetSparsePresent`), which reads the key from
+/// the place's slot and assumes the entry present; the same set with no dominating
+/// guard stays the bare `DurSetSparse` (create-or-reconcile at commit).
+#[test]
+fn an_exists_guarded_sparse_set_is_strict() {
+    let guarded = format!(
+        "{HEADER}\
+         pub fn tag(n: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(n)\n\
+         \x20       if exists(p)\n\
+         \x20           p.label = \"x\"\n"
+    );
+    let instrs = compile_verify(&guarded);
+    let instrs = export_instrs(&instrs, "tag");
+    assert_eq!(count_strict(instrs), 1, "the guarded set lowers strict");
+    assert_eq!(count_bare(instrs), 0, "no bare set remains");
+
+    let unguarded = format!(
+        "{HEADER}\
+         pub fn tag(n: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(n)\n\
+         \x20       p.label = \"x\"\n"
+    );
+    let image = compile_verify(&unguarded);
+    let instrs = export_instrs(&image, "tag");
+    assert_eq!(count_strict(instrs), 0, "an unguarded set is not strict");
+    assert_eq!(count_bare(instrs), 1, "the unguarded set stays bare");
+}
+
+/// An `if const c = p` entry read proves the entry present in its then-block, so a
+/// sparse set through the same place there is strict.
+#[test]
+fn an_if_const_guarded_sparse_set_is_strict() {
+    let source = format!(
+        "{HEADER}\
+         pub fn tag(n: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(n)\n\
+         \x20       if const c = p\n\
+         \x20           p.label = \"x\"\n"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "tag");
+    assert_eq!(count_strict(instrs), 1);
+}
+
+/// A whole-entry upsert (`p = Record(...)`) leaves the entry present, so a following
+/// sparse set through the place is strict.
+#[test]
+fn a_sparse_set_after_an_upsert_is_strict() {
+    let source = format!(
+        "{HEADER}\
+         pub fn tag(n: int, v: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(n)\n\
+         \x20       p = Counter(value: v)\n\
+         \x20       p.label = \"x\"\n"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "tag");
+    assert_eq!(count_strict(instrs), 1, "the post-upsert set is strict");
+}
+
+/// Presence facts attach to a lexical `place` binding only: an inline `^root(k)`
+/// address never carries one, so an inline sparse set stays bare even under a guard.
+#[test]
+fn an_inline_sparse_set_is_never_strict() {
+    let source = format!(
+        "{HEADER}\
+         pub fn tag(n: int)\n\
+         \x20   transaction\n\
+         \x20       if exists(^counters(n))\n\
+         \x20           ^counters(n).label = \"x\"\n"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "tag");
+    assert_eq!(count_strict(instrs), 0);
+    assert_eq!(count_bare(instrs), 1);
+}
+
+/// A presence fact does not survive a `delete p`: a sparse set after the entry is
+/// erased is bare again (the compiler drops the fact; the verifier would reject a
+/// strict set there).
+#[test]
+fn a_sparse_set_after_delete_is_not_strict() {
+    let source = format!(
+        "{HEADER}\
+         pub fn tag(n: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(n)\n\
+         \x20       if exists(p)\n\
+         \x20           delete p\n\
+         \x20           p.label = \"x\"\n"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "tag");
+    assert_eq!(count_strict(instrs), 0, "presence is killed by the erase");
+    assert_eq!(count_bare(instrs), 1);
+}
+
+/// The fact does not leak past the guarded block: a sparse set after the `if
+/// exists(p)` block closes is bare, since the entry is not known present there.
+#[test]
+fn the_presence_fact_does_not_outlive_its_block() {
+    let source = format!(
+        "{HEADER}\
+         pub fn tag(n: int)\n\
+         \x20   transaction\n\
+         \x20       place p = ^counters(n)\n\
+         \x20       if exists(p)\n\
+         \x20           p.label = \"in\"\n\
+         \x20       p.label = \"out\"\n"
+    );
+    let image = compile_verify(&source);
+    let instrs = export_instrs(&image, "tag");
+    assert_eq!(count_strict(instrs), 1, "only the in-block set is strict");
+    assert_eq!(count_bare(instrs), 1, "the post-block set is bare");
+}
+
 // --- Scope and type rules. ---
 
 /// A `place` must name a whole durable entry address. A non-durable value, a

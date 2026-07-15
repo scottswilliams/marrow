@@ -187,6 +187,16 @@ pub enum SealedInstr {
     DurSetRequired(u16),
     /// `K, T? →`: set (present) or clear (vacant) the sparse field site `_0`.
     DurSetSparse(u16),
+    /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
+    /// entry key from local slot `key_slot` and asserting the containing entry is
+    /// present. The strict form: emitted only for a sparse set through a `place` a
+    /// presence fact dominates, so the verifier's place-slot presence lattice proves
+    /// `key_slot`'s entry is present on every path here, and the kernel faults
+    /// `run.corruption` if the marker is absent (defense in depth).
+    DurSetSparsePresent {
+        site: u16,
+        key_slot: u16,
+    },
     /// `K, Rec →`: create the entry at site `_0` (algebra `create`).
     DurCreateEntry(u16),
     /// `K, Rec →`: replace the entry at site `_0` (algebra `replace`).
@@ -232,6 +242,7 @@ impl SealedInstr {
             self,
             SealedInstr::DurSetRequired(_)
                 | SealedInstr::DurSetSparse(_)
+                | SealedInstr::DurSetSparsePresent { .. }
                 | SealedInstr::DurCreateEntry(_)
                 | SealedInstr::DurReplaceEntry(_)
                 | SealedInstr::DurEraseField(_)

@@ -317,6 +317,140 @@ fn mutated_durable_images_never_panic_the_verifier() {
     }
 }
 
+/// A good durable image whose mutating export carries a strict present-entry sparse
+/// set guarded by `if exists(p)`. Mutating it reaches the DurSetSparsePresent decode
+/// (two `u16` operands) and the place-slot presence lattice, which a bare-set image
+/// never exercises.
+fn a_strict_durable_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0f; 16]),
+                    required: false,
+                    value: DurableValueShape::Scalar(Scalar::Text),
+                },
+            ],
+        },
+    });
+    let app = SemanticStep::new(
+        SemanticStepKind::Application,
+        LedgerIdBytes::from_bytes([0x0a; 16]),
+    );
+    let placement = SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes([0x0b; 16]),
+    );
+    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
+        app, placement,
+    ])));
+    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
+        app,
+        placement,
+        SemanticStep::new(
+            SemanticStepKind::Field,
+            LedgerIdBytes::from_bytes([0x0e; 16]),
+        ),
+    ])));
+    let label_site = draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
+        app,
+        placement,
+        SemanticStep::new(
+            SemanticStepKind::Field,
+            LedgerIdBytes::from_bytes([0x0f; 16]),
+        ),
+    ])));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("tag");
+    let text = draft.intern_text("x");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::DurExists(0),
+        Instr::JumpIfFalse(7),
+        Instr::ConstLoad(text.index()),
+        Instr::SomeWrap,
+        Instr::DurSetSparsePresent {
+            site: label_site.index(),
+            key_slot: 0,
+        },
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let spans = (0..code.len() as u32)
+        .map(|instr_index| SpanEntry {
+            instr_index,
+            line: 1,
+            column: 1,
+        })
+        .collect();
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Text)],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans,
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn mutated_strict_durable_images_never_panic_the_verifier() {
+    let mut rng = Rng(seed() ^ 0x8A5C_D789_0AB0_1C3F);
+    let base = a_strict_durable_image();
+    // The base image itself must verify, so the strict-set decode and the presence
+    // lattice are reached before mutation.
+    assert!(
+        verify(&base).is_ok(),
+        "strict durable base image must verify"
+    );
+    for _ in 0..4096 {
+        let mut bytes = base.clone();
+        for _ in 0..=rng.below(3) {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= rng.byte();
+        }
+        oracle(&bytes);
+    }
+}
+
 /// A good durable image whose resource declares a static `group` (holding a field)
 /// and a keyed `branch` (holding a field). Mutating it reaches the recursive
 /// durable member-tree decoder — its group/branch tags, the `Group` id, the branch

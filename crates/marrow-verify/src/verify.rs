@@ -10,6 +10,7 @@
 //! current subset, and an opcode whose vertical has not landed is a phase-3
 //! rejection rather than a silent pass.
 
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use marrow_image::{
@@ -21,18 +22,18 @@ use marrow_image::{
     OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
     OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
     OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
-    OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT,
-    OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES,
-    OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET,
-    OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT,
-    OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED,
-    OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL,
-    OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB,
-    OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN,
-    OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
-    OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
-    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
+    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
+    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT,
+    OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE,
+    OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD,
+    OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
+    OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED,
+    OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET,
+    OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
+    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
+    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
+    OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, SemanticNode,
     SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL,
     TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD,
@@ -2140,6 +2141,12 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         effects.check_transaction_flow(index, function, export_entries[index])?;
     }
 
+    // Phase 5 (presence): every present-entry sparse set is dominated by a presence
+    // fact on its key slot, rechecked independently of the compiler.
+    for function in &functions {
+        check_presence_flow(function, &ctx)?;
+    }
+
     let exports = decoded
         .exports
         .iter()
@@ -2550,6 +2557,205 @@ fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
     }
 }
 
+/// Phase 5 (presence): the place-slot presence lattice (design §D). A
+/// `DurSetSparsePresent` (the strict sparse set) asserts its containing entry is
+/// present; this recheck proves that independently of the compiler, so a forged or
+/// mis-lowered strict set whose graph cannot imply its payload is refused.
+///
+/// The lattice state at each program point is the set of key-slot locals whose entry
+/// a dominating fact has proven present. A fact is *established* by a guard that
+/// tests the entry keyed by a slot — `LocalGet(S); DurExists(entry); JumpIfFalse` on
+/// its present (fallthrough) edge, or `LocalGet(S); DurReadEntry; BranchPresent` on
+/// its present edge — or by a whole-entry `DurCreateEntry` keyed by that slot (create
+/// leaves the entry present whether it was created or already present). It is
+/// *killed* by an entry erase keyed by the slot or by any `LocalSet` of the slot (a
+/// rebind; a `place` key slot is bind-once, so this never fires on compiler output —
+/// it hardens the recheck against a mutated tape). Facts join by intersection at
+/// merges: a slot is present only if it holds on every incoming edge. Calls are
+/// transparent (no aliasing model): a mutation reached through a call that erases the
+/// entry is caught by the kernel's runtime presence assertion, not here.
+fn check_presence_flow(function: &SealedFunction, ctx: &Ctx) -> Result<(), VerifyRejection> {
+    let code = function.instrs();
+    if !code
+        .iter()
+        .any(|instr| matches!(instr, SealedInstr::DurSetSparsePresent { .. }))
+    {
+        return Ok(());
+    }
+    let mut entry: Vec<Option<BTreeSet<u16>>> = vec![None; code.len()];
+    entry[0] = Some(BTreeSet::new());
+    let mut worklist = vec![0usize];
+    while let Some(index) = worklist.pop() {
+        let present = entry[index]
+            .clone()
+            .expect("worklist only enqueues reached instructions");
+        if let SealedInstr::DurSetSparsePresent { key_slot, .. } = &code[index]
+            && !present.contains(key_slot)
+        {
+            return Err(reject(
+                VerifyPhase::Flow,
+                "a present-entry sparse set is not dominated by a presence fact on its key slot",
+            ));
+        }
+        for (successor, set) in presence_edges(code, ctx, index, &present) {
+            if successor >= code.len() {
+                return Err(reject(VerifyPhase::Flow, "presence edge out of range"));
+            }
+            match &mut entry[successor] {
+                None => {
+                    entry[successor] = Some(set);
+                    worklist.push(successor);
+                }
+                Some(existing) => {
+                    let merged: BTreeSet<u16> = existing.intersection(&set).copied().collect();
+                    if merged.len() != existing.len() {
+                        *existing = merged;
+                        worklist.push(successor);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The presence-set carried on each successor edge of the instruction at `index`.
+/// Most instructions pass the set through unchanged; guards split the set (adding the
+/// proven slot only on the present edge); create adds and erase/rebind remove.
+fn presence_edges(
+    code: &[SealedInstr],
+    ctx: &Ctx,
+    index: usize,
+    present: &BTreeSet<u16>,
+) -> Vec<(usize, BTreeSet<u16>)> {
+    match &code[index] {
+        SealedInstr::JumpIfFalse(target) => match exists_guard_slot(code, ctx, index) {
+            // The present (true) edge falls through into the guarded block; the false
+            // edge (target) is the absent branch.
+            Some(slot) => {
+                let mut present_edge = present.clone();
+                present_edge.insert(slot);
+                vec![(*target, present.clone()), (index + 1, present_edge)]
+            }
+            None => flow_successors(code, index)
+                .into_iter()
+                .map(|s| (s, present.clone()))
+                .collect(),
+        },
+        SealedInstr::BranchPresent(target) => match read_entry_guard_slot(code, ctx, index) {
+            Some(slot) => {
+                let mut present_edge = present.clone();
+                present_edge.insert(slot);
+                vec![(*target, present.clone()), (index + 1, present_edge)]
+            }
+            None => flow_successors(code, index)
+                .into_iter()
+                .map(|s| (s, present.clone()))
+                .collect(),
+        },
+        SealedInstr::DurCreateEntry(_) => {
+            let mut next = present.clone();
+            if let Some(slot) = entry_write_key_slot(code, index) {
+                next.insert(slot);
+            }
+            vec![(index + 1, next)]
+        }
+        SealedInstr::DurEraseEntry(_) => {
+            let mut next = present.clone();
+            if let Some(slot) = adjacent_key_slot(code, index) {
+                next.remove(&slot);
+            }
+            vec![(index + 1, next)]
+        }
+        SealedInstr::LocalSet(slot) => {
+            let mut next = present.clone();
+            next.remove(slot);
+            vec![(index + 1, next)]
+        }
+        _ => flow_successors(code, index)
+            .into_iter()
+            .map(|s| (s, present.clone()))
+            .collect(),
+    }
+}
+
+/// Whether `site` is a flat whole-payload (entry marker) site — the presence a
+/// containing-payload fact is about.
+fn is_entry_site(ctx: &Ctx, site: u16) -> bool {
+    matches!(
+        ctx.sites.get(site as usize),
+        Some(SealedSite::Flat {
+            target: SealedSiteTarget::WholePayload,
+            ..
+        })
+    )
+}
+
+/// The key slot of an `exists`-guard at a `JumpIfFalse`: `LocalGet(S); DurExists(entry
+/// site); JumpIfFalse`. `None` when the shape does not match (a non-entry site, a
+/// non-local key, or an unrelated condition establishes no fact).
+fn exists_guard_slot(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<u16> {
+    if index < 2 {
+        return None;
+    }
+    let SealedInstr::DurExists(site) = &code[index - 1] else {
+        return None;
+    };
+    if !is_entry_site(ctx, *site) {
+        return None;
+    }
+    let SealedInstr::LocalGet(slot) = &code[index - 2] else {
+        return None;
+    };
+    Some(*slot)
+}
+
+/// The key slot of an `if const x = p` guard at a `BranchPresent`: `LocalGet(S);
+/// DurReadEntry(entry site); BranchPresent`.
+fn read_entry_guard_slot(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<u16> {
+    if index < 2 {
+        return None;
+    }
+    let SealedInstr::DurReadEntry(site) = &code[index - 1] else {
+        return None;
+    };
+    if !is_entry_site(ctx, *site) {
+        return None;
+    }
+    let SealedInstr::LocalGet(slot) = &code[index - 2] else {
+        return None;
+    };
+    Some(*slot)
+}
+
+/// The key slot of a whole-entry create at `index`: `LocalGet(S); LocalGet(record);
+/// DurCreateEntry`. The key is the operand below the record, so the create's key
+/// comes from the `LocalGet` two back when the record is a single local push.
+fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
+    if index < 2 {
+        return None;
+    }
+    let SealedInstr::LocalGet(_) = &code[index - 1] else {
+        return None;
+    };
+    let SealedInstr::LocalGet(slot) = &code[index - 2] else {
+        return None;
+    };
+    Some(*slot)
+}
+
+/// The key slot of a single-operand durable op at `index` whose key is the adjacent
+/// `LocalGet(S)` (used for entry erase).
+fn adjacent_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
+    if index < 1 {
+        return None;
+    }
+    let SealedInstr::LocalGet(slot) = &code[index - 1] else {
+        return None;
+    };
+    Some(*slot)
+}
+
 /// The successor edges for a two-way branch that keeps the current stack on the
 /// `target` edge and pushes one value on the fallthrough edge (`index + 1`). Shared
 /// by `BranchPresent` (present value) and the checked ops (int result).
@@ -2709,6 +2915,10 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(&mut reader)?),
             OP_DUR_SET_REQUIRED => SealedInstr::DurSetRequired(operand_u16(&mut reader)?),
             OP_DUR_SET_SPARSE => SealedInstr::DurSetSparse(operand_u16(&mut reader)?),
+            OP_DUR_SET_SPARSE_PRESENT => SealedInstr::DurSetSparsePresent {
+                site: operand_u16(&mut reader)?,
+                key_slot: operand_u16(&mut reader)?,
+            },
             OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_u16(&mut reader)?),
             OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(&mut reader)?),
             OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
@@ -3676,6 +3886,7 @@ fn apply(
         | SealedInstr::DurReadEntry(_)
         | SealedInstr::DurSetRequired(_)
         | SealedInstr::DurSetSparse(_)
+        | SealedInstr::DurSetSparsePresent { .. }
         | SealedInstr::DurCreateEntry(_)
         | SealedInstr::DurReplaceEntry(_)
         | SealedInstr::DurEraseField(_)
@@ -3772,6 +3983,7 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurReadEntry(site)
         | SealedInstr::DurSetRequired(site)
         | SealedInstr::DurSetSparse(site)
+        | SealedInstr::DurSetSparsePresent { site, .. }
         | SealedInstr::DurCreateEntry(site)
         | SealedInstr::DurReplaceEntry(site)
         | SealedInstr::DurEraseField(site)
@@ -3869,6 +4081,35 @@ fn apply_durable(
             let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, value)?;
             expect(pop(stack)?, key_ty)?;
+        }
+        SealedInstr::DurSetSparsePresent { key_slot, .. } => {
+            let field = field_of(ctx, site_target, root)?;
+            if field.required {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "set-sparse-present targets a required field",
+                ));
+            }
+            // The strict form reads its entry key from the place's pre-evaluated
+            // local slot rather than the stack, so only the value is popped. The
+            // slot must be definitely initialized with the root's key type.
+            let value = durable_field_vtype(field).to_optional();
+            expect(pop(stack)?, value)?;
+            match frame.locals.get(*key_slot as usize) {
+                Some(Some(slot_ty)) if *slot_ty == key_ty => {}
+                Some(Some(_)) => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "set-sparse-present key slot has the wrong type",
+                    ));
+                }
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "set-sparse-present key slot is uninitialized or out of range",
+                    ));
+                }
+            }
         }
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
             require_entry(site_target)?;

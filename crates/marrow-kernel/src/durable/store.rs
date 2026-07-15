@@ -52,6 +52,16 @@ pub trait Durable {
         key: KeyScalar,
         value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault>;
+    /// Set (present) or clear (vacant) a sparse field of an entry the caller has
+    /// statically proven present. Asserts the entry marker is present — a violation
+    /// is a marker/field mismatch ([`KernelFault::Corruption`]), never implicit
+    /// creation — then stages the leaf exactly like [`Self::set_sparse`].
+    fn set_sparse_present(
+        &mut self,
+        site: &AuthorizedSite,
+        key: KeyScalar,
+        value: Option<RuntimeScalar>,
+    ) -> Result<(), KernelFault>;
     fn create_entry(
         &mut self,
         site: &AuthorizedSite,
@@ -287,6 +297,14 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
+    fn set_sparse_present(
+        &mut self,
+        _site: &AuthorizedSite,
+        _key: KeyScalar,
+        _value: Option<RuntimeScalar>,
+    ) -> Result<(), KernelFault> {
+        unreachable!("verifier proved a read-only session performs no mutation")
+    }
     fn create_entry(
         &mut self,
         _site: &AuthorizedSite,
@@ -515,6 +533,22 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
             }
         }
         Ok(())
+    }
+    fn set_sparse_present(
+        &mut self,
+        site: &AuthorizedSite,
+        key: KeyScalar,
+        value: Option<RuntimeScalar>,
+    ) -> Result<(), KernelFault> {
+        // The compiler's place-slot presence proof makes an absent marker
+        // unreachable; assert it here as defense in depth over the trust boundary.
+        // A present field leaf without a present entry marker is corruption, never
+        // implicit creation (the marker law).
+        let marker = physical::marker_key(&site.root, &key);
+        if read_raw(self.txn(), &marker)?.is_none() {
+            return Err(KernelFault::Corruption);
+        }
+        self.set_sparse(site, key, value)
     }
     fn create_entry(
         &mut self,

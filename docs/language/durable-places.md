@@ -290,6 +290,47 @@ A sparse field is a **present-or-clear** place: it accepts a value, an optional
 value, or `absent`. A present value is stored; an absent value clears the field.
 A required field does not accept an optional or absent assignment.
 
+### Guarded And Unguarded Sparse Sets
+
+A sparse-field set takes one of two forms depending on what the compiler knows
+about the containing entry.
+
+An **unguarded** set — a set on an inline `^root(key).field` address, or on a
+named place whose entry has not been shown to exist — makes no assumption that the
+entry is present. The field value is staged, and when the transaction commits the
+entry is created if all its required fields are present, or the transaction rolls
+back if a required field is missing. This is the create-or-reconcile behavior of
+every sparse set; a clear (`= absent`) never creates an entry.
+
+A **guarded** set — a set on a named `place` whose containing entry a preceding
+test in the same block has shown to be present — is statically known to update an
+existing entry. The entry is proven present by an `if exists(place)` test, by
+binding it with `if const x = place`, or by a preceding whole-entry write
+`place = Record(...)` in the same block. The compiler emits the strict form of the
+set, which reads the place's one pre-evaluated key and updates the field of the
+entry already there. Clearing the entry with `delete place` withdraws the
+knowledge, so a set after it is unguarded again.
+
+```mw
+module docs::durable_guarded
+
+resource Book
+    required title: string
+    subtitle: string
+
+store ^books(id: int): Book
+
+pub fn setSubtitleIfPresent(id: int, subtitle: string)
+    transaction
+        place book = ^books(id)
+        if exists(book)
+            book.subtitle = subtitle
+```
+
+Both forms have the same observable result when the entry is present; the guarded
+form additionally records, in the compiled program and its independent verifier,
+that the update lands on an entry the program proved to exist.
+
 ## Whole Resource Assignment
 
 Assignment to the entry address is exact replacement:

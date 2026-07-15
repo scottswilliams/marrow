@@ -481,6 +481,10 @@ fn encode_code(
                 push_u16(&mut out, *variant);
                 push_u16(&mut out, *field);
             }
+            Instr::DurSetSparsePresent { site, key_slot } => {
+                push_u16(&mut out, *site);
+                push_u16(&mut out, *key_slot);
+            }
             _ => {}
         }
     }

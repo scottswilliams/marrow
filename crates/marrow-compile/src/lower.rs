@@ -890,6 +890,12 @@ pub(crate) struct FnLowerer<'a> {
     locals: Vec<Local>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal>,
+    /// The key slots of `place` bindings a presence fact currently dominates: the
+    /// containing entry is known present here, so a sparse-field set through the
+    /// place lowers to the strict present-entry form. Scoped like `locals` (a fact
+    /// established in a guarded block or after an upsert does not outlive its block);
+    /// the verifier rechecks each strict set independently.
+    present_places: Vec<u16>,
     loops: Vec<LoopCtx>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
@@ -934,6 +940,7 @@ impl<'a> FnLowerer<'a> {
             calls: Vec::new(),
             locals: Vec::new(),
             places: Vec::new(),
+            present_places: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
             ret,
@@ -1347,6 +1354,10 @@ impl<'a> FnLowerer<'a> {
     fn lower_block(&mut self, block: &Block) -> Flow {
         let mark = self.locals.len();
         let place_mark = self.places.len();
+        // Presence facts established inside this block (e.g. after an upsert) do not
+        // outlive it; facts the caller established for the block (a guard) sit below
+        // this mark and are preserved here, dropped by the caller.
+        let present_mark = self.present_places.len();
         let mut flow = Flow::Fallthrough;
         for statement in &block.statements {
             if flow == Flow::Terminates {
@@ -1362,6 +1373,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
+        self.present_places.truncate(present_mark);
         flow
     }
 
@@ -1841,11 +1853,19 @@ impl<'a> FnLowerer<'a> {
         let mut all_terminate = else_block.is_some();
 
         for (cond, block) in branches {
+            // `exists(p)` over a named place proves the entry present in the guarded
+            // block: a sparse-field set through `p` there lowers to the strict form.
+            let guard_slot = self.exists_guard_slot(cond);
             if self.lower_condition(cond).is_none() {
                 return Flow::Fallthrough;
             }
             let jif = self.push_jif(cond.span());
+            let present_mark = self.present_places.len();
+            if let Some(slot) = guard_slot {
+                self.mark_present(slot);
+            }
             let flow = self.lower_block(block);
+            self.present_places.truncate(present_mark);
             all_terminate &= flow == Flow::Terminates;
             if flow == Flow::Fallthrough {
                 end_jumps.push(self.push_jump(block.span));
@@ -1884,10 +1904,16 @@ impl<'a> FnLowerer<'a> {
         // A whole durable entry address (`if const book = ^books(id)` or the named
         // `place` form) reads the entry here; a bare place name is otherwise not a
         // value, so the entry guard is its whole-entry read form.
+        // A named-place entry read proves the entry present on the guarded edge: a
+        // sparse-field set through the same place in the then-block lowers strict.
+        let mut guard_slot: Option<u16> = None;
         let optional = if matches!(self.durable_access(value), Some(DurShape::Entry)) {
             let Some(place) = self.resolve_durable(value) else {
                 return Flow::Fallthrough;
             };
+            if let PlaceKey::Bound(slot) = place.key {
+                guard_slot = Some(slot);
+            }
             match self.lower_durable_read(place) {
                 Some(ty) => ty,
                 None => return Flow::Fallthrough,
@@ -1936,7 +1962,12 @@ impl<'a> FnLowerer<'a> {
             mutable: false,
             slot,
         });
+        let present_mark = self.present_places.len();
+        if let Some(guard) = guard_slot {
+            self.mark_present(guard);
+        }
         let then_flow = self.lower_block(then_block);
+        self.present_places.truncate(present_mark);
         self.locals.truncate(mark);
 
         let mut end_jumps = Vec::new();
@@ -4857,6 +4888,52 @@ impl<'a> FnLowerer<'a> {
         self.places.iter().rev().find(|place| place.name == name)
     }
 
+    /// Record that the entry of the `place` whose key is `key_slot` is known present
+    /// from here (a dominating guard or a completed upsert). Idempotent.
+    fn mark_present(&mut self, key_slot: u16) {
+        if !self.present_places.contains(&key_slot) {
+            self.present_places.push(key_slot);
+        }
+    }
+
+    /// Whether a presence fact currently dominates the `place` whose key is `key_slot`.
+    fn is_present_slot(&self, key_slot: u16) -> bool {
+        self.present_places.contains(&key_slot)
+    }
+
+    /// Drop any presence fact on `key_slot` (its entry may no longer be present, e.g.
+    /// after `delete p`).
+    fn clear_present(&mut self, key_slot: u16) {
+        self.present_places.retain(|slot| *slot != key_slot);
+    }
+
+    /// If `cond` is `exists(p)` over an in-scope named `place`, that place's key slot.
+    /// The guarded (then) block may set the place's sparse fields in the strict form.
+    fn exists_guard_slot(&self, cond: &Expression) -> Option<u16> {
+        let Expression::Call { callee, args, .. } = cond else {
+            return None;
+        };
+        let Expression::Name { segments, .. } = &**callee else {
+            return None;
+        };
+        if segments.as_slice() != ["exists"] {
+            return None;
+        }
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        if arg.name.is_some() {
+            return None;
+        }
+        let Expression::Name { segments, .. } = &arg.value else {
+            return None;
+        };
+        let [name] = segments.as_slice() else {
+            return None;
+        };
+        self.lookup_place(name).map(|place| place.key_slot)
+    }
+
     /// Whether `name` names an in-scope `place`.
     fn is_place_name(&self, expr: &Expression) -> bool {
         matches!(
@@ -5776,20 +5853,50 @@ impl<'a> FnLowerer<'a> {
     fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
         match place.target {
             DurTarget::Entry { entry_site, record } => {
-                self.lower_upsert(
-                    place.key,
-                    place.key_ty,
-                    entry_site,
-                    record,
-                    value,
-                    place.span,
-                );
+                if self
+                    .lower_upsert(
+                        place.key,
+                        place.key_ty,
+                        entry_site,
+                        record,
+                        value,
+                        place.span,
+                    )
+                    .is_some()
+                    && let PlaceKey::Bound(slot) = place.key
+                {
+                    // The upsert leaves the entry present on every path from here, so
+                    // subsequent sparse sets through the place lower to the strict form.
+                    self.mark_present(slot);
+                }
             }
             DurTarget::Field {
                 site,
                 scalar,
                 required,
             } => {
+                // A sparse set through a `place` a presence fact dominates lowers to
+                // the strict present-entry form: it reads the entry key from the
+                // place's pre-evaluated slot and asserts the entry is present, so it
+                // pushes no key operand. Every other field set keeps the bare form
+                // (unchanged: create-or-reconcile at commit for a sparse set).
+                if !required
+                    && let PlaceKey::Bound(slot) = place.key
+                    && self.is_present_slot(slot)
+                {
+                    let expected = LTy::bare_scalar(scalar).to_optional();
+                    if self.lower_as(value, expected).is_none() {
+                        return;
+                    }
+                    self.push(
+                        Instr::DurSetSparsePresent {
+                            site,
+                            key_slot: slot,
+                        },
+                        place.span,
+                    );
+                    return;
+                }
                 if self.emit_key(place.key, place.key_ty, place.span).is_none() {
                     return;
                 }
@@ -5822,9 +5929,19 @@ impl<'a> FnLowerer<'a> {
         value: &Expression,
         span: SourceSpan,
     ) -> Option<()> {
-        let key_slot = self.alloc_slot();
-        self.emit_key(key, key_ty, span)?;
-        self.push(Instr::LocalSet(key_slot), span);
+        // A named place already holds its key in one pre-evaluated slot; reuse it so
+        // the create/replace ops key off the place's slot (the verifier's presence
+        // lattice recognizes the create as establishing that slot's entry). An inline
+        // address is evaluated once into a fresh slot.
+        let key_slot = match key {
+            PlaceKey::Bound(slot) => slot,
+            PlaceKey::Expr(_) => {
+                let slot = self.alloc_slot();
+                self.emit_key(key, key_ty, span)?;
+                self.push(Instr::LocalSet(slot), span);
+                slot
+            }
+        };
         let rec_slot = self.alloc_slot();
         self.lower_as(
             value,
@@ -5869,6 +5986,11 @@ impl<'a> FnLowerer<'a> {
         match place.target {
             DurTarget::Entry { entry_site, .. } => {
                 self.push(Instr::DurEraseEntry(entry_site), place.span);
+                // The entry is gone; a later sparse set through the place must not
+                // assume presence.
+                if let PlaceKey::Bound(slot) = place.key {
+                    self.clear_present(slot);
+                }
             }
             DurTarget::Field { site, required, .. } => {
                 if required {

@@ -950,6 +950,112 @@ fn flow_double_begin_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
+/// Add a single mutating export with two `string` key params (slots 0 and 1) over
+/// the tracer schema in `draft`, whose body is `code`, and encode it. Used by the
+/// presence-lattice hostiles, where the guard proves one slot and the strict set
+/// names a slot. The caller interns any consts in the same draft first.
+fn finish_two_key(mut draft: ImageDraft, code: Vec<Instr>) -> Vec<u8> {
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Text),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// The well-formed shape: `if exists(p)` (LocalGet(S); DurExists(entry);
+/// JumpIfFalse) dominates the strict set on its present edge, so the present-entry
+/// sparse set verifies. The positive control the presence-lattice hostiles perturb.
+#[test]
+fn a_guarded_strict_sparse_set_verifies() {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let text = draft.intern_text("x");
+    // JumpIfFalse targets the TxnCommit at instruction index 7 (the guard's absent
+    // edge); the encoder maps the index to a byte offset.
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(0),
+            Instr::JumpIfFalse(7),
+            Instr::ConstLoad(text.index()),
+            Instr::SomeWrap,
+            Instr::DurSetSparsePresent {
+                site: 2,
+                key_slot: 0,
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "VERIFIED");
+}
+
+/// A strict present-entry sparse set with no dominating presence fact on its key
+/// slot is refused at the flow phase, independently of the compiler.
+#[test]
+fn a_strict_sparse_set_without_a_presence_fact_rejects() {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let text = draft.intern_text("x");
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::ConstLoad(text.index()),
+            Instr::SomeWrap,
+            Instr::DurSetSparsePresent {
+                site: 2,
+                key_slot: 0,
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.flow");
+}
+
+/// The presence fact is proven for the guarded slot only: a strict set that names a
+/// different, unproven key slot is refused even though that slot is initialized and
+/// key-typed. This is the mutated-place-slot-index gate.
+#[test]
+fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let text = draft.intern_text("x");
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(0),
+            Instr::JumpIfFalse(7),
+            Instr::ConstLoad(text.index()),
+            Instr::SomeWrap,
+            // Slot 0 is proven present by the guard; naming slot 1 is unproven.
+            Instr::DurSetSparsePresent {
+                site: 2,
+                key_slot: 1,
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.flow");
+}
+
 #[test]
 fn flow_transaction_owner_may_not_be_called_rejects() {
     // A helper owns a transaction (contains TxnBegin); an export that calls it is a
