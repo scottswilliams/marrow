@@ -23,7 +23,10 @@ use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
-use crate::types::{NominalId, SupportSet, TypeRegistry};
+use crate::types::{
+    GArg, GenericInst, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK, SupportSet,
+    TypeRegistry,
+};
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
 /// each bare or optional. A nominal is int-shaped in the image; its distinct
@@ -134,13 +137,23 @@ impl LTy {
                     .unwrap_or_else(|| "struct".to_string()),
                 optional,
             ),
-            LTy::Enum { ty, optional } => (
-                records
-                    .enum_by_id(ty)
-                    .map(|info| info.name.clone())
-                    .unwrap_or_else(|| "enum".to_string()),
-                optional,
-            ),
+            LTy::Enum { ty, optional } => {
+                let base = match records.generic_inst(ty) {
+                    Some(GenericInst::Option(inner)) => {
+                        format!("Option[{}]", garg_spelling(inner, records))
+                    }
+                    Some(GenericInst::Result(ok, err)) => format!(
+                        "Result[{}, {}]",
+                        garg_spelling(ok, records),
+                        garg_spelling(err, records)
+                    ),
+                    None => records
+                        .enum_by_id(ty)
+                        .map(|info| info.name.clone())
+                        .unwrap_or_else(|| "enum".to_string()),
+                };
+                (base, optional)
+            }
         };
         if optional { format!("{base}?") } else { base }
     }
@@ -163,6 +176,30 @@ impl LTy {
                 ty,
                 optional: false,
             } => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// This type as a built-in generic argument (a bare value type), or `None` for
+    /// an optional or the durable resource record, which are not value arguments.
+    fn as_garg(self) -> Option<GArg> {
+        match self {
+            LTy::Scalar {
+                scalar,
+                optional: false,
+            } => Some(GArg::Scalar(scalar)),
+            LTy::Nominal {
+                id,
+                optional: false,
+            } => Some(GArg::Nominal(id)),
+            LTy::Struct {
+                ty,
+                optional: false,
+            } => Some(GArg::Struct(ty)),
+            LTy::Enum {
+                ty,
+                optional: false,
+            } => Some(GArg::Enum(ty)),
             _ => None,
         }
     }
@@ -192,6 +229,74 @@ impl LTy {
                 optional,
             },
         }
+    }
+}
+
+/// The bare lowered type a built-in generic argument denotes (the inverse of
+/// [`LTy::as_garg`] over the value cases).
+fn garg_to_lty(arg: GArg) -> LTy {
+    match arg {
+        GArg::Scalar(scalar) => LTy::bare_scalar(scalar),
+        GArg::Nominal(id) => LTy::Nominal {
+            id,
+            optional: false,
+        },
+        GArg::Struct(ty) => LTy::Struct {
+            ty,
+            optional: false,
+        },
+        GArg::Enum(ty) => LTy::Enum {
+            ty,
+            optional: false,
+        },
+    }
+}
+
+/// The source spelling of a built-in generic argument, recursing through nested
+/// `Option`/`Result` arguments.
+fn garg_spelling(arg: GArg, records: &TypeRegistry) -> String {
+    garg_to_lty(arg).spelling(records)
+}
+
+/// A built-in `Option`/`Result` constructor form in expression position. The
+/// constructor names are reserved, so any `none`, `some(_)`, `ok(_)`, or `err(_)`
+/// is this built-in rather than a name or call the surrounding scope resolves.
+#[derive(Debug, Clone, Copy)]
+enum CtorKind {
+    None,
+    Some,
+    Ok,
+    Err,
+}
+
+impl CtorKind {
+    fn name(self) -> &'static str {
+        match self {
+            CtorKind::None => "none",
+            CtorKind::Some => "some",
+            CtorKind::Ok => "ok",
+            CtorKind::Err => "err",
+        }
+    }
+}
+
+/// Classify an expression as a built-in constructor form: bare `none`, or a call
+/// `some(..)`/`ok(..)`/`err(..)`. Returns `None` for anything else.
+fn constructor_kind(expr: &Expression) -> Option<CtorKind> {
+    match expr {
+        Expression::Name { segments, .. } if matches!(segments.as_slice(), [n] if n == "none") => {
+            Some(CtorKind::None)
+        }
+        Expression::Call { callee, .. } => match &**callee {
+            Expression::Name { segments, .. } => match segments.as_slice() {
+                [n] if n == "some" => Some(CtorKind::Some),
+                [n] if n == "ok" => Some(CtorKind::Ok),
+                [n] if n == "err" => Some(CtorKind::Err),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -301,20 +406,25 @@ impl FunctionRegistry {
     /// `functions` pairs each declaration with its dotted module name.
     pub(crate) fn build(
         records: &TypeRegistry,
+        draft: &mut ImageDraft,
         functions: &[(String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
     ) -> Self {
         let mut sigs = Vec::with_capacity(functions.len());
         for (index, (module, function)) in functions.iter().enumerate() {
-            let params = function
-                .params
-                .iter()
-                .filter_map(|param| param_type(records, &param.ty))
-                .collect();
+            // A generic param/return type instantiates its built-in enum into the
+            // draft here; the same instantiation is reused (never re-added) when the
+            // body lowers, since the registry caches by argument types.
+            let mut params = Vec::with_capacity(function.params.len());
+            for param in &function.params {
+                if let Some(ty) = param_type(records, draft, &param.ty) {
+                    params.push(ty);
+                }
+            }
             let ret = match &function.return_type {
                 None => RetType::Unit,
-                Some(annotation) => match resolve_type(records, annotation) {
+                Some(annotation) => match resolve_type(records, draft, annotation) {
                     Some(LTy::Record { .. }) | None => {
                         // A resource-record or unsupported return; the function's own
                         // lowering reports it. Record Unit here so indices stay aligned.
@@ -487,7 +597,7 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<Lowered> {
         let ret = match &function.return_type {
             None => RetType::Unit,
-            Some(annotation) => match resolve_type(records, annotation) {
+            Some(annotation) => match resolve_type(records, draft, annotation) {
                 Some(LTy::Record { .. }) => {
                     diagnostics.push(unsupported(
                         file,
@@ -1211,21 +1321,49 @@ impl<'a> FnLowerer<'a> {
             ));
             return Flow::Fallthrough;
         };
-        // The scrutinee's variants: name plus payload scalar list, owned so the arm
-        // loop can borrow `self` mutably while resolving each arm.
-        let variants: Vec<(String, Vec<ScalarType>)> = self
-            .records
-            .enum_by_id(enum_id)
-            .expect("a bare enum resolves to enum info")
-            .variants
-            .iter()
-            .map(|variant| {
-                (
-                    variant.name.clone(),
-                    variant.payload.iter().map(|field| field.scalar).collect(),
-                )
-            })
-            .collect();
+        // The scrutinee's variants: member name plus payload type list, owned so the
+        // arm loop can borrow `self` mutably while resolving each arm. A built-in
+        // `Option`/`Result` supplies its fixed members and monomorphized payload
+        // types; a user `enum` reads them from the type registry.
+        let (enum_name, variants): (String, Vec<(String, Vec<LTy>)>) =
+            match self.records.generic_inst(enum_id) {
+                Some(GenericInst::Option(inner)) => (
+                    scrut_ty.spelling(self.records),
+                    vec![
+                        ("none".to_string(), Vec::new()),
+                        ("some".to_string(), vec![garg_to_lty(inner)]),
+                    ],
+                ),
+                Some(GenericInst::Result(ok, err)) => (
+                    scrut_ty.spelling(self.records),
+                    vec![
+                        ("ok".to_string(), vec![garg_to_lty(ok)]),
+                        ("err".to_string(), vec![garg_to_lty(err)]),
+                    ],
+                ),
+                None => {
+                    let info = self
+                        .records
+                        .enum_by_id(enum_id)
+                        .expect("a bare user enum resolves to enum info");
+                    (
+                        info.name.clone(),
+                        info.variants
+                            .iter()
+                            .map(|variant| {
+                                (
+                                    variant.name.clone(),
+                                    variant
+                                        .payload
+                                        .iter()
+                                        .map(|field| LTy::bare_scalar(field.scalar))
+                                        .collect(),
+                                )
+                            })
+                            .collect(),
+                    )
+                }
+            };
 
         let scrut_slot = self.alloc_slot();
         self.push(Instr::LocalSet(scrut_slot), span);
@@ -1251,13 +1389,7 @@ impl<'a> FnLowerer<'a> {
                     Code::CheckMatchArm.as_str(),
                     self.file,
                     arm.span,
-                    format!(
-                        "`{member}` is not a member of enum `{}`",
-                        self.records
-                            .enum_by_id(enum_id)
-                            .expect("enum resolved")
-                            .name
-                    ),
+                    format!("`{member}` is not a member of `{enum_name}`"),
                 ));
                 continue;
             };
@@ -1302,7 +1434,7 @@ impl<'a> FnLowerer<'a> {
 
             // Bind the payload positionally into fresh locals scoped to the arm.
             let mark = self.locals.len();
-            for (field, (binding, scalar)) in arm.bindings.iter().zip(&payload).enumerate() {
+            for (field, (binding, leaf_ty)) in arm.bindings.iter().zip(&payload).enumerate() {
                 let slot = self.alloc_slot();
                 self.push(Instr::LocalGet(scrut_slot), binding.span);
                 self.push(
@@ -1315,7 +1447,7 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalSet(slot), binding.span);
                 self.locals.push(Local {
                     name: binding.name.clone(),
-                    ty: LTy::bare_scalar(*scalar),
+                    ty: *leaf_ty,
                     mutable: false,
                     slot,
                 });
@@ -1756,6 +1888,12 @@ impl<'a> FnLowerer<'a> {
     /// exactly `expected` (bare-to-optional via `SomeWrap`; `absent` becomes a vacant
     /// optional). Reports a diagnostic and returns `None` on mismatch.
     fn lower_as(&mut self, expr: &Expression, expected: LTy) -> Option<()> {
+        // A built-in constructor is directed by the expected type: it supplies the
+        // exact `Option`/`Result` instantiation, so `none`/`some`/`ok`/`err` need no
+        // annotation of their own here.
+        if let Some(kind) = constructor_kind(expr) {
+            return self.lower_ctor_as(kind, expr, expected);
+        }
         if let Expression::Absent { span } = expr {
             let vacant = match expected {
                 LTy::Scalar {
@@ -1806,6 +1944,18 @@ impl<'a> FnLowerer<'a> {
         match expr {
             Expression::Literal { kind, text, span } => self.lower_literal(*kind, text, *span),
             Expression::Name { segments, span, .. } => match segments.as_slice() {
+                // `none` is a reserved Option constructor; it needs an expected type
+                // (an annotation, argument, return, or coerced position) to know its
+                // instantiation, so a bare `none` in value position is a type error.
+                [name] if name == "none" => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *span,
+                        "the Option type of `none` cannot be inferred here; use it where an Option is expected".to_string(),
+                    ));
+                    None
+                }
                 [name] => {
                     if let Some(local) = self.lookup(name) {
                         let (slot, ty) = (local.slot, local.ty);
@@ -1870,6 +2020,7 @@ impl<'a> FnLowerer<'a> {
             Expression::Field {
                 base, name, span, ..
             } => self.lower_field(base, name, *span),
+            Expression::Try { inner, span } => self.lower_try(inner, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this expression"));
                 None
@@ -2363,6 +2514,23 @@ impl<'a> FnLowerer<'a> {
         if name == "unreachable" {
             return self.lower_unreachable(args, span);
         }
+        // The built-in constructors are reserved call names. `some(v)` infers its
+        // Option from `v`; `ok`/`err` cannot infer the whole Result, so they need an
+        // expected type (an annotation, argument, return, or coerced position).
+        if name == "some" {
+            return self.lower_some_infer(args, span).map(CallResult::Value);
+        }
+        if name == "ok" || name == "err" {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "the Result type of `{name}` cannot be inferred here; use it where a Result is expected"
+                ),
+            ));
+            return None;
+        }
         if matches!(name, "isEmpty" | "contains" | "trim") {
             return self
                 .lower_text_builtin(name, args, span)
@@ -2842,6 +3010,252 @@ impl<'a> FnLowerer<'a> {
             ty: enum_id,
             optional: false,
         })
+    }
+
+    /// The image enum index of `Option[inner]`, minting it on first use.
+    fn opt_enum(&mut self, inner: GArg) -> EnumId {
+        self.records.instantiate_option(self.draft, inner)
+    }
+
+    /// Lower a built-in `Option`/`Result` constructor directed by an expected type:
+    /// `none`, `some(v)`, `ok(v)`, or `err(e)`. The expected type supplies the exact
+    /// instantiation, so the argument (if any) is coerced to the matching member
+    /// type. A constructor used where its built-in is not expected is a typed error.
+    fn lower_ctor_as(&mut self, kind: CtorKind, expr: &Expression, expected: LTy) -> Option<()> {
+        let span = expr.span();
+        let LTy::Enum {
+            ty: enum_id,
+            optional: false,
+        } = expected
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "`{}` needs an Option or Result type here, but the expected type is {}",
+                    kind.name(),
+                    expected.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        match (kind, self.records.generic_inst(enum_id)) {
+            (CtorKind::None, Some(GenericInst::Option(_))) => {
+                self.push(
+                    Instr::EnumConstruct {
+                        enum_idx: enum_id.index(),
+                        variant: OPTION_NONE,
+                    },
+                    span,
+                );
+                Some(())
+            }
+            (CtorKind::Some, Some(GenericInst::Option(inner))) => {
+                let arg = self.single_ctor_arg(expr, "some")?;
+                self.lower_as(arg, garg_to_lty(inner))?;
+                self.push(
+                    Instr::EnumConstruct {
+                        enum_idx: enum_id.index(),
+                        variant: OPTION_SOME,
+                    },
+                    span,
+                );
+                Some(())
+            }
+            (CtorKind::Ok, Some(GenericInst::Result(ok, _))) => {
+                let arg = self.single_ctor_arg(expr, "ok")?;
+                self.lower_as(arg, garg_to_lty(ok))?;
+                self.push(
+                    Instr::EnumConstruct {
+                        enum_idx: enum_id.index(),
+                        variant: RESULT_OK,
+                    },
+                    span,
+                );
+                Some(())
+            }
+            (CtorKind::Err, Some(GenericInst::Result(_, err))) => {
+                let arg = self.single_ctor_arg(expr, "err")?;
+                self.lower_as(arg, garg_to_lty(err))?;
+                self.push(
+                    Instr::EnumConstruct {
+                        enum_idx: enum_id.index(),
+                        variant: RESULT_ERR,
+                    },
+                    span,
+                );
+                Some(())
+            }
+            _ => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "`{}` does not construct {}",
+                        kind.name(),
+                        expected.spelling(self.records)
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lower a bare `some(v)` whose Option type is inferred from `v`. `none`, `ok`,
+    /// and `err` cannot infer their full type argument set, so they require an
+    /// expected type and are rejected here.
+    fn lower_some_infer(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`some` takes exactly one value, as `some(value)`".to_string(),
+            ));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`some` takes a positional value".to_string(),
+            ));
+            return None;
+        }
+        let inner_ty = self.lower_expr(&arg.value)?;
+        let Some(inner) = inner_ty.as_garg() else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                format!(
+                    "{} cannot be the value of an Option",
+                    inner_ty.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        let id = self.opt_enum(inner);
+        self.push(
+            Instr::EnumConstruct {
+                enum_idx: id.index(),
+                variant: OPTION_SOME,
+            },
+            span,
+        );
+        Some(LTy::Enum {
+            ty: id,
+            optional: false,
+        })
+    }
+
+    /// The single positional argument of a `some`/`ok`/`err` constructor call.
+    fn single_ctor_arg<'e>(&mut self, expr: &'e Expression, name: &str) -> Option<&'e Expression> {
+        let Expression::Call { args, .. } = expr else {
+            return None;
+        };
+        match args.as_slice() {
+            [arg] if arg.name.is_none() => Some(&arg.value),
+            _ => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    expr.span(),
+                    format!("`{name}` takes exactly one value, as `{name}(value)`"),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lower prefix `try <expr>`: propagate a `Result[T, E]`'s `err` out of the
+    /// enclosing `Result[U, E]`-returning function (same `E`, no conversion),
+    /// yielding the `ok` value `T`. Dispatches on the tag: on `err` it rebuilds the
+    /// error in the return `Result` and returns; on `ok` it extracts the value.
+    fn lower_try(&mut self, inner: &Expression, span: SourceSpan) -> Option<LTy> {
+        let inner_ty = self.lower_expr(inner)?;
+        let src = inner_ty
+            .bare_enum()
+            .and_then(|id| self.records.generic_inst(id));
+        let Some(GenericInst::Result(t_arg, e_arg)) = src else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                inner.span(),
+                format!(
+                    "`try` needs a Result value, found {}",
+                    inner_ty.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        let ret_id = match self.ret {
+            RetType::Value(ty) => ty.bare_enum(),
+            RetType::Unit => None,
+        };
+        let ret_result = ret_id.and_then(|id| self.records.generic_inst(id).map(|inst| (id, inst)));
+        let Some((ret_id, GenericInst::Result(_, ret_err))) = ret_result else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`try` is only valid in a function that returns a Result".to_string(),
+            ));
+            return None;
+        };
+        if ret_err != e_arg {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "`try` propagates the error type {}, but the function returns {}",
+                    garg_spelling(e_arg, self.records),
+                    garg_spelling(ret_err, self.records)
+                ),
+            ));
+            return None;
+        }
+        let slot = self.alloc_slot();
+        self.push(Instr::LocalSet(slot), span);
+        self.push(Instr::LocalGet(slot), span);
+        self.push(Instr::EnumTag, span);
+        let err_tag = self.draft.intern_int(i64::from(RESULT_ERR));
+        self.push(Instr::ConstLoad(err_tag.index()), span);
+        self.push(Instr::EqInt, span);
+        // False (not err, i.e. ok) jumps to the ok extraction; true (err) falls
+        // through to rebuild the error in the return Result and return it.
+        let to_ok = self.push_jif(span);
+        self.push(Instr::LocalGet(slot), span);
+        self.push(
+            Instr::EnumPayloadGet {
+                variant: RESULT_ERR,
+                field: 0,
+            },
+            span,
+        );
+        self.push(
+            Instr::EnumConstruct {
+                enum_idx: ret_id.index(),
+                variant: RESULT_ERR,
+            },
+            span,
+        );
+        self.push(Instr::Return, span);
+        let ok_here = self.here();
+        self.patch(to_ok, ok_here);
+        self.push(Instr::LocalGet(slot), span);
+        self.push(
+            Instr::EnumPayloadGet {
+                variant: RESULT_OK,
+                field: 0,
+            },
+            span,
+        );
+        Some(garg_to_lty(t_arg))
     }
 
     fn lower_field(&mut self, base: &Expression, name: &str, span: SourceSpan) -> Option<LTy> {
@@ -3332,12 +3746,12 @@ impl<'a> FnLowerer<'a> {
 
     // --- type resolution ---
 
-    fn resolve(&self, annotation: &TypeExpr) -> Option<LTy> {
-        resolve_type(self.records, annotation)
+    fn resolve(&mut self, annotation: &TypeExpr) -> Option<LTy> {
+        resolve_type(self.records, self.draft, annotation)
     }
 
     fn param_type(&mut self, ty: &TypeExpr) -> Option<LTy> {
-        match param_type(self.records, ty) {
+        match param_type(self.records, self.draft, ty) {
             Some(param) => Some(param),
             None => {
                 self.fail(unsupported(self.file, ty.span(), "this parameter type"));
@@ -3351,8 +3765,8 @@ impl<'a> FnLowerer<'a> {
 /// nominal, or a bare `struct` value. Optionals, the durable resource record, and
 /// unresolved names are outside the parameter subset. One owner for signature
 /// building and body lowering, so the two can never disagree on a parameter's type.
-fn param_type(records: &TypeRegistry, ty: &TypeExpr) -> Option<LTy> {
-    match resolve_type(records, ty) {
+fn param_type(records: &TypeRegistry, draft: &mut ImageDraft, ty: &TypeExpr) -> Option<LTy> {
+    match resolve_type(records, draft, ty) {
         Some(
             param @ (LTy::Scalar {
                 optional: false, ..
@@ -3375,11 +3789,19 @@ fn param_type(records: &TypeRegistry, ty: &TypeExpr) -> Option<LTy> {
 /// spelling. Aliases expand first, so classification reads only scalar spellings
 /// and declared type names; the no-nested-optional rule applies to the expanded
 /// form, so an alias cannot smuggle a doubled optional.
-fn resolve_type(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy> {
-    resolve_expanded(records, &records.expand(annotation))
+fn resolve_type(
+    records: &TypeRegistry,
+    draft: &mut ImageDraft,
+    annotation: &TypeExpr,
+) -> Option<LTy> {
+    resolve_expanded(records, draft, &records.expand(annotation))
 }
 
-fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy> {
+fn resolve_expanded(
+    records: &TypeRegistry,
+    draft: &mut ImageDraft,
+    annotation: &TypeExpr,
+) -> Option<LTy> {
     match annotation {
         TypeExpr::Name { text, .. } => {
             if let Some(scalar) = ScalarType::from_spelling(text) {
@@ -3407,12 +3829,46 @@ fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy
             }
         }
         TypeExpr::Optional { inner, .. } => {
-            let inner = resolve_expanded(records, inner)?;
+            let inner = resolve_expanded(records, draft, inner)?;
             if inner.is_optional() {
                 None
             } else {
                 Some(inner.to_optional())
             }
+        }
+        TypeExpr::Apply { head, args, .. } => resolve_generic(records, draft, head, args),
+        _ => None,
+    }
+}
+
+/// Resolve a built-in generic application `Option[T]`/`Result[T, E]` to a bare
+/// enum instantiation, monomorphizing it into the draft on first use. A wrong
+/// arity or an argument that is not a value type (an optional or the resource
+/// record) yields `None`, so the caller reports it as an unsupported type. A
+/// user-defined generic head is a later slice and resolves to `None` here.
+fn resolve_generic(
+    records: &TypeRegistry,
+    draft: &mut ImageDraft,
+    head: &str,
+    args: &[TypeExpr],
+) -> Option<LTy> {
+    match head {
+        "Option" => {
+            let [arg] = args else { return None };
+            let inner = resolve_expanded(records, draft, arg)?.as_garg()?;
+            Some(LTy::Enum {
+                ty: records.instantiate_option(draft, inner),
+                optional: false,
+            })
+        }
+        "Result" => {
+            let [ok, err] = args else { return None };
+            let ok = resolve_expanded(records, draft, ok)?.as_garg()?;
+            let err = resolve_expanded(records, draft, err)?.as_garg()?;
+            Some(LTy::Enum {
+                ty: records.instantiate_result(draft, ok, err),
+                optional: false,
+            })
         }
         _ => None,
     }

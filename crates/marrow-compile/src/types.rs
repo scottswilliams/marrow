@@ -13,10 +13,13 @@
 //! children) and any number of dense `struct` value types (every field required,
 //! non-durable, constructible and read by value).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use marrow_codes::Code;
-use marrow_image::{EnumId, EnumTypeDef, FieldDef, ImageDraft, RecordTypeDef, TypeId, VariantDef};
+use marrow_image::{
+    EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar, TypeId, VariantDef,
+};
 use marrow_syntax::{
     AliasDecl, EnumDecl, EnumMember, Expression, LiteralKind, NominalDecl, ResourceDecl,
     ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
@@ -29,6 +32,72 @@ use crate::scalar::ScalarType;
 /// lowered type so classification never re-reads the source spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NominalId(pub(crate) u16);
+
+/// A concrete bare (non-optional) value type used as a `Option`/`Result` type
+/// argument. Monomorphization keys an instantiation on the exact argument types,
+/// so `Option[int]` and `Option[string]` are distinct instantiations, and
+/// `Option[Option[int]]` nests through the [`GArg::Enum`] case. A resource record
+/// is not a value type, so it is not a representable argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GArg {
+    Scalar(ScalarType),
+    Nominal(NominalId),
+    Struct(TypeId),
+    Enum(EnumId),
+}
+
+impl GArg {
+    /// The image type this argument monomorphizes to as an enum payload leaf. A
+    /// nominal erases to its base `int` (its interval is carried by guards, not the
+    /// image), matching how a nominal is recorded everywhere else.
+    fn image(self) -> ImageType {
+        match self {
+            GArg::Scalar(scalar) => ImageType::scalar(scalar.image()),
+            GArg::Nominal(_) => ImageType::scalar(Scalar::Int),
+            GArg::Struct(ty) => ImageType::Record {
+                idx: ty.index(),
+                optional: false,
+            },
+            GArg::Enum(id) => ImageType::Enum {
+                idx: id.index(),
+                optional: false,
+            },
+        }
+    }
+}
+
+/// A built-in generic instantiation: which built-in type an image enum index came
+/// from, and with which argument(s). Recovered by [`TypeRegistry::generic_inst`]
+/// so `match`, construction, and spelling can treat an `Option`/`Result` value
+/// like the built-in it is rather than a user `enum`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenericInst {
+    Option(GArg),
+    Result(GArg, GArg),
+}
+
+/// The `none`/`some` and `ok`/`err` variant indices, fixed for every `Option` and
+/// `Result` instantiation so construction, `match`, and `try` agree on the tag.
+pub(crate) const OPTION_NONE: u16 = 0;
+pub(crate) const OPTION_SOME: u16 = 1;
+pub(crate) const RESULT_OK: u16 = 0;
+pub(crate) const RESULT_ERR: u16 = 1;
+
+/// Whether `name` is a built-in generic type the user cannot redeclare.
+pub(crate) fn is_reserved_type_name(name: &str) -> bool {
+    matches!(name, "Option" | "Result")
+}
+
+/// The lazily-monomorphized built-in generic instantiations. Interior-mutable so a
+/// shared `&TypeRegistry` can mint a fresh instantiation into the image draft the
+/// first time a concrete `Option`/`Result` is used, while every later use of the
+/// same argument reuses the same image enum index.
+#[derive(Default)]
+struct Generics {
+    options: Vec<(GArg, EnumId)>,
+    results: Vec<(GArg, GArg, EnumId)>,
+    by_id: Vec<(u16, GenericInst)>,
+}
 
 /// The closed capability set a nominal declaration's `supports` list unlocks.
 /// Each flag independently admits operators over the nominal (see the lowerer's
@@ -142,9 +211,99 @@ pub(crate) struct TypeRegistry {
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
     record: Option<RecordInfo>,
+    generics: RefCell<Generics>,
 }
 
 impl TypeRegistry {
+    /// The image enum index of `Option[inner]`, minting it into `draft` on first
+    /// use and reusing it thereafter. Variant `0` is `none` (no payload) and
+    /// variant `1` is `some` (the argument as its single payload leaf).
+    pub(crate) fn instantiate_option(&self, draft: &mut ImageDraft, inner: GArg) -> EnumId {
+        if let Some((_, id)) = self
+            .generics
+            .borrow()
+            .options
+            .iter()
+            .find(|(arg, _)| *arg == inner)
+        {
+            return *id;
+        }
+        let name = draft.intern_string("Option");
+        let none = draft.intern_string("none");
+        let some = draft.intern_string("some");
+        let id = draft.add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: none,
+                    category: false,
+                    payload: Vec::new(),
+                },
+                VariantDef {
+                    name: some,
+                    category: false,
+                    payload: vec![inner.image()],
+                },
+            ],
+        });
+        let mut generics = self.generics.borrow_mut();
+        generics.options.push((inner, id));
+        generics
+            .by_id
+            .push((id.index(), GenericInst::Option(inner)));
+        id
+    }
+
+    /// The image enum index of `Result[ok, err]`, minting it into `draft` on first
+    /// use and reusing it thereafter. Variant `0` is `ok` and variant `1` is `err`,
+    /// each carrying its argument as its single payload leaf.
+    pub(crate) fn instantiate_result(&self, draft: &mut ImageDraft, ok: GArg, err: GArg) -> EnumId {
+        if let Some((_, _, id)) = self
+            .generics
+            .borrow()
+            .results
+            .iter()
+            .find(|(o, e, _)| *o == ok && *e == err)
+        {
+            return *id;
+        }
+        let name = draft.intern_string("Result");
+        let ok_name = draft.intern_string("ok");
+        let err_name = draft.intern_string("err");
+        let id = draft.add_enum_type(EnumTypeDef {
+            name,
+            variants: vec![
+                VariantDef {
+                    name: ok_name,
+                    category: false,
+                    payload: vec![ok.image()],
+                },
+                VariantDef {
+                    name: err_name,
+                    category: false,
+                    payload: vec![err.image()],
+                },
+            ],
+        });
+        let mut generics = self.generics.borrow_mut();
+        generics.results.push((ok, err, id));
+        generics
+            .by_id
+            .push((id.index(), GenericInst::Result(ok, err)));
+        id
+    }
+
+    /// The built-in instantiation an image enum index came from, or `None` for a
+    /// user-declared `enum`.
+    pub(crate) fn generic_inst(&self, id: EnumId) -> Option<GenericInst> {
+        self.generics
+            .borrow()
+            .by_id
+            .iter()
+            .find(|(index, _)| *index == id.index())
+            .map(|(_, inst)| *inst)
+    }
+
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
         self.record.as_ref().filter(|info| info.name == name)
     }
@@ -199,6 +358,11 @@ impl TypeRegistry {
                 element: Box::new(self.expand(element)),
                 span: *span,
             },
+            TypeExpr::Apply { head, args, span } => TypeExpr::Apply {
+                head: head.clone(),
+                args: args.iter().map(|arg| self.expand(arg)).collect(),
+                span: *span,
+            },
             TypeExpr::Identity(_) => ty.clone(),
         }
     }
@@ -224,6 +388,7 @@ impl TypeRegistry {
             structs: Vec::new(),
             enums: Vec::new(),
             record: None,
+            generics: RefCell::default(),
         };
         registry.nominals =
             build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
@@ -256,6 +421,10 @@ fn build_alias_table(
         // A parse error blocks compilation before this runs, so a missing target
         // only means the declaration itself was reported; skip it quietly.
         let Some(ty) = &decl.ty else { continue };
+        if is_reserved_type_name(&decl.name) {
+            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            continue;
+        }
         if raw.contains_key(&decl.name) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
@@ -362,6 +531,11 @@ fn referenced_names<'t>(ty: &'t TypeExpr, visit: &mut impl FnMut(&'t str)) {
         TypeExpr::Name { text, .. } => visit(text),
         TypeExpr::Optional { inner, .. } => referenced_names(inner, visit),
         TypeExpr::Sequence { element, .. } => referenced_names(element, visit),
+        TypeExpr::Apply { args, .. } => {
+            for arg in args {
+                referenced_names(arg, visit);
+            }
+        }
         TypeExpr::Identity(_) => {}
     }
 }
@@ -380,6 +554,11 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
         },
         TypeExpr::Sequence { element, span } => TypeExpr::Sequence {
             element: Box::new(expand_in(table, element)),
+            span: *span,
+        },
+        TypeExpr::Apply { head, args, span } => TypeExpr::Apply {
+            head: head.clone(),
+            args: args.iter().map(|arg| expand_in(table, arg)).collect(),
             span: *span,
         },
         TypeExpr::Identity(_) => ty.clone(),
@@ -451,6 +630,10 @@ fn build_nominals(
         let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
             continue;
         };
+        if is_reserved_type_name(&decl.name) {
+            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            continue;
+        }
         // Scalar spellings are keywords the parser already rejects as names;
         // owning them here keeps the conflict predicate self-contained.
         if ScalarType::from_spelling(&decl.name).is_some()
@@ -637,6 +820,10 @@ fn build_structs(
 ) -> Vec<StructInfo> {
     let mut built: Vec<StructInfo> = Vec::new();
     for (file, decl) in structs {
+        if is_reserved_type_name(&decl.name) {
+            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            continue;
+        }
         if ScalarType::from_spelling(&decl.name).is_some()
             || registry.aliases.contains_key(&decl.name)
             || registry.nominal_by_name(&decl.name).is_some()
@@ -748,6 +935,10 @@ fn build_enums(
 ) -> Vec<EnumInfo> {
     let mut built: Vec<EnumInfo> = Vec::new();
     for (file, decl) in enums {
+        if is_reserved_type_name(&decl.name) {
+            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            continue;
+        }
         if ScalarType::from_spelling(&decl.name).is_some()
             || registry.aliases.contains_key(&decl.name)
             || registry.nominal_by_name(&decl.name).is_some()
@@ -839,7 +1030,7 @@ fn enum_variants(
             category: false,
             payload: payload_scalars
                 .iter()
-                .map(|scalar| scalar.image())
+                .map(|scalar| ImageType::scalar(scalar.image()))
                 .collect(),
         });
         variants.push(VariantInfo {
@@ -908,6 +1099,10 @@ fn build_record(
         }
     }
     let (file, resource) = resources.first()?;
+    if is_reserved_type_name(&resource.name) {
+        diagnostics.push(reserved_name(file, resource.name_span, &resource.name));
+        return None;
+    }
 
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
@@ -954,6 +1149,16 @@ fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {
         TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
         _ => None,
     }
+}
+
+/// The diagnostic for a declaration that reuses a built-in generic type name.
+fn reserved_name(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckNameConflict.as_str(),
+        file,
+        span,
+        format!("`{name}` is a built-in generic type and cannot be redeclared"),
+    )
 }
 
 fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic {

@@ -330,7 +330,8 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         })
         .collect();
     let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
-    let signatures = FunctionRegistry::build(&records, &functions, module_names, imports);
+    let signatures =
+        FunctionRegistry::build(&records, &mut draft, &functions, module_names, imports);
 
     // Module-private constants, evaluated before body lowering so a reference folds
     // to its value.

@@ -156,8 +156,8 @@ pub fn product(a: int, b: int): int?
 ```
 
 Each `on` arm runs when the operation faults that way and must diverge — every path
-through it must `return`, `break`, `continue`, `throw`, or reach `unreachable`, so
-control never falls out of an arm back into the surrounding code. The required arms
+through it must `return`, `break`, `continue`, or reach `unreachable`, so control
+never falls out of an arm back into the surrounding code. The required arms
 are exactly the faults the operation can raise: `+`, `-`, `*`, and negation take an
 `on out_of_range` arm; `/` and `%` take both `on out_of_range` (for the
 `i64::MIN / -1` case) and `on zero_divisor`. A missing, extra, or non-diverging arm
@@ -217,8 +217,31 @@ direction (see [`future/general-purpose-language.md`](../future/general-purpose-
 On the current line every member is a selectable leaf and the checker rejects a
 `category` or nested member as `check.unsupported`.
 
-## `try` And `transaction`
+## Prefix `try` And `transaction`
 
-`try`/`catch` transfers `Error` values. `transaction` groups durable effects.
-Their exit rules are defined together in
+Prefix `try <expr>` propagates a `Result[T, E]` failure. It is written as the
+top-level right-hand side of a statement — `const x = try f()`, `var x = try
+f()`, `return try f()`, or a bare `try f()` — never nested inside a larger
+expression. It evaluates `expr` to a `Result[T, E]`: an `ok(v)` yields the value
+`v`, and an `err(e)` returns `err(e)` immediately from the enclosing function. The
+enclosing function must return `Result[U, E]` with the same error type `E`; there
+is no implicit error conversion.
+
+```mw
+module docs::propagation
+
+fn checkPort(n: int): Result[int, string]
+    if n < 0
+        return err("negative port")
+    return ok(n)
+
+pub fn openTwice(a: int, b: int): Result[int, string]
+    const x = try checkPort(a)
+    const y = try checkPort(b)
+    return ok(x + y)
+```
+
+`Result[T, E]` and `Option[T]` are ordinary value types; see
+[Types and values](types-and-values.md). `transaction` groups durable effects;
+its exit rules are defined in
 [Errors and transactions](errors-and-transactions.md).

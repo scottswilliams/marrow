@@ -303,22 +303,18 @@ fn formats_a_range_for_with_a_by_step() {
 }
 
 #[test]
-fn formats_transaction_and_try_blocks() {
+fn formats_transaction_and_prefix_try() {
     let source = "module app\n\
-         fn commit(id: Id(^books))\n\
+         fn commit(id: Id(^books)): Result[int, string]\n\
          \x20   transaction\n\
          \x20       ^books(id).title = title\n\
-         \x20   try\n\
-         \x20       risky()\n\
-         \x20   catch err: Error\n\
-         \x20       print(err.message)\n";
+         \x20   const x = try risky()\n\
+         \x20   return ok(x)\n";
     let expected = "\
          \x20   transaction\n\
          \x20       ^books(id).title = title\n\
-         \x20   try\n\
-         \x20       risky()\n\
-         \x20   catch err: Error\n\
-         \x20       print(err.message)";
+         \x20   const x = try risky()\n\
+         \x20   return ok(x)";
     assert_eq!(format_function_body(source), expected);
 }
 
@@ -1230,14 +1226,14 @@ fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
 fn preserves_multiline_trailing_comma_calls() {
     let source = "module app\n\
          fn fail()\n\
-         \x20   throw Error(\n\
+         \x20   log(\n\
          \x20       code: \"book.absent\",\n\
          \x20       message: \"missing book\",\n\
          \x20   )\n";
     let expected = "module app\n\
          \n\
          fn fail()\n\
-         \x20   throw Error(\n\
+         \x20   log(\n\
          \x20       code: \"book.absent\",\n\
          \x20       message: \"missing book\",\n\
          \x20   )\n";
@@ -1249,14 +1245,14 @@ fn preserves_multiline_trailing_comma_calls() {
 fn preserves_trailing_comments_on_multiline_statements() {
     let source = "module app\n\
          fn run()\n\
-         \x20   throw Error(\n\
+         \x20   log(\n\
          \x20       code: \"book.absent\",\n\
          \x20       message: \"missing book\",\n\
          \x20   ) ; retained rationale\n";
     let expected = "module app\n\
          \n\
          fn run()\n\
-         \x20   throw Error(\n\
+         \x20   log(\n\
          \x20       code: \"book.absent\",\n\
          \x20       message: \"missing book\",\n\
          \x20   ) ; retained rationale\n";
@@ -1355,38 +1351,27 @@ fn preserves_trailing_comments_on_if_clauses() {
 }
 
 #[test]
-fn preserves_trailing_comments_on_try_catch_headers() {
+fn preserves_trailing_comments_on_prefix_try_statements() {
     let source = "module app\n\
-         fn run()\n\
-         \x20   try ; try rationale\n\
-         \x20       return\n\
-         \x20   catch err: Error ; catch rationale\n\
-         \x20       return\n";
+         fn run(): Result[int, string]\n\
+         \x20   const x = try risky() ; try rationale\n\
+         \x20   return ok(x)\n";
     let expected = "module app\n\
          \n\
-         fn run()\n\
-         \x20   try ; try rationale\n\
-         \x20       return\n\
-         \x20   catch err: Error ; catch rationale\n\
-         \x20       return\n";
+         fn run(): Result[int, string]\n\
+         \x20   const x = try risky() ; try rationale\n\
+         \x20   return ok(x)\n";
 
     assert_eq!(format_source(source), expected);
 
     let body = reparsed_run_body(source);
     assert_eq!(
         comment_facts(&body.comments),
-        vec![
-            (
-                "try rationale",
-                CommentPlacement::Trailing,
-                CommentMarker::Line,
-            ),
-            (
-                "catch rationale",
-                CommentPlacement::Trailing,
-                CommentMarker::Line,
-            ),
-        ]
+        vec![(
+            "try rationale",
+            CommentPlacement::Trailing,
+            CommentMarker::Line,
+        )]
     );
     let once = format_source(source);
     assert_eq!(format_source(&once), once);

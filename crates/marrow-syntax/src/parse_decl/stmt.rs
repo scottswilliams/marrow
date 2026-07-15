@@ -4,16 +4,14 @@
 //! statement may span several physical lines inside open delimiters.
 
 use super::head::arm_pattern;
-use super::statement_lines::{
-    parse_catch_header, parse_for_header, parse_if_const_head, parse_simple_statement,
-};
+use super::statement_lines::{parse_for_header, parse_if_const_head, parse_simple_statement};
 use super::tokens::{
     comment_from_token, expr_of_after, find_top_level_equal, first_line_end, is_line_comment,
     line_end, line_span_or, parse_type, push_parse_error,
 };
 use crate::ast::{
-    ArmBinding, Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf,
-    Expression, MatchArm, Statement, TypeExpr,
+    ArmBinding, Block, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf, Expression,
+    MatchArm, Statement, TypeExpr,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -39,13 +37,13 @@ enum CheckedFault {
 }
 
 /// A block-introducing keyword that has no statement of its own and only ever
-/// appears as a clause of one (`else`, `catch`). Standing alone it
-/// cannot be structured, so the statement parser swallows it and its nested
-/// block, reporting the stray keyword so the following statements still parse.
-/// The keywords with dedicated statement parsers (`if`, `while`, …) are matched
-/// before this guard and never reach it.
+/// appears as a clause of one (`else`). Standing alone it cannot be structured, so
+/// the statement parser swallows it and its nested block, reporting the stray
+/// keyword so the following statements still parse. The keywords with dedicated
+/// statement parsers (`if`, `while`, …) are matched before this guard and never
+/// reach it.
 fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
-    matches!(keyword, Keyword::Else | Keyword::Catch)
+    matches!(keyword, Keyword::Else)
 }
 
 /// Parses the statements of a function body over the file-wide token stream.
@@ -186,12 +184,30 @@ impl<'a> StmtParser<'a> {
                 self.skip_reserved_compound("lock");
                 return None;
             }
-            TokenKind::Keyword(Keyword::Try) => return Some(self.try_stmt()),
+            TokenKind::Keyword(Keyword::Try) => return self.try_statement(),
             TokenKind::Keyword(Keyword::Match) => return Some(self.match_stmt()),
             TokenKind::Keyword(Keyword::Assert) => return Some(self.assert_stmt()),
             TokenKind::Keyword(keyword) if is_stray_block_clause_keyword(keyword) => {
                 self.skip_compound();
                 return None;
+            }
+            // `throw`/`catch` are no longer keywords: the throw/catch channel was
+            // removed. A statement that begins with one is the removed form; report
+            // it as unsupported and point at `Result`, keeping the parse total.
+            TokenKind::Identifier if self.tokens[self.pos].text(self.source) == "throw" => {
+                return self.recover_removed_throw();
+            }
+            TokenKind::Identifier if self.tokens[self.pos].text(self.source) == "catch" => {
+                return self.recover_removed_clause(
+                    UnsupportedSyntax::CatchClause,
+                    "`catch` was removed; match a `Result[T, E]` on its `ok`/`err` members instead",
+                );
+            }
+            TokenKind::Identifier if self.tokens[self.pos].text(self.source) == "finally" => {
+                return self.recover_removed_clause(
+                    UnsupportedSyntax::Finally,
+                    "`finally` blocks were removed; return a `Result[T, E]` and clean up on its `err` member",
+                );
             }
             _ => {}
         }
@@ -309,94 +325,93 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse `try ... catch ...`. A try block without a catch is retained for
-    /// recovery but receives a parser diagnostic.
-    fn try_stmt(&mut self) -> Statement {
+    /// Parse a statement that begins with `try`. Prefix `try <expr>` is a value
+    /// form: it propagates a `Result[T, E]`'s `err` out of the enclosing
+    /// `Result`-returning function, yielding the `ok` value. The removed block form
+    /// (`try` opening an indented body, with `catch`/`finally`) is reported as
+    /// unsupported and its blocks are skipped so the parse stays total.
+    fn try_statement(&mut self) -> Option<Statement> {
         let start = self.advance().span; // `try`
-        self.consume_header_line();
-        let body = self.block_body();
-        let mut end = body.span;
-
-        let catch = if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Catch))) {
-            let clause = self.catch_clause();
-            end = clause.block.span;
-            Some(clause)
-        } else {
-            None
-        };
-        if let Some(finally_span) = self.consume_removed_finally_clause() {
-            end = finally_span;
-        }
-
-        if catch.is_none() {
+        let header = self.take_line();
+        // The block form opens an indented body after the header line.
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.skip_block();
+            self.consume_removed_try_clauses();
             self.error_span_reason(
                 start,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
-                "`try` requires a `catch` clause",
+                ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TryCatchBlock),
+                "block-form `try`/`catch` was removed; return a `Result[T, E]` and propagate it with prefix `try <expr>`",
             );
-            if let Some(diagnostic) = self.diagnostics.last_mut() {
-                diagnostic.help =
-                    Some("catch, clean up, then rethrow when cleanup is needed".to_string());
-            }
+            return None;
         }
+        if header.is_empty() {
+            self.error_span_reason(
+                start,
+                ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TryCatchBlock),
+                "prefix `try` needs a `Result[T, E]` expression, as `try <expr>`",
+            );
+            return None;
+        }
+        let error_span = line_span_or(header, start);
+        let inner = expr_of_after(self.source, header, start, &mut self.diagnostics)
+            .unwrap_or(Expression::Error { span: error_span });
+        let span = join_spans(start, inner.span());
+        Some(Statement::Expr {
+            value: Expression::Try {
+                inner: Box::new(inner),
+                span,
+            },
+            span,
+        })
+    }
 
-        Statement::Try {
-            body,
-            catch,
-            span: join_spans(start, end),
+    /// Consume the `catch`/`finally` clauses that followed a removed block `try`,
+    /// so their headers and bodies do not leak into the surrounding statements.
+    fn consume_removed_try_clauses(&mut self) {
+        loop {
+            let Some(token) = self.tokens.get(self.pos).copied() else {
+                return;
+            };
+            let is_clause = token.kind == TokenKind::Identifier
+                && matches!(token.text(self.source), "catch" | "finally");
+            if !is_clause {
+                return;
+            }
+            self.consume_header_line();
+            if matches!(self.peek(), Some(TokenKind::Indent)) {
+                self.skip_block();
+            }
         }
     }
 
-    fn consume_removed_finally_clause(&mut self) -> Option<SourceSpan> {
-        let token = self.tokens.get(self.pos).copied()?;
-        if token.kind != TokenKind::Identifier || token.text(self.source) != "finally" {
-            return None;
-        }
-        let line_end = self.find_line_end();
-        let has_trailing_comment =
-            line_end > self.pos && is_line_comment(self.tokens[line_end - 1].kind);
-        let content_end = if has_trailing_comment {
-            line_end - 1
-        } else {
-            line_end
-        };
-        if content_end != self.pos + 1 {
-            return None;
-        }
-        let after_header = match self.tokens.get(line_end).map(|token| token.kind) {
-            Some(TokenKind::Newline) => line_end + 1,
-            _ => line_end,
-        };
-        if self.tokens.get(after_header).map(|token| token.kind) != Some(TokenKind::Indent) {
-            return None;
-        }
+    /// Recover a removed `throw <expr>` statement: consume its line and report the
+    /// throw/catch channel as unsupported, pointing at `Result`.
+    fn recover_removed_throw(&mut self) -> Option<Statement> {
+        let start = self.tokens[self.pos].span;
+        let line = self.take_line();
+        let span = line_span_or(line, start);
         self.error_span_reason(
-            token.span,
-            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::Finally),
-            "`finally` blocks were removed",
+            span,
+            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::ThrowStatement),
+            "`throw` was removed; return a `Result[T, E]` with `err(...)` and propagate it with `try`",
         );
-        if let Some(diagnostic) = self.diagnostics.last_mut() {
-            diagnostic.help =
-                Some("catch, clean up, then rethrow when cleanup is needed".to_string());
-        }
-        self.consume_header_line();
-        let end = self.skip_block();
-        Some(join_spans(token.span, end))
+        None
     }
 
-    fn catch_clause(&mut self) -> CatchClause {
-        let keyword = self.advance(); // `catch`
-        let header = self.take_line();
-        let (name, ty) = match parse_catch_header(self.source, header) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                let (span, reason, message) = error.locate(line_span_or(header, keyword.span));
-                self.error_span_reason(span, reason, message);
-                (String::new(), None)
-            }
-        };
-        let block = self.block_body();
-        CatchClause { name, ty, block }
+    /// Recover a stray removed block clause (`catch`/`finally`): consume its header
+    /// line and any indented block, reporting `reason` at its header.
+    fn recover_removed_clause(
+        &mut self,
+        reason: UnsupportedSyntax,
+        message: &'static str,
+    ) -> Option<Statement> {
+        let start = self.tokens[self.pos].span;
+        self.consume_header_line();
+        if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.skip_block();
+        }
+        self.error_span_reason(start, ParseDiagnosticReason::Unsupported(reason), message);
+        None
     }
 
     fn if_stmt(&mut self) -> Statement {

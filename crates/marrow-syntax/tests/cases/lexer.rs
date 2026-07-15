@@ -565,12 +565,12 @@ fn lexes_utf8_strings_bytes_and_interpolation_boundaries() {
 
 #[test]
 fn suppresses_layout_inside_open_delimiters() {
-    let source = "throw Error(\n    code: \"book.absent\",\n    message: \"missing\",\n)\n";
+    let source = "return Error(\n    code: \"book.absent\",\n    message: \"missing\",\n)\n";
 
     assert_eq!(
         kinds(source),
         vec![
-            TokenKind::Keyword(Keyword::Throw),
+            TokenKind::Keyword(Keyword::Return),
             TokenKind::Keyword(Keyword::Error),
             TokenKind::LeftParen,
             TokenKind::Identifier,
@@ -590,12 +590,12 @@ fn suppresses_layout_inside_open_delimiters() {
 
 #[test]
 fn comment_lines_inside_open_delimiters_do_not_emit_newlines() {
-    let source = "throw Error(\n    ; generated message\n    code: \"book.absent\",\n)\n";
+    let source = "return Error(\n    ; generated message\n    code: \"book.absent\",\n)\n";
 
     assert_eq!(
         kinds(source),
         vec![
-            TokenKind::Keyword(Keyword::Throw),
+            TokenKind::Keyword(Keyword::Return),
             TokenKind::Keyword(Keyword::Error),
             TokenKind::LeftParen,
             TokenKind::Comment,

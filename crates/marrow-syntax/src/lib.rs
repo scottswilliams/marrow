@@ -21,13 +21,13 @@ pub use active_call::{
     ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
 };
 pub use ast::{
-    AliasDecl, Argument, ArmBinding, BinaryOp, Block, CatchClause, CheckedBind, Comment,
-    CommentMarker, CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl,
-    EnumMember, EnumPayloadField, EvolveDecl, EvolveStep, Expression, FieldDecl, ForBinding,
-    ForName, FunctionDecl, GroupDecl, IdentityTypeExpr, IndexDecl, InterpolationPart, KeyParam,
-    LiteralKind, LoopOrder, MatchArm, ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr,
-    ResourceDecl, ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, StructDecl,
-    SupportSpelling, TestDecl, TypeExpr, UnaryOp, UseDecl, range_expr,
+    AliasDecl, Argument, ArmBinding, BinaryOp, Block, CheckedBind, Comment, CommentMarker,
+    CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
+    EnumPayloadField, EvolveDecl, EvolveStep, Expression, FieldDecl, ForBinding, ForName,
+    FunctionDecl, GroupDecl, IdentityTypeExpr, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
+    LoopOrder, MatchArm, ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl,
+    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, StructDecl, SupportSpelling,
+    TestDecl, TypeExpr, UnaryOp, UseDecl, range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
@@ -311,7 +311,6 @@ mod decl_parser_corpus {
             ),
             ("fn f()\n    return 1 +\n", "fn f()\n    return 1 +".len()),
             ("fn f()\n    delete\n", "fn f()\n    delete".len()),
-            ("fn f()\n    throw\n", "fn f()\n    throw".len()),
             ("fn f()\n    x =\n", "fn f()\n    x =".len()),
             (
                 "fn f()\n    if const x =\n        x\n",

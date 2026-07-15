@@ -157,9 +157,10 @@ decode operation; converting bytes to `string` does not perform that decode.
 
 ## Errors
 
-`Error(code: ..., message: ..., help: ..., data: ...)` constructs the built-in
-error resource. `code` and `message` are required; `help` and `data` are sparse.
-`throw` and `catch` are statements described in
+A recoverable failure a program handles is an ordinary `Result[T, E]` value (see
+[Types and values](types-and-values.md)), returned with `err(...)` and propagated
+with prefix `try`. There is no throwable error value and no `throw`/`catch`
+channel; the distinct failure kinds are described in
 [Errors and transactions](errors-and-transactions.md).
 
 ## Deletion

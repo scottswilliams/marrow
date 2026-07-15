@@ -189,7 +189,8 @@ base_type        = scalar_type
                  | qualified_name
                  | "Error"
                  | identity_type
-                 | sequence_type ;
+                 | sequence_type
+                 | generic_type ;
 
 scalar_type      = "int" | "bool" | "string" | "bytes"
                  | "decimal" | "date" | "instant" | "duration"
@@ -197,7 +198,14 @@ scalar_type      = "int" | "bool" | "string" | "bytes"
 
 identity_type    = "Id", "(", saved_root, ")" ;
 sequence_type    = "sequence", "[", type, "]" ;
+generic_type     = ("Option" | "Result"), "[", type, {",", type}, "]" ;
 ```
+
+`generic_type` is a built-in generic application, spelled with the same bracket
+group as `sequence_type`. Only the built-in `Option[T]` and `Result[T, E]` heads
+are recognized on the current line; a user-defined generic head is a future
+direction. The applied argument arity (`Option` takes one type, `Result` takes
+two) is a checker rule.
 
 Keyed local-collection shapes are written on declarations, not as standalone
 type annotations.
@@ -219,15 +227,13 @@ statement       = const_stmt
                 | continue_stmt
                 | return_stmt
                 | transaction_stmt
-                | try_stmt
-                | throw_stmt
                 | expression_stmt ;
 
 const_stmt      = "const", identifier, type_annotation?,
-                  "=", expression, NEWLINE ;
+                  "=", (try_value | expression), NEWLINE ;
 
 var_stmt        = "var", identifier, key_params?,
-                  type_annotation?, ("=", expression)?, NEWLINE ;
+                  type_annotation?, ("=", (try_value | expression))?, NEWLINE ;
 
 assignment_stmt = assignable, "=", expression, NEWLINE ;
 
@@ -238,9 +244,8 @@ compound_op     = "+=" | "-=" | "*=" | "/=" | "%=" ;
 delete_stmt     = "delete", path_expr, NEWLINE ;
 break_stmt      = "break", NEWLINE ;
 continue_stmt   = "continue", NEWLINE ;
-return_stmt     = "return", expression?, NEWLINE ;
-throw_stmt      = "throw", expression, NEWLINE ;
-expression_stmt = expression, NEWLINE ;
+return_stmt     = "return", (try_value | expression)?, NEWLINE ;
+expression_stmt = (try_value | expression), NEWLINE ;
 ```
 
 ## Conditionals, Loops, And Match
@@ -272,15 +277,19 @@ arm_bindings    = "(", identifier, {",", identifier}, ","?, ")" ;
 
 `by` is contextual in a `for` head. `category` is contextual in an enum body.
 
-## Transactions And Catching
+## Transactions And `try`
 
 ```ebnf
 transaction_stmt = "transaction", NEWLINE, block ;
 
-try_stmt         = "try", NEWLINE, block, catch_clause ;
-catch_clause     = "catch", identifier, type_annotation?,
-                   NEWLINE, block ;
+try_value        = "try", expression ;
 ```
+
+Prefix `try_value` propagates a `Result[T, E]` failure. It is a statement-level
+value form only: it may stand as the top-level right-hand side of a `const_stmt`,
+`var_stmt`, `return_stmt`, or `expression_stmt`, but never nested inside a larger
+expression. The throw/catch channel was removed; a `throw`, block `try`/`catch`,
+or `finally` is a rejected removed form.
 
 ## Expressions
 

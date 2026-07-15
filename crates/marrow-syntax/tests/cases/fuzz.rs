@@ -43,7 +43,9 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn label(s: Status)\n    match s\n        active\n            print(\"a\")\n        archived\n            print(\"b\")\n",
         "module app\n\nfn area(s: Shape): int\n    match s\n        dot\n            return 0\n        circle(r)\n            return r\n        rect(w, h)\n            return w\n",
         "module app\n\nfn commit(id: Id(^books))\n    transaction\n        ^books(id).title = title\n",
-        "module app\n\nfn risky()\n    try\n        run()\n    catch err: Error\n        print(err.message)\n",
+        "module app\n\nfn risky(): Result[int, string]\n    const x = try run()\n    return ok(x)\n",
+        "module app\n\nfn nested(o: Option[Option[int]]): int\n    match o\n        none\n            return 0\n        some(inner)\n            return depth(inner)\n",
+        "module app\n\nfn find(): Result[Option[int], string]\n    const x = try lookup()\n    return ok(some(x))\n",
         "module app\n\nfn amounts(): int?\n    return absent\n",
         "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    default Book.author = \"unknown\"\n    retire ^books.byTitle\n    transform Book.shelf\n        return ^books(1).shelf\n",
         "module app\n\nfn compound()\n    var total: int = 0\n    total += 1\n    total *= 2\n",
@@ -161,7 +163,7 @@ fn formatter_faithful_regressions() -> Vec<String> {
         "module app\n\nfn f()\n    while x\n\n    b\n",
         "module app\n\nfn f()\n    for i in xs\n\n    b\n",
         "module app\n\nfn f()\n    transaction\n\n    b\n",
-        "module app\n\nfn f()\n    try\n    catch e: Error\n\n    b\n",
+        "module app\n\nfn f(o: Option[int]): int\n    match o\n        some(v)\n            return v\n        none\n            return 0\n",
         // An own-line comment sharing a non-canonical source indent with its sibling
         // statements was misread as outdented and rendered at its source column
         // while the statements canonicalized, so a reparse opened a spurious deeper

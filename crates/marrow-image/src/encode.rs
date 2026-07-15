@@ -182,8 +182,9 @@ impl ImageDraft {
 
     /// Encode the ENUMS table (section 0x09): a count, then per enum its name
     /// string index, a variant count, and per variant a name string index, a
-    /// `category` flag byte, a payload count, and one bare-scalar tag per payload
-    /// leaf in declaration order.
+    /// `category` flag byte, a payload count, and one bare-`ImageType` reference per
+    /// payload leaf in declaration order (a scalar tag, or a tag plus a big-endian
+    /// `u16` index for a record or enum leaf).
     fn encode_enums(&self, str_map: &[u16]) -> Vec<u8> {
         let mut body = Vec::new();
         push_u16(&mut body, self.enums().len() as u16);
@@ -194,8 +195,8 @@ impl ImageDraft {
                 push_u16(&mut body, str_map[variant.name.raw() as usize]);
                 body.push(u8::from(variant.category));
                 body.push(variant.payload.len() as u8);
-                for scalar in &variant.payload {
-                    ImageType::scalar(*scalar).encode(&mut body);
+                for ty in &variant.payload {
+                    ty.encode(&mut body);
                 }
             }
         }

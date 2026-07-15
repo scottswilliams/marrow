@@ -95,14 +95,17 @@ pub struct RecordTypeDef {
 
 /// One enum variant: a member name, a `category` flag reserving the hierarchy
 /// seam (always a leaf on the current flat line — the checker rejects category
-/// members), and its ordered dense scalar payload (empty for a payloadless
-/// member). Payload order is the declaration order — the canonical product-leaf
-/// order the checker owns.
+/// members), and its ordered dense payload (empty for a payloadless member). Each
+/// payload leaf is a bare (non-optional) [`ImageType`]: a user `enum` member
+/// carries only bare scalars, while a built-in `Option`/`Result` instantiation
+/// carries whatever concrete type its argument monomorphized to (a scalar, a
+/// record, or another enum). Payload order is the declaration order — the
+/// canonical product-leaf order the checker owns.
 #[derive(Debug, Clone)]
 pub struct VariantDef {
     pub name: StrId,
     pub category: bool,
-    pub payload: Vec<Scalar>,
+    pub payload: Vec<ImageType>,
 }
 
 /// A closed enum type: an ordered variant list in declaration order.

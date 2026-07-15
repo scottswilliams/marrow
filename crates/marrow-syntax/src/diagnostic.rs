@@ -168,6 +168,14 @@ pub enum UnsupportedSyntax {
     ParameterDefaults,
     QuotedFieldSegments,
     UserDefinedGenerics,
+    /// A `throw` statement: the throw/catch channel was removed. A recoverable
+    /// failure is a `Result[T, E]` value returned with `err(...)`.
+    ThrowStatement,
+    /// A block-form `try`/`catch`: removed in favour of prefix `try <expr>`
+    /// propagation over a `Result[T, E]`.
+    TryCatchBlock,
+    /// A stray `catch` clause with no `try`: the throw/catch channel was removed.
+    CatchClause,
 }
 
 impl fmt::Display for Diagnostic {

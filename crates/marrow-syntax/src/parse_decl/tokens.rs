@@ -471,10 +471,55 @@ fn build_type_expr(
     if let Some(sequence) = build_sequence(source, tokens, span, expected)? {
         return Ok(sequence);
     }
+    if let Some(apply) = build_apply(source, tokens, span, expected)? {
+        return Ok(apply);
+    }
     Ok(TypeExpr::Name {
         text: type_text(source, tokens),
         span,
     })
+}
+
+/// A built-in generic application `Option[T]` or `Result[T, E]`, spelled with the
+/// same bracket group as `sequence[T]`: the head name whose `[...]` group spans
+/// the whole tail, with comma-separated type arguments. Only the two built-in
+/// heads are recognized; any other `Name[..]` stays a plain name (a user-defined
+/// generic head is a later slice). The applied argument arity is a checker
+/// concern, so `Result[T]` structures and reports its arity semantically.
+fn build_apply(
+    source: &str,
+    tokens: &[Token],
+    span: SourceSpan,
+    expected: ExpectedSyntax,
+) -> ParseResult<Option<TypeExpr>> {
+    let open = 1;
+    let Some(last) = tokens.len().checked_sub(1) else {
+        return Ok(None);
+    };
+    if tokens.first().map(|token| token.kind) != Some(TokenKind::Identifier)
+        || tokens.get(open).map(|token| token.kind) != Some(TokenKind::LeftBracket)
+        || tokens[last].kind != TokenKind::RightBracket
+        || balanced_group_end(tokens, open) != Some(last)
+    {
+        return Ok(None);
+    }
+    let head = tokens[0].text(source).to_string();
+    if head != "Option" && head != "Result" {
+        return Ok(None);
+    }
+    let inner = &tokens[open + 1..last];
+    let mut args = Vec::new();
+    for part in split_top_level_commas(inner) {
+        if part.is_empty() {
+            return Err(ParseError::at(
+                span,
+                ParseDiagnosticReason::Expected(expected),
+                "a generic type argument is missing",
+            ));
+        }
+        args.push(build_type_expr(source, part, expected)?);
+    }
+    Ok(Some(TypeExpr::Apply { head, args, span }))
 }
 
 /// Whether a token slice opens as an identity constructor `Id ( ^`. `Id` is a

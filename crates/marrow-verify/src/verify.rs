@@ -77,12 +77,12 @@ struct DecodedEnum {
     variants: Vec<DecodedVariant>,
 }
 
-/// A decoded enum variant: name string index, `category` flag, and dense scalar
-/// payload in declaration order.
+/// A decoded enum variant: name string index, `category` flag, and dense payload
+/// in declaration order. Each leaf is a bare (non-optional) [`ImageType`].
 struct DecodedVariant {
     name: u16,
     category: bool,
-    payload: Vec<Scalar>,
+    payload: Vec<ImageType>,
 }
 
 /// A decoded durable root: name string index, key scalar, and record type index.
@@ -200,7 +200,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     // order, so they are attached to the already-decoded function list.
     let strings = decode_strings(sections[0].1)?;
     let types = decode_types(sections[1].1, strings.len())?;
-    let enums = decode_enums(sections[8].1, strings.len())?;
+    let enums = decode_enums(sections[8].1, strings.len(), types.len())?;
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(sections[4].1, strings.len(), types.len(), enums.len())?;
@@ -405,9 +405,16 @@ fn decode_types(
 
 /// Decode the ENUMS table (section 0x09): a count, then per enum its name string
 /// index, a variant count, and per variant a name string index, a `category` flag
-/// byte, a payload count, and one bare-scalar tag per payload leaf. Variant names
-/// are unique within an enum; payload leaves must be bare scalars.
-fn decode_enums(body: &[u8], string_count: usize) -> Result<Vec<DecodedEnum>, VerifyRejection> {
+/// byte, a payload count, and one bare-`ImageType` reference per payload leaf.
+/// Variant names are unique within an enum; a payload leaf is a bare scalar, a
+/// bare record (index in range), or a bare enum (index in range) — never optional.
+/// The enum-payload reference graph must be acyclic (a value type cannot contain
+/// itself), which the caller-facing acyclicity pass proves after decoding.
+fn decode_enums(
+    body: &[u8],
+    string_count: usize,
+    type_count: usize,
+) -> Result<Vec<DecodedEnum>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
@@ -471,11 +478,12 @@ fn decode_enums(body: &[u8], string_count: usize) -> Result<Vec<DecodedEnum>, Ve
                 let tag = reader
                     .u8()
                     .ok_or(reject(VerifyPhase::Table, "short payload type"))?;
-                let scalar = decode_bare_scalar(tag).ok_or(reject(
-                    VerifyPhase::Table,
-                    "payload type must be a bare scalar",
-                ))?;
-                payload.push(scalar);
+                payload.push(decode_bare_payload_type(
+                    tag,
+                    &mut reader,
+                    type_count,
+                    count,
+                )?);
             }
             variants.push(DecodedVariant {
                 name: vname,
@@ -488,7 +496,124 @@ fn decode_enums(body: &[u8], string_count: usize) -> Result<Vec<DecodedEnum>, Ve
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in enum table"));
     }
+    reject_enum_payload_cycles(&enums)?;
     Ok(enums)
+}
+
+/// Decode one bare enum-payload leaf type: a scalar, a record, or an enum
+/// reference, never optional. Record and enum indices are validated in range
+/// (`type_count`/`enum_count`) so a payload can never name a type outside the
+/// image.
+fn decode_bare_payload_type(
+    tag: u8,
+    reader: &mut Reader,
+    type_count: usize,
+    enum_count: usize,
+) -> Result<ImageType, VerifyRejection> {
+    if tag & OPTIONAL_FLAG != 0 {
+        return Err(reject(
+            VerifyPhase::Table,
+            "enum payload leaf cannot be optional",
+        ));
+    }
+    match tag {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
+            decode_bare_scalar(tag).expect("scalar base"),
+        )),
+        TAG_RECORD => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short payload record index"))?;
+            if idx as usize >= type_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "payload record index out of range",
+                ));
+            }
+            Ok(ImageType::Record {
+                idx,
+                optional: false,
+            })
+        }
+        TAG_ENUM => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short payload enum index"))?;
+            if idx as usize >= enum_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "payload enum index out of range",
+                ));
+            }
+            Ok(ImageType::Enum {
+                idx,
+                optional: false,
+            })
+        }
+        _ => Err(reject(
+            VerifyPhase::Table,
+            "enum payload leaf must be a bare scalar, record, or enum",
+        )),
+    }
+}
+
+/// Reject any cycle in the enum-payload reference graph: an enum whose payload
+/// (directly or transitively) contains itself would be an infinite value type.
+/// Records reference only scalars, so only enum→enum payload edges can form a
+/// cycle. A three-colour DFS over those edges; a back edge to a node on the
+/// current stack is a cycle.
+fn reject_enum_payload_cycles(enums: &[DecodedEnum]) -> Result<(), VerifyRejection> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Colour {
+        White,
+        Gray,
+        Black,
+    }
+    let edges: Vec<Vec<usize>> = enums
+        .iter()
+        .map(|enum_def| {
+            enum_def
+                .variants
+                .iter()
+                .flat_map(|variant| variant.payload.iter())
+                .filter_map(|ty| match ty {
+                    ImageType::Enum { idx, .. } => Some(*idx as usize),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
+    let mut colour = vec![Colour::White; enums.len()];
+    for start in 0..enums.len() {
+        if colour[start] != Colour::White {
+            continue;
+        }
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        colour[start] = Colour::Gray;
+        while let Some(&(node, cursor)) = stack.last() {
+            if cursor < edges[node].len() {
+                stack.last_mut().expect("frame present").1 += 1;
+                let next = edges[node][cursor];
+                match colour[next] {
+                    Colour::Gray => {
+                        return Err(reject(
+                            VerifyPhase::Table,
+                            "the enum payload graph contains a cycle",
+                        ));
+                    }
+                    Colour::White => {
+                        colour[next] = Colour::Gray;
+                        stack.push((next, 0));
+                    }
+                    Colour::Black => {}
+                }
+            } else {
+                colour[node] = Colour::Black;
+                stack.pop();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Decode the DURABLE table (design §C 0x03): 0 or 1 roots, then the operation
@@ -1949,9 +2074,10 @@ fn apply(
                 "enum variant index out of range",
             ))?;
             // p0 is pushed first, so pop the payload in reverse declaration order.
-            for scalar in variant_def.payload.iter().rev() {
+            for ty in variant_def.payload.iter().rev() {
+                let want = VType::from_image(*ty).expect("a payload leaf is never unit");
                 let got = pop(&mut frame.stack)?;
-                if got != VType::bare_scalar(*scalar) {
+                if got != want {
                     return Err(reject(
                         VerifyPhase::Function,
                         "enum payload operand type mismatch",
@@ -2001,11 +2127,13 @@ fn apply(
             // The variant operand types the payload leaf; the VM faults if the
             // runtime value carries a different variant, so the pushed type is
             // never observed on a mismatch.
-            let scalar = variant_def.payload.get(*field as usize).ok_or(reject(
+            let leaf = variant_def.payload.get(*field as usize).ok_or(reject(
                 VerifyPhase::Function,
                 "enum payload field index out of range",
             ))?;
-            frame.stack.push(VType::bare_scalar(*scalar));
+            frame
+                .stack
+                .push(VType::from_image(*leaf).expect("a payload leaf is never unit"));
             return Ok(Control::Fallthrough);
         }
         SealedInstr::EqEnum => {

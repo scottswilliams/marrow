@@ -99,6 +99,7 @@ fn expr_has_error(expr: &Expression) -> bool {
             expr_has_error(base)
         }
         Expression::Unary { operand, .. } => expr_has_error(operand),
+        Expression::Try { inner, .. } => expr_has_error(inner),
         Expression::Binary { left, right, .. } => expr_has_error(left) || expr_has_error(right),
         Expression::Range {
             start, end, step, ..
@@ -125,7 +126,6 @@ fn stmt_has_error(stmt: &Statement) -> bool {
     match stmt {
         Statement::Error { .. } => true,
         Statement::Const { value, .. }
-        | Statement::Throw { value, .. }
         | Statement::Assert { value, .. }
         | Statement::Expr { value, .. } => expr_has_error(value),
         Statement::Var { value, .. } | Statement::Return { value, .. } => {
@@ -178,9 +178,6 @@ fn stmt_has_error(stmt: &Statement) -> bool {
                 || block_has_error(body)
         }
         Statement::Transaction { body, .. } => block_has_error(body),
-        Statement::Try { body, catch, .. } => {
-            block_has_error(body) || catch.as_ref().is_some_and(|c| block_has_error(&c.block))
-        }
         Statement::Match {
             scrutinee, arms, ..
         } => expr_has_error(scrutinee) || arms.iter().any(|arm| block_has_error(&arm.block)),

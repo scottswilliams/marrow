@@ -279,6 +279,14 @@ pub enum Expression {
         parts: Vec<InterpolationPart>,
         span: SourceSpan,
     },
+    /// Prefix `try <inner>`: propagate a `Result[T, E]`'s `err` out of the
+    /// enclosing `Result`-returning function (same `E`), yielding the `ok` value.
+    /// The parser produces this only as the top-level right-hand side of a
+    /// statement; it is not a general sub-expression.
+    Try {
+        inner: Box<Expression>,
+        span: SourceSpan,
+    },
     /// A span of source the parser could not structure as an expression. Total
     /// parsing yields this node in place of a dropped operand so every parse
     /// produces a tree; it always travels with a `parse.syntax` diagnostic at its
@@ -301,6 +309,7 @@ impl Expression {
             | Self::Binary { span, .. }
             | Self::Range { span, .. }
             | Self::Interpolation { span, .. }
+            | Self::Try { span, .. }
             | Self::Error { span } => *span,
         }
     }
@@ -687,10 +696,6 @@ pub enum Statement {
     Continue {
         span: SourceSpan,
     },
-    Throw {
-        value: Expression,
-        span: SourceSpan,
-    },
     /// `assert <expr>`: the compiler/image/verifier/VM-owned test assertion. Legal
     /// only inside a `test` body; the checker rejects it elsewhere. Its `value` is a
     /// bool condition whose falsity faults the running test.
@@ -744,11 +749,6 @@ pub enum Statement {
     },
     Transaction {
         body: Block,
-        span: SourceSpan,
-    },
-    Try {
-        body: Block,
-        catch: Option<CatchClause>,
         span: SourceSpan,
     },
     /// A `match` over an enum-typed scrutinee: each arm names one member of the
@@ -823,15 +823,6 @@ pub struct ElseIf {
     pub block: Block,
 }
 
-/// The `catch name: Error` clause of a `try` statement. `ty` is the optional
-/// type annotation on the bound error value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CatchClause {
-    pub name: String,
-    pub ty: Option<TypeExpr>,
-    pub block: Block,
-}
-
 /// The loop variable(s) of a `for` statement: `for k in ...`,
 /// `for k, v in ...`, or the composite-layer `for c0, c1, .., v in ...`. The
 /// binding is a non-empty name vector; the parser guarantees `names` holds at
@@ -870,7 +861,6 @@ impl Statement {
             | Self::Return { span, .. }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
-            | Self::Throw { span, .. }
             | Self::Assert { span, .. }
             | Self::Expr { span, .. }
             | Self::If { span, .. }
@@ -878,7 +868,6 @@ impl Statement {
             | Self::While { span, .. }
             | Self::For { span, .. }
             | Self::Transaction { span, .. }
-            | Self::Try { span, .. }
             | Self::Match { span, .. }
             | Self::Checked { span, .. }
             | Self::Error { span } => *span,
@@ -931,6 +920,16 @@ pub enum TypeExpr {
         inner: Box<TypeExpr>,
         span: SourceSpan,
     },
+    /// A generic type application `Head[Arg, ...]`, spelled with the same bracket
+    /// syntax as `sequence[T]`. The current line resolves only the built-in
+    /// `Option[T]` and `Result[T, E]` heads; a user-declared generic head is a
+    /// later slice. `head` is the applied name and `args` its type arguments in
+    /// source order.
+    Apply {
+        head: String,
+        args: Vec<TypeExpr>,
+        span: SourceSpan,
+    },
 }
 
 /// The parts of an `Id(^root)` identity annotation, spans included so tooling can
@@ -955,7 +954,8 @@ impl TypeExpr {
         match self {
             TypeExpr::Name { span, .. }
             | TypeExpr::Sequence { span, .. }
-            | TypeExpr::Optional { span, .. } => *span,
+            | TypeExpr::Optional { span, .. }
+            | TypeExpr::Apply { span, .. } => *span,
             TypeExpr::Identity(identity) => identity.span,
         }
     }
@@ -971,6 +971,19 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Sequence { element, .. } => write!(f, "sequence[{element}]"),
             TypeExpr::Identity(identity) => write!(f, "Id(^{})", identity.root),
             TypeExpr::Optional { inner, .. } => write!(f, "{inner}?"),
+            // The canonical spelling separates arguments with `", "`. Any source
+            // spacing parses to the same node, so this is idempotent and the digest
+            // it feeds is stable across reformatting.
+            TypeExpr::Apply { head, args, .. } => {
+                write!(f, "{head}[")?;
+                for (index, arg) in args.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                f.write_str("]")
+            }
         }
     }
 }

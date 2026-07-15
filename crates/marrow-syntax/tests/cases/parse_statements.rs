@@ -512,7 +512,7 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
     let parsed = parse_source(
         "module app\n\
          fn make()\n\
-         \x20   throw Error(\n\
+         \x20   log(\n\
          \x20       code: \"book.absent\",\n\
          \x20       message: \"missing\",\n\
          \x20   )\n",
@@ -524,7 +524,7 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
     assert!(
         matches!(
             &statements[0],
-            Statement::Throw {
+            Statement::Expr {
                 value: Expression::Call { .. },
                 ..
             }

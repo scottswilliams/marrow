@@ -581,13 +581,6 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         Statement::While { body, .. }
         | Statement::For { body, .. }
         | Statement::Transaction { body, .. } => collect_block_type_refs(body, type_refs),
-        Statement::Try { body, catch, .. } => {
-            collect_block_type_refs(body, type_refs);
-            if let Some(catch) = catch {
-                collect_optional_type_ref(catch.ty.as_ref(), type_refs);
-                collect_block_type_refs(&catch.block, type_refs);
-            }
-        }
         Statement::Match { arms, .. } => {
             for arm in arms {
                 collect_block_type_refs(&arm.block, type_refs);
@@ -612,7 +605,6 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         | Statement::Return { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
-        | Statement::Throw { .. }
         | Statement::Assert { .. }
         | Statement::Expr { .. }
         | Statement::Error { .. } => {}

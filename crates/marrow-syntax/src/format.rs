@@ -8,11 +8,11 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    AliasDecl, Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker,
-    CommentPlacement, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep,
-    Expression, ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm,
-    NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl,
-    TokenKind, TypeExpr, UnaryOp, encode_string_literal,
+    AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
+    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
+    ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl,
+    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind, TypeExpr,
+    UnaryOp, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -1039,9 +1039,6 @@ fn format_statement_with_comments(
         },
         Statement::Break { .. } => format!("{pad}break"),
         Statement::Continue { .. } => format!("{pad}continue"),
-        Statement::Throw { value, .. } => {
-            format!("{pad}throw {}", format_expression_at(value, level))
-        }
         Statement::Assert { value, .. } => {
             format!("{pad}assert {}", format_expression_at(value, level))
         }
@@ -1124,15 +1121,6 @@ fn format_statement_with_comments(
                 level,
             };
             return format_header_block(ctx, format!("{pad}transaction"), body);
-        }
-        Statement::Try { body, catch, span } => {
-            let ctx = StatementFormatContext {
-                source,
-                comments,
-                start_byte: span.start_byte,
-                level,
-            };
-            return format_try(ctx, body, catch.as_ref());
         }
         Statement::Match {
             scrutinee,
@@ -1319,43 +1307,6 @@ fn format_for(
         format_expression_at(iterable, ctx.level)
     );
     format_header_block(ctx, header, body)
-}
-
-fn format_try(
-    ctx: StatementFormatContext<'_, '_>,
-    body: &Block,
-    catch: Option<&CatchClause>,
-) -> String {
-    let pad = INDENT.repeat(ctx.level);
-    let mut header = format!("{pad}try");
-    append_trailing_comment_between(
-        &mut header,
-        ctx.comments,
-        ctx.start_byte,
-        body.span.start_byte,
-    );
-    let mut out = header;
-    append_body_block(&mut out, &format_block(ctx.source, body, ctx.level + 1));
-    if let Some(catch) = catch {
-        let mut header = format!(
-            "{pad}catch {}{}",
-            catch.name,
-            format_type_annotation(&catch.ty)
-        );
-        append_trailing_comment_between(
-            &mut header,
-            ctx.comments,
-            body.span.end_byte,
-            catch.block.span.start_byte,
-        );
-        out.push('\n');
-        out.push_str(&header);
-        append_body_block(
-            &mut out,
-            &format_block(ctx.source, &catch.block, ctx.level + 1),
-        );
-    }
-    out
 }
 
 fn format_match(
@@ -1615,6 +1566,12 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
             out
         }
         Expression::Interpolation { parts, .. } => format_interpolation_at(parts, level),
+        // Prefix `try <expr>`: a statement-level value form. The parser produces it
+        // only as a statement's top-level right-hand side, so it never needs
+        // parenthesizing against a surrounding operator.
+        Expression::Try { inner, .. } => {
+            format!("try {}", format_expression_layout(inner, level, layout))
+        }
     }
 }
 

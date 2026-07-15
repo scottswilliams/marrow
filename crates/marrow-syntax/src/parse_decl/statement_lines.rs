@@ -75,13 +75,6 @@ pub(super) fn parse_simple_statement(
                 path: value,
             })
         }
-        TokenKind::Keyword(Keyword::Throw) => {
-            let value = expr_of_after(source, &line[1..], first.span, diagnostics)?;
-            Some(Statement::Throw {
-                span: join_spans(first.span, value.span()),
-                value,
-            })
-        }
         TokenKind::Keyword(Keyword::Merge) => {
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,
@@ -188,7 +181,7 @@ fn parse_const_or_var(
     match line.get(index).map(|token| token.kind) {
         Some(TokenKind::Equal) => {
             let equal = line[index];
-            let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
+            let value = parse_rhs_value(source, &line[index + 1..], equal.span, diagnostics)?;
             let span = join_spans(keyword.span, value.span());
             Some(if is_var {
                 Statement::Var {
@@ -249,11 +242,34 @@ fn parse_return(
             span: keyword.span,
         });
     }
-    let value = expr_of_after(source, &line[1..], keyword.span, diagnostics)?;
+    let value = parse_rhs_value(source, &line[1..], keyword.span, diagnostics)?;
     Some(Statement::Return {
         span: join_spans(keyword.span, value.span()),
         value: Some(value),
     })
+}
+
+/// Parse a statement's right-hand-side value expression, recognizing a leading
+/// prefix `try`. Prefix `try` is a statement-level value form only, so it is
+/// stripped and wrapped here rather than in the general expression grammar; a
+/// `try` nested inside a larger expression stays a parse error.
+fn parse_rhs_value(
+    source: &str,
+    tokens: &[Token],
+    anchor: crate::diagnostic::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    if let Some(first) = tokens.first()
+        && first.kind == TokenKind::Keyword(Keyword::Try)
+    {
+        let inner = expr_of_after(source, &tokens[1..], first.span, diagnostics)?;
+        let span = join_spans(first.span, inner.span());
+        return Some(Expression::Try {
+            inner: Box::new(inner),
+            span,
+        });
+    }
+    expr_of_after(source, tokens, anchor, diagnostics)
 }
 
 fn parse_break_or_continue(
@@ -477,31 +493,6 @@ fn find_top_level_by(source: &str, tokens: &[Token]) -> Option<usize> {
         }
     }
     None
-}
-
-/// Parse a `catch` header `name` or `name: Type` into the bound name and an
-/// optional type annotation. A malformed header yields an empty name.
-pub(super) fn parse_catch_header(
-    source: &str,
-    header: &[Token],
-) -> ParseResult<(String, Option<TypeExpr>)> {
-    let Some(name_token) = header.first() else {
-        return Ok((String::new(), None));
-    };
-    if name_token.kind != TokenKind::Identifier {
-        return Ok((String::new(), None));
-    }
-    let name = name_token.text(source).to_string();
-    let ty = match header.get(1) {
-        Some(colon) if colon.kind == TokenKind::Colon && header.len() > 2 => Some(parse_type(
-            source,
-            &header[2..],
-            ExpectedSyntax::ParameterType,
-            "expected catch type annotation",
-        )?),
-        _ => None,
-    };
-    Ok((name, ty))
 }
 
 /// Parse the comma-separated loop-head names `a`, `a, b`, `a, b, c`, ... into a

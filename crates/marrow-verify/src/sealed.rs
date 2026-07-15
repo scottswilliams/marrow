@@ -238,13 +238,15 @@ impl SealedRecordType {
     }
 }
 
-/// One sealed enum variant: its member name, `category` flag, and dense scalar
-/// payload in declaration order.
+/// One sealed enum variant: its member name, `category` flag, and dense payload in
+/// declaration order. Each payload leaf is a bare (non-optional) [`ImageType`]: a
+/// user `enum` member carries only bare scalars, while a built-in `Option`/`Result`
+/// instantiation carries whatever concrete type its argument monomorphized to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedVariant {
     pub name: Rc<str>,
     pub category: bool,
-    pub payload: Vec<Scalar>,
+    pub payload: Vec<ImageType>,
 }
 
 /// A sealed enum type: an ordered variant list in declaration order.

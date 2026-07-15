@@ -294,6 +294,58 @@ data. This includes mutation of a key expression, a write to the guarded durable
 path, or a helper call whose effects may write it. Code must test presence again
 after invalidation.
 
+## Option And Result
+
+`Option[T]` and `Result[T, E]` are built-in closed enum value types. They ride the
+same machinery as a user `enum` — constructed, matched, and compared by value —
+and their type arguments may be any value type, including nested `Option` and
+`Result`. `Option[T]` has the members `none` and `some(v)`; `Result[T, E]` has
+`ok(v)` and `err(e)`. `T`, `E`, `some`, `none`, `ok`, and `err` are reserved: the
+constructors are the built-in members, and `Option` and `Result` cannot be
+redeclared.
+
+A value is constructed with its member: `some(v)`, `none`, `ok(v)`, or `err(e)`.
+`some(v)` infers its `Option[T]` from `v`; `none`, `ok(v)`, and `err(e)` cannot
+infer the whole type argument set, so they need an expected type — an annotation, a
+call argument, a return type, or the other side of a coercion. A `match` covers the
+members exactly, binding the payload positionally:
+
+```mw
+module docs::optionvalue
+
+fn firstEven(a: int, b: int): Option[int]
+    if a % 2 == 0
+        return some(a)
+    if b % 2 == 0
+        return some(b)
+    return none
+
+pub fn describe(o: Option[int]): string
+    match o
+        some(v)
+            return "some"
+        none
+            return "none"
+```
+
+Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are three
+different values of `Option[Option[int]]`. `==` and `!=` are exact equality — the
+same member with equal payload, compared over the same instantiation.
+
+`Result[T, E]` models a recoverable failure. Prefix `try <expr>` propagates it (see
+[Control flow](control-flow.md#prefix-try-and-transaction)): on `ok(v)` it yields
+`v`, and on `err(e)` it returns `err(e)` from the enclosing `Result[U, E]`-returning
+function, with the same error type `E`.
+
+`Option[T]` is distinct from the presence primitive `T?`. A `T?` place is absent or
+present and is produced by sparse reads, lookups, and optional returns; `??`,
+`if const`, `exists`, and `?.` consume it. An `Option[T]` is an ordinary value you
+build with `some`/`none`, pass, return, and `match`. Use `T?` for the presence of a
+place, and `Option[T]` when absence is a value the program passes around or stores
+in a structure. A sparse field whose type is `Option[string]` reads as
+`Option[string]?` — absent (the field is unset) versus a present `Option` that is
+itself `none` or `some`.
+
 ## Resources
 
 A resource value has the declared resource type. Required fields are bare in a

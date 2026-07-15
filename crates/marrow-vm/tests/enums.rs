@@ -30,12 +30,15 @@ fn shape_enum(draft: &mut ImageDraft) -> u16 {
                 VariantDef {
                     name: circle,
                     category: false,
-                    payload: vec![Scalar::Int],
+                    payload: vec![ImageType::scalar(Scalar::Int)],
                 },
                 VariantDef {
                     name: rect,
                     category: false,
-                    payload: vec![Scalar::Int, Scalar::Int],
+                    payload: vec![
+                        ImageType::scalar(Scalar::Int),
+                        ImageType::scalar(Scalar::Int),
+                    ],
                 },
             ],
         })
