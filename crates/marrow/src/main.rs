@@ -7,6 +7,7 @@ use crate::term_style::{Stream, Style};
 mod cmd_fmt;
 mod cmd_init;
 mod cmd_run;
+mod cmd_test;
 mod outcome;
 mod project;
 mod term_style;
@@ -18,6 +19,7 @@ Usage:
   marrow init <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run <export> [--store <path>] [--format jsonl] [-- <args>...]
+  marrow test [--format text|jsonl] [--filter <substring>]
   marrow --version
   marrow --help
 
@@ -25,9 +27,11 @@ This is the beta line's thin CLI. `init` creates a new project (a manifest and a
 contained src tree). `fmt` formats a single Marrow source file, or every module
 of a project directory, through the retained formatter. `run` compiles the
 project at the working directory, verifies the program image, and runs an
-exported function. The check, test, data, doctor, evolve, serve, client, backup,
-and restore commands are being refounded and return through their later lanes;
-invoking one reports cli.command_unsupported.
+exported function. `test` discovers `test \"name\"` declarations, runs each
+storeless through the verified image, and reports pass/fail/error. The check,
+data, doctor, evolve, serve, client, backup, and restore commands are being
+refounded and return through their later lanes; invoking one reports
+cli.command_unsupported.
 ";
 
 fn main() -> ExitCode {
@@ -73,7 +77,7 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
 /// through a later lane. Recognizing them keeps the not-yet-supported response
 /// distinct from an unknown-command usage error.
 const REFOUNDING_COMMANDS: &[&str] = &[
-    "check", "test", "data", "doctor", "evolve", "serve", "client", "backup", "restore",
+    "check", "data", "doctor", "evolve", "serve", "client", "backup", "restore",
 ];
 
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
@@ -81,6 +85,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "fmt" => cmd_fmt::fmt(rest),
         "init" => cmd_init::init(rest),
         "run" => cmd_run::run(rest),
+        "test" => cmd_test::test(rest),
         "--help" | "-h" | "help" => {
             print!("{}", term_style::render_help(Stream::Stdout, HELP));
             ExitCode::SUCCESS

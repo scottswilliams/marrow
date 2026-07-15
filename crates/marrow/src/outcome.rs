@@ -95,6 +95,119 @@ impl Record {
     }
 }
 
+/// The classified outcome of running one `test` declaration: it passed, an
+/// `assert` condition was false (`run.assert` — a test failure), or any other
+/// runtime fault errored it. A failure and an error stay distinct families: a
+/// failure is the test's own assertion, an error is an unexpected fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TestOutcome {
+    Passed,
+    Failed {
+        code: &'static str,
+        line: u32,
+        column: u32,
+    },
+    Errored {
+        code: &'static str,
+        line: u32,
+        column: u32,
+    },
+}
+
+/// One reported test: its report name, the source file it lives in, its
+/// declaration position (for the passed span), and its classified outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TestRecord {
+    pub(crate) name: String,
+    pub(crate) file: String,
+    pub(crate) decl_line: u32,
+    pub(crate) decl_column: u32,
+    pub(crate) outcome: TestOutcome,
+}
+
+impl TestRecord {
+    /// The canonical single-line JSONL projection: one `kind: "test"` object, keys
+    /// in ascending byte order. A pass carries the declaration span; a failure or
+    /// error carries its fault code and span.
+    pub(crate) fn to_jsonl(&self) -> String {
+        match &self.outcome {
+            TestOutcome::Passed => format!(
+                r#"{{"file":{},"kind":"test","name":{},"outcome":"passed","span":{}}}"#,
+                json_string(&self.file),
+                json_string(&self.name),
+                span_object(self.decl_line, self.decl_column),
+            ),
+            TestOutcome::Failed { code, line, column } => self.fault_jsonl("failed", code, *line, *column),
+            TestOutcome::Errored { code, line, column } => {
+                self.fault_jsonl("errored", code, *line, *column)
+            }
+        }
+    }
+
+    fn fault_jsonl(&self, outcome: &str, code: &str, line: u32, column: u32) -> String {
+        format!(
+            r#"{{"code":{},"file":{},"kind":"test","name":{},"outcome":"{outcome}","span":{}}}"#,
+            json_string(code),
+            json_string(&self.file),
+            json_string(&self.name),
+            span_object(line, column),
+        )
+    }
+
+    /// The plain-text rendering for the default format.
+    pub(crate) fn to_text(&self) -> String {
+        match &self.outcome {
+            TestOutcome::Passed => format!("ok    {}", self.name),
+            TestOutcome::Failed { code, line, column } => {
+                format!("FAIL  {} ({code} at {line}:{column})", self.name)
+            }
+            TestOutcome::Errored { code, line, column } => {
+                format!("ERROR {} ({code} at {line}:{column})", self.name)
+            }
+        }
+    }
+}
+
+/// The end-of-run summary over the selected tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TestSummary {
+    pub(crate) passed: usize,
+    pub(crate) failed: usize,
+    pub(crate) errored: usize,
+    pub(crate) total: usize,
+}
+
+impl TestSummary {
+    /// The number of tests actually run (selected by any filter).
+    fn selected(&self) -> usize {
+        self.passed + self.failed + self.errored
+    }
+
+    /// The canonical JSONL summary object, keys in ascending byte order.
+    pub(crate) fn to_jsonl(&self) -> String {
+        format!(
+            r#"{{"errored":{},"failed":{},"kind":"summary","passed":{},"selected":{},"total":{}}}"#,
+            self.errored,
+            self.failed,
+            self.passed,
+            self.selected(),
+            self.total,
+        )
+    }
+
+    /// The plain-text summary line.
+    pub(crate) fn to_text(&self) -> String {
+        format!(
+            "{} passed, {} failed, {} errored ({}/{} selected)",
+            self.passed,
+            self.failed,
+            self.errored,
+            self.selected(),
+            self.total,
+        )
+    }
+}
+
 /// Render bytes as `0x`-prefixed lowercase hex, the canonical `bytes` rendering.
 fn hex_bytes(bytes: &[u8]) -> String {
     use std::fmt::Write;

@@ -115,6 +115,14 @@ enum RetType {
     Value(LTy),
 }
 
+/// Which body is being lowered. Only a `test` body admits the owned `assert`
+/// statement; an ordinary function body rejects it with `check.assert_outside_test`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyKind {
+    Function,
+    Test,
+}
+
 /// The outcome of lowering a call: whether it yields a value, nothing, or diverges
 /// (never returns to the caller, e.g. `unreachable`).
 enum CallResult {
@@ -325,6 +333,8 @@ pub(crate) struct FnLowerer<'a> {
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
     ret: RetType,
+    /// Whether this is a function or a test body; gates the owned `assert`.
+    body_kind: BodyKind,
     failed: bool,
 }
 
@@ -377,6 +387,7 @@ impl<'a> FnLowerer<'a> {
             loops: Vec::new(),
             slot_count: 0,
             ret,
+            body_kind: BodyKind::Function,
             failed: false,
         };
 
@@ -414,10 +425,6 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        if lowerer.failed {
-            return None;
-        }
-
         let params: Vec<Scalar> = function
             .params
             .iter()
@@ -431,23 +438,76 @@ impl<'a> FnLowerer<'a> {
             RetType::Unit => ImageType::Unit,
             RetType::Value(ty) => ty.image(),
         };
-        let name_id = lowerer.draft.intern_string(&function.name);
-        let source_id = lowerer.draft.intern_string(file);
-        let code = std::mem::take(&mut lowerer.code);
-        let spans = std::mem::take(&mut lowerer.spans);
-        let func_id = lowerer.draft.add_function(FunctionDef {
+        lowerer.finish(&function.name, params, ret_ref)
+    }
+
+    /// Lower a `test` body into a storeless, zero-argument, unit-returning function
+    /// and return its [`Lowered`] identity. The body is the only place the owned
+    /// `assert` is legal; `name` is the test title (interned as the function name),
+    /// and the caller binds it into the image's TEST-ENTRY table.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn lower_test(
+        draft: &'a mut ImageDraft,
+        records: &'a RecordRegistry,
+        durable: &'a DurableRegistry,
+        functions: &'a FunctionRegistry,
+        consts: &'a ConstRegistry,
+        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        file: &'a str,
+        module: &'a str,
+        name: &str,
+        body: &Block,
+    ) -> Option<Lowered> {
+        let mut lowerer = FnLowerer {
+            draft,
+            records,
+            durable,
+            functions,
+            consts,
+            diagnostics,
+            file,
+            module,
+            code: Vec::new(),
+            spans: Vec::new(),
+            calls: Vec::new(),
+            locals: Vec::new(),
+            loops: Vec::new(),
+            slot_count: 0,
+            ret: RetType::Unit,
+            body_kind: BodyKind::Test,
+            failed: false,
+        };
+        // A test body is a unit-returning block: control that falls through ends with
+        // an implicit return, exactly like a unit function.
+        if lowerer.lower_block(body) == Flow::Fallthrough {
+            lowerer.push(Instr::Return, body.span);
+        }
+        lowerer.finish(name, Vec::new(), ImageType::Unit)
+    }
+
+    /// Intern the function name and source, add the lowered function to the draft,
+    /// and return its identity — the shared tail of function and test lowering. A
+    /// body that failed to lower returns `None`.
+    fn finish(mut self, name: &str, params: Vec<Scalar>, ret_ref: ImageType) -> Option<Lowered> {
+        if self.failed {
+            return None;
+        }
+        let name_id = self.draft.intern_string(name);
+        let source_id = self.draft.intern_string(self.file);
+        let code = std::mem::take(&mut self.code);
+        let spans = std::mem::take(&mut self.spans);
+        let func_id = self.draft.add_function(FunctionDef {
             name: name_id,
             source: source_id,
             params,
             ret: ret_ref,
-            local_count: lowerer.slot_count,
+            local_count: self.slot_count,
             code,
             spans,
         });
-
         Some(Lowered {
             func: func_id,
-            callees: std::mem::take(&mut lowerer.calls),
+            callees: std::mem::take(&mut self.calls),
         })
     }
 
@@ -665,10 +725,32 @@ impl<'a> FnLowerer<'a> {
                 self.lower_durable_delete(path, *span);
                 Flow::Fallthrough
             }
+            Statement::Assert { value, span } => {
+                self.lower_assert(value, *span);
+                Flow::Fallthrough
+            }
             other => {
                 self.fail(unsupported(self.file, other.span(), "this statement"));
                 Flow::Fallthrough
             }
+        }
+    }
+
+    /// Lower `assert <expr>`. The condition must be bool; on false the emitted
+    /// `Assert` op faults the running test with `run.assert`. Legal only in a test
+    /// body — in an ordinary function it is `check.assert_outside_test`.
+    fn lower_assert(&mut self, value: &Expression, span: SourceSpan) {
+        if self.body_kind != BodyKind::Test {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckAssertOutsideTest.as_str(),
+                self.file,
+                span,
+                "`assert` is legal only inside a `test` declaration".to_string(),
+            ));
+            return;
+        }
+        if self.lower_condition(value).is_some() {
+            self.push(Instr::Assert, span);
         }
     }
 

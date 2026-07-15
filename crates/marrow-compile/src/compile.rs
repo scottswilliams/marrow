@@ -41,6 +41,38 @@ pub struct Compiled {
     pub exports: Vec<ExportEntry>,
 }
 
+/// One discovered `test "name"` declaration: its report title, the module and
+/// source file it lives in, and the source position of its header. The image
+/// carries the title in its closed non-wire TEST-ENTRY table; this directory pairs
+/// it with its location for reporting.
+#[derive(Debug, Clone)]
+pub struct TestEntry {
+    pub name: String,
+    pub module: String,
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// The result of compiling a project *with* its tests: the image (carrying the
+/// test functions and the TEST-ENTRY table), the export directory, and the test
+/// directory `marrow test` reports against.
+#[derive(Debug, Clone)]
+pub struct CompiledTests {
+    pub image: EncodedImage,
+    pub exports: Vec<ExportEntry>,
+    pub tests: Vec<TestEntry>,
+}
+
+/// Whether a compilation includes the project's `test` declarations. A production
+/// `run` image excludes them (tests are not shipped); `marrow test` includes them,
+/// adding the test functions and the TEST-ENTRY table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestMode {
+    Exclude,
+    Include,
+}
+
 /// A parsed module: its file identity (for spans and diagnostics), its dotted
 /// module name (for export identity), and the parse tree.
 struct Module {
@@ -60,8 +92,39 @@ struct LoweredFn {
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
-/// directory, or return the typed source diagnostics that block it.
+/// directory, or return the typed source diagnostics that block it. The production
+/// path: `test` declarations are not lowered and the TEST-ENTRY table is empty.
 pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>> {
+    let built = build(project, TestMode::Exclude)?;
+    Ok(Compiled {
+        image: built.image,
+        exports: built.exports,
+    })
+}
+
+/// Compile a captured project *with* its tests: the image additionally carries the
+/// test functions and the closed TEST-ENTRY table, and the returned directory pairs
+/// each test's title with its location for `marrow test`.
+pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Vec<SourceDiagnostic>> {
+    let built = build(project, TestMode::Include)?;
+    Ok(CompiledTests {
+        image: built.image,
+        exports: built.exports,
+        tests: built.tests,
+    })
+}
+
+/// The image, export directory, and (when included) test directory a compilation
+/// produced.
+struct Built {
+    image: EncodedImage,
+    exports: Vec<ExportEntry>,
+    tests: Vec<TestEntry>,
+}
+
+/// Compile a captured project, including or excluding its `test` declarations per
+/// `mode`, or return the typed source diagnostics that block it.
+fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiagnostic>> {
     let mut diagnostics = Vec::new();
 
     // Parse every module first. A parse error blocks semantic processing, mirroring
@@ -288,8 +351,12 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
                     }
                 }
                 // Constants are evaluated into the const registry above; resources
-                // and stores are handled by their own registries.
-                Declaration::Const(_) | Declaration::Resource(_) | Declaration::Store(_) => {}
+                // and stores are handled by their own registries; test declarations
+                // are lowered separately below, after every function has an index.
+                Declaration::Const(_)
+                | Declaration::Resource(_)
+                | Declaration::Store(_)
+                | Declaration::Test(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
                     Code::CheckUnsupported.as_str(),
                     &module.file,
@@ -300,11 +367,65 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
         }
     }
 
+    // Lower each `test "name"` body into a storeless, zero-argument function and
+    // bind its title into the TEST-ENTRY table (only when tests are included). Tests
+    // are lowered after every function so their bodies' calls resolve and their own
+    // indices follow the functions'. Titles are unique across the project.
+    let mut tests: Vec<TestEntry> = Vec::new();
+    if mode == TestMode::Include {
+        for module in &parsed {
+            for declaration in &module.parsed.file.declarations {
+                let Declaration::Test(test) = declaration else {
+                    continue;
+                };
+                if tests.iter().any(|existing| existing.name == test.name) {
+                    diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckNameConflict.as_str(),
+                        &module.file,
+                        test.name_span,
+                        format!("a test named `{}` is already declared", test.name),
+                    ));
+                    continue;
+                }
+                let Some(result) = FnLowerer::lower_test(
+                    &mut draft,
+                    &records,
+                    &durable,
+                    &signatures,
+                    &constants,
+                    &mut diagnostics,
+                    &module.file,
+                    &module.name,
+                    &test.name,
+                    &test.body,
+                ) else {
+                    continue;
+                };
+                lowered.push(LoweredFn {
+                    index: result.func.index(),
+                    file: module.file.clone(),
+                    name: test.name.clone(),
+                    span: test.span,
+                    callees: result.callees,
+                });
+                let name_id = draft.intern_string(&test.name);
+                draft.add_test_entry(name_id, result.func);
+                tests.push(TestEntry {
+                    name: test.name.clone(),
+                    module: module.name.clone(),
+                    file: module.file.clone(),
+                    line: test.name_span.line,
+                    column: test.name_span.column,
+                });
+            }
+        }
+    }
+
     // The compiled subset does not admit recursion: the direct-call graph must be
     // acyclic. Reported at check time so the source carries the diagnostic. The
     // verifier independently rejects any cycle that still reaches it (image.closure),
     // so this is a source-facing check, not the trust boundary. Only run it once
-    // every function lowered, so the indices are aligned.
+    // every function and test lowered, so the indices are aligned.
     if diagnostics.is_empty() {
         reject_recursion(&lowered, &mut diagnostics);
     }
@@ -322,7 +443,11 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
             message: format!("program exceeds a representational bound: {error}"),
         }]
     })?;
-    Ok(Compiled { image, exports })
+    Ok(Built {
+        image,
+        exports,
+        tests,
+    })
 }
 
 /// Report a `check.name_conflict` for every function name declared more than once
@@ -407,6 +532,7 @@ fn declaration_span(declaration: &Declaration) -> SourceSpan {
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
         Declaration::Evolve(decl) => decl.span,
+        Declaration::Test(decl) => decl.span,
     }
 }
 
