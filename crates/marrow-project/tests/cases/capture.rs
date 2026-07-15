@@ -14,7 +14,7 @@ fn file(path: &str, body: &str) -> CapturedFile {
 }
 
 fn capture(files: Vec<CapturedFile>) -> Result<ProjectInput, marrow_project::CaptureError> {
-    marrow_project::capture(&manifest(), files, &CaptureLimits::DEFAULT)
+    marrow_project::capture(&manifest(), files, None, &CaptureLimits::DEFAULT)
 }
 
 fn identities(input: &ProjectInput) -> Vec<String> {
@@ -145,13 +145,13 @@ fn file_count_limit_boundary() {
     let manifest = manifest();
 
     // 0, 1, and N files all capture; N+1 rejects.
-    assert!(marrow_project::capture(&manifest, vec![], &limits).is_ok());
-    assert!(marrow_project::capture(&manifest, vec![file("src/a.mw", "a")], &limits).is_ok());
-    assert!(marrow_project::capture(&manifest, three_files(), &limits).is_ok());
+    assert!(marrow_project::capture(&manifest, vec![], None, &limits).is_ok());
+    assert!(marrow_project::capture(&manifest, vec![file("src/a.mw", "a")], None, &limits).is_ok());
+    assert!(marrow_project::capture(&manifest, three_files(), None, &limits).is_ok());
 
     let mut over = three_files();
     over.push(file("src/d.mw", "d"));
-    let error = marrow_project::capture(&manifest, over, &limits).expect_err("N+1 rejects");
+    let error = marrow_project::capture(&manifest, over, None, &limits).expect_err("N+1 rejects");
     assert_eq!(error.code, "project.capture_limit");
     match error.kind {
         CaptureErrorKind::CaptureLimit {
@@ -172,8 +172,10 @@ fn per_file_byte_limit_boundary() {
     let limits = CaptureLimits::new(16, 4, 1 << 20);
     let manifest = manifest();
 
-    assert!(marrow_project::capture(&manifest, vec![file("src/a.mw", "abcd")], &limits).is_ok());
-    let error = marrow_project::capture(&manifest, vec![file("src/a.mw", "abcde")], &limits)
+    assert!(
+        marrow_project::capture(&manifest, vec![file("src/a.mw", "abcd")], None, &limits).is_ok()
+    );
+    let error = marrow_project::capture(&manifest, vec![file("src/a.mw", "abcde")], None, &limits)
         .expect_err("oversize file rejects");
     match error.kind {
         CaptureErrorKind::CaptureLimit {
@@ -199,6 +201,7 @@ fn total_byte_limit_boundary() {
         marrow_project::capture(
             &manifest,
             vec![file("src/a.mw", "aaa"), file("src/b.mw", "bbb")],
+            None,
             &limits
         )
         .is_ok()
@@ -206,6 +209,7 @@ fn total_byte_limit_boundary() {
     let error = marrow_project::capture(
         &manifest,
         vec![file("src/a.mw", "aaa"), file("src/b.mw", "bbbb")],
+        None,
         &limits,
     )
     .expect_err("over-total rejects");

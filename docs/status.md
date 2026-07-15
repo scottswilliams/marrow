@@ -64,9 +64,13 @@ versioned store profile with an in-transaction commit witness.
 program can declare a keyed resource, read and write and iterate its entries
 inside one transaction, and survive a process restart on the redb backend. A
 store root is keyed by any scalar in the closed orderable durable-key set
-(`int`, `string`, `bool`, `bytes`, `date`, `instant`), and the program's durable
-graph carries a stable 32-byte durable-contract identity the verifier
-independently recomputes from the image and rejects on mismatch. The admitted
+(`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every durable declaration
+holds an entropy-minted identity in the committed machine-written `marrow.ids`
+ledger (minted by `marrow run`, required by every path, tombstoned on
+retirement), and the program's durable graph carries a stable 32-byte
+durable-contract identity computed over those ledger ids — so a rename
+preserves durable identity — which the verifier independently recomputes from
+the image and rejects on mismatch. The admitted
 subset is narrow and grows lane by lane; a well-formed construct outside it is a
 typed `check.unsupported` diagnostic.
 
@@ -122,7 +126,7 @@ unimplemented syntax or exact formats.
 ## Not current
 
 Marrow does not currently provide general-purpose language completeness,
-third-party packages, a durable identity ledger or executable/store binding,
+third-party packages, executable/store binding,
 online schema evolution, logical backup and restore, a supported packaged
 desktop application, public path publication, a supported served profile,
 concurrent multi-writer deployment, replication, high availability, signed

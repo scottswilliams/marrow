@@ -10,6 +10,8 @@ owner and one meaning.
 ```text
 my_app/
   marrow.toml      manifest (required)
+  marrow.ids       durable-identity ledger (machine-written; present only
+                   when the project declares durable data)
   src/             source root (required for any module)
     main.mw        module `main`
     shelf/
@@ -66,6 +68,28 @@ Two source files that resolve to the same module identity — the same derived
 name, or paths differing only in case — report `project.module_collision`. A
 path that cannot name a contained module reports `project.source_path`. These
 codes are listed in the [Error Code Reference](../error-codes.md).
+
+## The identity ledger
+
+A project that declares durable data carries `marrow.ids` at its root: the
+durable-identity ledger binding each durable declaration (the application, a
+store root, its key column, the stored resource, and each stored field) to an
+opaque entropy-minted id. The file is **machine-written only** — never edit,
+copy, or cite its contents. Commit it with the source: a clone or relocated
+checkout then reuses the committed identities exactly, and parallel branches
+merge it line by line. A merge that leaves conflict markers, two rows claiming
+one identity (the signature of the same declaration minted independently on two
+branches), a truncated file, or any other damage is rejected whole with
+`project.ids_corrupt`; restore the file from version control rather than
+repairing it by hand.
+
+The ledger is append-only about the past: a retired identity is recorded as a
+tombstone and is never reissued, so deleting a durable declaration and re-adding
+its name yields a fresh identity rather than silently adopting old data. In
+ordinary development the ledger is invisible — [`marrow run`](cli.md)
+mints missing identities automatically; every other command requires them to be
+present and fails precisely with `check.durable_identity` when one is missing.
+A storeless project has no `marrow.ids`.
 
 ## Creating a project
 

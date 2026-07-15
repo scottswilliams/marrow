@@ -11,6 +11,7 @@
 use marrow_codes::Code;
 
 use crate::identity::{FileIdentity, ModuleName, SourcePathReason};
+use crate::ids::{IdentityLedger, IdsError};
 use crate::manifest::{Edition, Manifest};
 
 /// A source file handed to [`capture`] by the physical adapter: a caller-supplied
@@ -114,6 +115,7 @@ impl ModuleInput {
 pub struct ProjectInput {
     edition: Edition,
     modules: Vec<ModuleInput>,
+    ledger: Option<IdentityLedger>,
 }
 
 impl ProjectInput {
@@ -126,13 +128,22 @@ impl ProjectInput {
     pub fn modules(&self) -> &[ModuleInput] {
         &self.modules
     }
+
+    /// The parsed durable-identity ledger, when the project committed a
+    /// `marrow.ids` artifact. `None` means the artifact is absent — the normal
+    /// state of a storeless project, equivalent to an empty ledger.
+    pub fn identity_ledger(&self) -> Option<&IdentityLedger> {
+        self.ledger.as_ref()
+    }
 }
 
-/// Capture a validated [`Manifest`] and a caller-supplied source listing into an
-/// immutable [`ProjectInput`].
+/// Capture a validated [`Manifest`], a caller-supplied source listing, and the
+/// optional `marrow.ids` identity-artifact bytes into an immutable
+/// [`ProjectInput`].
 ///
 /// Checks apply in a fixed precedence so the reported fault is deterministic
-/// regardless of input order: the file-count bound, then per-path validity, then
+/// regardless of input order: the identity artifact (rejected whole when
+/// corrupt), then the file-count bound, then per-path validity, then
 /// module-identity collisions, then the per-file and total byte bounds. Within a
 /// family the offender is chosen by canonical identity (or, for an invalid path,
 /// the smallest raw path), never by arrival order. A physical adapter that
@@ -142,8 +153,13 @@ impl ProjectInput {
 pub fn capture(
     manifest: &Manifest,
     files: Vec<CapturedFile>,
+    ids: Option<&[u8]>,
     limits: &CaptureLimits,
 ) -> Result<ProjectInput, CaptureError> {
+    let ledger = match ids {
+        Some(bytes) => Some(IdentityLedger::parse(bytes).map_err(CaptureError::ids)?),
+        None => None,
+    };
     if files.len() > limits.max_files {
         return Err(CaptureError::limit(
             CaptureBound::FileCount,
@@ -205,6 +221,7 @@ pub fn capture(
     Ok(ProjectInput {
         edition: manifest.edition(),
         modules,
+        ledger,
     })
 }
 
@@ -278,6 +295,8 @@ pub enum CaptureErrorKind {
         limit: usize,
         actual: usize,
     },
+    /// The committed `marrow.ids` identity artifact is corrupt (rejected whole).
+    IdsCorrupt { error: IdsError },
 }
 
 /// A capture failure. Carries a stable code, a typed [`CaptureErrorKind`], and a
@@ -344,6 +363,15 @@ impl CaptureError {
 
     fn limit(bound: CaptureBound, limit: usize, actual: usize) -> Self {
         Self::from_bound(bound, limit, actual)
+    }
+
+    fn ids(error: IdsError) -> Self {
+        let message = format!("marrow.ids is corrupt: {}", error.message);
+        Self {
+            code: error.code,
+            kind: CaptureErrorKind::IdsCorrupt { error },
+            message,
+        }
     }
 
     fn file_bytes(identity: FileIdentity, limit: usize, actual: usize) -> Self {

@@ -74,6 +74,14 @@ export runs inside its single transaction; a read-only export observes one
 pinned snapshot. When the export has no durable demand, `--store` is unnecessary
 and unused.
 
+When a fresh durable declaration has no identity in the project's
+[identity ledger](projects.md#the-identity-ledger), `run` mints one from OS
+entropy and publishes the updated `marrow.ids` atomically before compiling
+again — commit that file. This convenience is `run`-only (every other command
+fails precisely with `check.durable_identity`) and is superseded by the
+accepted change-review `apply` action when that lane lands; a retired identity
+is never minted over.
+
 Output is text by default — the returned value, or `absent` for a vacant
 optional. `--format jsonl` prints one canonical JSON object: an outcome of
 `value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the

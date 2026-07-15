@@ -20,7 +20,7 @@ through which direction.
 |---|---|---|
 | `marrow` | CLI: `init`, `fmt`, and `run` (compile, verify, execute an export), plus typed not-yet-supported responses for refounding command names | — |
 | `marrow-codes` | Typed diagnostic-code registry and generated code reference | — |
-| `marrow-project` | Pure project-input owner: manifest schema, contained discovery, immutable captured input | — |
+| `marrow-project` | Pure project-input owner: manifest schema, contained discovery, the `marrow.ids` durable-identity ledger, immutable captured input | — |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics | [Syntax](syntax.md) |
 | `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft | — |
 | `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest | — |

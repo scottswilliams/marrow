@@ -14,26 +14,27 @@ use std::rc::Rc;
 
 use marrow_image::{
     DurableContractDescriptor, DurableContractId, DurableFieldShape, DurableRootShape, ExportId,
-    ImageId, ImageType, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
-    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
-    OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
-    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
-    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
-    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
-    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
-    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT,
-    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION,
-    OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION,
-    OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
-    OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
-    OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
-    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET,
-    OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
-    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
-    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
-    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
-    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM,
-    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE,
+    OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
+    OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE,
+    OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
+    OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
+    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE,
+    OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT,
+    OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION,
+    OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET,
+    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
+    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
+    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
+    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
+    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
+    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
+    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
+    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
+    TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -95,11 +96,17 @@ struct DecodedVariant {
     payload: Vec<ImageType>,
 }
 
-/// A decoded durable root: name string index, key scalar, and record type index.
+/// A decoded durable root: name string index, key scalar, record type index, and
+/// the root's ledger identity block (placement, product, and key ids plus one id
+/// per record field).
 struct DecodedRoot {
     name: u16,
     key: Scalar,
     record: u16,
+    placement: LedgerIdBytes,
+    product: LedgerIdBytes,
+    key_id: LedgerIdBytes,
+    field_ids: Vec<LedgerIdBytes>,
 }
 
 /// A decoded durable site: root index and entry-or-field target.
@@ -886,11 +893,14 @@ fn reject_value_type_cycles(
     Ok(())
 }
 
-/// Decode the DURABLE table (design §C 0x03): 0 or 1 roots, then the operation
-/// sites, then the 32-byte durable-contract id closing the section. Every site is
-/// revalidated against the roots and record types, and the contract id is
-/// independently recomputed from the decoded graph and checked against the carried
-/// bytes.
+/// Decode the DURABLE table (design §C 0x03): 0 or 1 roots — preceded, when any
+/// root is present, by the application's 16-byte ledger id — then the operation
+/// sites, then the 32-byte durable-contract id closing the section. Each root
+/// carries its ledger identity block (placement, product, and key ids plus one id
+/// per record field). Every site is revalidated against the roots and record
+/// types, every ledger id in the section must be pairwise distinct, and the
+/// contract id is independently recomputed from the decoded graph and checked
+/// against the carried bytes.
 fn decode_durable(
     body: &[u8],
     strings: &[Rc<str>],
@@ -904,6 +914,28 @@ fn decode_durable(
     if root_count > marrow_image::bounds::MAX_ROOTS {
         return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
+    let mut ledger_ids: Vec<LedgerIdBytes> = Vec::new();
+    let mut distinct_id =
+        |reader: &mut Reader<'_>, what: &'static str| -> Result<LedgerIdBytes, VerifyRejection> {
+            let bytes: [u8; 16] = reader
+                .take(16)
+                .ok_or(reject(VerifyPhase::Table, what))?
+                .try_into()
+                .expect("take(16) yields 16 bytes");
+            let id = LedgerIdBytes::from_bytes(bytes);
+            // Entropy-minted ids are distinct by construction; two equal ids in one
+            // durable table are a forged or corrupted identity block.
+            if ledger_ids.contains(&id) {
+                return Err(reject(VerifyPhase::Table, "duplicate durable ledger id"));
+            }
+            ledger_ids.push(id);
+            Ok(id)
+        };
+    let application = if root_count > 0 {
+        Some(distinct_id(&mut reader, "short application identity")?)
+    } else {
+        None
+    };
     let mut roots = Vec::with_capacity(root_count);
     for _ in 0..root_count {
         let name = reader
@@ -956,7 +988,33 @@ fn decode_durable(
                 "a durable root record must have only scalar fields",
             ));
         }
-        roots.push(DecodedRoot { name, key, record });
+        let placement = distinct_id(&mut reader, "short placement identity")?;
+        let product = distinct_id(&mut reader, "short product identity")?;
+        let key_id = distinct_id(&mut reader, "short key identity")?;
+        let field_id_count = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short field identity count"))?
+            as usize;
+        // The identity block covers exactly the record's stored fields.
+        if field_id_count != types[record as usize].fields.len() {
+            return Err(reject(
+                VerifyPhase::Table,
+                "root field identities do not cover the record fields",
+            ));
+        }
+        let mut field_ids = Vec::with_capacity(field_id_count);
+        for _ in 0..field_id_count {
+            field_ids.push(distinct_id(&mut reader, "short field identity")?);
+        }
+        roots.push(DecodedRoot {
+            name,
+            key,
+            record,
+            placement,
+            product,
+            key_id,
+            field_ids,
+        });
     }
 
     let site_count = reader
@@ -1018,7 +1076,7 @@ fn decode_durable(
             "trailing bytes in durable table",
         ));
     }
-    let recomputed = durable_descriptor(&roots, strings, types).contract_id();
+    let recomputed = durable_descriptor(application, &roots, types).contract_id();
     if recomputed.bytes() != &carried {
         return Err(reject(
             VerifyPhase::Table,
@@ -1030,14 +1088,19 @@ fn decode_durable(
 
 /// Rebuild the canonical durable-graph descriptor from the decoded tables. This is
 /// the verifier's independent reconstruction: it shares the canonical encoding owned
-/// by `marrow-image` but reads only the decoded roots, strings, and record fields,
-/// so the recomputed id depends on nothing the compiler asserted directly. A durable
-/// root record carries only scalar fields (rechecked above), so the profile is total.
+/// by `marrow-image` but reads only the decoded application id, roots, identity
+/// blocks, and record fields, so the recomputed id depends on nothing the compiler
+/// asserted directly. A durable root record carries only scalar fields (rechecked
+/// above) and its identity block covers exactly the record fields (rechecked
+/// above), so the profile is total.
 fn durable_descriptor(
+    application: Option<LedgerIdBytes>,
     roots: &[DecodedRoot],
-    strings: &[Rc<str>],
     types: &[DecodedRecordType],
 ) -> DurableContractDescriptor {
+    let Some(application) = application else {
+        return DurableContractDescriptor::empty();
+    };
     let shapes = roots
         .iter()
         .map(|root| {
@@ -1045,12 +1108,13 @@ fn durable_descriptor(
             let fields = record
                 .fields
                 .iter()
-                .filter_map(|field| match field.ty {
+                .zip(&root.field_ids)
+                .filter_map(|(field, id)| match field.ty {
                     ImageType::Scalar {
                         scalar,
                         optional: false,
                     } => Some(DurableFieldShape {
-                        name: strings[field.name as usize].to_string(),
+                        id: *id,
                         scalar,
                         required: field.required,
                     }),
@@ -1058,13 +1122,15 @@ fn durable_descriptor(
                 })
                 .collect();
             DurableRootShape {
-                name: strings[root.name as usize].to_string(),
+                placement: root.placement,
+                product: root.product,
                 key: root.key,
+                key_id: root.key_id,
                 fields,
             }
         })
         .collect();
-    DurableContractDescriptor::new(shapes)
+    DurableContractDescriptor::new(application, shapes)
 }
 
 fn decode_consts(body: &[u8], strings: &[Rc<str>]) -> Result<Vec<SealedConst>, VerifyRejection> {

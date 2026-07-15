@@ -49,13 +49,50 @@ impl CaptureFailure {
 }
 
 /// Read and capture the project rooted at `root` into an immutable
-/// [`ProjectInput`], enforcing [`CaptureLimits::DEFAULT`].
+/// [`ProjectInput`], enforcing [`CaptureLimits::DEFAULT`]. The optional
+/// `marrow.ids` identity artifact is read here — the artifact's one read — and
+/// its bytes are validated by the pure owner exactly like source bytes.
 pub(crate) fn capture_project(root: &Path) -> Result<ProjectInput, CaptureFailure> {
     let limits = CaptureLimits::DEFAULT;
     let manifest = read_manifest(root)?;
     let files = walk_source(root, &limits)?;
-    marrow_project::capture(&manifest, files, &limits)
+    let ids = read_ids(root)?;
+    marrow_project::capture(&manifest, files, ids.as_deref(), &limits)
         .map_err(|error| CaptureFailure::simple(error.code, error.message))
+}
+
+/// Read the raw bytes of the project's `marrow.ids`, or `None` when the
+/// artifact is absent. A symlinked artifact is refused like a symlinked source
+/// root, and the size bound is enforced before reading so a hostile file is
+/// never buffered; the pure owner rechecks the same bound.
+fn read_ids(root: &Path) -> Result<Option<Vec<u8>>, CaptureFailure> {
+    let path = root.join(marrow_project::IDS_FILE);
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Ok(None);
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(CaptureFailure::simple(
+            Code::ProjectIdsCorrupt.as_str(),
+            format!(
+                "{} is a symlink; the identity artifact must be a real file inside the project",
+                path.display()
+            ),
+        ));
+    }
+    if metadata.len() > marrow_project::MAX_IDS_BYTES as u64 {
+        return Err(CaptureFailure::simple(
+            Code::ProjectIdsCorrupt.as_str(),
+            format!(
+                "{} is {} bytes, over the {}-byte identity-artifact bound",
+                path.display(),
+                metadata.len(),
+                marrow_project::MAX_IDS_BYTES
+            ),
+        ));
+    }
+    fs::read(&path)
+        .map(Some)
+        .map_err(|error| read_dir_failure(&path, &error))
 }
 
 fn read_manifest(root: &Path) -> Result<Manifest, CaptureFailure> {

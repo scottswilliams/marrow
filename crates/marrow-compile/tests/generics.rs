@@ -15,7 +15,8 @@ fn project(source: &str) -> ProjectInput {
         "src/main.mw".to_string(),
         source.as_bytes().to_vec(),
     )];
-    marrow_project::capture(&manifest, files, &CaptureLimits::DEFAULT).expect("capture project")
+    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
+        .expect("capture project")
 }
 
 fn compile_ok(source: &str) -> Compiled {

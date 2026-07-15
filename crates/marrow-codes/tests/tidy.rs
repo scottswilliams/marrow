@@ -334,6 +334,42 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The pure owners have no filesystem edge: `marrow-project` (the project-input
+/// and identity-ledger owner) and `marrow-compile` (a read-only ledger
+/// consumer) never touch `std::fs`. This is the D00 absence gate for compiler
+/// ledger mutation — minting and publishing `marrow.ids` live only in the CLI's
+/// `marrow run` convenience action (and in the accepted apply action when it
+/// lands), so the compiler can never write identity. OS entropy is likewise a
+/// CLI concern; these crates draw none.
+#[test]
+fn pure_owners_have_no_filesystem_edge() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    for relative in ["crates/marrow-project/src", "crates/marrow-compile/src"] {
+        rust_sources(&root.join(relative), &mut files);
+    }
+    assert!(
+        !files.is_empty(),
+        "the pure-owner source scan found no files; the roots moved"
+    );
+
+    let mut violations: Vec<String> = Vec::new();
+    for path in files {
+        let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
+        for api in ["std::fs", "std::io::Read", "File::open", "File::create"] {
+            if contents.contains(api) {
+                violations.push(format!("{}: {api}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "a filesystem edge reached a pure owner:\n{}",
+        violations.join("\n")
+    );
+}
+
 /// No ambient clock feeds a temporal value: the temporal language path reads no wall
 /// or monotonic clock and depends on no date/time crate. A clock is a later explicit
 /// host effect; the temporal types are constructed only from literals and arguments.

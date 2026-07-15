@@ -12,6 +12,7 @@
 //! rechecks every bound against the received bytes; the draft's checks are a
 //! producer-side guard, not the trust boundary.
 
+use crate::durable_id::LedgerIdBytes;
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::ty::{ImageType, Scalar};
@@ -143,13 +144,28 @@ pub enum CollectionTypeDef {
     Map { key: ImageType, value: ImageType },
 }
 
-/// A durable root: one keyed placement of a record type.
+/// The ledger identity block of a durable root: the entropy-minted ids of the
+/// placement, the stored product, the key column, and each stored field of the
+/// root's record (aligned with the record's field order). The contract id is
+/// computed over these, so a rename — which moves a ledger anchor while its id
+/// stays — preserves the durable identity.
+#[derive(Debug, Clone)]
+pub struct RootIdentity {
+    pub placement: LedgerIdBytes,
+    pub product: LedgerIdBytes,
+    pub key: LedgerIdBytes,
+    pub fields: Vec<LedgerIdBytes>,
+}
+
+/// A durable root: one keyed placement of a record type, plus its ledger
+/// identity block.
 #[derive(Debug, Clone)]
 pub struct RootDef {
     pub name: StrId,
     /// The key column type (`Int` or `Text` at v0).
     pub key: Scalar,
     pub record: TypeId,
+    pub identity: RootIdentity,
 }
 
 /// What an operation site addresses within its root.
@@ -272,6 +288,7 @@ pub struct ImageDraft {
     enums: Vec<EnumTypeDef>,
     colls: Vec<CollectionTypeDef>,
     roots: Vec<RootDef>,
+    application: Option<LedgerIdBytes>,
     sites: Vec<SiteDef>,
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
@@ -383,6 +400,13 @@ impl ImageDraft {
         self.roots.push(def);
     }
 
+    /// Record the application's ledger id. Required exactly when the draft has a
+    /// durable root — the durable graph's identity is anchored to it; a storeless
+    /// image carries none.
+    pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
+        self.application = Some(id);
+    }
+
     pub fn add_site(&mut self, def: SiteDef) -> SiteId {
         let id = SiteId(self.sites.len() as u16);
         self.sites.push(def);
@@ -427,6 +451,9 @@ impl ImageDraft {
     }
     pub(crate) fn roots(&self) -> &[RootDef] {
         &self.roots
+    }
+    pub(crate) fn application_identity(&self) -> Option<LedgerIdBytes> {
+        self.application
     }
     pub(crate) fn sites(&self) -> &[SiteDef] {
         &self.sites

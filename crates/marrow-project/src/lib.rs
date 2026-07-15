@@ -4,8 +4,9 @@
 //! closed versioned manifest schema ([`Manifest`]), deterministic contained
 //! discovery over caller-supplied file listings and bytes ([`capture`]), the
 //! root-relative canonical file identities and path-derived module names
-//! ([`FileIdentity`], [`ModuleName`]), and the immutable [`ProjectInput`] every
-//! later stage consumes.
+//! ([`FileIdentity`], [`ModuleName`]), the durable-identity ledger and its
+//! committed machine-written artifact ([`IdentityLedger`], `marrow.ids`), and
+//! the immutable [`ProjectInput`] every later stage consumes.
 //!
 //! It is pure: it has no filesystem, Git, network, compiler, runtime, or store
 //! edge. The physical adapter that walks `src`, reads bytes, and enforces the
@@ -16,6 +17,7 @@
 
 mod capture;
 mod identity;
+mod ids;
 mod manifest;
 
 pub use capture::{
@@ -23,4 +25,8 @@ pub use capture::{
     ModuleInput, ProjectInput, capture,
 };
 pub use identity::{FileIdentity, ModuleName, SOURCE_EXTENSION, SOURCE_ROOT, SourcePathReason};
+pub use ids::{
+    DurableIdentityId, IDS_FILE, IdentityAnchor, IdentityKind, IdentityLedger, IdentityTombstone,
+    IdsError, IdsErrorKind, MAX_IDS_BYTES, MintError,
+};
 pub use manifest::{Edition, Manifest, ManifestError, ManifestErrorKind, Position};

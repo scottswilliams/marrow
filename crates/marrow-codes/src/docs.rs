@@ -171,6 +171,7 @@ Static errors found while checking source.
             Code::CheckMatchNonexhaustive,
             Code::CheckMatchArm,
             Code::CheckInstantiationLimit,
+            Code::CheckDurableIdentity,
         ]),
         r#"
 ### `image.*` — kind `artifact`
@@ -283,9 +284,10 @@ a non-UTF-8 command argument.
         r#"
 ### `project.*` — kind `tooling`
 
-Project-capture faults raised while discovering a project's source under `src`:
-an invalid contained path, a module-identity collision, or an exceeded capture
-bound.
+Project-capture faults raised while discovering a project's source under `src`
+and reading its committed `marrow.ids` identity artifact: an invalid contained
+path, a module-identity collision, an exceeded capture bound, a corrupt
+identity artifact, or a failed identity mint.
 
 | Code | Meaning |
 |---|---|"#
@@ -294,6 +296,8 @@ bound.
             Code::ProjectSourcePath,
             Code::ProjectModuleCollision,
             Code::ProjectCaptureLimit,
+            Code::ProjectIdsCorrupt,
+            Code::ProjectIdsMint,
         ]),
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),

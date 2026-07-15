@@ -37,22 +37,38 @@ and function visibility does not change root access.
 
 ## Durable Identity
 
-A program's durable graph — its roots, each root's key scalar, and each root
-record's ordered stored field profile (name, scalar type, and `required` flag) —
-has a stable 32-byte **durable-contract identity**. The compiler derives it from
-the resolved graph and records it in the program image; the independent verifier
-rebuilds the descriptor from the image tables, recomputes the identity, and
-rejects any image whose recorded identity does not match its graph. The identity
-changes on every semantic change to the graph (a renamed root or field, a
-changed key type, a field made required, a field added or removed) and is stable
-across source spelling and declaration order that leave the graph unchanged.
-Operation sites — the individual read and write points over the graph — are not
-part of the identity, so adding or removing one leaves it stable.
+Every durable declaration — the application, a store root, its key column, the
+stored resource, and each stored field — has its own durable identity: an
+opaque 128-bit id minted once from OS entropy and recorded in the project's
+committed identity ledger, `marrow.ids` (see
+[Projects](../tools/projects.md#the-identity-ledger)). The ledger is machine
+written and machine read; developers never edit, copy, or cite ids. In ordinary
+development it is invisible: the first `marrow run` over a fresh durable
+declaration mints its identities, and the file is committed with the source so
+every later build, clone, and checkout reuses them. A durable declaration with
+no ledger identity does not compile — the typed `check.durable_identity`
+diagnostic names the missing identity — and a retired identity is never reused:
+deleting a declaration and re-adding its name mints a fresh identity.
+
+A program's whole durable graph additionally carries a stable 32-byte
+**durable-contract identity**, computed over the graph's ledger ids and shape
+(each root's key scalar and its record's ordered stored field profile — scalar
+type and `required` flag per field). The compiler derives it from the resolved
+graph and records it in the program image; the independent verifier rebuilds
+the descriptor from the image tables, recomputes the identity, and rejects any
+image whose recorded identity does not match its graph. Because the descriptor
+carries ledger ids rather than names, renaming a root or field preserves the
+durable identity (the ledger anchor moves; the id stays), while every semantic
+change — a changed key type, a field made required, a field added or removed,
+or a delete-then-re-add — changes it. Spelling and declaration order that leave
+the graph unchanged leave the identity unchanged. Operation sites — the
+individual read and write points over the graph — are not part of the identity,
+so adding or removing one leaves it stable.
 
 The identity is scoped to the local project. Its canonical form reserves a
 leading package-lineage byte, so a durable graph contributed by a dependency
 package later carries a distinct lineage without changing the identity of a
-local graph.
+local graph. A storeless project needs no ledger and no identity.
 
 Durable writes are grouped by an explicit transaction owned by the exporting
 function; see [Errors and transactions](errors-and-transactions.md).

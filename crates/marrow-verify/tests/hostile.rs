@@ -10,7 +10,8 @@
 
 use marrow_image::{
     EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr,
-    RecordTypeDef, RootDef, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef, image_id,
+    LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry,
+    VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -334,10 +335,20 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
         ],
     });
     let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     draft.add_root(RootDef {
         name: root,
         key: Scalar::Text,
         record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            key: LedgerIdBytes::from_bytes([0x0c; 16]),
+            fields: vec![
+                LedgerIdBytes::from_bytes([0x0e; 16]),
+                LedgerIdBytes::from_bytes([0x0f; 16]),
+            ],
+        },
     });
     let entry = draft.add_site(SiteDef {
         root: 0,
@@ -433,6 +444,36 @@ fn rehashed_mutated_durable_field_flag_breaks_the_contract_id() {
     // TYPES: count(2) | type: name(2) field_count(2) | field0: name(2) tag(1) required(1)
     let required0 = body + 2 + 2 + 2 + 2 + 1;
     bytes[required0] ^= 0x01;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_mutated_ledger_id_breaks_the_contract_id() {
+    // The DURABLE section opens with the root count and then the application's
+    // 16-byte ledger id. Flipping one id byte mutates the graph the verifier
+    // recomputes the contract over, so the carried id no longer matches — the
+    // contract id binds the ledger identities, not the source names.
+    let mut bytes = good_durable_image();
+    let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 3).unwrap();
+    let application0 = body + 2;
+    bytes[application0] ^= 0xFF;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_duplicated_ledger_id_rejects_at_table() {
+    // Entropy-minted ids are pairwise distinct by construction; overwriting the
+    // root's placement id with the application id forges two equal identities in
+    // one durable table and is rejected before the contract recomputation.
+    let mut bytes = good_durable_image();
+    let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 3).unwrap();
+    // DURABLE: count(2) | application(16) | root: name(2) key-tag(1) record(2) placement(16)…
+    let application0 = body + 2;
+    let placement0 = body + 2 + 16 + 2 + 1 + 2;
+    let application: [u8; 16] = bytes[application0..application0 + 16].try_into().unwrap();
+    bytes[placement0..placement0 + 16].copy_from_slice(&application);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
 }
@@ -1506,10 +1547,20 @@ fn durable_root_with_a_non_scalar_field_rejects() {
         ],
     });
     let root = draft.intern_string("boxes");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x1a; 16]));
     draft.add_root(RootDef {
         name: root,
         key: Scalar::Int,
         record: rec,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x1b; 16]),
+            product: LedgerIdBytes::from_bytes([0x1d; 16]),
+            key: LedgerIdBytes::from_bytes([0x1c; 16]),
+            fields: vec![
+                LedgerIdBytes::from_bytes([0x1e; 16]),
+                LedgerIdBytes::from_bytes([0x1f; 16]),
+            ],
+        },
     });
     let zero = draft.intern_int(0);
     let f = draft.intern_string("f");

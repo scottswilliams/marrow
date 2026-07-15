@@ -147,6 +147,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 line: 1,
                 column: 1,
                 message: "source file is not valid UTF-8".to_string(),
+                identity: None,
             }),
         }
     }
@@ -331,7 +332,13 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
-    let durable = DurableRegistry::build(&mut draft, &records, &stores, &mut diagnostics);
+    let durable = DurableRegistry::build(
+        &mut draft,
+        &records,
+        &stores,
+        project.identity_ledger(),
+        &mut diagnostics,
+    );
     let signatures =
         FunctionRegistry::build(&records, &mut draft, &functions, module_names, imports);
     // Generic functions are templates with no image index; they are monomorphized at
@@ -609,6 +616,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             line: 1,
             column: 1,
             message: format!("program exceeds a representational bound: {error}"),
+            identity: None,
         }]
     })?;
     Ok(Built {

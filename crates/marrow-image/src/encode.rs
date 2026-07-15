@@ -39,7 +39,7 @@ impl ImageDraft {
         tail.push(SECTION_COUNT);
         push_section(&mut tail, 0x01, encode_strings(&sorted_strings))?;
         push_section(&mut tail, 0x02, self.encode_types(&str_map))?;
-        push_section(&mut tail, 0x03, self.encode_durable(&str_map))?;
+        push_section(&mut tail, 0x03, self.encode_durable(&str_map)?)?;
         push_section(&mut tail, 0x04, encode_consts(&sorted_consts, &str_map))?;
         let function_offsets = self.encode_functions(&str_map, &const_map)?;
         push_section(&mut tail, 0x05, function_offsets.body)?;
@@ -231,13 +231,34 @@ impl ImageDraft {
         body
     }
 
-    fn encode_durable(&self, str_map: &[u16]) -> Vec<u8> {
+    fn encode_durable(&self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
         let mut body = Vec::new();
         push_u16(&mut body, self.roots().len() as u16);
+        // The application's ledger id anchors a non-empty durable graph; a
+        // storeless image carries none.
+        if !self.roots().is_empty() {
+            let application = self
+                .application_identity()
+                .ok_or(ImageBuildError::InvalidReference("application identity"))?;
+            body.extend_from_slice(application.bytes());
+        }
         for root in self.roots() {
             push_u16(&mut body, str_map[root.name.raw() as usize]);
             ImageType::scalar(root.key).encode(&mut body);
             push_u16(&mut body, root.record.0);
+            // The root's ledger identity block: placement, product, and key ids,
+            // then one field id per record field in declaration order.
+            let record = &self.types()[root.record.index() as usize];
+            if root.identity.fields.len() != record.fields.len() {
+                return Err(ImageBuildError::InvalidReference("root field identities"));
+            }
+            body.extend_from_slice(root.identity.placement.bytes());
+            body.extend_from_slice(root.identity.product.bytes());
+            body.extend_from_slice(root.identity.key.bytes());
+            push_u16(&mut body, root.identity.fields.len() as u16);
+            for field_id in &root.identity.fields {
+                body.extend_from_slice(field_id.bytes());
+            }
         }
         push_u16(&mut body, self.sites().len() as u16);
         for site in self.sites() {
@@ -254,15 +275,22 @@ impl ImageDraft {
         // `DurableContractId` over the canonical graph descriptor. The verifier
         // recomputes it from the decoded roots/records and rejects a mismatch, so
         // these bytes are a producer-side commitment, not a trusted input.
-        body.extend_from_slice(self.durable_descriptor().contract_id().bytes());
-        body
+        body.extend_from_slice(self.durable_descriptor()?.contract_id().bytes());
+        Ok(body)
     }
 
-    /// The canonical durable-graph descriptor for this draft, built from its roots
-    /// and the scalar field profile of each root's record. A durable root record
-    /// carries only scalar fields (the compiler rejects any other shape before an
-    /// image is produced), so the profile is total over the roots present.
-    fn durable_descriptor(&self) -> DurableContractDescriptor {
+    /// The canonical durable-graph descriptor for this draft, built from its
+    /// application id, its roots' ledger identity blocks, and the scalar field
+    /// profile of each root's record. A durable root record carries only scalar
+    /// fields (the compiler rejects any other shape before an image is produced),
+    /// so the profile is total over the roots present.
+    fn durable_descriptor(&self) -> Result<DurableContractDescriptor, ImageBuildError> {
+        if self.roots().is_empty() {
+            return Ok(DurableContractDescriptor::empty());
+        }
+        let application = self
+            .application_identity()
+            .ok_or(ImageBuildError::InvalidReference("application identity"))?;
         let roots = self
             .roots()
             .iter()
@@ -271,12 +299,13 @@ impl ImageDraft {
                 let fields = record
                     .fields
                     .iter()
-                    .filter_map(|field| match field.ty {
+                    .zip(&root.identity.fields)
+                    .filter_map(|(field, id)| match field.ty {
                         ImageType::Scalar {
                             scalar,
                             optional: false,
                         } => Some(DurableFieldShape {
-                            name: self.strings()[field.name.raw() as usize].to_string(),
+                            id: *id,
                             scalar,
                             required: field.required,
                         }),
@@ -284,13 +313,15 @@ impl ImageDraft {
                     })
                     .collect();
                 DurableRootShape {
-                    name: self.strings()[root.name.raw() as usize].to_string(),
+                    placement: root.identity.placement,
+                    product: root.identity.product,
                     key: root.key,
+                    key_id: root.identity.key,
                     fields,
                 }
             })
             .collect();
-        DurableContractDescriptor::new(roots)
+        Ok(DurableContractDescriptor::new(application, roots))
     }
 
     fn encode_functions(

@@ -5,19 +5,22 @@
 //! export, and execute it on the VM. Each of the four failure families surfaces as
 //! its own typed [`Record`]; the value or the first failure sets the exit code.
 //!
-//! Durable execution (opening a store for an export with nonempty demand) is wired
-//! in with the durable slices; at this slice every admitted export is read-only.
+//! Durable execution opens an in-process store for an export with nonempty demand
+//! (an interim seam that dies with the durable-run trough). A fresh durable
+//! declaration with no ledger identity is minted here — `run` is the one
+//! convenience mint action; see [`mint_missing_identities`].
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use marrow_compile::{ExportEntry, ExportId, compile};
+use marrow_compile::{ExportEntry, ExportId, SourceDiagnostic, compile};
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{
     DurableStore, ExportDemand, FieldSchema, InvocationGrant, SessionError, SiteSpec,
     SiteTarget as KernelSiteTarget, StoreSchema,
 };
+use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
 use marrow_verify::{
     ImageType, Scalar, SealedEnumType, SealedRecordType, SealedSiteTarget, VerifiedImage,
 };
@@ -59,20 +62,57 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         }
     };
 
-    // Family 1: source diagnostics.
+    // Family 1: source diagnostics. When compilation fails *only* because fresh
+    // durable declarations lack ledger identities, `run` — and only `run` — mints
+    // them into `marrow.ids` and compiles again; any other failure reports as-is.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,
-        Err(diagnostics) => {
-            let records: Vec<Record> = diagnostics
-                .iter()
-                .map(|diagnostic| Record::Diagnostic {
-                    code: diagnostic.code,
-                    line: diagnostic.line,
-                    column: diagnostic.column,
-                })
-                .collect();
-            return emit(args.format, &records, &[], &[], ExitCode::FAILURE);
-        }
+        Err(diagnostics) => match mint_missing_identities(&project, &diagnostics) {
+            MintOutcome::Minted => {
+                let recaptured = match capture_project(&PathBuf::from(".")) {
+                    Ok(project) => project,
+                    Err(failure) => {
+                        return emit(
+                            args.format,
+                            &[Record::OperationalError { code: failure.code }],
+                            &[],
+                            &[],
+                            ExitCode::FAILURE,
+                        );
+                    }
+                };
+                match compile(&recaptured) {
+                    Ok(compiled) => compiled,
+                    Err(diagnostics) => {
+                        return emit(
+                            args.format,
+                            &diagnostic_records(&diagnostics),
+                            &[],
+                            &[],
+                            ExitCode::FAILURE,
+                        );
+                    }
+                }
+            }
+            MintOutcome::NotApplicable => {
+                return emit(
+                    args.format,
+                    &diagnostic_records(&diagnostics),
+                    &[],
+                    &[],
+                    ExitCode::FAILURE,
+                );
+            }
+            MintOutcome::Failed(code) => {
+                return emit(
+                    args.format,
+                    &[Record::OperationalError { code }],
+                    &[],
+                    &[],
+                    ExitCode::FAILURE,
+                );
+            }
+        },
     };
 
     // Resolve the caller-supplied name to a stable id through the compiler's export
@@ -138,6 +178,130 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         image.enums(),
         exit,
     )
+}
+
+/// The typed diagnostic records for a compile failure.
+fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| Record::Diagnostic {
+            code: diagnostic.code,
+            line: diagnostic.line,
+            column: diagnostic.column,
+        })
+        .collect()
+}
+
+/// What the `run` mint pre-pass did with a compile failure.
+enum MintOutcome {
+    /// Every diagnostic was a mintable identity gap; fresh identities were
+    /// drawn and `marrow.ids` was published atomically.
+    Minted,
+    /// The failure is not (only) missing mintable identity; report it as-is.
+    NotApplicable,
+    /// Minting itself failed; `marrow.ids` is unchanged.
+    Failed(&'static str),
+}
+
+/// The `marrow run` convenience mint: when a compile failed *only* because
+/// fresh durable declarations have no ledger row, draw one id per missing
+/// anchor from OS entropy and publish the grown ledger atomically
+/// (temp + rename), leaving the artifact untouched on any failure.
+///
+/// This is a live bridge. Caller: `cmd_run` (this file), and nothing else —
+/// `marrow test` and every other path fail precisely, so CI never mutates the
+/// tree. Isolation: CLI orchestration only; the compiler stays a read-only
+/// ledger consumer (its typed `IdentityGap` payloads are the sole input here —
+/// the CLI never classifies durable declarations itself). Absence test:
+/// `durable_identity.rs` asserts the CI path writes nothing. Deletion
+/// condition: F03's accepted apply action becomes the one mint owner (with
+/// D04 sending durable `run` into the trough), and this pre-pass is deleted
+/// with the in-process store seam.
+fn mint_missing_identities(
+    project: &ProjectInput,
+    diagnostics: &[SourceDiagnostic],
+) -> MintOutcome {
+    // Act when the compile reported at least one mintable identity gap and no
+    // retired anchor. Non-gap diagnostics do not block the mint: an unminted
+    // root cascades (every operation over it reports unsupported), and the gaps
+    // themselves are emitted only for a durable declaration whose shape already
+    // validated — the recompile reports whatever genuinely remains. A retired
+    // anchor is never re-mintable, so its failure stays precise and unminted.
+    let mut anchors: Vec<IdentityAnchor> = Vec::new();
+    for diagnostic in diagnostics {
+        match &diagnostic.identity {
+            Some(gap) if gap.retired => return MintOutcome::NotApplicable,
+            Some(gap) => {
+                let anchor = gap.anchor();
+                if !anchors.contains(&anchor) {
+                    anchors.push(anchor);
+                }
+            }
+            None => {}
+        }
+    }
+    if anchors.is_empty() {
+        return MintOutcome::NotApplicable;
+    }
+
+    let mut mints: Vec<(IdentityAnchor, DurableIdentityId)> = Vec::with_capacity(anchors.len());
+    for anchor in anchors {
+        let id = match draw_entropy_id() {
+            Ok(id) => id,
+            Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
+        };
+        mints.push((anchor, id));
+    }
+    let ledger = project.identity_ledger().cloned().unwrap_or_default();
+    let minted = match ledger.with_minted(&mints) {
+        Ok(minted) => minted,
+        // A collision or state conflict: no retry, and the artifact bytes are
+        // untouched (`with_minted` never mutated the source ledger).
+        Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
+    };
+    match publish_ids(Path::new("."), &minted.to_bytes()) {
+        Ok(()) => MintOutcome::Minted,
+        Err(_) => MintOutcome::Failed(marrow_codes::Code::IoWrite.as_str()),
+    }
+}
+
+/// One 128-bit id drawn from the OS entropy source. No clock, hash, provider,
+/// or retry: a failure surfaces as-is and the caller aborts the mint.
+#[cfg(unix)]
+fn draw_entropy_id() -> std::io::Result<DurableIdentityId> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(DurableIdentityId::from_bytes(bytes))
+}
+
+#[cfg(not(unix))]
+fn draw_entropy_id() -> std::io::Result<DurableIdentityId> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "durable identity minting requires an approved OS entropy source on this platform",
+    ))
+}
+
+/// Publish `marrow.ids` atomically: write a sibling temp file, then rename it
+/// over the artifact, so a reader observes either the old complete artifact or
+/// the new one — never a torn write. The temp file is removed on failure.
+fn publish_ids(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = root.join(marrow_project::IDS_FILE);
+    let temp = root.join(format!(
+        "{}.tmp.{}",
+        marrow_project::IDS_FILE,
+        std::process::id()
+    ));
+    if let Err(error) = std::fs::write(&temp, bytes) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    if let Err(error) = std::fs::rename(&temp, &target) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Resolve a caller-supplied export path to its [`ExportId`] through the compiler's
