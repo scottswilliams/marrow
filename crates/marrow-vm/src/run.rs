@@ -282,6 +282,104 @@ fn execute<'s>(
                 stack.push(Value::Bool(result));
                 pc += 1;
             }
+            // Temporal comparison and equality. Each temporal type is a signed
+            // integer domain (days for a date, nanoseconds for an instant or
+            // duration), so the language order is the integer order — which agrees
+            // with the kernel key-codec byte order (pinned in
+            // `tests/temporal_order_agreement.rs`).
+            SealedInstr::EqDate
+            | SealedInstr::DateLt
+            | SealedInstr::DateLe
+            | SealedInstr::DateGt
+            | SealedInstr::DateGe => {
+                let b = pop_date(&mut stack);
+                let a = pop_date(&mut stack);
+                stack.push(Value::Bool(temporal_compare(
+                    &function.instrs()[pc],
+                    a.cmp(&b),
+                )));
+                pc += 1;
+            }
+            SealedInstr::EqInstant
+            | SealedInstr::InstantLt
+            | SealedInstr::InstantLe
+            | SealedInstr::InstantGt
+            | SealedInstr::InstantGe => {
+                let b = pop_instant(&mut stack);
+                let a = pop_instant(&mut stack);
+                stack.push(Value::Bool(temporal_compare(
+                    &function.instrs()[pc],
+                    a.cmp(&b),
+                )));
+                pc += 1;
+            }
+            SealedInstr::EqDuration
+            | SealedInstr::DurationLt
+            | SealedInstr::DurationLe
+            | SealedInstr::DurationGt
+            | SealedInstr::DurationGe => {
+                let b = pop_duration(&mut stack);
+                let a = pop_duration(&mut stack);
+                stack.push(Value::Bool(temporal_compare(
+                    &function.instrs()[pc],
+                    a.cmp(&b),
+                )));
+                pc += 1;
+            }
+            // The closed temporal arithmetic floor. Each faults
+            // `run.temporal_overflow` when its result leaves the supported domain;
+            // `marrow-temporal` owns the checked operations.
+            SealedInstr::DateAddDays => {
+                let days = pop_int(&mut stack);
+                let date = pop_date(&mut stack);
+                match marrow_temporal::add_days(date, days) {
+                    Some(result) => stack.push(Value::Date(result)),
+                    None => return Err(fault(function, pc, Code::RunTemporalOverflow.as_str())),
+                }
+                pc += 1;
+            }
+            SealedInstr::DateDaysBetween => {
+                let to = pop_date(&mut stack);
+                let from = pop_date(&mut stack);
+                stack.push(Value::Int(marrow_temporal::days_between(from, to)));
+                pc += 1;
+            }
+            SealedInstr::DurationAdd => {
+                let b = pop_duration(&mut stack);
+                let a = pop_duration(&mut stack);
+                match marrow_temporal::duration_add(a, b) {
+                    Some(result) => stack.push(Value::Duration(result)),
+                    None => return Err(fault(function, pc, Code::RunTemporalOverflow.as_str())),
+                }
+                pc += 1;
+            }
+            SealedInstr::DurationSub => {
+                let b = pop_duration(&mut stack);
+                let a = pop_duration(&mut stack);
+                match marrow_temporal::duration_sub(a, b) {
+                    Some(result) => stack.push(Value::Duration(result)),
+                    None => return Err(fault(function, pc, Code::RunTemporalOverflow.as_str())),
+                }
+                pc += 1;
+            }
+            SealedInstr::InstantAddDuration => {
+                let duration = pop_duration(&mut stack);
+                let instant = pop_instant(&mut stack);
+                match marrow_temporal::instant_add_duration(instant, duration) {
+                    Some(result) => stack.push(Value::Instant(result)),
+                    None => return Err(fault(function, pc, Code::RunTemporalOverflow.as_str())),
+                }
+                pc += 1;
+            }
+            SealedInstr::InstantSubDuration => {
+                let duration = pop_duration(&mut stack);
+                let instant = pop_instant(&mut stack);
+                match marrow_temporal::instant_sub_duration(instant, duration) {
+                    Some(result) => stack.push(Value::Instant(result)),
+                    None => return Err(fault(function, pc, Code::RunTemporalOverflow.as_str())),
+                }
+                pc += 1;
+            }
             SealedInstr::ConvStringInt => {
                 let v = pop_int(&mut stack);
                 stack.push(Value::Text(v.to_string().into()));
@@ -844,6 +942,39 @@ fn pop_int(stack: &mut Vec<Value>) -> i64 {
     }
 }
 
+fn pop_date(stack: &mut Vec<Value>) -> i32 {
+    match pop(stack) {
+        Value::Date(v) => v,
+        _ => unreachable!("verifier proved a date operand"),
+    }
+}
+
+fn pop_instant(stack: &mut Vec<Value>) -> i128 {
+    match pop(stack) {
+        Value::Instant(v) => v,
+        _ => unreachable!("verifier proved an instant operand"),
+    }
+}
+
+fn pop_duration(stack: &mut Vec<Value>) -> i128 {
+    match pop(stack) {
+        Value::Duration(v) => v,
+        _ => unreachable!("verifier proved a duration operand"),
+    }
+}
+
+/// Resolve a temporal comparison opcode against the operands' ordering. Equality
+/// opcodes test `is_eq`; the four order opcodes test their relation.
+fn temporal_compare(instr: &SealedInstr, ordering: std::cmp::Ordering) -> bool {
+    match instr {
+        SealedInstr::EqDate | SealedInstr::EqInstant | SealedInstr::EqDuration => ordering.is_eq(),
+        SealedInstr::DateLt | SealedInstr::InstantLt | SealedInstr::DurationLt => ordering.is_lt(),
+        SealedInstr::DateLe | SealedInstr::InstantLe | SealedInstr::DurationLe => ordering.is_le(),
+        SealedInstr::DateGt | SealedInstr::InstantGt | SealedInstr::DurationGt => ordering.is_gt(),
+        _ => ordering.is_ge(),
+    }
+}
+
 fn as_bool(value: Value) -> bool {
     match value {
         Value::Bool(v) => v,
@@ -918,6 +1049,9 @@ fn const_value(value: &SealedConst) -> Value {
         SealedConst::Int(v) => Value::Int(*v),
         SealedConst::Bool(v) => Value::Bool(*v),
         SealedConst::Text(v) => Value::Text(v.clone()),
+        SealedConst::Date(v) => Value::Date(*v),
+        SealedConst::Instant(v) => Value::Instant(*v),
+        SealedConst::Duration(v) => Value::Duration(*v),
     }
 }
 
@@ -950,6 +1084,9 @@ fn value_to_key(value: Value) -> KeyScalar {
         Value::Bool(v) => KeyScalar::Bool(v),
         Value::Text(v) => KeyScalar::Str(v.to_string()),
         Value::Bytes(v) => KeyScalar::Bytes(v.to_vec()),
+        Value::Date(v) => KeyScalar::Date(v),
+        Value::Instant(v) => KeyScalar::Instant(v),
+        Value::Duration(v) => KeyScalar::Duration(v),
         _ => unreachable!("verifier proved a scalar key operand"),
     }
 }
@@ -961,7 +1098,9 @@ fn key_to_value(key: KeyScalar) -> Value {
         KeyScalar::Bool(v) => Value::Bool(v),
         KeyScalar::Str(v) => Value::Text(v.into()),
         KeyScalar::Bytes(v) => Value::Bytes(Rc::from(v.as_slice())),
-        _ => unreachable!("C01 keys are int, string, bool, or bytes"),
+        KeyScalar::Date(v) => Value::Date(v),
+        KeyScalar::Instant(v) => Value::Instant(v),
+        KeyScalar::Duration(v) => Value::Duration(v),
     }
 }
 

@@ -26,6 +26,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-project",
     "marrow-store",
     "marrow-syntax",
+    "marrow-temporal",
     "marrow-verify",
     "marrow-vm",
 ];
@@ -286,6 +287,81 @@ fn no_tracked_file_names_a_forbidden_family() {
     assert!(
         violations.is_empty(),
         "forbidden legacy families still present:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// Ambient-clock APIs that must not reach the temporal language path. A Marrow
+/// temporal value is pure: it never derives from a wall or monotonic clock, a
+/// timezone database, or a date/time crate. `Instant::now` (not the bare word
+/// `Instant`, which is the temporal type) and `SystemTime` are the standard-library
+/// clocks; the rest are the common third-party date/time crates.
+const FORBIDDEN_CLOCK_APIS: &[&str] = &[
+    "SystemTime",
+    "UNIX_EPOCH",
+    "Instant::now",
+    "chrono",
+    "OffsetDateTime",
+    "PrimitiveDateTime",
+];
+
+/// The production source roots on the temporal language path: the temporal domain
+/// owner, the compiler, the image container, the verifier, the VM, the parser, and
+/// the kernel's logical codecs. The kernel's durable *store substrate* is excluded:
+/// its witness-token nonce legitimately mixes the wall clock for cross-process
+/// distinctness, which is a physical-substrate concern, not a temporal value.
+const TEMPORAL_PATH_SRC: &[&str] = &[
+    "crates/marrow-temporal/src",
+    "crates/marrow-compile/src",
+    "crates/marrow-image/src",
+    "crates/marrow-verify/src",
+    "crates/marrow-vm/src",
+    "crates/marrow-syntax/src",
+    "crates/marrow-kernel/src/codec",
+];
+
+fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// No ambient clock feeds a temporal value: the temporal language path reads no wall
+/// or monotonic clock and depends on no date/time crate. A clock is a later explicit
+/// host effect; the temporal types are constructed only from literals and arguments.
+#[test]
+fn no_ambient_clock_on_the_temporal_path() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    for relative in TEMPORAL_PATH_SRC {
+        rust_sources(&root.join(relative), &mut files);
+    }
+    assert!(
+        !files.is_empty(),
+        "the temporal-path source scan found no files; the roots moved"
+    );
+
+    let mut violations: Vec<String> = Vec::new();
+    for path in files {
+        let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
+        for api in FORBIDDEN_CLOCK_APIS {
+            if contents.contains(api) {
+                violations.push(format!("{}: {api}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "an ambient clock reached the temporal language path:\n{}",
         violations.join("\n")
     );
 }

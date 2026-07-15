@@ -97,17 +97,14 @@ impl GArg {
         }
     }
 
-    /// Whether this argument is admitted as a `Map` key type: a scalar key type
-    /// (`int`/`bool`/`string`/`bytes`) or a nominal int (which erases to `int`).
-    /// `decimal`, structs, enums, and collections are rejected as keys, mirroring the
-    /// durable-key scalar family.
+    /// Whether this argument is admitted as a `Map` key type: any scalar key type
+    /// (`int`/`bool`/`string`/`bytes`/`date`/`instant`/`duration`) or a nominal int
+    /// (which erases to `int`). Structs, enums, and collections are rejected as keys,
+    /// mirroring the closed durable-key scalar family. Every current scalar is
+    /// key-eligible, so this covers the whole `ScalarType` set.
     pub(crate) fn is_key_type(self) -> bool {
         match self {
-            GArg::Scalar(scalar) => matches!(
-                scalar,
-                ScalarType::Int | ScalarType::Bool | ScalarType::Text | ScalarType::Bytes
-            ),
-            GArg::Nominal(_) => true,
+            GArg::Scalar(_) | GArg::Nominal(_) => true,
             GArg::Struct(_) | GArg::Enum(_) | GArg::Collection(_) | GArg::Param(_) => false,
         }
     }
@@ -115,9 +112,10 @@ impl GArg {
     /// Whether a concrete argument supports the given generic constraint, checked
     /// at every application of a constrained generic. The equality domain is every
     /// type the `==`/`!=` operator admits (scalar, nominal, enum); the order domain
-    /// is every type the `<`/`>` operators admit (`int`/`text`/`bytes` and nominal
-    /// int). A struct or collection supports neither; `bool` and an enum support
-    /// equality but not order. `Param` never reaches a concrete revalidation.
+    /// is every type the `<`/`>` operators admit (`int`/`text`/`bytes`/`date`/
+    /// `instant`/`duration` and nominal int). A struct or collection supports
+    /// neither; `bool` and an enum support equality but not order. `Param` never
+    /// reaches a concrete revalidation.
     pub(crate) fn satisfies(self, constraint: TypeConstraint) -> bool {
         match constraint {
             TypeConstraint::Equality => {
@@ -125,8 +123,14 @@ impl GArg {
             }
             TypeConstraint::Order => matches!(
                 self,
-                GArg::Scalar(ScalarType::Int | ScalarType::Text | ScalarType::Bytes)
-                    | GArg::Nominal(_)
+                GArg::Scalar(
+                    ScalarType::Int
+                        | ScalarType::Text
+                        | ScalarType::Bytes
+                        | ScalarType::Date
+                        | ScalarType::Instant
+                        | ScalarType::Duration
+                ) | GArg::Nominal(_)
             ),
         }
     }

@@ -372,6 +372,13 @@ enum Builtin {
     Split,
     Lines,
     Join,
+    /// The named temporal arithmetic floor: `date_add_days(date, int): date` and
+    /// `date_days_between(date, date): int`. Named rather than operators so a date
+    /// offset never reads as an ambiguous `date + int`; they are reserved, so a
+    /// colliding value declaration is rejected. `marrow-temporal` owns the checked
+    /// operations, which fault `run.temporal_overflow` past the supported range.
+    DateAddDays,
+    DateDaysBetween,
     /// The empty-collection constructors `List()`/`Map()`, type-directed by the
     /// expected type. They are reserved (blocking a colliding value declaration)
     /// because a bare `List`/`Map` at a use site is always the built-in constructor.
@@ -398,6 +405,8 @@ impl Builtin {
             "split" => Builtin::Split,
             "lines" => Builtin::Lines,
             "join" => Builtin::Join,
+            "date_add_days" => Builtin::DateAddDays,
+            "date_days_between" => Builtin::DateDaysBetween,
             "List" => Builtin::List,
             "Map" => Builtin::Map,
             _ => return None,
@@ -2754,6 +2763,20 @@ impl<'a> FnLowerer<'a> {
                 };
                 (ScalarType::Text, self.draft.intern_text(&decoded))
             }
+            // The prototype's `1.second` duration-suffix literal is not in the beta
+            // floor: a duration is constructed from a canonical text literal. Point
+            // at the constructor rather than reporting a generic unsupported literal.
+            LiteralKind::Duration => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckUnsupported.as_str(),
+                    self.file,
+                    span,
+                    "duration suffix literals are not supported; construct a duration \
+                     from canonical text, e.g. `duration(\"PT1S\")`"
+                        .to_string(),
+                ));
+                return None;
+            }
             _ => {
                 self.fail(unsupported(self.file, span, "this literal"));
                 return None;
@@ -2844,7 +2867,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        use ScalarType::{Bool, Bytes, Int, Text};
+        use ScalarType::{Bool, Bytes, Date, Duration, Instant, Int, Text};
         let (instr, result): (Instr, ScalarType) = match (op, left, right_scalar) {
             (BinaryOp::Add, Int, Int) => (Instr::IntAdd, Int),
             (BinaryOp::Add, Text, Text) => (Instr::TextConcat, Text),
@@ -2863,6 +2886,23 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::LessEqual, Bytes, Bytes) => (Instr::BytesLe, Bool),
             (BinaryOp::Greater, Bytes, Bytes) => (Instr::BytesGt, Bool),
             (BinaryOp::GreaterEqual, Bytes, Bytes) => (Instr::BytesGe, Bool),
+            // Temporal order (same-type only). The closed arithmetic floor: a
+            // duration sums/differences with a duration, and a duration shifts an
+            // instant; there is no `date +/- int` operator (use `date_add_days`), no
+            // `duration * int`, and no calendar-month arithmetic.
+            (op, Date, Date) if temporal_comparison(op).is_some() => {
+                (date_comparison(op).expect("guard matched"), Bool)
+            }
+            (op, Instant, Instant) if temporal_comparison(op).is_some() => {
+                (instant_comparison(op).expect("guard matched"), Bool)
+            }
+            (op, Duration, Duration) if temporal_comparison(op).is_some() => {
+                (duration_comparison(op).expect("guard matched"), Bool)
+            }
+            (BinaryOp::Add, Duration, Duration) => (Instr::DurationAdd, Duration),
+            (BinaryOp::Subtract, Duration, Duration) => (Instr::DurationSub, Duration),
+            (BinaryOp::Add, Instant, Duration) => (Instr::InstantAddDuration, Instant),
+            (BinaryOp::Subtract, Instant, Duration) => (Instr::InstantSubDuration, Instant),
             (BinaryOp::Equal, a, b) if a == b => (eq_instr(a), Bool),
             (BinaryOp::NotEqual, a, b) if a == b => {
                 self.push(eq_instr(a), span);
@@ -3329,6 +3369,9 @@ impl<'a> FnLowerer<'a> {
                     .lower_text_split(name, args, span)
                     .map(CallResult::Value),
                 Builtin::Join => self.lower_text_join(args, span).map(CallResult::Value),
+                Builtin::DateAddDays | Builtin::DateDaysBetween => self
+                    .lower_date_arith(builtin, args, span)
+                    .map(CallResult::Value),
                 // `List()`/`Map()` are the empty-collection constructors; they infer
                 // nothing on their own, so they need an expected List/Map type (an
                 // annotation, argument, return, or coerced position).
@@ -3357,10 +3400,16 @@ impl<'a> FnLowerer<'a> {
                 }
             };
         }
-        // A scalar-type spelling in call position is a conversion, resolved before
-        // records/functions so a conversion is never shadowed. The admitted set is
+        // A scalar-type spelling in call position is a conversion (or, for a
+        // temporal type, a compile-time-validated literal constructor), resolved
+        // before records/functions so it is never shadowed. The admitted set is
         // closed; an unadmitted pair is a typed `check.unsupported`.
-        if ScalarType::from_spelling(name).is_some() {
+        if let Some(scalar) = ScalarType::from_spelling(name) {
+            if scalar.is_temporal() {
+                return self
+                    .lower_temporal_construct(scalar, args, span)
+                    .map(CallResult::Value);
+            }
             return self
                 .lower_conversion(name, args, span)
                 .map(CallResult::Value);
@@ -5178,6 +5227,171 @@ impl<'a> FnLowerer<'a> {
     /// Lower a closed scalar conversion `target(value)`. The admitted set is
     /// `string(int)`, `string(bool)`, and `bytes(string)`; any other conversion is a
     /// typed `check.unsupported` on the beta line.
+    /// Lower a temporal constructor `date("…")` / `instant("…")` / `duration("…")`.
+    /// Construction is from exactly one static string literal, validated and folded
+    /// at compile time: a malformed or out-of-range canonical form is a typed
+    /// `check.type` diagnostic here, so no ordinary program produces an out-of-range
+    /// temporal value at runtime. The folded raw scalar is interned as a temporal
+    /// constant. `marrow-temporal` owns the canonical text grammar.
+    fn lower_temporal_construct(
+        &mut self,
+        scalar: ScalarType,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let spelling = scalar.spelling();
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{spelling}` takes one string-literal argument"),
+            ));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                format!("the `{spelling}` argument is positional"),
+            ));
+            return None;
+        }
+        // A temporal value is constructed only from a static string literal, so its
+        // canonical form is validated once at compile time rather than parsed at
+        // runtime (there is no ambient clock or runtime temporal parse in the floor).
+        let Expression::Literal {
+            kind: LiteralKind::String,
+            text,
+            span: arg_span,
+        } = &arg.value
+        else {
+            self.fail(unsupported(
+                self.file,
+                arg.value.span(),
+                &format!("constructing a `{spelling}` from a non-literal value"),
+            ));
+            return None;
+        };
+        let Ok(decoded) = decode_string_literal(text) else {
+            self.fail(unsupported(self.file, *arg_span, "this string literal"));
+            return None;
+        };
+        let bytes = decoded.as_bytes();
+        let const_id = match scalar {
+            ScalarType::Date => match marrow_temporal::parse_date(bytes) {
+                Some(days) => self.draft.intern_date(days),
+                None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
+            },
+            ScalarType::Instant => match marrow_temporal::parse_instant(bytes) {
+                Some(nanos) => self.draft.intern_instant(nanos),
+                None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
+            },
+            ScalarType::Duration => match marrow_temporal::parse_duration(bytes) {
+                Some(nanos) => self.draft.intern_duration(nanos),
+                None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
+            },
+            _ => unreachable!("caller passes only a temporal scalar"),
+        };
+        self.push(Instr::ConstLoad(const_id.index()), span);
+        Some(LTy::bare_scalar(scalar))
+    }
+
+    /// Report a malformed or out-of-range temporal literal and return `None`.
+    fn fail_temporal_literal(
+        &mut self,
+        scalar: ScalarType,
+        value: &str,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let form = match scalar {
+            ScalarType::Date => "a canonical date `YYYY-MM-DD` in years 0001-9999",
+            ScalarType::Instant => {
+                "a canonical UTC instant `YYYY-MM-DDTHH:MM:SS[.fraction]Z` in years 0001-9999"
+            }
+            ScalarType::Duration => "a canonical duration `[-]PT<seconds>[.fraction]S`",
+            _ => unreachable!("caller passes only a temporal scalar"),
+        };
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            span,
+            format!(
+                "`{value}` is not {form}, so it is not a `{}` literal",
+                scalar.spelling()
+            ),
+        ));
+        None
+    }
+
+    /// Lower `date_add_days(date, int): date` or `date_days_between(date, date): int`,
+    /// emitting the checked temporal instruction after type-checking the operands.
+    fn lower_date_arith(
+        &mut self,
+        builtin: Builtin,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let (name, second, instr, result) = match builtin {
+            Builtin::DateAddDays => (
+                "date_add_days",
+                ScalarType::Int,
+                Instr::DateAddDays,
+                ScalarType::Date,
+            ),
+            Builtin::DateDaysBetween => (
+                "date_days_between",
+                ScalarType::Date,
+                Instr::DateDaysBetween,
+                ScalarType::Int,
+            ),
+            _ => unreachable!("caller passes only a date-arithmetic builtin"),
+        };
+        let [first_arg, second_arg] = args else {
+            self.fail(builtin_arity(self.file, span, name, 2));
+            return None;
+        };
+        if first_arg.name.is_some() || second_arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("`{name}` arguments are positional"),
+            ));
+            return None;
+        }
+        self.expect_bare_scalar(&first_arg.value, ScalarType::Date, name)?;
+        self.expect_bare_scalar(&second_arg.value, second, name)?;
+        self.push(instr, span);
+        Some(LTy::bare_scalar(result))
+    }
+
+    /// Lower `expr` and require it to be exactly the bare scalar `expected`, failing
+    /// with a `check.type` diagnostic (naming `builtin`) otherwise.
+    fn expect_bare_scalar(
+        &mut self,
+        expr: &Expression,
+        expected: ScalarType,
+        builtin: &str,
+    ) -> Option<()> {
+        let ty = self.lower_expr(expr)?;
+        if ty == LTy::bare_scalar(expected) {
+            return Some(());
+        }
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            expr.span(),
+            format!(
+                "`{builtin}` expects a `{}` argument, found `{}`",
+                expected.spelling(),
+                ty.spelling(self.records)
+            ),
+        ));
+        None
+    }
+
     fn lower_conversion(
         &mut self,
         target: &str,
@@ -5849,12 +6063,55 @@ fn int_comparison(op: BinaryOp) -> Option<Instr> {
     })
 }
 
+/// Whether `op` is one of the four order comparisons, the guard the temporal
+/// operator arms share before selecting the per-type instruction.
+fn temporal_comparison(op: BinaryOp) -> Option<()> {
+    matches!(
+        op,
+        BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
+    )
+    .then_some(())
+}
+
+fn date_comparison(op: BinaryOp) -> Option<Instr> {
+    Some(match op {
+        BinaryOp::Less => Instr::DateLt,
+        BinaryOp::LessEqual => Instr::DateLe,
+        BinaryOp::Greater => Instr::DateGt,
+        BinaryOp::GreaterEqual => Instr::DateGe,
+        _ => return None,
+    })
+}
+
+fn instant_comparison(op: BinaryOp) -> Option<Instr> {
+    Some(match op {
+        BinaryOp::Less => Instr::InstantLt,
+        BinaryOp::LessEqual => Instr::InstantLe,
+        BinaryOp::Greater => Instr::InstantGt,
+        BinaryOp::GreaterEqual => Instr::InstantGe,
+        _ => return None,
+    })
+}
+
+fn duration_comparison(op: BinaryOp) -> Option<Instr> {
+    Some(match op {
+        BinaryOp::Less => Instr::DurationLt,
+        BinaryOp::LessEqual => Instr::DurationLe,
+        BinaryOp::Greater => Instr::DurationGt,
+        BinaryOp::GreaterEqual => Instr::DurationGe,
+        _ => return None,
+    })
+}
+
 fn eq_instr(scalar: ScalarType) -> Instr {
     match scalar {
         ScalarType::Int => Instr::EqInt,
         ScalarType::Bool => Instr::EqBool,
         ScalarType::Text => Instr::EqText,
         ScalarType::Bytes => Instr::EqBytes,
+        ScalarType::Date => Instr::EqDate,
+        ScalarType::Instant => Instr::EqInstant,
+        ScalarType::Duration => Instr::EqDuration,
     }
 }
 

@@ -239,6 +239,9 @@ fn render_value_text(
         Value::Bool(v) => v.to_string(),
         Value::Text(v) => v.to_string(),
         Value::Bytes(v) => hex_bytes(v),
+        Value::Date(v) => date_text(*v),
+        Value::Instant(v) => instant_text(*v),
+        Value::Duration(v) => marrow_temporal::format_duration(*v),
         Value::Optional(None) => "absent".to_string(),
         Value::Optional(Some(inner)) => render_value_text(inner, types, enums),
         // A returned record renders `{field: value, ...}` in field declaration order,
@@ -322,10 +325,22 @@ fn render_key_text(key: &KeyScalar) -> String {
         KeyScalar::Bool(v) => v.to_string(),
         KeyScalar::Str(v) => v.clone(),
         KeyScalar::Bytes(v) => hex_bytes(v),
-        KeyScalar::Date(v) => v.to_string(),
-        KeyScalar::Instant(v) => v.to_string(),
-        KeyScalar::Duration(v) => v.to_string(),
+        KeyScalar::Date(v) => date_text(*v),
+        KeyScalar::Instant(v) => instant_text(*v),
+        KeyScalar::Duration(v) => marrow_temporal::format_duration(*v),
     }
+}
+
+/// The canonical `YYYY-MM-DD` text of a date. A validated date always formats; a raw
+/// day outside the supported range (only reachable from a hand-built value) falls
+/// back to its integer so rendering never fails.
+fn date_text(days: i32) -> String {
+    marrow_temporal::format_date(days).unwrap_or_else(|| days.to_string())
+}
+
+/// The canonical UTC text of an instant, with the same out-of-range fallback.
+fn instant_text(nanos: i128) -> String {
+    marrow_temporal::format_instant(nanos).unwrap_or_else(|| nanos.to_string())
 }
 
 /// Render a value as the JSONL `data` field, or `Err` when it exceeds the data
@@ -352,6 +367,10 @@ fn render_data(
             }
             json_string(&hex_bytes(v))
         }
+        // Temporal values render as their canonical text in a JSON string, like bytes.
+        Some(Value::Date(v)) => json_string(&date_text(*v)),
+        Some(Value::Instant(v)) => json_string(&instant_text(*v)),
+        Some(Value::Duration(v)) => json_string(&marrow_temporal::format_duration(*v)),
         Some(Value::Optional(Some(inner))) => render_data(Some(inner), types, enums)?,
         Some(Value::Record(idx, slots)) => {
             let fields = types.get(*idx as usize).map(SealedRecordType::fields);

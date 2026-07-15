@@ -1,14 +1,14 @@
 //! Saved values round-trip through their canonical byte form, and non-canonical
 //! bytes are rejected.
 
-use marrow_kernel::codec::civil::{
-    SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
-    SUPPORTED_INSTANT_MIN_NANOS, date_days, supported_date_days, supported_instant_nanos,
-};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{
     RuntimeScalar, ScalarKind, ValueError, decode_value, encode_value, scalar_key_matches_type,
     validate_scalar_key,
+};
+use marrow_temporal::{
+    SUPPORTED_DATE_MAX_DAYS, SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS,
+    SUPPORTED_INSTANT_MIN_NANOS, date_days, supported_date_days, supported_instant_nanos,
 };
 
 fn round_trips(value: RuntimeScalar, ty: ScalarKind) {

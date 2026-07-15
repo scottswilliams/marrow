@@ -14,6 +14,13 @@ pub enum ScalarType {
     Bool,
     Text,
     Bytes,
+    /// A proleptic-Gregorian calendar day. The temporal scalar domain (calendar,
+    /// canonical text codec, arithmetic) is owned by `marrow-temporal`.
+    Date,
+    /// A UTC nanosecond instant.
+    Instant,
+    /// A signed nanosecond span.
+    Duration,
 }
 
 impl ScalarType {
@@ -24,6 +31,9 @@ impl ScalarType {
             "bool" => Some(ScalarType::Bool),
             "string" => Some(ScalarType::Text),
             "bytes" => Some(ScalarType::Bytes),
+            "date" => Some(ScalarType::Date),
+            "instant" => Some(ScalarType::Instant),
+            "duration" => Some(ScalarType::Duration),
             _ => None,
         }
     }
@@ -35,7 +45,18 @@ impl ScalarType {
             ScalarType::Bool => "bool",
             ScalarType::Text => "string",
             ScalarType::Bytes => "bytes",
+            ScalarType::Date => "date",
+            ScalarType::Instant => "instant",
+            ScalarType::Duration => "duration",
         }
+    }
+
+    /// Whether this scalar is a temporal type (`date`/`instant`/`duration`).
+    pub fn is_temporal(self) -> bool {
+        matches!(
+            self,
+            ScalarType::Date | ScalarType::Instant | ScalarType::Duration
+        )
     }
 
     /// The image type tag this scalar lowers to.
@@ -45,6 +66,9 @@ impl ScalarType {
             ScalarType::Bool => Scalar::Bool,
             ScalarType::Text => Scalar::Text,
             ScalarType::Bytes => Scalar::Bytes,
+            ScalarType::Date => Scalar::Date,
+            ScalarType::Instant => Scalar::Instant,
+            ScalarType::Duration => Scalar::Duration,
         }
     }
 }

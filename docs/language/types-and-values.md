@@ -12,15 +12,15 @@ perform implicit numeric or text conversions.
 | `bool` | `true` or `false` |
 | `string` | UTF-8 text |
 | `bytes` | Byte sequences |
-| `decimal` | Exact base-10 values with at most 34 significant digits and 34 fractional places |
-| `date` | Calendar dates in years 0001 through 9999 |
-| `instant` | Nanosecond UTC instants in years 0001 through 9999 |
-| `duration` | Signed fixed elapsed nanoseconds in the `i128` range |
+| `date` | Proleptic-Gregorian calendar days in years 0001 through 9999 |
+| `instant` | UTC nanosecond instants in years 0001 through 9999 |
+| `duration` | Signed elapsed nanoseconds over the `i128` range |
+| `decimal` | Exact base-10 values (future) |
 
-On the current beta line the implemented scalar floor is `int`, `bool`, `string`,
-and `bytes`. `decimal` and the temporal types (`date`, `instant`, `duration`) are
-recorded here as direction and are not yet accepted by the compiler; a program that
-uses one reports `check.unsupported` until its lane lands.
+The implemented scalar floor is `int`, `bool`, `string`, `bytes`, and the temporal
+types `date`, `instant`, and `duration` (see [Temporal Types](#temporal-types)).
+`decimal` is recorded here as direction and is not yet accepted by the compiler; a
+program that uses it reports `check.unsupported` until its lane lands.
 
 ## Type Aliases
 
@@ -125,6 +125,83 @@ ordinary optional. Nominal types are not yet admitted as resource field types,
 store key types, or constant types; those positions report `check.unsupported`
 until their lanes land.
 
+## Temporal Types
+
+Marrow has three temporal value types. Each is a pure value: it has a fixed
+integer representation, deterministic parse, format, and order, and no dependence
+on a clock, timezone, or locale.
+
+| Type | Representation | Range |
+|---|---|---|
+| `date` | proleptic-Gregorian days since 1970-01-01 | years 0001-9999 |
+| `instant` | signed nanoseconds since 1970-01-01T00:00:00Z, in UTC | years 0001-9999 |
+| `duration` | signed nanoseconds | the `i128` range |
+
+### Construction
+
+A temporal value is constructed from exactly one static string literal in the
+type's canonical text form, validated and folded at compile time. There is no
+suffix literal (the prototype's `1.second` form reports `check.unsupported`), no
+ambient `today`/`now`, and no runtime string parse in the language floor.
+
+| Constructor | Canonical text | Example |
+|---|---|---|
+| `date("…")` | `YYYY-MM-DD` (fixed width) | `date("2026-07-15")` |
+| `instant("…")` | `YYYY-MM-DDTHH:MM:SS[.fraction]Z` (UTC, `Z` required) | `instant("2026-07-15T17:00:00Z")` |
+| `duration("…")` | `[-]PT<seconds>[.fraction]S` (zero is `PT0S`) | `duration("PT3600S")` |
+
+The forms are strict and canonical: a field must have its fixed width, an
+optional sub-second `fraction` is one to nine digits with no trailing zero, whole
+seconds carry no leading zero, and `-PT0S` is not a duration (zero is `PT0S`). A
+malformed form, an impossible date such as `date("2021-02-29")`, or a `date`/
+`instant` outside years 0001-9999 is a compile-time `check.type` diagnostic at the
+literal, so no ordinary program produces an out-of-range temporal value. The
+constructor argument must be a literal; a non-literal argument reports
+`check.unsupported`.
+
+### Operations
+
+The closed operation floor:
+
+- comparison and equality (`==`, `!=`, `<`, `<=`, `>`, `>=`) between two values of
+  the same temporal type;
+- `duration + duration` and `duration - duration`, yielding a `duration`;
+- `instant + duration` and `instant - duration`, yielding an `instant`;
+- `date_add_days(d: date, n: int): date` — the date `n` days after `d`;
+- `date_days_between(a: date, b: date): int` — the signed number of days from `a`
+  to `b`.
+
+An arithmetic result outside the type's domain (a `date` or `instant` past years
+0001-9999, or a `duration` beyond the `i128` range) faults `run.temporal_overflow`
+at runtime, mapped to the operation's span and not catchable inside the program.
+There is no other temporal arithmetic: no `date` operator, no `instant - instant`,
+no scaling a `duration` by an `int`, and no calendar-month or calendar-year unit.
+
+```mw
+module docs::temporal
+
+pub fn dueDate(assigned: date, leadDays: int): date
+    return date_add_days(assigned, leadDays)
+
+pub fn isOverdue(due: date, onDay: date): bool
+    return due < onDay
+
+pub fn reminderAt(deadline: instant, lead: duration): instant
+    return deadline - lead
+```
+
+### Order and keys
+
+Each temporal type is orderable: `date` and `instant` by their instant on the
+timeline, `duration` by signed length. The order is total and agrees with the
+order-preserving durable key encoding, so a temporal type is a key type — a
+`Map[date, V]` is admitted and iterates in ascending date order (see
+[Key Types](#key-types)).
+
+A clock is not part of the language. Reading the current instant or day is a
+host effect a future lane introduces explicitly; until then a program takes the
+relevant day or instant as an argument.
+
 ## Nominal Values
 
 An enum value belongs to one declared closed enum and selects one of its
@@ -151,17 +228,23 @@ numeric types implicitly.
 
 | Form | Accepted operands | Result |
 |---|---|---|
-| `-value` | `int` or `decimal` | same type |
+| `-value` | `int` | `int` |
 | `not value` | `bool` | `bool` |
-| `a + b` | matching numeric types; `string`; `duration`; `instant + duration` | matching type, or `instant` |
-| `a - b` | matching numeric types; `duration`; `instant - duration`; `instant - instant` | matching type, `instant`, or `duration` |
-| `a * b` | matching `int` or matching `decimal` | matching type |
-| `a / b` | matching `int` or matching `decimal` | `int` for `int / int`, else `decimal` |
+| `a + b` | `int`; `string`; `duration + duration`; `instant + duration` | matching type, or `instant` |
+| `a - b` | `int`; `duration - duration`; `instant - duration` | matching type, or `instant` |
+| `a * b` | `int` and `int` | `int` |
+| `a / b` | `int` and `int` | `int` |
 | `a % b` | `int` and `int` | `int` |
-| `<`, `<=`, `>`, `>=` | matching `int`, `decimal`, `string`, `bytes`, `date`, `instant`, or `duration` | `bool` |
+| `<`, `<=`, `>`, `>=` | matching `int`, `string`, `bytes`, `date`, `instant`, or `duration` | `bool` |
 | `==`, `!=` | matching scalars, the same enum type, or identities for the same store root | `bool` |
 | `and`, `or` | `bool` and `bool` | `bool` |
 | `optional ?? fallback` | compatible present-arm types | presence follows the fallback |
+
+The temporal operators are a closed set: a `duration` sums or differs with a
+`duration`, and a `duration` shifts an `instant`. There is no `date` operator (use
+`date_add_days`/`date_days_between`), no `instant - instant`, no `duration * int`,
+and no calendar-month or calendar-year arithmetic. See
+[Temporal Types](#temporal-types).
 
 `int / int` is integer division truncated toward zero, paired with the `int % int`
 remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
@@ -177,11 +260,13 @@ defined under [Traversal and indexes](traversal-and-indexes.md#ranges).
 
 ## Explicit Conversion
 
-The scalar conversion names `bool`, `int`, `decimal`, `string`, `bytes`, `date`,
-`instant`, `duration`, and `ErrorCode` use call syntax. Conversions validate
-their input and fail at runtime when the value cannot be represented.
-`Id(^root, keys...)` uses the same call shape but constructs a nominal entry
-identity rather than converting one scalar type to another.
+The scalar conversion names `bool`, `int`, `decimal`, `string`, `bytes`, and
+`ErrorCode` use call syntax. Conversions validate their input and fail at runtime
+when the value cannot be represented. `Id(^root, keys...)` uses the same call
+shape but constructs a nominal entry identity rather than converting one scalar
+type to another. The temporal names `date`, `instant`, and `duration` also use
+call syntax, but they are compile-time literal constructors rather than runtime
+conversions (see [Temporal Types](#temporal-types)).
 
 ```mw
 module docs::conversion
@@ -202,14 +287,13 @@ pub fn checkedCode(raw: string): ErrorCode
 | `decimal` | `decimal`, `int`, or canonical decimal text in range |
 | `string` | Any scalar or enum value, rendered canonically |
 | `bytes` | `bytes`, or the UTF-8 bytes of a `string` |
-| `date` | `date` or validated date text |
-| `instant` | `instant` or validated instant text |
-| `duration` | `duration` or validated duration text |
 | `ErrorCode` | validated `string` text |
 
 On the current beta line the implemented conversions are `string(int)`,
 `string(bool)`, and `bytes(string)`; the remaining rows are direction and report
-`check.unsupported` until their scalar types land.
+`check.unsupported` until their scalar types land. Temporal values are built with
+the literal constructors in [Temporal Types](#temporal-types), not these
+conversions.
 
 `ErrorCode` is represented as a string value. `ErrorCode(text)` requires two or
 more nonempty dot-separated segments containing lowercase ASCII letters,

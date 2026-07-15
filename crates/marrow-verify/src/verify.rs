@@ -15,20 +15,25 @@ use std::rc::Rc;
 use marrow_image::{
     ExportId, ImageId, ImageType, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE,
     OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
-    OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
+    OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE,
+    OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
     OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
-    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_ENUM_CONSTRUCT,
-    OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_ENUM, OP_EQ_INT, OP_EQ_TEXT,
-    OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
-    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
-    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
-    OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
+    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE,
+    OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT,
+    OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION,
+    OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET,
+    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
+    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
+    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
+    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
     OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
     OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
-    TAG_COLLECTION, TAG_ENUM, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
+    TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -342,6 +347,9 @@ fn decode_bare_scalar(tag: u8) -> Option<Scalar> {
         TAG_BOOL => Some(Scalar::Bool),
         TAG_TEXT => Some(Scalar::Text),
         TAG_BYTES => Some(Scalar::Bytes),
+        TAG_DATE => Some(Scalar::Date),
+        TAG_INSTANT => Some(Scalar::Instant),
+        TAG_DURATION => Some(Scalar::Duration),
         _ => None,
     }
 }
@@ -596,9 +604,9 @@ fn decode_collection_inner_ref(
         ));
     }
     match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
-            decode_bare_scalar(tag).expect("scalar base"),
-        )),
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
+            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
+        ),
         TAG_RECORD => {
             let idx = reader
                 .u16()
@@ -668,9 +676,9 @@ fn decode_bare_payload_type(
         ));
     }
     match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
-            decode_bare_scalar(tag).expect("scalar base"),
-        )),
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
+            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
+        ),
         TAG_RECORD => {
             let idx = reader
                 .u16()
@@ -721,9 +729,9 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
         ));
     }
     match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
-            decode_bare_scalar(tag).expect("scalar base"),
-        )),
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
+            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
+        ),
         TAG_ENUM => {
             let idx = reader
                 .u16()
@@ -1034,6 +1042,36 @@ fn decode_consts(body: &[u8], strings: &[Rc<str>]) -> Result<Vec<SealedConst>, V
                     idx.to_be_bytes().to_vec(),
                 )
             }
+            0x04 => {
+                let days = reader
+                    .i32()
+                    .ok_or(reject(VerifyPhase::Table, "short date const"))?;
+                if !marrow_temporal::supported_date_days(days) {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "date const out of supported range",
+                    ));
+                }
+                (SealedConst::Date(days), days.to_be_bytes().to_vec())
+            }
+            0x05 => {
+                let nanos = reader
+                    .i128()
+                    .ok_or(reject(VerifyPhase::Table, "short instant const"))?;
+                if !marrow_temporal::supported_instant_nanos(nanos) {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "instant const out of supported range",
+                    ));
+                }
+                (SealedConst::Instant(nanos), nanos.to_be_bytes().to_vec())
+            }
+            0x06 => {
+                let nanos = reader
+                    .i128()
+                    .ok_or(reject(VerifyPhase::Table, "short duration const"))?;
+                (SealedConst::Duration(nanos), nanos.to_be_bytes().to_vec())
+            }
             _ => return Err(reject(VerifyPhase::Table, "unknown const tag")),
         };
         if let Some((ptag, pkey)) = &previous
@@ -1069,7 +1107,7 @@ fn decode_type_ref_ret(
             }
             Ok(RetShape::Unit)
         }
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => {
             let scalar = decode_bare_scalar(base).expect("scalar base");
             Ok(RetShape::Scalar { scalar, optional })
         }
@@ -1131,9 +1169,9 @@ fn decode_param_ref(
         ));
     }
     match tag {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
-            decode_bare_scalar(tag).expect("scalar base"),
-        )),
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => Ok(
+            ImageType::scalar(decode_bare_scalar(tag).expect("scalar base")),
+        ),
         TAG_RECORD => {
             let idx = reader
                 .u16()
@@ -2011,6 +2049,27 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_TEXT_SPLIT => SealedInstr::TextSplit(operand_u16(&mut reader)?),
             OP_TEXT_LINES => SealedInstr::TextLines(operand_u16(&mut reader)?),
             OP_TEXT_JOIN => SealedInstr::TextJoin,
+            OP_EQ_DATE => SealedInstr::EqDate,
+            OP_DATE_LT => SealedInstr::DateLt,
+            OP_DATE_LE => SealedInstr::DateLe,
+            OP_DATE_GT => SealedInstr::DateGt,
+            OP_DATE_GE => SealedInstr::DateGe,
+            OP_EQ_INSTANT => SealedInstr::EqInstant,
+            OP_INSTANT_LT => SealedInstr::InstantLt,
+            OP_INSTANT_LE => SealedInstr::InstantLe,
+            OP_INSTANT_GT => SealedInstr::InstantGt,
+            OP_INSTANT_GE => SealedInstr::InstantGe,
+            OP_EQ_DURATION => SealedInstr::EqDuration,
+            OP_DURATION_LT => SealedInstr::DurationLt,
+            OP_DURATION_LE => SealedInstr::DurationLe,
+            OP_DURATION_GT => SealedInstr::DurationGt,
+            OP_DURATION_GE => SealedInstr::DurationGe,
+            OP_DATE_ADD_DAYS => SealedInstr::DateAddDays,
+            OP_DATE_DAYS_BETWEEN => SealedInstr::DateDaysBetween,
+            OP_DURATION_ADD => SealedInstr::DurationAdd,
+            OP_DURATION_SUB => SealedInstr::DurationSub,
+            OP_INSTANT_ADD_DURATION => SealedInstr::InstantAddDuration,
+            OP_INSTANT_SUB_DURATION => SealedInstr::InstantSubDuration,
             OP_RECORD_NEW => SealedInstr::RecordNew(operand_u16(&mut reader)?),
             OP_FIELD_GET => SealedInstr::FieldGet(operand_u16(&mut reader)?),
             OP_FIELD_SET => SealedInstr::FieldSet(operand_u16(&mut reader)?),
@@ -2098,10 +2157,12 @@ fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejecti
     }
     let base = tag & !OPTIONAL_FLAG;
     match base {
-        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::Scalar {
-            scalar: decode_bare_scalar(base).expect("scalar base"),
-            optional: true,
-        }),
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES | TAG_DATE | TAG_INSTANT | TAG_DURATION => {
+            Ok(ImageType::Scalar {
+                scalar: decode_bare_scalar(base).expect("scalar base"),
+                optional: true,
+            })
+        }
         TAG_ENUM => {
             let idx = reader.u16().ok_or(reject(
                 VerifyPhase::Function,
@@ -2907,6 +2968,52 @@ fn apply(
             binary(stack, Scalar::Bytes, Scalar::Bool)?;
             Ok(Control::Fallthrough)
         }
+        SealedInstr::EqDate
+        | SealedInstr::DateLt
+        | SealedInstr::DateLe
+        | SealedInstr::DateGt
+        | SealedInstr::DateGe => {
+            binary(stack, Scalar::Date, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::EqInstant
+        | SealedInstr::InstantLt
+        | SealedInstr::InstantLe
+        | SealedInstr::InstantGt
+        | SealedInstr::InstantGe => {
+            binary(stack, Scalar::Instant, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::EqDuration
+        | SealedInstr::DurationLt
+        | SealedInstr::DurationLe
+        | SealedInstr::DurationGt
+        | SealedInstr::DurationGe => {
+            binary(stack, Scalar::Duration, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
+        }
+        // `date_add_days(date, int) → date`: pop the int, then the date.
+        SealedInstr::DateAddDays => {
+            expect_scalar(pop(stack)?, Scalar::Int)?;
+            expect_scalar(pop(stack)?, Scalar::Date)?;
+            stack.push(VType::bare_scalar(Scalar::Date));
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::DateDaysBetween => {
+            binary(stack, Scalar::Date, Scalar::Int)?;
+            Ok(Control::Fallthrough)
+        }
+        SealedInstr::DurationAdd | SealedInstr::DurationSub => {
+            binary(stack, Scalar::Duration, Scalar::Duration)?;
+            Ok(Control::Fallthrough)
+        }
+        // `instant +/- duration → instant`: pop the duration, then the instant.
+        SealedInstr::InstantAddDuration | SealedInstr::InstantSubDuration => {
+            expect_scalar(pop(stack)?, Scalar::Duration)?;
+            expect_scalar(pop(stack)?, Scalar::Instant)?;
+            stack.push(VType::bare_scalar(Scalar::Instant));
+            Ok(Control::Fallthrough)
+        }
         SealedInstr::ConvStringInt => {
             expect_scalar(pop(stack)?, Scalar::Int)?;
             stack.push(VType::bare_scalar(Scalar::Text));
@@ -3236,6 +3343,9 @@ fn const_scalar(value: &SealedConst) -> Scalar {
         SealedConst::Int(_) => Scalar::Int,
         SealedConst::Bool(_) => Scalar::Bool,
         SealedConst::Text(_) => Scalar::Text,
+        SealedConst::Date(_) => Scalar::Date,
+        SealedConst::Instant(_) => Scalar::Instant,
+        SealedConst::Duration(_) => Scalar::Duration,
     }
 }
 

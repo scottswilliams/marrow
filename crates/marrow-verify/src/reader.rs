@@ -52,4 +52,14 @@ impl<'a> Reader<'a> {
         let raw: [u8; 8] = self.take(8)?.try_into().ok()?;
         Some(i64::from_be_bytes(raw))
     }
+
+    pub(crate) fn i32(&mut self) -> Option<i32> {
+        let raw: [u8; 4] = self.take(4)?.try_into().ok()?;
+        Some(i32::from_be_bytes(raw))
+    }
+
+    pub(crate) fn i128(&mut self) -> Option<i128> {
+        let raw: [u8; 16] = self.take(16)?.try_into().ok()?;
+        Some(i128::from_be_bytes(raw))
+    }
 }

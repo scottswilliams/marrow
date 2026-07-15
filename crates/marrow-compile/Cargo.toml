@@ -13,6 +13,7 @@ marrow-codes = { path = "../marrow-codes" }
 marrow-image = { path = "../marrow-image" }
 marrow-project = { path = "../marrow-project" }
 marrow-syntax = { path = "../marrow-syntax" }
+marrow-temporal = { path = "../marrow-temporal" }
 
 [lints]
 workspace = true

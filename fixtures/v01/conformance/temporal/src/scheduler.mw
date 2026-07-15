@@ -1,0 +1,32 @@
+; A due-date scheduler over the narrow temporal value types. Dates, instants, and
+; durations are pure values built from canonical text literals; there is no ambient
+; clock, so a "current day" is always an explicit argument. The closed operation
+; floor is: same-type comparison/equality; `date_add_days`/`date_days_between`;
+; `duration +/- duration`; and `instant +/- duration`.
+module scheduler
+
+; A task's due date: the day it was assigned plus its allowed lead time in days.
+; `date_add_days` faults `run.temporal_overflow` if the result leaves the supported
+; calendar range (years 0001-9999).
+pub fn dueDate(assigned: date, leadDays: int): date
+    return date_add_days(assigned, leadDays)
+
+; Whether a task is overdue on a given day: its due date is strictly before that day.
+pub fn isOverdue(due: date, onDay: date): bool
+    return due < onDay
+
+; Days remaining until a due date, relative to a given day (negative if overdue).
+pub fn daysUntilDue(due: date, onDay: date): int
+    return date_days_between(onDay, due)
+
+; The reminder instant a fixed lead duration before a deadline instant.
+pub fn reminderAt(deadline: instant, lead: duration): instant
+    return deadline - lead
+
+; The deadline instant a fixed duration after a start instant.
+pub fn deadlineAfter(start: instant, window: duration): instant
+    return start + window
+
+; The total of two durations (for summing lead times).
+pub fn totalLead(first: duration, second: duration): duration
+    return first + second

@@ -107,6 +107,34 @@ pub const OP_MAP_VALUE_AT: u8 = 0x99;
 pub const OP_TEXT_SPLIT: u8 = 0x9A;
 pub const OP_TEXT_LINES: u8 = 0x9B;
 pub const OP_TEXT_JOIN: u8 = 0x9C;
+// Temporal comparison and equality. Operands are two bare temporals of the named
+// type; the result is a bool. The order agrees with the kernel key-codec byte order
+// (pinned in `marrow-vm`'s `temporal_order_agreement` test).
+pub const OP_EQ_DATE: u8 = 0xA0;
+pub const OP_DATE_LT: u8 = 0xA1;
+pub const OP_DATE_LE: u8 = 0xA2;
+pub const OP_DATE_GT: u8 = 0xA3;
+pub const OP_DATE_GE: u8 = 0xA4;
+pub const OP_EQ_INSTANT: u8 = 0xA5;
+pub const OP_INSTANT_LT: u8 = 0xA6;
+pub const OP_INSTANT_LE: u8 = 0xA7;
+pub const OP_INSTANT_GT: u8 = 0xA8;
+pub const OP_INSTANT_GE: u8 = 0xA9;
+pub const OP_EQ_DURATION: u8 = 0xAA;
+pub const OP_DURATION_LT: u8 = 0xAB;
+pub const OP_DURATION_LE: u8 = 0xAC;
+pub const OP_DURATION_GT: u8 = 0xAD;
+pub const OP_DURATION_GE: u8 = 0xAE;
+// The closed temporal arithmetic floor. Each faults `run.temporal_overflow` when its
+// result would leave the supported day/nanosecond domain; there is no general
+// temporal arithmetic (no `date +/- int` operator, no `duration * int`, no calendar
+// months/years). `marrow-temporal` owns the checked operations.
+pub const OP_DATE_ADD_DAYS: u8 = 0xB0;
+pub const OP_DATE_DAYS_BETWEEN: u8 = 0xB1;
+pub const OP_DURATION_ADD: u8 = 0xB2;
+pub const OP_DURATION_SUB: u8 = 0xB3;
+pub const OP_INSTANT_ADD_DURATION: u8 = 0xB4;
+pub const OP_INSTANT_SUB_DURATION: u8 = 0xB5;
 
 /// A draft instruction. Jump targets are instruction indices into the function's
 /// own instruction list; the encoder rewrites them to container byte offsets.
@@ -170,6 +198,37 @@ pub enum Instr {
     TextSplit(u16),
     TextLines(u16),
     TextJoin,
+    /// Temporal equality and order over two bare temporals of the same type,
+    /// producing a bool. The order agrees with the kernel key-codec byte order.
+    EqDate,
+    DateLt,
+    DateLe,
+    DateGt,
+    DateGe,
+    EqInstant,
+    InstantLt,
+    InstantLe,
+    InstantGt,
+    InstantGe,
+    EqDuration,
+    DurationLt,
+    DurationLe,
+    DurationGt,
+    DurationGe,
+    /// `date_add_days(date, int) → date`, faulting `run.temporal_overflow` when the
+    /// result leaves the supported calendar range (years 0001-9999).
+    DateAddDays,
+    /// `date_days_between(date, date) → int`: the signed day span from the first to
+    /// the second. Total (both operands are supported dates).
+    DateDaysBetween,
+    /// `duration +/- duration → duration`, faulting `run.temporal_overflow` on
+    /// `i128` overflow.
+    DurationAdd,
+    DurationSub,
+    /// `instant +/- duration → instant`, faulting `run.temporal_overflow` when the
+    /// result leaves the supported instant range.
+    InstantAddDuration,
+    InstantSubDuration,
     /// Checked arithmetic: `_0` is the fault-handler target (instruction index in
     /// the draft, rewritten to a byte offset by the encoder). On overflow the op
     /// jumps to the target instead of faulting; otherwise it pushes the result.
@@ -308,6 +367,27 @@ impl Instr {
             Instr::TextSplit(_) => OP_TEXT_SPLIT,
             Instr::TextLines(_) => OP_TEXT_LINES,
             Instr::TextJoin => OP_TEXT_JOIN,
+            Instr::EqDate => OP_EQ_DATE,
+            Instr::DateLt => OP_DATE_LT,
+            Instr::DateLe => OP_DATE_LE,
+            Instr::DateGt => OP_DATE_GT,
+            Instr::DateGe => OP_DATE_GE,
+            Instr::EqInstant => OP_EQ_INSTANT,
+            Instr::InstantLt => OP_INSTANT_LT,
+            Instr::InstantLe => OP_INSTANT_LE,
+            Instr::InstantGt => OP_INSTANT_GT,
+            Instr::InstantGe => OP_INSTANT_GE,
+            Instr::EqDuration => OP_EQ_DURATION,
+            Instr::DurationLt => OP_DURATION_LT,
+            Instr::DurationLe => OP_DURATION_LE,
+            Instr::DurationGt => OP_DURATION_GT,
+            Instr::DurationGe => OP_DURATION_GE,
+            Instr::DateAddDays => OP_DATE_ADD_DAYS,
+            Instr::DateDaysBetween => OP_DATE_DAYS_BETWEEN,
+            Instr::DurationAdd => OP_DURATION_ADD,
+            Instr::DurationSub => OP_DURATION_SUB,
+            Instr::InstantAddDuration => OP_INSTANT_ADD_DURATION,
+            Instr::InstantSubDuration => OP_INSTANT_SUB_DURATION,
             Instr::IntAddChecked(_) => OP_INT_ADD_CHECKED,
             Instr::IntSubChecked(_) => OP_INT_SUB_CHECKED,
             Instr::IntMulChecked(_) => OP_INT_MUL_CHECKED,

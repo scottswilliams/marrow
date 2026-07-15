@@ -11,6 +11,7 @@ members = [
     "crates/marrow-project",
     "crates/marrow-store",
     "crates/marrow-syntax",
+    "crates/marrow-temporal",
 ]
 
 [workspace.package]

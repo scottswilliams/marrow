@@ -1,0 +1,44 @@
+; Layer: runtime (narrow temporal primitives). Dates/instants/durations built from
+; canonical text literals travel the beta stack; there is no ambient clock. These
+; are beta-only value types (not in the preserved-semantics manifest, so no oracle
+; pairing). Boundary known answers live in `crates/marrow-kernel` KATs and the
+; language-order/codec-order agreement in `crates/marrow-vm`.
+module scheduler_checks
+
+test "due date adds the lead days"
+    assert scheduler::dueDate(date("2026-07-15"), 10) == date("2026-07-25")
+
+test "due date crosses a month boundary"
+    assert scheduler::dueDate(date("2026-07-25"), 10) == date("2026-08-04")
+
+test "overdue is a strict same-type date comparison"
+    assert scheduler::isOverdue(date("2026-07-15"), date("2026-07-16"))
+    assert not scheduler::isOverdue(date("2026-07-16"), date("2026-07-16"))
+    assert not scheduler::isOverdue(date("2026-07-17"), date("2026-07-16"))
+
+test "days until due counts the day span"
+    assert scheduler::daysUntilDue(date("2026-07-25"), date("2026-07-15")) == 10
+    assert scheduler::daysUntilDue(date("2026-07-10"), date("2026-07-15")) == -5
+
+test "a reminder is a lead duration before the deadline"
+    const deadline: instant = instant("2026-07-15T17:00:00Z")
+    const oneHour: duration = duration("PT3600S")
+    assert scheduler::reminderAt(deadline, oneHour) == instant("2026-07-15T16:00:00Z")
+
+test "a deadline is a window after the start"
+    const start: instant = instant("2026-07-15T09:00:00Z")
+    const workday: duration = duration("PT28800S")
+    assert scheduler::deadlineAfter(start, workday) == instant("2026-07-15T17:00:00Z")
+
+test "durations add"
+    assert scheduler::totalLead(duration("PT60S"), duration("PT30S")) == duration("PT90S")
+
+test "a fractional-second instant parses and compares"
+    assert instant("2026-07-15T12:00:00.5Z") > instant("2026-07-15T12:00:00Z")
+
+test "a negative duration orders below zero"
+    assert duration("-PT1S") < duration("PT0S")
+
+test "equal dates compare equal"
+    assert date("2026-07-15") == date("2026-07-15")
+    assert date("2026-07-15") != date("2026-07-16")

@@ -448,6 +448,18 @@ fn encode_consts(sorted: &[ConstValue], str_map: &[u16]) -> Vec<u8> {
                 body.push(0x03);
                 push_u16(&mut body, str_map[str_id.raw() as usize]);
             }
+            ConstValue::Date(v) => {
+                body.push(0x04);
+                body.extend_from_slice(&v.to_be_bytes());
+            }
+            ConstValue::Instant(v) => {
+                body.push(0x05);
+                body.extend_from_slice(&v.to_be_bytes());
+            }
+            ConstValue::Duration(v) => {
+                body.push(0x06);
+                body.extend_from_slice(&v.to_be_bytes());
+            }
         }
     }
     body

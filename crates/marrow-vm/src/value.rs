@@ -40,6 +40,12 @@ pub enum Value {
     Bool(bool),
     Text(Rc<str>),
     Bytes(Rc<[u8]>),
+    /// A `date`, held as days since the Unix epoch (1970-01-01).
+    Date(i32),
+    /// An `instant`, held as signed nanoseconds since the epoch.
+    Instant(i128),
+    /// A `duration`, held as a signed count of nanoseconds.
+    Duration(i128),
     Record(u16, Box<[Option<Value>]>),
     Optional(Option<Box<Value>>),
     Enum(u16, u16, Box<[Value]>),
@@ -58,6 +64,9 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Text(a), Value::Text(b)) => a == b,
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
+            (Value::Date(a), Value::Date(b)) => a == b,
+            (Value::Instant(a), Value::Instant(b)) => a == b,
+            (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::Record(ta, a), Value::Record(tb, b)) => ta == tb && a == b,
             (Value::Optional(a), Value::Optional(b)) => a == b,
             (Value::Enum(ta, va, pa), Value::Enum(tb, vb, pb)) => ta == tb && va == vb && pa == pb,
@@ -91,6 +100,8 @@ impl Value {
             Value::Bool(_) => 1,
             Value::Text(text) => text.len(),
             Value::Bytes(bytes) => bytes.len(),
+            Value::Date(_) => 8,
+            Value::Instant(_) | Value::Duration(_) => 16,
             Value::Optional(None) => 1,
             Value::Optional(Some(inner)) => 1 + inner.structural_bytes(),
             Value::Record(_, slots) => {

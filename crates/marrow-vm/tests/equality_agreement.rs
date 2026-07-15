@@ -25,6 +25,9 @@ fn to_domain(value: &Value) -> ValueDomain {
         Value::Bool(b) => ValueDomain::Scalar(RuntimeScalar::Bool(*b)),
         Value::Text(s) => ValueDomain::Scalar(RuntimeScalar::Str(s.to_string())),
         Value::Bytes(b) => ValueDomain::Scalar(RuntimeScalar::Bytes(b.to_vec())),
+        Value::Date(v) => ValueDomain::Scalar(RuntimeScalar::Date(*v)),
+        Value::Instant(v) => ValueDomain::Scalar(RuntimeScalar::Instant(*v)),
+        Value::Duration(v) => ValueDomain::Scalar(RuntimeScalar::Duration(*v)),
         Value::Record(ty, slots) => ValueDomain::Product {
             ty: *ty,
             fields: slots
@@ -71,6 +74,13 @@ fn corpus() -> Vec<Value> {
         text("x"),
         text("y"),
         Value::Bytes(Rc::from([0x00u8, 0xff].as_slice())),
+        // Temporal scalars: dates, instants, and durations differing by value.
+        Value::Date(0),
+        Value::Date(20_650),
+        Value::Instant(0),
+        Value::Instant(1_500_000_000),
+        Value::Duration(-1),
+        Value::Duration(90_000_000_000),
         // Products: same type, differing by a field and by sparse presence.
         Value::Record(0, Box::new([Some(Value::Int(1)), Some(text("a"))])),
         Value::Record(0, Box::new([Some(Value::Int(2)), Some(text("a"))])),

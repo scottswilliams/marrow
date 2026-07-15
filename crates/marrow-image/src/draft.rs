@@ -214,6 +214,13 @@ pub(crate) enum ConstValue {
     Int(i64),
     Bool(bool),
     Text(StrId),
+    /// A temporal scalar folded from a compile-time-validated canonical text
+    /// literal: a `date` (days since the Unix epoch), an `instant` (signed
+    /// nanoseconds since the epoch), or a `duration` (signed nanoseconds). The raw
+    /// scalar is stored directly, so the runtime loads it without re-parsing text.
+    Date(i32),
+    Instant(i128),
+    Duration(i128),
 }
 
 /// A failure to build a well-formed draft: a §E bound exceeded or an invalid
@@ -299,6 +306,21 @@ impl ImageDraft {
     pub fn intern_text(&mut self, text: &str) -> ConstId {
         let str_id = self.intern_string(text);
         self.intern_const(ConstValue::Text(str_id))
+    }
+
+    /// Intern a `date` constant (days since the Unix epoch).
+    pub fn intern_date(&mut self, days: i32) -> ConstId {
+        self.intern_const(ConstValue::Date(days))
+    }
+
+    /// Intern an `instant` constant (signed nanoseconds since the epoch).
+    pub fn intern_instant(&mut self, nanos: i128) -> ConstId {
+        self.intern_const(ConstValue::Instant(nanos))
+    }
+
+    /// Intern a `duration` constant (signed nanoseconds).
+    pub fn intern_duration(&mut self, nanos: i128) -> ConstId {
+        self.intern_const(ConstValue::Duration(nanos))
     }
 
     fn intern_const(&mut self, value: ConstValue) -> ConstId {
@@ -436,6 +458,9 @@ fn const_eq(a: ConstValue, b: ConstValue) -> bool {
         (ConstValue::Int(x), ConstValue::Int(y)) => x == y,
         (ConstValue::Bool(x), ConstValue::Bool(y)) => x == y,
         (ConstValue::Text(x), ConstValue::Text(y)) => x.0 == y.0,
+        (ConstValue::Date(x), ConstValue::Date(y)) => x == y,
+        (ConstValue::Instant(x), ConstValue::Instant(y)) => x == y,
+        (ConstValue::Duration(x), ConstValue::Duration(y)) => x == y,
         _ => false,
     }
 }
@@ -454,6 +479,9 @@ impl ConstValue {
             ConstValue::Int(v) => (0x01, v.to_be_bytes().to_vec()),
             ConstValue::Bool(v) => (0x02, vec![u8::from(v)]),
             ConstValue::Text(s) => (0x03, str_map[s.0 as usize].to_be_bytes().to_vec()),
+            ConstValue::Date(v) => (0x04, v.to_be_bytes().to_vec()),
+            ConstValue::Instant(v) => (0x05, v.to_be_bytes().to_vec()),
+            ConstValue::Duration(v) => (0x06, v.to_be_bytes().to_vec()),
         }
     }
 }

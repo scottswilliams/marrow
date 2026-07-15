@@ -293,6 +293,9 @@ fn scalar_kind(scalar: Scalar) -> ScalarKind {
         Scalar::Bool => ScalarKind::Bool,
         Scalar::Text => ScalarKind::Str,
         Scalar::Bytes => ScalarKind::Bytes,
+        Scalar::Date => ScalarKind::Date,
+        Scalar::Instant => ScalarKind::Instant,
+        Scalar::Duration => ScalarKind::Duration,
     }
 }
 
@@ -337,6 +340,16 @@ fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
         Scalar::Bytes => decode_hex_bytes(text)
             .map(|bytes| Value::Bytes(Rc::from(bytes.as_slice())))
             .ok_or_else(|| format!("`{text}` is not `0x`-prefixed lowercase hex")),
+        // A temporal argument is its canonical text, matching how it renders back out.
+        Scalar::Date => marrow_temporal::parse_date(text.as_bytes())
+            .map(Value::Date)
+            .ok_or_else(|| format!("`{text}` is not a canonical date `YYYY-MM-DD`")),
+        Scalar::Instant => marrow_temporal::parse_instant(text.as_bytes())
+            .map(Value::Instant)
+            .ok_or_else(|| format!("`{text}` is not a canonical UTC instant")),
+        Scalar::Duration => marrow_temporal::parse_duration(text.as_bytes())
+            .map(Value::Duration)
+            .ok_or_else(|| format!("`{text}` is not a canonical duration `PT<seconds>S`")),
     }
 }
 

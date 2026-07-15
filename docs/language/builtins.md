@@ -188,9 +188,6 @@ int(value)
 decimal(value)
 string(value)
 bytes(value)
-date(value)
-instant(value)
-duration(value)
 ErrorCode(value)
 ```
 
@@ -200,6 +197,25 @@ Failure raises a typed runtime error. No conversion is implicit.
 `ErrorCode(value)` validates dotted lowercase code text. `string(value)` uses
 canonical scalar or enum rendering. `std::bytes::toText` is the explicit UTF-8
 decode operation; converting bytes to `string` does not perform that decode.
+
+## Temporal
+
+The temporal types `date`, `instant`, and `duration` are constructed from a
+static canonical text literal (`date("2026-07-15")`,
+`instant("2026-07-15T17:00:00Z")`, `duration("PT3600S")`), validated at compile
+time. Two named functions provide date arithmetic:
+
+```text
+date_add_days(d: date, n: int): date
+date_days_between(a: date, b: date): int
+```
+
+`date_add_days` returns the date `n` days after `d`; `date_days_between` returns
+the signed number of days from `a` to `b`. A result outside years 0001-9999
+faults `run.temporal_overflow`. `duration` sums and differences and `instant`
+shifts by a `duration` use the `+`/`-` operators. There is no clock builtin: the
+current day or instant is passed in as an argument. See
+[Temporal Types](types-and-values.md#temporal-types) for the full contract.
 
 ## Errors
 

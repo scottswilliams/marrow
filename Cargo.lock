@@ -71,6 +71,7 @@ dependencies = [
  "marrow-kernel",
  "marrow-project",
  "marrow-syntax",
+ "marrow-temporal",
  "marrow-verify",
  "marrow-vm",
 ]
@@ -87,6 +88,7 @@ dependencies = [
  "marrow-image",
  "marrow-project",
  "marrow-syntax",
+ "marrow-temporal",
 ]
 
 [[package]]
@@ -102,6 +104,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-codes",
  "marrow-store",
+ "marrow-temporal",
 ]
 
 [[package]]
@@ -128,11 +131,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-temporal"
+version = "0.1.0"
+
+[[package]]
 name = "marrow-verify"
 version = "0.1.0"
 dependencies = [
  "marrow-codes",
  "marrow-image",
+ "marrow-temporal",
 ]
 
 [[package]]
@@ -142,6 +150,7 @@ dependencies = [
  "marrow-codes",
  "marrow-image",
  "marrow-kernel",
+ "marrow-temporal",
  "marrow-verify",
 ]
 

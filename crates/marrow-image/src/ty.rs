@@ -8,15 +8,18 @@
 //! (record field, param, return, `VacantLoad` operand); position restrictions are
 //! enforced by the encoder that writes each and rechecked by the verifier.
 
-/// A bare image scalar. The three scalars the T01 subset admits; the runtime
-/// representation vocabulary (`RuntimeScalar`, `KeyScalar`) lives in the kernel and
-/// bridges to these tags.
+/// A bare image scalar. The runtime representation vocabulary (`RuntimeScalar`,
+/// `KeyScalar`) lives in the kernel and bridges to these tags; the temporal scalar
+/// domain (calendar, canonical text codec, arithmetic) lives in `marrow-temporal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scalar {
     Int,
     Bool,
     Text,
     Bytes,
+    Date,
+    Instant,
+    Duration,
 }
 
 /// Base-type tag bytes (low seven bits of a `ImageType` byte).
@@ -28,6 +31,9 @@ pub const TAG_RECORD: u8 = 0x04;
 pub const TAG_BYTES: u8 = 0x05;
 pub const TAG_ENUM: u8 = 0x06;
 pub const TAG_COLLECTION: u8 = 0x07;
+pub const TAG_DATE: u8 = 0x08;
+pub const TAG_INSTANT: u8 = 0x09;
+pub const TAG_DURATION: u8 = 0x0A;
 
 /// The optional-wrapper flag bit.
 pub const OPTIONAL_FLAG: u8 = 0x80;
@@ -40,6 +46,9 @@ impl Scalar {
             Scalar::Bool => TAG_BOOL,
             Scalar::Text => TAG_TEXT,
             Scalar::Bytes => TAG_BYTES,
+            Scalar::Date => TAG_DATE,
+            Scalar::Instant => TAG_INSTANT,
+            Scalar::Duration => TAG_DURATION,
         }
     }
 }

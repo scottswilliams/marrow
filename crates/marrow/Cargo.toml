@@ -18,6 +18,7 @@ marrow-compile = { path = "../marrow-compile" }
 marrow-kernel = { path = "../marrow-kernel" }
 marrow-project = { path = "../marrow-project" }
 marrow-syntax = { path = "../marrow-syntax" }
+marrow-temporal = { path = "../marrow-temporal" }
 marrow-verify = { path = "../marrow-verify" }
 marrow-vm = { path = "../marrow-vm" }
 

@@ -16,6 +16,11 @@ pub enum SealedConst {
     Int(i64),
     Bool(bool),
     Text(Rc<str>),
+    /// A temporal scalar: a `date` (days since the epoch), an `instant` (signed
+    /// nanoseconds since the epoch), or a `duration` (signed nanoseconds).
+    Date(i32),
+    Instant(i128),
+    Duration(i128),
 }
 
 /// A verified instruction with typed, bounds-checked operands. Jump targets are
@@ -79,6 +84,31 @@ pub enum SealedInstr {
     TextSplit(u16),
     TextLines(u16),
     TextJoin,
+    /// Temporal equality and order over two bare temporals of the same type,
+    /// producing a bool. The order agrees with the kernel key-codec byte order.
+    EqDate,
+    DateLt,
+    DateLe,
+    DateGt,
+    DateGe,
+    EqInstant,
+    InstantLt,
+    InstantLe,
+    InstantGt,
+    InstantGe,
+    EqDuration,
+    DurationLt,
+    DurationLe,
+    DurationGt,
+    DurationGe,
+    /// The closed temporal arithmetic floor. Each faults `run.temporal_overflow`
+    /// when its result would leave the supported day/nanosecond domain.
+    DateAddDays,
+    DateDaysBetween,
+    DurationAdd,
+    DurationSub,
+    InstantAddDuration,
+    InstantSubDuration,
     /// Checked arithmetic: `_0` is the fault-handler tape index. On overflow the op
     /// transfers there (carrying the post-pop stack) instead of faulting; otherwise
     /// it pushes the int result and falls through.
