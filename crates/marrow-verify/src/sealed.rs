@@ -8,7 +8,10 @@
 
 use std::rc::Rc;
 
-use marrow_image::{DurableContractId, ExportId, ImageId, ImageType, Scalar};
+use marrow_image::{
+    DurableContractDescriptor, DurableContractId, ExportId, ImageId, ImageType, Scalar,
+    SemanticNode,
+};
 
 /// A resolved constant value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -506,6 +509,7 @@ pub struct VerifiedImage {
     pub(crate) roots: Vec<SealedRoot>,
     pub(crate) sites: Vec<SealedSite>,
     pub(crate) durable_contract: DurableContractId,
+    pub(crate) durable_descriptor: DurableContractDescriptor,
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
@@ -555,6 +559,16 @@ impl VerifiedImage {
     /// A later store-admission phase binds an activated store to this id.
     pub fn durable_contract(&self) -> DurableContractId {
         self.durable_contract
+    }
+
+    /// Every durable graph node paired with its derived [`SemanticPath`]
+    /// ([`marrow_image::SemanticPath`]), reconstructed from the decoded graph. The
+    /// verifier rebuilds the same descriptor it recomputes the contract id from, so
+    /// these paths are the verifier's independent derivation — identical to the
+    /// compiler's for a graph that verifies — not a trusted transfer of compiler
+    /// output. A rename that only moves ledger anchors leaves every path unchanged.
+    pub fn semantic_nodes(&self) -> Vec<SemanticNode> {
+        self.durable_descriptor.semantic_nodes()
     }
 
     /// The durable operation sites, indexed by image site index.

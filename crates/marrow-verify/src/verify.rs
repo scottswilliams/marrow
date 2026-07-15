@@ -177,6 +177,7 @@ struct DecodedImage {
     roots: Vec<DecodedRoot>,
     sites: Vec<DecodedSite>,
     durable_contract: DurableContractId,
+    durable_descriptor: DurableContractDescriptor,
     consts: Vec<SealedConst>,
     functions: Vec<DecodedFunction>,
     exports: Vec<(ExportId, u16)>,
@@ -266,7 +267,8 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
-    let (roots, sites, durable_contract) = decode_durable(sections[2].1, &strings, &types, &enums)?;
+    let (roots, sites, durable_contract, durable_descriptor) =
+        decode_durable(sections[2].1, &strings, &types, &enums)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(
         sections[4].1,
@@ -288,6 +290,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         roots,
         sites,
         durable_contract,
+        durable_descriptor,
         consts,
         functions,
         exports,
@@ -949,7 +952,15 @@ fn decode_durable(
     strings: &[Rc<str>],
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
-) -> Result<(Vec<DecodedRoot>, Vec<DecodedSite>, DurableContractId), VerifyRejection> {
+) -> Result<
+    (
+        Vec<DecodedRoot>,
+        Vec<DecodedSite>,
+        DurableContractId,
+        DurableContractDescriptor,
+    ),
+    VerifyRejection,
+> {
     let string_count = strings.len();
     let mut reader = Reader::new(body);
     let root_count = reader
@@ -1106,14 +1117,15 @@ fn decode_durable(
             "trailing bytes in durable table",
         ));
     }
-    let recomputed = durable_descriptor(application, &roots).contract_id();
+    let descriptor = durable_descriptor(application, &roots);
+    let recomputed = descriptor.contract_id();
     if recomputed.bytes() != &carried {
         return Err(reject(
             VerifyPhase::Table,
             "durable contract id does not match the durable graph",
         ));
     }
-    Ok((roots, sites, recomputed))
+    Ok((roots, sites, recomputed, descriptor))
 }
 
 /// Read one 16-byte ledger id, rejecting a duplicate against those already seen in
@@ -2029,6 +2041,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         roots,
         sites,
         durable_contract: decoded.durable_contract,
+        durable_descriptor: decoded.durable_descriptor,
         consts: decoded.consts,
         functions,
         exports,

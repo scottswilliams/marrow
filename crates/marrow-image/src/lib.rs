@@ -15,6 +15,7 @@ mod durable_id;
 mod encode;
 mod export_id;
 mod instr;
+mod semantic;
 mod ty;
 
 pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
@@ -50,6 +51,7 @@ pub use instr::{
     OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
     OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
 };
+pub use semantic::{SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind};
 pub use ty::{
     ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
     TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,

@@ -88,6 +88,9 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::semantic::{
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind,
+};
 use crate::ty::Scalar;
 
 /// The domain-separation tag for the durable-contract identity. Distinct from every
@@ -299,6 +302,37 @@ impl DurableContractDescriptor {
         DurableContractId::compute(LOCAL_ROOT_LINEAGE, &self.encode_graph())
     }
 
+    /// Enumerate every durable graph node paired with its derived [`SemanticPath`]:
+    /// each root placement, static `group` namespace, keyed `branch` placement, and
+    /// stored field, in a stable pre-order (a node before its descendants, members in
+    /// declaration order). The path is the chain of kind-tagged ledger ids from the
+    /// application to the node, so a rename that only moves ledger anchors leaves
+    /// every path unchanged while any structural or id change alters exactly the
+    /// paths through it. The empty graph yields no nodes.
+    ///
+    /// This is the single owner of the derived path identity; the compiler builds a
+    /// descriptor from its resolved graph and the verifier rebuilds one from the
+    /// decoded image tables, so both enumerate identical paths.
+    pub fn semantic_nodes(&self) -> Vec<SemanticNode> {
+        let Some(application) = self.application else {
+            return Vec::new();
+        };
+        let mut nodes = Vec::new();
+        let app_step = SemanticStep::new(SemanticStepKind::Application, application);
+        for root in &self.roots {
+            let root_path = SemanticPath::new(vec![
+                app_step,
+                SemanticStep::new(SemanticStepKind::Placement, root.placement),
+            ]);
+            nodes.push(SemanticNode {
+                kind: SemanticNodeKind::Root,
+                path: root_path.clone(),
+            });
+            collect_member_nodes(&root_path, &root.members, &mut nodes);
+        }
+        nodes
+    }
+
     /// The canonical graph bytes (the `graph` production above). Length-delimited so
     /// the whole is fed as one `LP(graph)` component of the payload.
     fn encode_graph(&self) -> Vec<u8> {
@@ -314,6 +348,47 @@ impl DurableContractDescriptor {
             push_members(&mut out, &root.members);
         }
         out
+    }
+}
+
+/// Walk one member tree under `container`'s path, appending a [`SemanticNode`] for
+/// each field, group, and branch in declaration order (a node before its
+/// descendants). A group and a branch each extend the path with their own step and
+/// recurse; a field is a leaf. Key columns are placement identity attributes, not
+/// nodes, so they are not walked.
+fn collect_member_nodes(
+    container: &SemanticPath,
+    members: &[DurableMemberShape],
+    nodes: &mut Vec<SemanticNode>,
+) {
+    for member in members {
+        match member {
+            DurableMemberShape::Field(field) => {
+                nodes.push(SemanticNode {
+                    kind: SemanticNodeKind::Field,
+                    path: container.child(SemanticStep::new(SemanticStepKind::Field, field.id)),
+                });
+            }
+            DurableMemberShape::Group(group) => {
+                let path = container.child(SemanticStep::new(SemanticStepKind::Group, group.id));
+                nodes.push(SemanticNode {
+                    kind: SemanticNodeKind::Group,
+                    path: path.clone(),
+                });
+                collect_member_nodes(&path, &group.members, nodes);
+            }
+            DurableMemberShape::Branch(branch) => {
+                let path = container.child(SemanticStep::new(
+                    SemanticStepKind::Placement,
+                    branch.placement,
+                ));
+                nodes.push(SemanticNode {
+                    kind: SemanticNodeKind::Branch,
+                    path: path.clone(),
+                });
+                collect_member_nodes(&path, &branch.members, nodes);
+            }
+        }
     }
 }
 
@@ -959,5 +1034,167 @@ mod tests {
         let empty = DurableContractDescriptor::empty();
         assert_eq!(empty.contract_id(), empty.contract_id());
         assert_ne!(empty.contract_id(), counters_graph().contract_id());
+    }
+
+    // --- Derived semantic paths (D02): every graph node's stable ledger-id chain. ---
+
+    use crate::semantic::{SemanticNodeKind, SemanticStepKind};
+
+    /// The `(node kind, step kinds, step ids)` fingerprint of every semantic node in
+    /// pre-order, for exact structural assertions.
+    fn node_shapes(
+        descriptor: &DurableContractDescriptor,
+    ) -> Vec<(SemanticNodeKind, Vec<SemanticStepKind>, Vec<[u8; 16]>)> {
+        descriptor
+            .semantic_nodes()
+            .into_iter()
+            .map(|node| {
+                let kinds = node.path.steps().iter().map(|s| s.kind).collect();
+                let ids = node.path.steps().iter().map(|s| *s.id.bytes()).collect();
+                (node.kind, kinds, ids)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn semantic_nodes_of_a_flat_root_are_the_root_and_its_fields() {
+        use SemanticNodeKind::{Field, Root};
+        use SemanticStepKind::{Application, Field as FieldStep, Placement};
+        assert_eq!(
+            node_shapes(&counters_graph()),
+            vec![
+                (
+                    Root,
+                    vec![Application, Placement],
+                    vec![[0x0a; 16], [0x0b; 16]]
+                ),
+                (
+                    Field,
+                    vec![Application, Placement, FieldStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x0e; 16]]
+                ),
+                (
+                    Field,
+                    vec![Application, Placement, FieldStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x0f; 16]]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_nodes_cover_every_group_and_branch_node_in_pre_order() {
+        use SemanticNodeKind::{Branch, Field, Group, Root};
+        use SemanticStepKind::{Application, Field as FieldStep, Group as GroupStep, Placement};
+        assert_eq!(
+            node_shapes(&library_graph()),
+            vec![
+                (
+                    Root,
+                    vec![Application, Placement],
+                    vec![[0x0a; 16], [0x0b; 16]]
+                ),
+                (
+                    Field,
+                    vec![Application, Placement, FieldStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x0e; 16]]
+                ),
+                (
+                    Group,
+                    vec![Application, Placement, GroupStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x20; 16]]
+                ),
+                (
+                    Field,
+                    vec![Application, Placement, GroupStep, FieldStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x20; 16], [0x21; 16]]
+                ),
+                // A branch step is a Placement, like a root — a keyed node.
+                (
+                    Branch,
+                    vec![Application, Placement, Placement],
+                    vec![[0x0a; 16], [0x0b; 16], [0x30; 16]]
+                ),
+                (
+                    Field,
+                    vec![Application, Placement, Placement, FieldStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x30; 16], [0x32; 16]]
+                ),
+                (
+                    Group,
+                    vec![Application, Placement, Placement, GroupStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x30; 16], [0x33; 16]]
+                ),
+                (
+                    Field,
+                    vec![Application, Placement, Placement, GroupStep, FieldStep],
+                    vec![[0x0a; 16], [0x0b; 16], [0x30; 16], [0x33; 16], [0x34; 16]]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_field_path_is_distinct_from_and_extends_its_container() {
+        let nodes = library_graph().semantic_nodes();
+        let group = nodes
+            .iter()
+            .find(|n| n.path.node_id() == id(0x20))
+            .expect("the group node");
+        let nested_field = nodes
+            .iter()
+            .find(|n| n.path.node_id() == id(0x21))
+            .expect("the group-nested field node");
+        assert_ne!(group.path, nested_field.path);
+        // The field's path is exactly the group's path plus the field step.
+        assert!(nested_field.path.steps().starts_with(group.path.steps()));
+        assert_eq!(
+            nested_field.path.steps().len(),
+            group.path.steps().len() + 1
+        );
+    }
+
+    #[test]
+    fn re_minting_a_node_id_moves_only_paths_through_it() {
+        let base = library_graph().semantic_nodes();
+
+        // Re-mint the group id: the group node and its nested field node move to the
+        // fresh id; every other node's path is untouched.
+        let mut regrouped = library_graph();
+        if let DurableMemberShape::Group(group) = &mut regrouped.roots[0].members[1] {
+            group.id = id(0x2f);
+        } else {
+            panic!("member 1 is the group");
+        }
+        let after = regrouped.semantic_nodes();
+
+        // The root and the top-level field keep identical paths.
+        for terminal in [id(0x0b), id(0x0e), id(0x30)] {
+            let before_path = base.iter().find(|n| n.path.node_id() == terminal);
+            let after_path = after.iter().find(|n| n.path.node_id() == terminal);
+            assert_eq!(
+                before_path.map(|n| &n.path),
+                after_path.map(|n| &n.path),
+                "the node ending in {terminal:?} is unaffected by re-minting the group",
+            );
+        }
+        // The group's own node now ends in the fresh id, and the old id is gone.
+        assert!(after.iter().any(|n| n.path.node_id() == id(0x2f)));
+        assert!(!after.iter().any(|n| n.path.node_id() == id(0x20)));
+        // Its nested field's path now passes through the fresh group id.
+        let nested = after
+            .iter()
+            .find(|n| n.path.node_id() == id(0x21))
+            .expect("the nested field node");
+        assert!(nested.path.steps().iter().any(|s| s.id == id(0x2f)));
+    }
+
+    #[test]
+    fn the_empty_graph_has_no_semantic_nodes() {
+        assert!(
+            DurableContractDescriptor::empty()
+                .semantic_nodes()
+                .is_empty()
+        );
     }
 }

@@ -14,7 +14,10 @@ mod sealed;
 mod verify;
 mod vtype;
 
-pub use marrow_image::{DurableContractId, ExportId, ImageId, ImageType, Scalar};
+pub use marrow_image::{
+    DurableContractId, ExportId, ImageId, ImageType, Scalar, SemanticNode, SemanticNodeKind,
+    SemanticPath, SemanticStep, SemanticStepKind,
+};
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{
     Demand, RetShape, SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction,
