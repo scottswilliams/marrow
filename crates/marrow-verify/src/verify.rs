@@ -14,37 +14,37 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use marrow_image::{
-    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableEnumMemberShape,
-    DurableFieldShape, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
-    DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape, ExportId, ImageId,
-    ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
-    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
-    OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
-    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
-    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
-    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD,
-    OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB,
-    OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE,
-    OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET,
-    OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE,
-    OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
-    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
-    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
-    OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
-    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
-    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
-    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, SemanticNode,
-    SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL,
-    TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD,
-    TAG_TEXT, TAG_UNIT, image_id,
+    DemandAtom, DurableBranchShape, DurableContractDescriptor, DurableContractId,
+    DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableIndexComponent,
+    DurableIndexShape, DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape,
+    ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT,
+    OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
+    OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
+    OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
+    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
+    OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
+    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
+    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT,
+    OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE,
+    OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD,
+    OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
+    OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED,
+    OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET,
+    OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
+    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
+    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
+    OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT,
+    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    Demand, RetShape, SealedCollectionType, SealedConst, SealedEnumType, SealedExport, SealedField,
+    RetShape, SealedCollectionType, SealedConst, SealedEnumType, SealedExport, SealedField,
     SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot, SealedSite,
     SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
 };
@@ -184,6 +184,8 @@ struct DecodedImage {
     collections: Vec<SealedCollectionType>,
     roots: Vec<DecodedRoot>,
     sites: Vec<SealedSite>,
+    /// Each site's resolved graph-node path, parallel to `sites` by index.
+    site_paths: Vec<SemanticPath>,
     durable_contract: DurableContractId,
     durable_descriptor: DurableContractDescriptor,
     consts: Vec<SealedConst>,
@@ -275,7 +277,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
-    let (roots, sites, durable_contract, durable_descriptor) =
+    let (roots, sites, site_paths, durable_contract, durable_descriptor) =
         decode_durable(sections[2].1, &strings, &types, &enums)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(
@@ -297,6 +299,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         collections,
         roots,
         sites,
+        site_paths,
         durable_contract,
         durable_descriptor,
         consts,
@@ -955,20 +958,23 @@ fn reject_value_type_cycles(
 /// types, every ledger id in the section must be pairwise distinct, and the
 /// contract id is independently recomputed from the decoded graph and checked
 /// against the carried bytes.
+/// The decoded durable graph: the roots, the sealed operation sites, each site's
+/// resolved graph-node path (parallel to the sites), the recomputed contract id, and
+/// the canonical descriptor the paths and id were derived from.
+type DecodedDurable = (
+    Vec<DecodedRoot>,
+    Vec<SealedSite>,
+    Vec<SemanticPath>,
+    DurableContractId,
+    DurableContractDescriptor,
+);
+
 fn decode_durable(
     body: &[u8],
     strings: &[Rc<str>],
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
-) -> Result<
-    (
-        Vec<DecodedRoot>,
-        Vec<SealedSite>,
-        DurableContractId,
-        DurableContractDescriptor,
-    ),
-    VerifyRejection,
-> {
+) -> Result<DecodedDurable, VerifyRejection> {
     let string_count = strings.len();
     let mut reader = Reader::new(body);
     let root_count = reader
@@ -1085,8 +1091,13 @@ fn decode_durable(
         return Err(reject(VerifyPhase::Table, "too many durable sites"));
     }
     let mut sites: Vec<SealedSite> = Vec::with_capacity(site_count);
+    // Each site's resolved graph-node path, parallel to `sites` by index. The demand
+    // reconstruction maps a durable opcode's site index to the semantic path of the
+    // node it addresses; a flat site drops the path from its executable form, so it
+    // is retained here rather than re-derived.
+    let mut site_paths: Vec<SemanticPath> = Vec::with_capacity(site_count);
     for _ in 0..site_count {
-        let site = decode_site(&mut reader, &nodes, &roots)?;
+        let (site, path) = decode_site(&mut reader, &nodes, &roots)?;
         // Sites are unique by their resolved identity: a flat site by (root, target),
         // a parked site by (path, target). Full structural equality covers both, and a
         // flat and a parked site can never collide.
@@ -1094,6 +1105,7 @@ fn decode_durable(
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
         sites.push(site);
+        site_paths.push(path);
     }
 
     // The section closes with the 32-byte durable-contract id. Recompute it
@@ -1118,7 +1130,7 @@ fn decode_durable(
             "durable contract id does not match the durable graph",
         ));
     }
-    Ok((roots, sites, recomputed, descriptor))
+    Ok((roots, sites, site_paths, recomputed, descriptor))
 }
 
 /// Decode one operation site — its semantic path then its target-kind byte — and
@@ -1131,7 +1143,7 @@ fn decode_site(
     reader: &mut Reader<'_>,
     nodes: &[SemanticNode],
     roots: &[DecodedRoot],
-) -> Result<SealedSite, VerifyRejection> {
+) -> Result<(SealedSite, SemanticPath), VerifyRejection> {
     let step_count = reader
         .u8()
         .ok_or(reject(VerifyPhase::Table, "short site path length"))? as usize;
@@ -1168,7 +1180,11 @@ fn decode_site(
         0x03 => SemanticTarget::IndexLookup,
         _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
     };
-    resolve_site(&steps, target, nodes, roots)
+    let site = resolve_site(&steps, target, nodes, roots)?;
+    // The site's node path is the chain it resolved against — retained parallel to
+    // the sealed site so demand reconstruction can name the node a flat site
+    // addresses without re-deriving it from the executable form.
+    Ok((site, SemanticPath::from_steps(steps)))
 }
 
 /// Resolve a decoded site path plus target kind to a [`SealedSite`]. A path that
@@ -2333,7 +2349,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
 
     // Phase 4/5: closure-informed effect and transaction-flow validation. An export
     // entry that mutates in closure is the owner of a transaction.
-    let effects = Effects::compute(&functions);
+    let effects = Effects::compute(&functions, &decoded.site_paths);
     let export_entries: Vec<bool> = {
         let mut entries = vec![false; functions.len()];
         for (_, func) in &decoded.exports {
@@ -2354,11 +2370,17 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     let exports = decoded
         .exports
         .iter()
-        .map(|(id, func)| SealedExport {
-            id: *id,
-            func: *func,
-            mutating: effects.mutates_closure[*func as usize],
-            demand: effects.demand(*func),
+        .map(|(id, func)| {
+            let demand = effects.demand(*func);
+            let demand_id = demand.demand_set_id();
+            SealedExport {
+                id: *id,
+                func: *func,
+                mutating: effects.mutates_closure[*func as usize],
+                demand,
+                demand_id,
+                reachable_sites: effects.reachable_sites(*func),
+            }
         })
         .collect();
 
@@ -2446,12 +2468,10 @@ fn check_test_entries(
                 "a test entry must return unit",
             ));
         }
-        if !effects.demand(*func).is_empty() {
-            return Err(reject(
-                VerifyPhase::TestEntry,
-                "a test entry reads or writes durable data",
-            ));
-        }
+        // A test entry may touch durable data: its demand is recorded in the parallel
+        // test-entry table below so an E01 ephemeral test attachment can bound its
+        // authority by the test-image union. It is still never an export and carries
+        // no wire identity.
     }
 
     // A test entry is an entry point: no function may call one.
@@ -2472,6 +2492,7 @@ fn check_test_entries(
         .map(|(name, func)| SealedTestEntry {
             name: decoded.strings[*name as usize].clone(),
             func: *func,
+            demand: effects.demand(*func),
         })
         .collect())
 }
@@ -2549,12 +2570,22 @@ fn call_targets(function: &SealedFunction) -> Vec<usize> {
         .collect()
 }
 
-/// Phase 4/5 durable-effect closure and the transaction-flow lattice (design §E).
+/// Phase 4/5 durable-demand closure and the transaction-flow lattice (design §E).
+///
+/// The single effects owner: it reconstructs each function's durable-access atom set
+/// over its whole acyclic call closure from the sealed sites its opcodes reference,
+/// and the boolean mutate/read coverage the transaction-flow lattice and the store
+/// ceiling consume are projected from that atom set — there is no second effects
+/// model.
 struct Effects {
-    /// Per function: whether it or a transitive callee stages a mutation.
+    /// Per function: the durable-access atoms it or a transitive callee performs.
+    atoms_closure: Vec<BTreeSet<DemandAtom>>,
+    /// Per function: the image-local site indices it or a transitive callee reaches.
+    sites_closure: Vec<BTreeSet<u16>>,
+    /// Per function: whether its atom closure mutates (write/erase). Projected from
+    /// the atom set; consumed by the transaction-flow lattice and the export effect
+    /// class.
     mutates_closure: Vec<bool>,
-    /// Per function: whether it or a transitive callee reads durable data.
-    reads_closure: Vec<bool>,
     /// Per function: whether it contains a `TxnBegin` (a transaction owner).
     has_begin: Vec<bool>,
     /// Per function: whether it contains a `TxnCommit`.
@@ -2562,15 +2593,28 @@ struct Effects {
 }
 
 impl Effects {
-    fn compute(functions: &[SealedFunction]) -> Self {
+    /// Reconstruct demand over the acyclic call graph. `site_paths[s]` is the
+    /// semantic path of the node site `s` addresses (parallel to the sealed sites).
+    fn compute(functions: &[SealedFunction], site_paths: &[SemanticPath]) -> Self {
         let count = functions.len();
-        let mutates_self: Vec<bool> = functions
+        // Each function's own atoms and reached sites, before closure.
+        let mut atoms_closure: Vec<BTreeSet<DemandAtom>> = functions
             .iter()
-            .map(|function| function.instrs().iter().any(SealedInstr::is_mutation))
+            .map(|function| {
+                let mut set = BTreeSet::new();
+                for instr in function.instrs() {
+                    if let (Some(site), Some(class)) =
+                        (durable_site(instr), durable_op_class(instr))
+                    {
+                        set.insert(DemandAtom::new(site_paths[site as usize].clone(), class));
+                    }
+                }
+                set
+            })
             .collect();
-        let reads_self: Vec<bool> = functions
+        let mut sites_closure: Vec<BTreeSet<u16>> = functions
             .iter()
-            .map(|function| function.instrs().iter().any(SealedInstr::is_durable_read))
+            .map(|function| function.instrs().iter().filter_map(durable_site).collect())
             .collect();
         let has_begin: Vec<bool> = functions
             .iter()
@@ -2592,20 +2636,30 @@ impl Effects {
             .collect();
         let callees: Vec<Vec<usize>> = functions.iter().map(call_targets).collect();
 
-        // Fixpoint over the acyclic call graph: iterating `count` times converges.
-        let mut mutates_closure = mutates_self.clone();
-        let mut reads_closure = reads_self;
+        // Fixpoint over the acyclic call graph: a caller's closure unions each
+        // callee's closure. The graph is acyclic (recursion is rejected), so
+        // iterating `count` times converges; the monotone growth stops earlier. The
+        // caller index `f` also indexes the two closures a split borrow updates in
+        // place, so a range loop is used deliberately.
+        #[allow(clippy::needless_range_loop)]
         for _ in 0..count {
             let mut changed = false;
             for f in 0..count {
-                for &callee in &callees[f] {
-                    if mutates_closure[callee] && !mutates_closure[f] {
-                        mutates_closure[f] = true;
-                        changed = true;
+                for callee_index in 0..callees[f].len() {
+                    let callee = callees[f][callee_index];
+                    // Split the borrow: a call graph edge never self-loops (no
+                    // recursion), so `f != callee`.
+                    let (dst, src) = borrow_two(&mut atoms_closure, f, callee);
+                    for atom in src.iter() {
+                        if dst.insert(atom.clone()) {
+                            changed = true;
+                        }
                     }
-                    if reads_closure[callee] && !reads_closure[f] {
-                        reads_closure[f] = true;
-                        changed = true;
+                    let (dst_sites, src_sites) = borrow_two(&mut sites_closure, f, callee);
+                    for &site in src_sites.iter() {
+                        if dst_sites.insert(site) {
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -2614,20 +2668,29 @@ impl Effects {
             }
         }
 
+        let mutates_closure: Vec<bool> = atoms_closure
+            .iter()
+            .map(|atoms| atoms.iter().any(|atom| atom.class().mutates()))
+            .collect();
+
         Self {
+            atoms_closure,
+            sites_closure,
             mutates_closure,
-            reads_closure,
             has_begin,
             has_commit,
         }
     }
 
-    /// The verifier-derived per-root demand of the export entered at `func`.
-    fn demand(&self, func: u16) -> Demand {
-        Demand {
-            read: self.reads_closure[func as usize],
-            write: self.mutates_closure[func as usize],
-        }
+    /// The verifier-reconstructed durable demand of the entry at `func`: its stable
+    /// atom set over its whole call closure.
+    fn demand(&self, func: u16) -> ExportDemand {
+        ExportDemand::from_atoms(self.atoms_closure[func as usize].iter().cloned())
+    }
+
+    /// The image-local operation sites the entry at `func` can reach, ascending.
+    fn reachable_sites(&self, func: u16) -> Vec<u16> {
+        self.sites_closure[func as usize].iter().copied().collect()
     }
 
     /// Phase 5: validate one function's transaction flow. A transaction owner (a
@@ -4205,6 +4268,42 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurEraseEntry(site)
         | SealedInstr::DurNextKey(site) => Some(*site),
         _ => None,
+    }
+}
+
+/// The demand [`OperationClass`] a durable opcode makes at its site. The closed
+/// projection of the durable operation algebra onto authority atoms: `create`,
+/// `replace`, and required/sparse field sets are all writes; the two erases are
+/// erases; presence is a probe; field/entry reads are reads; and the next-key step
+/// is ordered traversal. Non-durable instructions and the transaction markers make
+/// no atom.
+fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
+    match instr {
+        SealedInstr::DurExists(_) => Some(OperationClass::Presence),
+        SealedInstr::DurReadField(_) | SealedInstr::DurReadEntry(_) => Some(OperationClass::Read),
+        SealedInstr::DurSetRequired(_)
+        | SealedInstr::DurSetSparse(_)
+        | SealedInstr::DurSetSparsePresent { .. }
+        | SealedInstr::DurCreateEntry(_)
+        | SealedInstr::DurReplaceEntry(_) => Some(OperationClass::Write),
+        SealedInstr::DurEraseField(_) | SealedInstr::DurEraseEntry(_) => {
+            Some(OperationClass::Erase)
+        }
+        SealedInstr::DurNextKey(_) => Some(OperationClass::IndexRead),
+        _ => None,
+    }
+}
+
+/// Mutably borrow two distinct elements of a slice. The demand fixpoint unions a
+/// callee's closure into its caller; the call graph is acyclic, so `dst != src`.
+fn borrow_two<T>(slice: &mut [T], dst: usize, src: usize) -> (&mut T, &T) {
+    assert_ne!(dst, src, "a call graph edge never self-loops");
+    if dst < src {
+        let (left, right) = slice.split_at_mut(src);
+        (&mut left[dst], &right[0])
+    } else {
+        let (left, right) = slice.split_at_mut(dst);
+        (&mut right[0], &left[src])
     }
 }
 

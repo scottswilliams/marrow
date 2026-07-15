@@ -9,6 +9,7 @@
 //! compiler can emit bytes but can never mint a trusted image.
 
 pub mod bounds;
+mod demand;
 mod digest;
 mod draft;
 mod durable_id;
@@ -18,6 +19,7 @@ mod instr;
 mod semantic;
 mod ty;
 
+pub use demand::{DEMAND_SET_KIND, DemandAtom, DemandSetId, ExportDemand, OperationClass};
 pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
 pub use draft::{
     CollTypeId, CollectionTypeDef, ConstId, DurableMemberDef, EnumId, EnumTypeDef, FieldDef,

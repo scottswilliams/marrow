@@ -1575,8 +1575,10 @@ fn test_entry_with_a_non_unit_return_rejects() {
 }
 
 #[test]
-fn test_entry_with_durable_demand_rejects() {
-    // A test entry whose body reads durable data: demand must be empty.
+fn test_entry_may_carry_durable_demand() {
+    // A test entry whose body probes durable data verifies (D04): its demand is
+    // recorded in the parallel test-entry demand table so an E01 ephemeral
+    // attachment can bound its authority. It is still never an export.
     let mut draft = ImageDraft::new();
     let (entry_site, _value, _label) = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
@@ -1598,7 +1600,17 @@ fn test_entry_with_durable_demand_rejects() {
         code,
     });
     draft.add_test_entry(title, func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+    let image = verify(&draft.encode().unwrap().bytes).expect("durable test entry verifies");
+    let entry = &image.test_entries()[0];
+    assert_eq!(entry.name(), "holds");
+    // A presence probe on the root: the test-image demand union is nonempty and
+    // reads without writing.
+    let union = image.test_demand_union();
+    assert!(!union.is_empty());
+    assert!(union.reads());
+    assert!(!union.writes());
+    // A test entry is never an export.
+    assert!(image.exports().is_empty());
 }
 
 #[test]
