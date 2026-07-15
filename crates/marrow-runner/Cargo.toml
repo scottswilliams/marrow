@@ -1,0 +1,27 @@
+[package]
+name = "marrow-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "marrow-runner"
+path = "src/bin/marrow-runner.rs"
+
+[dependencies]
+marrow-codes = { path = "../marrow-codes" }
+marrow-local-wire = { path = "../marrow-local-wire" }
+marrow-image = { path = "../marrow-image" }
+marrow-verify = { path = "../marrow-verify" }
+marrow-vm = { path = "../marrow-vm" }
+marrow-temporal = { path = "../marrow-temporal" }
+
+[dev-dependencies]
+marrow-project = { path = "../marrow-project" }
+marrow-compile = { path = "../marrow-compile" }
+
+[lints]
+workspace = true

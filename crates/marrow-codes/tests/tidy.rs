@@ -25,6 +25,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-kernel",
     "marrow-local-wire",
     "marrow-project",
+    "marrow-runner",
     "marrow-store",
     "marrow-syntax",
     "marrow-temporal",
@@ -67,6 +68,30 @@ const FORBIDDEN_FAMILIES: &[&str] = &[
     "CatalogId",
     "DataPathSegment",
 ];
+
+/// Whether `contents` names a forbidden family. A `marrow*` crate token matches
+/// only as a whole crate reference, never as a prefix of a longer name — so the
+/// deleted interpreter crate `marrow-run`/`marrow_run` does not false-match the
+/// retained `marrow-runner`/`marrow_runner`. The non-crate identifiers (`Surface`,
+/// `Interpreter`, …) keep matching as prefixes, which is intended.
+fn names_forbidden_family(contents: &str, family: &str) -> bool {
+    if !family.starts_with("marrow") {
+        return contents.contains(family);
+    }
+    let mut from = 0;
+    while let Some(offset) = contents[from..].find(family) {
+        let end = from + offset + family.len();
+        let extends = contents[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if !extends {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<root>/crates/marrow-codes`.
@@ -257,6 +282,30 @@ fn cargo_dag_respects_the_trust_boundaries() {
         );
     }
 
+    // The runner executes storeless exports only: it consumes the verifier and VM
+    // but never compiles source, so it has no production edge to the compiler (a
+    // test-only dev edge, to build fixture images, is permitted). The store gate
+    // below independently keeps it off the raw engine. Its production edges stay
+    // within the wire/image/verify/vm/temporal/codes set.
+    let runner = find("marrow-runner");
+    const RUNNER_ALLOWED: &[&str] = &[
+        "marrow-local-wire",
+        "marrow-image",
+        "marrow-verify",
+        "marrow-vm",
+        "marrow-temporal",
+        "marrow-codes",
+    ];
+    for (dep, is_dev) in &runner.edges {
+        if *is_dev {
+            continue;
+        }
+        assert!(
+            RUNNER_ALLOWED.contains(&dep.as_str()),
+            "marrow-runner has an unexpected production edge to {dep}"
+        );
+    }
+
     // The raw byte engine has exactly one consumer: the path kernel.
     for package in &packages {
         let depends_on_store = package.edges.iter().any(|(dep, _)| dep == "marrow-store");
@@ -292,7 +341,7 @@ fn no_tracked_file_names_a_forbidden_family() {
             continue; // binary/non-utf8 tracked asset
         };
         for family in FORBIDDEN_FAMILIES {
-            if contents.contains(family) {
+            if names_forbidden_family(&contents, family) {
                 violations.push(format!("{}: {family}", path.display()));
             }
         }

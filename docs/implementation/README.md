@@ -28,6 +28,8 @@ through which direction.
 | `marrow-vm` | Stack VM over the sealed instruction tape, with source-mapped runtime faults; the ephemeral-attachment executor derives the flat store schema and site table from a verified image and runs a durable test against a freshly minted attachment | — |
 | `marrow-kernel` | Path kernel: durable operation algebra, authority triple, store profile, commit witness, runtime logical codecs, and the production ephemeral-memory attachment (nonforgeable attachment id, deployment ceiling, per-invocation grant) minted from a verified image | [Storage](storage.md) |
 | `marrow-store` | Ordered-byte engine contract, memory and redb backends, engine conformance suite | [Storage](storage.md) |
+| `marrow-local-wire` | Pure single owner of the local wire: length-prefixed framing with a maximum size, the protocol version byte, canonical JSON (its own value model, codec, and depth/string bounds), the closed handshake/request/response/fault grammar, and the closed loss classification; depends only on `marrow-codes` | — |
+| `marrow-runner` | Storeless export runner (library plus stock binary): the supervised Unix-domain channel discipline (mode-0700 dir, listener-before-handshake, launch nonce, poll-based deadlines, explicit fail-closed teardown, bounded loop-accept-until-authenticated), the transfer codec between wire JSON and runtime values, and export dispatch that rejects unknown, durable, and mismatched requests; consumes `marrow-verify` and `marrow-vm` | — |
 
 ## Guides
 

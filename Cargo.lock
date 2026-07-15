@@ -124,6 +124,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-runner"
+version = "0.1.0"
+dependencies = [
+ "marrow-codes",
+ "marrow-compile",
+ "marrow-image",
+ "marrow-local-wire",
+ "marrow-project",
+ "marrow-temporal",
+ "marrow-verify",
+ "marrow-vm",
+]
+
+[[package]]
 name = "marrow-store"
 version = "0.1.0"
 dependencies = [
