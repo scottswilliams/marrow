@@ -43,28 +43,50 @@ impl AttachmentId {
     }
 }
 
+/// The opaque ceiling-id binding token: the 32 bytes minted by the image-side
+/// ceiling-descriptor owner (`marrow_image::CeilingDescriptor`) over a verified
+/// demand union. The kernel never recomputes or interprets it — it only records the
+/// token and reports it back for equality, so the kernel stays free of any image
+/// dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CeilingIdToken([u8; 32]);
+
+impl CeilingIdToken {
+    /// Wrap the 32 token bytes the image-side ceiling-descriptor owner minted.
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The 32 token bytes.
+    pub fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
 /// The deployment ceiling an ephemeral attachment is bounded by: the read/write
 /// coverage the path kernel admits before intersecting the per-invocation grant,
-/// carried alongside the 32-byte `ceiling_id` binding token minted by the image-side
+/// carried alongside the [`CeilingIdToken`] binding token minted by the image-side
 /// ceiling-descriptor owner (`marrow_image::CeilingDescriptor`). The kernel treats
 /// the id as opaque — it never recomputes it and needs no image dependency — but
 /// records it so a minted attachment is bound to the exact ceiling it was minted
-/// under; the recompute-and-compare against the verified image's demand union lives
-/// in the attach path, where the image is in scope. The read/write coverage is the
-/// projection the T01 store ceiling checks; a path-granular atom-level ceiling is a
-/// later lane.
+/// under. The attach path derives both the coverage and the id from the verified
+/// image's demand union and binds them together, so widening the coverage would
+/// change the id. Comparing the token against an independently supplied ceiling
+/// arrives with the persistent native attachment (F02). The read/write coverage is
+/// the projection the T01 store ceiling checks; a path-granular atom-level ceiling
+/// is a later lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeploymentCeiling {
     coverage: DemandCoverage,
-    ceiling_id: [u8; 32],
+    ceiling_id: CeilingIdToken,
 }
 
 impl DeploymentCeiling {
-    /// A ceiling from an explicit read/write coverage and the 32-byte ceiling-id
-    /// binding token. The attach path derives both from the verified image's demand
-    /// union, so the coverage the kernel checks and the id it binds move together —
-    /// widening the coverage would change the id.
-    pub fn new(coverage: DemandCoverage, ceiling_id: [u8; 32]) -> Self {
+    /// A ceiling from an explicit read/write coverage and the ceiling-id binding
+    /// token. The attach path derives both from the verified image's demand union, so
+    /// the coverage the kernel checks and the id it binds move together — widening the
+    /// coverage would change the id.
+    pub fn new(coverage: DemandCoverage, ceiling_id: CeilingIdToken) -> Self {
         Self {
             coverage,
             ceiling_id,
@@ -76,8 +98,8 @@ impl DeploymentCeiling {
         self.coverage
     }
 
-    /// The 32-byte ceiling-id binding token this ceiling carries.
-    pub fn ceiling_id(&self) -> [u8; 32] {
+    /// The ceiling-id binding token this ceiling carries.
+    pub fn ceiling_id(&self) -> CeilingIdToken {
         self.ceiling_id
     }
 }
@@ -98,7 +120,7 @@ pub struct EphemeralAttachment {
     /// The ceiling-id binding token: the attachment is bound to the exact deployment
     /// ceiling it was minted under, so its recorded authority bound cannot be swapped
     /// for a wider ceiling after minting.
-    ceiling_id: [u8; 32],
+    ceiling_id: CeilingIdToken,
     store: DurableStore<MemoryEngine>,
 }
 
@@ -133,7 +155,7 @@ impl EphemeralAttachment {
     }
 
     /// The ceiling-id binding token this attachment was minted under.
-    pub fn ceiling_id(&self) -> [u8; 32] {
+    pub fn ceiling_id(&self) -> CeilingIdToken {
         self.ceiling_id
     }
 
@@ -225,7 +247,7 @@ mod tests {
                 read: true,
                 write: false,
             },
-            [0x11; 32],
+            CeilingIdToken::new([0x11; 32]),
         )
     }
 
@@ -263,11 +285,11 @@ mod tests {
                     read: true,
                     write: false,
                 },
-                [0x22; 32],
+                CeilingIdToken::new([0x22; 32]),
             ),
         )
         .expect("mint");
-        assert_eq!(a.ceiling_id(), [0x22; 32]);
+        assert_eq!(a.ceiling_id(), CeilingIdToken::new([0x22; 32]));
 
         let b = EphemeralAttachment::mint(
             schema(),
@@ -277,7 +299,7 @@ mod tests {
                     read: true,
                     write: true,
                 },
-                [0x33; 32],
+                CeilingIdToken::new([0x33; 32]),
             ),
         )
         .expect("mint");

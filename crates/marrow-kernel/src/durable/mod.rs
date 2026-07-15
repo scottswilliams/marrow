@@ -1,21 +1,27 @@
-//! The stub path kernel: the typed durable runtime the VM drives (design §G).
+//! The typed durable runtime the VM drives (design §G).
 //!
 //! The kernel sits below the language. It consumes verified sites and typed
 //! scalars — never source — and turns durable operations into ordered-byte engine
 //! calls through the narrow [`marrow_store::ByteEngine`] seam. It owns the durable
-//! operation algebra outcomes, the authority triple, the T01 store profile, the
+//! operation algebra outcomes, the authority triple, the store profile, the
 //! name-keyed physical layout, and the commit witness.
 //!
-//! Everything here is a named T01 compromise with a deletion point: the in-process
-//! open dies at D00, the name-keyed cells and profile `0x01` are refounded at
-//! D00/E01, and the commit witness is absorbed into the engine contract at E00.
+//! E01 landed the real flat read/write kernel and the ephemeral-memory attachment:
+//! a fresh in-memory store minted from a verified image's schema, sites, and
+//! deployment ceiling, driving read and single-write sessions bounded by
+//! `demand ∩ ceiling ∩ grant`. The parked boundary is the physical layout: the
+//! flat name-keyed root with one keyed record of scalar fields. Sparse structural
+//! values over nested branches and groups (E03) and composite keys with bounded
+//! traversal (E04) widen that layout in their own lanes; E01 never widens it.
 
 mod attach;
 mod physical;
 mod profile;
 mod store;
 
-pub use attach::{AttachError, AttachmentId, DeploymentCeiling, EphemeralAttachment};
+pub use attach::{
+    AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
+};
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
 use marrow_store::StoreError;

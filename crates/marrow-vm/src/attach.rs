@@ -14,8 +14,8 @@
 
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{
-    DemandCoverage, DeploymentCeiling, EphemeralAttachment, FieldSchema, InvocationGrant, SiteSpec,
-    SiteTarget, StoreSchema,
+    CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment, FieldSchema,
+    InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_verify::{
     CeilingDescriptor, ImageType, Scalar, SealedSite, SealedSiteTarget, SealedTestEntry,
@@ -55,7 +55,7 @@ pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> Durab
     let ceiling_descriptor = CeilingDescriptor::from_demand_union(image.test_demand_union());
     let ceiling = DeploymentCeiling::new(
         coverage(ceiling_descriptor.reads(), ceiling_descriptor.writes()),
-        *ceiling_descriptor.ceiling_id().bytes(),
+        CeilingIdToken::new(*ceiling_descriptor.ceiling_id().bytes()),
     );
     let mut attachment = match EphemeralAttachment::mint(schema, sites, ceiling) {
         Ok(attachment) => attachment,

@@ -218,7 +218,10 @@ fn a_failing_durable_assert_reports_run_assert() {
 /// last-write-wins, the `if const` binding guard over a present and an absent
 /// field, and cross-test attachment isolation. No raw seeder mints the state — a
 /// block that observes a present value writes it itself, and the fresh-attachment
-/// block proves one test never observes another's write.
+/// block writes its own sentinel first, then asserts that sentinel reads back while
+/// another test's key stays absent — so it proves fresh state regardless of run
+/// order (a reordering cannot make it pass vacuously, since a shared attachment
+/// would leak the other write).
 ///
 /// The tag's wider families are out of the flat read kernel's scope and stay with
 /// their owning lanes: whole-record read/coalesce and the whole-entry
@@ -290,6 +293,8 @@ fn flat_durable_place_behaviors_run_as_source_tests() {
          \x20   assert (^counters(77).value ?? 0) == 1\n\
          \n\
          test \"a fresh attachment does not observe another test's write\"\n\
+         \x20   ^counters(88).value = 2\n\
+         \x20   assert (^counters(88).value ?? -1) == 2\n\
          \x20   assert (^counters(77).value ?? -1) == -1\n",
     );
     write(&temp.join("marrow.ids"), COUNTERS_IDS);
