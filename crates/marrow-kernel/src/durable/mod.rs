@@ -58,10 +58,14 @@ pub enum SiteTarget {
     FieldLeaf(u16),
 }
 
-/// The verifier-derived durable demand of the export being run: whether it reads or
-/// writes the root. An input to the authority check, never a source of rights.
+/// The read/write coverage of a durable demand: whether it observes or mutates the
+/// store at all. This is the projection of the compiler-side
+/// `marrow_image::ExportDemand` atom set (its `reads()`/`writes()`) that the T01
+/// store ceiling checks; the store ceiling is read/write granular, so a
+/// path-granular ceiling reserves finer intersection for a later lane. An input to
+/// the authority check, never a source of rights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExportDemand {
+pub struct DemandCoverage {
     pub read: bool,
     pub write: bool,
 }

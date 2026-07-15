@@ -97,8 +97,29 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             .find(|test| test.name == entry.name())
             .expect("compiler and image agree on the test set");
 
-        // Family 3: a source-mapped runtime fault, or a pass. Tests are storeless, so
-        // the VM runs with no session; a durable op would be a verifier rejection.
+        // A durable test entry — one whose reconstructed demand is nonempty — cannot
+        // run yet: ephemeral-memory durable execution returns at E01, which mints a
+        // fresh test attachment bounded by the test-image demand union. In the
+        // trough its demand is recorded (so E01 can bound authority) but the test is
+        // reported as the durable trough rather than run storeless.
+        if !entry.demand().is_empty() {
+            errored += 1;
+            records.push(TestRecord {
+                name: entry.name().to_string(),
+                file: meta.file.clone(),
+                decl_line: meta.line,
+                decl_column: meta.column,
+                outcome: TestOutcome::Errored {
+                    code: Code::CliDurableUnsupported.as_str(),
+                    line: meta.line,
+                    column: meta.column,
+                },
+            });
+            continue;
+        }
+
+        // Family 3: a source-mapped runtime fault, or a pass. A storeless test runs
+        // with no session.
         let outcome = match marrow_vm::run(&image, entry.func(), Vec::new()) {
             Ok(_) => {
                 passed += 1;

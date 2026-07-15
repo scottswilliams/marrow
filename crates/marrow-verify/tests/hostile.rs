@@ -433,6 +433,64 @@ fn put_export(code: Vec<Instr>) -> ImageDraft {
     draft
 }
 
+/// Encode a read-only export `read(k:string): T?` that reads the field at site index
+/// `site` (one of the sites `durable_schema` registers) returning `ret`.
+fn read_field_export(site: u16, ret: ImageType) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("read");
+    let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Text)],
+        ret,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "read"), func);
+    draft
+}
+
+#[test]
+fn the_durable_opcode_site_determines_the_reconstructed_demand() {
+    // Two read exports that differ only in the field a durable opcode reads. Demand
+    // is reconstructed from the sealed site the bytecode names — there is no
+    // serialized demand summary — so a change to which site an opcode reads changes
+    // the reconstructed atom's path and the export's demand id.
+    let value_site = {
+        let mut probe = ImageDraft::new();
+        durable_schema(&mut probe).1
+    };
+    let label_site = {
+        let mut probe = ImageDraft::new();
+        durable_schema(&mut probe).2
+    };
+    let value = read_field_export(value_site, ImageType::opt_scalar(Scalar::Int));
+    let label = read_field_export(label_site, ImageType::opt_scalar(Scalar::Text));
+
+    let value_image = verify(&value.encode().unwrap().bytes).expect("value read verifies");
+    let label_image = verify(&label.encode().unwrap().bytes).expect("label read verifies");
+
+    let value_export = &value_image.exports()[0];
+    let label_export = &label_image.exports()[0];
+
+    // Each demands a single read atom on its own field node.
+    assert_eq!(value_export.demand().atoms().len(), 1);
+    assert_eq!(
+        *value_export.demand().atoms()[0].path().node_id().bytes(),
+        VALUE_FIELD_ID
+    );
+    assert_eq!(
+        *label_export.demand().atoms()[0].path().node_id().bytes(),
+        LABEL_FIELD_ID
+    );
+    // Different sites read, so the demand identities differ.
+    assert_ne!(value_export.demand_id(), label_export.demand_id());
+}
+
 #[test]
 fn durable_put_export_verifies() {
     // The well-formed baseline the flow hostiles derive from.

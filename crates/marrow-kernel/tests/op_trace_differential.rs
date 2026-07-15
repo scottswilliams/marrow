@@ -10,7 +10,7 @@
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    CommitResult, CreateOutcome, Durable, DurableStore, EntryValue, ExportDemand, FieldSchema,
+    CommitResult, CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema,
     InvocationGrant, NextKey, Presence, Reopen, ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
@@ -95,15 +95,15 @@ fn entry(value: i64, label: Option<&str>) -> EntryValue {
     }
 }
 
-fn write() -> ExportDemand {
-    ExportDemand {
+fn write() -> DemandCoverage {
+    DemandCoverage {
         read: true,
         write: true,
     }
 }
 
-fn read() -> ExportDemand {
-    ExportDemand {
+fn read() -> DemandCoverage {
+    DemandCoverage {
         read: true,
         write: false,
     }

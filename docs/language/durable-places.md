@@ -378,3 +378,24 @@ pub fn remove(id: int)
 
 Deleting a sparse field that is already absent is a no-op. Deleting a required
 field is rejected. Deleting a whole entry removes the entry and its fields.
+
+## Access Demand
+
+Each exported function has a derived **access demand**: the set of durable places
+its whole call graph touches, paired with the operation each makes there. An
+operation is one of `read`, `write`, `presence`, `erase`, or `iterate` — the same
+source vocabulary the operations above are written in. A place is named by its
+durable path (the resource root and, for a field operation, the field), not by a
+storage location. A function that reads one field demands `read` of that field; a
+function that reads a field and then writes it demands both `read` and `write` of
+that field.
+
+Demand describes the access a program *requires*; it never grants access. The
+compiler emits the operation points and the verifier independently rebuilds each
+export's demand from them — the demand is not stored in the program image. Two
+exports that touch the same place with the same operation carry the same demand
+atom, and a program-wide union of every export's demand describes the whole
+program's durable footprint. Whether an invocation is permitted to exercise a
+demand is a separate concern that intersects demand with the access a deployment
+and an invocation allow; that intersection is not yet part of the current
+language.

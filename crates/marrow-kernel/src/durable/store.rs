@@ -9,8 +9,8 @@ use marrow_store::{ByteEngine, CommitOutcome, ReadView, StoreError, WriteTxn};
 use super::physical::{self, CellKind};
 use super::profile;
 use super::{
-    AuthTarget, AuthorizedSite, CommitResult, CreateOutcome, Denied, EntryValue, EraseOutcome,
-    ExportDemand, InvocationGrant, KernelFault, NextKey, Presence, Reopen, ReplaceOutcome,
+    AuthTarget, AuthorizedSite, CommitResult, CreateOutcome, DemandCoverage, Denied, EntryValue,
+    EraseOutcome, InvocationGrant, KernelFault, NextKey, Presence, Reopen, ReplaceOutcome,
     SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use crate::codec::key::{KeyScalar, decode_key_value, encode_key_value};
@@ -164,7 +164,7 @@ impl<E: ByteEngine> DurableStore<E> {
     pub fn read_session(
         &mut self,
         grant: InvocationGrant,
-        demand: ExportDemand,
+        demand: DemandCoverage,
     ) -> Result<ReadSession<'_, E>, SessionError> {
         resolve_authority(demand, self.ceiling_writable, grant)
             .map_err(|Denied| SessionError::Denied)?;
@@ -183,7 +183,7 @@ impl<E: ByteEngine> DurableStore<E> {
     pub fn txn_session(
         &mut self,
         grant: InvocationGrant,
-        demand: ExportDemand,
+        demand: DemandCoverage,
     ) -> Result<TxnSession<'_, E>, SessionError> {
         resolve_authority(demand, self.ceiling_writable, grant)
             .map_err(|Denied| SessionError::Denied)?;
@@ -229,7 +229,7 @@ const WITNESS: &str = "witness";
 /// it is only checked. The store ceiling permits reads unconditionally and writes
 /// only when the handle is writable.
 fn resolve_authority(
-    demand: ExportDemand,
+    demand: DemandCoverage,
     ceiling_writable: bool,
     grant: InvocationGrant,
 ) -> Result<(), Denied> {
@@ -786,8 +786,8 @@ mod tests {
 
     use super::super::physical;
     use super::super::{
-        CommitResult, EntryValue, ExportDemand, FieldSchema, InvocationGrant, KernelFault, NextKey,
-        SiteSpec, SiteTarget, StoreSchema,
+        CommitResult, DemandCoverage, EntryValue, FieldSchema, InvocationGrant, KernelFault,
+        NextKey, SessionError, SiteSpec, SiteTarget, StoreSchema,
     };
     use super::{Durable, DurableStore};
     use crate::codec::key::KeyScalar;
@@ -832,18 +832,48 @@ mod tests {
         }
     }
 
-    fn write_demand() -> ExportDemand {
-        ExportDemand {
+    fn write_demand() -> DemandCoverage {
+        DemandCoverage {
             read: true,
             write: true,
         }
     }
 
-    fn read_demand() -> ExportDemand {
-        ExportDemand {
+    fn read_demand() -> DemandCoverage {
+        DemandCoverage {
             read: true,
             write: false,
         }
+    }
+
+    #[test]
+    fn the_authority_triple_admits_the_union_and_checks_the_named_record() {
+        // The compiler-side demand reaches the triple as read/write coverage: a
+        // whole-program union for admission, a named export's record for invocation.
+        // Under a read-only grant, a read-only record is admitted while a writing
+        // record — including the union of a program that writes — is denied. Demand
+        // never grants; the grant is the intersecting term.
+        let read_grant = InvocationGrant {
+            read: true,
+            write: false,
+        };
+
+        // Invocation of a read-only export: admitted under the read-only grant.
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        assert!(store.read_session(read_grant, read_demand()).is_ok());
+
+        // Admission of a program whose union writes: denied under the read-only grant.
+        assert!(matches!(
+            store.txn_session(read_grant, write_demand()),
+            Err(SessionError::Denied)
+        ));
+
+        // A full grant admits the writing union.
+        assert!(
+            store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .is_ok()
+        );
     }
 
     #[test]

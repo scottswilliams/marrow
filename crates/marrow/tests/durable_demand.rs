@@ -8,7 +8,10 @@
 //! surface: the verifier reconstructs each export's atoms from the sealed sites its
 //! closure references, and nothing about demand is serialized into the image.
 
-use marrow_verify::{DemandSetId, ImageId, OperationClass, SealedExport, VerifiedImage};
+use marrow_kernel::durable::DemandCoverage;
+use marrow_verify::{
+    DemandSetId, ExportDemand, ImageId, OperationClass, SealedExport, VerifiedImage,
+};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -31,9 +34,9 @@ const HEADER: &str = "resource Counter\n\
 const VALUE_FIELD: [u8; 16] = [0x0e; 16];
 const LABEL_FIELD: [u8; 16] = [0x0f; 16];
 
-/// Compile and verify one `src/main.mw` through the production path, returning the
-/// verified image and its `ImageId`.
-fn compile_verify(source: &str) -> (VerifiedImage, ImageId) {
+/// Compile one `src/main.mw` through the production path, returning its canonical
+/// image bytes and `ImageId`.
+fn compile_bytes(source: &str) -> (Vec<u8>, ImageId) {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -47,8 +50,15 @@ fn compile_verify(source: &str) -> (VerifiedImage, ImageId) {
     )
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
-    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    (image, compiled.image.image_id)
+    (compiled.image.bytes, compiled.image.image_id)
+}
+
+/// Compile and verify one `src/main.mw` through the production path, returning the
+/// verified image and its `ImageId`.
+fn compile_verify(source: &str) -> (VerifiedImage, ImageId) {
+    let (bytes, image_id) = compile_bytes(source);
+    let image = marrow_verify::verify(&bytes).expect("verify");
+    (image, image_id)
 }
 
 /// The export whose entry function is named `name`.
@@ -220,4 +230,127 @@ fn reachable_sites_are_image_local_and_not_in_the_demand_id() {
     // which is a pure function of the atom set.
     assert!(!read.reachable_sites().is_empty());
     assert!(bump.reachable_sites().len() >= read.reachable_sites().len());
+}
+
+// --- Reverse incidence and the no-serialized-summary absence assertion. ---
+
+#[test]
+fn demand_incidence_reverses_the_export_map() {
+    let (image, _) = compile_verify(&two_export_source("", ""));
+    let incidence = image.demand_incidence();
+
+    // Both exports touch only the `value` field, so there is exactly one incidence
+    // node, and it is that field.
+    assert_eq!(incidence.len(), 1);
+    let node = &incidence[0];
+    assert_eq!(*node.path.node_id().bytes(), VALUE_FIELD);
+
+    // The node is read by both exports and written by `bump` — the reverse of the
+    // per-export demand, derived from the call closure.
+    let bump = export_named(&image, "bump").id();
+    let read = export_named(&image, "readValue").id();
+    assert!(
+        node.touched_by
+            .iter()
+            .any(|inc| inc.export == read && inc.class == OperationClass::Read)
+    );
+    assert!(
+        node.touched_by
+            .iter()
+            .any(|inc| inc.export == bump && inc.class == OperationClass::Write)
+    );
+    // Exactly a read from each export plus a write from `bump`.
+    assert_eq!(node.touched_by.len(), 3);
+}
+
+#[test]
+fn the_image_serializes_no_demand_summary() {
+    // Demand is verifier-reconstructed. The image carries operation sites and
+    // bytecode but no demand, incidence, or consequence summary — so no export's
+    // demand id (a hash the verifier never reads) appears anywhere in the bytes.
+    let (bytes, _) = compile_bytes(&two_export_source("", ""));
+    let image = marrow_verify::verify(&bytes).expect("verify");
+
+    for export in image.exports() {
+        assert!(
+            !contains(&bytes, export.demand_id().bytes()),
+            "an export demand id must not be serialized in the image"
+        );
+    }
+    assert!(
+        !contains(&bytes, image.demand_union().demand_set_id().bytes()),
+        "the demand union id must not be serialized in the image"
+    );
+    // The image container still has exactly its ten sections — no demand section was
+    // added — and re-verifying rebuilds identical demand from the same bytes.
+    let again = marrow_verify::verify(&bytes).expect("verify again");
+    for (a, b) in image.exports().iter().zip(again.exports()) {
+        assert_eq!(a.demand_id(), b.demand_id());
+    }
+}
+
+/// Whether `needle` occurs as a contiguous subsequence of `haystack`.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+// --- Ceiling admission vs. invocation coverage feeding the kernel triple. ---
+
+/// The read/write coverage the store ceiling checks, projected from an image
+/// demand. This is the seam a durable runtime driver crosses at E01: the stable
+/// atom set feeds the kernel's authority triple (`marrow-kernel`, which owns the
+/// engine) through its read/write coverage. The intersection with a ceiling and a
+/// grant is the kernel's; here the projection and the union-vs-named distinction
+/// the triple consumes are asserted at the compiler surface.
+fn coverage(demand: &ExportDemand) -> DemandCoverage {
+    DemandCoverage {
+        read: demand.reads(),
+        write: demand.writes(),
+    }
+}
+
+#[test]
+fn admission_coverage_is_the_union_while_invocation_coverage_is_the_named_record() {
+    let (image, _) = compile_verify(&two_export_source("", ""));
+
+    // Ceiling admission projects the whole-program union. The program both reads and
+    // writes, so admission must be granted read and write.
+    let union = coverage(&image.demand_union());
+    assert_eq!(
+        union,
+        DemandCoverage {
+            read: true,
+            write: true
+        }
+    );
+
+    // Invocation projects the *named* export. The read-only export needs only read,
+    // even though the program union also writes — invocation uses the record, not the
+    // union.
+    let read_export = coverage(export_named(&image, "readValue").demand());
+    assert_eq!(
+        read_export,
+        DemandCoverage {
+            read: true,
+            write: false
+        }
+    );
+
+    // The mutating export needs both.
+    let bump_export = coverage(export_named(&image, "bump").demand());
+    assert_eq!(
+        bump_export,
+        DemandCoverage {
+            read: true,
+            write: true
+        }
+    );
+
+    // The union coverage dominates every export's coverage: whatever an invocation
+    // demands, admission of the union already covers.
+    for export in image.exports() {
+        let c = coverage(export.demand());
+        assert!(union.read || !c.read);
+        assert!(union.write || !c.write);
+    }
 }

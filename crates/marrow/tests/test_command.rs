@@ -123,6 +123,62 @@ fn assert_outside_a_test_is_a_check_diagnostic() {
     assert!(stdout.contains("check.assert_outside_test"), "{output:?}");
 }
 
+/// The identity ledger for the durable `counters` resource used below.
+const COUNTERS_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+/// A durable test — one whose body reads durable data — verifies and records its
+/// demand, but cannot run in the durable trough: `marrow test` reports it as the
+/// typed durable-unsupported outcome rather than running it storeless (which would
+/// have no session). Ephemeral durable test execution returns at E01. A storeless
+/// test in the same project still runs and passes.
+#[test]
+fn a_durable_test_reports_the_trough_outcome() {
+    let temp = TempDir::new("durable-test");
+    project(
+        &temp,
+        "resource Counter\n\
+         \x20   required value: int\n\
+         \x20   label: string\n\
+         \n\
+         store ^counters(id: int): Counter\n\
+         \n\
+         test \"storeless holds\"\n\
+         \x20   assert 1 + 1 == 2\n\
+         \n\
+         test \"durable probe\"\n\
+         \x20   assert exists(^counters(1)) == false\n",
+    );
+    write(&temp.join("marrow.ids"), COUNTERS_IDS);
+
+    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The durable test cannot run in the trough, so the command exits nonzero.
+    assert!(!output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    let storeless = lines
+        .iter()
+        .find(|l| l.contains(r#""name":"storeless holds""#))
+        .unwrap_or_else(|| panic!("no storeless record: {stdout}"));
+    assert!(storeless.contains(r#""outcome":"passed""#), "{storeless}");
+
+    let durable = lines
+        .iter()
+        .find(|l| l.contains(r#""name":"durable probe""#))
+        .unwrap_or_else(|| panic!("no durable record: {stdout}"));
+    assert!(durable.contains(r#""outcome":"errored""#), "{durable}");
+    assert!(durable.contains("cli.durable_unsupported"), "{durable}");
+}
+
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
 fn filter_selects_a_subset_by_name() {
