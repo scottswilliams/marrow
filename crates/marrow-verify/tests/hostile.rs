@@ -1181,6 +1181,53 @@ fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
     assert_eq!(code_of(&bytes), "image.flow");
 }
 
+/// A presence fact established before a loop does not survive the loop header when the
+/// body erases the entry through the same key slot. The header is a merge of the
+/// pre-loop edge (slot 0 proven present by the `exists` guard) and the back edge (slot
+/// 0 erased in the body); the intersection-join kills the fact, so a strict set placed
+/// after the loop is refused at the flow phase. This pins the backedge kill explicitly:
+/// without intersection at the header the stale pre-loop fact would wrongly dominate.
+#[test]
+fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let text = draft.intern_text("x");
+    // Instruction-index layout (targets are draft-form indices):
+    //   0 TxnBegin
+    //   1 LocalGet(0); 2 DurExists(0); 3 JumpIfFalse(15) — present edge proves slot 0.
+    //   4 loop header (merge of the pre-loop edge and the back edge at 9).
+    //   4 LocalGet(1); 5 DurExists(0); 6 JumpIfFalse(10) — loop-continue test on slot 1.
+    //   7 LocalGet(0); 8 DurEraseEntry(0) — body erases the entry keyed by slot 0.
+    //   9 Jump(4) — back edge; slot 0 is absent on this edge.
+    //   10 strict set on slot 0 (rejected: killed by the header intersection).
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(0),
+            Instr::JumpIfFalse(15),
+            Instr::LocalGet(1),
+            Instr::DurExists(0),
+            Instr::JumpIfFalse(10),
+            Instr::LocalGet(0),
+            Instr::DurEraseEntry(0),
+            Instr::Jump(4),
+            Instr::ConstLoad(text.index()),
+            Instr::SomeWrap,
+            Instr::DurSetSparsePresent {
+                site: 2,
+                key_slot: 0,
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.flow");
+}
+
 #[test]
 fn flow_transaction_owner_may_not_be_called_rejects() {
     // A helper owns a transaction (contains TxnBegin); an export that calls it is a

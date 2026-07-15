@@ -2731,6 +2731,16 @@ fn read_entry_guard_slot(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Optio
 /// The key slot of a whole-entry create at `index`: `LocalGet(S); LocalGet(record);
 /// DurCreateEntry`. The key is the operand below the record, so the create's key
 /// comes from the `LocalGet` two back when the record is a single local push.
+///
+/// Soundness of shape-adjacent slot identification (this fn and `adjacent_key_slot`):
+/// on the phase-3 subset, create and erase target only the `WholePayload` site and the
+/// durable graph admits a single root (`MAX_ROOTS == 1`, `marrow_image::bounds`). With
+/// one root every entry key names the same containing entry, so a key slot alone fully
+/// discriminates which entry the write establishes or kills — the adjacent `LocalGet`
+/// is that key. When `MAX_ROOTS` widens this no longer holds: two writes through the
+/// same slot value could touch different roots' entries, and the presence lattice must
+/// key on (root, slot) rather than slot alone. Revisit both helpers for per-root slot
+/// discrimination before admitting more than one root.
 fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
     if index < 2 {
         return None;
