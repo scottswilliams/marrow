@@ -815,9 +815,10 @@ impl<'a> IdentityResolver<'a> {
 
     /// Resolve and validate one index's ordered projection into leaf references, or
     /// `None` (with a diagnostic and the graph marked incomplete) on any violation. A
-    /// component resolves to an identity key or a top-level orderable-key field; a
-    /// nonunique index must additionally end with every identity key in declaration
-    /// order and carry no identity key in a leading position.
+    /// component resolves to an identity key or a top-level orderable-key field and
+    /// appears at most once; a nonunique index must additionally end with every
+    /// identity key in declaration order and carry no identity key in a leading
+    /// position.
     fn resolve_index_components(
         &mut self,
         index: &IndexDecl,
@@ -828,8 +829,22 @@ impl<'a> IdentityResolver<'a> {
         let mut leading_key = false;
         let trailing_start = index.args.len().saturating_sub(keys.len());
         let mut ok = true;
+        let mut seen_args: Vec<&str> = Vec::with_capacity(index.args.len());
         for (position, arg) in index.args.iter().enumerate() {
             let span = index.arg_spans.get(position).copied().unwrap_or(index.span);
+            if seen_args.contains(&arg.as_str()) {
+                self.reject_index(
+                    span,
+                    format!(
+                        "index `{}` repeats component `{arg}`; each projection component appears \
+                         at most once",
+                        index.name
+                    ),
+                );
+                ok = false;
+                continue;
+            }
+            seen_args.push(arg);
             if arg.contains('.') {
                 self.reject_index(
                     span,

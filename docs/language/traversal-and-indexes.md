@@ -148,7 +148,8 @@ pub fn label(): string
 ```
 
 Each index argument names either one store identity column or one plain top-level
-field of the stored resource, in projection order. A non-unique index must end with
+field of the stored resource, in projection order, and no component may repeat. A
+non-unique index must end with
 every identity key in declaration order, with no identity key in a leading position;
 a `unique` index may omit the identity keys. A field reached through an unkeyed
 group, a keyed child layer, or a keyed positional leaf cannot be an index component.

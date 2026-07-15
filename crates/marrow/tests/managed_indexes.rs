@@ -11,8 +11,8 @@
 //! (runtime maintenance and traversal land at E05).
 
 use marrow_verify::{
-    DurableIndexComponent, LedgerIdBytes, SealedInstr, SealedSite, SemanticNodeKind,
-    SemanticStepKind, SemanticTarget,
+    DurableIndexComponent, LedgerIdBytes, SealedSite, SemanticNodeKind, SemanticStepKind,
+    SemanticTarget,
 };
 
 fn rep(byte: u8) -> LedgerIdBytes {
@@ -195,30 +195,57 @@ fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
 
 #[test]
 fn no_application_opcode_maintains_a_managed_index() {
-    // The keep-list law and the release veto: an index has no application write path.
-    // The absence is structural — there is no index-write opcode and no index-write
-    // site kind — so no verified instruction over any indexed program is an index
-    // mutation. A whole-graph program that declares indexes still emits only the
-    // ordinary durable/pure opcodes; none of its mutations touches an index cell.
-    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
-    for function in image.functions() {
-        for instr in function.instrs() {
-            assert!(
-                !is_index_write(instr),
-                "no verified instruction may maintain a managed index",
-            );
-        }
-    }
-}
+    // The keep-list law and the release veto: managed-index maintenance is
+    // compiler-owned and has no application write path. The absence is structural,
+    // enforced on the two independent owners so that adding an index-write path here
+    // trips this gate conspicuously: the frozen opcode set names no durable
+    // index-maintenance opcode, and the operation-target set names no index *write*
+    // target.
 
-/// Whether an instruction writes a managed index. No such instruction exists — the
-/// opcode space contains no index-maintenance opcode — so this is always false; the
-/// function documents the closed mutation set the absence assertion rests on.
-fn is_index_write(instr: &SealedInstr) -> bool {
-    // The complete durable-mutation set (`is_mutation`) is field/entry writes only;
-    // none names an index. There is deliberately no `DurIndex*` variant to match.
-    let _ = instr.is_mutation();
-    false
+    // (1) No `OP_DUR_*` opcode names an index. Scanning the frozen opcode constants of
+    // `marrow-image`'s `instr.rs` by source text — as the workspace's other tidy gates
+    // scan source — keeps the law honest against a future `OP_DUR_INDEX_*` byte.
+    let instr_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../marrow-image/src/instr.rs"
+    ));
+    for line in instr_src.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("pub const OP_DUR_") else {
+            continue;
+        };
+        let name = rest
+            .split(|c: char| c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or(rest);
+        assert!(
+            !name.contains("INDEX"),
+            "durable opcode `OP_DUR_{name}` names an index; managed-index maintenance \
+             must remain compiler-owned with no application opcode",
+        );
+    }
+
+    // (2) `SemanticTarget` carries exactly the whole-payload, field-leaf, and two index
+    // *read* targets and no index *write* target. The exhaustive match fails to compile
+    // if a variant is added until it is classified, and an index-write classification
+    // trips the assertion.
+    for target in [
+        SemanticTarget::WholePayload,
+        SemanticTarget::FieldLeaf,
+        SemanticTarget::IndexScan,
+        SemanticTarget::IndexLookup,
+    ] {
+        let is_index_write = match target {
+            SemanticTarget::WholePayload
+            | SemanticTarget::FieldLeaf
+            | SemanticTarget::IndexScan
+            | SemanticTarget::IndexLookup => false,
+        };
+        assert!(
+            !is_index_write,
+            "SemanticTarget::{target:?} is an index-write target; managed-index \
+             maintenance must remain compiler-owned with no operation-target write path",
+        );
+    }
 }
 
 #[test]
@@ -278,6 +305,14 @@ fn a_nonunique_index_omitting_the_identity_key_is_rejected() {
 #[test]
 fn a_nonunique_index_with_the_identity_key_not_last_is_rejected() {
     let source = base_source("    index byShelf(id, shelf)\n");
+    assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
+}
+
+#[test]
+fn an_index_repeating_a_projection_component_is_rejected() {
+    // A repeated component adds no ordering distinction and would double-maintain one
+    // cell; each projection component appears at most once.
+    let source = base_source("    index byShelf(shelf, shelf, id)\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
 }
 
