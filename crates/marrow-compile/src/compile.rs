@@ -19,7 +19,7 @@ use marrow_syntax::{
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
-use crate::lower::{FnLowerer, FunctionRegistry};
+use crate::lower::{FnLowerer, FunctionRegistry, is_reserved_builtin_name, reserved_builtin_name};
 use crate::types::TypeRegistry;
 
 /// One resolved public export: its dotted module, its item name, and the stable
@@ -514,8 +514,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
 }
 
 /// Report a `check.name_conflict` for every function name declared more than once
-/// within a single module (a `Call` must resolve to a unique target). Functions of
-/// the same name in different modules are distinct and do not conflict.
+/// within a single module (a `Call` must resolve to a unique target) and for every
+/// function whose name is a reserved built-in the compiler intercepts in call
+/// position (`some`/`exists`/`trim`/...); such a function would be admitted and
+/// then never reached. Functions of the same name in different modules are distinct
+/// and do not conflict.
 fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut Vec<SourceDiagnostic>) {
     for module in parsed {
         let mut seen: Vec<&str> = Vec::new();
@@ -523,6 +526,14 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut Vec<SourceDia
             let Declaration::Function(function) = declaration else {
                 continue;
             };
+            if is_reserved_builtin_name(&function.name) {
+                diagnostics.push(reserved_builtin_name(
+                    &module.file,
+                    function.span,
+                    &function.name,
+                ));
+                continue;
+            }
             if seen.contains(&function.name.as_str()) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckNameConflict.as_str(),

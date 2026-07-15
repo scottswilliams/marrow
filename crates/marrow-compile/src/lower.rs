@@ -280,6 +280,72 @@ impl CtorKind {
     }
 }
 
+/// A value-level built-in the compiler intercepts before user resolution: the
+/// `Option`/`Result` constructors (`none`/`some`/`ok`/`err`), the presence test
+/// (`exists`), the divergence marker (`unreachable`), and the pure text floor
+/// (`isEmpty`/`contains`/`trim`). None of these spellings is a keyword, so the
+/// parser admits them as identifiers; the reservation is enforced here instead.
+///
+/// This enum is the single owner of that name set. Call interception dispatches
+/// on `from_name` (see `lower_unqualified_call`), and declaration rejection
+/// consults the same classifier through [`is_reserved_builtin_name`], so a name
+/// that is intercepted at a use site can never be silently shadowed by a
+/// colliding value declaration. Adding a built-in is a new variant, which the
+/// exhaustive dispatch match forces every consumer to account for.
+#[derive(Debug, Clone, Copy)]
+enum Builtin {
+    None,
+    Some,
+    Ok,
+    Err,
+    Exists,
+    Unreachable,
+    IsEmpty,
+    Contains,
+    Trim,
+}
+
+impl Builtin {
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "none" => Builtin::None,
+            "some" => Builtin::Some,
+            "ok" => Builtin::Ok,
+            "err" => Builtin::Err,
+            "exists" => Builtin::Exists,
+            "unreachable" => Builtin::Unreachable,
+            "isEmpty" => Builtin::IsEmpty,
+            "contains" => Builtin::Contains,
+            "trim" => Builtin::Trim,
+            _ => return None,
+        })
+    }
+}
+
+/// Whether `name` is a reserved value-level built-in that a `fn`, `const`,
+/// parameter, or local binding may not redeclare. A colliding value declaration
+/// would be admitted and then silently shadowed at every use site the compiler
+/// intercepts (`some(v)`, bare `none`, `trim(s)`, ...), surfacing later as a
+/// confusing type error; rejecting the declaration keeps the reserved name and
+/// its interception the single fact.
+///
+/// Struct fields and enum variants are excluded: both are reached only through
+/// member syntax (`r.none`, `Color::err`), never a bare or unqualified-call use,
+/// so they cannot collide with an intercepted built-in.
+pub(crate) fn is_reserved_builtin_name(name: &str) -> bool {
+    Builtin::from_name(name).is_some()
+}
+
+/// The diagnostic for a value declaration whose name is a reserved built-in.
+pub(crate) fn reserved_builtin_name(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckNameConflict.as_str(),
+        file,
+        span,
+        format!("`{name}` is a built-in and cannot be redeclared"),
+    )
+}
+
 /// Classify an expression as a built-in constructor form: bare `none`, or a call
 /// `some(..)`/`ok(..)`/`err(..)`. Returns `None` for anything else.
 fn constructor_kind(expr: &Expression) -> Option<CtorKind> {
@@ -632,6 +698,9 @@ impl<'a> FnLowerer<'a> {
         for param in &function.params {
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
+            }
+            if is_reserved_builtin_name(&param.name) {
+                lowerer.fail(reserved_builtin_name(file, function.span, &param.name));
             }
             let Some(ty) = lowerer.param_type(&param.ty) else {
                 continue;
@@ -1011,6 +1080,10 @@ impl<'a> FnLowerer<'a> {
         value: &Expression,
         mutable: bool,
     ) {
+        if is_reserved_builtin_name(name) {
+            self.fail(reserved_builtin_name(self.file, value.span(), name));
+            return;
+        }
         let ty = if let Some(annotation) = annotation {
             let Some(expected) = self.resolve(annotation) else {
                 self.fail(unsupported(
@@ -1331,6 +1404,10 @@ impl<'a> FnLowerer<'a> {
         else_ifs: &[ElseIf],
         else_block: Option<&Block>,
     ) -> Flow {
+        if is_reserved_builtin_name(name) {
+            self.fail(reserved_builtin_name(self.file, value.span(), name));
+            return Flow::Fallthrough;
+        }
         let Some(optional) = self.lower_expr(value) else {
             return Flow::Fallthrough;
         };
@@ -2611,33 +2688,45 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<CallResult> {
-        if name == "exists" {
-            return self.lower_exists(args, span).map(CallResult::Value);
-        }
-        if name == "unreachable" {
-            return self.lower_unreachable(args, span);
-        }
-        // The built-in constructors are reserved call names. `some(v)` infers its
-        // Option from `v`; `ok`/`err` cannot infer the whole Result, so they need an
-        // expected type (an annotation, argument, return, or coerced position).
-        if name == "some" {
-            return self.lower_some_infer(args, span).map(CallResult::Value);
-        }
-        if name == "ok" || name == "err" {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                span,
-                format!(
-                    "the Result type of `{name}` cannot be inferred here; use it where a Result is expected"
-                ),
-            ));
-            return None;
-        }
-        if matches!(name, "isEmpty" | "contains" | "trim") {
-            return self
-                .lower_text_builtin(name, args, span)
-                .map(CallResult::Value);
+        // The reserved built-ins are intercepted before any user resolution, so a
+        // colliding declaration (rejected at its declaration site) can never reach
+        // here. Dispatching on the shared classifier keeps interception and
+        // declaration rejection reading the same fact.
+        if let Some(builtin) = Builtin::from_name(name) {
+            return match builtin {
+                Builtin::Exists => self.lower_exists(args, span).map(CallResult::Value),
+                Builtin::Unreachable => self.lower_unreachable(args, span),
+                // `some(v)` infers its Option from `v`; `ok`/`err` cannot infer the
+                // whole Result, so they need an expected type (an annotation,
+                // argument, return, or coerced position).
+                Builtin::Some => self.lower_some_infer(args, span).map(CallResult::Value),
+                Builtin::Ok | Builtin::Err => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!(
+                            "the Result type of `{name}` cannot be inferred here; use it where a Result is expected"
+                        ),
+                    ));
+                    None
+                }
+                Builtin::IsEmpty | Builtin::Contains | Builtin::Trim => self
+                    .lower_text_builtin(name, args, span)
+                    .map(CallResult::Value),
+                // `none` is the payloadless Option constructor; it carries no
+                // arguments, so a call form has no meaning.
+                Builtin::None => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        "`none` takes no arguments; write `none` where an Option is expected"
+                            .to_string(),
+                    ));
+                    None
+                }
+            };
         }
         // A scalar-type spelling in call position is a conversion, resolved before
         // records/functions so a conversion is never shadowed. The admitted set is

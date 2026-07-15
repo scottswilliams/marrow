@@ -62,6 +62,12 @@ impl ConstRegistry {
     ) -> Self {
         let mut entries: BTreeMap<String, Vec<(String, ConstScalar)>> = BTreeMap::new();
         for (module, file, decl) in consts {
+            if crate::lower::is_reserved_builtin_name(&decl.name) {
+                diagnostics.push(crate::lower::reserved_builtin_name(
+                    file, decl.span, &decl.name,
+                ));
+                continue;
+            }
             let module_entries = entries.entry(module.clone()).or_default();
             if module_entries.iter().any(|(name, _)| name == &decl.name) {
                 diagnostics.push(SourceDiagnostic::at(

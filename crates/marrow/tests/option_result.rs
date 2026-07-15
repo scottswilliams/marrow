@@ -232,3 +232,89 @@ fn an_uninferable_bare_constructor_is_reported() {
         );
     }
 }
+
+/// Every value-level built-in the compiler intercepts before user resolution —
+/// the `Option`/`Result` constructors (`none`/`some`/`ok`/`err`), the presence
+/// test (`exists`), the divergence marker (`unreachable`), and the pure text
+/// floor (`isEmpty`/`contains`/`trim`) — is reserved at every value-binding
+/// declaration site. A `fn`, module `const`, parameter, local `const`/`var`, or
+/// `if const` binding that reuses one is a `check.name_conflict` at the
+/// declaration, not a declaration that is admitted and then silently shadowed at
+/// its use site (surfacing later as a confusing `check.type`).
+#[test]
+fn redeclaring_a_reserved_builtin_value_name_is_reported() {
+    const NAMES: [&str; 9] = [
+        "none",
+        "some",
+        "ok",
+        "err",
+        "exists",
+        "unreachable",
+        "isEmpty",
+        "contains",
+        "trim",
+    ];
+    for name in NAMES {
+        let sources = [
+            // module function
+            format!("pub fn {name}(): int\n    return 0\n\npub fn f(): int\n    return 0\n"),
+            // module constant
+            format!("const {name}: int = 1\n\npub fn f(): int\n    return 0\n"),
+            // parameter
+            format!("pub fn g({name}: int): int\n    return 0\n\npub fn f(): int\n    return 0\n"),
+            // local constant
+            format!("pub fn f(): int\n    const {name} = 1\n    return 0\n"),
+            // local variable
+            format!("pub fn f(): int\n    var {name} = 1\n    return 0\n"),
+            // if-const binding
+            format!(
+                "pub fn maybe(): Option[int]\n    return some(1)\n\n\
+                 pub fn f(): int\n    if const {name} = maybe()\n        return 0\n    return 0\n"
+            ),
+        ];
+        for source in sources {
+            let temp = TempDir::new("reserved-value");
+            project(&temp, &source);
+            let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(!output.status.success(), "{source}\n{stdout}");
+            assert!(
+                stdout.contains(r#""code":"check.name_conflict""#),
+                "{source}\n{stdout}"
+            );
+        }
+    }
+}
+
+/// The reserved-built-in family covers only bare and unqualified-call use sites,
+/// so a struct field or an enum variant that spells a built-in name does not
+/// collide: both are reached solely through member syntax (`s.none`, `E::ok`),
+/// which no built-in ever occupies. Such a program checks and runs.
+#[test]
+fn a_struct_field_or_enum_variant_may_spell_a_builtin_name() {
+    let temp = TempDir::new("member-name-ok");
+    project(
+        &temp,
+        "struct S\n\
+         \x20   none: int\n\
+         \x20   trim: int\n\
+         \n\
+         enum E\n\
+         \x20   ok\n\
+         \x20   err\n\
+         \n\
+         pub fn pick(b: bool): E\n\
+         \x20   if b\n\
+         \x20       return E::ok\n\
+         \x20   return E::err\n\
+         \n\
+         pub fn f(): int\n\
+         \x20   const s = S(none: 3, trim: 4)\n\
+         \x20   return s.none + s.trim\n",
+    );
+    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":7"#), "{stdout}");
+    assert!(!stdout.contains("name_conflict"), "{stdout}");
+}

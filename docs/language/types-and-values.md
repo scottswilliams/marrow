@@ -300,9 +300,11 @@ after invalidation.
 same machinery as a user `enum` — constructed, matched, and compared by value —
 and their type arguments may be any value type, including nested `Option` and
 `Result`. `Option[T]` has the members `none` and `some(v)`; `Result[T, E]` has
-`ok(v)` and `err(e)`. `T`, `E`, `some`, `none`, `ok`, and `err` are reserved: the
-constructors are the built-in members, and `Option` and `Result` cannot be
-redeclared.
+`ok(v)` and `err(e)`. `Option` and `Result` are reserved type names that cannot be
+redeclared. Their constructors `some`, `none`, `ok`, and `err` are reserved value
+names: a function, constant, parameter, or local binding that reuses one is a
+`check.name_conflict` at the declaration, so the constructor is never silently
+shadowed.
 
 A value is constructed with its member: `some(v)`, `none`, `ok(v)`, or `err(e)`.
 `some(v)` infers its `Option[T]` from `v`; `none`, `ok(v)`, and `err(e)` cannot
@@ -390,7 +392,7 @@ non-scalar field on a stored resource is a `check.type` at the `store`.
 ## Structs
 
 A `struct` declares a dense product value type. Every field is required, held
-inline, and named `name: Type` over a scalar type. Unlike a resource, a struct is
+inline, and named `name: Type` over any value type. Unlike a resource, a struct is
 not durable and has no keyed layers, groups, or sparse fields.
 
 ```mw

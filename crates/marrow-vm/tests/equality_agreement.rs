@@ -73,6 +73,34 @@ fn corpus() -> Vec<Value> {
             Box::new([Value::Enum(3, 1, Box::new([Value::Int(1)]))]),
         ),
         Value::Enum(5, 1, Box::new([Value::Enum(3, 0, Box::new([]))])),
+        // All three shapes nested at once: an enum payload carrying a struct whose
+        // fields are an Option leaf, a bytes leaf, and a bool leaf. The two members
+        // differ only in the innermost Option presence and the bool leaf, so
+        // agreement must recurse through sum, product, and sum again to the scalars.
+        Value::Enum(
+            6,
+            1,
+            Box::new([Value::Record(
+                2,
+                Box::new([
+                    Some(Value::Enum(3, 1, Box::new([Value::Int(9)]))),
+                    Some(Value::Bytes(Rc::from([0x01u8, 0x02].as_slice()))),
+                    Some(Value::Bool(true)),
+                ]),
+            )]),
+        ),
+        Value::Enum(
+            6,
+            1,
+            Box::new([Value::Record(
+                2,
+                Box::new([
+                    Some(Value::Enum(3, 0, Box::new([]))),
+                    Some(Value::Bytes(Rc::from([0x01u8, 0x02].as_slice()))),
+                    Some(Value::Bool(false)),
+                ]),
+            )]),
+        ),
     ]
 }
 

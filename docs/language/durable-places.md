@@ -87,8 +87,8 @@ pub fn setSubtitle(id: int, subtitle: string)
 
 pub fn clearSubtitle(id: int)
     transaction
-        const none: string? = absent
-        ^books(id).subtitle = none
+        const cleared: string? = absent
+        ^books(id).subtitle = cleared
 ```
 
 A sparse field is a **present-or-clear** place: it accepts a value, an optional

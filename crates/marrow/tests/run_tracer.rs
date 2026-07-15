@@ -161,13 +161,13 @@ fn short_circuit_boolean_logic() {
     let temp = TempDir::new("andor");
     project(
         &temp,
-        "pub fn ok(): bool\n\
+        "pub fn andor(): bool\n\
          \x20   const t = true\n\
          \x20   const f = false\n\
          \x20   return t and (f or t)\n",
     );
 
-    let output = run_in(&temp, &["run", "ok"]);
+    let output = run_in(&temp, &["run", "andor"]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "true\n");
 }
