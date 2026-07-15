@@ -13,19 +13,19 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ExportId, ImageId, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
-    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
-    OP_CONV_STRING_INT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
-    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
-    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_INT, OP_EQ_TEXT,
-    OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE,
-    OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
-    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
-    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
-    OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
-    OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_INT, TAG_RECORD, TAG_TEXT,
-    TAG_UNIT, image_id,
+    ExportId, ImageId, ImageType, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE,
+    OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
+    OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
+    OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
+    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL, OP_EQ_BYTES,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
+    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
+    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
+    OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
+    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
+    OP_TEXT_IS_EMPTY, OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT,
+    OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_INT,
+    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -86,7 +86,7 @@ struct DecodedSite {
 struct DecodedFunction {
     name: u16,
     source: u16,
-    params: Vec<Scalar>,
+    params: Vec<ImageType>,
     ret: RetShape,
     local_count: u16,
     code: Vec<u8>,
@@ -186,7 +186,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let types = decode_types(sections[1].1, strings.len())?;
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
-    let mut functions = decode_functions(sections[4].1, strings.len())?;
+    let mut functions = decode_functions(sections[4].1, strings.len(), types.len())?;
     let exports = decode_exports(sections[5].1, functions.len())?;
     decode_spans(sections[6].1, &mut functions)?;
     let test_entries = decode_test_entries(sections[7].1, strings.len(), functions.len())?;
@@ -549,7 +549,11 @@ fn decode_consts(body: &[u8], strings: &[Rc<str>]) -> Result<Vec<SealedConst>, V
     Ok(consts)
 }
 
-fn decode_type_ref_ret(tag: u8, reader: &mut Reader) -> Result<RetShape, VerifyRejection> {
+fn decode_type_ref_ret(
+    tag: u8,
+    reader: &mut Reader,
+    type_count: usize,
+) -> Result<RetShape, VerifyRejection> {
     let optional = tag & OPTIONAL_FLAG != 0;
     let base = tag & !OPTIONAL_FLAG;
     match base {
@@ -564,19 +568,65 @@ fn decode_type_ref_ret(tag: u8, reader: &mut Reader) -> Result<RetShape, VerifyR
             Ok(RetShape::Scalar { scalar, optional })
         }
         TAG_RECORD => {
-            let _ = reader;
-            Err(reject(
-                VerifyPhase::Table,
-                "record return type is not admitted",
-            ))
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short record return type index"))?;
+            if idx as usize >= type_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "record return type index out of range",
+                ));
+            }
+            Ok(RetShape::Record { idx, optional })
         }
         _ => Err(reject(VerifyPhase::Table, "unknown return type tag")),
+    }
+}
+
+/// Decode one parameter type reference: a bare scalar or a bare record (a dense
+/// `struct` value). Optional parameters and a unit parameter are outside the
+/// parameter subset the compiler emits, and are rejected.
+fn decode_param_ref(
+    tag: u8,
+    reader: &mut Reader,
+    type_count: usize,
+) -> Result<ImageType, VerifyRejection> {
+    if tag & OPTIONAL_FLAG != 0 {
+        return Err(reject(
+            VerifyPhase::Table,
+            "parameter type cannot be optional",
+        ));
+    }
+    match tag {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
+            decode_bare_scalar(tag).expect("scalar base"),
+        )),
+        TAG_RECORD => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short record param type index"))?;
+            if idx as usize >= type_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "record param type index out of range",
+                ));
+            }
+            Ok(ImageType::Record {
+                idx,
+                optional: false,
+            })
+        }
+        _ => Err(reject(
+            VerifyPhase::Table,
+            "param type must be a bare scalar or record",
+        )),
     }
 }
 
 fn decode_functions(
     body: &[u8],
     string_count: usize,
+    type_count: usize,
 ) -> Result<Vec<DecodedFunction>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
@@ -611,16 +661,12 @@ fn decode_functions(
             let tag = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short param type"))?;
-            let scalar = decode_bare_scalar(tag).ok_or(reject(
-                VerifyPhase::Table,
-                "param type must be a bare scalar",
-            ))?;
-            params.push(scalar);
+            params.push(decode_param_ref(tag, &mut reader, type_count)?);
         }
         let ret_tag = reader
             .u8()
             .ok_or(reject(VerifyPhase::Table, "short return type"))?;
-        let ret = decode_type_ref_ret(ret_tag, &mut reader)?;
+        let ret = decode_type_ref_ret(ret_tag, &mut reader, type_count)?;
         let local_count = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short local count"))?;
@@ -977,7 +1023,7 @@ struct Ctx<'a> {
 
 /// A callee's signature, consulted by the per-function `Call` type check.
 struct FnSig {
-    params: Vec<Scalar>,
+    params: Vec<ImageType>,
     ret: RetShape,
 }
 
@@ -1504,8 +1550,9 @@ fn check_flow(
     // Params occupy locals `0..param_count`, pre-initialized to their param type;
     // the rest start uninitialized. The entry operand stack is empty.
     let mut initial_locals: Vec<Option<VType>> = vec![None; function.local_count as usize];
-    for (slot, scalar) in function.params.iter().enumerate() {
-        initial_locals[slot] = Some(VType::bare_scalar(*scalar));
+    for (slot, param) in function.params.iter().enumerate() {
+        initial_locals[slot] =
+            Some(VType::from_image(*param).expect("a parameter type is never unit"));
     }
     let mut entry: Vec<Option<Frame>> = vec![None; code.len()];
     entry[0] = Some(Frame {
@@ -1628,7 +1675,8 @@ fn apply(
         // a0 is pushed first, so pop arguments in reverse parameter order.
         for param in sig.params.iter().rev() {
             let got = pop(&mut frame.stack)?;
-            if got != VType::bare_scalar(*param) {
+            let want = VType::from_image(*param).expect("a parameter type is never unit");
+            if got != want {
                 return Err(reject(VerifyPhase::Function, "call argument type mismatch"));
             }
         }
@@ -1636,6 +1684,9 @@ fn apply(
             RetShape::Unit => {}
             RetShape::Scalar { scalar, optional } => {
                 frame.stack.push(VType::Scalar { scalar, optional });
+            }
+            RetShape::Record { idx, optional } => {
+                frame.stack.push(VType::Record { idx, optional });
             }
         }
         return Ok(Control::Fallthrough);

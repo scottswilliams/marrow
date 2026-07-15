@@ -119,7 +119,9 @@ pub struct SpanEntry {
 pub struct FunctionDef {
     pub name: StrId,
     pub source: StrId,
-    pub params: Vec<Scalar>,
+    /// Parameter types in declaration order. Each is a bare scalar or a bare record
+    /// (a dense `struct` value); the verifier rechecks the same restriction.
+    pub params: Vec<ImageType>,
     pub ret: ImageType,
     /// Total local slots, including params (which occupy slots `0..params.len()`).
     pub local_count: u16,

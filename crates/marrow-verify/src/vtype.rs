@@ -1,6 +1,6 @@
 //! The abstract value type the phase-3 stack interpreter tracks.
 
-use marrow_image::Scalar;
+use marrow_image::{ImageType, Scalar};
 
 use crate::sealed::RetShape;
 
@@ -24,6 +24,17 @@ impl VType {
         VType::Record {
             idx,
             optional: false,
+        }
+    }
+
+    /// The stack type for an image type reference (a parameter type), or `None` for
+    /// `Unit`, which is never a parameter or local type. Records carry their sealed
+    /// type index; the verifier proved it in range at decode.
+    pub(crate) fn from_image(ty: ImageType) -> Option<Self> {
+        match ty {
+            ImageType::Unit => None,
+            ImageType::Scalar { scalar, optional } => Some(VType::Scalar { scalar, optional }),
+            ImageType::Record { idx, optional } => Some(VType::Record { idx, optional }),
         }
     }
 
@@ -71,6 +82,13 @@ impl VType {
                     optional: want_opt,
                 },
             ) => scalar == want && optional == want_opt,
+            (
+                VType::Record { idx, optional },
+                RetShape::Record {
+                    idx: want,
+                    optional: want_opt,
+                },
+            ) => idx == want && optional == want_opt,
             _ => false,
         }
     }

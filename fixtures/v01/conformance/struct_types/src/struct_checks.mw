@@ -41,3 +41,18 @@ test "a struct holds fields of several scalar types"
 test "a struct field typed through an alias reads as the aliased scalar"
     assert structs::personAge("Ada", 36) == 36
     assert structs::personActive(1)
+
+test "a struct passes into and returns from a function by value"
+    const p = Point(x: 1, y: 2)
+    const q = structs::shift(p, 10, 20)
+    assert q.x == 11
+    assert q.y == 22
+    assert p.x == 1
+
+test "a returned struct is read back through the production path"
+    const p = structs::makePoint(3, 4)
+    assert p.x == 3
+    assert p.y == 4
+
+test "a struct threads through a nested call"
+    assert structs::translateX(5, 7) == 12

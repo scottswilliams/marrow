@@ -73,8 +73,8 @@ impl RecordInfo {
 /// One dense product type: a `struct` whose every field is present inline. It
 /// shares the image [`RecordTypeDef`] representation with the resource record —
 /// the single canonical product-leaf order owner — but is a distinct value type:
-/// non-durable, constructed and read by value, every field required. (A struct
-/// as a parameter or return type awaits image return-shape growth.)
+/// non-durable, constructed and read by value, every field required. A struct is
+/// admitted as a parameter and a return type (carried as an `ImageType::Record`).
 pub(crate) struct StructInfo {
     pub(crate) type_id: TypeId,
     pub(crate) name: String,

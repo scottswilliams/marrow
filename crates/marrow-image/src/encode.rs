@@ -204,8 +204,8 @@ impl ImageDraft {
             push_u16(&mut body, str_map[function.name.raw() as usize]);
             push_u16(&mut body, str_map[function.source.raw() as usize]);
             body.push(function.params.len() as u8);
-            for &param in &function.params {
-                ImageType::scalar(param).encode(&mut body);
+            for param in &function.params {
+                param.encode(&mut body);
             }
             function.ret.encode(&mut body);
             push_u16(&mut body, function.local_count);

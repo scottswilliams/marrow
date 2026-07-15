@@ -321,15 +321,23 @@ const q = Point(y: 4, x: 3)
 ```
 
 Fields are read with `.`, yielding the field's scalar type. Struct values are
-copied by value through local bindings and assignments, like every other value.
-A struct name is project-global and is written without a module qualifier.
+copied by value through local bindings, assignments, parameters, and returns, like
+every other value. A struct name is project-global and is written without a module
+qualifier.
+
+A struct is admitted as a parameter type and as a return type: a value travels by
+value into and out of ordinary functions. A returned struct is rendered by
+`marrow run` as a JSON object under `--format jsonl` (field names as keys, in
+ascending byte order) and as `{field: value, ...}` in text; a struct has no
+command-line argument spelling, so an export taking a struct parameter cannot be
+invoked from the terminal.
 
 A field type is a scalar type (or an alias that expands to one). The current
-compiler does not admit a struct as a parameter type, as a return type, or as the
-type of a struct field; each is a `check.unsupported` diagnostic. A missing,
-unknown, duplicated, or wrong-typed field argument, and an unnamed (positional)
-argument, are `check.type` diagnostics; a struct name that collides with another
-declared type is a `check.name_conflict`.
+compiler does not admit a struct as the type of a struct field; that is a
+`check.unsupported` diagnostic. A missing, unknown, duplicated, or wrong-typed
+field argument, and an unnamed (positional) argument, are `check.type`
+diagnostics; a struct name that collides with another declared type is a
+`check.name_conflict`.
 
 ## Sequences And Keyed Collections
 

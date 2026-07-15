@@ -18,7 +18,7 @@ use marrow_kernel::durable::{
     DurableStore, ExportDemand, FieldSchema, InvocationGrant, SessionError, SiteSpec,
     SiteTarget as KernelSiteTarget, StoreSchema,
 };
-use marrow_verify::{Scalar, SealedSiteTarget, VerifiedImage};
+use marrow_verify::{ImageType, Scalar, SealedRecordType, SealedSiteTarget, VerifiedImage};
 use marrow_vm::Value;
 
 use crate::outcome::Record;
@@ -50,6 +50,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
             return emit(
                 args.format,
                 &[Record::OperationalError { code: failure.code }],
+                &[],
                 ExitCode::FAILURE,
             );
         }
@@ -67,7 +68,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                     column: diagnostic.column,
                 })
                 .collect();
-            return emit(args.format, &records, ExitCode::FAILURE);
+            return emit(args.format, &records, &[], ExitCode::FAILURE);
         }
     };
 
@@ -89,6 +90,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                 &[Record::ArtifactRejected {
                     code: rejection.code(),
                 }],
+                &[],
                 ExitCode::FAILURE,
             );
         }
@@ -125,7 +127,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         Record::Value(_) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     };
-    emit(args.format, &[record], exit)
+    emit(args.format, &[record], image.record_types(), exit)
 }
 
 /// Resolve a caller-supplied export path to its [`ExportId`] through the compiler's
@@ -280,8 +282,10 @@ fn scalar_kind(scalar: Scalar) -> ScalarKind {
     }
 }
 
-/// Decode positional CLI arguments against the export's scalar parameter types.
-fn decode_args(params: &[Scalar], args: &[String]) -> Result<Vec<Value>, String> {
+/// Decode positional CLI arguments against the export's parameter types. A scalar
+/// parameter decodes from its text; a record (`struct`) parameter has no
+/// command-line spelling, so an export taking one cannot be run from the terminal.
+fn decode_args(params: &[ImageType], args: &[String]) -> Result<Vec<Value>, String> {
     if params.len() != args.len() {
         return Err(format!(
             "this export takes {} argument(s), found {}",
@@ -292,7 +296,13 @@ fn decode_args(params: &[Scalar], args: &[String]) -> Result<Vec<Value>, String>
     params
         .iter()
         .zip(args)
-        .map(|(scalar, text)| decode_arg(*scalar, text))
+        .map(|(param, text)| match param {
+            ImageType::Scalar {
+                scalar,
+                optional: false,
+            } => decode_arg(*scalar, text),
+            _ => Err("a struct argument cannot be passed on the command line".to_string()),
+        })
         .collect()
 }
 
@@ -383,12 +393,17 @@ fn usage(message: &str) -> ExitCode {
 
 /// Emit records in the selected format and return `exit`. JSONL is one canonical
 /// object per line (LF-terminated); text prints each record's rendering.
-fn emit(format: Format, records: &[Record], exit: ExitCode) -> ExitCode {
+fn emit(
+    format: Format,
+    records: &[Record],
+    types: &[SealedRecordType],
+    exit: ExitCode,
+) -> ExitCode {
     for record in records {
         match format {
-            Format::Jsonl => println!("{}", record.to_jsonl()),
+            Format::Jsonl => println!("{}", record.to_jsonl(types)),
             Format::Text => {
-                let text = record.to_text();
+                let text = record.to_text(types);
                 if !text.is_empty() {
                     println!("{text}");
                 }

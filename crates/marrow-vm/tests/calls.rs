@@ -30,7 +30,7 @@ fn a_direct_call_runs() {
     let double = draft.add_function(FunctionDef {
         name: double_name,
         source: src,
-        params: vec![Scalar::Int],
+        params: vec![ImageType::scalar(Scalar::Int)],
         ret: ImageType::scalar(Scalar::Int),
         local_count: 1,
         spans: spans(&double_code),

@@ -175,11 +175,13 @@ fn usage(message: &str) -> ExitCode {
 
 /// Emit typed failure records (capture/compile/verify) and return `exit`.
 fn emit_records(format: Format, records: &[Record], exit: ExitCode) -> ExitCode {
+    // The test command's typed failure records are never a value, so they carry no
+    // record types to render.
     for record in records {
         match format {
-            Format::Jsonl => println!("{}", record.to_jsonl()),
+            Format::Jsonl => println!("{}", record.to_jsonl(&[])),
             Format::Text => {
-                let text = record.to_text();
+                let text = record.to_text(&[]);
                 if !text.is_empty() {
                     println!("{text}");
                 }

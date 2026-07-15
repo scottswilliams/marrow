@@ -6,6 +6,7 @@
 //! source diagnostic, an artifact rejection, a source-mapped runtime fault, and an
 //! owner-local operational error are distinct records.
 
+use marrow_verify::SealedRecordType;
 use marrow_vm::Value;
 
 /// The maximum rendered `data` size before an overflow becomes an operational
@@ -39,10 +40,12 @@ pub(crate) enum Record {
 }
 
 impl Record {
-    /// The plain-text rendering for the default (non-JSONL) format.
-    pub(crate) fn to_text(&self) -> String {
+    /// The plain-text rendering for the default (non-JSONL) format. `types` supplies
+    /// the field names of a returned record value; it is empty for the non-value
+    /// families, which never render a record.
+    pub(crate) fn to_text(&self, types: &[SealedRecordType]) -> String {
         match self {
-            Record::Value(Some(value)) => render_value_text(value),
+            Record::Value(Some(value)) => render_value_text(value, types),
             Record::Value(None) => String::new(),
             Record::Diagnostic { code, line, column } => format!("{code} at {line}:{column}"),
             Record::Fault {
@@ -62,14 +65,14 @@ impl Record {
 
     /// The canonical single-line JSONL projection: one object, keys in ascending
     /// byte order, LF added by the caller.
-    pub(crate) fn to_jsonl(&self) -> String {
+    pub(crate) fn to_jsonl(&self, types: &[SealedRecordType]) -> String {
         match self {
-            Record::Value(value) => match render_data(value.as_ref()) {
+            Record::Value(value) => match render_data(value.as_ref(), types) {
                 Ok(data) => format!(r#"{{"data":{data},"kind":"run","outcome":"value"}}"#),
                 Err(()) => Record::OperationalError {
                     code: marrow_codes::Code::IoWrite.as_str(),
                 }
-                .to_jsonl(),
+                .to_jsonl(types),
             },
             Record::Diagnostic { code, line, column } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"diagnostic","span":{}}}"#,
@@ -225,23 +228,42 @@ fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
 }
 
-fn render_value_text(value: &Value) -> String {
+fn render_value_text(value: &Value, types: &[SealedRecordType]) -> String {
     match value {
         Value::Int(v) => v.to_string(),
         Value::Bool(v) => v.to_string(),
         Value::Text(v) => v.to_string(),
         Value::Bytes(v) => hex_bytes(v),
         Value::Optional(None) => "absent".to_string(),
-        Value::Optional(Some(inner)) => render_value_text(inner),
-        // Record returns are rejected by the verifier, so a record never surfaces
-        // as an export result; render defensively rather than panicking.
-        Value::Record(..) => String::new(),
+        Value::Optional(Some(inner)) => render_value_text(inner, types),
+        // A returned record renders `{field: value, ...}` in field declaration order,
+        // reading names from the sealed record type.
+        Value::Record(idx, slots) => {
+            let fields = types.get(*idx as usize).map(SealedRecordType::fields);
+            let mut out = String::from("{");
+            for (position, slot) in slots.iter().enumerate() {
+                if position > 0 {
+                    out.push_str(", ");
+                }
+                if let Some(field) = fields.and_then(|fields| fields.get(position)) {
+                    out.push_str(&field.name);
+                    out.push_str(": ");
+                }
+                match slot {
+                    Some(inner) => out.push_str(&render_value_text(inner, types)),
+                    None => out.push_str("absent"),
+                }
+            }
+            out.push('}');
+            out
+        }
     }
 }
 
-/// Render a value as the JSONL `data` field, or `Err` when a text value exceeds the
-/// data bound (the caller turns that into an operational error, never a truncation).
-fn render_data(value: Option<&Value>) -> Result<String, ()> {
+/// Render a value as the JSONL `data` field, or `Err` when it exceeds the data
+/// bound (the caller turns that into an operational error, never a truncation). A
+/// record renders as a JSON object with field names, keys in ascending byte order.
+fn render_data(value: Option<&Value>, types: &[SealedRecordType]) -> Result<String, ()> {
     Ok(match value {
         None | Some(Value::Optional(None)) => "null".to_string(),
         Some(Value::Int(v)) => v.to_string(),
@@ -258,10 +280,33 @@ fn render_data(value: Option<&Value>) -> Result<String, ()> {
             }
             json_string(&hex_bytes(v))
         }
-        Some(Value::Optional(Some(inner))) => render_data(Some(inner))?,
-        // A record cannot be an export result (verifier-rejected return); no record
-        // wire format is minted here.
-        Some(Value::Record(..)) => return Err(()),
+        Some(Value::Optional(Some(inner))) => render_data(Some(inner), types)?,
+        Some(Value::Record(idx, slots)) => {
+            let fields = types.get(*idx as usize).map(SealedRecordType::fields);
+            let mut entries: Vec<(&str, String)> = Vec::with_capacity(slots.len());
+            for (position, slot) in slots.iter().enumerate() {
+                let name = fields
+                    .and_then(|fields| fields.get(position))
+                    .map(|field| field.name.as_ref())
+                    .unwrap_or("");
+                entries.push((name, render_data(slot.as_ref(), types)?));
+            }
+            entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+            let mut out = String::from("{");
+            for (position, (name, rendered)) in entries.iter().enumerate() {
+                if position > 0 {
+                    out.push(',');
+                }
+                out.push_str(&json_string(name));
+                out.push(':');
+                out.push_str(rendered);
+            }
+            out.push('}');
+            if out.len() > MAX_DATA_BYTES {
+                return Err(());
+            }
+            out
+        }
     })
 }
 
@@ -296,15 +341,15 @@ mod tests {
     #[test]
     fn value_record_is_canonical_jsonl() {
         assert_eq!(
-            Record::Value(Some(Value::Int(42))).to_jsonl(),
+            Record::Value(Some(Value::Int(42))).to_jsonl(&[]),
             r#"{"data":42,"kind":"run","outcome":"value"}"#
         );
         assert_eq!(
-            Record::Value(Some(Value::Bool(true))).to_jsonl(),
+            Record::Value(Some(Value::Bool(true))).to_jsonl(&[]),
             r#"{"data":true,"kind":"run","outcome":"value"}"#
         );
         assert_eq!(
-            Record::Value(None).to_jsonl(),
+            Record::Value(None).to_jsonl(&[]),
             r#"{"data":null,"kind":"run","outcome":"value"}"#
         );
     }
@@ -317,14 +362,14 @@ mod tests {
                 line: 3,
                 column: 5
             }
-            .to_jsonl()
+            .to_jsonl(&[])
             .contains(r#""outcome":"diagnostic""#)
         );
         assert!(
             Record::ArtifactRejected {
                 code: "image.function"
             }
-            .to_jsonl()
+            .to_jsonl(&[])
             .contains(r#""outcome":"artifact_rejected""#)
         );
         assert!(
@@ -334,12 +379,12 @@ mod tests {
                 column: 1,
                 detail: None,
             }
-            .to_jsonl()
+            .to_jsonl(&[])
             .contains(r#""outcome":"fault""#)
         );
         assert!(
             Record::OperationalError { code: "store.io" }
-                .to_jsonl()
+                .to_jsonl(&[])
                 .contains(r#""outcome":"error""#)
         );
     }
@@ -354,7 +399,7 @@ mod tests {
             column: 2,
             detail: None,
         }
-        .to_jsonl();
+        .to_jsonl(&[]);
         assert_eq!(
             line,
             r#"{"code":"run.overflow","kind":"run","outcome":"fault","span":{"column":2,"line":7}}"#

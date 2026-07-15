@@ -70,7 +70,7 @@ fn range_guard_image() -> Vec<u8> {
     let func = draft.add_function(FunctionDef {
         name,
         source,
-        params: vec![Scalar::Int],
+        params: vec![ImageType::scalar(Scalar::Int)],
         ret: ImageType::scalar(Scalar::Int),
         local_count: 1,
         code: vec![

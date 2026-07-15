@@ -134,16 +134,6 @@ impl LTy {
         }
     }
 
-    /// The bare image scalar a scalar-shaped value (scalar or nominal) lowers
-    /// to, derived from [`LTy::image`] so the erasure has one owner. Params are
-    /// scalar-shaped by [`param_type`].
-    fn image_scalar(self) -> Scalar {
-        match self.image() {
-            ImageType::Scalar { scalar, .. } => scalar,
-            _ => unreachable!("caller classified a scalar-shaped value"),
-        }
-    }
-
     fn image(self) -> ImageType {
         match self {
             LTy::Scalar {
@@ -288,10 +278,9 @@ impl FunctionRegistry {
             let ret = match &function.return_type {
                 None => RetType::Unit,
                 Some(annotation) => match resolve_type(records, annotation) {
-                    Some(LTy::Record { .. } | LTy::Struct { .. }) | None => {
-                        // A record, struct, or unsupported return; the function's own
+                    Some(LTy::Record { .. }) | None => {
+                        // A resource-record or unsupported return; the function's own
                         // lowering reports it. Record Unit here so indices stay aligned.
-                        // (A struct return needs image `RetShape` growth, deferred.)
                         RetType::Unit
                     }
                     Some(ty) => RetType::Value(ty),
@@ -463,11 +452,11 @@ impl<'a> FnLowerer<'a> {
             None => RetType::Unit,
             Some(annotation) => match resolve_type(records, annotation) {
                 Some(LTy::Record { .. }) => {
-                    diagnostics.push(unsupported(file, annotation.span(), "a record return type"));
-                    return None;
-                }
-                Some(LTy::Struct { .. }) => {
-                    diagnostics.push(unsupported(file, annotation.span(), "a struct return type"));
+                    diagnostics.push(unsupported(
+                        file,
+                        annotation.span(),
+                        "a resource return type",
+                    ));
                     return None;
                 }
                 Some(ty) => RetType::Value(ty),
@@ -491,8 +480,8 @@ impl<'a> FnLowerer<'a> {
             BodyKind::Function,
         );
 
-        // Params occupy the first slots as bare scalars (design §C: params are bare
-        // scalar type refs), pre-initialized to their type.
+        // Params occupy the first slots, pre-initialized to their type: a bare
+        // scalar, a bare nominal (int-shaped), or a bare struct record ref.
         for param in &function.params {
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
@@ -536,14 +525,15 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        let params: Vec<Scalar> = function
+        let params: Vec<ImageType> = function
             .params
             .iter()
             .zip(&lowerer.locals)
             // A nominal param erases to its base int in the image; in-language
             // callers passed the type, and the entry guard emitted above
-            // revalidates the interval against out-of-language callers.
-            .map(|(_, local)| local.ty.image_scalar())
+            // revalidates the interval against out-of-language callers. A struct
+            // param carries its image record ref (`ImageType::Record`).
+            .map(|(_, local)| local.ty.image())
             .collect();
         let ret_ref = match ret {
             RetType::Unit => ImageType::Unit,
@@ -592,7 +582,7 @@ impl<'a> FnLowerer<'a> {
     /// Intern the function name and source, add the lowered function to the draft,
     /// and return its identity — the shared tail of function and test lowering. A
     /// body that failed to lower returns `None`.
-    fn finish(mut self, name: &str, params: Vec<Scalar>, ret_ref: ImageType) -> Option<Lowered> {
+    fn finish(mut self, name: &str, params: Vec<ImageType>, ret_ref: ImageType) -> Option<Lowered> {
         if self.failed {
             return None;
         }
@@ -2970,10 +2960,10 @@ impl<'a> FnLowerer<'a> {
     }
 }
 
-/// Resolve a parameter annotation to its lowered type: a bare scalar or a bare
-/// nominal. Optionals, records, and unresolved names are outside the parameter
-/// subset. One owner for signature building and body lowering, so the two can
-/// never disagree on a parameter's type.
+/// Resolve a parameter annotation to its lowered type: a bare scalar, a bare
+/// nominal, or a bare `struct` value. Optionals, the durable resource record, and
+/// unresolved names are outside the parameter subset. One owner for signature
+/// building and body lowering, so the two can never disagree on a parameter's type.
 fn param_type(records: &TypeRegistry, ty: &TypeExpr) -> Option<LTy> {
     match resolve_type(records, ty) {
         Some(
@@ -2981,6 +2971,9 @@ fn param_type(records: &TypeRegistry, ty: &TypeExpr) -> Option<LTy> {
                 optional: false, ..
             }
             | LTy::Nominal {
+                optional: false, ..
+            }
+            | LTy::Struct {
                 optional: false, ..
             }),
         ) => Some(param),

@@ -93,7 +93,7 @@ fn struct_conformance_fixture_passes_on_the_production_path() {
         .find(|line| line.contains(r#""kind":"summary""#))
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
-    assert!(summary.contains(r#""total":7"#), "{summary}");
+    assert!(summary.contains(r#""total":10"#), "{summary}");
 }
 
 /// A field read reaches the constructed value through the VM: `run` on an export
@@ -222,28 +222,69 @@ fn a_struct_name_collision_is_a_check_name_conflict() {
     }
 }
 
-/// A struct is not yet admitted as a parameter or return type: each position is
-/// `check.unsupported`, as the reference documents, until image return-shape
-/// growth lands.
+/// A struct is admitted as a parameter and a return type: it travels by value into
+/// and out of a function through the production path. An export returning a struct
+/// renders it as a JSON object (keys ascending) under `--format jsonl` and as
+/// `{field: value, ...}` in text.
 #[test]
-fn structs_are_unsupported_in_param_and_return_positions() {
-    for source in [
-        // Parameter type.
-        "struct P\n\x20   x: int\n\nfn g(p: P): int\n\x20   return 1\n\npub fn f(): int\n\x20   return 1\n",
-        // Return type.
-        "struct P\n\x20   x: int\n\npub fn make(): P\n\x20   return P(x: 1)\n",
-    ] {
-        let temp = TempDir::new("struct-position");
-        project(&temp, source);
-        let export = if source.contains("make") { "make" } else { "f" };
-        let output = run_in(&temp, &["run", export, "--format", "jsonl"]);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(!output.status.success(), "{source:?} must fail: {stdout}");
-        assert!(
-            stdout.contains(r#""code":"check.unsupported""#),
-            "{source:?}: {stdout}"
-        );
-    }
+fn a_returned_struct_renders_through_the_run_path() {
+    let temp = TempDir::new("struct-return");
+    project(
+        &temp,
+        "struct Point\n\
+         \x20   x: int\n\
+         \x20   y: int\n\
+         \n\
+         fn shift(p: Point, dx: int): Point\n\
+         \x20   return Point(x: p.x + dx, y: p.y)\n\
+         \n\
+         pub fn moved(): Point\n\
+         \x20   return shift(Point(x: 1, y: 2), 10)\n",
+    );
+    let jsonl = run_in(&temp, &["run", "moved", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&jsonl.stdout);
+    assert!(jsonl.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":{"x":11,"y":2}"#), "{stdout}");
+
+    let text = run_in(&temp, &["run", "moved"]);
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(stdout.contains("{x: 11, y: 2}"), "{stdout}");
+}
+
+/// A struct has no command-line spelling, so an export taking a struct parameter
+/// cannot be run from the terminal: the argument decode is a usage error (exit 2).
+#[test]
+fn a_struct_argument_cannot_be_passed_on_the_command_line() {
+    let temp = TempDir::new("struct-arg");
+    project(
+        &temp,
+        "struct Point\n\
+         \x20   x: int\n\
+         \n\
+         pub fn takesPoint(p: Point): int\n\
+         \x20   return p.x\n",
+    );
+    let output = run_in(&temp, &["run", "takesPoint", "--", "5"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+}
+
+/// A resource record is still not admitted as a return type: that vertical is
+/// deferred, so it remains a `check.unsupported` diagnostic.
+#[test]
+fn a_resource_return_is_still_unsupported() {
+    let temp = TempDir::new("resource-return");
+    project(
+        &temp,
+        "resource Book\n\
+         \x20   required title: string\n\
+         \n\
+         pub fn make(): Book\n\
+         \x20   return Book(title: \"t\")\n",
+    );
+    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
 }
 
 /// A dense struct and a durable resource coexist: the struct is a value the VM

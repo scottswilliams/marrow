@@ -11,10 +11,7 @@ struct Person
     age: int
     active: bool
 
-; A struct is a value: construct it, bind it, read its fields. Struct return
-; and parameter types are not yet admitted (they need image return-shape
-; growth), so these helpers take and return scalars, building the struct
-; internally.
+; A struct is a value: construct it, bind it, read its fields.
 
 pub fn pointX(a: int, b: int): int
     const p = Point(x: a, y: b)
@@ -35,3 +32,17 @@ pub fn personAge(n: string, a: int): int
 pub fn personActive(a: int): bool
     const person = Person(name: "x", age: a, active: a > 0)
     return person.active
+
+; A struct value is admitted as a parameter and a return type: it travels by
+; value into and out of ordinary functions, beside scalar parameters.
+
+pub fn shift(p: Point, dx: int, dy: int): Point
+    return Point(x: p.x + dx, y: p.y + dy)
+
+pub fn makePoint(a: int, b: int): Point
+    return Point(x: a, y: b)
+
+pub fn translateX(start: int, dx: int): int
+    const p = Point(x: start, y: 0)
+    const moved = shift(p, dx, 0)
+    return moved.x

@@ -78,7 +78,7 @@ the direct-call graph is acyclic.
 
 ## Parameters Are By Value
 
-Scalars, resources, and sequences are passed by value. A local keyed collection
+Scalars, structs, resources, and sequences are passed by value. A local keyed collection
 may be passed to a parameter with the same keyed shape, but it has no return-type
 syntax. Parameters cannot be assigned. A helper that changes a local resource or
 sequence returns the replacement value; keyed collection parameters are

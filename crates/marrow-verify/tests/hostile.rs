@@ -251,7 +251,7 @@ fn function_phase_call_argument_type_mismatch() {
     let helper = draft.add_function(FunctionDef {
         name: helper_name,
         source: src,
-        params: vec![Scalar::Int],
+        params: vec![ImageType::scalar(Scalar::Int)],
         ret: ImageType::scalar(Scalar::Int),
         local_count: 1,
         spans: spans(&helper_code),
@@ -363,7 +363,10 @@ fn put_export(code: Vec<Instr>) -> ImageDraft {
     let func = draft.add_function(FunctionDef {
         name,
         source: src,
-        params: vec![Scalar::Text, Scalar::Int],
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
         ret: ImageType::Unit,
         local_count: 2,
         spans: spans(&code),
@@ -604,7 +607,7 @@ fn test_entry_with_a_parameter_rejects() {
     let func = draft.add_function(FunctionDef {
         name: title,
         source: src,
-        params: vec![Scalar::Bool],
+        params: vec![ImageType::scalar(Scalar::Bool)],
         ret: ImageType::Unit,
         local_count: 1,
         spans: spans(&code),
@@ -998,4 +1001,127 @@ fn range_guard_with_a_truncated_operand_rejects_at_function() {
     rehash(&mut bytes);
 
     assert_eq!(code_of(&bytes), "image.function");
+}
+
+// --- record-typed parameter and return references (V3b) ---
+
+/// A one-int-field record type, a function that constructs and returns it, and a
+/// function that takes it by value and reads a field all verify — the well-formed
+/// baseline the record-ref hostiles derive from.
+#[test]
+fn record_param_and_return_refs_verify() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let field = draft.intern_string("x");
+    let rec = draft.add_record_type(RecordTypeDef {
+        name: field,
+        fields: vec![FieldDef {
+            name: field,
+            ty: Scalar::Int,
+            required: true,
+        }],
+    });
+    let zero = draft.intern_int(0);
+    let make_name = draft.intern_string("make");
+    let make_code = vec![
+        Instr::ConstLoad(zero.index()),
+        Instr::RecordNew(rec.index()),
+        Instr::Return,
+    ];
+    draft.add_function(FunctionDef {
+        name: make_name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Record {
+            idx: rec.index(),
+            optional: false,
+        },
+        local_count: 0,
+        spans: spans(&make_code),
+        code: make_code,
+    });
+    let take_name = draft.intern_string("take");
+    let take_code = vec![Instr::LocalGet(0), Instr::FieldGet(0), Instr::Return];
+    let take = draft.add_function(FunctionDef {
+        name: take_name,
+        source: src,
+        params: vec![ImageType::Record {
+            idx: rec.index(),
+            optional: false,
+        }],
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 1,
+        spans: spans(&take_code),
+        code: take_code,
+    });
+    draft.add_export(ExportId::of_local("", "take"), take);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+/// A record return type index past the type table rejects at the table phase.
+#[test]
+fn record_return_index_out_of_range_rejects() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f");
+    let code = vec![Instr::Return];
+    let f = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        // No record types exist, so index 5 is out of range.
+        ret: ImageType::Record {
+            idx: 5,
+            optional: false,
+        },
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), f);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+}
+
+/// A record parameter type index past the type table rejects at the table phase.
+#[test]
+fn record_param_index_out_of_range_rejects() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f");
+    let code = vec![Instr::Return];
+    let f = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::Record {
+            idx: 5,
+            optional: false,
+        }],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), f);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+}
+
+/// An optional parameter type is outside the parameter subset and rejects at the
+/// table phase.
+#[test]
+fn optional_parameter_type_rejects() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f");
+    let code = vec![Instr::Return];
+    let f = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::opt_scalar(Scalar::Int)],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), f);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
