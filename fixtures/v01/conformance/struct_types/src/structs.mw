@@ -1,0 +1,37 @@
+module structs
+
+alias Name = string
+
+struct Point
+    x: int
+    y: int
+
+struct Person
+    name: Name
+    age: int
+    active: bool
+
+; A struct is a value: construct it, bind it, read its fields. Struct return
+; and parameter types are not yet admitted (they need image return-shape
+; growth), so these helpers take and return scalars, building the struct
+; internally.
+
+pub fn pointX(a: int, b: int): int
+    const p = Point(x: a, y: b)
+    return p.x
+
+pub fn pointY(a: int, b: int): int
+    const p = Point(x: a, y: b)
+    return p.y
+
+pub fn sum(a: int, b: int): int
+    const p = Point(x: a, y: b)
+    return p.x + p.y
+
+pub fn personAge(n: string, a: int): int
+    const person = Person(name: n, age: a, active: true)
+    return person.age
+
+pub fn personActive(a: int): bool
+    const person = Person(name: "x", age: a, active: a > 0)
+    return person.active

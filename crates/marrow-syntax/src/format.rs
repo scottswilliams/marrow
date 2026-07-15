@@ -11,8 +11,8 @@ use crate::{
     AliasDecl, Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker,
     CommentPlacement, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep,
     Expression, ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm,
-    NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind,
-    TypeExpr, UnaryOp, encode_string_literal,
+    NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl,
+    TokenKind, TypeExpr, UnaryOp, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -157,6 +157,7 @@ fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingComme
             TrailingCommentLine::Last
         }
         Declaration::Resource(decl) => TrailingCommentLine::Line(decl.docs.len()),
+        Declaration::Struct(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Store(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Function(decl) => {
             TrailingCommentLine::Line(format_function_header_last_line(decl))
@@ -207,6 +208,7 @@ fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
         Declaration::Nominal(decl) => decl.docs.len(),
         Declaration::Const(decl) => decl.docs.len(),
         Declaration::Resource(decl) => decl.docs.len(),
+        Declaration::Struct(decl) => decl.docs.len(),
         Declaration::Store(decl) => decl.docs.len(),
         Declaration::Function(decl) => decl.docs.len(),
         Declaration::Enum(decl) => decl.docs.len(),
@@ -244,6 +246,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
         Declaration::Nominal(decl) => decl.span,
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
+        Declaration::Struct(decl) => decl.span,
         Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
@@ -261,6 +264,7 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Nominal(decl) => format_nominal(decl),
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(source, decl),
+        Declaration::Struct(decl) => format_struct(source, decl),
         Declaration::Store(decl) => format_store(source, decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(source, decl),
@@ -369,6 +373,18 @@ fn format_const(decl: &ConstDecl) -> String {
 fn format_resource(source: &str, decl: &ResourceDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     out.push_str("resource ");
+    out.push_str(&decl.name);
+    let body = format_resource_body(source, &decl.members, &decl.comments, 1);
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
+    }
+    out
+}
+
+fn format_struct(source: &str, decl: &StructDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str("struct ");
     out.push_str(&decl.name);
     let body = format_resource_body(source, &decl.members, &decl.comments, 1);
     if !body.is_empty() {

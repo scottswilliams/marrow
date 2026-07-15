@@ -442,6 +442,12 @@ fn collect_declaration_suppression(
                 collect_resource_member_suppression(member, type_refs, declarations);
             }
         }
+        Declaration::Struct(decl) => {
+            declarations.push(decl.span);
+            for member in &decl.members {
+                collect_resource_member_suppression(member, type_refs, declarations);
+            }
+        }
         Declaration::Store(store) => {
             declarations.push(store.span);
             collect_key_param_type_refs(&store.root.keys, type_refs);
@@ -869,6 +875,7 @@ fn declaration_header_span_contains(
         Declaration::Nominal(decl) => span_contains(decl.span, byte),
         Declaration::Const(decl) => const_header_span_contains(parsed, decl, byte),
         Declaration::Resource(decl) => span_contains(decl.span, byte),
+        Declaration::Struct(decl) => span_contains(decl.span, byte),
         Declaration::Store(decl) => span_contains(decl.span, byte),
         Declaration::Function(decl) => span_contains(decl.span, byte),
         Declaration::Enum(decl) => span_contains(decl.span, byte),

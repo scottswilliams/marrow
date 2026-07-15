@@ -31,6 +31,7 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\ntype Age: int in 0..=150 supports add, subtract, step, scale\ntype Percent: int in 0..101\n\nfn f(a: Age): Age?\n    return Age.checked(a - Age(0))\n",
         "module app\n\nconst Greeting = $\"hello {name}: {{literal}}\"\n",
         "module app\n\nresource Book\n    required title: string\n    tags(pos: int): string\n    notes(noteId: string)\n        text: string\nstore ^books(id: int): Book\n    index byShelf(shelf, id)\n    index uniq(id) unique\n",
+        "module app\n\nstruct Point\n    x: int\n    y: int\n\nfn origin(): int\n    const p = Point(x: 0, y: 0)\n    return p.x\n",
         "module app\n\nenum Status\n    active\n    archived\n",
         "module app\n\nenum Cat\n    category feline\n        tiger\n        lion\n",
         "module app\n\npub fn add(a: int, b: int): int\n    return a + b\n",

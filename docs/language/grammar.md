@@ -59,6 +59,7 @@ top_level_decl  = {doc_comment},
                  | nominal_decl
                  | const_decl
                  | resource_decl
+                 | struct_decl
                  | store_decl
                  | enum_decl
                  | function_decl
@@ -109,6 +110,17 @@ index_arg_list  = field_path, {",", field_path}, ","? ;
 field_path      = identifier, {".", identifier} ;
 
 saved_root      = "^", identifier ;
+```
+
+A dense product value type shares the resource member syntax, but a struct field
+is the bare `identifier, type_annotation` form; the `required` marker, key
+parameters, and groups are rejected by the checker.
+
+```ebnf
+struct_decl     = "struct", identifier, NEWLINE,
+                  INDENT, struct_field+, DEDENT ;
+
+struct_field    = {doc_comment}, identifier, type_annotation, NEWLINE ;
 ```
 
 ## Enums
@@ -332,6 +344,8 @@ resource_constructor =
                   qualified_name, "(", named_argument_list?, ")"
                 | "Error", "(", named_argument_list?, ")" ;
 
+struct_literal  = identifier, "(", named_argument_list?, ")" ;
+
 path_expr       = saved_path | local_path ;
 saved_path      = "^", identifier, {path_suffix} ;
 local_path      = identifier, path_suffix, {path_suffix} ;
@@ -339,9 +353,9 @@ path_suffix     = paren_suffix | field_suffix ;
 assignable      = identifier | path_expr ;
 ```
 
-The checker distinguishes a function call, resource constructor, conversion,
-entry-identity constructor, and keyed path access after parsing the common call
-shape.
+The checker distinguishes a function call, resource constructor, struct literal,
+conversion, entry-identity constructor, and keyed path access after parsing the
+common call shape.
 
 ## Arguments
 

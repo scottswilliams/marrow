@@ -13,7 +13,7 @@ use super::tokens::{
 use crate::ast::{
     AliasDecl, Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl,
     Expression, FunctionDecl, ModuleDecl, NominalDecl, ParsedSource, ResourceDecl, SavedRoot,
-    SourceFile, StoreDecl, SupportSpelling, TestDecl, TypeExpr, UseDecl,
+    SourceFile, StoreDecl, StructDecl, SupportSpelling, TestDecl, TypeExpr, UseDecl,
 };
 use crate::diagnostic::{Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::literal::decode_string_literal;
@@ -131,6 +131,13 @@ impl<'a> DeclParser<'a> {
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let resource = self.parse_resource(decl_docs);
                 file.declarations.push(Declaration::Resource(resource));
+                file.comments.extend(trailing_comment);
+            }
+            Some(TokenKind::Keyword(Keyword::Struct)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let decl = self.parse_struct(decl_docs);
+                file.declarations.push(Declaration::Struct(decl));
                 file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Store)) if self.keyword_introduces_decl() => {
@@ -680,6 +687,41 @@ impl<'a> DeclParser<'a> {
         };
         debug_assert!(indexes.is_empty());
         ResourceDecl {
+            docs,
+            name,
+            name_span,
+            members,
+            comments,
+            span,
+        }
+    }
+
+    /// Parse a `struct Name` declaration and its indented field body. The header
+    /// and body reuse the resource machinery; a struct-specific restriction (no
+    /// groups, keys, or `required` keyword) is a checker rule, so the shared parser
+    /// stays one owner.
+    fn parse_struct(&mut self, docs: Vec<String>) -> StructDecl {
+        let span = self.header_span();
+        let header = self.take_header_line();
+        let (name, name_span) = match parse_resource_head(self.source, &header[1..]) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.report(span, error);
+                (String::new(), SourceSpan::default())
+            }
+        };
+        let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.parse_resource_members(false)
+        } else {
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
+                "expected an indented struct body",
+            );
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+        debug_assert!(indexes.is_empty());
+        StructDecl {
             docs,
             name,
             name_span,

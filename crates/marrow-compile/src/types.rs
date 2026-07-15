@@ -7,9 +7,11 @@
 //! distinct type: the registry owns its identity — name, inclusive interval, and
 //! `supports` capability set — while the image records only its base scalar, so
 //! the interval is carried by the guard instructions the compiler emits, not by
-//! an image type table. The T01 subset admits exactly one record type per
-//! project: a `resource` with required and sparse scalar fields, no groups and no
-//! keyed children, lowered into the image [`RecordTypeDef`].
+//! an image type table. Two product kinds lower into image [`RecordTypeDef`]s,
+//! the single canonical product-leaf order owner: the optional `resource` (a
+//! durable record with required and sparse scalar fields, no groups and no keyed
+//! children) and any number of dense `struct` value types (every field required,
+//! non-durable, constructible and read by value).
 
 use std::collections::BTreeMap;
 
@@ -17,7 +19,7 @@ use marrow_codes::Code;
 use marrow_image::{FieldDef, ImageDraft, RecordTypeDef, TypeId};
 use marrow_syntax::{
     AliasDecl, Expression, LiteralKind, NominalDecl, ResourceDecl, ResourceMember, SourceSpan,
-    TypeExpr, UnaryOp, range_expr,
+    StructDecl, TypeExpr, UnaryOp, range_expr,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -64,28 +66,60 @@ pub(crate) struct RecordInfo {
 
 impl RecordInfo {
     pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
-        self.fields
-            .iter()
-            .enumerate()
-            .find(|(_, field)| field.name == name)
-            .map(|(index, field)| (index as u16, field))
+        field_index(&self.fields, name)
     }
 }
 
-/// The project named-type registry: the transparent aliases and zero or one
-/// record type.
+/// One dense product type: a `struct` whose every field is present inline. It
+/// shares the image [`RecordTypeDef`] representation with the resource record —
+/// the single canonical product-leaf order owner — but is a distinct value type:
+/// non-durable, constructed and read by value, every field required. (A struct
+/// as a parameter or return type awaits image return-shape growth.)
+pub(crate) struct StructInfo {
+    pub(crate) type_id: TypeId,
+    pub(crate) name: String,
+    pub(crate) fields: Vec<FieldInfo>,
+}
+
+impl StructInfo {
+    pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
+        field_index(&self.fields, name)
+    }
+}
+
+/// The index and info of the field named `name` in declaration order, shared by
+/// the resource record and the dense struct so field lookup has one owner.
+fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f FieldInfo)> {
+    fields
+        .iter()
+        .enumerate()
+        .find(|(_, field)| field.name == name)
+        .map(|(index, field)| (index as u16, field))
+}
+
+/// The project named-type registry: the transparent aliases, the nominal int
+/// types, the dense struct value types, and zero or one durable record type.
 #[derive(Default)]
 pub(crate) struct TypeRegistry {
     /// `alias name -> alias-free expanded target`. Cyclic aliases are reported
     /// at build and never enter this map.
     aliases: BTreeMap<String, TypeExpr>,
     nominals: Vec<NominalInfo>,
+    structs: Vec<StructInfo>,
     record: Option<RecordInfo>,
 }
 
 impl TypeRegistry {
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
         self.record.as_ref().filter(|info| info.name == name)
+    }
+
+    pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
+        self.structs.iter().find(|info| info.name == name)
+    }
+
+    pub(crate) fn struct_by_type(&self, ty: TypeId) -> Option<&StructInfo> {
+        self.structs.iter().find(|info| info.type_id == ty)
     }
 
     pub(crate) fn nominal_by_name(&self, name: &str) -> Option<(NominalId, &NominalInfo)> {
@@ -135,16 +169,22 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         aliases: &[(String, &AliasDecl)],
         nominals: &[(String, &NominalDecl)],
+        structs: &[(String, &StructDecl)],
         resources: &[(String, &ResourceDecl)],
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
         let mut registry = Self {
-            aliases: build_alias_table(aliases, resources, diagnostics),
+            aliases: build_alias_table(aliases, resources, structs, diagnostics),
             nominals: Vec::new(),
+            structs: Vec::new(),
             record: None,
         };
-        registry.nominals = build_nominals(&registry, nominals, resources, diagnostics);
+        registry.nominals = build_nominals(&registry, nominals, resources, structs, diagnostics);
+        // The resource record takes its image type index before the structs, so a
+        // project's durable root and sites keep the same record index whether or
+        // not dense structs are also declared.
         registry.record = build_record(draft, &registry, resources, diagnostics);
+        registry.structs = build_structs(draft, &registry, structs, resources, diagnostics);
         validate_alias_targets(&registry, aliases, diagnostics);
         registry
     }
@@ -157,6 +197,7 @@ impl TypeRegistry {
 fn build_alias_table(
     aliases: &[(String, &AliasDecl)],
     resources: &[(String, &ResourceDecl)],
+    structs: &[(String, &StructDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> BTreeMap<String, TypeExpr> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
@@ -182,6 +223,15 @@ fn build_alias_table(
                 file,
                 decl.name_span,
                 format!("`{}` is already declared as a resource", decl.name),
+            ));
+            continue;
+        }
+        if structs.iter().any(|(_, item)| item.name == decl.name) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as a struct", decl.name),
             ));
             continue;
         }
@@ -298,6 +348,7 @@ fn validate_alias_targets(
                 if ScalarType::from_spelling(text).is_none()
                     && registry.by_name(text).is_none()
                     && registry.nominal_by_name(text).is_none()
+                    && registry.struct_by_name(text).is_none()
                 {
                     diagnostics.push(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -327,6 +378,7 @@ fn build_nominals(
     registry: &TypeRegistry,
     nominals: &[(String, &NominalDecl)],
     resources: &[(String, &ResourceDecl)],
+    structs: &[(String, &StructDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Vec<NominalInfo> {
     let mut built: Vec<NominalInfo> = Vec::new();
@@ -343,6 +395,7 @@ fn build_nominals(
             || resources
                 .iter()
                 .any(|(_, resource)| resource.name == decl.name)
+            || structs.iter().any(|(_, item)| item.name == decl.name)
             || built.iter().any(|info| info.name == decl.name)
         {
             diagnostics.push(SourceDiagnostic::at(
@@ -502,6 +555,117 @@ fn support_set(
         *flag = true;
     }
     Some(supports)
+}
+
+/// Build the dense struct types. Each becomes an image [`RecordTypeDef`] whose
+/// every field is required, resolving field annotations through the aliases
+/// already installed in `registry`. A name collision with a scalar, alias,
+/// nominal, resource, or earlier struct is a `check.name_conflict`; a group,
+/// keyed field, the `required` keyword, an optional field type, or a non-scalar
+/// field type is `check.unsupported` (a struct field is the bare `name: Type`
+/// form over a scalar). A declaration with a defect is dropped whole.
+fn build_structs(
+    draft: &mut ImageDraft,
+    registry: &TypeRegistry,
+    structs: &[(String, &StructDecl)],
+    resources: &[(String, &ResourceDecl)],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Vec<StructInfo> {
+    let mut built: Vec<StructInfo> = Vec::new();
+    for (file, decl) in structs {
+        if ScalarType::from_spelling(&decl.name).is_some()
+            || registry.aliases.contains_key(&decl.name)
+            || registry.nominal_by_name(&decl.name).is_some()
+            || resources
+                .iter()
+                .any(|(_, resource)| resource.name == decl.name)
+            || built.iter().any(|info| info.name == decl.name)
+        {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as a type", decl.name),
+            ));
+            continue;
+        }
+        let Some((fields, field_defs)) = struct_fields(draft, registry, file, decl, diagnostics)
+        else {
+            continue;
+        };
+        let name_id = draft.intern_string(&decl.name);
+        let type_id = draft.add_record_type(RecordTypeDef {
+            name: name_id,
+            fields: field_defs,
+        });
+        built.push(StructInfo {
+            type_id,
+            name: decl.name.clone(),
+            fields,
+        });
+    }
+    built
+}
+
+/// Resolve a struct's members to its required scalar fields and their image
+/// definitions, or `None` if any member is not the bare `name: scalar` form.
+fn struct_fields(
+    draft: &mut ImageDraft,
+    registry: &TypeRegistry,
+    file: &str,
+    decl: &StructDecl,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<(Vec<FieldInfo>, Vec<FieldDef>)> {
+    let mut fields = Vec::new();
+    let mut field_defs = Vec::new();
+    let mut ok = true;
+    for member in &decl.members {
+        let ResourceMember::Field(field) = member else {
+            diagnostics.push(unsupported(file, member.span(), "a struct group"));
+            ok = false;
+            continue;
+        };
+        if !field.keys.is_empty() {
+            diagnostics.push(unsupported(file, field.span, "a keyed struct field"));
+            ok = false;
+            continue;
+        }
+        if field.required {
+            diagnostics.push(unsupported(
+                file,
+                field.span,
+                "the `required` keyword on a struct field (struct fields are always required)",
+            ));
+            ok = false;
+            continue;
+        }
+        if matches!(registry.expand(&field.ty), TypeExpr::Optional { .. }) {
+            diagnostics.push(unsupported(
+                file,
+                field.ty.span(),
+                "an optional struct field type",
+            ));
+            ok = false;
+            continue;
+        }
+        let Some(scalar) = scalar_of(&registry.expand(&field.ty)) else {
+            diagnostics.push(unsupported(file, field.ty.span(), "this struct field type"));
+            ok = false;
+            continue;
+        };
+        let field_name_id = draft.intern_string(&field.name);
+        field_defs.push(FieldDef {
+            name: field_name_id,
+            ty: scalar.image(),
+            required: true,
+        });
+        fields.push(FieldInfo {
+            name: field.name.clone(),
+            scalar,
+            required: true,
+        });
+    }
+    ok.then_some((fields, field_defs))
 }
 
 /// Build the one admitted record type, resolving field annotations through the

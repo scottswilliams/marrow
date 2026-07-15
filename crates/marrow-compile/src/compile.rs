@@ -13,7 +13,7 @@ use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, FunctionDecl, NominalDecl, ParsedSource, ResourceDecl,
-    SourceSpan, StoreDecl, parse_source,
+    SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -284,10 +284,23 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
+    let structs: Vec<(String, &StructDecl)> = parsed
+        .iter()
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
+                if let Declaration::Struct(item) = decl {
+                    Some((module.file.clone(), item))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
     let records = TypeRegistry::build(
         &mut draft,
         &aliases,
         &nominals,
+        &structs,
         &resources,
         &mut diagnostics,
     );
@@ -389,6 +402,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 | Declaration::Nominal(_)
                 | Declaration::Const(_)
                 | Declaration::Resource(_)
+                | Declaration::Struct(_)
                 | Declaration::Store(_)
                 | Declaration::Test(_) => {}
                 other => diagnostics.push(SourceDiagnostic::at(
@@ -564,6 +578,7 @@ fn declaration_span(declaration: &Declaration) -> SourceSpan {
         Declaration::Nominal(decl) => decl.span,
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
+        Declaration::Struct(decl) => decl.span,
         Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,

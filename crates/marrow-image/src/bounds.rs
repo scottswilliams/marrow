@@ -13,8 +13,11 @@ pub const MAX_IMAGE_BYTES: usize = 256 * 1024;
 pub const MAX_STRINGS: usize = 1024;
 pub const MAX_STRING_BYTES: usize = 4 * 1024;
 
-/// Record types (0 or 1 at v0) and fields per record.
-pub const MAX_TYPES: usize = 1;
+/// Record types and fields per record. A project's type table holds its dense
+/// `struct` value types alongside the optional durable resource record; the
+/// durable graph still admits at most one root (`MAX_ROOTS`), which references
+/// exactly one of these types.
+pub const MAX_TYPES: usize = 64;
 pub const MAX_FIELDS: usize = 64;
 
 /// Durable roots (0 or 1) and operation sites.

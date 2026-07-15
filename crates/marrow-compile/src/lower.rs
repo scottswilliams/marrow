@@ -28,9 +28,26 @@ use crate::types::{NominalId, SupportSet, TypeRegistry};
 /// check-time identity lives here and in the [`TypeRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LTy {
-    Scalar { scalar: ScalarType, optional: bool },
-    Nominal { id: NominalId, optional: bool },
-    Record { ty: TypeId, optional: bool },
+    Scalar {
+        scalar: ScalarType,
+        optional: bool,
+    },
+    Nominal {
+        id: NominalId,
+        optional: bool,
+    },
+    Record {
+        ty: TypeId,
+        optional: bool,
+    },
+    /// A dense `struct` value. Like [`LTy::Record`] it is image-`Record`-shaped and
+    /// runtime-`Value::Record`-shaped (the one product representation owner), but
+    /// it is a distinct value type: constructible and returnable, every field
+    /// present. The `TypeId` names its image record def.
+    Struct {
+        ty: TypeId,
+        optional: bool,
+    },
 }
 
 impl LTy {
@@ -45,7 +62,8 @@ impl LTy {
         match self {
             LTy::Scalar { optional, .. }
             | LTy::Nominal { optional, .. }
-            | LTy::Record { optional, .. } => optional,
+            | LTy::Record { optional, .. }
+            | LTy::Struct { optional, .. } => optional,
         }
     }
 
@@ -57,6 +75,7 @@ impl LTy {
             },
             LTy::Nominal { id, .. } => LTy::Nominal { id, optional: true },
             LTy::Record { ty, .. } => LTy::Record { ty, optional: true },
+            LTy::Struct { ty, .. } => LTy::Struct { ty, optional: true },
         }
     }
 
@@ -68,6 +87,10 @@ impl LTy {
                 optional: false,
             },
             LTy::Record { ty, .. } => LTy::Record {
+                ty,
+                optional: false,
+            },
+            LTy::Struct { ty, .. } => LTy::Struct {
                 ty,
                 optional: false,
             },
@@ -89,6 +112,13 @@ impl LTy {
             LTy::Scalar { scalar, optional } => (scalar.spelling().to_string(), optional),
             LTy::Nominal { id, optional } => (records.nominal(id).name.clone(), optional),
             LTy::Record { optional, .. } => ("record".to_string(), optional),
+            LTy::Struct { ty, optional } => (
+                records
+                    .struct_by_type(ty)
+                    .map(|info| info.name.clone())
+                    .unwrap_or_else(|| "struct".to_string()),
+                optional,
+            ),
         };
         if optional { format!("{base}?") } else { base }
     }
@@ -130,7 +160,7 @@ impl LTy {
                 optional: false, ..
             } => ImageType::scalar(Scalar::Int),
             LTy::Nominal { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
-            LTy::Record { ty, optional } => ImageType::Record {
+            LTy::Record { ty, optional } | LTy::Struct { ty, optional } => ImageType::Record {
                 idx: ty.index(),
                 optional,
             },
@@ -258,9 +288,10 @@ impl FunctionRegistry {
             let ret = match &function.return_type {
                 None => RetType::Unit,
                 Some(annotation) => match resolve_type(records, annotation) {
-                    Some(LTy::Record { .. }) | None => {
-                        // A record or unsupported return; the function's own lowering
-                        // reports it. Record Unit here so indices stay aligned.
+                    Some(LTy::Record { .. } | LTy::Struct { .. }) | None => {
+                        // A record, struct, or unsupported return; the function's own
+                        // lowering reports it. Record Unit here so indices stay aligned.
+                        // (A struct return needs image `RetShape` growth, deferred.)
                         RetType::Unit
                     }
                     Some(ty) => RetType::Value(ty),
@@ -433,6 +464,10 @@ impl<'a> FnLowerer<'a> {
             Some(annotation) => match resolve_type(records, annotation) {
                 Some(LTy::Record { .. }) => {
                     diagnostics.push(unsupported(file, annotation.span(), "a record return type"));
+                    return None;
+                }
+                Some(LTy::Struct { .. }) => {
+                    diagnostics.push(unsupported(file, annotation.span(), "a struct return type"));
                     return None;
                 }
                 Some(ty) => RetType::Value(ty),
@@ -2088,6 +2123,11 @@ impl<'a> FnLowerer<'a> {
                 .lower_nominal_construct(id, args, span)
                 .map(CallResult::Value);
         }
+        if self.records.struct_by_name(name).is_some() {
+            return self
+                .lower_struct_literal(name, args, span)
+                .map(CallResult::Value);
+        }
         if self.records.by_name(name).is_some() {
             return self
                 .lower_constructor(name, args, span)
@@ -2344,38 +2384,143 @@ impl<'a> FnLowerer<'a> {
         })
     }
 
+    /// Lower a dense struct literal `Point(x: a, y: b)`: named-only arguments, the
+    /// exact field set with none missing, duplicated, or unknown, each coerced to
+    /// its required field scalar in field declaration order (f0 pushed first) so
+    /// the canonical product-leaf order owns evaluation. Emits `RecordNew` over the
+    /// struct's shared image record def.
+    fn lower_struct_literal(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let type_id = self.records.struct_by_name(name)?.type_id;
+
+        let mut ok = true;
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for argument in args {
+            let Some(arg_name) = &argument.name else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{name}` fields are named, as `{name}(field: value, ...)`"),
+                ));
+                ok = false;
+                continue;
+            };
+            if self.records.struct_by_name(name)?.field(arg_name).is_none() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{name}` has no field `{arg_name}`"),
+                ));
+                ok = false;
+                continue;
+            }
+            if !seen.insert(arg_name.as_str()) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("field `{arg_name}` is set more than once"),
+                ));
+                ok = false;
+            }
+        }
+        if !ok {
+            return None;
+        }
+
+        let field_plan: Vec<(String, ScalarType)> = self
+            .records
+            .struct_by_name(name)?
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.scalar))
+            .collect();
+        for (field_name, scalar) in field_plan {
+            let arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(field_name.as_str()));
+            match arg {
+                Some(argument) => {
+                    self.lower_as(&argument.value, LTy::bare_scalar(scalar))?;
+                }
+                None => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("missing field `{field_name}`"),
+                    ));
+                    return None;
+                }
+            }
+        }
+        self.push(Instr::RecordNew(type_id.index()), span);
+        Some(LTy::Struct {
+            ty: type_id,
+            optional: false,
+        })
+    }
+
     fn lower_field(&mut self, base: &Expression, name: &str, span: SourceSpan) -> Option<LTy> {
         let base_ty = self.lower_expr(base)?;
-        let LTy::Record {
-            ty,
-            optional: false,
-        } = base_ty
-        else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                base.span(),
-                format!(
-                    "field access needs a record, found {}",
-                    base_ty.spelling(self.records)
-                ),
-            ));
-            return None;
+        let (index, scalar, required) = match base_ty {
+            LTy::Record {
+                ty,
+                optional: false,
+            } => {
+                let Some(record) = self.records.by_name_for_type(ty) else {
+                    self.fail(unsupported(self.file, span, "this field access"));
+                    return None;
+                };
+                let Some((index, field)) = record.field(name) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("record has no field `{name}`"),
+                    ));
+                    return None;
+                };
+                (index, field.scalar, field.required)
+            }
+            LTy::Struct {
+                ty,
+                optional: false,
+            } => {
+                let info = self
+                    .records
+                    .struct_by_type(ty)
+                    .expect("a bare struct type resolves to a struct info");
+                let Some((index, field)) = info.field(name) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("`{}` has no field `{name}`", info.name),
+                    ));
+                    return None;
+                };
+                (index, field.scalar, field.required)
+            }
+            _ => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    base.span(),
+                    format!(
+                        "field access needs a record or struct, found {}",
+                        base_ty.spelling(self.records)
+                    ),
+                ));
+                return None;
+            }
         };
-        let Some(record) = self.records.by_name_for_type(ty) else {
-            self.fail(unsupported(self.file, span, "this field access"));
-            return None;
-        };
-        let Some((index, field)) = record.field(name) else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                span,
-                format!("record has no field `{name}`"),
-            ));
-            return None;
-        };
-        let (scalar, required) = (field.scalar, field.required);
         self.push(Instr::FieldGet(index), span);
         Some(if required {
             LTy::bare_scalar(scalar)
@@ -2859,6 +3004,11 @@ fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy
             } else if let Some((id, _)) = records.nominal_by_name(text) {
                 Some(LTy::Nominal {
                     id,
+                    optional: false,
+                })
+            } else if let Some(info) = records.struct_by_name(text) {
+                Some(LTy::Struct {
+                    ty: info.type_id,
                     optional: false,
                 })
             } else {

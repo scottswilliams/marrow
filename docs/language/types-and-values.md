@@ -299,6 +299,38 @@ separately and are not materialized as part of a local resource value.
 Resource values are copied by value through local bindings, parameters, and
 returns. See [Resources](resources.md).
 
+## Structs
+
+A `struct` declares a dense product value type. Every field is required, held
+inline, and named `name: Type` over a scalar type. Unlike a resource, a struct is
+not durable and has no keyed layers, groups, or sparse fields.
+
+```mw
+struct Point
+    x: int
+    y: int
+```
+
+A struct value is built with a named-only literal that provides every field
+exactly once; the field arguments may appear in any order and are evaluated in
+field declaration order:
+
+```mw
+const p = Point(x: 3, y: 4)
+const q = Point(y: 4, x: 3)
+```
+
+Fields are read with `.`, yielding the field's scalar type. Struct values are
+copied by value through local bindings and assignments, like every other value.
+A struct name is project-global and is written without a module qualifier.
+
+A field type is a scalar type (or an alias that expands to one). The current
+compiler does not admit a struct as a parameter type, as a return type, or as the
+type of a struct field; each is a `check.unsupported` diagnostic. A missing,
+unknown, duplicated, or wrong-typed field argument, and an unnamed (positional)
+argument, are `check.type` diagnostics; a struct name that collides with another
+declared type is a `check.name_conflict`.
+
 ## Sequences And Keyed Collections
 
 `sequence[T]` is a local or declared positional collection whose keys are

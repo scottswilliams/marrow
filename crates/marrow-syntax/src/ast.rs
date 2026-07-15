@@ -83,6 +83,7 @@ pub enum Declaration {
     Nominal(NominalDecl),
     Const(ConstDecl),
     Resource(ResourceDecl),
+    Struct(StructDecl),
     Store(StoreDecl),
     Function(FunctionDecl),
     Enum(EnumDecl),
@@ -465,6 +466,23 @@ impl CompoundAssignOp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceDecl {
+    pub docs: Vec<String>,
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub members: Vec<ResourceMember>,
+    pub comments: Vec<Comment>,
+    pub span: SourceSpan,
+}
+
+/// A dense product type: `struct Name` with an indented body of `name: Type`
+/// fields. Unlike a `resource`, a struct is a non-durable value type — every
+/// field is required, held inline, and copied by value — and it is constructed
+/// with a named-only literal `Name(field: expr, ...)`. It shares the resource
+/// member syntax, so groups, key parameters, and the `required` keyword parse
+/// here; the checker rejects them, since a struct field is always the bare
+/// `name: Type` form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub name_span: SourceSpan,

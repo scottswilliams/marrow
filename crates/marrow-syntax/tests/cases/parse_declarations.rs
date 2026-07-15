@@ -551,6 +551,7 @@ fn normalize(title: string): string
             Declaration::Nominal(decl) => decl.name.as_str(),
             Declaration::Const(decl) => decl.name.as_str(),
             Declaration::Resource(decl) => decl.name.as_str(),
+            Declaration::Struct(decl) => decl.name.as_str(),
             Declaration::Store(decl) => decl.root.root.as_str(),
             Declaration::Function(decl) => decl.name.as_str(),
             Declaration::Enum(decl) => decl.name.as_str(),
