@@ -19,13 +19,14 @@ mod ty;
 
 pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
 pub use draft::{
-    CollTypeId, CollectionTypeDef, ConstId, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef,
-    ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef, RootIdentity, SiteDef, SiteId,
-    SiteTarget, SpanEntry, StrId, TypeId, VariantDef,
+    CollTypeId, CollectionTypeDef, ConstId, DurableMemberDef, EnumId, EnumTypeDef, FieldDef,
+    FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef,
+    RootIdentity, SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TypeId, VariantDef,
 };
 pub use durable_id::{
-    DURABLE_CONTRACT_KIND, DurableContractDescriptor, DurableContractId, DurableFieldShape,
-    DurableKeyShape, DurableRootShape, LedgerIdBytes,
+    DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableContractId,
+    DurableFieldShape, DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
+    LedgerIdBytes,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};

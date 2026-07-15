@@ -3,25 +3,34 @@
 //! The durable graph admits at most one `store` root over the project's single
 //! resource record. A root is a *singleton* (`store ^root: Record`, no key) or a
 //! *keyed tuple* (`store ^root(k1: K1, k2: K2): Record`, one or more ordered
-//! orderable durable-key columns). Every admitted root is a distinct graph node
-//! with a complete ledger identity — its placement, its stored product, one
-//! identity per key column, and one per stored field — and a slot in the image
-//! DURABLE table the verifier independently re-encodes.
+//! orderable durable-key columns). A resource's durable shape is a **member tree**:
+//! its top-level stored fields, plus any static `group` field-path namespaces and
+//! keyed `branch` placements, each of which recursively holds its own members. A
+//! group is an unkeyed pathing construct (a `Group` ledger identity); a branch is a
+//! keyed subtree — a distinct graph node with its own placement id and key tuple,
+//! just like a root. Every admitted node has a complete ledger identity and a
+//! contribution to the durable-contract identity the verifier independently
+//! re-encodes.
 //!
 //! The executable durable subset the single-root kernel can serve at this stage is
-//! the single-column keyed root. A singleton or composite-key root completes its
-//! identity and verifies, but has no executable operation sites: an operation over
-//! one is a precise typed `check.unsupported` rejection at lowering (the wider key
-//! arities execute at E01). This module validates the declaration, adds the root
-//! and — for the executable subset — its operation sites to the draft, and exposes
-//! the resolved sites the function lowerer emits against.
+//! the flat single-column keyed root: one key column and no groups or branches. A
+//! singleton or composite-key root, or any root whose resource declares a group or
+//! a branch, completes its identity and verifies but has no executable operation
+//! sites — an operation over one is a precise typed `check.unsupported` rejection at
+//! lowering ("not yet executable"). The wider shapes run at E01. This module
+//! validates the declaration, adds the root, its member tree, and — for the
+//! executable subset — its operation sites to the draft, and exposes the resolved
+//! sites the function lowerer emits against.
 
 use marrow_codes::Code;
 use marrow_image::{
-    ImageDraft, KeyColumn, LedgerIdBytes, RootDef, RootIdentity, SiteDef, SiteTarget, bounds,
+    DurableMemberDef, ImageDraft, KeyColumn, LedgerIdBytes, RootDef, RootIdentity, SiteDef,
+    SiteTarget, bounds,
 };
 use marrow_project::{IdentityKind, IdentityLedger};
-use marrow_syntax::{SourceSpan, StoreDecl};
+use marrow_syntax::{
+    FieldDecl, GroupDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr,
+};
 
 use crate::diag::{IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
@@ -40,8 +49,8 @@ pub(crate) struct DurableField {
 }
 
 /// The project's single executable durable root and its operation sites. Only a
-/// single-column keyed root reaches this form; its single key scalar backs the
-/// kernel-serviceable read/write path.
+/// flat single-column keyed root (one key column, no groups or branches) reaches
+/// this form; its single key scalar backs the kernel-serviceable read/write path.
 pub(crate) struct DurableRoot {
     pub(crate) name: String,
     pub(crate) key: ScalarType,
@@ -57,9 +66,10 @@ impl DurableRoot {
 }
 
 /// The durable registry: zero or one root. `executable` is populated only for the
-/// single-column keyed root the kernel can serve; `declared_root` names any
-/// admitted root (singleton, single-column, or composite) so a durable operation
-/// over a not-yet-executable shape reports precisely rather than as "no store".
+/// flat single-column keyed root the kernel can serve; `declared_root` names any
+/// admitted root (singleton, single-column, composite, or one bearing groups or
+/// branches) so a durable operation over a not-yet-executable shape reports
+/// precisely rather than as "no store".
 #[derive(Default)]
 pub(crate) struct DurableRegistry {
     executable: Option<DurableRoot>,
@@ -67,15 +77,15 @@ pub(crate) struct DurableRegistry {
 }
 
 impl DurableRegistry {
-    /// The executable single-column keyed root, if the project declares one.
+    /// The executable flat single-column keyed root, if the project declares one.
     pub(crate) fn root(&self) -> Option<&DurableRoot> {
         self.executable.as_ref()
     }
 
-    /// The name of a declared root whose key arity the kernel cannot yet serve
-    /// (singleton or composite). `Some` exactly when a root is declared but not
-    /// executable, so the lowerer can distinguish a not-yet-executable operation
-    /// from an operation with no store at all.
+    /// The name of a declared root the kernel cannot yet serve (a singleton or
+    /// composite key, or a resource with a group or branch). `Some` exactly when a
+    /// root is declared but not executable, so the lowerer can distinguish a
+    /// not-yet-executable operation from an operation with no store at all.
     pub(crate) fn not_yet_executable_root(&self) -> Option<&str> {
         match (&self.executable, &self.declared_root) {
             (None, Some(name)) => Some(name),
@@ -88,14 +98,17 @@ impl DurableRegistry {
     /// than one store, an index, a missing or mismatched resource, a key column
     /// outside the closed orderable durable-key set, or a key tuple past the
     /// column bound are rejected — and so is a durable graph whose identity is
-    /// incomplete: every durable declaration must have a live row in the committed
-    /// `marrow.ids` ledger, or the declaration fails precisely with
+    /// incomplete: every durable declaration (the application, the root placement,
+    /// its product, each key column, each stored field, each group namespace, and
+    /// each nested branch placement and key column) must have a live row in the
+    /// committed `marrow.ids` ledger, or the declaration fails precisely with
     /// `check.durable_identity`. The compiler only *reads* the ledger; minting
     /// lives in the `marrow run` convenience action (and in the accepted apply
     /// action when it lands).
     pub(crate) fn build(
         draft: &mut ImageDraft,
         records: &TypeRegistry,
+        resources: &[(String, &ResourceDecl)],
         stores: &[(String, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut Vec<SourceDiagnostic>,
@@ -125,37 +138,17 @@ impl DurableRegistry {
             ));
             return Self::default();
         }
-        // Resolve each key column's scalar in declared tuple order. A singleton
+        // Resolve each root key column's scalar in declared tuple order. A singleton
         // root has no columns.
-        let mut key_scalars: Vec<ScalarType> = Vec::with_capacity(store.root.keys.len());
-        for key_param in &store.root.keys {
-            let Some(key) = scalar_of(&records.expand(&key_param.ty)) else {
-                diagnostics.push(unsupported(file, store.root.span, "this key type"));
-                return Self::default();
-            };
-            // The closed orderable durable-key scalar set (frozen at C04): int,
-            // string, bool, bytes, date, and instant. `duration` is a span, not an
-            // identity, so it is not a durable key.
-            if !matches!(
-                key,
-                ScalarType::Int
-                    | ScalarType::Text
-                    | ScalarType::Bool
-                    | ScalarType::Bytes
-                    | ScalarType::Date
-                    | ScalarType::Instant
-            ) {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    file,
-                    store.root.span,
-                    "a store key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
-                        .to_string(),
-                ));
-                return Self::default();
-            }
-            key_scalars.push(key);
-        }
+        let Some(key_scalars) = resolve_key_scalars(
+            file,
+            store.root.span,
+            &store.root.keys,
+            records,
+            diagnostics,
+        ) else {
+            return Self::default();
+        };
         let Some(record) = records.by_name(&store.resource) else {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -165,9 +158,15 @@ impl DurableRegistry {
             ));
             return Self::default();
         };
+        let Some((_, resource)) = resources
+            .iter()
+            .find(|(_, decl)| decl.name == store.resource)
+        else {
+            return Self::default();
+        };
 
-        // Durable storage is scalar-leaf; a resource carrying an enum-valued field
-        // has no store representation, so it cannot back a `store`.
+        // A durable resource stores scalar leaves; a top-level enum-valued field has
+        // no store representation, so it cannot back a `store`.
         if let Some(field) = record
             .fields
             .iter()
@@ -185,17 +184,16 @@ impl DurableRegistry {
             return Self::default();
         }
 
-        // Resolve the durable graph's ledger identities. Every durable
-        // declaration — the application, the root placement, its stored product,
-        // each key column, and each stored field — must hold a live row in the
-        // committed `marrow.ids` ledger; a missing or retired anchor is a precise
-        // typed diagnostic carrying the `(kind, path)` gap the mint action
-        // consumes.
+        // Resolve the durable graph's ledger identities. The application, the root
+        // placement, its product, and each root key column anchor first; then the
+        // resource's member tree (top-level fields, groups, and branches) anchors as
+        // it is walked. A missing or retired anchor is a precise typed diagnostic
+        // carrying the `(kind, path)` gap the mint action consumes.
         let mut resolver = IdentityResolver::new(file, store.span, ledger, diagnostics);
         let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
         let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
         let product = resolver.resolve(IdentityKind::Product, &store.resource);
-        let key_ids: Vec<Option<LedgerIdBytes>> = store
+        let key_ids: Vec<LedgerIdBytes> = store
             .root
             .keys
             .iter()
@@ -206,38 +204,42 @@ impl DurableRegistry {
                 )
             })
             .collect();
-        let field_ids: Vec<Option<LedgerIdBytes>> = record
+
+        // The resource's member tree, in canonical order: its top-level fields
+        // (aligned with the materialized record), then its static `group`
+        // namespaces, then its keyed `branch` placements — each group and branch
+        // recursively holding its own members. `has_extras` records whether the
+        // resource declares any group or branch, which makes even a single-column
+        // keyed root not yet executable.
+        let mut members: Vec<DurableMemberDef> = record
             .fields
             .iter()
-            .map(|field| {
-                resolver.resolve(
+            .map(|field| DurableMemberDef::Field {
+                id: resolver.resolve(
                     IdentityKind::Field,
                     &format!("{}.{}", store.resource, field.name),
-                )
+                ),
+                scalar: field
+                    .ty
+                    .as_scalar()
+                    .expect("a stored resource field is a scalar")
+                    .image(),
+                required: field.required,
             })
             .collect();
+        let (groups_and_branches, has_extras) =
+            resolver.build_extras(records, &resource.members, &store.resource);
+        members.extend(groups_and_branches);
 
         // Every identity must resolve before the graph enters the image; a single
-        // gap already reported precisely leaves the durable graph absent.
-        // A durable graph whose identity is incomplete has already reported a
-        // precise `check.durable_identity` gap per missing anchor; it does not
-        // enter the image and leaves no declared-root marker, so an operation over
-        // it is not additionally mislabelled "not yet executable" (the identity gap
-        // is the diagnosis, whatever the root's key arity).
-        let (Some(application), Some(placement), Some(product)) = (application, placement, product)
-        else {
+        // gap already reported precisely leaves the durable graph absent, so an
+        // operation over it is not additionally mislabelled "not yet executable"
+        // (the identity gap is the diagnosis, whatever the shape).
+        if !resolver.complete {
             return Self::default();
-        };
-        let Some(key_ids) = key_ids.into_iter().collect::<Option<Vec<_>>>() else {
-            return Self::default();
-        };
-        let Some(field_ids) = field_ids.into_iter().collect::<Option<Vec<_>>>() else {
-            return Self::default();
-        };
-
+        }
         draft.set_application_identity(application);
-        let root_name = draft.intern_string(&store.root.root);
-        let keys: Vec<KeyColumn> = key_scalars
+        let key_columns: Vec<KeyColumn> = key_scalars
             .iter()
             .zip(&key_ids)
             .map(|(scalar, id)| KeyColumn {
@@ -245,24 +247,29 @@ impl DurableRegistry {
                 id: *id,
             })
             .collect();
+
+        let root_name = draft.intern_string(&store.root.root);
         draft.add_root(RootDef {
             name: root_name,
-            keys,
+            keys: key_columns,
             record: record.type_id,
             identity: RootIdentity {
                 placement,
                 product,
-                fields: field_ids,
+                members,
             },
         });
 
-        // Operation sites — and therefore executable durable operations — exist
-        // only for the single-column keyed root the kernel can serve. A singleton
-        // or composite-key root carries its identity but no sites; the lowerer
-        // reports any operation over it as not yet executable.
+        // Operation sites — and therefore executable durable operations — exist only
+        // for the flat single-column keyed root the kernel can serve. A singleton,
+        // composite-key, or group/branch-bearing root carries its identity but no
+        // sites; the lowerer reports any operation over it as not yet executable.
         let [key] = key_scalars.as_slice() else {
             return Self::declared(&store.root.root);
         };
+        if has_extras {
+            return Self::declared(&store.root.root);
+        }
         let entry_site = draft
             .add_site(SiteDef {
                 root: 0,
@@ -306,8 +313,8 @@ impl DurableRegistry {
 
     /// A registry recording that a root of the named placement is declared, in the
     /// image with a complete identity, but not executable — the kernel cannot yet
-    /// serve its key arity (a singleton or composite-key root). Used only after the
-    /// root has entered the draft.
+    /// serve its shape (a singleton or composite key, or a group- or branch-bearing
+    /// resource). Used only after the root has entered the draft.
     fn declared(root: &str) -> Self {
         Self {
             executable: None,
@@ -316,14 +323,59 @@ impl DurableRegistry {
     }
 }
 
+/// Resolve each key column's scalar in declared tuple order, rejecting a key type
+/// outside the closed orderable durable-key set. `None` (with a diagnostic) if any
+/// column is not a supported key scalar; a singleton placement has no columns and
+/// yields an empty vector. Shared by root and branch key tuples.
+fn resolve_key_scalars(
+    file: &str,
+    span: SourceSpan,
+    keys: &[KeyParam],
+    records: &TypeRegistry,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<Vec<ScalarType>> {
+    let mut scalars = Vec::with_capacity(keys.len());
+    for key_param in keys {
+        let Some(key) = scalar_of(&records.expand(&key_param.ty)) else {
+            diagnostics.push(unsupported(file, span, "this key type"));
+            return None;
+        };
+        // The closed orderable durable-key scalar set (frozen at C04): int, string,
+        // bool, bytes, date, and instant. `duration` is a span, not an identity, so
+        // it is not a durable key.
+        if !matches!(
+            key,
+            ScalarType::Int
+                | ScalarType::Text
+                | ScalarType::Bool
+                | ScalarType::Bytes
+                | ScalarType::Date
+                | ScalarType::Instant
+        ) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                file,
+                span,
+                "a durable key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
+                    .to_string(),
+            ));
+            return None;
+        }
+        scalars.push(key);
+    }
+    Some(scalars)
+}
+
 /// Resolves durable `(kind, path)` anchors against the committed ledger, pushing a
-/// precise `check.durable_identity` diagnostic for each missing or retired anchor.
-/// Returning `Option` per anchor lets the caller report every gap in one pass
-/// rather than stopping at the first.
+/// precise `check.durable_identity` diagnostic for each missing or retired anchor,
+/// and building the group/branch member tree. `complete` stays true only while
+/// every anchor resolved; the caller discards the graph when it is false, so an id
+/// resolved to a placeholder on a gap never reaches the image.
 struct IdentityResolver<'a> {
     file: &'a str,
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
+    complete: bool,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
 }
 
@@ -338,29 +390,168 @@ impl<'a> IdentityResolver<'a> {
             file,
             span,
             ledger,
+            complete: true,
             diagnostics,
         }
     }
 
-    fn resolve(&mut self, kind: IdentityKind, path: &str) -> Option<LedgerIdBytes> {
+    /// Resolve one anchor to its live ledger id. On a gap this reports the precise
+    /// `(kind, path)` diagnostic, flips `complete` to false, and returns a
+    /// placeholder id — the caller discards the whole graph when `complete` is
+    /// false, so the placeholder is never encoded.
+    fn resolve(&mut self, kind: IdentityKind, path: &str) -> LedgerIdBytes {
         let (live, retired) = match self.ledger {
             Some(ledger) => (ledger.lookup(kind, path), ledger.is_retired(kind, path)),
             None => (None, false),
         };
         match live {
-            Some(id) => Some(LedgerIdBytes::from_bytes(*id.bytes())),
+            Some(id) => LedgerIdBytes::from_bytes(*id.bytes()),
             None => {
+                self.complete = false;
                 self.diagnostics
                     .push(identity_gap(self.file, self.span, kind, path, retired));
-                None
+                LedgerIdBytes::from_bytes([0u8; 16])
             }
         }
     }
+
+    /// Walk a resource's declared members, returning the durable member records for
+    /// its static `group` namespaces and keyed `branch` placements (its top-level
+    /// stored fields are anchored by the caller against the materialized record) and
+    /// whether any such group or branch is present. `container` is the anchor path
+    /// prefix — the resource name at the top level, extended by each group or branch
+    /// name as the walk descends. A keyed scalar leaf or a non-scalar field inside a
+    /// group or branch is a precise `check.unsupported` rejection.
+    fn build_extras(
+        &mut self,
+        records: &TypeRegistry,
+        members: &[ResourceMember],
+        container: &str,
+    ) -> (Vec<DurableMemberDef>, bool) {
+        let mut groups = Vec::new();
+        let mut branches = Vec::new();
+        for member in members {
+            let ResourceMember::Group(group) = member else {
+                continue;
+            };
+            let path = format!("{container}.{}", group.name);
+            if group.keys.is_empty() {
+                // A `group`: an unkeyed static field-path namespace.
+                let id = self.resolve(IdentityKind::Group, &path);
+                let inner = self.build_member_tree(records, group, &path);
+                groups.push(DurableMemberDef::Group { id, members: inner });
+            } else {
+                // A keyed `branch`: a distinct keyed placement, like a root.
+                let placement = self.resolve(IdentityKind::Root, &path);
+                let keys = self.build_branch_keys(records, group, &path);
+                let inner = self.build_member_tree(records, group, &path);
+                branches.push(DurableMemberDef::Branch {
+                    placement,
+                    keys,
+                    members: inner,
+                });
+            }
+        }
+        let has_extras = !groups.is_empty() || !branches.is_empty();
+        groups.extend(branches);
+        (groups, has_extras)
+    }
+
+    /// The key tuple of a branch placement: each column's scalar and its ledger id
+    /// anchored at `<branch path>.<column>`. A key type outside the closed orderable
+    /// durable-key set is a precise diagnostic and marks the graph incomplete.
+    fn build_branch_keys(
+        &mut self,
+        records: &TypeRegistry,
+        group: &GroupDecl,
+        path: &str,
+    ) -> Vec<KeyColumn> {
+        let scalars = match resolve_key_scalars(
+            self.file,
+            group.span,
+            &group.keys,
+            records,
+            self.diagnostics,
+        ) {
+            Some(scalars) => scalars,
+            None => {
+                self.complete = false;
+                return Vec::new();
+            }
+        };
+        group
+            .keys
+            .iter()
+            .zip(scalars)
+            .map(|(key_param, scalar)| KeyColumn {
+                scalar: scalar.image(),
+                id: self.resolve(IdentityKind::Key, &format!("{path}.{}", key_param.name)),
+            })
+            .collect()
+    }
+
+    /// The member records of one group or branch body: its stored scalar fields,
+    /// then its nested groups and branches. Field anchors are `<path>.<field>`.
+    fn build_member_tree(
+        &mut self,
+        records: &TypeRegistry,
+        group: &GroupDecl,
+        path: &str,
+    ) -> Vec<DurableMemberDef> {
+        let mut fields = Vec::new();
+        for member in &group.members {
+            let ResourceMember::Field(field) = member else {
+                continue;
+            };
+            if let Some(def) = self.build_field(records, field, path) {
+                fields.push(def);
+            }
+        }
+        let (extras, _) = self.build_extras(records, &group.members, path);
+        fields.extend(extras);
+        fields
+    }
+
+    /// One stored scalar field of a group or branch: its ledger id, scalar, and
+    /// required flag. A keyed scalar leaf or a non-scalar field is a precise
+    /// `check.unsupported` rejection and marks the graph incomplete.
+    fn build_field(
+        &mut self,
+        records: &TypeRegistry,
+        field: &FieldDecl,
+        container: &str,
+    ) -> Option<DurableMemberDef> {
+        if !field.keys.is_empty() {
+            self.complete = false;
+            self.diagnostics
+                .push(unsupported(self.file, field.span, "a keyed field"));
+            return None;
+        }
+        let Some(scalar) = scalar_of(&records.expand(&field.ty)) else {
+            self.complete = false;
+            self.diagnostics.push(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                field.span,
+                format!(
+                    "a stored field has a scalar type; `{}` is not a scalar",
+                    field.name
+                ),
+            ));
+            return None;
+        };
+        let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
+        Some(DurableMemberDef::Field {
+            id,
+            scalar: scalar.image(),
+            required: field.required,
+        })
+    }
 }
 
-fn scalar_of(ty: &marrow_syntax::TypeExpr) -> Option<ScalarType> {
+fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {
     match ty {
-        marrow_syntax::TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
+        TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
         _ => None,
     }
 }

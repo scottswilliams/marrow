@@ -7,9 +7,9 @@
 //! the default suite. A minimized counterexample becomes a permanent fixture.
 
 use marrow_image::{
-    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry,
-    VariantDef, image_id,
+    DurableMemberDef, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget,
+    SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -234,9 +234,17 @@ fn a_durable_image() -> Vec<u8> {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            fields: vec![
-                LedgerIdBytes::from_bytes([0x0e; 16]),
-                LedgerIdBytes::from_bytes([0x0f; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    scalar: Scalar::Int,
+                    required: true,
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0f; 16]),
+                    scalar: Scalar::Text,
+                    required: false,
+                },
             ],
         },
     });
@@ -287,6 +295,104 @@ fn mutated_durable_images_never_panic_the_verifier() {
     let base = a_durable_image();
     // The base image itself must verify, so the durable decode path is reached.
     assert!(verify(&base).is_ok(), "durable base image must verify");
+    for _ in 0..4096 {
+        let mut bytes = base.clone();
+        for _ in 0..=rng.below(3) {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= rng.byte();
+        }
+        oracle(&bytes);
+    }
+}
+
+/// A good durable image whose resource declares a static `group` (holding a field)
+/// and a keyed `branch` (holding a field). Mutating it reaches the recursive
+/// durable member-tree decoder — its group/branch tags, the `Group` id, the branch
+/// placement and key tuple, and the nesting-depth and member-count bounds — that a
+/// flat root never exercises.
+fn a_group_branch_durable_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let book = draft.intern_string("Book");
+    let title = draft.intern_string("title");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: book,
+        fields: vec![FieldDef {
+            name: title,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("books");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    scalar: Scalar::Text,
+                    required: true,
+                },
+                DurableMemberDef::Group {
+                    id: LedgerIdBytes::from_bytes([0x20; 16]),
+                    members: vec![DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes([0x21; 16]),
+                        scalar: Scalar::Int,
+                        required: false,
+                    }],
+                },
+                DurableMemberDef::Branch {
+                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes([0x31; 16]),
+                    }],
+                    members: vec![DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes([0x32; 16]),
+                        scalar: Scalar::Text,
+                        required: true,
+                    }],
+                },
+            ],
+        },
+    });
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("label");
+    let zero = draft.intern_int(0);
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let spans = (0..code.len() as u32)
+        .map(|instr_index| SpanEntry {
+            instr_index,
+            line: 1,
+            column: 1,
+        })
+        .collect();
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans,
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "label"), func);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn mutated_group_branch_durable_images_never_panic_the_verifier() {
+    let mut rng = Rng(seed() ^ 0x2545_F491_4F6C_DD1D);
+    let base = a_group_branch_durable_image();
+    // The base image itself must verify, so the member-tree decode path is reached.
+    assert!(verify(&base).is_ok(), "group/branch base image must verify");
     for _ in 0..4096 {
         let mut bytes = base.clone();
         for _ in 0..=rng.below(3) {

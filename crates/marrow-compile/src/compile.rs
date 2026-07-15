@@ -335,6 +335,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     let durable = DurableRegistry::build(
         &mut draft,
         &records,
+        &resources,
         &stores,
         project.identity_ledger(),
         &mut diagnostics,

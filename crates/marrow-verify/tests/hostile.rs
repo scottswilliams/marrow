@@ -9,11 +9,29 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry,
-    VariantDef, image_id,
+    DurableMemberDef, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
+    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef,
+    SiteTarget, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
+
+/// The tracer `Counter` record's durable member tree: `value:int` required then
+/// `label:string` sparse, matching the `durable_schema` record fields so the
+/// verifier's member-tree/record cross-check passes.
+fn counters_members() -> Vec<DurableMemberDef> {
+    vec![
+        DurableMemberDef::Field {
+            id: LedgerIdBytes::from_bytes([0x0e; 16]),
+            scalar: Scalar::Int,
+            required: true,
+        },
+        DurableMemberDef::Field {
+            id: LedgerIdBytes::from_bytes([0x0f; 16]),
+            scalar: Scalar::Text,
+            required: false,
+        },
+    ]
+}
 
 /// A well-formed multi-function image: a caller exporting `main` that calls a helper,
 /// plus a couple of constants. Every hostile case derives from this.
@@ -346,10 +364,7 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            fields: vec![
-                LedgerIdBytes::from_bytes([0x0e; 16]),
-                LedgerIdBytes::from_bytes([0x0f; 16]),
-            ],
+            members: counters_members(),
         },
     });
     let entry = draft.add_site(SiteDef {
@@ -531,7 +546,11 @@ fn executable_site_over_a_composite_root_rejects() {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            fields: vec![LedgerIdBytes::from_bytes([0x0e; 16])],
+            members: vec![DurableMemberDef::Field {
+                id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                scalar: Scalar::Int,
+                required: true,
+            }],
         },
     });
     let value_site = draft.add_site(SiteDef {
@@ -564,6 +583,151 @@ fn executable_site_over_a_composite_root_rejects() {
     // The composite-key root is rejected during per-function structural/type
     // recording (the `image.function` phase), where the operation site is typed.
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+/// Build a `Book { title:string required }` root at `^books(id:int)` whose durable
+/// member tree adds a static `details` group (holding `pages:int`) and a keyed
+/// `notes(noteId:string)` branch (holding `text:string required`). The record
+/// carries only the top-level `title` field, so the verifier's member-tree/record
+/// cross-check passes. When `with_site` is true, an operation site and a reading
+/// function are added — the not-yet-executable shape a forged image would need.
+fn group_branch_draft(with_site: bool) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let book = draft.intern_string("Book");
+    let title = draft.intern_string("title");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: book,
+        fields: vec![FieldDef {
+            name: title,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("books");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    scalar: Scalar::Text,
+                    required: true,
+                },
+                DurableMemberDef::Group {
+                    id: LedgerIdBytes::from_bytes([0x20; 16]),
+                    members: vec![DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes([0x21; 16]),
+                        scalar: Scalar::Int,
+                        required: false,
+                    }],
+                },
+                DurableMemberDef::Branch {
+                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes([0x31; 16]),
+                    }],
+                    members: vec![DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes([0x32; 16]),
+                        scalar: Scalar::Text,
+                        required: true,
+                    }],
+                },
+            ],
+        },
+    });
+    let src = draft.intern_string("src/main.mw");
+    if with_site {
+        let site = draft.add_site(SiteDef {
+            root: 0,
+            target: SiteTarget::Field(0),
+        });
+        let name = draft.intern_string("read");
+        let code = vec![
+            Instr::LocalGet(0),
+            Instr::DurReadField(site.index()),
+            Instr::Return,
+        ];
+        let func = draft.add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::opt_scalar(Scalar::Text),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_export(ExportId::of_local("", "read"), func);
+    } else {
+        let name = draft.intern_string("label");
+        let zero = draft.intern_int(0);
+        let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+        let func = draft.add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_export(ExportId::of_local("", "label"), func);
+    }
+    draft
+}
+
+/// Flip the first occurrence of a 16-byte ledger id in `bytes`. The distinct test
+/// ids never collide with a string or other field, so this reliably mutates the
+/// targeted node.
+fn flip_ledger_id(bytes: &mut [u8], id: [u8; 16]) {
+    let at = bytes
+        .windows(16)
+        .position(|window| window == id)
+        .expect("the ledger id appears in the image");
+    bytes[at] ^= 0xFF;
+}
+
+#[test]
+fn rehashed_mutated_group_id_breaks_the_contract_id() {
+    // A static `group` namespace contributes its `Group` ledger id to the durable
+    // member tree the verifier recomputes the contract over. Flipping that id (and
+    // rehashing the outer digest) leaves the carried contract id stale, so the
+    // recomputation rejects — the contract binds group structure, not only roots.
+    let mut bytes = group_branch_draft(false).encode().unwrap().bytes;
+    flip_ledger_id(&mut bytes, [0x20; 16]);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_mutated_branch_placement_id_breaks_the_contract_id() {
+    // A keyed `branch` is a distinct placement; its id is part of the member tree
+    // the contract binds. Flipping it and rehashing the digest leaves the carried
+    // contract id stale, so the recomputation rejects.
+    let mut bytes = group_branch_draft(false).encode().unwrap().bytes;
+    flip_ledger_id(&mut bytes, [0x30; 16]);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn executable_site_over_a_group_bearing_root_rejects() {
+    // A single-column keyed root whose resource declares a group or branch carries a
+    // complete identity but is not yet executable. A forged image that adds an
+    // operation site over it is refused independently during per-function typing
+    // (the `image.function` phase), regardless of the compiler's own boundary.
+    assert_eq!(
+        code_of(&group_branch_draft(true).encode().unwrap().bytes),
+        "image.function"
+    );
 }
 
 #[test]
@@ -1646,10 +1810,13 @@ fn durable_root_with_a_non_scalar_field_rejects() {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x1b; 16]),
             product: LedgerIdBytes::from_bytes([0x1d; 16]),
-            fields: vec![
-                LedgerIdBytes::from_bytes([0x1e; 16]),
-                LedgerIdBytes::from_bytes([0x1f; 16]),
-            ],
+            // The durable member tree carries only the scalar field; the enum field
+            // has no durable representation and is what makes verification reject.
+            members: vec![DurableMemberDef::Field {
+                id: LedgerIdBytes::from_bytes([0x1e; 16]),
+                scalar: Scalar::Int,
+                required: true,
+            }],
         },
     });
     let zero = draft.intern_int(0);

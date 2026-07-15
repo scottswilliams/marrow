@@ -64,17 +64,24 @@ node with its own complete identity (its placement, its stored product, one
 identity per key column, and one per stored field; see
 [Durable Identity](#durable-identity)).
 
-The single-column keyed root is the executable durable shape in this preview: its
-entries are read and written through the operations below. A singleton or
-composite-key root declares and verifies its full identity, but its read and
-write operations are not yet executable — an operation over one is the typed
-`check.unsupported` rejection rather than a silent drop, until the wider durable
-runtime lands.
+A stored resource may also declare static `group` namespaces and keyed `branch`
+placements (see [Resources](resources.md#groups-and-branches)). These are part of
+the durable graph and complete their identity like a root.
+
+The *flat* single-column keyed root is the executable durable shape in this
+preview: a root with one key column and no groups or branches, whose entries are
+read and written through the operations below. A singleton root, a composite-key
+root, or a root whose resource declares a group or a branch declares and verifies
+its full identity, but its read and write operations are not yet executable — an
+operation over one is the typed `check.unsupported` rejection rather than a silent
+drop, until the wider durable runtime lands.
 
 ## Durable Identity
 
 Every durable declaration — the application, a store root, each of its key
-columns, the stored resource, and each stored field — has its own durable
+columns, the stored resource, each stored field, each static `group` namespace,
+and each keyed `branch` placement together with its own key columns and fields —
+has its own durable
 identity: an opaque 128-bit id minted once from OS entropy and recorded in the
 project's committed identity ledger, `marrow.ids` (see
 [Projects](../tools/projects.md#the-identity-ledger)). The ledger is machine
@@ -87,10 +94,14 @@ diagnostic names the missing identity — and a retired identity is never reused
 deleting a declaration and re-adding its name mints a fresh identity.
 
 A program's whole durable graph additionally carries a stable 32-byte
-**durable-contract identity**, computed over the graph's ledger ids and shape
-(each root's ordered key tuple — scalar and identity per column — and its
-record's ordered stored field profile — scalar type and `required` flag per
-field). Key-column order is part of the identity. The compiler derives it from
+**durable-contract identity**, computed over the graph's ledger ids and shape:
+each root's ordered key tuple — scalar and identity per column — and its
+resource's ordered **member tree**. The member tree is the resource's stored
+fields (scalar type and `required` flag per field) interleaved with its static
+`group` namespaces (each an identity and its own member tree) and its keyed
+`branch` placements (each an identity, an ordered key tuple, and its own member
+tree). Key-column and member order are part of the identity. The compiler derives
+it from
 the resolved
 graph and records it in the program image; the independent verifier rebuilds
 the descriptor from the image tables, recomputes the identity, and rejects any

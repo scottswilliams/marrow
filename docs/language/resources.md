@@ -70,6 +70,30 @@ A one-column `int` leaf such as `tags(pos: int): string` has positional
 behavior: positive integer positions, 1-based append, and holes. Other key
 shapes are ordinary ordered keyed layers.
 
+## Groups And Branches
+
+An unkeyed block (`details` above) is a **group**: a static field-path namespace
+inside a resource. A block with key parameters (`notes(noteId: string)` above) is
+a **branch**: a keyed subtree, a distinct durable graph node with its own key
+tuple, nested under its containing resource. A group or branch may itself hold
+fields, groups, and branches.
+
+When a resource backs a store, its group and branch declarations are part of the
+durable graph. Each group has its own durable identity (a `group` identity), and
+each branch has its own placement identity, one identity per key column, and one
+per stored field — anchored at a group- or branch-qualified path
+(`Book.details.pages`, `Book.notes.noteId`, `Book.notes.text`). Groups and
+branches contribute to the [durable-contract
+identity](durable-places.md#durable-identity) exactly as roots do.
+
+A resource that declares a group or a branch declares and verifies its complete
+durable identity, but its durable operations are not yet executable in this
+preview: only the flat single-column keyed root runs, so an operation over a
+group- or branch-bearing store is the typed `check.unsupported` rejection rather
+than a silent drop, until the wider durable runtime lands. A keyed scalar leaf
+such as `tags(pos: int): string` is likewise not yet part of the executable
+durable graph.
+
 ## Local Resource Values
 
 A constructor supplies named members:

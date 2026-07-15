@@ -8,9 +8,13 @@
 
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
-use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, SiteTarget};
+use crate::draft::{
+    CollectionTypeDef, ConstValue, DurableMemberDef, ImageBuildError, ImageDraft, KeyColumn,
+    SiteTarget,
+};
 use crate::durable_id::{
-    DurableContractDescriptor, DurableFieldShape, DurableKeyShape, DurableRootShape,
+    DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
+    DurableKeyShape, DurableMemberShape, DurableRootShape,
 };
 use crate::instr::Instr;
 use crate::ty::ImageType;
@@ -110,6 +114,8 @@ impl ImageDraft {
             if root.keys.len() > bounds::MAX_KEY_COLUMNS {
                 return Err(ImageBuildError::TooManyKeyColumns);
             }
+            let mut member_count = 0usize;
+            validate_member_tree(&root.identity.members, 1, &mut member_count)?;
         }
         if self.sites().len() > bounds::MAX_SITES {
             return Err(ImageBuildError::TooManySites);
@@ -253,24 +259,14 @@ impl ImageDraft {
             push_u16(&mut body, str_map[root.name.raw() as usize]);
             // The key tuple: a count, then each column's scalar type and ledger id.
             // Zero columns is a singleton root; more than one is a composite key.
-            push_u16(&mut body, root.keys.len() as u16);
-            for key in &root.keys {
-                ImageType::scalar(key.scalar).encode(&mut body);
-                body.extend_from_slice(key.id.bytes());
-            }
+            encode_key_tuple(&mut body, &root.keys);
             push_u16(&mut body, root.record.0);
             // The root's remaining ledger identity block: placement and product,
-            // then one field id per record field in declaration order.
-            let record = &self.types()[root.record.index() as usize];
-            if root.identity.fields.len() != record.fields.len() {
-                return Err(ImageBuildError::InvalidReference("root field identities"));
-            }
+            // then the resource's durable member tree (top-level fields interleaved
+            // with static `group` namespaces and keyed `branch` placements).
             body.extend_from_slice(root.identity.placement.bytes());
             body.extend_from_slice(root.identity.product.bytes());
-            push_u16(&mut body, root.identity.fields.len() as u16);
-            for field_id in &root.identity.fields {
-                body.extend_from_slice(field_id.bytes());
-            }
+            encode_durable_members(&mut body, &root.identity.members);
         }
         push_u16(&mut body, self.sites().len() as u16);
         for site in self.sites() {
@@ -292,10 +288,10 @@ impl ImageDraft {
     }
 
     /// The canonical durable-graph descriptor for this draft, built from its
-    /// application id, its roots' ledger identity blocks, and the scalar field
-    /// profile of each root's record. A durable root record carries only scalar
-    /// fields (the compiler rejects any other shape before an image is produced),
-    /// so the profile is total over the roots present.
+    /// application id and each root's ledger identity block (placement, product,
+    /// key tuple, and the resource's durable member tree). The member tree is
+    /// self-describing, so the descriptor no longer derives field shapes from the
+    /// materialized record type.
     fn durable_descriptor(&self) -> Result<DurableContractDescriptor, ImageBuildError> {
         if self.roots().is_empty() {
             return Ok(DurableContractDescriptor::empty());
@@ -306,38 +302,11 @@ impl ImageDraft {
         let roots = self
             .roots()
             .iter()
-            .map(|root| {
-                let record = &self.types()[root.record.index() as usize];
-                let fields = record
-                    .fields
-                    .iter()
-                    .zip(&root.identity.fields)
-                    .filter_map(|(field, id)| match field.ty {
-                        ImageType::Scalar {
-                            scalar,
-                            optional: false,
-                        } => Some(DurableFieldShape {
-                            id: *id,
-                            scalar,
-                            required: field.required,
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                let keys = root
-                    .keys
-                    .iter()
-                    .map(|key| DurableKeyShape {
-                        scalar: key.scalar,
-                        id: key.id,
-                    })
-                    .collect();
-                DurableRootShape {
-                    placement: root.identity.placement,
-                    product: root.identity.product,
-                    keys,
-                    fields,
-                }
+            .map(|root| DurableRootShape {
+                placement: root.identity.placement,
+                product: root.identity.product,
+                keys: key_shapes(&root.keys),
+                members: member_shapes(&root.identity.members),
             })
             .collect();
         Ok(DurableContractDescriptor::new(application, roots))
@@ -561,6 +530,133 @@ fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) -> Result<(), ImageBui
     push_u32(out, body.len() as u32);
     out.extend_from_slice(&body);
     Ok(())
+}
+
+/// Encode a placement key tuple into the DURABLE section: `u16(count) ‖
+/// [scalar_tag ‖ id(16)]*`. Shared by roots and branches; column order is
+/// load-bearing.
+fn encode_key_tuple(body: &mut Vec<u8>, keys: &[KeyColumn]) {
+    push_u16(body, keys.len() as u16);
+    for key in keys {
+        ImageType::scalar(key.scalar).encode(body);
+        body.extend_from_slice(key.id.bytes());
+    }
+}
+
+/// Encode a durable member tree into the DURABLE section: `u16(count) ‖ member*`.
+/// A field is tag `0x00`, its ledger id, its bare scalar, and a required flag; a
+/// group is tag `0x01`, its ledger id, and its own members; a branch is tag
+/// `0x02`, its placement id, its key tuple, and its own members. Recurses through
+/// groups and branches in source declaration order.
+fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef]) {
+    push_u16(body, members.len() as u16);
+    for member in members {
+        match member {
+            DurableMemberDef::Field {
+                id,
+                scalar,
+                required,
+            } => {
+                body.push(0x00);
+                body.extend_from_slice(id.bytes());
+                ImageType::scalar(*scalar).encode(body);
+                body.push(u8::from(*required));
+            }
+            DurableMemberDef::Group { id, members } => {
+                body.push(0x01);
+                body.extend_from_slice(id.bytes());
+                encode_durable_members(body, members);
+            }
+            DurableMemberDef::Branch {
+                placement,
+                keys,
+                members,
+            } => {
+                body.push(0x02);
+                body.extend_from_slice(placement.bytes());
+                encode_key_tuple(body, keys);
+                encode_durable_members(body, members);
+            }
+        }
+    }
+}
+
+/// Recheck the durable member-tree bounds a well-formed draft must satisfy: total
+/// member records within [`bounds::MAX_DURABLE_MEMBERS`] and nesting within
+/// [`bounds::MAX_DURABLE_DEPTH`]. A branch's key tuple is bounded by the same
+/// [`bounds::MAX_KEY_COLUMNS`] as a root's. `depth` is 1 for a top-level member.
+fn validate_member_tree(
+    members: &[DurableMemberDef],
+    depth: usize,
+    count: &mut usize,
+) -> Result<(), ImageBuildError> {
+    if depth > bounds::MAX_DURABLE_DEPTH {
+        return Err(ImageBuildError::DurableTreeTooDeep);
+    }
+    for member in members {
+        *count += 1;
+        if *count > bounds::MAX_DURABLE_MEMBERS {
+            return Err(ImageBuildError::TooManyDurableMembers);
+        }
+        match member {
+            DurableMemberDef::Field { .. } => {}
+            DurableMemberDef::Group { members, .. } => {
+                validate_member_tree(members, depth + 1, count)?;
+            }
+            DurableMemberDef::Branch { keys, members, .. } => {
+                if keys.len() > bounds::MAX_KEY_COLUMNS {
+                    return Err(ImageBuildError::TooManyKeyColumns);
+                }
+                validate_member_tree(members, depth + 1, count)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The descriptor key-tuple shapes for a placement's key columns.
+fn key_shapes(keys: &[KeyColumn]) -> Vec<DurableKeyShape> {
+    keys.iter()
+        .map(|key| DurableKeyShape {
+            scalar: key.scalar,
+            id: key.id,
+        })
+        .collect()
+}
+
+/// Convert a draft member tree into the descriptor's member shapes, recursing
+/// through groups and branches. The descriptor is the canonical identity owner;
+/// this is the compiler-side projection into it.
+fn member_shapes(members: &[DurableMemberDef]) -> Vec<DurableMemberShape> {
+    members
+        .iter()
+        .map(|member| match member {
+            DurableMemberDef::Field {
+                id,
+                scalar,
+                required,
+            } => DurableMemberShape::Field(DurableFieldShape {
+                id: *id,
+                scalar: *scalar,
+                required: *required,
+            }),
+            DurableMemberDef::Group { id, members } => {
+                DurableMemberShape::Group(DurableGroupShape {
+                    id: *id,
+                    members: member_shapes(members),
+                })
+            }
+            DurableMemberDef::Branch {
+                placement,
+                keys,
+                members,
+            } => DurableMemberShape::Branch(DurableBranchShape {
+                placement: *placement,
+                keys: key_shapes(keys),
+                members: member_shapes(members),
+            }),
+        })
+        .collect()
 }
 
 fn push_u16(out: &mut Vec<u8>, value: u16) {

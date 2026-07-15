@@ -2214,10 +2214,17 @@ fn fill_record(
     let mut field_defs = Vec::new();
     for member in &resource.members {
         let ResourceMember::Field(field) = member else {
-            diagnostics.push(unsupported(file, member.span(), "a resource group"));
+            // A `group` (unkeyed namespace) or a keyed `branch` (a `group` with key
+            // parameters) is a durable-graph member, not a materialized top-level
+            // field. The durable-graph owner (`durable.rs`) resolves its identity and
+            // records it in the DURABLE table; the materialized record carries only
+            // the resource's flat top-level scalar fields, so it is skipped here.
             continue;
         };
         if !field.keys.is_empty() {
+            // A keyed scalar leaf (`tags(pos: int): string`) is a keyed positional
+            // layer, not yet part of the beta durable graph. It is reported here so
+            // the shape is a precise rejection rather than a silent drop.
             diagnostics.push(unsupported(file, field.span, "a keyed field"));
             continue;
         }

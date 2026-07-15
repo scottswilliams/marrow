@@ -267,14 +267,19 @@ pub struct SealedSite {
 /// A verified durable root: one placement of a record type over its ordered key
 /// tuple. The tuple is empty for a singleton root and holds one or more
 /// orderable durable-key scalars for a keyed root. The executable subset served
-/// by the single-root kernel is the single-column keyed root; wider key arities
-/// carry identity but reject at their operation sites (rechecked during flow
-/// validation).
+/// by the single-root kernel is the *flat* single-column keyed root — one key
+/// column and no groups or branches; a wider key arity or a resource declaring a
+/// group or branch (`has_extras`) carries identity but rejects at its operation
+/// sites (rechecked during flow validation).
 #[derive(Debug, Clone)]
 pub struct SealedRoot {
     pub(crate) name: Rc<str>,
     pub(crate) keys: Vec<Scalar>,
     pub(crate) record: u16,
+    /// Whether the root's resource declares any static `group` namespace or keyed
+    /// `branch` placement — a member tree beyond flat top-level fields. Such a root
+    /// is not yet executable.
+    pub(crate) has_extras: bool,
 }
 
 impl SealedRoot {
@@ -288,6 +293,10 @@ impl SealedRoot {
     }
     pub fn record(&self) -> u16 {
         self.record
+    }
+    /// Whether the resource declares a group or branch (a non-flat member tree).
+    pub fn has_extras(&self) -> bool {
+        self.has_extras
     }
 }
 

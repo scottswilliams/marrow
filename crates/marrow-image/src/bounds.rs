@@ -37,11 +37,28 @@ pub const MAX_COLLECTIONS: usize = 64;
 pub const MAX_ROOTS: usize = 1;
 pub const MAX_SITES: usize = 64;
 
-/// Key columns per durable root placement. A singleton root has zero; a keyed
-/// root has an ordered tuple of one or more columns. The bound keeps every
-/// key-tuple decoder (image, verifier) allocating within a fixed limit (§ law 9);
-/// eight columns is far above any composite key a personal-product journey needs.
+/// Key columns per durable root or branch placement. A singleton root has zero;
+/// a keyed placement has an ordered tuple of one or more columns. The bound keeps
+/// every key-tuple decoder (image, verifier) allocating within a fixed limit
+/// (§ law 9); eight columns is far above any composite key a personal-product
+/// journey needs.
 pub const MAX_KEY_COLUMNS: usize = 8;
+
+/// Total durable-graph member records (fields, groups, and keyed branches, at
+/// every nesting level) one root's identity tree may carry. A resource's durable
+/// shape is a member tree — top-level fields plus static `group` namespaces and
+/// keyed `branch` placements, each recursively holding its own members — and this
+/// bound keeps the image and verifier member-tree decoders allocating within a
+/// fixed limit (§ law 9), independently of `MAX_FIELDS` (which bounds one
+/// materialized record's flat field list).
+pub const MAX_DURABLE_MEMBERS: usize = 256;
+
+/// Nesting depth of the durable-graph member tree: a top-level member is depth 1,
+/// a member of a group or branch is one deeper. The bound stops a hostile or
+/// divergent image from driving unbounded recursion in the member-tree decoder
+/// before it allocates (§ law 9), comfortably above any source-shaped nesting the
+/// parser's own depth limit admits.
+pub const MAX_DURABLE_DEPTH: usize = 16;
 
 /// Constant-pool entries.
 pub const MAX_CONSTS: usize = 1024;

@@ -37,22 +37,38 @@
 //!             ‖ root*                                          (roots in image order)
 //!   root    = IDREF(0x03, placement) ‖ IDREF(0x01, product)
 //!             ‖ u16_be(key_count) ‖ key*                       (key columns in tuple order)
-//!             ‖ u16_be(field_count) ‖ field*                   (fields in image order)
+//!             ‖ members                                        (the resource's durable member tree)
+//!   members = u16_be(member_count) ‖ member*                  (in source declaration order)
+//!   member  = u8(member_tag) ‖ member_body
+//!     field(0)  = IDREF(0x02, field) ‖ u8(field_scalar_tag) ‖ u8(required?1:0)
+//!     group(1)  = IDREF(0x07, group) ‖ members
+//!     branch(2) = IDREF(0x03, placement) ‖ u16_be(key_count) ‖ key* ‖ members
 //!   key     = u8(key_scalar_tag) ‖ IDREF(0x04, key)
-//!   field   = IDREF(0x02, field) ‖ u8(field_scalar_tag) ‖ u8(required?1:0)
 //!   IDREF(k, id) = u8(k) ‖ u64_be(16) ‖ id                     (kind-tagged, LP 16 bytes)
 //! ```
 //!
-//! A root's key tuple is length-prefixed, so a singleton root (`key_count = 0`)
-//! and a composite root (`key_count > 1`) are the same shape as the ordinary
+//! A key tuple is length-prefixed, so a singleton root (`key_count = 0`) and a
+//! composite root (`key_count > 1`) are the same shape as the ordinary
 //! single-column root, and key-column order is part of the identity.
 //!
+//! A resource's durable shape is a **member tree**: its top-level fields plus any
+//! static `group` field-path namespaces and keyed `branch` placements, each of
+//! which recursively holds its own members. A group is an unkeyed namespace (a
+//! `Group` identity); a branch is a keyed placement (its own `Root`-kind placement
+//! identity and key tuple), so a nested keyed subtree is a distinct graph node
+//! with a complete identity, just like a root. Member order is source declaration
+//! order and is part of the identity. Only the flat single-column-keyed root with
+//! no groups or branches is executable in this preview; the wider shapes complete
+//! their identity and verify but run at E01.
+//!
 //! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0,
-//! product 1, field 2, root placement 3, key 4; 5-7 reserved). An empty graph
-//! (no roots) has no application component: a storeless project needs no ledger,
-//! so its contract commits to nothing. Scalar tags are the frozen
-//! [`Scalar::tag`] bytes. Operation *sites* are deliberately excluded: they are
-//! derivable access points over the graph, not part of its durable identity.
+//! product 1, field 2, root/branch placement 3, key 4, group 7; 5-6 reserved). An
+//! empty graph (no roots) has no application component: a storeless project needs
+//! no ledger, so its contract commits to nothing. Scalar tags are the frozen
+//! [`Scalar::tag`] bytes. The `member_tag` bytes (field 0, group 1, branch 2) are
+//! internal to this payload and independent of the ledger kind space. Operation
+//! *sites* are deliberately excluded: they are derivable access points over the
+//! graph, not part of its durable identity.
 
 use sha2::{Digest, Sha256};
 
@@ -74,6 +90,14 @@ const IDREF_PRODUCT: u8 = 1;
 const IDREF_FIELD: u8 = 2;
 const IDREF_ROOT: u8 = 3;
 const IDREF_KEY: u8 = 4;
+const IDREF_GROUP: u8 = 7;
+
+/// The frozen member-tag bytes distinguishing the three durable member kinds
+/// within the canonical payload. They are internal to this encoding and separate
+/// from the ledger `IDREF` kind space.
+const MEMBER_FIELD: u8 = 0;
+const MEMBER_GROUP: u8 = 1;
+const MEMBER_BRANCH: u8 = 2;
 
 /// An entropy-minted 128-bit ledger id as the image carries it: 16 opaque bytes.
 /// The artifact-side semantics (anchors, tombstones, hex spelling) live with the
@@ -93,10 +117,10 @@ impl LedgerIdBytes {
     }
 }
 
-/// One stored field of a durable root record, as it contributes to the contract
-/// identity: its ledger id, scalar type, and whether it is required. Field order is
-/// the record's declaration (image) order. The field's *name* is not part of the
-/// identity — a rename preserves it.
+/// One stored scalar field of a durable resource, group, or branch, as it
+/// contributes to the contract identity: its ledger id, scalar type, and whether
+/// it is required. The field's *name* is not part of the identity — a rename
+/// preserves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableFieldShape {
     pub id: LedgerIdBytes,
@@ -104,24 +128,54 @@ pub struct DurableFieldShape {
     pub required: bool,
 }
 
-/// One key column of a durable root, as it contributes to the contract identity:
-/// its orderable durable-key scalar and its ledger id. Column order is the
-/// declared tuple order.
+/// One key column of a durable root or branch placement, as it contributes to the
+/// contract identity: its orderable durable-key scalar and its ledger id. Column
+/// order is the declared tuple order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableKeyShape {
     pub scalar: Scalar,
     pub id: LedgerIdBytes,
 }
 
+/// One static field-path namespace (`group`) as it contributes to the contract
+/// identity: its `Group` ledger id and its own ordered member tree. A group is an
+/// unkeyed pathing construct; it stores no data of its own beyond its members.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableGroupShape {
+    pub id: LedgerIdBytes,
+    pub members: Vec<DurableMemberShape>,
+}
+
+/// One keyed subtree (`branch`) as it contributes to the contract identity: its
+/// own placement id, its ordered key tuple, and its own member tree. A branch is a
+/// distinct keyed graph node nested under its containing resource, branch, or
+/// group — the same placement/key shape as a root, without a separate product.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableBranchShape {
+    pub placement: LedgerIdBytes,
+    pub keys: Vec<DurableKeyShape>,
+    pub members: Vec<DurableMemberShape>,
+}
+
+/// One member of a durable resource's shape, in source declaration order: a stored
+/// scalar field, a static `group` namespace, or a keyed `branch` placement. The
+/// tree is recursive — groups and branches carry their own members.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableMemberShape {
+    Field(DurableFieldShape),
+    Group(DurableGroupShape),
+    Branch(DurableBranchShape),
+}
+
 /// One durable root, as it contributes to the contract identity: its placement id,
 /// the stored product's id, its ordered key tuple (empty for a singleton root),
-/// and the ordered stored field profile of its record.
+/// and the ordered member tree of its resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRootShape {
     pub placement: LedgerIdBytes,
     pub product: LedgerIdBytes,
     pub keys: Vec<DurableKeyShape>,
-    pub fields: Vec<DurableFieldShape>,
+    pub members: Vec<DurableMemberShape>,
 }
 
 /// The canonical descriptor of a program's durable graph. This is the single owner
@@ -172,19 +226,48 @@ impl DurableContractDescriptor {
         for root in &self.roots {
             push_idref(&mut out, IDREF_ROOT, &root.placement);
             push_idref(&mut out, IDREF_PRODUCT, &root.product);
-            out.extend_from_slice(&(root.keys.len() as u16).to_be_bytes());
-            for key in &root.keys {
-                out.push(key.scalar.tag());
-                push_idref(&mut out, IDREF_KEY, &key.id);
-            }
-            out.extend_from_slice(&(root.fields.len() as u16).to_be_bytes());
-            for field in &root.fields {
-                push_idref(&mut out, IDREF_FIELD, &field.id);
+            push_keys(&mut out, &root.keys);
+            push_members(&mut out, &root.members);
+        }
+        out
+    }
+}
+
+/// Append `u16_be(count) ‖ [u8(scalar_tag) ‖ IDREF(key)]*` — a placement's key
+/// tuple, shared by roots and branches. Column order is load-bearing.
+fn push_keys(out: &mut Vec<u8>, keys: &[DurableKeyShape]) {
+    out.extend_from_slice(&(keys.len() as u16).to_be_bytes());
+    for key in keys {
+        out.push(key.scalar.tag());
+        push_idref(out, IDREF_KEY, &key.id);
+    }
+}
+
+/// Append a member tree: `u16_be(count) ‖ member*`, each member a tag byte and its
+/// body. Recurses through groups and branches so a whole durable shape has one
+/// canonical byte image.
+fn push_members(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
+    out.extend_from_slice(&(members.len() as u16).to_be_bytes());
+    for member in members {
+        match member {
+            DurableMemberShape::Field(field) => {
+                out.push(MEMBER_FIELD);
+                push_idref(out, IDREF_FIELD, &field.id);
                 out.push(field.scalar.tag());
                 out.push(u8::from(field.required));
             }
+            DurableMemberShape::Group(group) => {
+                out.push(MEMBER_GROUP);
+                push_idref(out, IDREF_GROUP, &group.id);
+                push_members(out, &group.members);
+            }
+            DurableMemberShape::Branch(branch) => {
+                out.push(MEMBER_BRANCH);
+                push_idref(out, IDREF_ROOT, &branch.placement);
+                push_keys(out, &branch.keys);
+                push_members(out, &branch.members);
+            }
         }
-        out
     }
 }
 
@@ -245,8 +328,9 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DURABLE_CONTRACT_KIND, DurableContractDescriptor, DurableFieldShape, DurableKeyShape,
-        DurableRootShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
+        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableFieldShape,
+        DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
+        LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::ty::Scalar;
     use sha2::{Digest, Sha256};
@@ -255,8 +339,17 @@ mod tests {
         LedgerIdBytes::from_bytes([byte; 16])
     }
 
+    fn field(byte: u8, scalar: Scalar, required: bool) -> DurableMemberShape {
+        DurableMemberShape::Field(DurableFieldShape {
+            id: id(byte),
+            scalar,
+            required,
+        })
+    }
+
     /// The tracer's `counters` graph with fixed test ids: application `0x0a`,
-    /// placement `0x0b`, key `0x0c`, product `0x0d`, fields `0x0e`/`0x0f`.
+    /// placement `0x0b`, key `0x0c`, product `0x0d`, fields `0x0e`/`0x0f`. A flat
+    /// single-column-keyed resource: its member tree is two top-level fields.
     fn counters_graph() -> DurableContractDescriptor {
         DurableContractDescriptor::new(
             id(0x0a),
@@ -267,17 +360,48 @@ mod tests {
                     scalar: Scalar::Text,
                     id: id(0x0c),
                 }],
-                fields: vec![
-                    DurableFieldShape {
-                        id: id(0x0e),
-                        scalar: Scalar::Int,
-                        required: true,
-                    },
-                    DurableFieldShape {
-                        id: id(0x0f),
-                        scalar: Scalar::Text,
-                        required: false,
-                    },
+                members: vec![
+                    field(0x0e, Scalar::Int, true),
+                    field(0x0f, Scalar::Text, false),
+                ],
+            }],
+        )
+    }
+
+    /// A richer graph exercising every member kind: a top-level field, a static
+    /// `group` namespace holding a field, and a keyed `branch` placement holding a
+    /// field and its own nested group. This is the shape the branch/group slice
+    /// makes identity-complete.
+    fn library_graph() -> DurableContractDescriptor {
+        DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: vec![DurableKeyShape {
+                    scalar: Scalar::Int,
+                    id: id(0x0c),
+                }],
+                members: vec![
+                    field(0x0e, Scalar::Text, true),
+                    DurableMemberShape::Group(DurableGroupShape {
+                        id: id(0x20),
+                        members: vec![field(0x21, Scalar::Int, false)],
+                    }),
+                    DurableMemberShape::Branch(DurableBranchShape {
+                        placement: id(0x30),
+                        keys: vec![DurableKeyShape {
+                            scalar: Scalar::Text,
+                            id: id(0x31),
+                        }],
+                        members: vec![
+                            field(0x32, Scalar::Text, true),
+                            DurableMemberShape::Group(DurableGroupShape {
+                                id: id(0x33),
+                                members: vec![field(0x34, Scalar::Instant, false)],
+                            }),
+                        ],
+                    }),
                 ],
             }],
         )
@@ -298,11 +422,11 @@ mod tests {
 
     /// Known-answer test for the frozen canonical payload of the tracer's `counters`
     /// graph over ledger ids. Freezing this hex pins the domain-separation,
-    /// length-delimiting, IDREF kind tags, and graph layout so a later reader can
-    /// reconstruct it independently. This value supersedes the slice-2 KAT
-    /// (`8f1d8fc8…`): the root's single `key`/`key_id` pair is now a
-    /// length-prefixed key tuple (`u16(key_count) ‖ key*`), so a singleton and a
-    /// composite root are the same shape as the single-column root. If this value
+    /// length-delimiting, IDREF kind tags, and member-tree layout so a later reader
+    /// can reconstruct it independently. This value supersedes the slice-3 roots KAT
+    /// (`4f8def5f…`): the root's stored fields are now the leading members of a
+    /// self-describing member tree (`u16(member_count) ‖ [u8(member_tag) ‖ …]*`),
+    /// the encoding that also carries `group` and `branch` members. If this value
     /// must change, the durable-contract identity has changed and every
     /// stored/derived id changes with it.
     #[test]
@@ -314,7 +438,26 @@ mod tests {
         // The frozen value itself.
         assert_eq!(
             counters_graph().contract_id().to_hex(),
-            "4f8def5f34a4ace8506ded103bf0dfd7cc44fa4d2cd13d2a63f9144a37017245",
+            "344ca8743fbed63e63e72dfba608c0c6d63730af76bfadabb417aae7533a9750",
+        );
+    }
+
+    /// Known-answer test for a graph with a group and a keyed branch: pins the
+    /// member-tag bytes (field 0, group 1, branch 2), the `Group` IDREF tag (7), and
+    /// the branch placement/key-tuple layout.
+    #[test]
+    fn durable_contract_id_with_group_and_branch_known_answer() {
+        assert_eq!(
+            library_graph().contract_id().to_hex(),
+            independent_id(&library_graph())
+        );
+        assert_eq!(
+            library_graph().contract_id().to_hex(),
+            "9ab446598d8488dd30c9c78b158fd735cdc9ffa66278e2b26f8d9b716e17e165",
+        );
+        assert_ne!(
+            library_graph().contract_id(),
+            counters_graph().contract_id()
         );
     }
 
@@ -330,6 +473,37 @@ mod tests {
             out.push(kind);
             lp(out, id.bytes());
         }
+        fn keys(out: &mut Vec<u8>, columns: &[DurableKeyShape]) {
+            out.extend_from_slice(&(columns.len() as u16).to_be_bytes());
+            for key in columns {
+                out.push(key.scalar.tag());
+                idref(out, 4, &key.id);
+            }
+        }
+        fn member_tree(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
+            out.extend_from_slice(&(members.len() as u16).to_be_bytes());
+            for member in members {
+                match member {
+                    DurableMemberShape::Field(f) => {
+                        out.push(0);
+                        idref(out, 2, &f.id);
+                        out.push(f.scalar.tag());
+                        out.push(u8::from(f.required));
+                    }
+                    DurableMemberShape::Group(g) => {
+                        out.push(1);
+                        idref(out, 7, &g.id);
+                        member_tree(out, &g.members);
+                    }
+                    DurableMemberShape::Branch(b) => {
+                        out.push(2);
+                        idref(out, 3, &b.placement);
+                        keys(out, &b.keys);
+                        member_tree(out, &b.members);
+                    }
+                }
+            }
+        }
         let mut graph: Vec<u8> = Vec::new();
         graph.extend_from_slice(&(descriptor.roots.len() as u16).to_be_bytes());
         if let Some(application) = &descriptor.application {
@@ -338,17 +512,8 @@ mod tests {
         for root in &descriptor.roots {
             idref(&mut graph, 3, &root.placement);
             idref(&mut graph, 1, &root.product);
-            graph.extend_from_slice(&(root.keys.len() as u16).to_be_bytes());
-            for key in &root.keys {
-                graph.push(key.scalar.tag());
-                idref(&mut graph, 4, &key.id);
-            }
-            graph.extend_from_slice(&(root.fields.len() as u16).to_be_bytes());
-            for field in &root.fields {
-                idref(&mut graph, 2, &field.id);
-                graph.push(field.scalar.tag());
-                graph.push(u8::from(field.required));
-            }
+            keys(&mut graph, &root.keys);
+            member_tree(&mut graph, &root.members);
         }
         let mut payload: Vec<u8> = Vec::new();
         lp(&mut payload, LOCAL_ROOT_LINEAGE);
@@ -383,9 +548,10 @@ mod tests {
         // names are simply not part of the payload).
         assert_eq!(base, counters_graph().contract_id());
 
-        // A re-minted field id changes the id (delete-then-re-add mints fresh).
+        // A re-minted top-level field id changes the id (delete-then-re-add mints
+        // fresh).
         let mut re_minted = counters_graph();
-        re_minted.roots[0].fields[0].id = id(0x1e);
+        re_minted.roots[0].members[0] = field(0x1e, Scalar::Int, true);
         assert_ne!(base, re_minted.contract_id());
 
         // A changed key type changes the id.
@@ -408,18 +574,69 @@ mod tests {
 
         // A field made required changes the id.
         let mut required = counters_graph();
-        required.roots[0].fields[1].required = true;
+        required.roots[0].members[1] = field(0x0f, Scalar::Text, true);
         assert_ne!(base, required.contract_id());
 
         // A removed field changes the id.
         let mut narrowed = counters_graph();
-        narrowed.roots[0].fields.pop();
+        narrowed.roots[0].members.pop();
         assert_ne!(base, narrowed.contract_id());
 
         // A different application changes the id.
         let mut other_app = counters_graph();
         other_app.application = Some(id(0x2a));
         assert_ne!(base, other_app.contract_id());
+    }
+
+    /// Group and branch structure is part of the identity, distinct from a flat
+    /// field of the same ledger id.
+    #[test]
+    fn group_and_branch_structure_is_part_of_the_identity() {
+        let base = library_graph().contract_id();
+        assert_eq!(base, library_graph().contract_id());
+
+        // Re-minting the group id changes the identity.
+        let mut regrouped = library_graph();
+        if let DurableMemberShape::Group(group) = &mut regrouped.roots[0].members[1] {
+            group.id = id(0x2f);
+        } else {
+            panic!("member 1 is the group");
+        }
+        assert_ne!(base, regrouped.contract_id());
+
+        // Re-minting the branch placement id changes the identity.
+        let mut rebranched = library_graph();
+        if let DurableMemberShape::Branch(branch) = &mut rebranched.roots[0].members[2] {
+            branch.placement = id(0x3f);
+        } else {
+            panic!("member 2 is the branch");
+        }
+        assert_ne!(base, rebranched.contract_id());
+
+        // Adding a key column to the branch changes the identity.
+        let mut wider = library_graph();
+        if let DurableMemberShape::Branch(branch) = &mut wider.roots[0].members[2] {
+            branch.keys.push(DurableKeyShape {
+                scalar: Scalar::Int,
+                id: id(0x3d),
+            });
+        } else {
+            panic!("member 2 is the branch");
+        }
+        assert_ne!(base, wider.contract_id());
+
+        // Promoting the group's field to a top-level field of the same id is a
+        // different graph (nesting is load-bearing), even though the field id,
+        // scalar, and required flag are unchanged.
+        let mut flattened = library_graph();
+        flattened.roots[0].members[1] = field(0x21, Scalar::Int, false);
+        assert_ne!(base, flattened.contract_id());
+
+        // Member order is load-bearing: swapping the group and the branch changes
+        // the identity.
+        let mut reordered = library_graph();
+        reordered.roots[0].members.swap(1, 2);
+        assert_ne!(base, reordered.contract_id());
     }
 
     /// A singleton root (empty key tuple) and a composite root (two key columns)
@@ -433,11 +650,7 @@ mod tests {
                 placement: id(0x0b),
                 product: id(0x0d),
                 keys: Vec::new(),
-                fields: vec![DurableFieldShape {
-                    id: id(0x0e),
-                    scalar: Scalar::Text,
-                    required: true,
-                }],
+                members: vec![field(0x0e, Scalar::Text, true)],
             }],
         );
         assert_eq!(singleton.contract_id().to_hex(), independent_id(&singleton));
@@ -457,7 +670,7 @@ mod tests {
                         id: id(0x1c),
                     },
                 ],
-                fields: Vec::new(),
+                members: Vec::new(),
             }],
         );
         assert_eq!(composite.contract_id().to_hex(), independent_id(&composite));

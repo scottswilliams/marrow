@@ -1,0 +1,18 @@
+module library
+
+resource Book
+    required title: string
+    required author: string
+
+    details
+        pages: int
+        language: string
+
+    notes(noteId: string)
+        required text: string
+        createdAt: instant
+
+store ^books(id: int): Book
+
+pub fn label(): string
+    return "books"

@@ -13,28 +13,28 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    DurableContractDescriptor, DurableContractId, DurableFieldShape, DurableKeyShape,
-    DurableRootShape, ExportId, ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT,
-    OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
-    OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
-    OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
-    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
-    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
-    OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT,
-    OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES,
-    OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET,
-    OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT,
-    OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED,
-    OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL,
-    OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB,
-    OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN,
-    OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
-    OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
-    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
-    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
-    TAG_UNIT, image_id,
+    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableFieldShape,
+    DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape, ExportId, ImageId,
+    ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
+    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
+    OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
+    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
+    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
+    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
+    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION,
+    OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION,
+    OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
+    OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
+    OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
+    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET,
+    OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
+    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
+    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
+    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM,
+    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -97,16 +97,43 @@ struct DecodedVariant {
 }
 
 /// A decoded durable root: name string index, its ordered key tuple (each column a
-/// scalar and its ledger id; empty for a singleton root), record type index, and
-/// the rest of the root's ledger identity block (placement, product, and one id per
-/// record field).
+/// scalar and its ledger id; empty for a singleton root), record type index, the
+/// rest of the root's placement/product ledger identity, and the resource's durable
+/// member tree.
 struct DecodedRoot {
     name: u16,
     keys: Vec<(Scalar, LedgerIdBytes)>,
     record: u16,
     placement: LedgerIdBytes,
     product: LedgerIdBytes,
-    field_ids: Vec<LedgerIdBytes>,
+    members: Vec<DecodedMember>,
+}
+
+/// One decoded durable member, in the image's declaration order: a stored scalar
+/// field, a static `group` namespace, or a keyed `branch` placement. Groups and
+/// branches recurse.
+enum DecodedMember {
+    Field {
+        id: LedgerIdBytes,
+        scalar: Scalar,
+        required: bool,
+    },
+    Group {
+        id: LedgerIdBytes,
+        members: Vec<DecodedMember>,
+    },
+    Branch {
+        placement: LedgerIdBytes,
+        keys: Vec<(Scalar, LedgerIdBytes)>,
+        members: Vec<DecodedMember>,
+    },
+}
+
+impl DecodedMember {
+    /// Whether this member is a group or a keyed branch (not a flat field).
+    fn is_extra(&self) -> bool {
+        !matches!(self, DecodedMember::Field { .. })
+    }
 }
 
 /// A decoded durable site: root index and entry-or-field target.
@@ -915,24 +942,12 @@ fn decode_durable(
         return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
     let mut ledger_ids: Vec<LedgerIdBytes> = Vec::new();
-    let mut distinct_id =
-        |reader: &mut Reader<'_>, what: &'static str| -> Result<LedgerIdBytes, VerifyRejection> {
-            let bytes: [u8; 16] = reader
-                .take(16)
-                .ok_or(reject(VerifyPhase::Table, what))?
-                .try_into()
-                .expect("take(16) yields 16 bytes");
-            let id = LedgerIdBytes::from_bytes(bytes);
-            // Entropy-minted ids are distinct by construction; two equal ids in one
-            // durable table are a forged or corrupted identity block.
-            if ledger_ids.contains(&id) {
-                return Err(reject(VerifyPhase::Table, "duplicate durable ledger id"));
-            }
-            ledger_ids.push(id);
-            Ok(id)
-        };
     let application = if root_count > 0 {
-        Some(distinct_id(&mut reader, "short application identity")?)
+        Some(take_distinct_id(
+            &mut reader,
+            &mut ledger_ids,
+            "short application identity",
+        )?)
     } else {
         None
     };
@@ -955,30 +970,7 @@ fn decode_durable(
         if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
             return Err(reject(VerifyPhase::Table, "too many root key columns"));
         }
-        let mut keys = Vec::with_capacity(key_count);
-        for _ in 0..key_count {
-            let key_tag = reader
-                .u8()
-                .ok_or(reject(VerifyPhase::Table, "short root key type"))?;
-            let scalar = match decode_bare_scalar(key_tag) {
-                Some(
-                    scalar @ (Scalar::Int
-                    | Scalar::Text
-                    | Scalar::Bool
-                    | Scalar::Bytes
-                    | Scalar::Date
-                    | Scalar::Instant),
-                ) => scalar,
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "root key type must be an orderable durable-key scalar",
-                    ));
-                }
-            };
-            let key_id = distinct_id(&mut reader, "short key identity")?;
-            keys.push((scalar, key_id));
-        }
+        let keys = decode_key_tuple(&mut reader, key_count, &mut ledger_ids)?;
         let record = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short root record"))?;
@@ -1001,22 +993,50 @@ fn decode_durable(
                 "a durable root record must have only scalar fields",
             ));
         }
-        let placement = distinct_id(&mut reader, "short placement identity")?;
-        let product = distinct_id(&mut reader, "short product identity")?;
-        let field_id_count = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short field identity count"))?
-            as usize;
-        // The identity block covers exactly the record's stored fields.
-        if field_id_count != types[record as usize].fields.len() {
+        let placement = take_distinct_id(&mut reader, &mut ledger_ids, "short placement identity")?;
+        let product = take_distinct_id(&mut reader, &mut ledger_ids, "short product identity")?;
+        // The resource's durable member tree: top-level fields interleaved with
+        // static `group` namespaces and keyed `branch` placements.
+        let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
+        let members = decode_members(&mut reader, 1, &mut member_budget, &mut ledger_ids)?;
+        // The member tree's top-level fields are exactly the materialized record's
+        // stored fields, in order: this ties the durable identity to the executable
+        // record so a hostile image cannot claim one identity while executing over a
+        // different field shape.
+        let record_fields = &types[record as usize].fields;
+        let mut top_fields = members.iter().filter_map(|member| match member {
+            DecodedMember::Field {
+                scalar, required, ..
+            } => Some((*scalar, *required)),
+            _ => None,
+        });
+        for field in record_fields {
+            let ImageType::Scalar {
+                scalar,
+                optional: false,
+            } = field.ty
+            else {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "a durable root record must have only scalar fields",
+                ));
+            };
+            match top_fields.next() {
+                Some((member_scalar, member_required))
+                    if member_scalar == scalar && member_required == field.required => {}
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "root member tree fields do not match the record fields",
+                    ));
+                }
+            }
+        }
+        if top_fields.next().is_some() {
             return Err(reject(
                 VerifyPhase::Table,
-                "root field identities do not cover the record fields",
+                "root member tree has more top-level fields than the record",
             ));
-        }
-        let mut field_ids = Vec::with_capacity(field_id_count);
-        for _ in 0..field_id_count {
-            field_ids.push(distinct_id(&mut reader, "short field identity")?);
         }
         roots.push(DecodedRoot {
             name,
@@ -1024,7 +1044,7 @@ fn decode_durable(
             record,
             placement,
             product,
-            field_ids,
+            members,
         });
     }
 
@@ -1087,7 +1107,7 @@ fn decode_durable(
             "trailing bytes in durable table",
         ));
     }
-    let recomputed = durable_descriptor(application, &roots, types).contract_id();
+    let recomputed = durable_descriptor(application, &roots).contract_id();
     if recomputed.bytes() != &carried {
         return Err(reject(
             VerifyPhase::Table,
@@ -1097,58 +1117,210 @@ fn decode_durable(
     Ok((roots, sites, recomputed))
 }
 
+/// Read one 16-byte ledger id, rejecting a duplicate against those already seen in
+/// this durable table. Entropy-minted ids are distinct by construction, so two
+/// equal ids are a forged or corrupted identity block.
+fn take_distinct_id(
+    reader: &mut Reader<'_>,
+    seen: &mut Vec<LedgerIdBytes>,
+    what: &'static str,
+) -> Result<LedgerIdBytes, VerifyRejection> {
+    let bytes: [u8; 16] = reader
+        .take(16)
+        .ok_or(reject(VerifyPhase::Table, what))?
+        .try_into()
+        .expect("take(16) yields 16 bytes");
+    let id = LedgerIdBytes::from_bytes(bytes);
+    if seen.contains(&id) {
+        return Err(reject(VerifyPhase::Table, "duplicate durable ledger id"));
+    }
+    seen.push(id);
+    Ok(id)
+}
+
+/// Decode a placement key tuple: `count` columns, each a bare orderable durable-key
+/// scalar and a distinct ledger id. Shared by roots and branches; the caller has
+/// already validated `count` against `MAX_KEY_COLUMNS`.
+fn decode_key_tuple(
+    reader: &mut Reader<'_>,
+    count: usize,
+    seen: &mut Vec<LedgerIdBytes>,
+) -> Result<Vec<(Scalar, LedgerIdBytes)>, VerifyRejection> {
+    let mut keys = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key_tag = reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, "short key type"))?;
+        let scalar = match decode_bare_scalar(key_tag) {
+            Some(
+                scalar @ (Scalar::Int
+                | Scalar::Text
+                | Scalar::Bool
+                | Scalar::Bytes
+                | Scalar::Date
+                | Scalar::Instant),
+            ) => scalar,
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "key type must be an orderable durable-key scalar",
+                ));
+            }
+        };
+        let key_id = take_distinct_id(reader, seen, "short key identity")?;
+        keys.push((scalar, key_id));
+    }
+    Ok(keys)
+}
+
+/// Decode a durable member tree: `u16(count) ‖ member*`. A field is tag `0x00`; a
+/// group is tag `0x01`; a branch is tag `0x02`. `budget` bounds the total member
+/// records across the whole tree and `depth` bounds nesting, so a hostile image
+/// cannot drive unbounded recursion or allocation before the bounds are rechecked
+/// (§ law 9). Every ledger id is distinct across the table.
+fn decode_members(
+    reader: &mut Reader<'_>,
+    depth: usize,
+    budget: &mut usize,
+    seen: &mut Vec<LedgerIdBytes>,
+) -> Result<Vec<DecodedMember>, VerifyRejection> {
+    if depth > marrow_image::bounds::MAX_DURABLE_DEPTH {
+        return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
+    }
+    let count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
+    let mut members = Vec::with_capacity(count.min(*budget));
+    for _ in 0..count {
+        if *budget == 0 {
+            return Err(reject(VerifyPhase::Table, "too many durable members"));
+        }
+        *budget -= 1;
+        let tag = reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, "short durable member tag"))?;
+        let member = match tag {
+            0x00 => {
+                let id = take_distinct_id(reader, seen, "short durable field identity")?;
+                let scalar_tag = reader
+                    .u8()
+                    .ok_or(reject(VerifyPhase::Table, "short durable field type"))?;
+                let scalar = decode_bare_scalar(scalar_tag).ok_or(reject(
+                    VerifyPhase::Table,
+                    "durable field type must be a bare scalar",
+                ))?;
+                let required = match reader.u8().ok_or(reject(
+                    VerifyPhase::Table,
+                    "short durable field required flag",
+                ))? {
+                    0 => false,
+                    1 => true,
+                    _ => {
+                        return Err(reject(
+                            VerifyPhase::Table,
+                            "durable field required flag must be 0 or 1",
+                        ));
+                    }
+                };
+                DecodedMember::Field {
+                    id,
+                    scalar,
+                    required,
+                }
+            }
+            0x01 => {
+                let id = take_distinct_id(reader, seen, "short durable group identity")?;
+                let inner = decode_members(reader, depth + 1, budget, seen)?;
+                DecodedMember::Group { id, members: inner }
+            }
+            0x02 => {
+                let placement = take_distinct_id(reader, seen, "short durable branch identity")?;
+                let key_count = reader
+                    .u16()
+                    .ok_or(reject(VerifyPhase::Table, "short branch key count"))?
+                    as usize;
+                if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
+                    return Err(reject(VerifyPhase::Table, "too many branch key columns"));
+                }
+                let keys = decode_key_tuple(reader, key_count, seen)?;
+                let inner = decode_members(reader, depth + 1, budget, seen)?;
+                DecodedMember::Branch {
+                    placement,
+                    keys,
+                    members: inner,
+                }
+            }
+            _ => return Err(reject(VerifyPhase::Table, "unknown durable member tag")),
+        };
+        members.push(member);
+    }
+    Ok(members)
+}
+
 /// Rebuild the canonical durable-graph descriptor from the decoded tables. This is
 /// the verifier's independent reconstruction: it shares the canonical encoding owned
-/// by `marrow-image` but reads only the decoded application id, roots, identity
-/// blocks, and record fields, so the recomputed id depends on nothing the compiler
-/// asserted directly. A durable root record carries only scalar fields (rechecked
-/// above) and its identity block covers exactly the record fields (rechecked
-/// above), so the profile is total.
+/// by `marrow-image` but reads only the decoded application id, roots, key tuples,
+/// and member trees, so the recomputed id depends on nothing the compiler asserted
+/// directly.
 fn durable_descriptor(
     application: Option<LedgerIdBytes>,
     roots: &[DecodedRoot],
-    types: &[DecodedRecordType],
 ) -> DurableContractDescriptor {
     let Some(application) = application else {
         return DurableContractDescriptor::empty();
     };
     let shapes = roots
         .iter()
-        .map(|root| {
-            let record = &types[root.record as usize];
-            let fields = record
-                .fields
-                .iter()
-                .zip(&root.field_ids)
-                .filter_map(|(field, id)| match field.ty {
-                    ImageType::Scalar {
-                        scalar,
-                        optional: false,
-                    } => Some(DurableFieldShape {
-                        id: *id,
-                        scalar,
-                        required: field.required,
-                    }),
-                    _ => None,
-                })
-                .collect();
-            let keys = root
-                .keys
-                .iter()
-                .map(|(scalar, id)| DurableKeyShape {
-                    scalar: *scalar,
-                    id: *id,
-                })
-                .collect();
-            DurableRootShape {
-                placement: root.placement,
-                product: root.product,
-                keys,
-                fields,
-            }
+        .map(|root| DurableRootShape {
+            placement: root.placement,
+            product: root.product,
+            keys: key_shapes(&root.keys),
+            members: member_shapes(&root.members),
         })
         .collect();
     DurableContractDescriptor::new(application, shapes)
+}
+
+/// The descriptor key-tuple shapes for a decoded placement's key columns.
+fn key_shapes(keys: &[(Scalar, LedgerIdBytes)]) -> Vec<DurableKeyShape> {
+    keys.iter()
+        .map(|(scalar, id)| DurableKeyShape {
+            scalar: *scalar,
+            id: *id,
+        })
+        .collect()
+}
+
+/// Convert a decoded member tree into the descriptor's member shapes, recursing
+/// through groups and branches.
+fn member_shapes(members: &[DecodedMember]) -> Vec<DurableMemberShape> {
+    members
+        .iter()
+        .map(|member| match member {
+            DecodedMember::Field {
+                id,
+                scalar,
+                required,
+            } => DurableMemberShape::Field(DurableFieldShape {
+                id: *id,
+                scalar: *scalar,
+                required: *required,
+            }),
+            DecodedMember::Group { id, members } => DurableMemberShape::Group(DurableGroupShape {
+                id: *id,
+                members: member_shapes(members),
+            }),
+            DecodedMember::Branch {
+                placement,
+                keys,
+                members,
+            } => DurableMemberShape::Branch(DurableBranchShape {
+                placement: *placement,
+                keys: key_shapes(keys),
+                members: member_shapes(members),
+            }),
+        })
+        .collect()
 }
 
 fn decode_consts(body: &[u8], strings: &[Rc<str>]) -> Result<Vec<SealedConst>, VerifyRejection> {
@@ -1633,6 +1805,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
             name: decoded.strings[root.name as usize].clone(),
             keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
             record: root.record,
+            has_extras: root.members.iter().any(DecodedMember::is_extra),
         })
         .collect();
     let sites: Vec<SealedSite> = decoded
@@ -3343,11 +3516,18 @@ fn apply_durable(
         VerifyPhase::Function,
         "durable site root out of range",
     ))?;
-    // The executable durable subset served by the single-root kernel is the
-    // single-column keyed root. A singleton or composite-key root carries a
-    // complete identity but has no executable operation sites; a site over one is
-    // a forged or not-yet-executable image and is refused here, independently of
-    // the compiler's own boundary.
+    // The executable durable subset served by the single-root kernel is the flat
+    // single-column keyed root: one key column and no groups or branches. A
+    // singleton, composite-key, or group/branch-bearing root carries a complete
+    // identity but has no executable operation sites; a site over one is a forged
+    // or not-yet-executable image and is refused here, independently of the
+    // compiler's own boundary.
+    if root.has_extras {
+        return Err(reject(
+            VerifyPhase::Function,
+            "a durable operation site requires a resource with no groups or branches",
+        ));
+    }
     let [key] = root.keys.as_slice() else {
         return Err(reject(
             VerifyPhase::Function,

@@ -145,21 +145,45 @@ pub enum CollectionTypeDef {
 }
 
 /// The ledger identity block of a durable root: the entropy-minted ids of the
-/// placement, the stored product, and each stored field of the root's record
-/// (aligned with the record's field order). Each key column's id travels with
-/// its scalar in [`KeyColumn`]. The contract id is computed over these, so a
-/// rename — which moves a ledger anchor while its id stays — preserves the
-/// durable identity.
+/// placement and the stored product, plus the resource's durable **member tree**
+/// (its top-level fields interleaved with any static `group` namespaces and keyed
+/// `branch` placements, each recursively holding its own members). Each key
+/// column's id travels with its scalar in [`KeyColumn`]. The contract id is
+/// computed over these, so a rename — which moves a ledger anchor while its id
+/// stays — preserves the durable identity.
 #[derive(Debug, Clone)]
 pub struct RootIdentity {
     pub placement: LedgerIdBytes,
     pub product: LedgerIdBytes,
-    pub fields: Vec<LedgerIdBytes>,
+    pub members: Vec<DurableMemberDef>,
 }
 
-/// One key column of a durable root placement: its orderable durable-key scalar
-/// and the entropy-minted ledger id anchored at `<root>.<column>`. Column order
-/// is the declared tuple order and is part of the durable identity.
+/// One member of a durable resource's shape as the draft carries it, in source
+/// declaration order: a stored scalar field, a static `group` field-path
+/// namespace, or a keyed `branch` placement. Groups and branches recurse. This is
+/// the image-side owner of the durable member tree; the verifier decodes an
+/// independent copy and the contract id is computed over both.
+#[derive(Debug, Clone)]
+pub enum DurableMemberDef {
+    Field {
+        id: LedgerIdBytes,
+        scalar: Scalar,
+        required: bool,
+    },
+    Group {
+        id: LedgerIdBytes,
+        members: Vec<DurableMemberDef>,
+    },
+    Branch {
+        placement: LedgerIdBytes,
+        keys: Vec<KeyColumn>,
+        members: Vec<DurableMemberDef>,
+    },
+}
+
+/// One key column of a durable root or branch placement: its orderable durable-key
+/// scalar and the entropy-minted ledger id anchored at `<placement>.<column>`.
+/// Column order is the declared tuple order and is part of the durable identity.
 #[derive(Debug, Clone)]
 pub struct KeyColumn {
     pub scalar: Scalar,
@@ -264,6 +288,8 @@ pub enum ImageBuildError {
     TooManyCollections,
     TooManyRoots,
     TooManyKeyColumns,
+    TooManyDurableMembers,
+    DurableTreeTooDeep,
     TooManySites,
     TooManyFunctions,
     TooManyParams,
