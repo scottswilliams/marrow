@@ -17,6 +17,7 @@ mod durable_id;
 mod encode;
 mod export_id;
 mod instr;
+mod interface;
 mod semantic;
 mod ty;
 
@@ -56,6 +57,11 @@ pub use instr::{
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+};
+pub use interface::{
+    EnumShape, ExcludedKind, ExportSignature, FieldShape, FunctionDescriptor, INTERFACE_ID_KIND,
+    Interface, InterfaceError, InterfaceId, RecordShape, SignaturePosition, TransferField,
+    TransferType, TransferVariant, VariantShape,
 };
 pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,

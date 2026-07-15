@@ -68,6 +68,7 @@ version = "0.1.0"
 dependencies = [
  "marrow-codes",
  "marrow-compile",
+ "marrow-image",
  "marrow-kernel",
  "marrow-project",
  "marrow-syntax",

@@ -107,3 +107,12 @@ pub const MAX_STACK_DEPTH: usize = 256;
 
 /// Text-concatenation result ceiling (runtime bound, design §D `TextConcat`).
 pub const MAX_TEXT_BYTES: usize = 64 * 1024;
+
+/// The node budget for structurally expanding one export's wire transfer graph
+/// (`crate::interface`). A record field or enum payload may itself be a record or
+/// enum, so a *verified acyclic* value graph can still expand exponentially (a
+/// diamond of many-fielded records). The `InterfaceId` derivation expands each
+/// signature into its full structural transfer shape, so it bounds the total
+/// expanded node count before it allocates (§ law 9) and rejects a signature that
+/// exceeds this with a typed error rather than materializing an exponential tree.
+pub const MAX_INTERFACE_TRANSFER_NODES: usize = 4096;

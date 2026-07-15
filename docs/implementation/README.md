@@ -23,7 +23,7 @@ through which direction.
 | `marrow-project` | Pure project-input owner: manifest schema, contained discovery, the `marrow.ids` durable-identity ledger, immutable captured input | — |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics | [Syntax](syntax.md) |
 | `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft: it emits the whole durable graph's operation sites and lowers named `place` bindings with a once-evaluated key tuple and structured present-entry analysis | — |
-| `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest; a durable graph node's derived semantic path and a durable operation site's closed whole-payload/field-leaf target; the durable access-demand model (operation class, atom, and the `DemandSetId` demand-set identity); and the deployment-ceiling descriptor whose read/write coverage and 32-byte ceiling-id are both derived from a demand union, binding a ceiling to its verified image | — |
+| `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest; a durable graph node's derived semantic path and a durable operation site's closed whole-payload/field-leaf target; the durable access-demand model (operation class, atom, and the `DemandSetId` demand-set identity); the deployment-ceiling descriptor whose read/write coverage and 32-byte ceiling-id are both derived from a demand union, binding a ceiling to its verified image; and the host-neutral wire interface descriptor, its closed transfer graph, and the `InterfaceId` interface identity | — |
 | `marrow-verify` | The only image decoder and the phased verifier producing the sealed `VerifiedImage`; it resolves each operation site's semantic path against its own reconstructed node set and re-derives the site rather than trusting a compiler-side summary, and reconstructs each export's access demand from the sealed sites its call closure reaches | — |
 | `marrow-vm` | Stack VM over the sealed instruction tape, with source-mapped runtime faults; the ephemeral-attachment executor derives the flat store schema and site table from a verified image and runs a durable test against a freshly minted attachment | — |
 | `marrow-kernel` | Path kernel: durable operation algebra, authority triple, store profile, commit witness, runtime logical codecs, and the production ephemeral-memory attachment (nonforgeable attachment id, deployment ceiling, per-invocation grant) minted from a verified image | [Storage](storage.md) |
@@ -61,3 +61,34 @@ verifier rebuilds it from the operation sites and bytecode. The kernel's
 authority triple checks that read/write coverage against a deployment ceiling and
 an invocation grant — admission uses the program-wide union, an invocation uses
 its named export's demand — and demand is never a source of rights.
+
+## Wire interface
+
+A program's wire interface is the set of its concrete root-package exports, each
+described host-neutrally by a function descriptor that both real callers — the
+terminal and the generated TypeScript client — consume without reparsing source.
+`marrow-image` owns the interface vocabulary: a `TransferType` (the closed set of
+value types a signature may carry — `unit`, the seven scalars, a `Product`
+record, and a `Sum` enum, the last also covering `Option`/`Result`), a
+`FunctionDescriptor` pairing an export's `ExportId` with its transfer-projected
+parameters and return and its `DemandSetId`, an `Interface` (the descriptor set
+sorted by export id), and the `InterfaceId` interface identity — a
+domain-separated hash over the sorted descriptor set, distinct from every export
+id, every demand-set id, and the image id.
+
+Like access demand, the interface is a fact reconstructed from the verified
+image, not a section written into it. Every input — export ids, function
+parameter and return types, the record and enum tables, and each export's
+reconstructed `DemandSetId` — is already present in a `VerifiedImage`, so the
+`InterfaceId` derives from verified facts rather than trusting a compiler-written
+summary. A body edit that changes no signature and no demand leaves the
+`InterfaceId` fixed while the image id moves; any signature change (a parameter or
+return type, a record field name, an enum variant) or demand change moves it.
+Finite collections (`List`/`Map`) are deliberately outside the transfer graph at
+this stage: a signature that reaches one — directly or through a record field or
+enum payload — is rejected with a typed exclusion rather than surfaced on the
+wire, and collections join the transfer graph only when the client earns them.
+Because a record field or enum payload may itself be a record or enum, each
+signature is expanded structurally under a fixed node budget, so a
+verified-but-adversarial diamond of many-fielded records cannot drive an
+exponential expansion.
