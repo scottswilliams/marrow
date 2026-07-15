@@ -7,7 +7,8 @@
 //! the default suite. A minimized counterexample becomes a permanent fixture.
 
 use marrow_image::{
-    ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, image_id,
+    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef,
+    Scalar, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -72,6 +73,95 @@ fn a_good_image() -> Vec<u8> {
     });
     draft.add_export(ExportId::of_local("", "e"), func);
     draft.encode().expect("encode").bytes
+}
+
+/// A good image whose value-type tables exercise the nested-value decode and
+/// acyclicity paths: an `Outer` record with a scalar field, a nested `Inner` record
+/// field, and an `E` enum field, plus the referenced `Inner` record and `E` enum.
+/// Mutating this reaches the record-field record/enum index decode and the value-
+/// graph cycle pass that plain scalar images never touch.
+fn a_nested_value_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let outer = draft.intern_string("Outer");
+    let inner = draft.intern_string("Inner");
+    let ename = draft.intern_string("E");
+    let f_inner = draft.intern_string("inner");
+    let f_tag = draft.intern_string("tag");
+    let f_n = draft.intern_string("n");
+    let v_only = draft.intern_string("only");
+    // Inner is record 0, Outer is record 1 (Outer references Inner and E).
+    draft.add_record_type(RecordTypeDef {
+        name: inner,
+        fields: vec![FieldDef {
+            name: f_n,
+            ty: ImageType::scalar(Scalar::Int),
+            required: true,
+        }],
+    });
+    draft.add_record_type(RecordTypeDef {
+        name: outer,
+        fields: vec![
+            FieldDef {
+                name: f_inner,
+                ty: ImageType::Record {
+                    idx: 0,
+                    optional: false,
+                },
+                required: true,
+            },
+            FieldDef {
+                name: f_tag,
+                ty: ImageType::Enum {
+                    idx: 0,
+                    optional: false,
+                },
+                required: true,
+            },
+        ],
+    });
+    draft.add_enum_type(EnumTypeDef {
+        name: ename,
+        variants: vec![VariantDef {
+            name: v_only,
+            category: false,
+            payload: Vec::new(),
+        }],
+    });
+    let answer = draft.intern_int(42);
+    let name = draft.intern_string("main");
+    let code = vec![Instr::ConstLoad(answer.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 1,
+            column: 1,
+        }],
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn mutated_nested_value_images_never_panic_the_verifier() {
+    let mut rng = Rng(seed() ^ 0x2545_F491_4F6C_DD1D);
+    let base = a_nested_value_image();
+    // The base image itself must verify, so the decode path is reached.
+    assert!(verify(&base).is_ok(), "nested value base image must verify");
+    for _ in 0..4096 {
+        let mut bytes = base.clone();
+        for _ in 0..=rng.below(3) {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= rng.byte();
+        }
+        oracle(&bytes);
+    }
 }
 
 #[test]

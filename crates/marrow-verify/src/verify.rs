@@ -204,7 +204,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let strings = decode_strings(sections[0].1)?;
     let types = decode_types(sections[1].1, strings.len())?;
     let enums = decode_enums(sections[8].1, strings.len(), types.len())?;
-    validate_record_field_enums(&types, enums.len())?;
+    validate_record_field_refs(&types, enums.len())?;
     reject_value_type_cycles(&types, &enums)?;
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
@@ -583,29 +583,47 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
                 optional: false,
             })
         }
+        TAG_RECORD => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short field record index"))?;
+            Ok(ImageType::Record {
+                idx,
+                optional: false,
+            })
+        }
         _ => Err(reject(
             VerifyPhase::Table,
-            "record field type must be a bare scalar or enum",
+            "record field type must be a bare scalar, record, or enum",
         )),
     }
 }
 
-/// Bounds-check every enum-typed record field against the decoded ENUMS table.
-/// The field decoder reads the enum index before the table exists, so this runs
-/// once both tables are decoded.
-fn validate_record_field_enums(
+/// Bounds-check every record field's referenced value type against the decoded
+/// tables: an enum-typed field against the ENUMS table and a record-typed field
+/// (a struct-valued field) against the RECORD-TYPES table. The field decoder reads
+/// each index before the referenced table exists, so this runs once both tables are
+/// decoded. Cycles among the in-range references are rejected separately.
+fn validate_record_field_refs(
     types: &[DecodedRecordType],
     enum_count: usize,
 ) -> Result<(), VerifyRejection> {
     for record in types {
         for field in &record.fields {
-            if let ImageType::Enum { idx, .. } = field.ty
-                && idx as usize >= enum_count
-            {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "record field enum index out of range",
-                ));
+            match field.ty {
+                ImageType::Enum { idx, .. } if idx as usize >= enum_count => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "record field enum index out of range",
+                    ));
+                }
+                ImageType::Record { idx, .. } if idx as usize >= types.len() => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "record field record index out of range",
+                    ));
+                }
+                _ => {}
             }
         }
     }
@@ -613,11 +631,11 @@ fn validate_record_field_enums(
 }
 
 /// Reject any cycle in the combined value-type reference graph over records and
-/// enums: a record field may reference an enum, and an enum payload leaf may
-/// reference a record or another enum, so a value type that (directly or
-/// transitively) contains itself would be infinite. Records occupy node indices
-/// `0..R` and enums `R..R+E`. A three-colour DFS; a back edge to a node on the
-/// current stack is a cycle.
+/// enums: a record field may reference another record (a struct-typed field) or an
+/// enum, and an enum payload leaf may reference a record or another enum, so a value
+/// type that (directly or transitively) contains itself would be infinite. Records
+/// occupy node indices `0..R` and enums `R..R+E`. A three-colour DFS; a back edge to
+/// a node on the current stack is a cycle.
 fn reject_value_type_cycles(
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
@@ -638,6 +656,7 @@ fn reject_value_type_cycles(
                 .iter()
                 .filter_map(|field| match field.ty {
                     ImageType::Enum { idx, .. } => Some(enum_node(idx)),
+                    ImageType::Record { idx, .. } => Some(idx as usize),
                     _ => None,
                 })
                 .collect(),

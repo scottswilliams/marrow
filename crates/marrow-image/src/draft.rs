@@ -294,6 +294,21 @@ impl ImageDraft {
         id
     }
 
+    /// Replace the fields of an already-reserved record type. Value types are built
+    /// in two passes — every record and enum reserves its type index first so a
+    /// field or payload may reference any other value type (including a mutually
+    /// referential `struct`), then each definition's fields are filled in. Only the
+    /// reserving pass may set fields; the index is fixed at reservation.
+    pub fn set_record_fields(&mut self, ty: TypeId, fields: Vec<FieldDef>) {
+        self.types[ty.0 as usize].fields = fields;
+    }
+
+    /// Replace the variants of an already-reserved enum type (see
+    /// [`Self::set_record_fields`] for the two-pass rationale).
+    pub fn set_enum_variants(&mut self, id: EnumId, variants: Vec<VariantDef>) {
+        self.enums[id.0 as usize].variants = variants;
+    }
+
     pub fn add_root(&mut self, def: RootDef) {
         self.roots.push(def);
     }

@@ -381,9 +381,11 @@ pub fn label(): string
     return b.note ?? "unlabeled"
 ```
 
-A field type is a scalar or a built-in `Option`/`Result` value type. A resource
-backing a `store` has only scalar fields, since durable storage records scalar
-leaves.
+A field type is a scalar, a closed enum value type (a user `enum` or a built-in
+`Option`/`Result`), or an alias that expands to one. A user-enum field holds a
+local enum value, so a `match` may dispatch on a field read. A resource backing a
+`store` has only scalar fields, since durable storage records scalar leaves: a
+non-scalar field on a stored resource is a `check.type` at the `store`.
 
 ## Structs
 
@@ -418,8 +420,15 @@ ascending byte order) and as `{field: value, ...}` in text; a struct has no
 command-line argument spelling, so an export taking a struct parameter cannot be
 invoked from the terminal.
 
-A field type is a scalar type (or an alias that expands to one). The current
-compiler does not admit a struct as the type of a struct field; that is a
+A field type is any value type (or an alias that expands to one): a scalar, a
+nominal, another struct, or a closed enum (a user `enum` or a built-in
+`Option`/`Result`). A struct field may name a struct or enum declared later in the
+file, and two structs may reference each other, because every value type is
+declared before any field type is resolved. The only nesting restriction is
+acyclicity: a value type that contains itself directly or transitively — a
+`struct Node` with a `next: Node` field, or a `some(Self)` field — is an infinite
+value and is a `check.recursion` diagnostic naming the cycle (the independent
+verifier re-rejects any such cycle in the image). An unknown field type name is a
 `check.unsupported` diagnostic. A missing, unknown, duplicated, or wrong-typed
 field argument, and an unnamed (positional) argument, are `check.type`
 diagnostics; a struct name that collides with another declared type is a

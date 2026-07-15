@@ -46,3 +46,53 @@ pub fn translateX(start: int, dx: int): int
     const p = Point(x: start, y: 0)
     const moved = shift(p, dx, 0)
     return moved.x
+
+; A struct field may itself be a struct (nesting behind the acyclicity proof), a
+; struct declared later in the file (a forward reference), or a user enum. There
+; is no depth restriction other than that the value graph has no cycle.
+
+enum Tint
+    plain
+    bright
+
+struct Segment
+    a: Point
+    b: Point
+
+struct Tagged
+    where: Segment
+    tint: Tint
+
+pub fn segmentBX(a: int, b: int, c: int, d: int): int
+    const s = Segment(a: Point(x: a, y: b), b: Point(x: c, y: d))
+    return s.b.x
+
+pub fn makeTagged(): Tagged
+    return Tagged(where: Segment(a: Point(x: 1, y: 2), b: Point(x: 3, y: 4)), tint: Tint::bright)
+
+pub fn tintName(t: Tagged): string
+    match t.tint
+        plain
+            return "plain"
+        bright
+            return "bright"
+
+; A forward reference: `Wrap` names `Leaf`, declared afterwards.
+
+struct Wrap
+    leaf: Leaf
+
+struct Leaf
+    v: int
+
+pub fn wrapValue(v: int): int
+    const w = Wrap(leaf: Leaf(v: v))
+    return w.leaf.v
+
+; Nested equality routes through the VM's structural `EqEnum`: two `some(Point)`
+; values are equal exactly when their payload structs are field-wise equal.
+
+pub fn sameBoxedPoint(a: int, b: int, c: int, d: int): bool
+    const p = some(Point(x: a, y: b))
+    const q = some(Point(x: c, y: d))
+    return p == q

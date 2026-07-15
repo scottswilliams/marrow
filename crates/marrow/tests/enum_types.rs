@@ -262,3 +262,61 @@ fn an_enum_name_collision_is_reported() {
         "{stdout}"
     );
 }
+
+/// A resource field may name a user enum declared later in the file: because the
+/// value types are declared before any field is resolved, the field resolves to the
+/// enum, a `match` over the field read keeps the enum identity, and the whole travels
+/// the production path. (The resource is a local value here; a resource backing a
+/// `store` still admits only scalar fields.)
+#[test]
+fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
+    let temp = TempDir::new("resource-enum-field");
+    project(
+        &temp,
+        "resource Paint\n\
+         \x20   required shade: Color\n\
+         \n\
+         enum Color\n\
+         \x20   red\n\
+         \x20   green\n\
+         \n\
+         pub fn name(): string\n\
+         \x20   const p = Paint(shade: Color::green)\n\
+         \x20   match p.shade\n\
+         \x20       red\n\
+         \x20           return \"r\"\n\
+         \x20       green\n\
+         \x20           return \"g\"\n",
+    );
+    let output = run_in(&temp, &["run", "name", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":"g""#), "{stdout}");
+}
+
+/// A resource backing a `store` still admits only scalar fields: a user-enum field
+/// on a stored resource is a typed `check.type` at the store (the durable-root
+/// scalar-only rule is unchanged by the local-value nesting work).
+#[test]
+fn a_stored_resource_with_an_enum_field_is_rejected() {
+    let temp = TempDir::new("stored-enum-field");
+    project(
+        &temp,
+        "resource Paint\n\
+         \x20   required id: int\n\
+         \x20   required shade: Color\n\
+         \n\
+         enum Color\n\
+         \x20   red\n\
+         \x20   green\n\
+         \n\
+         store ^paints(id: int): Paint\n\
+         \n\
+         pub fn f(): int\n\
+         \x20   return 0\n",
+    );
+    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
+}

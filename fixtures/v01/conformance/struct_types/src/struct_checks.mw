@@ -1,5 +1,6 @@
 ; Layer: check+runtime (dense `struct` value type: named-only construction,
-; field reads, value/copy semantics). Struct declarations are beta-only syntax
+; field reads, value/copy semantics, and struct/enum-typed nested fields behind the
+; value-graph acyclicity proof). Struct declarations are beta-only syntax
 ; absent from the frozen tag, so this fixture is not in the preserved-semantics
 ; manifest and has no oracle pairing. Type names are project-global, so a struct
 ; is referenced by its bare name; only functions take a module qualifier.
@@ -56,3 +57,27 @@ test "a returned struct is read back through the production path"
 
 test "a struct threads through a nested call"
     assert structs::translateX(5, 7) == 12
+
+test "a struct field may be a struct and reads through two hops"
+    const s = Segment(a: Point(x: 1, y: 2), b: Point(x: 3, y: 4))
+    assert s.a.x == 1
+    assert s.b.y == 4
+    assert structs::segmentBX(1, 2, 3, 4) == 3
+
+test "a nested struct returns whole and reads back"
+    const t = structs::makeTagged()
+    assert t.where.a.x == 1
+    assert t.where.b.y == 4
+
+test "a match over a struct's enum field resolves the enum"
+    const t = structs::makeTagged()
+    assert structs::tintName(t) == "bright"
+
+test "a struct field may name a struct declared later in the file"
+    const w = Wrap(leaf: Leaf(v: 7))
+    assert w.leaf.v == 7
+    assert structs::wrapValue(9) == 9
+
+test "nested equality compares payload structs field-wise"
+    assert structs::sameBoxedPoint(1, 2, 1, 2)
+    assert not structs::sameBoxedPoint(1, 2, 1, 9)

@@ -8,10 +8,12 @@
 //! `supports` capability set — while the image records only its base scalar, so
 //! the interval is carried by the guard instructions the compiler emits, not by
 //! an image type table. Two product kinds lower into image [`RecordTypeDef`]s,
-//! the single canonical product-leaf order owner: the optional `resource` (a
-//! durable record with required and sparse scalar fields, no groups and no keyed
-//! children) and any number of dense `struct` value types (every field required,
-//! non-durable, constructible and read by value).
+//! the single canonical product-leaf order owner: the optional `resource` (a record
+//! with required and sparse fields — scalar or closed-enum, no groups and no keyed
+//! children; only scalar fields when it backs a `store`) and any number of dense
+//! `struct` value types (every field required, non-durable, constructible and read
+//! by value). Value types are built declare-then-fill so a field may name any other
+//! value type regardless of order; the sole nesting restriction is acyclicity.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -106,7 +108,7 @@ pub(crate) fn is_reserved_type_name(name: &str) -> bool {
 struct Generics {
     options: Vec<(GArg, EnumId)>,
     results: Vec<(GArg, GArg, EnumId)>,
-    by_id: Vec<(u16, GenericInst)>,
+    by_id: Vec<(EnumId, GenericInst)>,
 }
 
 /// The closed capability set a nominal declaration's `supports` list unlocks.
@@ -129,9 +131,11 @@ pub(crate) struct NominalInfo {
     pub(crate) supports: SupportSet,
 }
 
-/// One resolved record field, in declaration order. The field type is a bare
-/// value type: a scalar (durable-storable) or a built-in `Option`/`Result` value
-/// type for a local-only value field. Struct fields are always scalar.
+/// One resolved record field, in declaration order. The field type is a bare value
+/// type. A resource field is a scalar (durable-storable) or a closed enum
+/// (`Option`/`Result`/a user `enum`) local value; a struct field may additionally be
+/// another struct or a nominal. Nesting is admitted behind the value-graph
+/// acyclicity proof.
 pub(crate) struct FieldInfo {
     pub(crate) name: String,
     pub(crate) ty: GArg,
@@ -260,9 +264,7 @@ impl TypeRegistry {
         });
         let mut generics = self.generics.borrow_mut();
         generics.options.push((inner, id));
-        generics
-            .by_id
-            .push((id.index(), GenericInst::Option(inner)));
+        generics.by_id.push((id, GenericInst::Option(inner)));
         id
     }
 
@@ -299,9 +301,7 @@ impl TypeRegistry {
         });
         let mut generics = self.generics.borrow_mut();
         generics.results.push((ok, err, id));
-        generics
-            .by_id
-            .push((id.index(), GenericInst::Result(ok, err)));
+        generics.by_id.push((id, GenericInst::Result(ok, err)));
         id
     }
 
@@ -359,7 +359,7 @@ impl TypeRegistry {
             .borrow()
             .by_id
             .iter()
-            .find(|(index, _)| *index == id.index())
+            .find(|(eid, _)| *eid == id)
             .map(|(_, inst)| *inst)
     }
 
@@ -426,11 +426,33 @@ impl TypeRegistry {
         }
     }
 
+    /// Every generic `Option`/`Result` instantiation minted so far, paired with its
+    /// image enum index. The value-type cycle check reads these so a nesting routed
+    /// through a built-in generic (`struct S` with a `some(S)` field) is caught.
+    pub(crate) fn generic_instantiations(&self) -> Vec<(EnumId, GenericInst)> {
+        self.generics
+            .borrow()
+            .by_id
+            .iter()
+            .map(|(id, inst)| (*id, *inst))
+            .collect()
+    }
+
     /// Build the registry: the alias table (duplicates, resource-name collisions,
     /// and cycles rejected; targets pre-expanded to alias-free form and validated
-    /// against the known types), then the one admitted record type, whose field
-    /// annotations resolve through the aliases. More than one resource, groups,
-    /// keyed fields, or non-scalar field types are rejected.
+    /// against the known types), then the value types in two passes.
+    ///
+    /// Value types (the one resource record, the dense structs, and the closed
+    /// enums) are built declare-then-fill: pass one reserves every type's image
+    /// index with empty members and decides name conflicts, so pass two can resolve
+    /// each field or payload against the full set of declared types regardless of
+    /// declaration order — a struct field may name a later struct or enum, two
+    /// structs may reference each other, and a resource field may name a user enum.
+    /// The only nesting restriction is acyclicity: a value type may not contain
+    /// itself directly or transitively, reported at check time (and independently
+    /// re-rejected by the verifier). The resource record reserves its image index
+    /// before the structs, so a project's durable root and sites keep the same
+    /// record index whether or not dense structs are also declared.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut ImageDraft,
@@ -451,16 +473,20 @@ impl TypeRegistry {
         };
         registry.nominals =
             build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
-        // The resource record takes its image type index before the structs, so a
-        // project's durable root and sites keep the same record index whether or
-        // not dense structs are also declared. Enums take a separate index space
-        // (the ENUMS table), so they build last (alias -> nominal -> record ->
-        // struct -> enum). A resource field may still name a built-in
-        // `Option`/`Result` value type: those monomorphize lazily into the draft at
-        // field resolution, independent of build order.
-        registry.record = build_record(draft, &registry, resources, diagnostics);
-        registry.structs = build_structs(draft, &registry, structs, resources, diagnostics);
-        registry.enums = build_enums(draft, &registry, enums, resources, diagnostics);
+
+        // Pass one: reserve every value type's image index with empty members and
+        // decide name conflicts. The record reserves first (image index 0).
+        let record_decl = declare_record(draft, &mut registry, resources, diagnostics);
+        let struct_decls = declare_structs(draft, &mut registry, structs, resources, diagnostics);
+        let enum_decls = declare_enums(draft, &mut registry, enums, resources, diagnostics);
+
+        // Pass two: resolve and fill each definition's members against the full
+        // registry, monomorphizing any `Option`/`Result` field type on first use.
+        fill_record(draft, &mut registry, record_decl.as_ref(), diagnostics);
+        fill_structs(draft, &mut registry, &struct_decls, diagnostics);
+        fill_enums(draft, &mut registry, &enum_decls, diagnostics);
+
+        reject_value_cycles(&registry, structs, resources, diagnostics);
         validate_alias_targets(&registry, aliases, diagnostics);
         registry
     }
@@ -865,21 +891,27 @@ fn support_set(
     Some(supports)
 }
 
-/// Build the dense struct types. Each becomes an image [`RecordTypeDef`] whose
-/// every field is required, resolving field annotations through the aliases
-/// already installed in `registry`. A name collision with a scalar, alias,
-/// nominal, resource, or earlier struct is a `check.name_conflict`; a group,
-/// keyed field, the `required` keyword, an optional field type, or a non-scalar
-/// field type is `check.unsupported` (a struct field is the bare `name: Type`
-/// form over a scalar). A declaration with a defect is dropped whole.
-fn build_structs(
+/// One struct reserved in pass one: the file it was declared in, its declaration,
+/// and the image record index it will fill in pass two.
+struct ReservedStruct<'a> {
+    file: String,
+    decl: &'a StructDecl,
+    type_id: TypeId,
+}
+
+/// Pass one for the dense struct types: reserve each admitted struct's image
+/// [`RecordTypeDef`] index (empty for now) and register its name, so pass two may
+/// resolve a field that names any other struct or enum. A name collision with a
+/// scalar, alias, nominal, resource, or earlier struct is a `check.name_conflict`;
+/// a colliding or reserved-name struct is dropped and never reserved.
+fn declare_structs<'a>(
     draft: &mut ImageDraft,
-    registry: &TypeRegistry,
-    structs: &[(String, &StructDecl)],
+    registry: &mut TypeRegistry,
+    structs: &'a [(String, &StructDecl)],
     resources: &[(String, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Vec<StructInfo> {
-    let mut built: Vec<StructInfo> = Vec::new();
+) -> Vec<ReservedStruct<'a>> {
+    let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
     for (file, decl) in structs {
         if is_reserved_type_name(&decl.name) {
             diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
@@ -891,7 +923,7 @@ fn build_structs(
             || resources
                 .iter()
                 .any(|(_, resource)| resource.name == decl.name)
-            || built.iter().any(|info| info.name == decl.name)
+            || registry.struct_by_name(&decl.name).is_some()
         {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
@@ -901,26 +933,63 @@ fn build_structs(
             ));
             continue;
         }
-        let Some((fields, field_defs)) = struct_fields(draft, registry, file, decl, diagnostics)
-        else {
-            continue;
-        };
         let name_id = draft.intern_string(&decl.name);
         let type_id = draft.add_record_type(RecordTypeDef {
             name: name_id,
-            fields: field_defs,
+            fields: Vec::new(),
         });
-        built.push(StructInfo {
+        registry.structs.push(StructInfo {
             type_id,
             name: decl.name.clone(),
-            fields,
+            fields: Vec::new(),
+        });
+        reserved.push(ReservedStruct {
+            file: file.clone(),
+            decl,
+            type_id,
         });
     }
-    built
+    reserved
 }
 
-/// Resolve a struct's members to its required scalar fields and their image
-/// definitions, or `None` if any member is not the bare `name: scalar` form.
+/// Pass two for the dense struct types: resolve each reserved struct's fields
+/// against the full registry and fill both the registry info and the image record.
+/// A struct field is the bare `name: Type` form over any value type — a scalar,
+/// nominal, another struct, or a closed enum (`Option`/`Result`/a user `enum`);
+/// a group, keyed field, the `required` keyword, an optional type, or an unknown
+/// type is `check.unsupported`. A declaration with a member defect is dropped
+/// whole (its reserved image record stays empty and its name leaves the registry)
+/// so a later construction or match cannot resolve against a broken struct.
+fn fill_structs(
+    draft: &mut ImageDraft,
+    registry: &mut TypeRegistry,
+    reserved: &[ReservedStruct<'_>],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    let mut dropped: Vec<TypeId> = Vec::new();
+    for item in reserved {
+        match struct_fields(draft, registry, &item.file, item.decl, diagnostics) {
+            Some((fields, field_defs)) => {
+                draft.set_record_fields(item.type_id, field_defs);
+                if let Some(info) = registry
+                    .structs
+                    .iter_mut()
+                    .find(|info| info.type_id == item.type_id)
+                {
+                    info.fields = fields;
+                }
+            }
+            None => dropped.push(item.type_id),
+        }
+    }
+    registry
+        .structs
+        .retain(|info| !dropped.contains(&info.type_id));
+}
+
+/// Resolve a struct's members to its required value fields and their image
+/// definitions, or `None` if any member is not the bare `name: Type` form over a
+/// value type.
 fn struct_fields(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
@@ -960,7 +1029,7 @@ fn struct_fields(
             ok = false;
             continue;
         }
-        let Some(scalar) = scalar_of(&registry.expand(&field.ty)) else {
+        let Some(field_ty) = registry.resolve_garg(draft, &field.ty) else {
             diagnostics.push(unsupported(file, field.ty.span(), "this struct field type"));
             ok = false;
             continue;
@@ -968,33 +1037,41 @@ fn struct_fields(
         let field_name_id = draft.intern_string(&field.name);
         field_defs.push(FieldDef {
             name: field_name_id,
-            ty: ImageType::scalar(scalar.image()),
+            ty: field_ty.image(),
             required: true,
         });
         fields.push(FieldInfo {
             name: field.name.clone(),
-            ty: GArg::Scalar(scalar),
+            ty: field_ty,
             required: true,
         });
     }
     ok.then_some((fields, field_defs))
 }
 
-/// Build the closed flat enum types. Each becomes an image [`EnumTypeDef`]. A name
-/// collision with a scalar, alias, nominal, resource, struct, or earlier enum is a
-/// `check.name_conflict`. Hierarchy is deferred: a `category` member or a member
-/// with nested members is `check.unsupported`. A member's payload is the dense
-/// `name: Type` form over bare scalars; an optional or non-scalar payload type is
-/// `check.unsupported`. A declaration with a defect is dropped whole rather than
-/// admitted half-checked, so a later match cannot resolve against a broken enum.
-fn build_enums(
+/// One enum reserved in pass one: the file it was declared in, its declaration,
+/// and the image ENUMS index it will fill in pass two.
+struct ReservedEnum<'a> {
+    file: String,
+    decl: &'a EnumDecl,
+    enum_id: EnumId,
+}
+
+/// Pass one for the closed flat enum types: reserve each admitted enum's image
+/// [`EnumTypeDef`] index (empty for now) and register its name. A name collision
+/// with a scalar, alias, nominal, resource, struct, or earlier enum is a
+/// `check.name_conflict`; a colliding or reserved-name enum is dropped and never
+/// reserved. Reserving user enums before pass two resolves any field types keeps
+/// their image indices ahead of the `Option`/`Result` instantiations minted lazily
+/// during field resolution.
+fn declare_enums<'a>(
     draft: &mut ImageDraft,
-    registry: &TypeRegistry,
-    enums: &[(String, &EnumDecl)],
+    registry: &mut TypeRegistry,
+    enums: &'a [(String, &EnumDecl)],
     resources: &[(String, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Vec<EnumInfo> {
-    let mut built: Vec<EnumInfo> = Vec::new();
+) -> Vec<ReservedEnum<'a>> {
+    let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
     for (file, decl) in enums {
         if is_reserved_type_name(&decl.name) {
             diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
@@ -1007,7 +1084,7 @@ fn build_enums(
             || resources
                 .iter()
                 .any(|(_, resource)| resource.name == decl.name)
-            || built.iter().any(|info| info.name == decl.name)
+            || registry.enum_by_name(&decl.name).is_some()
         {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
@@ -1017,23 +1094,58 @@ fn build_enums(
             ));
             continue;
         }
-        let Some((variants, variant_defs)) =
-            enum_variants(draft, registry, file, decl, diagnostics)
-        else {
-            continue;
-        };
         let name_id = draft.intern_string(&decl.name);
         let enum_id = draft.add_enum_type(EnumTypeDef {
             name: name_id,
-            variants: variant_defs,
+            variants: Vec::new(),
         });
-        built.push(EnumInfo {
+        registry.enums.push(EnumInfo {
             enum_id,
             name: decl.name.clone(),
-            variants,
+            variants: Vec::new(),
+        });
+        reserved.push(ReservedEnum {
+            file: file.clone(),
+            decl,
+            enum_id,
         });
     }
-    built
+    reserved
+}
+
+/// Pass two for the closed flat enum types: resolve each reserved enum's variants
+/// and fill both the registry info and the image ENUMS entry. Hierarchy is
+/// deferred: a `category` member or a member with nested members is
+/// `check.unsupported`. A member's payload is the dense `name: Type` form over bare
+/// scalars; an optional or non-scalar payload type is `check.unsupported`. A
+/// declaration with a defect is dropped whole (its reserved image entry stays empty
+/// and its name leaves the registry) so a later match cannot resolve against a
+/// broken enum.
+fn fill_enums(
+    draft: &mut ImageDraft,
+    registry: &mut TypeRegistry,
+    reserved: &[ReservedEnum<'_>],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    let mut dropped: Vec<EnumId> = Vec::new();
+    for item in reserved {
+        match enum_variants(draft, registry, &item.file, item.decl, diagnostics) {
+            Some((variants, variant_defs)) => {
+                draft.set_enum_variants(item.enum_id, variant_defs);
+                if let Some(info) = registry
+                    .enums
+                    .iter_mut()
+                    .find(|info| info.enum_id == item.enum_id)
+                {
+                    info.variants = variants;
+                }
+            }
+            None => dropped.push(item.enum_id),
+        }
+    }
+    registry
+        .enums
+        .retain(|info| !dropped.contains(&info.enum_id));
 }
 
 /// Resolve an enum's members to its selectable variants and their image
@@ -1141,14 +1253,16 @@ fn enum_payload(
     ok.then_some((payload, scalars))
 }
 
-/// Build the one admitted record type, resolving field annotations through the
-/// aliases already installed in `registry`.
-fn build_record(
+/// Pass one for the one admitted record type: reserve its image [`RecordTypeDef`]
+/// index (empty for now, ahead of the structs) and register its name, returning the
+/// surviving resource declaration for pass two. More than one resource, or a
+/// reserved resource name, drops the record.
+fn declare_record<'a>(
     draft: &mut ImageDraft,
-    registry: &TypeRegistry,
-    resources: &[(String, &ResourceDecl)],
+    registry: &mut TypeRegistry,
+    resources: &'a [(String, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Option<RecordInfo> {
+) -> Option<(String, &'a ResourceDecl)> {
     if resources.len() > 1 {
         for (file, resource) in &resources[1..] {
             diagnostics.push(SourceDiagnostic::at(
@@ -1164,10 +1278,41 @@ fn build_record(
         diagnostics.push(reserved_name(file, resource.name_span, &resource.name));
         return None;
     }
+    let name_id = draft.intern_string(&resource.name);
+    let type_id = draft.add_record_type(RecordTypeDef {
+        name: name_id,
+        fields: Vec::new(),
+    });
+    registry.record = Some(RecordInfo {
+        type_id,
+        name: resource.name.clone(),
+        fields: Vec::new(),
+    });
+    Some((file.clone(), resource))
+}
 
+/// Pass two for the record type: resolve each field against the full registry and
+/// fill both the registry info and the image record. A resource field is a scalar
+/// (durable-storable) or a closed enum value (`Option`/`Result`/a user `enum`) held
+/// locally; a nominal, struct, or unknown spelling is not an admitted field type. A
+/// group or keyed member, and a bad field type, are `check.unsupported` and skip
+/// only that member (the record keeps its other fields).
+fn fill_record(
+    draft: &mut ImageDraft,
+    registry: &mut TypeRegistry,
+    record_decl: Option<&(String, &ResourceDecl)>,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    let Some((file, resource)) = record_decl else {
+        return;
+    };
+    let type_id = registry
+        .record
+        .as_ref()
+        .expect("a reserved record is present when its declaration survived")
+        .type_id;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
-    let name_id = draft.intern_string(&resource.name);
     for member in &resource.members {
         let ResourceMember::Field(field) = member else {
             diagnostics.push(unsupported(file, member.span(), "a resource group"));
@@ -1177,9 +1322,6 @@ fn build_record(
             diagnostics.push(unsupported(file, field.span, "a keyed field"));
             continue;
         }
-        // A field is a scalar (durable-storable) or a closed enum
-        // (`Option`/`Result`) local-only value. A nominal, struct, or unknown
-        // spelling is not an admitted field type.
         let field_ty = match registry.resolve_garg(draft, &field.ty) {
             Some(ty @ (GArg::Scalar(_) | GArg::Enum(_))) => ty,
             _ => {
@@ -1199,16 +1341,221 @@ fn build_record(
             required: field.required,
         });
     }
+    draft.set_record_fields(type_id, field_defs);
+    if let Some(info) = registry.record.as_mut() {
+        info.fields = fields;
+    }
+}
 
-    let type_id = draft.add_record_type(RecordTypeDef {
-        name: name_id,
-        fields: field_defs,
-    });
-    Some(RecordInfo {
-        type_id,
-        name: resource.name.clone(),
-        fields,
-    })
+/// Reject a cycle in the value-containment graph at check time: a struct, record,
+/// or enum that (directly or transitively) contains itself would be an infinite
+/// value. Edges run from a product's fields and an enum's payload leaves to the
+/// value types they name, including through the built-in `Option`/`Result`
+/// instantiations minted during field resolution. Every struct or record on a cycle
+/// is reported at its declaration with the cycle path; the verifier independently
+/// re-rejects any cycle that still reaches it, so this is a source-facing check, not
+/// the trust boundary.
+fn reject_value_cycles(
+    registry: &TypeRegistry,
+    structs: &[(String, &StructDecl)],
+    resources: &[(String, &ResourceDecl)],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    let graph = ValueGraph::build(registry);
+    for info in &registry.structs {
+        if let Some(path) = graph.cycle_through(ValueNode::Record(info.type_id)) {
+            let (file, span) = structs
+                .iter()
+                .find(|(_, decl)| decl.name == info.name)
+                .map(|(file, decl)| (file.clone(), decl.name_span))
+                .expect("a reserved struct has a surviving declaration");
+            diagnostics.push(value_cycle_diagnostic(&file, span, &info.name, &path));
+        }
+    }
+    if let Some(record) = registry.record.as_ref()
+        && let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id))
+    {
+        let (file, span) = resources
+            .first()
+            .map(|(file, decl)| (file.clone(), decl.name_span))
+            .expect("a reserved record has a surviving declaration");
+        diagnostics.push(value_cycle_diagnostic(&file, span, &record.name, &path));
+    }
+}
+
+fn value_cycle_diagnostic(
+    file: &str,
+    span: SourceSpan,
+    name: &str,
+    path: &[String],
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckRecursion.as_str(),
+        file,
+        span,
+        format!(
+            "value type `{name}` contains itself through the cycle {}",
+            path.join(" -> ")
+        ),
+    )
+}
+
+/// A node in the value-containment graph: a record type (the resource record or a
+/// struct — both are image records) or an enum type (a user enum or a built-in
+/// `Option`/`Result` instantiation).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValueNode {
+    Record(TypeId),
+    Enum(EnumId),
+}
+
+/// The value-containment graph over the project's records and enums, used to prove
+/// acyclicity at check time.
+struct ValueGraph {
+    nodes: Vec<ValueNode>,
+    labels: Vec<String>,
+    edges: Vec<Vec<usize>>,
+}
+
+impl ValueGraph {
+    fn build(registry: &TypeRegistry) -> Self {
+        let mut nodes: Vec<ValueNode> = Vec::new();
+        let mut labels: Vec<String> = Vec::new();
+        let mut push = |node: ValueNode, label: String| {
+            nodes.push(node);
+            labels.push(label);
+        };
+        if let Some(record) = registry.record.as_ref() {
+            push(ValueNode::Record(record.type_id), record.name.clone());
+        }
+        for info in &registry.structs {
+            push(ValueNode::Record(info.type_id), info.name.clone());
+        }
+        for info in &registry.enums {
+            push(ValueNode::Enum(info.enum_id), info.name.clone());
+        }
+        for (id, inst) in registry.generic_instantiations() {
+            let label = garg_arg_to_lty_spelling(registry, inst);
+            push(ValueNode::Enum(id), label);
+        }
+        let index_of = |target: ValueNode| nodes.iter().position(|node| *node == target);
+        let arg_target = |arg: GArg| match arg {
+            GArg::Struct(ty) => Some(ValueNode::Record(ty)),
+            GArg::Enum(id) => Some(ValueNode::Enum(id)),
+            GArg::Scalar(_) | GArg::Nominal(_) => None,
+        };
+        let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+        for (from, node) in nodes.iter().enumerate() {
+            let targets: Vec<GArg> = match node {
+                ValueNode::Record(ty) => registry
+                    .record
+                    .as_ref()
+                    .filter(|record| record.type_id == *ty)
+                    .map(|record| record.fields.iter().map(|field| field.ty).collect())
+                    .or_else(|| {
+                        registry
+                            .struct_by_type(*ty)
+                            .map(|info| info.fields.iter().map(|field| field.ty).collect())
+                    })
+                    .unwrap_or_default(),
+                ValueNode::Enum(id) => match registry.generic_inst(*id) {
+                    Some(GenericInst::Option(arg)) => vec![arg],
+                    Some(GenericInst::Result(ok, err)) => vec![ok, err],
+                    // A user enum's payload leaves are bare scalars, so it has no
+                    // outgoing value-containment edges.
+                    None => Vec::new(),
+                },
+            };
+            for arg in targets {
+                if let Some(target) = arg_target(arg)
+                    && let Some(to) = index_of(target)
+                {
+                    edges[from].push(to);
+                }
+            }
+        }
+        ValueGraph {
+            nodes,
+            labels,
+            edges,
+        }
+    }
+
+    /// The label path of a cycle that passes through `node`, or `None` if `node` is
+    /// not on any cycle. The path starts and ends at `node`'s label.
+    fn cycle_through(&self, node: ValueNode) -> Option<Vec<String>> {
+        let start = self.nodes.iter().position(|n| *n == node)?;
+        let mut trail: Vec<usize> = Vec::new();
+        let mut visited = vec![false; self.nodes.len()];
+        if self.reaches(start, start, &mut visited, &mut trail) {
+            let mut path: Vec<String> = trail.iter().map(|i| self.labels[*i].clone()).collect();
+            path.push(self.labels[start].clone());
+            return Some(path);
+        }
+        None
+    }
+
+    /// Whether `current` can reach `target` following one or more edges, recording
+    /// the traversal in `trail`. A DFS bounded by `visited`; the graph is finite.
+    fn reaches(
+        &self,
+        current: usize,
+        target: usize,
+        visited: &mut [bool],
+        trail: &mut Vec<usize>,
+    ) -> bool {
+        trail.push(current);
+        for &next in &self.edges[current] {
+            if next == target {
+                return true;
+            }
+            if !visited[next] {
+                visited[next] = true;
+                if self.reaches(next, target, visited, trail) {
+                    return true;
+                }
+            }
+        }
+        trail.pop();
+        false
+    }
+}
+
+/// The source-facing spelling of the value type a built-in instantiation denotes,
+/// used to label an `Option`/`Result` node in a reported value-type cycle.
+fn garg_arg_to_lty_spelling(registry: &TypeRegistry, inst: GenericInst) -> String {
+    match inst {
+        GenericInst::Option(arg) => format!("Option[{}]", garg_spelling(registry, arg)),
+        GenericInst::Result(ok, err) => format!(
+            "Result[{}, {}]",
+            garg_spelling(registry, ok),
+            garg_spelling(registry, err)
+        ),
+    }
+}
+
+/// The source spelling of a bare value-type argument for cycle labels.
+fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
+    match arg {
+        GArg::Scalar(scalar) => scalar.spelling().to_string(),
+        GArg::Nominal(id) => registry.nominal(id).name.clone(),
+        GArg::Struct(ty) => registry
+            .struct_by_type(ty)
+            .map(|info| info.name.clone())
+            .or_else(|| {
+                registry
+                    .by_name_for_type(ty)
+                    .map(|record| record.name.clone())
+            })
+            .unwrap_or_else(|| "struct".to_string()),
+        GArg::Enum(id) => match registry.generic_inst(id) {
+            Some(inst) => garg_arg_to_lty_spelling(registry, inst),
+            None => registry
+                .enum_by_id(id)
+                .map(|info| info.name.clone())
+                .unwrap_or_else(|| "enum".to_string()),
+        },
+    }
 }
 
 fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {

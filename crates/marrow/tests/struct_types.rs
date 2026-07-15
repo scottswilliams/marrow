@@ -93,7 +93,7 @@ fn struct_conformance_fixture_passes_on_the_production_path() {
         .find(|line| line.contains(r#""kind":"summary""#))
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
-    assert!(summary.contains(r#""total":10"#), "{summary}");
+    assert!(summary.contains(r#""total":15"#), "{summary}");
 }
 
 /// A field read reaches the constructed value through the VM: `run` on an export
@@ -171,9 +171,11 @@ fn reading_an_unknown_field_is_a_check_type_diagnostic() {
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
 }
 
-/// A struct field body that is not the bare `name: scalar` form — a group, a
-/// keyed field, the `required` keyword, an optional type, or a non-scalar type —
-/// is a typed `check.unsupported` at the offending member.
+/// A struct field body that is not the bare `name: Type` form over a value type —
+/// a group, a keyed field, the `required` keyword, an optional type, or an unknown
+/// type — is a typed `check.unsupported` at the offending member. A struct-typed or
+/// enum-typed field is admitted (covered by the nesting tests), so the rejected
+/// non-scalar case here is an unknown type name.
 #[test]
 fn a_non_bare_scalar_field_is_a_check_unsupported_diagnostic() {
     for source in [
@@ -185,8 +187,8 @@ fn a_non_bare_scalar_field_is_a_check_unsupported_diagnostic() {
         "struct P\n\x20   scores(k: string): int\n\npub fn f(): int\n\x20   return 1\n",
         // An optional field type.
         "struct P\n\x20   x: int?\n\npub fn f(): int\n\x20   return 1\n",
-        // A non-scalar (struct) field type.
-        "struct A\n\x20   x: int\nstruct B\n\x20   a: A\n\npub fn f(): int\n\x20   return 1\n",
+        // An unknown field type name.
+        "struct B\n\x20   a: Nonexistent\n\npub fn f(): int\n\x20   return 1\n",
     ] {
         let temp = TempDir::new("non-bare-field");
         project(&temp, source);
@@ -285,6 +287,120 @@ fn a_resource_return_is_still_unsupported() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
+}
+
+/// A struct field may itself be a struct: a nested value constructs, reads through
+/// two field hops, and renders as nested JSON. Behind the acyclicity proof, nesting
+/// is admitted with no depth restriction other than the value-graph having no cycle.
+#[test]
+fn a_struct_field_may_be_a_struct() {
+    let temp = TempDir::new("nested-struct");
+    project(
+        &temp,
+        "struct Inner\n\
+         \x20   v: int\n\
+         struct Outer\n\
+         \x20   inner: Inner\n\
+         \x20   tag: int\n\
+         \n\
+         pub fn sum(): int\n\
+         \x20   const o = Outer(inner: Inner(v: 7), tag: 3)\n\
+         \x20   return o.inner.v + o.tag\n\
+         \n\
+         pub fn whole(): Outer\n\
+         \x20   return Outer(inner: Inner(v: 9), tag: 1)\n",
+    );
+    let sum = run_in(&temp, &["run", "sum", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&sum.stdout);
+    assert!(sum.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":10"#), "{stdout}");
+
+    let whole = run_in(&temp, &["run", "whole", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&whole.stdout);
+    assert!(whole.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(r#""data":{"inner":{"v":9},"tag":1}"#),
+        "{stdout}"
+    );
+}
+
+/// A struct field may name a struct declared later in the file: because every value
+/// type is declared before any field is resolved, a forward reference resolves
+/// regardless of declaration order. The chain `A -> B -> C` is acyclic and travels
+/// through the VM.
+#[test]
+fn a_struct_field_may_name_a_later_declared_struct() {
+    let temp = TempDir::new("forward-ref");
+    project(
+        &temp,
+        "struct A\n\
+         \x20   b: B\n\
+         struct B\n\
+         \x20   c: C\n\
+         struct C\n\
+         \x20   v: int\n\
+         \n\
+         pub fn f(): int\n\
+         \x20   const a = A(b: B(c: C(v: 42)))\n\
+         \x20   return a.b.c.v\n",
+    );
+    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":42"#), "{stdout}");
+}
+
+/// A struct field may be a user enum: the field constructs, and a `match` over the
+/// field read resolves against the enum's members (the field-derived scrutinee
+/// keeps its enum identity through `FieldGet`).
+#[test]
+fn a_struct_field_may_be_an_enum_and_match_over_the_field_read() {
+    let temp = TempDir::new("struct-enum-field");
+    project(
+        &temp,
+        "enum Color\n\
+         \x20   red\n\
+         \x20   green\n\
+         struct Pen\n\
+         \x20   tint: Color\n\
+         \n\
+         pub fn name(): string\n\
+         \x20   const p = Pen(tint: Color::green)\n\
+         \x20   match p.tint\n\
+         \x20       red\n\
+         \x20           return \"r\"\n\
+         \x20       green\n\
+         \x20           return \"g\"\n",
+    );
+    let output = run_in(&temp, &["run", "name", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":"g""#), "{stdout}");
+}
+
+/// A value type that contains itself directly or transitively is a typed
+/// `check.recursion` at each struct on the cycle (naming the cycle path), never a
+/// silent infinite type or a deferred artifact rejection.
+#[test]
+fn a_value_type_cycle_is_a_check_recursion_diagnostic() {
+    for source in [
+        // Self-reference.
+        "struct Node\n\x20   next: Node\n\npub fn f(): int\n\x20   return 1\n",
+        // Two-struct cycle.
+        "struct A\n\x20   b: B\nstruct B\n\x20   a: A\n\npub fn f(): int\n\x20   return 1\n",
+        // A cycle routed through an `Option` field (a `some(A)` reaches A).
+        "struct A\n\x20   v: int\n\x20   me: Option[A]\n\npub fn f(): int\n\x20   return 1\n",
+    ] {
+        let temp = TempDir::new("value-cycle");
+        project(&temp, source);
+        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{source:?} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.recursion""#),
+            "{source:?}: {stdout}"
+        );
+    }
 }
 
 /// A dense struct and a durable resource coexist: the struct is a value the VM

@@ -1236,6 +1236,195 @@ fn value_type_cycle_through_a_record_field_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
+/// Add a trivial `fn f(): int` export to `draft`, encode, and return the rejection
+/// code (or `""` for a clean image). Shared by the value-graph hostiles below, which
+/// populate the record and enum tables before calling this.
+fn value_graph_code(draft: &mut ImageDraft) -> String {
+    let src = draft.intern_string("src/main.mw");
+    let zero = draft.intern_int(0);
+    let fname = draft.intern_string("f");
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: fname,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
+    code_of(&draft.encode().unwrap().bytes)
+}
+
+#[test]
+fn record_field_with_out_of_range_record_index_rejects() {
+    // A struct-typed field naming a record index past the RECORD-TYPES table rejects
+    // before the acyclicity pass.
+    let bytes = record_table_image(|draft| {
+        let name = draft.intern_string("x");
+        vec![FieldDef {
+            name,
+            ty: ImageType::Record {
+                idx: 5,
+                optional: false,
+            },
+            required: true,
+        }]
+    });
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn self_referential_record_field_rejects() {
+    // Record 0 has a field of type Record(0): a value that directly contains itself.
+    let bytes = record_table_image(|draft| {
+        let name = draft.intern_string("me");
+        vec![FieldDef {
+            name,
+            ty: ImageType::Record {
+                idx: 0,
+                optional: false,
+            },
+            required: true,
+        }]
+    });
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn value_type_cycle_through_two_records_rejects() {
+    // Record 0 has a field of type Record(1) and Record 1 a field of type Record(0):
+    // a struct-to-struct cycle the widened record-field edge now catches.
+    let mut draft = ImageDraft::new();
+    let a = draft.intern_string("A");
+    let b = draft.intern_string("B");
+    let fb = draft.intern_string("b");
+    let fa = draft.intern_string("a");
+    draft.add_record_type(RecordTypeDef {
+        name: a,
+        fields: vec![FieldDef {
+            name: fb,
+            ty: ImageType::Record {
+                idx: 1,
+                optional: false,
+            },
+            required: true,
+        }],
+    });
+    draft.add_record_type(RecordTypeDef {
+        name: b,
+        fields: vec![FieldDef {
+            name: fa,
+            ty: ImageType::Record {
+                idx: 0,
+                optional: false,
+            },
+            required: true,
+        }],
+    });
+    assert_eq!(value_graph_code(&mut draft), "image.table");
+}
+
+#[test]
+fn self_referential_enum_payload_rejects() {
+    // Enum 0's one variant carries a payload of type Enum(0): a value that contains
+    // itself with no record on the cycle.
+    let mut draft = ImageDraft::new();
+    let ename = draft.intern_string("E");
+    let vname = draft.intern_string("wrap");
+    draft.add_enum_type(EnumTypeDef {
+        name: ename,
+        variants: vec![VariantDef {
+            name: vname,
+            category: false,
+            payload: vec![ImageType::Enum {
+                idx: 0,
+                optional: false,
+            }],
+        }],
+    });
+    assert_eq!(value_graph_code(&mut draft), "image.table");
+}
+
+#[test]
+fn value_type_cycle_through_mixed_records_and_enums_rejects() {
+    // A three-hop cycle Record0 -> Enum0 -> Record1 -> Record0 mixing record fields
+    // and an enum payload leaf.
+    let mut draft = ImageDraft::new();
+    let r0 = draft.intern_string("R0");
+    let r1 = draft.intern_string("R1");
+    let ename = draft.intern_string("E");
+    let vname = draft.intern_string("wrap");
+    let f_e = draft.intern_string("e");
+    let f_back = draft.intern_string("back");
+    draft.add_record_type(RecordTypeDef {
+        name: r0,
+        fields: vec![FieldDef {
+            name: f_e,
+            ty: ImageType::Enum {
+                idx: 0,
+                optional: false,
+            },
+            required: true,
+        }],
+    });
+    draft.add_record_type(RecordTypeDef {
+        name: r1,
+        fields: vec![FieldDef {
+            name: f_back,
+            ty: ImageType::Record {
+                idx: 0,
+                optional: false,
+            },
+            required: true,
+        }],
+    });
+    draft.add_enum_type(EnumTypeDef {
+        name: ename,
+        variants: vec![VariantDef {
+            name: vname,
+            category: false,
+            payload: vec![ImageType::Record {
+                idx: 1,
+                optional: false,
+            }],
+        }],
+    });
+    assert_eq!(value_graph_code(&mut draft), "image.table");
+}
+
+#[test]
+fn deep_acyclic_record_chain_verifies() {
+    // A long but acyclic chain Record0 -> Record1 -> ... -> Record(N-1) verifies:
+    // depth is not a restriction, only cycles are.
+    let mut draft = ImageDraft::new();
+    const N: u16 = 24;
+    for i in 0..N {
+        let name = draft.intern_string(&format!("R{i}"));
+        let fields = if i + 1 < N {
+            let fname = draft.intern_string("next");
+            vec![FieldDef {
+                name: fname,
+                ty: ImageType::Record {
+                    idx: i + 1,
+                    optional: false,
+                },
+                required: true,
+            }]
+        } else {
+            let fname = draft.intern_string("v");
+            vec![FieldDef {
+                name: fname,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            }]
+        };
+        draft.add_record_type(RecordTypeDef { name, fields });
+    }
+    assert_eq!(value_graph_code(&mut draft), "VERIFIED");
+}
+
 #[test]
 fn durable_root_with_a_non_scalar_field_rejects() {
     // A durable root record carrying an enum-valued field has no store
