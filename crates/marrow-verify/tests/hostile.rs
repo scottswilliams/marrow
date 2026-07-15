@@ -394,6 +394,49 @@ fn durable_put_export_verifies() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
 
+/// A well-formed durable image (the tracer schema plus one verifying `put` export),
+/// the baseline for the durable-contract-id hostiles.
+fn good_durable_image() -> Vec<u8> {
+    put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(1),
+        Instr::TxnCommit,
+        Instr::Return,
+    ])
+    .encode()
+    .unwrap()
+    .bytes
+}
+
+#[test]
+fn rehashed_mutated_durable_contract_id_rejects_at_table() {
+    // The DURABLE section (id 3) closes with the 32-byte contract id. Flipping a byte
+    // of it and rehashing the envelope leaves an id the verifier's independent
+    // recomputation from the decoded graph will not match.
+    let mut bytes = good_durable_image();
+    let (_, body, len) = *sections(&bytes).iter().find(|(id, ..)| *id == 3).unwrap();
+    let id_byte = body + len - 1;
+    bytes[id_byte] ^= 0xFF;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_mutated_durable_field_flag_breaks_the_contract_id() {
+    // Flipping the required flag of the first durable field mutates the graph the
+    // verifier recomputes the contract over, so the carried id no longer matches —
+    // the contract id binds the field profile, not only the root and key.
+    let mut bytes = good_durable_image();
+    let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 2).unwrap();
+    // TYPES: count(2) | type: name(2) field_count(2) | field0: name(2) tag(1) required(1)
+    let required0 = body + 2 + 2 + 2 + 2 + 1;
+    bytes[required0] ^= 0x01;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
 #[test]
 fn flow_mutation_outside_transaction_rejects() {
     let value_site = 1;

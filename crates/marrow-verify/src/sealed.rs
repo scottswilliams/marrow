@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use marrow_image::{ExportId, ImageId, ImageType, Scalar};
+use marrow_image::{DurableContractId, ExportId, ImageId, ImageType, Scalar};
 
 /// A resolved constant value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,6 +489,7 @@ pub struct VerifiedImage {
     pub(crate) collections: Vec<SealedCollectionType>,
     pub(crate) roots: Vec<SealedRoot>,
     pub(crate) sites: Vec<SealedSite>,
+    pub(crate) durable_contract: DurableContractId,
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
@@ -531,6 +532,13 @@ impl VerifiedImage {
     /// The durable roots (0 or 1 at v0).
     pub fn roots(&self) -> &[SealedRoot] {
         &self.roots
+    }
+
+    /// The durable-contract identity of this image's durable graph, independently
+    /// recomputed by the verifier and proven to match the bytes the image carried.
+    /// A later store-admission phase binds an activated store to this id.
+    pub fn durable_contract(&self) -> DurableContractId {
+        self.durable_contract
     }
 
     /// The durable operation sites, indexed by image site index.

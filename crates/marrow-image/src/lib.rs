@@ -11,6 +11,7 @@
 pub mod bounds;
 mod digest;
 mod draft;
+mod durable_id;
 mod encode;
 mod export_id;
 mod instr;
@@ -21,6 +22,10 @@ pub use draft::{
     CollTypeId, CollectionTypeDef, ConstId, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef,
     ImageBuildError, ImageDraft, RecordTypeDef, RootDef, SiteDef, SiteId, SiteTarget, SpanEntry,
     StrId, TypeId, VariantDef,
+};
+pub use durable_id::{
+    DURABLE_CONTRACT_KIND, DurableContractDescriptor, DurableContractId, DurableFieldShape,
+    DurableRootShape,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};

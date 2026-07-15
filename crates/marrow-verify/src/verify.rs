@@ -13,27 +13,27 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ExportId, ImageId, ImageType, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE,
-    OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
-    OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE,
-    OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
-    OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
-    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE,
-    OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT,
-    OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION,
-    OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET,
-    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
-    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
-    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
-    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
-    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
-    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
-    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
-    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
-    TAG_UNIT, image_id,
+    DurableContractDescriptor, DurableContractId, DurableFieldShape, DurableRootShape, ExportId,
+    ImageId, ImageType, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
+    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
+    OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
+    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
+    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
+    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
+    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION,
+    OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION,
+    OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
+    OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
+    OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
+    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET,
+    OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
+    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
+    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
+    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM,
+    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -126,6 +126,7 @@ struct DecodedImage {
     collections: Vec<SealedCollectionType>,
     roots: Vec<DecodedRoot>,
     sites: Vec<DecodedSite>,
+    durable_contract: DurableContractId,
     consts: Vec<SealedConst>,
     functions: Vec<DecodedFunction>,
     exports: Vec<(ExportId, u16)>,
@@ -215,7 +216,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
-    let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
+    let (roots, sites, durable_contract) = decode_durable(sections[2].1, &strings, &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(
         sections[4].1,
@@ -236,6 +237,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         collections,
         roots,
         sites,
+        durable_contract,
         consts,
         functions,
         exports,
@@ -885,12 +887,16 @@ fn reject_value_type_cycles(
 }
 
 /// Decode the DURABLE table (design §C 0x03): 0 or 1 roots, then the operation
-/// sites, revalidating every site against the roots and record types.
+/// sites, then the 32-byte durable-contract id closing the section. Every site is
+/// revalidated against the roots and record types, and the contract id is
+/// independently recomputed from the decoded graph and checked against the carried
+/// bytes.
 fn decode_durable(
     body: &[u8],
-    string_count: usize,
+    strings: &[Rc<str>],
     types: &[DecodedRecordType],
-) -> Result<(Vec<DecodedRoot>, Vec<DecodedSite>), VerifyRejection> {
+) -> Result<(Vec<DecodedRoot>, Vec<DecodedSite>, DurableContractId), VerifyRejection> {
+    let string_count = strings.len();
     let mut reader = Reader::new(body);
     let root_count = reader
         .u16()
@@ -909,12 +915,22 @@ fn decode_durable(
         let key_tag = reader
             .u8()
             .ok_or(reject(VerifyPhase::Table, "short root key type"))?;
+        // The closed orderable durable-key scalar set (frozen at C04): int, string,
+        // bool, bytes, date, and instant. `duration` is a span, not an identity, and
+        // is not admitted as a key.
         let key = match decode_bare_scalar(key_tag) {
-            Some(scalar @ (Scalar::Int | Scalar::Text)) => scalar,
+            Some(
+                scalar @ (Scalar::Int
+                | Scalar::Text
+                | Scalar::Bool
+                | Scalar::Bytes
+                | Scalar::Date
+                | Scalar::Instant),
+            ) => scalar,
             _ => {
                 return Err(reject(
                     VerifyPhase::Table,
-                    "root key type must be int or string",
+                    "root key type must be an orderable durable-key scalar",
                 ));
             }
         };
@@ -986,13 +1002,69 @@ fn decode_durable(
         }
         sites.push(DecodedSite { root, target });
     }
+
+    // The section closes with the 32-byte durable-contract id. Recompute it
+    // independently from the decoded graph — never trust the carried bytes — and
+    // reject a mismatch, so a hostile image that mutates a root or field shape
+    // without re-minting the contract is refused here.
+    let carried: [u8; 32] = reader
+        .take(32)
+        .ok_or(reject(VerifyPhase::Table, "short durable contract id"))?
+        .try_into()
+        .expect("take(32) yields 32 bytes");
     if !reader.is_empty() {
         return Err(reject(
             VerifyPhase::Table,
             "trailing bytes in durable table",
         ));
     }
-    Ok((roots, sites))
+    let recomputed = durable_descriptor(&roots, strings, types).contract_id();
+    if recomputed.bytes() != &carried {
+        return Err(reject(
+            VerifyPhase::Table,
+            "durable contract id does not match the durable graph",
+        ));
+    }
+    Ok((roots, sites, recomputed))
+}
+
+/// Rebuild the canonical durable-graph descriptor from the decoded tables. This is
+/// the verifier's independent reconstruction: it shares the canonical encoding owned
+/// by `marrow-image` but reads only the decoded roots, strings, and record fields,
+/// so the recomputed id depends on nothing the compiler asserted directly. A durable
+/// root record carries only scalar fields (rechecked above), so the profile is total.
+fn durable_descriptor(
+    roots: &[DecodedRoot],
+    strings: &[Rc<str>],
+    types: &[DecodedRecordType],
+) -> DurableContractDescriptor {
+    let shapes = roots
+        .iter()
+        .map(|root| {
+            let record = &types[root.record as usize];
+            let fields = record
+                .fields
+                .iter()
+                .filter_map(|field| match field.ty {
+                    ImageType::Scalar {
+                        scalar,
+                        optional: false,
+                    } => Some(DurableFieldShape {
+                        name: strings[field.name as usize].to_string(),
+                        scalar,
+                        required: field.required,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            DurableRootShape {
+                name: strings[root.name as usize].to_string(),
+                key: root.key,
+                fields,
+            }
+        })
+        .collect();
+    DurableContractDescriptor::new(shapes)
 }
 
 fn decode_consts(body: &[u8], strings: &[Rc<str>]) -> Result<Vec<SealedConst>, VerifyRejection> {
@@ -1553,6 +1625,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         collections,
         roots,
         sites,
+        durable_contract: decoded.durable_contract,
         consts: decoded.consts,
         functions,
         exports,

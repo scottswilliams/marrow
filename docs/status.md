@@ -62,9 +62,13 @@ versioned store profile with an in-transaction commit witness.
 
 `marrow run <export>` drives this path end to end: a small durable counter
 program can declare a keyed resource, read and write and iterate its entries
-inside one transaction, and survive a process restart on the redb backend. The
-admitted subset is narrow and grows lane by lane; a well-formed construct outside
-it is a typed `check.unsupported` diagnostic.
+inside one transaction, and survive a process restart on the redb backend. A
+store root is keyed by any scalar in the closed orderable durable-key set
+(`int`, `string`, `bool`, `bytes`, `date`, `instant`), and the program's durable
+graph carries a stable 32-byte durable-contract identity the verifier
+independently recomputes from the image and rejects on mismatch. The admitted
+subset is narrow and grows lane by lane; a well-formed construct outside it is a
+typed `check.unsupported` diagnostic.
 
 ### Deleted at B00
 

@@ -8,7 +8,7 @@
 
 use marrow_image::{
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef,
-    Scalar, SpanEntry, VariantDef, image_id,
+    RootDef, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -195,5 +195,91 @@ fn structured_prefix_of_a_good_image_never_panics() {
     // Every truncation of a good image must decode-reject cleanly, never panic.
     for len in 0..base.len() {
         oracle(&base[..len]);
+    }
+}
+
+/// A good durable image: the tracer schema (`^counters(name:string): Counter`) plus
+/// one verifying mutating export. Mutating it reaches the DURABLE-table decode and
+/// the durable-contract-id recomputation that scalar/value images never touch.
+fn a_durable_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("counters");
+    draft.add_root(RootDef {
+        name: root,
+        key: Scalar::Text,
+        record,
+    });
+    draft.add_site(SiteDef {
+        root: 0,
+        target: SiteTarget::Entry,
+    });
+    let value_site = draft.add_site(SiteDef {
+        root: 0,
+        target: SiteTarget::Field(0),
+    });
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site.index()),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let spans = (0..code.len() as u32)
+        .map(|instr_index| SpanEntry {
+            instr_index,
+            line: 1,
+            column: 1,
+        })
+        .collect();
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans,
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn mutated_durable_images_never_panic_the_verifier() {
+    let mut rng = Rng(seed() ^ 0x6C62_272E_07BB_0142);
+    let base = a_durable_image();
+    // The base image itself must verify, so the durable decode path is reached.
+    assert!(verify(&base).is_ok(), "durable base image must verify");
+    for _ in 0..4096 {
+        let mut bytes = base.clone();
+        for _ in 0..=rng.below(3) {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= rng.byte();
+        }
+        oracle(&bytes);
     }
 }

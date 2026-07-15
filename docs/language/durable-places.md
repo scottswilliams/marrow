@@ -27,10 +27,32 @@ pub fn title(id: int): string?
     return ^books(id).title
 ```
 
-The identity column is a single `int` or `string` key. A resource declares
+The identity column is a single key drawn from the closed orderable durable-key
+scalar set: `int`, `string`, `bool`, `bytes`, `date`, or `instant` (a nominal
+type over one of these is admitted through its base scalar). `duration` is a
+span rather than an identity and is not a durable key. A resource declares
 scalar fields that are `required` or sparse; a sparse field may be absent. The
 store root is project-wide: any module uses the declared root shape directly,
 and function visibility does not change root access.
+
+## Durable Identity
+
+A program's durable graph — its roots, each root's key scalar, and each root
+record's ordered stored field profile (name, scalar type, and `required` flag) —
+has a stable 32-byte **durable-contract identity**. The compiler derives it from
+the resolved graph and records it in the program image; the independent verifier
+rebuilds the descriptor from the image tables, recomputes the identity, and
+rejects any image whose recorded identity does not match its graph. The identity
+changes on every semantic change to the graph (a renamed root or field, a
+changed key type, a field made required, a field added or removed) and is stable
+across source spelling and declaration order that leave the graph unchanged.
+Operation sites — the individual read and write points over the graph — are not
+part of the identity, so adding or removing one leaves it stable.
+
+The identity is scoped to the local project. Its canonical form reserves a
+leading package-lineage byte, so a durable graph contributed by a dependency
+package later carries a distinct lineage without changing the identity of a
+local graph.
 
 Durable writes are grouped by an explicit transaction owned by the exporting
 function; see [Errors and transactions](errors-and-transactions.md).

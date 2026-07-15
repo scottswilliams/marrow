@@ -9,6 +9,7 @@
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, SiteTarget};
+use crate::durable_id::{DurableContractDescriptor, DurableFieldShape, DurableRootShape};
 use crate::instr::Instr;
 use crate::ty::ImageType;
 
@@ -249,7 +250,47 @@ impl ImageDraft {
                 }
             }
         }
+        // The durable-contract identity closes the section: a 32-byte
+        // `DurableContractId` over the canonical graph descriptor. The verifier
+        // recomputes it from the decoded roots/records and rejects a mismatch, so
+        // these bytes are a producer-side commitment, not a trusted input.
+        body.extend_from_slice(self.durable_descriptor().contract_id().bytes());
         body
+    }
+
+    /// The canonical durable-graph descriptor for this draft, built from its roots
+    /// and the scalar field profile of each root's record. A durable root record
+    /// carries only scalar fields (the compiler rejects any other shape before an
+    /// image is produced), so the profile is total over the roots present.
+    fn durable_descriptor(&self) -> DurableContractDescriptor {
+        let roots = self
+            .roots()
+            .iter()
+            .map(|root| {
+                let record = &self.types()[root.record.index() as usize];
+                let fields = record
+                    .fields
+                    .iter()
+                    .filter_map(|field| match field.ty {
+                        ImageType::Scalar {
+                            scalar,
+                            optional: false,
+                        } => Some(DurableFieldShape {
+                            name: self.strings()[field.name.raw() as usize].to_string(),
+                            scalar,
+                            required: field.required,
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+                DurableRootShape {
+                    name: self.strings()[root.name.raw() as usize].to_string(),
+                    key: root.key,
+                    fields,
+                }
+            })
+            .collect();
+        DurableContractDescriptor::new(roots)
     }
 
     fn encode_functions(

@@ -1121,6 +1121,56 @@ fn durable_iteration_totals_entries() {
     assert_eq!(stdout_of(&output), "60\n");
 }
 
+/// The frozen closed orderable durable-key set (D00) admits `date` as a key. A
+/// `date`-keyed store round-trips through the full production path and redb, the
+/// key encoded by the order-preserving key codec the kernel already owns.
+const DATE_STORE_SOURCE: &str = "resource Event\n\
+     \x20   required name: string\n\
+     \n\
+     store ^events(day: date): Event\n\
+     \n\
+     pub fn record(day: date, name: string)\n\
+     \x20   transaction\n\
+     \x20       ^events(day) = Event(name: name)\n\
+     \n\
+     pub fn nameOn(day: date): string?\n\
+     \x20   return ^events(day).name\n";
+
+#[test]
+fn a_date_keyed_store_round_trips_on_redb() {
+    let temp = TempDir::new("date-store");
+    project(&temp, DATE_STORE_SOURCE);
+    let store = temp.join("store");
+    stdout_of(&run_counter(
+        &temp,
+        &store,
+        "record",
+        &["2024-01-15", "launch"],
+    ));
+    assert_eq!(
+        stdout_of(&run_counter(&temp, &store, "nameOn", &["2024-01-15"])),
+        "launch\n"
+    );
+}
+
+/// `duration` is a span, not an identity, so it is not in the durable-key set: a
+/// duration-keyed store is a source diagnostic, not a runnable graph.
+#[test]
+fn a_duration_keyed_store_is_a_source_diagnostic() {
+    let temp = TempDir::new("dur-key");
+    project(
+        &temp,
+        "resource Span\n\
+         \x20   required n: int\n\
+         \n\
+         store ^spans(d: duration): Span\n\
+         \n\
+         pub fn get(d: duration): int?\n\
+         \x20   return ^spans(d).n\n",
+    );
+    assert!(run_diagnostic_code(&temp, "get").contains("check.type"));
+}
+
 /// The checked-in tracer fixture app compiles and runs through the built binary.
 #[test]
 fn tracer_fixture_app_runs() {

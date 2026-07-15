@@ -86,12 +86,24 @@ impl DurableRegistry {
             diagnostics.push(unsupported(file, store.root.span, "this key type"));
             return Self::default();
         };
-        if !matches!(key, ScalarType::Int | ScalarType::Text) {
+        // The closed orderable durable-key scalar set (frozen at C04): int, string,
+        // bool, bytes, date, and instant. `duration` is a span, not an identity, so
+        // it is not a durable key.
+        if !matches!(
+            key,
+            ScalarType::Int
+                | ScalarType::Text
+                | ScalarType::Bool
+                | ScalarType::Bytes
+                | ScalarType::Date
+                | ScalarType::Instant
+        ) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 file,
                 store.root.span,
-                "a store key must be `int` or `string`".to_string(),
+                "a store key must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
+                    .to_string(),
             ));
             return Self::default();
         }
