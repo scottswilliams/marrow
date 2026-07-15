@@ -22,7 +22,7 @@ pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
 pub use draft::{
     CollTypeId, CollectionTypeDef, ConstId, DurableMemberDef, EnumId, EnumTypeDef, FieldDef,
     FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef,
-    RootIdentity, SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TypeId, VariantDef,
+    RootIdentity, SiteDef, SiteId, SpanEntry, StrId, TypeId, VariantDef,
 };
 pub use durable_id::{
     DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableContractId,
@@ -51,7 +51,9 @@ pub use instr::{
     OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
     OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
 };
-pub use semantic::{SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind};
+pub use semantic::{
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+};
 pub use ty::{
     ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
     TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,

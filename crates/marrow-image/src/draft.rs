@@ -15,6 +15,7 @@
 use crate::durable_id::{DurableValueShape, LedgerIdBytes};
 use crate::export_id::ExportId;
 use crate::instr::Instr;
+use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::{ImageType, Scalar};
 
 /// A logical string-pool id, stable across the sort the encoder performs.
@@ -202,19 +203,34 @@ pub struct RootDef {
     pub identity: RootIdentity,
 }
 
-/// What an operation site addresses within its root.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SiteTarget {
-    Entry,
-    /// A field of the root's record, by field index.
-    Field(u16),
-}
-
-/// A durable operation site: a root plus an entry-or-field target.
+/// A durable operation site: the [`SemanticPath`] of the graph node it addresses
+/// plus the closed [`SemanticTarget`] kind it performs there. The path — not a
+/// container-table index — names the node, so the site follows the durable graph's
+/// ledger ids; the verifier resolves the path against its own reconstructed node
+/// set and rejects a path that names no node or whose target kind disagrees with the
+/// resolved node's kind.
 #[derive(Debug, Clone)]
 pub struct SiteDef {
-    pub root: u16,
-    pub target: SiteTarget,
+    pub path: SemanticPath,
+    pub target: SemanticTarget,
+}
+
+impl SiteDef {
+    /// A whole-payload site over the keyed placement `path` names.
+    pub fn whole_payload(path: SemanticPath) -> Self {
+        Self {
+            path,
+            target: SemanticTarget::WholePayload,
+        }
+    }
+
+    /// A field-leaf site over the stored field `path` names.
+    pub fn field_leaf(path: SemanticPath) -> Self {
+        Self {
+            path,
+            target: SemanticTarget::FieldLeaf,
+        }
+    }
 }
 
 /// A source-position mapping for one instruction. The encoder converts the
@@ -293,6 +309,8 @@ pub enum ImageBuildError {
     DurableTreeTooDeep,
     DurableValueTooDeep,
     TooManySites,
+    SitePathTooDeep,
+    SitePathTooShort,
     TooManyFunctions,
     TooManyParams,
     TooManyLocals,

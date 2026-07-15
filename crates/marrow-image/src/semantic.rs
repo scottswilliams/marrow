@@ -54,6 +54,32 @@ impl SemanticStepKind {
             SemanticStepKind::Field => 2,
         }
     }
+
+    /// The step kind for a frozen ledger `IDREF` kind byte, or `None` for a byte
+    /// outside the kind space a path step may carry. The inverse of
+    /// [`Self::ledger_kind`]; the verifier decodes an untrusted site path's step
+    /// kinds through this and rejects an unknown byte.
+    pub fn from_ledger_kind(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(SemanticStepKind::Application),
+            3 => Some(SemanticStepKind::Placement),
+            7 => Some(SemanticStepKind::Group),
+            2 => Some(SemanticStepKind::Field),
+            _ => None,
+        }
+    }
+}
+
+/// What an operation site does *at* the graph node its [`SemanticPath`] names: the
+/// closed, index-free operation-target set. `WholePayload` observes or writes a keyed
+/// placement's whole entry; `FieldLeaf` reads or writes one stored field leaf. The
+/// node the path resolves to fixes which is legal — a placement admits `WholePayload`,
+/// a field admits `FieldLeaf` — so the two together name a site. Managed-index targets
+/// are a separate later concern and are deliberately not in this set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticTarget {
+    WholePayload,
+    FieldLeaf,
 }
 
 /// One step of a [`SemanticPath`]: a node's kind-tagged entropy-minted ledger id.
@@ -83,6 +109,16 @@ impl SemanticPath {
     /// Build a path from an application step and the chain of node steps below it.
     /// The application step is the shared root of every path in a graph.
     pub(crate) fn new(steps: Vec<SemanticStep>) -> Self {
+        Self { steps }
+    }
+
+    /// Build a path from an explicit step chain. This is the producer-side
+    /// constructor a compiler uses to spell the path of an operation site it emits
+    /// into the image; the verifier does not trust such a path but resolves it
+    /// against its own independently derived [`crate::SemanticNode`] set. The chain
+    /// runs from the application step to the addressed node and must be non-empty.
+    pub fn from_steps(steps: Vec<SemanticStep>) -> Self {
+        debug_assert!(!steps.is_empty(), "a semantic path has at least one step");
         Self { steps }
     }
 

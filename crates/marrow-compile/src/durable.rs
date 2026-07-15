@@ -27,7 +27,8 @@ use std::collections::BTreeSet;
 use marrow_codes::Code;
 use marrow_image::{
     DurableEnumMemberShape, DurableMemberDef, DurableValueShape, ImageDraft, KeyColumn,
-    LedgerIdBytes, RootDef, RootIdentity, SiteDef, SiteTarget, bounds,
+    LedgerIdBytes, RootDef, RootIdentity, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    bounds,
 };
 use marrow_project::{IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -230,6 +231,17 @@ impl DurableRegistry {
             })
             .collect();
 
+        // The top-level field ledger ids, in record order, for the operation-site
+        // paths below — captured before the member tree moves into the draft.
+        let field_ids: Vec<LedgerIdBytes> = members
+            .iter()
+            .take(record.fields.len())
+            .map(|member| match member {
+                DurableMemberDef::Field { id, .. } => *id,
+                _ => unreachable!("a resource's leading members are its top-level fields"),
+            })
+            .collect();
+
         let root_name = draft.intern_string(&store.root.root);
         draft.add_root(RootDef {
             name: root_name,
@@ -259,23 +271,30 @@ impl DurableRegistry {
         if has_extras || !all_scalar_fields {
             return Self::declared(&store.root.root);
         }
+        // A site names its target node by the node's semantic path — the chain of
+        // kind-tagged ledger ids from the application down. The executable flat root
+        // yields a whole-payload site at `[application, placement]` and one field-leaf
+        // site per top-level field at `[application, placement, field]`. The verifier
+        // re-derives every site from its own reconstructed node set, so this path is a
+        // producer claim, not a trusted address.
+        let root_path = SemanticPath::from_steps(vec![
+            SemanticStep::new(SemanticStepKind::Application, application),
+            SemanticStep::new(SemanticStepKind::Placement, placement),
+        ]);
         let entry_site = draft
-            .add_site(SiteDef {
-                root: 0,
-                target: SiteTarget::Entry,
-            })
+            .add_site(SiteDef::whole_payload(root_path.clone()))
             .index();
         let fields = record
             .fields
             .iter()
             .enumerate()
             .map(|(index, field)| {
-                let site = draft
-                    .add_site(SiteDef {
-                        root: 0,
-                        target: SiteTarget::Field(index as u16),
-                    })
-                    .index();
+                let field_path = SemanticPath::from_steps(vec![
+                    SemanticStep::new(SemanticStepKind::Application, application),
+                    SemanticStep::new(SemanticStepKind::Placement, placement),
+                    SemanticStep::new(SemanticStepKind::Field, field_ids[index]),
+                ]);
+                let site = draft.add_site(SiteDef::field_leaf(field_path)).index();
                 DurableField {
                     name: field.name.clone(),
                     site,

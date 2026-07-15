@@ -252,15 +252,21 @@ impl SealedInstr {
     }
 }
 
-/// What a durable operation site addresses within its root.
+/// The resolved physical form of a durable operation site's closed
+/// [`marrow_image::SemanticTarget`], as the verifier re-derives it from the site's
+/// semantic path: `WholePayload` over a keyed placement, or `FieldLeaf` carrying the
+/// resolved index of the field within its root's record. The index is a verifier
+/// derivation from the resolved graph node, never a value trusted from the image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SealedSiteTarget {
-    Entry,
-    /// A field of the root's record, by field index.
-    Field(u16),
+    WholePayload,
+    FieldLeaf(u16),
 }
 
-/// A verified durable operation site: a root index plus an entry-or-field target.
+/// A verified durable operation site: the root index its semantic path resolved to
+/// plus the resolved target. The verifier reconstructs both by resolving the image's
+/// site path against its own derived node set — it trusts no compiler-side site
+/// summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SealedSite {
     pub root: u16,

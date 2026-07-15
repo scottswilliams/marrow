@@ -11,9 +11,46 @@
 use marrow_image::{
     DurableEnumMemberShape, DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef,
     FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef, image_id,
+    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
+
+/// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
+/// the site-path helpers so a hostile mutation can target one precisely.
+const APPLICATION_ID: [u8; 16] = [0x0a; 16];
+const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
+const VALUE_FIELD_ID: [u8; 16] = [0x0e; 16];
+const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
+
+/// The semantic path of the tracer root itself: `application -> placement`.
+fn root_path() -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        ),
+    ])
+}
+
+/// The semantic path of a top-level field of the tracer root.
+fn field_path(field_id: [u8; 16]) -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        ),
+        SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(field_id)),
+    ])
+}
 
 /// The tracer `Counter` record's durable member tree: `value:int` required then
 /// `label:string` sparse, matching the `durable_schema` record fields so the
@@ -367,18 +404,9 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
             members: counters_members(),
         },
     });
-    let entry = draft.add_site(SiteDef {
-        root: 0,
-        target: SiteTarget::Entry,
-    });
-    let value_site = draft.add_site(SiteDef {
-        root: 0,
-        target: SiteTarget::Field(0),
-    });
-    let label_site = draft.add_site(SiteDef {
-        root: 0,
-        target: SiteTarget::Field(1),
-    });
+    let entry = draft.add_site(SiteDef::whole_payload(root_path()));
+    let value_site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let label_site = draft.add_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
     (entry.index(), value_site.index(), label_site.index())
 }
 
@@ -553,10 +581,7 @@ fn executable_site_over_a_composite_root_rejects() {
             }],
         },
     });
-    let value_site = draft.add_site(SiteDef {
-        root: 0,
-        target: SiteTarget::Field(0),
-    });
+    let value_site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
@@ -646,10 +671,7 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
     });
     let src = draft.intern_string("src/main.mw");
     if with_site {
-        let site = draft.add_site(SiteDef {
-            root: 0,
-            target: SiteTarget::Field(0),
-        });
+        let site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
         let name = draft.intern_string("read");
         let code = vec![
             Instr::LocalGet(0),
@@ -728,6 +750,99 @@ fn executable_site_over_a_group_bearing_root_rejects() {
         code_of(&group_branch_draft(true).encode().unwrap().bytes),
         "image.function"
     );
+}
+
+/// The tracer durable schema plus a verifying `put` export, with `extra` appended to
+/// the site table. The image carries an encoder-computed digest, so any rejection is
+/// the site table's own resolution, not a stale digest.
+fn durable_with_extra_site(extra: SiteDef) -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    draft.add_site(extra);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    draft.encode().unwrap().bytes
+}
+
+#[test]
+fn a_site_path_naming_no_graph_node_rejects() {
+    // A field-leaf site whose path carries a ledger id absent from the durable graph
+    // — the shape a mutated site-path id takes — resolves against no reconstructed
+    // node and is refused at the durable table.
+    let bytes = durable_with_extra_site(SiteDef::field_leaf(field_path([0xbb; 16])));
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn a_field_path_with_a_whole_payload_target_rejects() {
+    // A whole-payload target over a field path: the path resolves to a field node,
+    // but the target claims a keyed placement. A field site cannot acquire a
+    // whole-payload target — the verifier rejects the kind disagreement at decode.
+    let bytes = durable_with_extra_site(SiteDef::whole_payload(field_path(VALUE_FIELD_ID)));
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn a_root_path_with_a_field_leaf_target_rejects() {
+    // The mirror hostile: a field-leaf target over the root's own path. The path
+    // resolves to the placement node, but the target claims a stored field — a
+    // retarget/rebind whose kind disagrees with the resolved node.
+    let bytes = durable_with_extra_site(SiteDef::field_leaf(root_path()));
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+/// Flip the *last* occurrence of a 16-byte ledger id — the copy carried in the site
+/// table, which follows the member tree — leaving the graph's own id intact.
+fn flip_last_ledger_id(bytes: &mut [u8], id: [u8; 16]) {
+    let at = bytes
+        .windows(16)
+        .rposition(|window| window == id)
+        .expect("the ledger id appears in the image");
+    bytes[at] ^= 0xFF;
+}
+
+#[test]
+fn rehashed_mutated_site_path_id_rejects_at_table() {
+    // Flip only the site table's copy of the value field's ledger id (and rehash the
+    // outer digest). The graph's member tree is untouched, so the contract id still
+    // matches; but the site path now names an id absent from the graph and resolves
+    // against no node. This is the site-path-mutation gate, distinct from the
+    // contract-id gate a member-tree flip trips.
+    let mut bytes = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(1),
+        Instr::TxnCommit,
+        Instr::Return,
+    ])
+    .encode()
+    .unwrap()
+    .bytes;
+    flip_last_ledger_id(&mut bytes, [0x0e; 16]);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 #[test]

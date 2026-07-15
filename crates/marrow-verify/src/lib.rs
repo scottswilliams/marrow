@@ -16,7 +16,7 @@ mod vtype;
 
 pub use marrow_image::{
     DurableContractId, ExportId, ImageId, ImageType, Scalar, SemanticNode, SemanticNodeKind,
-    SemanticPath, SemanticStep, SemanticStepKind,
+    SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
 };
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{

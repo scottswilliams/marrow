@@ -33,7 +33,8 @@ use marrow_image::{
     OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, SemanticNode,
+    SemanticNodeKind, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL, TAG_BYTES,
     TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
     TAG_UNIT, image_id,
 };
@@ -1058,6 +1059,12 @@ fn decode_durable(
         });
     }
 
+    // Reconstruct the durable graph's node set now, from the same descriptor the
+    // contract id is computed over, so every operation site resolves against this
+    // verifier's own derivation of the graph rather than a compiler-side summary.
+    let descriptor = durable_descriptor(application, &roots);
+    let nodes = descriptor.semantic_nodes();
+
     let site_count = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short site count"))? as usize;
@@ -1066,40 +1073,15 @@ fn decode_durable(
     }
     let mut sites: Vec<DecodedSite> = Vec::with_capacity(site_count);
     for _ in 0..site_count {
-        let root = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short site root"))?;
-        if root as usize >= roots.len() {
-            return Err(reject(VerifyPhase::Table, "site root index out of range"));
-        }
-        let target_tag = reader
-            .u8()
-            .ok_or(reject(VerifyPhase::Table, "short site target"))?;
-        let target = match target_tag {
-            0x00 => SealedSiteTarget::Entry,
-            0x01 => {
-                let field = reader
-                    .u16()
-                    .ok_or(reject(VerifyPhase::Table, "short site field"))?;
-                let record = &types[roots[root as usize].record as usize];
-                if field as usize >= record.fields.len() {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "site field index out of range for its root record",
-                    ));
-                }
-                SealedSiteTarget::Field(field)
-            }
-            _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
-        };
-        // Sites are unique by (root, target).
+        let site = decode_site(&mut reader, &nodes, &roots)?;
+        // Sites are unique by their resolved (root, target).
         if sites
             .iter()
-            .any(|existing| existing.root == root && existing.target == target)
+            .any(|existing| existing.root == site.root && existing.target == site.target)
         {
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
-        sites.push(DecodedSite { root, target });
+        sites.push(site);
     }
 
     // The section closes with the 32-byte durable-contract id. Recompute it
@@ -1117,7 +1099,6 @@ fn decode_durable(
             "trailing bytes in durable table",
         ));
     }
-    let descriptor = durable_descriptor(application, &roots);
     let recomputed = descriptor.contract_id();
     if recomputed.bytes() != &carried {
         return Err(reject(
@@ -1126,6 +1107,145 @@ fn decode_durable(
         ));
     }
     Ok((roots, sites, recomputed, descriptor))
+}
+
+/// Decode one operation site — its semantic path then its target-kind byte — and
+/// resolve it against the reconstructed node set. The path is `u8(step_count) ‖
+/// [u8(ledger_kind) ‖ 16 id bytes]*`; the target byte is `0x00` whole-payload or
+/// `0x01` field-leaf. Nothing here is trusted: the path is resolved to a node and
+/// its kind cross-checked, and the executable physical facts are re-derived, so a
+/// forged path, a flipped target byte, or a mutated ledger id is refused.
+fn decode_site(
+    reader: &mut Reader<'_>,
+    nodes: &[SemanticNode],
+    roots: &[DecodedRoot],
+) -> Result<DecodedSite, VerifyRejection> {
+    let step_count = reader
+        .u8()
+        .ok_or(reject(VerifyPhase::Table, "short site path length"))? as usize;
+    if step_count < marrow_image::bounds::MIN_SITE_PATH_STEPS {
+        return Err(reject(
+            VerifyPhase::Table,
+            "durable site path names no graph node",
+        ));
+    }
+    if step_count > marrow_image::bounds::MAX_SITE_PATH_STEPS {
+        return Err(reject(VerifyPhase::Table, "durable site path too deep"));
+    }
+    let mut steps = Vec::with_capacity(step_count);
+    for _ in 0..step_count {
+        let kind_byte = reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, "short site path step kind"))?;
+        let kind = SemanticStepKind::from_ledger_kind(kind_byte)
+            .ok_or(reject(VerifyPhase::Table, "unknown site path step kind"))?;
+        let id_bytes: [u8; 16] = reader
+            .take(16)
+            .ok_or(reject(VerifyPhase::Table, "short site path step id"))?
+            .try_into()
+            .expect("take(16) yields 16 bytes");
+        steps.push(SemanticStep::new(kind, LedgerIdBytes::from_bytes(id_bytes)));
+    }
+    let target = match reader
+        .u8()
+        .ok_or(reject(VerifyPhase::Table, "short site target"))?
+    {
+        0x00 => SemanticTarget::WholePayload,
+        0x01 => SemanticTarget::FieldLeaf,
+        _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
+    };
+    resolve_site(&steps, target, nodes, roots)
+}
+
+/// Resolve a decoded site path plus target kind to the physical [`DecodedSite`] the
+/// executable path consumes. A path that names no reconstructed node, or a target
+/// whose kind disagrees with the resolved node's kind, is refused; the root index
+/// and (for a field leaf) the record field index are re-derived from the resolved
+/// graph, never trusted from the image.
+fn resolve_site(
+    steps: &[SemanticStep],
+    target: SemanticTarget,
+    nodes: &[SemanticNode],
+    roots: &[DecodedRoot],
+) -> Result<DecodedSite, VerifyRejection> {
+    let node = nodes
+        .iter()
+        .find(|node| node.path.steps() == steps)
+        .ok_or(reject(
+            VerifyPhase::Table,
+            "durable site path does not resolve to a graph node",
+        ))?;
+    // The target kind must agree with the resolved node's kind: a whole-payload
+    // target names a keyed placement, a field-leaf target names a stored field.
+    match (target, node.kind) {
+        (SemanticTarget::WholePayload, SemanticNodeKind::Root | SemanticNodeKind::Branch) => {}
+        (SemanticTarget::FieldLeaf, SemanticNodeKind::Field) => {}
+        _ => {
+            return Err(reject(
+                VerifyPhase::Table,
+                "durable site target kind does not match its resolved graph node",
+            ));
+        }
+    }
+    // Every node under a root carries that root's placement as its second step, so
+    // the root index is that placement's position. The kernel-executable flat root
+    // is the only shape with operation sites at this stage: a whole-payload site is
+    // the root itself, a field-leaf site a direct top-level field. Deeper sites
+    // carry a complete identity but are not yet executable and are refused here.
+    let placement = steps[1].id;
+    let root = roots
+        .iter()
+        .position(|root| root.placement == placement)
+        .ok_or(reject(
+            VerifyPhase::Table,
+            "durable site path is not rooted at a durable root",
+        ))? as u16;
+    let sealed = match target {
+        SemanticTarget::WholePayload => {
+            if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "a whole-payload operation site over a nested placement is not yet executable",
+                ));
+            }
+            SealedSiteTarget::WholePayload
+        }
+        SemanticTarget::FieldLeaf => {
+            if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "a field operation site over a nested field is not yet executable",
+                ));
+            }
+            let field_id = steps[2].id;
+            let field_index = top_level_field_index(&roots[root as usize].members, field_id)
+                .ok_or(reject(
+                    VerifyPhase::Table,
+                    "a field operation site does not name a top-level field",
+                ))?;
+            SealedSiteTarget::FieldLeaf(field_index)
+        }
+    };
+    Ok(DecodedSite {
+        root,
+        target: sealed,
+    })
+}
+
+/// The index of the top-level field with ledger id `field_id` among a root's member
+/// tree, counting only its direct field members in declaration order. This is the
+/// field's index into the root's materialized record (their orders are tied during
+/// root decode), so a resolved field-leaf site addresses the same field the record
+/// types.
+fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> Option<u16> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            DecodedMember::Field { id, .. } => Some(*id),
+            _ => None,
+        })
+        .position(|id| id == field_id)
+        .map(|index| index as u16)
 }
 
 /// Read one 16-byte ledger id, rejecting a duplicate against those already seen in
@@ -3772,7 +3892,7 @@ fn field_of<'a>(
     site: &SealedSite,
     root: &SealedRoot,
 ) -> Result<&'a SealedField, VerifyRejection> {
-    let SealedSiteTarget::Field(field) = site.target else {
+    let SealedSiteTarget::FieldLeaf(field) = site.target else {
         return Err(reject(
             VerifyPhase::Function,
             "operation requires a field site",
@@ -3796,8 +3916,8 @@ fn durable_field_vtype(field: &SealedField) -> VType {
 /// Require an entry-target site.
 fn require_entry(site: &SealedSite) -> Result<(), VerifyRejection> {
     match site.target {
-        SealedSiteTarget::Entry => Ok(()),
-        SealedSiteTarget::Field(_) => Err(reject(
+        SealedSiteTarget::WholePayload => Ok(()),
+        SealedSiteTarget::FieldLeaf(_) => Err(reject(
             VerifyPhase::Function,
             "operation requires an entry site",
         )),

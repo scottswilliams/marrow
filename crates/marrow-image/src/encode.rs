@@ -10,13 +10,13 @@ use crate::bounds;
 use crate::digest::{ImageId, image_id};
 use crate::draft::{
     CollectionTypeDef, ConstValue, DurableMemberDef, ImageBuildError, ImageDraft, KeyColumn,
-    SiteTarget,
 };
 use crate::durable_id::{
     DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
     DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape,
 };
 use crate::instr::Instr;
+use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 
 /// Container magic and version.
@@ -119,6 +119,15 @@ impl ImageDraft {
         }
         if self.sites().len() > bounds::MAX_SITES {
             return Err(ImageBuildError::TooManySites);
+        }
+        for site in self.sites() {
+            let steps = site.path.steps().len();
+            if steps < bounds::MIN_SITE_PATH_STEPS {
+                return Err(ImageBuildError::SitePathTooShort);
+            }
+            if steps > bounds::MAX_SITE_PATH_STEPS {
+                return Err(ImageBuildError::SitePathTooDeep);
+            }
         }
         if self.functions().len() > bounds::MAX_FUNCTIONS {
             return Err(ImageBuildError::TooManyFunctions);
@@ -270,14 +279,11 @@ impl ImageDraft {
         }
         push_u16(&mut body, self.sites().len() as u16);
         for site in self.sites() {
-            push_u16(&mut body, site.root);
-            match site.target {
-                SiteTarget::Entry => body.push(0x00),
-                SiteTarget::Field(field) => {
-                    body.push(0x01);
-                    push_u16(&mut body, field);
-                }
-            }
+            encode_site_path(&mut body, &site.path);
+            body.push(match site.target {
+                SemanticTarget::WholePayload => 0x00,
+                SemanticTarget::FieldLeaf => 0x01,
+            });
         }
         // The durable-contract identity closes the section: a 32-byte
         // `DurableContractId` over the canonical graph descriptor. The verifier
@@ -540,6 +546,19 @@ fn encode_key_tuple(body: &mut Vec<u8>, keys: &[KeyColumn]) {
     for key in keys {
         ImageType::scalar(key.scalar).encode(body);
         body.extend_from_slice(key.id.bytes());
+    }
+}
+
+/// Encode one operation site's semantic path: `u8(step_count) ‖ step*`, each step a
+/// `u8(ledger_kind) ‖ 16 id bytes`. The step kind byte is the same frozen ledger
+/// `IDREF` tag a durable node's identity uses, so the verifier decodes the path's
+/// kinds exactly as it spells its own node paths. The step count fits one byte
+/// (`MAX_SITE_PATH_STEPS` is far below 256, rechecked in `check_bounds`).
+fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
+    body.push(path.steps().len() as u8);
+    for step in path.steps() {
+        body.push(step.kind.ledger_kind());
+        body.extend_from_slice(step.id.bytes());
     }
 }
 

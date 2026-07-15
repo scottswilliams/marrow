@@ -67,13 +67,13 @@ fn schema() -> StoreSchema {
 fn sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
-            target: SiteTarget::Entry,
+            target: SiteTarget::WholePayload,
         },
         SiteSpec {
-            target: SiteTarget::Field(0),
+            target: SiteTarget::FieldLeaf(0),
         },
         SiteSpec {
-            target: SiteTarget::Field(1),
+            target: SiteTarget::FieldLeaf(1),
         },
     ]
 }

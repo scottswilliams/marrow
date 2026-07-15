@@ -133,8 +133,8 @@ impl<E: ByteEngine> DurableStore<E> {
                 root: self.schema.root_name.clone(),
                 key: self.schema.key,
                 target: match site.target {
-                    SiteTarget::Entry => AuthTarget::Entry,
-                    SiteTarget::Field(index) => {
+                    SiteTarget::WholePayload => AuthTarget::Entry,
+                    SiteTarget::FieldLeaf(index) => {
                         let field = &self.schema.fields[index as usize];
                         AuthTarget::Field {
                             name: field.name.clone(),
@@ -781,13 +781,13 @@ mod tests {
     fn sites() -> Vec<SiteSpec> {
         vec![
             SiteSpec {
-                target: SiteTarget::Entry,
+                target: SiteTarget::WholePayload,
             },
             SiteSpec {
-                target: SiteTarget::Field(0),
+                target: SiteTarget::FieldLeaf(0),
             },
             SiteSpec {
-                target: SiteTarget::Field(1),
+                target: SiteTarget::FieldLeaf(1),
             },
         ]
     }

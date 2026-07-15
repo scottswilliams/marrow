@@ -37,6 +37,14 @@ pub const MAX_COLLECTIONS: usize = 64;
 pub const MAX_ROOTS: usize = 1;
 pub const MAX_SITES: usize = 64;
 
+/// Steps in one operation site's semantic path: the application step, the root
+/// placement step, and up to `MAX_DURABLE_DEPTH` nested member steps down to the
+/// addressed node. The bound keeps the image and verifier site-path decoders
+/// allocating within a fixed limit (§ law 9); a path shorter than two steps names
+/// no graph node.
+pub const MIN_SITE_PATH_STEPS: usize = 2;
+pub const MAX_SITE_PATH_STEPS: usize = 2 + MAX_DURABLE_DEPTH;
+
 /// Key columns per durable root or branch placement. A singleton root has zero;
 /// a keyed placement has an ordered tuple of one or more columns. The bound keeps
 /// every key-tuple decoder (image, verifier) allocating within a fixed limit

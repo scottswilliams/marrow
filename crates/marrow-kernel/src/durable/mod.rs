@@ -38,19 +38,24 @@ pub struct FieldSchema {
     pub required: bool,
 }
 
-/// A verified operation site, indexed by the image's site index. Its root is the
-/// single T01 root; the target is the entry or one of the root's fields.
+/// A verified operation site the kernel maps to physical layout, indexed by the
+/// image's site index. Its root is the single T01 root; the target is the sealed
+/// [`SemanticTarget`](marrow_verify::SemanticTarget) projected to the physical flat
+/// root — the whole payload or one of the root's fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SiteSpec {
     pub target: SiteTarget,
 }
 
-/// What a site addresses within the root.
+/// The closed operation-target set the kernel serves over the flat root: the whole
+/// keyed payload, or one field leaf identified by its field index into
+/// [`StoreSchema::fields`]. The kernel owns the mapping from this sealed semantic
+/// target to the name-keyed physical layout (see `physical`); it is the physical
+/// projection of the verifier's closed `SemanticTarget`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteTarget {
-    Entry,
-    /// A field of the root's record, by field index into [`StoreSchema::fields`].
-    Field(u16),
+    WholePayload,
+    FieldLeaf(u16),
 }
 
 /// The verifier-derived durable demand of the export being run: whether it reads or
