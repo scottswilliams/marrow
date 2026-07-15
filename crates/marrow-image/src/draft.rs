@@ -236,6 +236,22 @@ impl SiteDef {
             target: SemanticTarget::FieldLeaf,
         }
     }
+
+    /// A nonunique progressive-prefix read site over the managed index `path` names.
+    pub fn index_scan(path: SemanticPath) -> Self {
+        Self {
+            path,
+            target: SemanticTarget::IndexScan,
+        }
+    }
+
+    /// A unique complete-key exact-read site over the managed index `path` names.
+    pub fn index_lookup(path: SemanticPath) -> Self {
+        Self {
+            path,
+            target: SemanticTarget::IndexLookup,
+        }
+    }
 }
 
 /// A source-position mapping for one instruction. The encoder converts the

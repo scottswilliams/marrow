@@ -686,6 +686,21 @@ impl VerifiedImage {
             .collect()
     }
 
+    /// The verifier-derived legal `unique_index_collision` outcome layout for a
+    /// `create`/`replace` on the root at index `root`: the stable ids of its unique
+    /// managed indexes, each of which a create/replace may collide on. A durable
+    /// operation algebra collision reveals exactly one of these `IndexId`s and nothing
+    /// else — no colliding key, entry, or sibling. A root with no unique index admits
+    /// no collision outcome. Derived from the sealed indexes, never trusted from the
+    /// image.
+    pub fn unique_collision_outcomes(&self, root: u16) -> Vec<LedgerIdBytes> {
+        self.indexes
+            .iter()
+            .filter(|index| index.root == root && index.unique)
+            .map(|index| index.id)
+            .collect()
+    }
+
     pub fn consts(&self) -> &[SealedConst] {
         &self.consts
     }

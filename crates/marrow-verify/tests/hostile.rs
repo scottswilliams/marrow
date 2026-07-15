@@ -9,10 +9,10 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    DurableEnumMemberShape, DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef,
-    FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
-    SpanEntry, VariantDef, image_id,
+    DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
+    DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
+    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
+    SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -707,6 +707,146 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
         draft.add_export(ExportId::of_local("", "label"), func);
     }
     draft
+}
+
+/// The fixed index ids of the indexed tracer graph.
+const BY_LABEL_INDEX_ID: [u8; 16] = [0x70; 16];
+const BY_VALUE_INDEX_ID: [u8; 16] = [0x71; 16];
+
+/// The semantic path of a managed index of the tracer root: `application ->
+/// placement -> index`.
+fn index_path(index_id: [u8; 16]) -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        ),
+        SemanticStep::new(SemanticStepKind::Index, LedgerIdBytes::from_bytes(index_id)),
+    ])
+}
+
+/// A well-formed indexed tracer graph: the counters root plus a nonunique
+/// `byLabel(label, k)` and a unique `byValue(value)`. `component` overrides the first
+/// index's projection, so a hostile test can point a component at a leaf the root does
+/// not carry.
+fn indexed_draft(by_label_components: Vec<DurableIndexComponent>) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: counters_members(),
+            indexes: vec![
+                DurableIndexShape {
+                    id: LedgerIdBytes::from_bytes(BY_LABEL_INDEX_ID),
+                    unique: false,
+                    components: by_label_components,
+                },
+                DurableIndexShape {
+                    id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
+                    unique: true,
+                    components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                        VALUE_FIELD_ID,
+                    ))],
+                },
+            ],
+        },
+    });
+    draft
+}
+
+/// The well-formed `byLabel` projection: the sparse `label` field then the identity
+/// key, the complete-suffix shape a nonunique index requires.
+fn by_label_projection() -> Vec<DurableIndexComponent> {
+    vec![
+        DurableIndexComponent::Field(LedgerIdBytes::from_bytes(LABEL_FIELD_ID)),
+        DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+    ]
+}
+
+#[test]
+fn a_well_formed_indexed_graph_verifies() {
+    assert_eq!(
+        code_of(&indexed_draft(by_label_projection()).encode().unwrap().bytes),
+        "VERIFIED",
+    );
+}
+
+#[test]
+fn rehashed_mutated_index_id_breaks_the_contract_id() {
+    // A managed index contributes its `Index` id to the durable graph the verifier
+    // recomputes the contract over. Flipping that id and rehashing the outer digest
+    // leaves the carried contract id stale, so the recomputation rejects — the
+    // contract binds index identity, not only roots and fields.
+    let mut bytes = indexed_draft(by_label_projection()).encode().unwrap().bytes;
+    flip_ledger_id(&mut bytes, BY_VALUE_INDEX_ID);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn an_index_component_naming_no_leaf_of_its_root_rejects() {
+    // A forged projection component pointing at a leaf the root does not carry is
+    // refused at decode: the verifier re-resolves every component against the root's
+    // own fields and keys.
+    let forged = vec![
+        DurableIndexComponent::Field(LedgerIdBytes::from_bytes([0x99; 16])),
+        DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+    ];
+    assert_eq!(
+        code_of(&indexed_draft(forged).encode().unwrap().bytes),
+        "image.table",
+    );
+}
+
+#[test]
+fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
+    // The unique index `byValue` admits only a complete-key exact lookup. A forged
+    // site with a progressive-prefix scan target over it — an attempt to traverse a
+    // unique index and observe siblings — is refused when the site's read kind is
+    // checked against the index's unique flag.
+    let mut draft = indexed_draft(by_label_projection());
+    draft.add_site(SiteDef::index_scan(index_path(BY_VALUE_INDEX_ID)));
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+}
+
+#[test]
+fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
+    // Symmetrically, the nonunique `byLabel` admits only a progressive-prefix scan; a
+    // forged complete-key lookup site over it is refused.
+    let mut draft = indexed_draft(by_label_projection());
+    draft.add_site(SiteDef::index_lookup(index_path(BY_LABEL_INDEX_ID)));
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
 /// Flip the first occurrence of a 16-byte ledger id in `bytes`. The distinct test

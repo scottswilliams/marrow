@@ -41,6 +41,8 @@ pub enum SemanticStepKind {
     Group,
     /// A stored field (`IDREF` kind 2).
     Field,
+    /// A managed index of a keyed root (`IDREF` kind 8).
+    Index,
 }
 
 impl SemanticStepKind {
@@ -52,6 +54,7 @@ impl SemanticStepKind {
             SemanticStepKind::Placement => 3,
             SemanticStepKind::Group => 7,
             SemanticStepKind::Field => 2,
+            SemanticStepKind::Index => 8,
         }
     }
 
@@ -65,21 +68,33 @@ impl SemanticStepKind {
             3 => Some(SemanticStepKind::Placement),
             7 => Some(SemanticStepKind::Group),
             2 => Some(SemanticStepKind::Field),
+            8 => Some(SemanticStepKind::Index),
             _ => None,
         }
     }
 }
 
 /// What an operation site does *at* the graph node its [`SemanticPath`] names: the
-/// closed, index-free operation-target set. `WholePayload` observes or writes a keyed
-/// placement's whole entry; `FieldLeaf` reads or writes one stored field leaf. The
-/// node the path resolves to fixes which is legal — a placement admits `WholePayload`,
-/// a field admits `FieldLeaf` — so the two together name a site. Managed-index targets
-/// are a separate later concern and are deliberately not in this set.
+/// closed operation-target set. `WholePayload` observes or writes a keyed placement's
+/// whole entry; `FieldLeaf` reads or writes one stored field leaf; `IndexScan` is the
+/// nonunique progressive typed-prefix read of a managed index; `IndexLookup` is the
+/// unique complete-key exact read of a managed index. The node the path resolves to
+/// fixes which is legal — a placement admits `WholePayload`, a field admits
+/// `FieldLeaf`, a nonunique index admits `IndexScan`, and a unique index admits
+/// `IndexLookup` — so the two together name a site. There is no index *write* target:
+/// managed-index maintenance is compiler-owned with no application opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticTarget {
     WholePayload,
     FieldLeaf,
+    /// The nonunique progressive typed-prefix read of a managed index: an incomplete
+    /// prefix yields the next distinct component; the complete projection yields the
+    /// source-root key. Runtime traversal lands at E05.
+    IndexScan,
+    /// The unique complete-key exact read of a managed index: it yields exactly the
+    /// one matching source-root key or absent, never a sibling or a traversal.
+    /// Runtime lookup lands at E05.
+    IndexLookup,
 }
 
 /// One step of a [`SemanticPath`]: a node's kind-tagged entropy-minted ledger id.
@@ -151,6 +166,9 @@ pub enum SemanticNodeKind {
     Group,
     Branch,
     Field,
+    /// A managed index of a keyed root: a graph node with its own semantic path
+    /// (the root path extended by the index step), read-only from source.
+    Index,
 }
 
 /// A durable graph node paired with its derived [`SemanticPath`]. The compiler and

@@ -376,6 +376,15 @@ impl DurableContractDescriptor {
                 path: root_path.clone(),
             });
             collect_member_nodes(&root_path, &root.members, &mut nodes);
+            // A managed index is a graph node too: its path is the root path extended
+            // by the index step, so a rename that only moves the index anchor leaves it
+            // unchanged. Index nodes follow the member nodes, in declaration order.
+            for index in &root.indexes {
+                nodes.push(SemanticNode {
+                    kind: SemanticNodeKind::Index,
+                    path: root_path.child(SemanticStep::new(SemanticStepKind::Index, index.id)),
+                });
+            }
         }
         nodes
     }

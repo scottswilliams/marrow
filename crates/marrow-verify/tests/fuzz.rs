@@ -7,10 +7,10 @@
 //! the default suite. A minimized counterexample becomes a permanent fixture.
 
 use marrow_image::{
-    DurableEnumMemberShape, DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef,
-    RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
-    VariantDef, image_id,
+    DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
+    DurableValueShape, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
+    SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -308,6 +308,118 @@ fn mutated_durable_images_never_panic_the_verifier() {
     let base = a_durable_image();
     // The base image itself must verify, so the durable decode path is reached.
     assert!(verify(&base).is_ok(), "durable base image must verify");
+    for _ in 0..4096 {
+        let mut bytes = base.clone();
+        for _ in 0..=rng.below(3) {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= rng.byte();
+        }
+        oracle(&bytes);
+    }
+}
+
+/// A good durable image whose keyed root carries two managed indexes — a nonunique
+/// `byLabel(label, k)` and a unique `byValue(value)` — plus their parked index read
+/// sites. Mutating it reaches the index-block decoder (index count, index ids, unique
+/// flags, component kinds and leaf ids, the component-resolves-to-a-real-leaf check)
+/// and the index-site path/target resolver (the unique-flag agreement), which a
+/// root without indexes never exercises.
+fn an_indexed_durable_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0f; 16]),
+                    required: false,
+                    value: DurableValueShape::Scalar(Scalar::Text),
+                },
+            ],
+            indexes: vec![
+                DurableIndexShape {
+                    id: LedgerIdBytes::from_bytes([0x70; 16]),
+                    unique: false,
+                    components: vec![
+                        DurableIndexComponent::Field(LedgerIdBytes::from_bytes([0x0f; 16])),
+                        DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+                    ],
+                },
+                DurableIndexShape {
+                    id: LedgerIdBytes::from_bytes([0x71; 16]),
+                    unique: true,
+                    components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                        [0x0e; 16],
+                    ))],
+                },
+            ],
+        },
+    });
+    let app = SemanticStep::new(
+        SemanticStepKind::Application,
+        LedgerIdBytes::from_bytes([0x0a; 16]),
+    );
+    let placement = SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes([0x0b; 16]),
+    );
+    draft.add_site(SiteDef::index_scan(SemanticPath::from_steps(vec![
+        app,
+        placement,
+        SemanticStep::new(
+            SemanticStepKind::Index,
+            LedgerIdBytes::from_bytes([0x70; 16]),
+        ),
+    ])));
+    draft.add_site(SiteDef::index_lookup(SemanticPath::from_steps(vec![
+        app,
+        placement,
+        SemanticStep::new(
+            SemanticStepKind::Index,
+            LedgerIdBytes::from_bytes([0x71; 16]),
+        ),
+    ])));
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn mutated_indexed_durable_images_never_panic_the_verifier() {
+    let mut rng = Rng(seed() ^ 0x1B56_3C1A_9F0E_4477);
+    let base = an_indexed_durable_image();
+    // The base image itself must verify, so the index-block decode path is reached.
+    assert!(verify(&base).is_ok(), "indexed base image must verify");
     for _ in 0..4096 {
         let mut bytes = base.clone();
         for _ in 0..=rng.below(3) {

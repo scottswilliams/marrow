@@ -1164,6 +1164,8 @@ fn decode_site(
     {
         0x00 => SemanticTarget::WholePayload,
         0x01 => SemanticTarget::FieldLeaf,
+        0x02 => SemanticTarget::IndexScan,
+        0x03 => SemanticTarget::IndexLookup,
         _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
     };
     resolve_site(&steps, target, nodes, roots)
@@ -1192,16 +1194,62 @@ fn resolve_site(
             "durable site path does not resolve to a graph node",
         ))?;
     // The target kind must agree with the resolved node's kind: a whole-payload
-    // target names a keyed placement, a field-leaf target names a stored field.
+    // target names a keyed placement, a field-leaf target names a stored field, and an
+    // index scan/lookup target names a managed index node.
     match (target, node.kind) {
         (SemanticTarget::WholePayload, SemanticNodeKind::Root | SemanticNodeKind::Branch) => {}
         (SemanticTarget::FieldLeaf, SemanticNodeKind::Field) => {}
+        (SemanticTarget::IndexScan | SemanticTarget::IndexLookup, SemanticNodeKind::Index) => {}
         _ => {
             return Err(reject(
                 VerifyPhase::Table,
                 "durable site target kind does not match its resolved graph node",
             ));
         }
+    }
+    // An index read site resolves to its managed index and seals parked (an index node
+    // is never a flat-executable node; runtime traversal/lookup lands at E05). The
+    // read kind must agree with the index's `unique` flag: a nonunique index admits
+    // only a progressive-prefix `IndexScan`, and a unique index admits only a
+    // complete-key `IndexLookup`. This is where a site that claims to *traverse* a
+    // unique index — or to exact-lookup a nonunique one — is refused, so source can
+    // never observe siblings through a unique index.
+    if matches!(
+        target,
+        SemanticTarget::IndexScan | SemanticTarget::IndexLookup
+    ) {
+        let placement = steps[1].id;
+        let root = roots
+            .iter()
+            .find(|root| root.placement == placement)
+            .ok_or(reject(
+                VerifyPhase::Table,
+                "durable index site path is not rooted at a durable root",
+            ))?;
+        let index_id = steps.last().expect("an index path has an index step").id;
+        let index = root
+            .indexes
+            .iter()
+            .find(|index| index.id == index_id)
+            .ok_or(reject(
+                VerifyPhase::Table,
+                "durable index site names no managed index of its root",
+            ))?;
+        let agrees = match target {
+            SemanticTarget::IndexScan => !index.unique,
+            SemanticTarget::IndexLookup => index.unique,
+            _ => unreachable!("guarded to index targets"),
+        };
+        if !agrees {
+            return Err(reject(
+                VerifyPhase::Table,
+                "durable index site read kind disagrees with the index's unique flag",
+            ));
+        }
+        return Ok(SealedSite::Parked {
+            path: SemanticPath::from_steps(steps.to_vec()),
+            target,
+        });
     }
     // Every node carries its enclosing root's placement as its second step, so the
     // root index is that placement's position. Only the flat single-column keyed root
@@ -1246,6 +1294,10 @@ fn resolve_site(
                 },
                 None => parked(),
             }
+        }
+        // Index scan/lookup targets returned parked above, before the flat/field logic.
+        SemanticTarget::IndexScan | SemanticTarget::IndexLookup => {
+            unreachable!("index read targets are sealed and returned before this point")
         }
     };
     Ok(sealed)

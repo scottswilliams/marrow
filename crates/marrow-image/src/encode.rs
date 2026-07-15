@@ -293,6 +293,8 @@ impl ImageDraft {
             body.push(match site.target {
                 SemanticTarget::WholePayload => 0x00,
                 SemanticTarget::FieldLeaf => 0x01,
+                SemanticTarget::IndexScan => 0x02,
+                SemanticTarget::IndexLookup => 0x03,
             });
         }
         // The durable-contract identity closes the section: a 32-byte

@@ -316,6 +316,22 @@ impl DurableRegistry {
             .index();
         let mut top_field_sites: Vec<u16> = Vec::new();
         emit_member_sites(draft, &root_steps, &members, &mut top_field_sites, true);
+        // One read site per managed index: a nonunique index is a progressive-prefix
+        // scan, a unique index a complete-key exact lookup. There is deliberately no
+        // index-write site — maintenance is compiler-owned. Every index site seals as
+        // parked (an index node is never a flat-executable node); runtime traversal and
+        // lookup land at E05.
+        for index in &indexes {
+            let mut steps = root_steps.clone();
+            steps.push(SemanticStep::new(SemanticStepKind::Index, index.id));
+            let path = SemanticPath::from_steps(steps);
+            let site = if index.unique {
+                SiteDef::index_lookup(path)
+            } else {
+                SiteDef::index_scan(path)
+            };
+            draft.add_site(site);
+        }
 
         let root_name = draft.intern_string(&store.root.root);
         draft.add_root(RootDef {

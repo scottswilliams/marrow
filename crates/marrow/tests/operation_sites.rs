@@ -52,6 +52,8 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
                 match target {
                     SemanticTarget::WholePayload => "whole",
                     SemanticTarget::FieldLeaf => "field",
+                    SemanticTarget::IndexScan => "index_scan",
+                    SemanticTarget::IndexLookup => "index_lookup",
                 },
                 path.steps().len(),
             ),

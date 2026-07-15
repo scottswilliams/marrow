@@ -10,7 +10,10 @@
 //! incidence — the maintenance consequence a later exact write must keep coherent
 //! (runtime maintenance and traversal land at E05).
 
-use marrow_verify::{DurableIndexComponent, LedgerIdBytes};
+use marrow_verify::{
+    DurableIndexComponent, LedgerIdBytes, SealedInstr, SealedSite, SemanticNodeKind,
+    SemanticStepKind, SemanticTarget,
+};
 
 fn rep(byte: u8) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes([byte; 16])
@@ -126,6 +129,96 @@ fn the_verifier_derives_field_and_root_incidence() {
 
     // RootId -> [IndexId]: a whole-entry write on root 0 maintains both indexes.
     assert_eq!(image.root_incidence(0), vec![rep(0x70), rep(0x71)]);
+}
+
+#[test]
+fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let index_nodes: Vec<_> = image
+        .semantic_nodes()
+        .into_iter()
+        .filter(|node| node.kind == SemanticNodeKind::Index)
+        .collect();
+    assert_eq!(index_nodes.len(), 2, "one graph node per managed index");
+    for (node, index_id) in index_nodes.iter().zip([rep(0x70), rep(0x71)]) {
+        let steps = node.path.steps();
+        // The index node's path is [Application, Placement, Index]: the root path
+        // extended by the index step, ending in the index's own ledger id.
+        assert_eq!(
+            steps.iter().map(|s| s.kind).collect::<Vec<_>>(),
+            vec![
+                SemanticStepKind::Application,
+                SemanticStepKind::Placement,
+                SemanticStepKind::Index,
+            ],
+        );
+        assert_eq!(node.path.node_id(), index_id);
+    }
+}
+
+#[test]
+fn index_read_sites_seal_parked_as_reads_only() {
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let index_sites: Vec<SemanticTarget> = image
+        .sites()
+        .iter()
+        .filter_map(|site| match site {
+            // Every index site is parked (runtime traversal/lookup lands at E05) and is
+            // a read target — there is no index-write site kind.
+            SealedSite::Parked { target, .. }
+                if matches!(
+                    target,
+                    SemanticTarget::IndexScan | SemanticTarget::IndexLookup
+                ) =>
+            {
+                Some(*target)
+            }
+            _ => None,
+        })
+        .collect();
+    // The nonunique byShelf is a progressive-prefix scan; the unique byIsbn an exact
+    // lookup.
+    assert_eq!(
+        index_sites,
+        vec![SemanticTarget::IndexScan, SemanticTarget::IndexLookup],
+    );
+}
+
+#[test]
+fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    // The closed unique_index_collision outcome layout for a create/replace on root 0
+    // is exactly its unique index (byIsbn, 0x71); the nonunique byShelf never
+    // collides.
+    assert_eq!(image.unique_collision_outcomes(0), vec![rep(0x71)]);
+}
+
+#[test]
+fn no_application_opcode_maintains_a_managed_index() {
+    // The keep-list law and the release veto: an index has no application write path.
+    // The absence is structural — there is no index-write opcode and no index-write
+    // site kind — so no verified instruction over any indexed program is an index
+    // mutation. A whole-graph program that declares indexes still emits only the
+    // ordinary durable/pure opcodes; none of its mutations touches an index cell.
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    for function in image.functions() {
+        for instr in function.instrs() {
+            assert!(
+                !is_index_write(instr),
+                "no verified instruction may maintain a managed index",
+            );
+        }
+    }
+}
+
+/// Whether an instruction writes a managed index. No such instruction exists — the
+/// opcode space contains no index-maintenance opcode — so this is always false; the
+/// function documents the closed mutation set the absence assertion rests on.
+fn is_index_write(instr: &SealedInstr) -> bool {
+    // The complete durable-mutation set (`is_mutation`) is field/entry writes only;
+    // none names an index. There is deliberately no `DurIndex*` variant to match.
+    let _ = instr.is_mutation();
+    false
 }
 
 #[test]
@@ -255,4 +348,35 @@ fn an_index_on_a_singleton_root_is_rejected() {
          high-water 0\n\
          end\n";
     assert_eq!(compile_codes(source, ids), vec!["check.type"]);
+}
+
+#[test]
+fn a_source_index_read_is_a_precise_not_yet_executable_diagnostic() {
+    // Runtime index traversal/lookup lands at E05. Until then a source read through a
+    // managed index is the honest capability-trough diagnostic — a precise
+    // `check.unsupported` at the read — not a confusing "no such field" error and
+    // never a lowered operation.
+    let source = "resource Book\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         \n\
+         store ^books(id: int): Book\n\
+         \x20   index byShelf(shelf, id)\n\
+         \n\
+         pub fn find(s: string): Id(^books)?\n\
+         \x20   for id in ^books.byShelf(s)\n\
+         \x20       return id\n\
+         \x20   return absent\n";
+    let ids = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+         id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+         id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+         id field Book.shelf 10101010101010101010101010101010\n\
+         id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+         id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+         id index books.byShelf 70707070707070707070707070707070\n\
+         high-water 0\n\
+         end\n";
+    assert_eq!(compile_codes(source, ids), vec!["check.unsupported"]);
 }

@@ -125,7 +125,11 @@ operation must restructure that same layer.
 
 ## Index Declarations
 
-Indexes belong to a store and are maintained from its typed fields:
+A keyed `store` root may declare narrow compiler-maintained ordered indexes. An
+index is an ordered projection of the root's identity keys and top-level fields;
+it stores no data of its own and has no application write operation. A non-unique
+index distinguishes each row by ending with the complete store identity suffix; a
+`unique` index may omit it.
 
 ```mw
 module docs::indexes
@@ -139,30 +143,33 @@ store ^books(id: int): Book
     index byShelf(shelf, id)
     index byIsbn(isbn) unique
 
-pub fn printShelf(shelf: string)
-    for id in ^books.byShelf(shelf)
-        if const title = ^books(id).title
-            print(title)
-
-pub fn findIsbn(isbn: string): Id(^books)?
-    return ^books.byIsbn(isbn)
+pub fn label(): string
+    return "books"
 ```
 
-A non-unique index ends with the complete store identity suffix. Iteration of a
-branch yields store identities in index order. A complete unique lookup returns
-`Id(^root)?`.
+Each index argument names either one store identity column or one plain top-level
+field of the stored resource, in projection order. A non-unique index must end with
+every identity key in declaration order, with no identity key in a leading position;
+a `unique` index may omit the identity keys. A field reached through an unkeyed
+group, a keyed child layer, or a keyed positional leaf cannot be an index component.
+Each projected field must store an orderable durable-key scalar (`int`, `string`,
+`bool`, `bytes`, `date`, or `instant`; a nominal erases to its base scalar). An index
+name shares the root's source namespace with the identity keys and stored fields, so
+it may not collide with either or with another index. An index requires a keyed root:
+a singleton store admits none.
 
-Each index argument names either one store identity column or one plain
-top-level field of the stored resource. A field nested through an unkeyed group,
-a keyed child layer, and a keyed positional leaf cannot be an index component. Index
-components must be orderable key values. In addition to the ordinary scalar key
-types, a plain top-level enum or entry-identity field may be indexed.
+Each index carries its own stable durable identity in the machine-written
+`marrow.ids` ledger (an `index` anchor at `<root>.<index name>`), distinct from every
+other durable identity; renaming an index preserves it, and a retired index name is
+never reused. The compiler maintains every index — assignment, clearing, whole
+replacement, and deletion keep the affected indexes coherent; source has no
+operation that writes an index, so an index can never be left incoherent by
+application code. A non-unique index read is a progressive typed-prefix refinement
+(an incomplete prefix yields the next distinct component; the complete projection
+yields the source-root key), and a `unique` index read is a complete-key exact lookup
+that yields exactly the one matching `Id(^root)` or absent — never a sibling.
 
-If an indexed sparse field is absent, the entry has no row in that index.
-Assignment, clearing, whole replacement, and deletion update affected indexes
-automatically and atomically with the source data.
-
-An index is a durable iterable, not a materialized local value. A bare
-non-unique index root traverses all stored identity rows in complete index
-order. A keyed branch such as `^books.byShelf("fiction")` restricts the leading
-index components.
+**Future.** Runtime index maintenance and index reads — traversal of a non-unique
+index and the exact lookup of a `unique` index — are not yet executable on the beta
+line. A source read through an index reports a precise not-yet-supported diagnostic
+until the managed-index runtime lands (see `docs/status.md`).
