@@ -783,7 +783,28 @@ fn rehashed_test_entry_count_short_of_body_rejects_at_table() {
 
 #[test]
 fn rehashed_aliased_test_entry_function_rejects() {
-    let mut bytes = two_test_image();
+    // Assert-free bodies isolate the aliasing rule: after the patch the orphaned
+    // function carries no `Assert`, so only the two-names-one-function check can
+    // reject (an assert-bearing body would trip the assert-outside-a-test-entry
+    // rule with the same code and mask a revert of the aliasing check).
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    for title_text in ["alpha", "beta"] {
+        let title = draft.intern_string(title_text);
+        let code = vec![Instr::Return];
+        let func = draft.add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_test_entry(title, func);
+    }
+    let mut bytes = draft.encode().expect("encode").bytes;
+    assert!(marrow_verify::verify(&bytes).is_ok());
     let (body, _) = test_entry_section(&bytes);
     // Point the second row's function at the first row's function: two names may
     // not alias one test function.
