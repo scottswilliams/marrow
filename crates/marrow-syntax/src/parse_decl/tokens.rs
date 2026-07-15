@@ -480,12 +480,12 @@ fn build_type_expr(
     })
 }
 
-/// A built-in generic application `Option[T]` or `Result[T, E]`, spelled with the
-/// same bracket group as `sequence[T]`: the head name whose `[...]` group spans
-/// the whole tail, with comma-separated type arguments. Only the two built-in
-/// heads are recognized; any other `Name[..]` stays a plain name (a user-defined
-/// generic head is a later slice). The applied argument arity is a checker
-/// concern, so `Result[T]` structures and reports its arity semantically.
+/// A built-in generic application `Option[T]`, `Result[T, E]`, `List[T]`, or
+/// `Map[K, V]`, spelled with the same bracket group as `sequence[T]`: the head name
+/// whose `[...]` group spans the whole tail, with comma-separated type arguments.
+/// Only these built-in heads are recognized; any other `Name[..]` stays a plain name
+/// (a user-defined generic head is a later slice). The applied argument arity is a
+/// checker concern, so a wrong arity structures and reports semantically.
 fn build_apply(
     source: &str,
     tokens: &[Token],
@@ -504,7 +504,7 @@ fn build_apply(
         return Ok(None);
     }
     let head = tokens[0].text(source).to_string();
-    if head != "Option" && head != "Result" {
+    if !matches!(head.as_str(), "Option" | "Result" | "List" | "Map") {
         return Ok(None);
     }
     let inner = &tokens[open + 1..last];

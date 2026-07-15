@@ -160,6 +160,27 @@ pub enum SealedInstr {
     TxnBegin,
     /// Close the export's single transaction region.
     TxnCommit,
+    /// Push an empty `List` of COLLTYPES index `_0`.
+    ListNew(u16),
+    /// `[list, value] → [list]`: append the bare element, faulting
+    /// `run.collection_limit` on a bound excess.
+    ListAppend,
+    /// `[list] → [int]`: the element count.
+    ListLen,
+    /// `[list, int] → [element]`: the bare element at the 0-based index.
+    ListGet,
+    /// Push an empty `Map` of COLLTYPES index `_0`.
+    MapNew(u16),
+    /// `[map, key, value] → [map]`: insert or replace by key in key order.
+    MapInsert,
+    /// `[map, key] → [value?]`: the value at `key`, or absent.
+    MapGet,
+    /// `[map] → [int]`: the entry count.
+    MapLen,
+    /// `[map, int] → [key]`: the bare key at the 0-based position in key order.
+    MapKeyAt,
+    /// `[map, int] → [value]`: the bare value at the 0-based position in key order.
+    MapValueAt,
 }
 
 impl SealedInstr {
@@ -259,6 +280,16 @@ pub struct SealedVariant {
     pub payload: Vec<ImageType>,
 }
 
+/// A sealed collection value type: a finite `List[T]` or ordered `Map[K, V]`. The
+/// element/key/value types are bare [`ImageType`]s (possibly `Collection` tags into
+/// an earlier row); the verifier proved every referenced index in range and that a
+/// `Map` key is a bare scalar key type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealedCollectionType {
+    List { elem: ImageType },
+    Map { key: ImageType, value: ImageType },
+}
+
 /// A sealed enum type: an ordered variant list in declaration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedEnumType {
@@ -285,6 +316,7 @@ pub enum RetShape {
     Scalar { scalar: Scalar, optional: bool },
     Record { idx: u16, optional: bool },
     Enum { idx: u16, optional: bool },
+    Collection { idx: u16, optional: bool },
 }
 
 /// A source-position row: the instruction it maps and its 1-based line/column.
@@ -416,6 +448,7 @@ pub struct VerifiedImage {
     pub(crate) image_id: ImageId,
     pub(crate) types: Vec<SealedRecordType>,
     pub(crate) enums: Vec<SealedEnumType>,
+    pub(crate) collections: Vec<SealedCollectionType>,
     pub(crate) roots: Vec<SealedRoot>,
     pub(crate) sites: Vec<SealedSite>,
     pub(crate) consts: Vec<SealedConst>,
@@ -443,6 +476,18 @@ impl VerifiedImage {
     /// render an enum value's declared and variant names.
     pub fn enums(&self) -> &[SealedEnumType] {
         &self.enums
+    }
+
+    /// The sealed collection value types, indexed by image COLLTYPES index. Consumed
+    /// by the VM to type collection operands and by the CLI to render a value.
+    pub fn collections(&self) -> &[SealedCollectionType] {
+        &self.collections
+    }
+
+    /// The sealed collection type at `index`. The verifier proved every operand and
+    /// return index in range.
+    pub fn collection_type(&self, index: u16) -> SealedCollectionType {
+        self.collections[index as usize]
     }
 
     /// The durable roots (0 or 1 at v0).

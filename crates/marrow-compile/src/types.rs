@@ -20,7 +20,8 @@ use std::collections::BTreeMap;
 
 use marrow_codes::Code;
 use marrow_image::{
-    EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar, TypeId, VariantDef,
+    CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar,
+    TypeId, VariantDef,
 };
 use marrow_syntax::{
     AliasDecl, EnumDecl, EnumMember, Expression, LiteralKind, NominalDecl, ResourceDecl,
@@ -46,6 +47,11 @@ pub(crate) enum GArg {
     Nominal(NominalId),
     Struct(TypeId),
     Enum(EnumId),
+    /// A finite collection value (`List[T]` / `Map[K, V]`) by its image COLLTYPES
+    /// index. The element/key/value source types live in the registry's collection
+    /// table (`CollSpec`), so a nested collection or a nominal element keeps its
+    /// source identity even though the image erases a nominal element to `int`.
+    Collection(u16),
 }
 
 impl GArg {
@@ -64,18 +70,47 @@ impl GArg {
                 idx: id.index(),
                 optional: false,
             },
+            GArg::Collection(idx) => ImageType::Collection {
+                idx,
+                optional: false,
+            },
         }
     }
 
     /// The scalar this argument denotes, if it is one. `None` for a nominal,
-    /// struct, or enum argument — the callers that need a durable scalar field
-    /// use this to reject a non-scalar field.
+    /// struct, enum, or collection argument — the callers that need a durable scalar
+    /// field use this to reject a non-scalar field.
     pub(crate) fn as_scalar(self) -> Option<ScalarType> {
         match self {
             GArg::Scalar(scalar) => Some(scalar),
             _ => None,
         }
     }
+
+    /// Whether this argument is admitted as a `Map` key type: a scalar key type
+    /// (`int`/`bool`/`string`/`bytes`) or a nominal int (which erases to `int`).
+    /// `decimal`, structs, enums, and collections are rejected as keys, mirroring the
+    /// durable-key scalar family.
+    pub(crate) fn is_key_type(self) -> bool {
+        match self {
+            GArg::Scalar(scalar) => matches!(
+                scalar,
+                ScalarType::Int | ScalarType::Bool | ScalarType::Text | ScalarType::Bytes
+            ),
+            GArg::Nominal(_) => true,
+            GArg::Struct(_) | GArg::Enum(_) | GArg::Collection(_) => false,
+        }
+    }
+}
+
+/// One concrete collection instantiation, keyed by the *source* element/key/value
+/// types so `List[Age]` and `List[int]` stay distinct even though both erase to the
+/// same image. The registry's collection table indexes these in the same order the
+/// image COLLTYPES table records them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollSpec {
+    List { elem: GArg },
+    Map { key: GArg, value: GArg },
 }
 
 /// A built-in generic instantiation: which built-in type an image enum index came
@@ -97,7 +132,7 @@ pub(crate) const RESULT_ERR: u16 = 1;
 
 /// Whether `name` is a built-in generic type the user cannot redeclare.
 pub(crate) fn is_reserved_type_name(name: &str) -> bool {
-    matches!(name, "Option" | "Result")
+    matches!(name, "Option" | "Result" | "List" | "Map")
 }
 
 /// The lazily-monomorphized built-in generic instantiations. Interior-mutable so a
@@ -228,6 +263,10 @@ pub(crate) struct TypeRegistry {
     enums: Vec<EnumInfo>,
     record: Option<RecordInfo>,
     generics: RefCell<Generics>,
+    /// The concrete collection instantiations minted so far, in image COLLTYPES
+    /// order. Interior-mutable so a shared `&TypeRegistry` can mint one on first use
+    /// of a concrete `List`/`Map`, deduping by source element/key/value types.
+    collections: RefCell<Vec<CollSpec>>,
 }
 
 impl TypeRegistry {
@@ -346,9 +385,78 @@ impl TypeRegistry {
                     let err = self.resolve_garg(draft, err)?;
                     Some(GArg::Enum(self.instantiate_result(draft, ok, err)))
                 }
+                "List" => {
+                    let [elem] = args.as_slice() else { return None };
+                    let elem = self.resolve_garg(draft, elem)?;
+                    Some(GArg::Collection(self.instantiate_list(draft, elem)))
+                }
+                "Map" => {
+                    let [key, value] = args.as_slice() else {
+                        return None;
+                    };
+                    let key = self.resolve_garg(draft, key)?;
+                    // A map key is drawn from the durable-key scalar family; a struct,
+                    // enum, collection, or decimal key is not admitted.
+                    if !key.is_key_type() {
+                        return None;
+                    }
+                    let value = self.resolve_garg(draft, value)?;
+                    Some(GArg::Collection(self.instantiate_map(draft, key, value)))
+                }
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// The image COLLTYPES index of `List[elem]`, minting it into `draft` on first
+    /// use and reusing it thereafter. Dedup is by the *source* element type, so
+    /// `List[Age]` and `List[int]` stay distinct rows even though both erase to
+    /// `List[int]` in the image.
+    pub(crate) fn instantiate_list(&self, draft: &mut ImageDraft, elem: GArg) -> u16 {
+        let spec = CollSpec::List { elem };
+        if let Some(index) = self.collections.borrow().iter().position(|s| *s == spec) {
+            return index as u16;
+        }
+        let id = draft.add_collection_type(CollectionTypeDef::List { elem: elem.image() });
+        let mut collections = self.collections.borrow_mut();
+        debug_assert_eq!(id.index() as usize, collections.len());
+        collections.push(spec);
+        id.index()
+    }
+
+    /// The image COLLTYPES index of `Map[key, value]`, minting it on first use and
+    /// reusing it thereafter, deduped by source key/value types.
+    pub(crate) fn instantiate_map(&self, draft: &mut ImageDraft, key: GArg, value: GArg) -> u16 {
+        let spec = CollSpec::Map { key, value };
+        if let Some(index) = self.collections.borrow().iter().position(|s| *s == spec) {
+            return index as u16;
+        }
+        let id = draft.add_collection_type(CollectionTypeDef::Map {
+            key: key.image(),
+            value: value.image(),
+        });
+        let mut collections = self.collections.borrow_mut();
+        debug_assert_eq!(id.index() as usize, collections.len());
+        collections.push(spec);
+        id.index()
+    }
+
+    /// The source element/key/value spec of a minted collection instantiation.
+    pub(crate) fn collection_spec(&self, idx: u16) -> CollSpec {
+        self.collections.borrow()[idx as usize]
+    }
+
+    /// The source spelling of a collection instantiation (`List[T]` / `Map[K, V]`),
+    /// used in diagnostics and cycle labels.
+    pub(crate) fn collection_spelling(&self, idx: u16) -> String {
+        match self.collection_spec(idx) {
+            CollSpec::List { elem } => format!("List[{}]", garg_spelling(self, elem)),
+            CollSpec::Map { key, value } => format!(
+                "Map[{}, {}]",
+                garg_spelling(self, key),
+                garg_spelling(self, value)
+            ),
         }
     }
 
@@ -470,6 +578,7 @@ impl TypeRegistry {
             enums: Vec::new(),
             record: None,
             generics: RefCell::default(),
+            collections: RefCell::default(),
         };
         registry.nominals =
             build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
@@ -1442,7 +1551,10 @@ impl ValueGraph {
         let arg_target = |arg: GArg| match arg {
             GArg::Struct(ty) => Some(ValueNode::Record(ty)),
             GArg::Enum(id) => Some(ValueNode::Enum(id)),
-            GArg::Scalar(_) | GArg::Nominal(_) => None,
+            // A collection is a finite value (an empty list/map terminates), so a
+            // field reached only through one is not an infinite value: it adds no
+            // containment edge, and `struct Node { kids: List[Node] }` is admitted.
+            GArg::Scalar(_) | GArg::Nominal(_) | GArg::Collection(_) => None,
         };
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
         for (from, node) in nodes.iter().enumerate() {
@@ -1555,6 +1667,7 @@ fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
                 .map(|info| info.name.clone())
                 .unwrap_or_else(|| "enum".to_string()),
         },
+        GArg::Collection(idx) => registry.collection_spelling(idx),
     }
 }
 

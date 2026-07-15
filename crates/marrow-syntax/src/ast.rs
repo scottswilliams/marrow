@@ -929,10 +929,10 @@ pub enum TypeExpr {
         span: SourceSpan,
     },
     /// A generic type application `Head[Arg, ...]`, spelled with the same bracket
-    /// syntax as `sequence[T]`. The current line resolves only the built-in
-    /// `Option[T]` and `Result[T, E]` heads; a user-declared generic head is a
-    /// later slice. `head` is the applied name and `args` its type arguments in
-    /// source order.
+    /// syntax as `sequence[T]`. The current line resolves the built-in value types
+    /// `Option[T]`/`Result[T, E]` and the finite collection types `List[T]`/
+    /// `Map[K, V]`; a user-declared generic head is a later slice. `head` is the
+    /// applied name and `args` its type arguments in source order.
     Apply {
         head: String,
         args: Vec<TypeExpr>,

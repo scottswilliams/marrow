@@ -170,6 +170,7 @@ program.
 | `run.required_missing` | A durable transaction reached its commit with an entry it created or staged that still leaves a required field unset. The transaction rolls back rather than committing a partial entry, and the fault is mapped to the transaction's source span. Not catchable inside the program. |
 | `run.commit` | A durable transaction commit did not confirm. The store handle is poisoned and every later operation fails; the process must exit and reopen, where the recorded witness classifies whether the commit completed. The fault is mapped to the transaction's source span and is not catchable inside the program. |
 | `run.corruption` | The path kernel found the durable store internally inconsistent while running a verified program: a field leaf with no entry marker (an orphan leaf), a cell it could not decode as its typed value, or a stored schema descriptor that does not match the program image. The fault is mapped to the operation's source span and is not catchable inside the program. |
+| `run.collection_limit` | A `List` append or `Map` insert would grow a collection past a fixed representational bound: more than 65536 elements, or an aggregate value size over 1 MiB. The operation faults rather than allocating unboundedly, mapped to its source span, and is not catchable inside the program. |
 
 ### `value.*` — kind `runtime`
 
@@ -248,3 +249,4 @@ already close. They are not ordinary user-facing diagnostics.
 | Code | Meaning |
 |---|---|
 | `run.enum_variant` | A defense-in-depth guard: a bytecode enum-payload read named a variant the running enum value did not select. The compiler dispatches on the enum tag before extracting a variant's payload, so ordinary compiled programs never reach this; it fails an image closed rather than reading a differently-typed payload leaf when a hand-built or corrupted image extracts the wrong variant. Mapped to the operation's source span and not catchable inside the program. |
+| `run.collection_range` | A defense-in-depth guard: a bytecode positional collection read (a list element or a map key/value at an index) addressed a position past the collection's length. The compiler's `for` lowering keeps every positional read in bounds, so ordinary compiled programs never reach this; it fails an image closed rather than reading out of bounds when a hand-built or corrupted image supplies an out-of-range index. Mapped to the operation's source span and not catchable inside the program. |

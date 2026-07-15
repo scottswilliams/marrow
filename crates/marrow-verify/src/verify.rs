@@ -22,19 +22,21 @@ use marrow_image::{
     OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
     OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
     OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
-    OP_JUMP, OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
-    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
-    OP_TEXT_IS_EMPTY, OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT,
-    OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_ENUM, TAG_INT,
-    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
+    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
+    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE,
+    OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_ENUM, TAG_INT, TAG_RECORD,
+    TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    Demand, RetShape, SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction,
-    SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry,
-    SealedVariant, SpanRow, VerifiedImage,
+    Demand, RetShape, SealedCollectionType, SealedConst, SealedEnumType, SealedExport, SealedField,
+    SealedFunction, SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget,
+    SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -116,6 +118,7 @@ struct DecodedImage {
     strings: Vec<Rc<str>>,
     types: Vec<DecodedRecordType>,
     enums: Vec<DecodedEnum>,
+    collections: Vec<SealedCollectionType>,
     roots: Vec<DecodedRoot>,
     sites: Vec<DecodedSite>,
     consts: Vec<SealedConst>,
@@ -158,12 +161,12 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let section_count = reader
         .u8()
         .ok_or(reject(VerifyPhase::Envelope, "short section count"))?;
-    if section_count != 9 {
-        return Err(reject(VerifyPhase::Envelope, "section count must be 9"));
+    if section_count != 10 {
+        return Err(reject(VerifyPhase::Envelope, "section count must be 10"));
     }
-    let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(9);
+    let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(10);
     let mut last_id = 0u8;
-    for _ in 0..9 {
+    for _ in 0..10 {
         let id = reader
             .u8()
             .ok_or(reject(VerifyPhase::Envelope, "short section id"))?;
@@ -189,12 +192,12 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
             "trailing bytes after sections",
         ));
     }
-    // Section ids strictly ascend and there are exactly 9, so they are exactly 1..9.
+    // Section ids strictly ascend and there are exactly 10, so they are exactly 1..10.
     for (index, (id, _)) in sections.iter().enumerate() {
         if *id != (index as u8 + 1) {
             return Err(reject(
                 VerifyPhase::Envelope,
-                "section ids must be exactly 1..9",
+                "section ids must be exactly 1..10",
             ));
         }
     }
@@ -204,11 +207,18 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let strings = decode_strings(sections[0].1)?;
     let types = decode_types(sections[1].1, strings.len())?;
     let enums = decode_enums(sections[8].1, strings.len(), types.len())?;
-    validate_record_field_refs(&types, enums.len())?;
+    let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
+    validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
     let (roots, sites) = decode_durable(sections[2].1, strings.len(), &types)?;
     let consts = decode_consts(sections[3].1, &strings)?;
-    let mut functions = decode_functions(sections[4].1, strings.len(), types.len(), enums.len())?;
+    let mut functions = decode_functions(
+        sections[4].1,
+        strings.len(),
+        types.len(),
+        enums.len(),
+        collections.len(),
+    )?;
     let exports = decode_exports(sections[5].1, functions.len())?;
     decode_spans(sections[6].1, &mut functions)?;
     let test_entries = decode_test_entries(sections[7].1, strings.len(), functions.len())?;
@@ -218,6 +228,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         strings,
         types,
         enums,
+        collections,
         roots,
         sites,
         consts,
@@ -501,6 +512,145 @@ fn decode_enums(
     Ok(enums)
 }
 
+/// Decode the COLLTYPES table (section 0x0A): a count, then per collection type a
+/// one-byte kind tag (`0x00` List, `0x01` Map) and its bare-`ImageType` element
+/// reference (List) or key then value references (Map). A referenced `Collection`
+/// index must name a strictly earlier row, so the collection reference graph is
+/// acyclic by construction (a nested collection is always minted after its inner
+/// shape). A `Map` key must be a bare scalar key type (`int`/`bool`/`string`/`bytes`;
+/// a nominal key is int-shaped) — the one durable-key scalar family the ordered map
+/// compares over.
+fn decode_collections(
+    body: &[u8],
+    type_count: usize,
+    enum_count: usize,
+) -> Result<Vec<SealedCollectionType>, VerifyRejection> {
+    let mut reader = Reader::new(body);
+    let count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short collection count"))? as usize;
+    if count > marrow_image::bounds::MAX_COLLECTIONS {
+        return Err(reject(VerifyPhase::Table, "too many collection types"));
+    }
+    let mut collections = Vec::with_capacity(count);
+    for row in 0..count {
+        let kind = reader
+            .u8()
+            .ok_or(reject(VerifyPhase::Table, "short collection kind"))?;
+        let coll = match kind {
+            0x00 => {
+                let elem = decode_collection_inner_ref(&mut reader, type_count, enum_count, row)?;
+                SealedCollectionType::List { elem }
+            }
+            0x01 => {
+                let key = decode_collection_inner_ref(&mut reader, type_count, enum_count, row)?;
+                if !matches!(
+                    key,
+                    ImageType::Scalar {
+                        optional: false,
+                        ..
+                    }
+                ) {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "map key must be a bare scalar key type",
+                    ));
+                }
+                let value = decode_collection_inner_ref(&mut reader, type_count, enum_count, row)?;
+                SealedCollectionType::Map { key, value }
+            }
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "collection kind must be 0 (list) or 1 (map)",
+                ));
+            }
+        };
+        collections.push(coll);
+    }
+    if !reader.is_empty() {
+        return Err(reject(
+            VerifyPhase::Table,
+            "trailing bytes in collection table",
+        ));
+    }
+    Ok(collections)
+}
+
+/// Decode one bare element/key/value type inside a COLLTYPES row: a scalar, a record
+/// (index in range), an enum (index in range), or a collection (a strictly earlier
+/// row `< current`). Never optional — a collection's leaf types are bare.
+fn decode_collection_inner_ref(
+    reader: &mut Reader,
+    type_count: usize,
+    enum_count: usize,
+    current_row: usize,
+) -> Result<ImageType, VerifyRejection> {
+    let tag = reader
+        .u8()
+        .ok_or(reject(VerifyPhase::Table, "short collection leaf type"))?;
+    if tag & OPTIONAL_FLAG != 0 {
+        return Err(reject(
+            VerifyPhase::Table,
+            "collection leaf type cannot be optional",
+        ));
+    }
+    match tag {
+        TAG_INT | TAG_BOOL | TAG_TEXT | TAG_BYTES => Ok(ImageType::scalar(
+            decode_bare_scalar(tag).expect("scalar base"),
+        )),
+        TAG_RECORD => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short collection record index"))?;
+            if idx as usize >= type_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "collection record index out of range",
+                ));
+            }
+            Ok(ImageType::Record {
+                idx,
+                optional: false,
+            })
+        }
+        TAG_ENUM => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short collection enum index"))?;
+            if idx as usize >= enum_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "collection enum index out of range",
+                ));
+            }
+            Ok(ImageType::Enum {
+                idx,
+                optional: false,
+            })
+        }
+        TAG_COLLECTION => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short nested collection index"))?;
+            if idx as usize >= current_row {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "nested collection index must name an earlier collection",
+                ));
+            }
+            Ok(ImageType::Collection {
+                idx,
+                optional: false,
+            })
+        }
+        _ => Err(reject(
+            VerifyPhase::Table,
+            "collection leaf type must be a bare scalar, record, enum, or earlier collection",
+        )),
+    }
+}
+
 /// Decode one bare enum-payload leaf type: a scalar, a record, or an enum
 /// reference, never optional. Record and enum indices are validated in range
 /// (`type_count`/`enum_count`) so a payload can never name a type outside the
@@ -592,9 +742,18 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
                 optional: false,
             })
         }
+        TAG_COLLECTION => {
+            let idx = reader
+                .u16()
+                .ok_or(reject(VerifyPhase::Table, "short field collection index"))?;
+            Ok(ImageType::Collection {
+                idx,
+                optional: false,
+            })
+        }
         _ => Err(reject(
             VerifyPhase::Table,
-            "record field type must be a bare scalar, record, or enum",
+            "record field type must be a bare scalar, record, enum, or collection",
         )),
     }
 }
@@ -607,6 +766,7 @@ fn decode_record_field_type(tag: u8, reader: &mut Reader) -> Result<ImageType, V
 fn validate_record_field_refs(
     types: &[DecodedRecordType],
     enum_count: usize,
+    collection_count: usize,
 ) -> Result<(), VerifyRejection> {
     for record in types {
         for field in &record.fields {
@@ -621,6 +781,12 @@ fn validate_record_field_refs(
                     return Err(reject(
                         VerifyPhase::Table,
                         "record field record index out of range",
+                    ));
+                }
+                ImageType::Collection { idx, .. } if idx as usize >= collection_count => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "record field collection index out of range",
                     ));
                 }
                 _ => {}
@@ -892,6 +1058,7 @@ fn decode_type_ref_ret(
     reader: &mut Reader,
     type_count: usize,
     enum_count: usize,
+    collection_count: usize,
 ) -> Result<RetShape, VerifyRejection> {
     let optional = tag & OPTIONAL_FLAG != 0;
     let base = tag & !OPTIONAL_FLAG;
@@ -930,6 +1097,19 @@ fn decode_type_ref_ret(
             }
             Ok(RetShape::Enum { idx, optional })
         }
+        TAG_COLLECTION => {
+            let idx = reader.u16().ok_or(reject(
+                VerifyPhase::Table,
+                "short collection return type index",
+            ))?;
+            if idx as usize >= collection_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "collection return type index out of range",
+                ));
+            }
+            Ok(RetShape::Collection { idx, optional })
+        }
         _ => Err(reject(VerifyPhase::Table, "unknown return type tag")),
     }
 }
@@ -942,6 +1122,7 @@ fn decode_param_ref(
     reader: &mut Reader,
     type_count: usize,
     enum_count: usize,
+    collection_count: usize,
 ) -> Result<ImageType, VerifyRejection> {
     if tag & OPTIONAL_FLAG != 0 {
         return Err(reject(
@@ -983,9 +1164,25 @@ fn decode_param_ref(
                 optional: false,
             })
         }
+        TAG_COLLECTION => {
+            let idx = reader.u16().ok_or(reject(
+                VerifyPhase::Table,
+                "short collection param type index",
+            ))?;
+            if idx as usize >= collection_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "collection param type index out of range",
+                ));
+            }
+            Ok(ImageType::Collection {
+                idx,
+                optional: false,
+            })
+        }
         _ => Err(reject(
             VerifyPhase::Table,
-            "param type must be a bare scalar, record, or enum",
+            "param type must be a bare scalar, record, enum, or collection",
         )),
     }
 }
@@ -995,6 +1192,7 @@ fn decode_functions(
     string_count: usize,
     type_count: usize,
     enum_count: usize,
+    collection_count: usize,
 ) -> Result<Vec<DecodedFunction>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
@@ -1029,12 +1227,24 @@ fn decode_functions(
             let tag = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short param type"))?;
-            params.push(decode_param_ref(tag, &mut reader, type_count, enum_count)?);
+            params.push(decode_param_ref(
+                tag,
+                &mut reader,
+                type_count,
+                enum_count,
+                collection_count,
+            )?);
         }
         let ret_tag = reader
             .u8()
             .ok_or(reject(VerifyPhase::Table, "short return type"))?;
-        let ret = decode_type_ref_ret(ret_tag, &mut reader, type_count, enum_count)?;
+        let ret = decode_type_ref_ret(
+            ret_tag,
+            &mut reader,
+            type_count,
+            enum_count,
+            collection_count,
+        )?;
         let local_count = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short local count"))?;
@@ -1248,9 +1458,11 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
             ret: function.ret,
         })
         .collect();
+    let collections = decoded.collections.clone();
     let ctx = Ctx {
         types: &types,
         enums: &enums,
+        collections: &collections,
         roots: &roots,
         sites: &sites,
         signatures: &signatures,
@@ -1300,6 +1512,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         image_id: decoded.image_id,
         types,
         enums,
+        collections,
         roots,
         sites,
         consts: decoded.consts,
@@ -1403,6 +1616,7 @@ fn check_test_entries(
 struct Ctx<'a> {
     types: &'a [SealedRecordType],
     enums: &'a [SealedEnumType],
+    collections: &'a [SealedCollectionType],
     roots: &'a [SealedRoot],
     sites: &'a [SealedSite],
     signatures: &'a [FnSig],
@@ -1826,6 +2040,16 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_DUR_NEXT_KEY => SealedInstr::DurNextKey(operand_u16(&mut reader)?),
             OP_TXN_BEGIN => SealedInstr::TxnBegin,
             OP_TXN_COMMIT => SealedInstr::TxnCommit,
+            OP_LIST_NEW => SealedInstr::ListNew(operand_u16(&mut reader)?),
+            OP_LIST_APPEND => SealedInstr::ListAppend,
+            OP_LIST_LEN => SealedInstr::ListLen,
+            OP_LIST_GET => SealedInstr::ListGet,
+            OP_MAP_NEW => SealedInstr::MapNew(operand_u16(&mut reader)?),
+            OP_MAP_INSERT => SealedInstr::MapInsert,
+            OP_MAP_GET => SealedInstr::MapGet,
+            OP_MAP_LEN => SealedInstr::MapLen,
+            OP_MAP_KEY_AT => SealedInstr::MapKeyAt,
+            OP_MAP_VALUE_AT => SealedInstr::MapValueAt,
             _ => {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -1885,9 +2109,19 @@ fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejecti
                 optional: true,
             })
         }
+        TAG_COLLECTION => {
+            let idx = reader.u16().ok_or(reject(
+                VerifyPhase::Function,
+                "short vacant-load collection index",
+            ))?;
+            Ok(ImageType::Collection {
+                idx,
+                optional: true,
+            })
+        }
         _ => Err(reject(
             VerifyPhase::Function,
-            "vacant-load operand must be an optional scalar or enum",
+            "vacant-load operand must be an optional scalar, enum, or collection",
         )),
     }
 }
@@ -2108,6 +2342,9 @@ fn apply(
             RetShape::Enum { idx, optional } => {
                 frame.stack.push(VType::Enum { idx, optional });
             }
+            RetShape::Collection { idx, optional } => {
+                frame.stack.push(VType::Collection { idx, optional });
+            }
         }
         return Ok(Control::Fallthrough);
     }
@@ -2239,14 +2476,23 @@ fn apply(
             return Ok(Control::Fallthrough);
         }
         SealedInstr::VacantLoad(ty) => {
-            // An enum operand names a value type; bounds-check it against the table.
-            if let ImageType::Enum { idx, .. } = ty
-                && ctx.enums.get(*idx as usize).is_none()
-            {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "vacant-load enum index out of range",
-                ));
+            // A record/enum/collection operand names a value type; bounds-check it.
+            match ty {
+                ImageType::Enum { idx, .. } if ctx.enums.get(*idx as usize).is_none() => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "vacant-load enum index out of range",
+                    ));
+                }
+                ImageType::Collection { idx, .. }
+                    if ctx.collections.get(*idx as usize).is_none() =>
+                {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "vacant-load collection index out of range",
+                    ));
+                }
+                _ => {}
             }
             frame
                 .stack
@@ -2364,6 +2610,113 @@ fn apply(
                 ));
             }
             frame.stack.push(VType::bare_scalar(Scalar::Bool));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::ListNew(idx) => {
+            match ctx.collections.get(*idx as usize) {
+                Some(SealedCollectionType::List { .. }) => {}
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "list-new operand does not name a list collection type",
+                    ));
+                }
+            }
+            frame.stack.push(VType::bare_collection(*idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MapNew(idx) => {
+            match ctx.collections.get(*idx as usize) {
+                Some(SealedCollectionType::Map { .. }) => {}
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "map-new operand does not name a map collection type",
+                    ));
+                }
+            }
+            frame.stack.push(VType::bare_collection(*idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::ListAppend => {
+            let value = pop(&mut frame.stack)?;
+            let (idx, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
+            if value != VType::from_image(elem).expect("a list element type is never unit") {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "list-append value type does not match the element type",
+                ));
+            }
+            frame.stack.push(VType::bare_collection(idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::ListLen => {
+            list_elem(ctx, pop(&mut frame.stack)?)?;
+            frame.stack.push(VType::bare_scalar(Scalar::Int));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::ListGet => {
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+            let (_, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
+            frame
+                .stack
+                .push(VType::from_image(elem).expect("a list element type is never unit"));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MapInsert => {
+            let value = pop(&mut frame.stack)?;
+            let key = pop(&mut frame.stack)?;
+            let (idx, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+            if key != VType::from_image(key_ty).expect("a map key type is never unit") {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "map-insert key type does not match the map key type",
+                ));
+            }
+            if value != VType::from_image(value_ty).expect("a map value type is never unit") {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "map-insert value type does not match the map value type",
+                ));
+            }
+            frame.stack.push(VType::bare_collection(idx));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MapGet => {
+            let key = pop(&mut frame.stack)?;
+            let (_, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+            if key != VType::from_image(key_ty).expect("a map key type is never unit") {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "map-get key type does not match the map key type",
+                ));
+            }
+            frame.stack.push(
+                VType::from_image(value_ty)
+                    .expect("a map value type is never unit")
+                    .to_optional(),
+            );
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MapLen => {
+            map_kv(ctx, pop(&mut frame.stack)?)?;
+            frame.stack.push(VType::bare_scalar(Scalar::Int));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MapKeyAt => {
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+            let (_, key_ty, _) = map_kv(ctx, pop(&mut frame.stack)?)?;
+            frame
+                .stack
+                .push(VType::from_image(key_ty).expect("a map key type is never unit"));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MapValueAt => {
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+            let (_, _, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+            frame
+                .stack
+                .push(VType::from_image(value_ty).expect("a map value type is never unit"));
             return Ok(Control::Fallthrough);
         }
         _ => {}
@@ -2582,11 +2935,59 @@ fn apply(
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurNextKey(_)
         | SealedInstr::TxnBegin
-        | SealedInstr::TxnCommit => {
+        | SealedInstr::TxnCommit
+        | SealedInstr::ListNew(_)
+        | SealedInstr::ListAppend
+        | SealedInstr::ListLen
+        | SealedInstr::ListGet
+        | SealedInstr::MapNew(_)
+        | SealedInstr::MapInsert
+        | SealedInstr::MapGet
+        | SealedInstr::MapLen
+        | SealedInstr::MapKeyAt
+        | SealedInstr::MapValueAt => {
             unreachable!(
-                "record, optional, call, and durable opcodes return from the earlier matches"
+                "record, optional, call, durable, and collection opcodes return from the earlier matches"
             )
         }
+    }
+}
+
+/// The COLLTYPES index and element type of a bare list `VType`, or a phase-3
+/// rejection when the operand is not a bare list collection.
+fn list_elem(ctx: &Ctx, value: VType) -> Result<(u16, ImageType), VerifyRejection> {
+    let VType::Collection {
+        idx,
+        optional: false,
+    } = value
+    else {
+        return Err(reject(VerifyPhase::Function, "operand is not a bare list"));
+    };
+    match ctx.collections.get(idx as usize) {
+        Some(SealedCollectionType::List { elem }) => Ok((idx, *elem)),
+        _ => Err(reject(
+            VerifyPhase::Function,
+            "collection index does not name a list type",
+        )),
+    }
+}
+
+/// The COLLTYPES index and `(key, value)` image types of a bare map `VType`, or a
+/// phase-3 rejection when the operand is not a bare map collection.
+fn map_kv(ctx: &Ctx, value: VType) -> Result<(u16, ImageType, ImageType), VerifyRejection> {
+    let VType::Collection {
+        idx,
+        optional: false,
+    } = value
+    else {
+        return Err(reject(VerifyPhase::Function, "operand is not a bare map"));
+    };
+    match ctx.collections.get(idx as usize) {
+        Some(SealedCollectionType::Map { key, value }) => Ok((idx, *key, *value)),
+        _ => Err(reject(
+            VerifyPhase::Function,
+            "collection index does not name a map type",
+        )),
     }
 }
 

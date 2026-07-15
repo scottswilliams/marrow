@@ -47,6 +47,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn risky(): Result[int, string]\n    const x = try run()\n    return ok(x)\n",
         "module app\n\nfn nested(o: Option[Option[int]]): int\n    match o\n        none\n            return 0\n        some(inner)\n            return depth(inner)\n",
         "module app\n\nfn find(): Result[Option[int], string]\n    const x = try lookup()\n    return ok(some(x))\n",
+        "module app\n\nfn build(): List[int]\n    var xs: List[int] = List()\n    xs = append(xs, 1)\n    for x in xs\n        print($\"{x}\")\n    return xs\n",
+        "module app\n\nfn score(): Map[string, int]\n    var m: Map[string, List[int]] = Map()\n    m = insert(m, \"a\", List())\n    for k, v in m\n        print(k)\n    return get(m, \"a\")\n",
         "module app\n\nfn amounts(): int?\n    return absent\n",
         "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    default Book.author = \"unknown\"\n    retire ^books.byTitle\n    transform Book.shelf\n        return ^books(1).shelf\n",
         "module app\n\nfn compound()\n    var total: int = 0\n    total += 1\n    total *= 2\n",

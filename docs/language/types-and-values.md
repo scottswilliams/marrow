@@ -436,6 +436,64 @@ field argument, and an unnamed (positional) argument, are `check.type`
 diagnostics; a struct name that collides with another declared type is a
 `check.name_conflict`.
 
+## Lists And Maps
+
+`List[T]` is a finite ordered collection of values of type `T`, and `Map[K, V]`
+is a finite ordered map from keys of type `K` to values of type `V`. Both are
+ordinary copied values with the same value semantics as every other type: passing,
+returning, or reassigning one copies it, and there is no aliasing or shared
+mutation. The element type `T` and the value type `V` may be any value type,
+including a nested `List`, `Map`, `struct`, `enum`, or `Option`/`Result`. A map key
+`K` is drawn from the ordered key scalars — `int`, `bool`, `string`, `bytes`, or a
+nominal int type; a struct, enum, collection, or `decimal` key is a
+`check.unsupported`. Collections are values, never durable storage: a resource
+field or store key is not a `List` or `Map`.
+
+An empty collection is constructed with `List()` or `Map()`, whose element and
+key/value types come from the expected type (an annotation, argument, return type,
+or coercion). The closed set of collection operations is procedural — there is no
+method syntax:
+
+| Form | Result |
+|---|---|
+| `List()` / `Map()` | an empty collection of the expected type |
+| `append(list, value)` | the list with `value` added after the last element |
+| `insert(map, key, value)` | the map with `value` stored at `key` (replacing any prior value) |
+| `get(map, key)` | `V?` — the value at `key`, or `absent` |
+| `length(collection)` | the element or entry count as an `int` |
+| `isEmpty(collection)` | whether the collection has no elements |
+
+Because collections are values, `append` and `insert` yield an updated collection
+rather than mutating in place; a `var` binding is reassigned to keep it.
+
+```mw
+module docs::collections
+
+pub fn total(): int
+    var xs: List[int] = List()
+    xs = append(xs, 10)
+    xs = append(xs, 20)
+    var sum: int = 0
+    for x in xs
+        sum = sum + x
+    return sum
+
+pub fn lookup(name: string): int
+    var scores: Map[string, int] = Map()
+    scores = insert(scores, "ada", 10)
+    return get(scores, name) ?? 0
+```
+
+A `List` iterates its elements in insertion order. A `Map` iterates in ascending
+key order: `for key in map` binds each key, and `for key, value in map` binds each
+key and its value. Map keys use the same typed order as durable traversal —
+numeric keys ascend, `false` precedes `true`, and strings and bytes use
+lexicographic order.
+
+A collection has fixed representational bounds: at most 65536 elements and at most
+1 MiB of aggregate value size. An `append` or `insert` that would exceed either
+faults `run.collection_limit` rather than allocating unboundedly.
+
 ## Sequences And Keyed Collections
 
 `sequence[T]` is a local or declared positional collection whose keys are

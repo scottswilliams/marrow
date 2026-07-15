@@ -198,14 +198,16 @@ scalar_type      = "int" | "bool" | "string" | "bytes"
 
 identity_type    = "Id", "(", saved_root, ")" ;
 sequence_type    = "sequence", "[", type, "]" ;
-generic_type     = ("Option" | "Result"), "[", type, {",", type}, "]" ;
+generic_type     = ("Option" | "Result" | "List" | "Map"),
+                   "[", type, {",", type}, "]" ;
 ```
 
 `generic_type` is a built-in generic application, spelled with the same bracket
-group as `sequence_type`. Only the built-in `Option[T]` and `Result[T, E]` heads
-are recognized on the current line; a user-defined generic head is a future
-direction. The applied argument arity (`Option` takes one type, `Result` takes
-two) is a checker rule.
+group as `sequence_type`. The recognized heads on the current line are the value
+types `Option[T]` and `Result[T, E]` and the finite collection types `List[T]`
+and `Map[K, V]`; a user-defined generic head is a future direction. The applied
+argument arity (`Option` and `List` take one type, `Result` and `Map` take two) is
+a checker rule.
 
 Keyed local-collection shapes are written on declarations, not as standalone
 type annotations.

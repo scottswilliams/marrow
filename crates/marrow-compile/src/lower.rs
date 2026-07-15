@@ -24,8 +24,8 @@ use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
-    GArg, GenericInst, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK, SupportSet,
-    TypeRegistry,
+    CollSpec, GArg, GenericInst, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK,
+    SupportSet, TypeRegistry,
 };
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
@@ -60,6 +60,14 @@ enum LTy {
         ty: EnumId,
         optional: bool,
     },
+    /// A finite collection value (`List[T]` / `Map[K, V]`), image-`Collection`- and
+    /// runtime-`Value::List`/`Value::Map`-shaped. `idx` names its image COLLTYPES
+    /// entry; the source element/key/value types live in the registry's collection
+    /// table.
+    Collection {
+        idx: u16,
+        optional: bool,
+    },
 }
 
 impl LTy {
@@ -76,7 +84,8 @@ impl LTy {
             | LTy::Nominal { optional, .. }
             | LTy::Record { optional, .. }
             | LTy::Struct { optional, .. }
-            | LTy::Enum { optional, .. } => optional,
+            | LTy::Enum { optional, .. }
+            | LTy::Collection { optional, .. } => optional,
         }
     }
 
@@ -90,6 +99,10 @@ impl LTy {
             LTy::Record { ty, .. } => LTy::Record { ty, optional: true },
             LTy::Struct { ty, .. } => LTy::Struct { ty, optional: true },
             LTy::Enum { ty, .. } => LTy::Enum { ty, optional: true },
+            LTy::Collection { idx, .. } => LTy::Collection {
+                idx,
+                optional: true,
+            },
         }
     }
 
@@ -110,6 +123,10 @@ impl LTy {
             },
             LTy::Enum { ty, .. } => LTy::Enum {
                 ty,
+                optional: false,
+            },
+            LTy::Collection { idx, .. } => LTy::Collection {
+                idx,
                 optional: false,
             },
         }
@@ -154,6 +171,7 @@ impl LTy {
                 };
                 (base, optional)
             }
+            LTy::Collection { idx, optional } => (records.collection_spelling(idx), optional),
         };
         if optional { format!("{base}?") } else { base }
     }
@@ -200,6 +218,10 @@ impl LTy {
                 ty,
                 optional: false,
             } => Some(GArg::Enum(ty)),
+            LTy::Collection {
+                idx,
+                optional: false,
+            } => Some(GArg::Collection(idx)),
             _ => None,
         }
     }
@@ -228,6 +250,7 @@ impl LTy {
                 idx: ty.index(),
                 optional,
             },
+            LTy::Collection { idx, optional } => ImageType::Collection { idx, optional },
         }
     }
 }
@@ -247,6 +270,10 @@ fn garg_to_lty(arg: GArg) -> LTy {
         },
         GArg::Enum(ty) => LTy::Enum {
             ty,
+            optional: false,
+        },
+        GArg::Collection(idx) => LTy::Collection {
+            idx,
             optional: false,
         },
     }
@@ -303,6 +330,15 @@ enum Builtin {
     IsEmpty,
     Contains,
     Trim,
+    /// The empty-collection constructors `List()`/`Map()`, type-directed by the
+    /// expected type. They are reserved (blocking a colliding value declaration)
+    /// because a bare `List`/`Map` at a use site is always the built-in constructor.
+    /// The procedural collection operations (`append`/`insert`/`get`/`length`) are
+    /// deliberately *not* reserved: they are common verbs, so a same-module function
+    /// of that name wins and the collection op is a fallback (see
+    /// [`FnLowerer::lower_collection_fallback`]).
+    List,
+    Map,
 }
 
 impl Builtin {
@@ -317,6 +353,8 @@ impl Builtin {
             "isEmpty" => Builtin::IsEmpty,
             "contains" => Builtin::Contains,
             "trim" => Builtin::Trim,
+            "List" => Builtin::List,
+            "Map" => Builtin::Map,
             _ => return None,
         })
     }
@@ -343,6 +381,35 @@ pub(crate) fn reserved_builtin_name(file: &str, span: SourceSpan, name: &str) ->
         file,
         span,
         format!("`{name}` is a built-in and cannot be redeclared"),
+    )
+}
+
+/// Classify an expression as an empty-collection constructor call `List()` or
+/// `Map()` (a zero-argument call on the reserved type name), returning the head.
+fn collection_ctor_call(expr: &Expression) -> Option<&'static str> {
+    let Expression::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    match &**callee {
+        Expression::Name { segments, .. } => match segments.as_slice() {
+            [n] if n == "List" => Some("List"),
+            [n] if n == "Map" => Some("Map"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The diagnostic for a built-in called with the wrong argument shape.
+fn builtin_arity(file: &str, span: SourceSpan, name: &str, arity: usize) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!("`{name}` takes {arity} positional argument(s)"),
     )
 }
 
@@ -1694,13 +1761,17 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "a loop step"));
             return Flow::Fallthrough;
         }
+        // A local `List`/`Map` iterable takes the collection path; a `^root` takes the
+        // durable key walk below.
+        if !matches!(iterable, Expression::SavedRoot { .. }) {
+            return self.lower_for_collection(binding, iterable, body, span);
+        }
         let Expression::SavedRoot {
             name,
             span: root_span,
         } = iterable
         else {
-            self.fail(unsupported(self.file, iterable.span(), "this iterable"));
-            return Flow::Fallthrough;
+            unreachable!("iterable is a saved root here");
         };
         let [var] = binding.names.as_slice() else {
             self.fail(unsupported(
@@ -1763,6 +1834,146 @@ impl<'a> FnLowerer<'a> {
         self.locals.truncate(mark);
         let end = self.here();
         self.patch(to_end, end);
+        self.patch_all(ctx.break_jumps, end);
+        Flow::Fallthrough
+    }
+
+    /// Lower `for x in list` / `for k in map` / `for k, v in map`: a forward
+    /// positional walk over a finite collection. A list yields elements in insertion
+    /// order; a map yields keys (and values) in `CollectionKeyOrder`. The collection
+    /// is evaluated once into a local, then indexed `0..length`; `continue` advances
+    /// to the next position, `break` exits.
+    fn lower_for_collection(
+        &mut self,
+        binding: &marrow_syntax::ForBinding,
+        iterable: &Expression,
+        body: &Block,
+        span: SourceSpan,
+    ) -> Flow {
+        let Some(coll_ty) = self.lower_expr(iterable) else {
+            return Flow::Fallthrough;
+        };
+        let LTy::Collection {
+            idx,
+            optional: false,
+        } = coll_ty
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                iterable.span(),
+                format!(
+                    "a `for` loop iterates a list, map, or store, found {}",
+                    coll_ty.spelling(self.records)
+                ),
+            ));
+            return Flow::Fallthrough;
+        };
+
+        // The loop variables and the per-position bind instructions, resolved from
+        // the collection kind and binding arity.
+        enum Bind {
+            List { elem: LTy },
+            MapKey { key: LTy },
+            MapKeyValue { key: LTy, value: LTy },
+        }
+        let bind = match (self.records.collection_spec(idx), binding.names.as_slice()) {
+            (CollSpec::List { elem }, [_var]) => Bind::List {
+                elem: garg_to_lty(elem),
+            },
+            (CollSpec::Map { key, .. }, [_k]) => Bind::MapKey {
+                key: garg_to_lty(key),
+            },
+            (CollSpec::Map { key, value }, [_k, _v]) => Bind::MapKeyValue {
+                key: garg_to_lty(key),
+                value: garg_to_lty(value),
+            },
+            (CollSpec::List { .. }, _) => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    "a list `for` binds exactly one element name",
+                ));
+                return Flow::Fallthrough;
+            }
+            (CollSpec::Map { .. }, _) => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    "a map `for` binds a key or a key and a value (`for k, v`)",
+                ));
+                return Flow::Fallthrough;
+            }
+        };
+
+        // The collection value is on the stack; keep it in a local to index it.
+        let coll_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(coll_slot), span);
+        // The cursor starts at -1 so the increment at the loop top reaches 0 first,
+        // which lets `continue` jump to that increment and always make progress.
+        let index_slot = self.alloc_slot();
+        let neg_one = self.draft.intern_int(-1);
+        self.push(Instr::ConstLoad(neg_one.index()), span);
+        self.push(Instr::LocalSet(index_slot), span);
+        let one = self.draft.intern_int(1);
+        let len_instr = match self.records.collection_spec(idx) {
+            CollSpec::List { .. } => Instr::ListLen,
+            CollSpec::Map { .. } => Instr::MapLen,
+        };
+
+        let top = self.here();
+        // index += 1
+        self.push(Instr::LocalGet(index_slot), span);
+        self.push(Instr::ConstLoad(one.index()), span);
+        self.push(Instr::IntAdd, span);
+        self.push(Instr::LocalSet(index_slot), span);
+        // index < length
+        self.push(Instr::LocalGet(index_slot), span);
+        self.push(Instr::LocalGet(coll_slot), span);
+        self.push(len_instr, span);
+        self.push(Instr::IntLt, span);
+        let exit = self.push_jif(span);
+
+        // Bind the loop variable(s) from the current position.
+        let mark = self.locals.len();
+        let bind_var = |lower: &mut Self, name: &str, ty: LTy, at: Instr| {
+            let slot = lower.alloc_slot();
+            lower.push(Instr::LocalGet(coll_slot), span);
+            lower.push(Instr::LocalGet(index_slot), span);
+            lower.push(at, span);
+            lower.push(Instr::LocalSet(slot), span);
+            lower.locals.push(Local {
+                name: name.to_string(),
+                ty,
+                mutable: false,
+                slot,
+            });
+        };
+        match bind {
+            Bind::List { elem } => {
+                bind_var(self, &binding.names[0].name, elem, Instr::ListGet);
+            }
+            Bind::MapKey { key } => {
+                bind_var(self, &binding.names[0].name, key, Instr::MapKeyAt);
+            }
+            Bind::MapKeyValue { key, value } => {
+                bind_var(self, &binding.names[0].name, key, Instr::MapKeyAt);
+                bind_var(self, &binding.names[1].name, value, Instr::MapValueAt);
+            }
+        }
+
+        self.loops.push(LoopCtx {
+            continue_target: top,
+            break_jumps: Vec::new(),
+        });
+        let body_flow = self.lower_block(body);
+        if body_flow == Flow::Fallthrough {
+            self.push(Instr::Jump(top as u32), body.span);
+        }
+        let ctx = self.loops.pop().expect("loop was pushed");
+        self.locals.truncate(mark);
+        let end = self.here();
+        self.patch(exit, end);
         self.patch_all(ctx.break_jumps, end);
         Flow::Fallthrough
     }
@@ -2073,6 +2284,11 @@ impl<'a> FnLowerer<'a> {
         // annotation of their own here.
         if let Some(kind) = constructor_kind(expr) {
             return self.lower_ctor_as(kind, expr, expected);
+        }
+        // `List()` / `Map()` are empty-collection constructors directed by the
+        // expected type, which supplies the exact instantiation.
+        if let Some(head) = collection_ctor_call(expr) {
+            return self.lower_collection_ctor(head, expr.span(), expected);
         }
         if let Expression::Absent { span } = expr {
             let vacant = match expected {
@@ -2711,9 +2927,26 @@ impl<'a> FnLowerer<'a> {
                     ));
                     None
                 }
-                Builtin::IsEmpty | Builtin::Contains | Builtin::Trim => self
+                // `isEmpty` accepts a string or a collection; the other two are
+                // text-only.
+                Builtin::IsEmpty => self.lower_is_empty(args, span).map(CallResult::Value),
+                Builtin::Contains | Builtin::Trim => self
                     .lower_text_builtin(name, args, span)
                     .map(CallResult::Value),
+                // `List()`/`Map()` are the empty-collection constructors; they infer
+                // nothing on their own, so they need an expected List/Map type (an
+                // annotation, argument, return, or coerced position).
+                Builtin::List | Builtin::Map => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!(
+                            "the type of `{name}()` cannot be inferred here; use it where a {name} type is expected"
+                        ),
+                    ));
+                    None
+                }
                 // `none` is the payloadless Option constructor; it carries no
                 // arguments, so a call form has no meaning.
                 Builtin::None => {
@@ -2755,8 +2988,33 @@ impl<'a> FnLowerer<'a> {
             let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
             return self.lower_function_call(index, &params, ret, args, span);
         }
+        // The procedural collection operations resolve last, so a same-module
+        // function of the same common name shadows them.
+        if let Some(result) = self.lower_collection_fallback(name, args, span) {
+            return result;
+        }
         self.fail(name_error(self.file, span, name));
         None
+    }
+
+    /// Resolve `append`/`insert`/`get`/`length` as collection operations, or `None`
+    /// when `name` is not one of them (so the caller reports it as an unknown name).
+    /// These are non-reserved fallbacks: a same-module function of the same name is
+    /// resolved before this is reached.
+    fn lower_collection_fallback(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<Option<CallResult>> {
+        let value = match name {
+            "append" => self.lower_append(args, span),
+            "insert" => self.lower_insert(args, span),
+            "get" => self.lower_map_get(args, span),
+            "length" => self.lower_length(args, span),
+            _ => return None,
+        };
+        Some(value.map(CallResult::Value))
     }
 
     /// A `::`-qualified call `prefix::item`: resolved against the calling module's
@@ -3734,6 +3992,221 @@ impl<'a> FnLowerer<'a> {
         Some(result)
     }
 
+    /// Lower an empty-collection constructor `List()`/`Map()` against the expected
+    /// type: the expected `Collection` supplies the exact instantiation, so the
+    /// constructor emits the `ListNew`/`MapNew` for that COLLTYPES index. A `List()`
+    /// against a `Map` type (or the reverse), or against a non-collection type, is a
+    /// typed diagnostic.
+    fn lower_collection_ctor(&mut self, head: &str, span: SourceSpan, expected: LTy) -> Option<()> {
+        let LTy::Collection {
+            idx,
+            optional: false,
+        } = expected
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "`{head}()` constructs a collection, but {} is expected here",
+                    expected.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        let (instr, ok) = match (head, self.records.collection_spec(idx)) {
+            ("List", CollSpec::List { .. }) => (Instr::ListNew(idx), true),
+            ("Map", CollSpec::Map { .. }) => (Instr::MapNew(idx), true),
+            _ => (Instr::ListNew(idx), false),
+        };
+        if !ok {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "`{head}()` does not construct {}",
+                    self.records.collection_spelling(idx)
+                ),
+            ));
+            return None;
+        }
+        self.push(instr, span);
+        Some(())
+    }
+
+    /// Lower `isEmpty(x)` over a string or a finite collection. A string routes to
+    /// the text floor; a `List`/`Map` lowers to `length(x) == 0`.
+    fn lower_is_empty(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [arg] = args else {
+            self.fail(builtin_arity(self.file, span, "isEmpty", 1));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(builtin_arity(self.file, span, "isEmpty", 1));
+            return None;
+        }
+        let ty = self.lower_expr(&arg.value)?;
+        match ty {
+            LTy::Scalar {
+                scalar: ScalarType::Text,
+                optional: false,
+            } => {
+                self.push(Instr::TextIsEmpty, span);
+                Some(LTy::bare_scalar(ScalarType::Bool))
+            }
+            LTy::Collection {
+                idx,
+                optional: false,
+            } => {
+                let len = match self.records.collection_spec(idx) {
+                    CollSpec::List { .. } => Instr::ListLen,
+                    CollSpec::Map { .. } => Instr::MapLen,
+                };
+                self.push(len, span);
+                let zero = self.draft.intern_int(0);
+                self.push(Instr::ConstLoad(zero.index()), span);
+                self.push(Instr::EqInt, span);
+                Some(LTy::bare_scalar(ScalarType::Bool))
+            }
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    arg.value.span(),
+                    "`isEmpty` on this type (it accepts a string, list, or map)",
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lower `length(x): int` over a finite collection: the element or entry count.
+    fn lower_length(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [arg] = args else {
+            self.fail(builtin_arity(self.file, span, "length", 1));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(builtin_arity(self.file, span, "length", 1));
+            return None;
+        }
+        let idx = self.collection_arg(&arg.value)?;
+        let len = match self.records.collection_spec(idx) {
+            CollSpec::List { .. } => Instr::ListLen,
+            CollSpec::Map { .. } => Instr::MapLen,
+        };
+        self.push(len, span);
+        Some(LTy::bare_scalar(ScalarType::Int))
+    }
+
+    /// Lower `append(list, value): List[T]`: append `value` after the last element,
+    /// yielding the grown list (collections are values). A non-list first argument,
+    /// or a `value` not of the element type, is a typed diagnostic.
+    fn lower_append(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [list_arg, value_arg] = args else {
+            self.fail(builtin_arity(self.file, span, "append", 2));
+            return None;
+        };
+        if args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(builtin_arity(self.file, span, "append", 2));
+            return None;
+        }
+        let idx = self.collection_arg(&list_arg.value)?;
+        let CollSpec::List { elem } = self.records.collection_spec(idx) else {
+            self.fail(unsupported(
+                self.file,
+                list_arg.value.span(),
+                "`append` on a map (a map is updated with `insert`)",
+            ));
+            return None;
+        };
+        self.lower_as(&value_arg.value, garg_to_lty(elem))?;
+        self.push(Instr::ListAppend, span);
+        Some(LTy::Collection {
+            idx,
+            optional: false,
+        })
+    }
+
+    /// Lower `insert(map, key, value): Map[K, V]`: insert or replace `value` at
+    /// `key`, yielding the updated map. A non-map first argument, or a key/value not
+    /// of the map's types, is a typed diagnostic.
+    fn lower_insert(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [map_arg, key_arg, value_arg] = args else {
+            self.fail(builtin_arity(self.file, span, "insert", 3));
+            return None;
+        };
+        if args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(builtin_arity(self.file, span, "insert", 3));
+            return None;
+        }
+        let idx = self.collection_arg(&map_arg.value)?;
+        let CollSpec::Map { key, value } = self.records.collection_spec(idx) else {
+            self.fail(unsupported(
+                self.file,
+                map_arg.value.span(),
+                "`insert` on a list (a list is grown with `append`)",
+            ));
+            return None;
+        };
+        self.lower_as(&key_arg.value, garg_to_lty(key))?;
+        self.lower_as(&value_arg.value, garg_to_lty(value))?;
+        self.push(Instr::MapInsert, span);
+        Some(LTy::Collection {
+            idx,
+            optional: false,
+        })
+    }
+
+    /// Lower `get(map, key): V?`: the value at `key`, present when the key is in the
+    /// map and absent otherwise (presence-typed per the `T?` primitive).
+    fn lower_map_get(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [map_arg, key_arg] = args else {
+            self.fail(builtin_arity(self.file, span, "get", 2));
+            return None;
+        };
+        if args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(builtin_arity(self.file, span, "get", 2));
+            return None;
+        }
+        let idx = self.collection_arg(&map_arg.value)?;
+        let CollSpec::Map { key, value } = self.records.collection_spec(idx) else {
+            self.fail(unsupported(
+                self.file,
+                map_arg.value.span(),
+                "`get` on a list (a list has no key lookup)",
+            ));
+            return None;
+        };
+        self.lower_as(&key_arg.value, garg_to_lty(key))?;
+        self.push(Instr::MapGet, span);
+        Some(garg_to_lty(value).to_optional())
+    }
+
+    /// Lower an expression that must be a bare collection, returning its COLLTYPES
+    /// index. A non-collection value is a typed diagnostic.
+    fn collection_arg(&mut self, expr: &Expression) -> Option<u16> {
+        let ty = self.lower_expr(expr)?;
+        match ty {
+            LTy::Collection {
+                idx,
+                optional: false,
+            } => Some(idx),
+            other => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    expr.span(),
+                    format!(
+                        "expected a list or map here, found {}",
+                        other.spelling(self.records)
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
     /// Lower a closed scalar conversion `target(value)`. The admitted set is
     /// `string(int)`, `string(bool)`, and `bytes(string)`; any other conversion is a
     /// typed `check.unsupported` on the beta line.
@@ -4067,6 +4540,26 @@ fn resolve_generic(
             let err = resolve_expanded(records, draft, err)?.as_garg()?;
             Some(LTy::Enum {
                 ty: records.instantiate_result(draft, ok, err),
+                optional: false,
+            })
+        }
+        "List" => {
+            let [elem] = args else { return None };
+            let elem = resolve_expanded(records, draft, elem)?.as_garg()?;
+            Some(LTy::Collection {
+                idx: records.instantiate_list(draft, elem),
+                optional: false,
+            })
+        }
+        "Map" => {
+            let [key, value] = args else { return None };
+            let key = resolve_expanded(records, draft, key)?.as_garg()?;
+            if !key.is_key_type() {
+                return None;
+            }
+            let value = resolve_expanded(records, draft, value)?.as_garg()?;
+            Some(LTy::Collection {
+                idx: records.instantiate_map(draft, key, value),
                 optional: false,
             })
         }

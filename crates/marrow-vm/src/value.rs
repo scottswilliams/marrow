@@ -6,6 +6,8 @@
 
 use std::rc::Rc;
 
+use marrow_kernel::codec::key::KeyScalar;
+
 /// A runtime value.
 ///
 /// A record carries its type index and one slot per field in declared order; a
@@ -17,6 +19,12 @@ use std::rc::Rc;
 /// slot per dense payload leaf in declaration order (empty for a payloadless
 /// member). Equality is exact — same variant and equal payload — so it derives
 /// structurally.
+///
+/// A `List` carries its COLLTYPES index and its elements in insertion order. A `Map`
+/// carries its COLLTYPES index and its entries kept sorted by `CollectionKeyOrder`
+/// (the kernel's `KeyScalar` order), so positional access yields key order and a
+/// lookup is a binary search. Both are ordinary copied values; the shared `Rc`
+/// backing gives copy-on-write growth (`Rc::make_mut`) rather than a copy per read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     Int(i64),
@@ -26,4 +34,6 @@ pub enum Value {
     Record(u16, Box<[Option<Value>]>),
     Optional(Option<Box<Value>>),
     Enum(u16, u16, Box<[Value]>),
+    List(u16, Rc<Vec<Value>>),
+    Map(u16, Rc<Vec<(KeyScalar, Value)>>),
 }

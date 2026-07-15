@@ -27,6 +27,7 @@ pub const TAG_TEXT: u8 = 0x03;
 pub const TAG_RECORD: u8 = 0x04;
 pub const TAG_BYTES: u8 = 0x05;
 pub const TAG_ENUM: u8 = 0x06;
+pub const TAG_COLLECTION: u8 = 0x07;
 
 /// The optional-wrapper flag bit.
 pub const OPTIONAL_FLAG: u8 = 0x80;
@@ -61,6 +62,15 @@ pub enum ImageType {
         idx: u16,
         optional: bool,
     },
+    /// A finite collection value (a `List[T]` or ordered `Map[K, V]`), by
+    /// COLLTYPES-table index. Mirrors `Record`/`Enum`: a one-byte tag plus a
+    /// big-endian `u16` index. The element/key/value types are recorded once in
+    /// the COLLTYPES entry, so a nested collection reaches its inner type through
+    /// that table rather than inlining it here (keeping `ImageType` `Copy`).
+    Collection {
+        idx: u16,
+        optional: bool,
+    },
 }
 
 impl ImageType {
@@ -83,16 +93,17 @@ impl ImageType {
             ImageType::Unit => false,
             ImageType::Scalar { optional, .. }
             | ImageType::Record { optional, .. }
-            | ImageType::Enum { optional, .. } => optional,
+            | ImageType::Enum { optional, .. }
+            | ImageType::Collection { optional, .. } => optional,
         }
     }
 
     /// The number of bytes [`ImageType::encode`] appends: one tag byte, plus a
-    /// big-endian `u16` index for a record or enum base.
+    /// big-endian `u16` index for a record, enum, or collection base.
     pub(crate) fn encoded_len(self) -> usize {
         match self {
             ImageType::Unit | ImageType::Scalar { .. } => 1,
-            ImageType::Record { .. } | ImageType::Enum { .. } => 3,
+            ImageType::Record { .. } | ImageType::Enum { .. } | ImageType::Collection { .. } => 3,
         }
     }
 
@@ -110,6 +121,10 @@ impl ImageType {
             }
             ImageType::Enum { idx, optional } => {
                 out.push(TAG_ENUM | if optional { OPTIONAL_FLAG } else { 0 });
+                out.extend_from_slice(&idx.to_be_bytes());
+            }
+            ImageType::Collection { idx, optional } => {
+                out.push(TAG_COLLECTION | if optional { OPTIONAL_FLAG } else { 0 });
                 out.extend_from_slice(&idx.to_be_bytes());
             }
         }

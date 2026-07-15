@@ -35,6 +35,14 @@ const MAX_CALL_DEPTH: u32 = 64;
 /// VM has no edge to the image crate, so it owns this limit itself.
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 
+/// Law-9 collection bounds (design §D collections). A `List`/`Map` may hold at most
+/// `MAX_COLLECTION_LEN` elements and measure at most `MAX_AGGREGATE_BYTES` in total
+/// value size; an append or insert that would exceed either faults
+/// `run.collection_limit` rather than allocating unboundedly. Private VM constants:
+/// no runner, CLI, or caller can raise them.
+const MAX_COLLECTION_LEN: usize = 65_536;
+const MAX_AGGREGATE_BYTES: usize = 1 << 20;
+
 /// Run a storeless function at `func_index` with `args`, returning its value (or
 /// `None` for a Unit return) or a source-mapped runtime fault. Rejected for a
 /// durable export (its demand is nonempty); use [`run_durable`].
@@ -618,6 +626,93 @@ fn execute<'s>(
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
+            SealedInstr::ListNew(idx) => {
+                stack.push(Value::List(*idx, Rc::new(Vec::new())));
+                pc += 1;
+            }
+            SealedInstr::ListAppend => {
+                let value = pop(&mut stack);
+                let (idx, mut items) = as_list(pop(&mut stack));
+                if items.len() + 1 > MAX_COLLECTION_LEN {
+                    return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
+                }
+                Rc::make_mut(&mut items).push(value);
+                if list_bytes(&items) > MAX_AGGREGATE_BYTES {
+                    return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
+                }
+                stack.push(Value::List(idx, items));
+                pc += 1;
+            }
+            SealedInstr::ListLen => {
+                let (_, items) = as_list(pop(&mut stack));
+                stack.push(Value::Int(items.len() as i64));
+                pc += 1;
+            }
+            SealedInstr::ListGet => {
+                let index = pop_int(&mut stack);
+                let (_, items) = as_list(pop(&mut stack));
+                match usize::try_from(index).ok().and_then(|i| items.get(i)) {
+                    Some(value) => stack.push(value.clone()),
+                    None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
+                }
+                pc += 1;
+            }
+            SealedInstr::MapNew(idx) => {
+                stack.push(Value::Map(*idx, Rc::new(Vec::new())));
+                pc += 1;
+            }
+            SealedInstr::MapInsert => {
+                let value = pop(&mut stack);
+                let key = pop_key(&mut stack);
+                let (idx, mut entries) = as_map(pop(&mut stack));
+                match entries.binary_search_by(|(k, _)| k.cmp(&key)) {
+                    Ok(position) => Rc::make_mut(&mut entries)[position].1 = value,
+                    Err(position) => {
+                        if entries.len() + 1 > MAX_COLLECTION_LEN {
+                            return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
+                        }
+                        Rc::make_mut(&mut entries).insert(position, (key, value));
+                    }
+                }
+                if map_bytes(&entries) > MAX_AGGREGATE_BYTES {
+                    return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
+                }
+                stack.push(Value::Map(idx, entries));
+                pc += 1;
+            }
+            SealedInstr::MapGet => {
+                let key = pop_key(&mut stack);
+                let (_, entries) = as_map(pop(&mut stack));
+                let found = entries
+                    .binary_search_by(|(k, _)| k.cmp(&key))
+                    .ok()
+                    .map(|position| Box::new(entries[position].1.clone()));
+                stack.push(Value::Optional(found));
+                pc += 1;
+            }
+            SealedInstr::MapLen => {
+                let (_, entries) = as_map(pop(&mut stack));
+                stack.push(Value::Int(entries.len() as i64));
+                pc += 1;
+            }
+            SealedInstr::MapKeyAt => {
+                let index = pop_int(&mut stack);
+                let (_, entries) = as_map(pop(&mut stack));
+                match usize::try_from(index).ok().and_then(|i| entries.get(i)) {
+                    Some((key, _)) => stack.push(key_to_value(key.clone())),
+                    None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
+                }
+                pc += 1;
+            }
+            SealedInstr::MapValueAt => {
+                let index = pop_int(&mut stack);
+                let (_, entries) = as_map(pop(&mut stack));
+                match usize::try_from(index).ok().and_then(|i| entries.get(i)) {
+                    Some((_, value)) => stack.push(value.clone()),
+                    None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
+                }
+                pc += 1;
+            }
             SealedInstr::DurNextKey(site) => {
                 let durable = session
                     .as_deref_mut()
@@ -708,6 +803,64 @@ fn as_enum(value: Value) -> (u16, u16, Box<[Value]>) {
     match value {
         Value::Enum(ty, variant, payload) => (ty, variant, payload),
         _ => unreachable!("verifier proved an enum operand"),
+    }
+}
+
+fn as_list(value: Value) -> (u16, Rc<Vec<Value>>) {
+    match value {
+        Value::List(idx, items) => (idx, items),
+        _ => unreachable!("verifier proved a list operand"),
+    }
+}
+
+fn as_map(value: Value) -> (u16, Rc<Vec<(KeyScalar, Value)>>) {
+    match value {
+        Value::Map(idx, entries) => (idx, entries),
+        _ => unreachable!("verifier proved a map operand"),
+    }
+}
+
+/// The aggregate value size of a list, used for the law-9 byte bound. Measured, not
+/// serialized: a cheap structural size (scalar payload bytes plus one byte of
+/// framing per node) that bounds runtime memory without depending on any wire codec.
+fn list_bytes(items: &[Value]) -> usize {
+    items.iter().map(value_bytes).sum()
+}
+
+fn map_bytes(entries: &[(KeyScalar, Value)]) -> usize {
+    entries
+        .iter()
+        .map(|(key, value)| key_bytes(key) + value_bytes(value))
+        .sum()
+}
+
+fn value_bytes(value: &Value) -> usize {
+    match value {
+        Value::Int(_) => 8,
+        Value::Bool(_) => 1,
+        Value::Text(text) => text.len(),
+        Value::Bytes(bytes) => bytes.len(),
+        Value::Optional(None) => 1,
+        Value::Optional(Some(inner)) => 1 + value_bytes(inner),
+        Value::Record(_, slots) => {
+            1 + slots
+                .iter()
+                .map(|slot| slot.as_ref().map_or(1, value_bytes))
+                .sum::<usize>()
+        }
+        Value::Enum(_, _, payload) => 1 + payload.iter().map(value_bytes).sum::<usize>(),
+        Value::List(_, items) => 1 + list_bytes(items),
+        Value::Map(_, entries) => 1 + map_bytes(entries),
+    }
+}
+
+fn key_bytes(key: &KeyScalar) -> usize {
+    match key {
+        KeyScalar::Bool(_) => 1,
+        KeyScalar::Int(_) | KeyScalar::Date(_) => 8,
+        KeyScalar::Duration(_) | KeyScalar::Instant(_) => 16,
+        KeyScalar::Str(text) => text.len(),
+        KeyScalar::Bytes(bytes) => bytes.len(),
     }
 }
 

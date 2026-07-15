@@ -8,14 +8,14 @@
 
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
-use crate::draft::{ConstValue, ImageBuildError, ImageDraft, SiteTarget};
+use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, SiteTarget};
 use crate::instr::Instr;
 use crate::ty::ImageType;
 
 /// Container magic and version.
 const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
-const SECTION_COUNT: u8 = 9;
+const SECTION_COUNT: u8 = 10;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -46,6 +46,7 @@ impl ImageDraft {
         push_section(&mut tail, 0x07, self.encode_spans(&function_offsets.per_fn))?;
         push_section(&mut tail, 0x08, self.encode_test_entries(&str_map))?;
         push_section(&mut tail, 0x09, self.encode_enums(&str_map))?;
+        push_section(&mut tail, 0x0A, self.encode_collections())?;
 
         let id = image_id(&tail);
         let mut bytes = Vec::with_capacity(37 + tail.len());
@@ -85,6 +86,9 @@ impl ImageDraft {
         }
         if self.enums().len() > bounds::MAX_ENUMS {
             return Err(ImageBuildError::TooManyEnums);
+        }
+        if self.collections().len() > bounds::MAX_COLLECTIONS {
+            return Err(ImageBuildError::TooManyCollections);
         }
         for enum_def in self.enums() {
             if enum_def.variants.len() > bounds::MAX_VARIANTS {
@@ -197,6 +201,29 @@ impl ImageDraft {
                 body.push(variant.payload.len() as u8);
                 for ty in &variant.payload {
                     ty.encode(&mut body);
+                }
+            }
+        }
+        body
+    }
+
+    /// Encode the COLLTYPES table (section 0x0A): a count, then per collection type
+    /// a one-byte kind tag (`0x00` List, `0x01` Map) followed by its bare-`ImageType`
+    /// element reference (List) or key then value references (Map). Element/key/value
+    /// references may themselves be `Collection` tags into an earlier COLLTYPES row.
+    fn encode_collections(&self) -> Vec<u8> {
+        let mut body = Vec::new();
+        push_u16(&mut body, self.collections().len() as u16);
+        for coll in self.collections() {
+            match coll {
+                CollectionTypeDef::List { elem } => {
+                    body.push(0x00);
+                    elem.encode(&mut body);
+                }
+                CollectionTypeDef::Map { key, value } => {
+                    body.push(0x01);
+                    key.encode(&mut body);
+                    value.encode(&mut body);
                 }
             }
         }
@@ -344,6 +371,7 @@ fn encode_code(
             Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(&mut out, *l),
             Instr::Call(f) => push_u16(&mut out, *f),
             Instr::RecordNew(t) => push_u16(&mut out, *t),
+            Instr::ListNew(c) | Instr::MapNew(c) => push_u16(&mut out, *c),
             Instr::FieldGet(f) | Instr::FieldSet(f) | Instr::FieldUnset(f) => {
                 push_u16(&mut out, *f)
             }

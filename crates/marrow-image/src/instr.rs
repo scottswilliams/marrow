@@ -87,6 +87,19 @@ pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
 pub const OP_DUR_NEXT_KEY: u8 = 0x39;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
 pub const OP_TXN_COMMIT: u8 = 0x3D;
+// Finite collection values (design §D collections). Element/key/value shapes come
+// from the COLLTYPES entry the `*New` operand names; the runtime enforces the
+// length and aggregate-byte bounds as typed `run.collection_limit` faults.
+pub const OP_LIST_NEW: u8 = 0x90;
+pub const OP_LIST_APPEND: u8 = 0x91;
+pub const OP_LIST_LEN: u8 = 0x92;
+pub const OP_LIST_GET: u8 = 0x93;
+pub const OP_MAP_NEW: u8 = 0x94;
+pub const OP_MAP_INSERT: u8 = 0x95;
+pub const OP_MAP_GET: u8 = 0x96;
+pub const OP_MAP_LEN: u8 = 0x97;
+pub const OP_MAP_KEY_AT: u8 = 0x98;
+pub const OP_MAP_VALUE_AT: u8 = 0x99;
 
 /// A draft instruction. Jump targets are instruction indices into the function's
 /// own instruction list; the encoder rewrites them to container byte offsets.
@@ -205,6 +218,31 @@ pub enum Instr {
     DurNextKey(u16),
     TxnBegin,
     TxnCommit,
+    /// Push an empty `List` of the COLLTYPES index `_0`.
+    ListNew(u16),
+    /// `[list, value] → [list']`: append the bare value after the last element,
+    /// faulting `run.collection_limit` when the length or aggregate-byte bound is
+    /// exceeded. Collections are values, so this yields a new list.
+    ListAppend,
+    /// `[list] → [int]`: the element count.
+    ListLen,
+    /// `[list, int] → [element]`: the bare element at the 0-based index. The
+    /// verifier proves the element type; the VM faults `run.collection_range` on an
+    /// out-of-range index (defense in depth — the compiler's loop stays in bounds).
+    ListGet,
+    /// Push an empty `Map` of the COLLTYPES index `_0`.
+    MapNew(u16),
+    /// `[map, key, value] → [map']`: insert or replace the value at `key`, keeping
+    /// keys in `CollectionKeyOrder`. Faults `run.collection_limit` on bound excess.
+    MapInsert,
+    /// `[map, key] → [value?]`: the value at `key`, or absent.
+    MapGet,
+    /// `[map] → [int]`: the entry count.
+    MapLen,
+    /// `[map, int] → [key]`: the bare key at the 0-based position in key order.
+    MapKeyAt,
+    /// `[map, int] → [value]`: the bare value at the 0-based position in key order.
+    MapValueAt,
 }
 
 impl Instr {
@@ -281,6 +319,16 @@ impl Instr {
             Instr::DurNextKey(_) => OP_DUR_NEXT_KEY,
             Instr::TxnBegin => OP_TXN_BEGIN,
             Instr::TxnCommit => OP_TXN_COMMIT,
+            Instr::ListNew(_) => OP_LIST_NEW,
+            Instr::ListAppend => OP_LIST_APPEND,
+            Instr::ListLen => OP_LIST_LEN,
+            Instr::ListGet => OP_LIST_GET,
+            Instr::MapNew(_) => OP_MAP_NEW,
+            Instr::MapInsert => OP_MAP_INSERT,
+            Instr::MapGet => OP_MAP_GET,
+            Instr::MapLen => OP_MAP_LEN,
+            Instr::MapKeyAt => OP_MAP_KEY_AT,
+            Instr::MapValueAt => OP_MAP_VALUE_AT,
         }
     }
 
@@ -305,7 +353,9 @@ impl Instr {
             | Instr::DurReplaceEntry(_)
             | Instr::DurEraseField(_)
             | Instr::DurEraseEntry(_)
-            | Instr::DurNextKey(_) => 2,
+            | Instr::DurNextKey(_)
+            | Instr::ListNew(_)
+            | Instr::MapNew(_) => 2,
             Instr::Jump(_)
             | Instr::JumpIfFalse(_)
             | Instr::BranchPresent(_)

@@ -70,6 +70,29 @@ pub fn isBlank(s: string): bool
     return isEmpty(trim(s))
 ```
 
+## Collections
+
+The finite collection types `List[T]` and `Map[K, V]` are built and read through a
+closed set of procedural built-ins — there is no method syntax. `List()`/`Map()`
+construct an empty collection of the expected type; `append`/`insert` add elements
+and yield the updated collection (collections are values); `get` looks a key up;
+`length`/`isEmpty` report size. See
+[Lists and maps](types-and-values.md#lists-and-maps) for the full table and value
+semantics.
+
+```mw
+module docs::collection_builtins
+
+pub fn size(): int
+    var xs: List[int] = List()
+    xs = append(xs, 1)
+    xs = append(xs, 2)
+    return length(xs)
+```
+
+`isEmpty` also accepts a `string` (the text floor form above). `length` reports a
+collection's element or entry count; a string's length is `std::text::length`.
+
 ## Ordered Neighbors
 
 `next(place)` and `prev(place)` return an optional neighboring key or entry

@@ -6,6 +6,7 @@
 //! source diagnostic, an artifact rejection, a source-mapped runtime fault, and an
 //! owner-local operational error are distinct records.
 
+use marrow_kernel::codec::key::KeyScalar;
 use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
 
@@ -281,6 +282,49 @@ fn render_value_text(
             }
             out
         }
+        // A list renders `[a, b, ...]` in insertion order.
+        Value::List(_, items) => {
+            let mut out = String::from("[");
+            for (position, item) in items.iter().enumerate() {
+                if position > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_value_text(item, types, enums));
+            }
+            out.push(']');
+            out
+        }
+        // A map renders `[k: v, ...]` in ascending key order (the entries are stored
+        // sorted), matching the type-directed map literal spelling.
+        Value::Map(_, entries) => {
+            let mut out = String::from("[");
+            for (position, (key, value)) in entries.iter().enumerate() {
+                if position > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_key_text(key));
+                out.push_str(": ");
+                out.push_str(&render_value_text(value, types, enums));
+            }
+            if entries.is_empty() {
+                out.push(':');
+            }
+            out.push(']');
+            out
+        }
+    }
+}
+
+/// Render a `KeyScalar` map key in the canonical scalar text form.
+fn render_key_text(key: &KeyScalar) -> String {
+    match key {
+        KeyScalar::Int(v) => v.to_string(),
+        KeyScalar::Bool(v) => v.to_string(),
+        KeyScalar::Str(v) => v.clone(),
+        KeyScalar::Bytes(v) => hex_bytes(v),
+        KeyScalar::Date(v) => v.to_string(),
+        KeyScalar::Instant(v) => v.to_string(),
+        KeyScalar::Duration(v) => v.to_string(),
     }
 }
 
@@ -352,6 +396,36 @@ fn render_data(
                 json_string(member),
                 items.join(",")
             );
+            if out.len() > MAX_DATA_BYTES {
+                return Err(());
+            }
+            out
+        }
+        // A list renders as a JSON array in insertion order.
+        Some(Value::List(_, items)) => {
+            let mut rendered = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                rendered.push(render_data(Some(item), types, enums)?);
+            }
+            let out = format!("[{}]", rendered.join(","));
+            if out.len() > MAX_DATA_BYTES {
+                return Err(());
+            }
+            out
+        }
+        // A map renders as a JSON object with string-rendered keys in ascending key
+        // order (entries are stored sorted).
+        Some(Value::Map(_, entries)) => {
+            let mut out = String::from("{");
+            for (position, (key, value)) in entries.iter().enumerate() {
+                if position > 0 {
+                    out.push(',');
+                }
+                out.push_str(&json_string(&render_key_text(key)));
+                out.push(':');
+                out.push_str(&render_data(Some(value), types, enums)?);
+            }
+            out.push('}');
             if out.len() > MAX_DATA_BYTES {
                 return Err(());
             }

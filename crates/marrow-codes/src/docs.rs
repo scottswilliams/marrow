@@ -216,6 +216,7 @@ program.
             Code::RunRequiredMissing,
             Code::RunCommit,
             Code::RunCorruption,
+            Code::RunCollectionLimit,
         ]),
         r#"
 ### `value.*` — kind `runtime`

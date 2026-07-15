@@ -18,8 +18,9 @@ mod ty;
 
 pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
 pub use draft::{
-    ConstId, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft,
-    RecordTypeDef, RootDef, SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TypeId, VariantDef,
+    CollTypeId, CollectionTypeDef, ConstId, EnumId, EnumTypeDef, FieldDef, FuncId, FunctionDef,
+    ImageBuildError, ImageDraft, RecordTypeDef, RootDef, SiteDef, SiteId, SiteTarget, SpanEntry,
+    StrId, TypeId, VariantDef,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};
@@ -33,12 +34,13 @@ pub use instr::{
     OP_FIELD_UNSET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE,
     OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
     OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
-    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
-    OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
-    OP_VACANT_LOAD,
+    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
+    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
+    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE,
+    OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
 };
 pub use ty::{
-    ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_ENUM, TAG_INT, TAG_RECORD, TAG_TEXT,
-    TAG_UNIT,
+    ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_ENUM, TAG_INT,
+    TAG_RECORD, TAG_TEXT, TAG_UNIT,
 };

@@ -38,6 +38,11 @@ fn to_domain(value: &Value) -> ValueDomain {
         Value::Optional(_) => {
             unreachable!("a top-level optional is outside the C02 equality domain")
         }
+        Value::List(..) | Value::Map(..) => {
+            unreachable!(
+                "collections have no `==` operator, so they are outside the equality domain"
+            )
+        }
     }
 }
 

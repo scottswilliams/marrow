@@ -56,6 +56,19 @@ impl EnumId {
     }
 }
 
+/// A collection-type index (also the final container index; collection types keep
+/// insertion order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollTypeId(pub(crate) u16);
+
+impl CollTypeId {
+    /// The raw collection-type index, as carried in `ListNew`/`MapNew` operands and
+    /// in an `ImageType::Collection`.
+    pub fn index(self) -> u16 {
+        self.0
+    }
+}
+
 /// A function index (also the final container index; functions keep insertion order).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FuncId(pub(crate) u16);
@@ -116,6 +129,18 @@ pub struct VariantDef {
 pub struct EnumTypeDef {
     pub name: StrId,
     pub variants: Vec<VariantDef>,
+}
+
+/// One collection value type: a finite `List[T]` or ordered `Map[K, V]`. The
+/// element/key/value types are bare (non-optional) [`ImageType`]s and may
+/// themselves be `Collection` references, so a nested collection reaches its inner
+/// shape through the COLLTYPES table. A `Map` key is a bare scalar key type
+/// (`int`/`bool`/`string`/`bytes`; a nominal key is int-shaped), the one durable-key
+/// scalar family the ordered map compares over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionTypeDef {
+    List { elem: ImageType },
+    Map { key: ImageType, value: ImageType },
 }
 
 /// A durable root: one keyed placement of a record type.
@@ -204,6 +229,7 @@ pub enum ImageBuildError {
     TooManyEnums,
     TooManyVariants,
     TooManyPayloadFields,
+    TooManyCollections,
     TooManyRoots,
     TooManySites,
     TooManyFunctions,
@@ -232,6 +258,7 @@ pub struct ImageDraft {
     consts: Vec<ConstValue>,
     types: Vec<RecordTypeDef>,
     enums: Vec<EnumTypeDef>,
+    colls: Vec<CollectionTypeDef>,
     roots: Vec<RootDef>,
     sites: Vec<SiteDef>,
     functions: Vec<FunctionDef>,
@@ -294,6 +321,22 @@ impl ImageDraft {
         id
     }
 
+    /// Add a collection type (a concrete `List`/`Map` instantiation), returning its
+    /// index. Unlike records and enums a collection type has no forward-reference
+    /// need — its element/key/value types are already-resolved [`ImageType`]s — so
+    /// there is no two-pass reserve/fill; the caller interns the inner types first.
+    ///
+    /// This appends unconditionally rather than deduplicating by image content: the
+    /// compiler's type registry is the single owner of collection instantiation
+    /// identity and dedups by the *source* element/key/value types (so `List[Age]`
+    /// and `List[int]` stay distinct even though a nominal element erases to the same
+    /// image `int`), minting one row here per distinct source instantiation.
+    pub fn add_collection_type(&mut self, def: CollectionTypeDef) -> CollTypeId {
+        let id = CollTypeId(self.colls.len() as u16);
+        self.colls.push(def);
+        id
+    }
+
     /// Replace the fields of an already-reserved record type. Value types are built
     /// in two passes — every record and enum reserves its type index first so a
     /// field or payload may reference any other value type (including a mutually
@@ -351,6 +394,9 @@ impl ImageDraft {
     }
     pub(crate) fn enums(&self) -> &[EnumTypeDef] {
         &self.enums
+    }
+    pub(crate) fn collections(&self) -> &[CollectionTypeDef] {
+        &self.colls
     }
     pub(crate) fn roots(&self) -> &[RootDef] {
         &self.roots
