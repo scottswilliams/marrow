@@ -7,9 +7,9 @@
 //! the default suite. A minimized counterexample becomes a permanent fixture.
 
 use marrow_image::{
-    DurableMemberDef, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
-    KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget,
-    SpanEntry, VariantDef, image_id,
+    DurableEnumMemberShape, DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef,
+    RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -237,13 +237,13 @@ fn a_durable_image() -> Vec<u8> {
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    scalar: Scalar::Int,
                     required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
                 },
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0f; 16]),
-                    scalar: Scalar::Text,
                     required: false,
+                    value: DurableValueShape::Scalar(Scalar::Text),
                 },
             ],
         },
@@ -337,15 +337,15 @@ fn a_group_branch_durable_image() -> Vec<u8> {
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    scalar: Scalar::Text,
                     required: true,
+                    value: DurableValueShape::Scalar(Scalar::Text),
                 },
                 DurableMemberDef::Group {
                     id: LedgerIdBytes::from_bytes([0x20; 16]),
                     members: vec![DurableMemberDef::Field {
                         id: LedgerIdBytes::from_bytes([0x21; 16]),
-                        scalar: Scalar::Int,
                         required: false,
+                        value: DurableValueShape::Scalar(Scalar::Int),
                     }],
                 },
                 DurableMemberDef::Branch {
@@ -356,8 +356,8 @@ fn a_group_branch_durable_image() -> Vec<u8> {
                     }],
                     members: vec![DurableMemberDef::Field {
                         id: LedgerIdBytes::from_bytes([0x32; 16]),
-                        scalar: Scalar::Text,
                         required: true,
+                        value: DurableValueShape::Scalar(Scalar::Text),
                     }],
                 },
             ],
@@ -393,6 +393,170 @@ fn mutated_group_branch_durable_images_never_panic_the_verifier() {
     let base = a_group_branch_durable_image();
     // The base image itself must verify, so the member-tree decode path is reached.
     assert!(verify(&base).is_ok(), "group/branch base image must verify");
+    for _ in 0..4096 {
+        let mut bytes = base.clone();
+        for _ in 0..=rng.below(3) {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= rng.byte();
+        }
+        oracle(&bytes);
+    }
+}
+
+/// A good durable image whose resource stores widened value shapes: a plain scalar
+/// (`id`), a closed enum with a payload-carrying member (`kind: Access`), and a dense
+/// struct (`owner: Pair`). Mutating it reaches the recursive value-shape decoder —
+/// its value tags, the enum sum/member ids and payload leaves, the struct leaf
+/// count, and the value-nesting-depth bound — plus the value-shape/record cross-check
+/// that a flat scalar root never exercises.
+fn a_widened_durable_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    // Enum `Access { a, b(int) }` — `b` carries an int payload leaf.
+    let access = draft.intern_string("Access");
+    let a = draft.intern_string("a");
+    let b = draft.intern_string("b");
+    draft.add_enum_type(EnumTypeDef {
+        name: access,
+        variants: vec![
+            VariantDef {
+                name: a,
+                category: false,
+                payload: Vec::new(),
+            },
+            VariantDef {
+                name: b,
+                category: false,
+                payload: vec![ImageType::scalar(Scalar::Int)],
+            },
+        ],
+    });
+    // Struct `Pair { x:int, y:string }` at record index 0.
+    let pair = draft.intern_string("Pair");
+    let x = draft.intern_string("x");
+    let y = draft.intern_string("y");
+    let pair_ty = draft.add_record_type(RecordTypeDef {
+        name: pair,
+        fields: vec![
+            FieldDef {
+                name: x,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: y,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            },
+        ],
+    });
+    // Resource `W { id:int, kind:Access, owner:Pair }` at record index 1.
+    let w = draft.intern_string("W");
+    let idn = draft.intern_string("id");
+    let kindn = draft.intern_string("kind");
+    let ownern = draft.intern_string("owner");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: w,
+        fields: vec![
+            FieldDef {
+                name: idn,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: kindn,
+                ty: ImageType::Enum {
+                    idx: 0,
+                    optional: false,
+                },
+                required: true,
+            },
+            FieldDef {
+                name: ownern,
+                ty: ImageType::Record {
+                    idx: pair_ty.index(),
+                    optional: false,
+                },
+                required: false,
+            },
+        ],
+    });
+    let root = draft.intern_string("ws");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0f; 16]),
+                    required: true,
+                    value: DurableValueShape::Enum {
+                        sum: LedgerIdBytes::from_bytes([0x50; 16]),
+                        members: vec![
+                            DurableEnumMemberShape {
+                                id: LedgerIdBytes::from_bytes([0x51; 16]),
+                                payload: Vec::new(),
+                            },
+                            DurableEnumMemberShape {
+                                id: LedgerIdBytes::from_bytes([0x52; 16]),
+                                payload: vec![DurableValueShape::Scalar(Scalar::Int)],
+                            },
+                        ],
+                    },
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x10; 16]),
+                    required: false,
+                    value: DurableValueShape::Struct(vec![
+                        DurableValueShape::Scalar(Scalar::Int),
+                        DurableValueShape::Scalar(Scalar::Text),
+                    ]),
+                },
+            ],
+        },
+    });
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("label");
+    let zero = draft.intern_int(0);
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let spans = (0..code.len() as u32)
+        .map(|instr_index| SpanEntry {
+            instr_index,
+            line: 1,
+            column: 1,
+        })
+        .collect();
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans,
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "label"), func);
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn mutated_widened_durable_images_never_panic_the_verifier() {
+    let mut rng = Rng(seed() ^ 0x94D0_49BB_1331_11EB);
+    let base = a_widened_durable_image();
+    // The base image itself must verify, so the value-shape decode/cross-check path
+    // is reached.
+    assert!(verify(&base).is_ok(), "widened base image must verify");
     for _ in 0..4096 {
         let mut bytes = base.clone();
         for _ in 0..=rng.below(3) {

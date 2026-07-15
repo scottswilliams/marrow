@@ -42,10 +42,10 @@ const MAX_PATH_BYTES: usize = 512;
 
 /// The kind of durable identity a ledger row anchors. A `Root` (placement)
 /// anchors either a `store` root or a keyed `branch` — both are keyed placements
-/// in the durable graph, distinguished by their nested anchor path. The tag space
-/// reserves `5`..`6` for the sum/member identities that land with enum-in-field
-/// evolution in a later slice; `Group` (7) anchors an unkeyed static field-path
-/// namespace.
+/// in the durable graph, distinguished by their nested anchor path. A `Sum` (5)
+/// anchors a durable-reachable closed enum's identity and a `Member` (6) one of its
+/// variants, so append-only enum member evolution has stable per-member codes;
+/// `Group` (7) anchors an unkeyed static field-path namespace.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IdentityKind {
     /// The application itself (one per project; anchor path `.`).
@@ -58,6 +58,12 @@ pub enum IdentityKind {
     Root,
     /// A placement's key column.
     Key,
+    /// A durable-reachable closed enum (sum) type, anchored at its canonical type
+    /// spelling.
+    Sum,
+    /// One variant of a durable-reachable closed enum, anchored at
+    /// `<enum spelling>.<variant>`.
+    Member,
     /// An unkeyed static field-path namespace (`group`) inside a resource,
     /// branch, or group.
     Group,
@@ -71,11 +77,12 @@ impl IdentityKind {
         IdentityKind::Field,
         IdentityKind::Root,
         IdentityKind::Key,
+        IdentityKind::Sum,
+        IdentityKind::Member,
         IdentityKind::Group,
     ];
 
-    /// The frozen numeric tag (also the canonical sort major). Tags 5-6 are
-    /// reserved for sum/member.
+    /// The frozen numeric tag (also the canonical sort major).
     pub const fn tag(self) -> u8 {
         match self {
             IdentityKind::Application => 0,
@@ -83,6 +90,8 @@ impl IdentityKind {
             IdentityKind::Field => 2,
             IdentityKind::Root => 3,
             IdentityKind::Key => 4,
+            IdentityKind::Sum => 5,
+            IdentityKind::Member => 6,
             IdentityKind::Group => 7,
         }
     }
@@ -95,6 +104,8 @@ impl IdentityKind {
             IdentityKind::Field => "field",
             IdentityKind::Root => "root",
             IdentityKind::Key => "key",
+            IdentityKind::Sum => "sum",
+            IdentityKind::Member => "member",
             IdentityKind::Group => "group",
         }
     }
@@ -815,9 +826,10 @@ mod tests {
 
     #[test]
     fn the_kind_tag_space_is_frozen_and_reserved() {
-        // Tags 0-4 and 7 are the current kinds; 5-6 stay reserved for sum/member.
+        // The frozen kind tag space: application/product/field/root/key, sum/member
+        // (durable enum identity), and group.
         let tags: Vec<u8> = IdentityKind::ALL.iter().map(|kind| kind.tag()).collect();
-        assert_eq!(tags, vec![0, 1, 2, 3, 4, 7]);
+        assert_eq!(tags, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         for kind in IdentityKind::ALL {
             assert_eq!(
                 IdentityKind::from_keyword(kind.keyword()),

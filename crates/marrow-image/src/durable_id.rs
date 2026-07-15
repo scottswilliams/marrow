@@ -40,12 +40,28 @@
 //!             ‖ members                                        (the resource's durable member tree)
 //!   members = u16_be(member_count) ‖ member*                  (in source declaration order)
 //!   member  = u8(member_tag) ‖ member_body
-//!     field(0)  = IDREF(0x02, field) ‖ u8(field_scalar_tag) ‖ u8(required?1:0)
+//!     field(0)  = IDREF(0x02, field) ‖ u8(required?1:0) ‖ value
 //!     group(1)  = IDREF(0x07, group) ‖ members
 //!     branch(2) = IDREF(0x03, placement) ‖ u16_be(key_count) ‖ key* ‖ members
 //!   key     = u8(key_scalar_tag) ‖ IDREF(0x04, key)
+//!   value   = u8(value_tag) ‖ value_body                       (a durable field's stored value shape)
+//!     scalar(0) = u8(scalar_tag)                               (a nominal erases to its base scalar)
+//!     struct(1) = u16_be(leaf_count) ‖ value*                  (dense struct leaves, all required; names are not identity)
+//!     enum(2)   = IDREF(0x05, sum) ‖ u16_be(member_count) ‖ evalue*
+//!   evalue  = IDREF(0x06, member) ‖ u16_be(payload_count) ‖ value*   (one enum member: its id and dense payload leaves)
 //!   IDREF(k, id) = u8(k) ‖ u64_be(16) ‖ id                     (kind-tagged, LP 16 bytes)
 //! ```
+//!
+//! A durable field's stored `value` is drawn from the closed acyclic durable value
+//! set: a nominal scalar (erased to its base scalar), a dense `struct` (its leaves
+//! recorded positionally as shape bytes — a nested product leaf mints no ledger id
+//! of its own, because the containing field is the renamable durable declaration),
+//! a closed `enum` (`Option`/`Result`/a user `enum`, each carrying a sum identity
+//! (kind 5) and one member identity (kind 6) per variant so append-only member
+//! evolution has stable per-member codes), or an `Option`, which is itself a closed
+//! enum (`none`/`some`). Collections and nested sparse/place/function/handle leaves
+//! are not durable value leaves. Only a durable-reachable enum contributes sum and
+//! member ids; a storeless enum stays ledger-free.
 //!
 //! A key tuple is length-prefixed, so a singleton root (`key_count = 0`) and a
 //! composite root (`key_count > 1`) are the same shape as the ordinary
@@ -90,7 +106,16 @@ const IDREF_PRODUCT: u8 = 1;
 const IDREF_FIELD: u8 = 2;
 const IDREF_ROOT: u8 = 3;
 const IDREF_KEY: u8 = 4;
+const IDREF_SUM: u8 = 5;
+const IDREF_MEMBER: u8 = 6;
 const IDREF_GROUP: u8 = 7;
+
+/// The frozen value-shape tag bytes distinguishing a durable field's stored value
+/// kinds within the canonical payload. Internal to this encoding and separate from
+/// the ledger `IDREF` kind space.
+const VSHAPE_SCALAR: u8 = 0;
+const VSHAPE_STRUCT: u8 = 1;
+const VSHAPE_ENUM: u8 = 2;
 
 /// The frozen member-tag bytes distinguishing the three durable member kinds
 /// within the canonical payload. They are internal to this encoding and separate
@@ -117,15 +142,74 @@ impl LedgerIdBytes {
     }
 }
 
-/// One stored scalar field of a durable resource, group, or branch, as it
-/// contributes to the contract identity: its ledger id, scalar type, and whether
-/// it is required. The field's *name* is not part of the identity — a rename
-/// preserves it.
+/// One stored field of a durable resource, group, or branch, as it contributes to
+/// the contract identity: its ledger id, whether it is required, and its stored
+/// value shape. The field's *name* is not part of the identity — a rename preserves
+/// it — but its value shape is: retyping or restructuring the value changes the
+/// contract id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableFieldShape {
     pub id: LedgerIdBytes,
-    pub scalar: Scalar,
     pub required: bool,
+    pub value: DurableValueShape,
+}
+
+/// The stored value shape of a durable field, from the closed acyclic durable value
+/// set. A nominal scalar erases to its base [`Scalar`]; a dense `struct` records its
+/// leaves positionally (no per-leaf ledger id); a closed `enum` (including `Option`)
+/// carries its sum identity and one member identity per variant. The tree is
+/// recursive: a struct leaf or an enum member payload is itself a value shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DurableValueShape {
+    Scalar(Scalar),
+    Struct(Vec<DurableValueShape>),
+    Enum {
+        sum: LedgerIdBytes,
+        members: Vec<DurableEnumMemberShape>,
+    },
+}
+
+/// One member (variant) of a durable-reachable enum, as it contributes to the
+/// contract identity: its ledger id (kind 6) and its dense payload leaves in
+/// declaration order. Member order is part of the identity, so append-only member
+/// evolution preserves every existing member's id and position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableEnumMemberShape {
+    pub id: LedgerIdBytes,
+    pub payload: Vec<DurableValueShape>,
+}
+
+impl DurableValueShape {
+    /// Append this value shape's canonical bytes (the `value` production above).
+    /// Shared by the descriptor's identity payload and the image DURABLE section, so
+    /// both spell a durable field's value one way.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            DurableValueShape::Scalar(scalar) => {
+                out.push(VSHAPE_SCALAR);
+                out.push(scalar.tag());
+            }
+            DurableValueShape::Struct(leaves) => {
+                out.push(VSHAPE_STRUCT);
+                out.extend_from_slice(&(leaves.len() as u16).to_be_bytes());
+                for leaf in leaves {
+                    leaf.encode(out);
+                }
+            }
+            DurableValueShape::Enum { sum, members } => {
+                out.push(VSHAPE_ENUM);
+                push_idref(out, IDREF_SUM, sum);
+                out.extend_from_slice(&(members.len() as u16).to_be_bytes());
+                for member in members {
+                    push_idref(out, IDREF_MEMBER, &member.id);
+                    out.extend_from_slice(&(member.payload.len() as u16).to_be_bytes());
+                    for leaf in &member.payload {
+                        leaf.encode(out);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// One key column of a durable root or branch placement, as it contributes to the
@@ -253,8 +337,8 @@ fn push_members(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
             DurableMemberShape::Field(field) => {
                 out.push(MEMBER_FIELD);
                 push_idref(out, IDREF_FIELD, &field.id);
-                out.push(field.scalar.tag());
                 out.push(u8::from(field.required));
+                field.value.encode(out);
             }
             DurableMemberShape::Group(group) => {
                 out.push(MEMBER_GROUP);
@@ -328,9 +412,9 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableFieldShape,
-        DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
-        LOCAL_ROOT_LINEAGE, LedgerIdBytes,
+        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor,
+        DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableKeyShape,
+        DurableMemberShape, DurableRootShape, DurableValueShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::ty::Scalar;
     use sha2::{Digest, Sha256};
@@ -342,8 +426,17 @@ mod tests {
     fn field(byte: u8, scalar: Scalar, required: bool) -> DurableMemberShape {
         DurableMemberShape::Field(DurableFieldShape {
             id: id(byte),
-            scalar,
             required,
+            value: DurableValueShape::Scalar(scalar),
+        })
+    }
+
+    /// A durable field carrying a widened value shape.
+    fn value_field(byte: u8, required: bool, value: DurableValueShape) -> DurableMemberShape {
+        DurableMemberShape::Field(DurableFieldShape {
+            id: id(byte),
+            required,
+            value,
         })
     }
 
@@ -423,12 +516,11 @@ mod tests {
     /// Known-answer test for the frozen canonical payload of the tracer's `counters`
     /// graph over ledger ids. Freezing this hex pins the domain-separation,
     /// length-delimiting, IDREF kind tags, and member-tree layout so a later reader
-    /// can reconstruct it independently. This value supersedes the slice-3 roots KAT
-    /// (`4f8def5f…`): the root's stored fields are now the leading members of a
-    /// self-describing member tree (`u16(member_count) ‖ [u8(member_tag) ‖ …]*`),
-    /// the encoding that also carries `group` and `branch` members. If this value
-    /// must change, the durable-contract identity has changed and every
-    /// stored/derived id changes with it.
+    /// can reconstruct it independently. This value supersedes the slice-3b member-
+    /// tree KAT (`344ca874…`): a durable field now records `IDREF(field) ‖ required ‖
+    /// value`, the value being the closed durable value shape (here a bare scalar,
+    /// `scalar(0) ‖ scalar_tag`). If this value must change, the durable-contract
+    /// identity has changed and every stored/derived id changes with it.
     #[test]
     fn durable_contract_id_known_answer() {
         assert_eq!(
@@ -438,7 +530,7 @@ mod tests {
         // The frozen value itself.
         assert_eq!(
             counters_graph().contract_id().to_hex(),
-            "344ca8743fbed63e63e72dfba608c0c6d63730af76bfadabb417aae7533a9750",
+            "0f633844944d599db964e76f209a1bc97d3785234db58e38bb478361660009bb",
         );
     }
 
@@ -453,7 +545,7 @@ mod tests {
         );
         assert_eq!(
             library_graph().contract_id().to_hex(),
-            "9ab446598d8488dd30c9c78b158fd735cdc9ffa66278e2b26f8d9b716e17e165",
+            "6c3cf722b607626d4dcb22edd79947521bf382166b5e93b9f1e2b509682e17b6",
         );
         assert_ne!(
             library_graph().contract_id(),
@@ -480,6 +572,33 @@ mod tests {
                 idref(out, 4, &key.id);
             }
         }
+        fn value(out: &mut Vec<u8>, shape: &DurableValueShape) {
+            match shape {
+                DurableValueShape::Scalar(scalar) => {
+                    out.push(0);
+                    out.push(scalar.tag());
+                }
+                DurableValueShape::Struct(leaves) => {
+                    out.push(1);
+                    out.extend_from_slice(&(leaves.len() as u16).to_be_bytes());
+                    for leaf in leaves {
+                        value(out, leaf);
+                    }
+                }
+                DurableValueShape::Enum { sum, members } => {
+                    out.push(2);
+                    idref(out, 5, sum);
+                    out.extend_from_slice(&(members.len() as u16).to_be_bytes());
+                    for member in members {
+                        idref(out, 6, &member.id);
+                        out.extend_from_slice(&(member.payload.len() as u16).to_be_bytes());
+                        for leaf in &member.payload {
+                            value(out, leaf);
+                        }
+                    }
+                }
+            }
+        }
         fn member_tree(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
             out.extend_from_slice(&(members.len() as u16).to_be_bytes());
             for member in members {
@@ -487,8 +606,8 @@ mod tests {
                     DurableMemberShape::Field(f) => {
                         out.push(0);
                         idref(out, 2, &f.id);
-                        out.push(f.scalar.tag());
                         out.push(u8::from(f.required));
+                        value(out, &f.value);
                     }
                     DurableMemberShape::Group(g) => {
                         out.push(1);
@@ -637,6 +756,159 @@ mod tests {
         let mut reordered = library_graph();
         reordered.roots[0].members.swap(1, 2);
         assert_ne!(base, reordered.contract_id());
+    }
+
+    /// A graph whose resource stores widened value shapes: a dense `struct` leaf, an
+    /// `Option`-shaped enum, and a user enum. Enum members carry sum (kind 5) and
+    /// member (kind 6) ids; the struct records its leaves positionally with no
+    /// per-leaf id.
+    fn widened_graph() -> DurableContractDescriptor {
+        DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: vec![DurableKeyShape {
+                    scalar: Scalar::Text,
+                    id: id(0x0c),
+                }],
+                members: vec![
+                    field(0x0e, Scalar::Int, true),
+                    value_field(
+                        0x40,
+                        false,
+                        DurableValueShape::Struct(vec![
+                            DurableValueShape::Scalar(Scalar::Text),
+                            DurableValueShape::Scalar(Scalar::Int),
+                        ]),
+                    ),
+                    // An Option[int]-shaped enum: none (empty) then some (int).
+                    value_field(
+                        0x41,
+                        true,
+                        DurableValueShape::Enum {
+                            sum: id(0x50),
+                            members: vec![
+                                DurableEnumMemberShape {
+                                    id: id(0x51),
+                                    payload: vec![],
+                                },
+                                DurableEnumMemberShape {
+                                    id: id(0x52),
+                                    payload: vec![DurableValueShape::Scalar(Scalar::Int)],
+                                },
+                            ],
+                        },
+                    ),
+                    // A user enum with three members, one carrying a payload.
+                    value_field(
+                        0x42,
+                        false,
+                        DurableValueShape::Enum {
+                            sum: id(0x53),
+                            members: vec![
+                                DurableEnumMemberShape {
+                                    id: id(0x54),
+                                    payload: vec![],
+                                },
+                                DurableEnumMemberShape {
+                                    id: id(0x55),
+                                    payload: vec![],
+                                },
+                                DurableEnumMemberShape {
+                                    id: id(0x56),
+                                    payload: vec![DurableValueShape::Scalar(Scalar::Text)],
+                                },
+                            ],
+                        },
+                    ),
+                ],
+            }],
+        )
+    }
+
+    /// Known-answer test for a durable graph with widened value shapes. Freezing
+    /// this hex pins the value-shape tag bytes (scalar 0, struct 1, enum 2), the sum
+    /// (5) and member (6) IDREF tags, and the payload layout.
+    #[test]
+    fn durable_contract_id_with_widened_values_known_answer() {
+        assert_eq!(
+            widened_graph().contract_id().to_hex(),
+            independent_id(&widened_graph())
+        );
+        assert_eq!(
+            widened_graph().contract_id().to_hex(),
+            "85b281494717c06e47bbe63ef7d243222c5e1b37a2b30f85cd09c7c4467d43aa",
+        );
+        assert_ne!(
+            widened_graph().contract_id(),
+            counters_graph().contract_id()
+        );
+    }
+
+    /// Enum member identity is part of the durable identity: a rename preserves it
+    /// (ids unchanged), while re-minting a member, reordering members (append is
+    /// positional), or re-typing a member payload changes it.
+    #[test]
+    fn enum_member_identity_follows_the_ledger_ids() {
+        let base = widened_graph().contract_id();
+        assert_eq!(base, widened_graph().contract_id());
+
+        // Re-minting the sum id (a delete-then-re-add of the enum) changes the id.
+        let mut re_summed = widened_graph();
+        if let DurableMemberShape::Field(f) = &mut re_summed.roots[0].members[2]
+            && let DurableValueShape::Enum { sum, .. } = &mut f.value
+        {
+            *sum = id(0x60);
+        } else {
+            panic!("member 2 is the Option-shaped enum field");
+        }
+        assert_ne!(base, re_summed.contract_id());
+
+        // Re-minting one member id (delete-then-re-add of a variant) changes the id.
+        let mut re_membered = widened_graph();
+        if let DurableMemberShape::Field(f) = &mut re_membered.roots[0].members[3]
+            && let DurableValueShape::Enum { members, .. } = &mut f.value
+        {
+            members[0].id = id(0x61);
+        } else {
+            panic!("member 3 is the user enum field");
+        }
+        assert_ne!(base, re_membered.contract_id());
+
+        // Appending a member is positional: swapping two members changes the id, so a
+        // member can never silently take another's code.
+        let mut reordered = widened_graph();
+        if let DurableMemberShape::Field(f) = &mut reordered.roots[0].members[3]
+            && let DurableValueShape::Enum { members, .. } = &mut f.value
+        {
+            members.swap(0, 1);
+        } else {
+            panic!("member 3 is the user enum field");
+        }
+        assert_ne!(base, reordered.contract_id());
+
+        // Re-typing a member payload leaf changes the id.
+        let mut retyped = widened_graph();
+        if let DurableMemberShape::Field(f) = &mut retyped.roots[0].members[3]
+            && let DurableValueShape::Enum { members, .. } = &mut f.value
+        {
+            members[2].payload[0] = DurableValueShape::Scalar(Scalar::Int);
+        } else {
+            panic!("member 3 is the user enum field");
+        }
+        assert_ne!(base, retyped.contract_id());
+
+        // Re-ordering a struct leaf changes the id (leaf order is load-bearing).
+        let mut struct_swapped = widened_graph();
+        if let DurableMemberShape::Field(f) = &mut struct_swapped.roots[0].members[1]
+            && let DurableValueShape::Struct(leaves) = &mut f.value
+        {
+            leaves.swap(0, 1);
+        } else {
+            panic!("member 1 is the struct field");
+        }
+        assert_ne!(base, struct_swapped.contract_id());
     }
 
     /// A singleton root (empty key tuple) and a composite root (two key columns)

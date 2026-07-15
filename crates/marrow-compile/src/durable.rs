@@ -22,10 +22,12 @@
 //! executable subset — its operation sites to the draft, and exposes the resolved
 //! sites the function lowerer emits against.
 
+use std::collections::BTreeSet;
+
 use marrow_codes::Code;
 use marrow_image::{
-    DurableMemberDef, ImageDraft, KeyColumn, LedgerIdBytes, RootDef, RootIdentity, SiteDef,
-    SiteTarget, bounds,
+    DurableEnumMemberShape, DurableMemberDef, DurableValueShape, ImageDraft, KeyColumn,
+    LedgerIdBytes, RootDef, RootIdentity, SiteDef, SiteTarget, bounds,
 };
 use marrow_project::{IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -34,7 +36,7 @@ use marrow_syntax::{
 
 use crate::diag::{IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
-use crate::types::TypeRegistry;
+use crate::types::{GArg, TypeRegistry};
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -165,25 +167,6 @@ impl DurableRegistry {
             return Self::default();
         };
 
-        // A durable resource stores scalar leaves; a top-level enum-valued field has
-        // no store representation, so it cannot back a `store`.
-        if let Some(field) = record
-            .fields
-            .iter()
-            .find(|field| field.ty.as_scalar().is_none())
-        {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                file,
-                store.span,
-                format!(
-                    "a stored resource has only scalar fields; `{}` is not a scalar",
-                    field.name
-                ),
-            ));
-            return Self::default();
-        }
-
         // Resolve the durable graph's ledger identities. The application, the root
         // placement, its product, and each root key column anchor first; then the
         // resource's member tree (top-level fields, groups, and branches) anchors as
@@ -208,9 +191,12 @@ impl DurableRegistry {
         // The resource's member tree, in canonical order: its top-level fields
         // (aligned with the materialized record), then its static `group`
         // namespaces, then its keyed `branch` placements — each group and branch
-        // recursively holding its own members. `has_extras` records whether the
-        // resource declares any group or branch, which makes even a single-column
-        // keyed root not yet executable.
+        // recursively holding its own members. A top-level field's value shape is
+        // drawn from the closed acyclic durable value set (a nominal scalar, a dense
+        // struct, a closed enum, or an `Option` of one), the field anchoring the
+        // ledger id while nested product leaves are shape bytes and each durable-
+        // reachable enum contributes its own sum/member identities. `has_extras`
+        // records whether the resource declares any group or branch.
         let mut members: Vec<DurableMemberDef> = record
             .fields
             .iter()
@@ -219,12 +205,8 @@ impl DurableRegistry {
                     IdentityKind::Field,
                     &format!("{}.{}", store.resource, field.name),
                 ),
-                scalar: field
-                    .ty
-                    .as_scalar()
-                    .expect("a stored resource field is a scalar")
-                    .image(),
                 required: field.required,
+                value: resolver.build_value_shape(records, field.ty, 1),
             })
             .collect();
         let (groups_and_branches, has_extras) =
@@ -261,13 +243,20 @@ impl DurableRegistry {
         });
 
         // Operation sites — and therefore executable durable operations — exist only
-        // for the flat single-column keyed root the kernel can serve. A singleton,
-        // composite-key, or group/branch-bearing root carries its identity but no
-        // sites; the lowerer reports any operation over it as not yet executable.
+        // for the flat single-column keyed root of plain scalar fields the kernel can
+        // serve. A singleton, composite-key, group/branch-bearing, or widened-field
+        // root (any top-level field that is a nominal scalar, struct, enum, or
+        // `Option` rather than a plain base scalar) carries its identity but no sites;
+        // the lowerer reports any operation over it as not yet executable. This keeps
+        // the executable flat-scalar path exactly as before value widening.
+        let all_scalar_fields = record
+            .fields
+            .iter()
+            .all(|f| matches!(f.ty, GArg::Scalar(_)));
         let [key] = key_scalars.as_slice() else {
             return Self::declared(&store.root.root);
         };
-        if has_extras {
+        if has_extras || !all_scalar_fields {
             return Self::declared(&store.root.root);
         }
         let entry_site = draft
@@ -376,6 +365,10 @@ struct IdentityResolver<'a> {
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
     complete: bool,
+    /// The durable anchor spellings of enums whose sum/member anchors have already
+    /// been resolved, so an enum reachable from several durable fields resolves —
+    /// and reports any identity gap — exactly once.
+    seen_enums: BTreeSet<String>,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
 }
 
@@ -391,8 +384,127 @@ impl<'a> IdentityResolver<'a> {
             span,
             ledger,
             complete: true,
+            seen_enums: BTreeSet::new(),
             diagnostics,
         }
+    }
+
+    /// Build a durable field's stored value shape from its resolved value type, over
+    /// the closed acyclic durable value set. A nominal scalar erases to its base
+    /// `int`; a dense struct records its leaves positionally with no per-leaf ledger
+    /// id (the containing field is the renamable durable declaration); a closed enum
+    /// resolves its sum (kind 5) and per-member (kind 6) identities. A collection or
+    /// abstract type parameter is not a durable value leaf — it is a precise
+    /// `check.unsupported` that marks the graph incomplete, so the placeholder shape
+    /// is discarded with the graph.
+    fn build_value_shape(
+        &mut self,
+        records: &TypeRegistry,
+        ty: GArg,
+        depth: usize,
+    ) -> DurableValueShape {
+        // A well-typed durable value is acyclic and shallow; exceeding the bound means
+        // the value graph is cyclic (a struct or enum reaching itself). The checker's
+        // value-cycle pass reports that as `check.recursion`; here the bound only
+        // stops unbounded recursion, marking the graph incomplete so its placeholder
+        // shape is discarded (no duplicate diagnostic).
+        if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
+            self.complete = false;
+            return DurableValueShape::Scalar(ScalarType::Int.image());
+        }
+        match ty {
+            GArg::Scalar(scalar) => DurableValueShape::Scalar(scalar.image()),
+            GArg::Nominal(_) => DurableValueShape::Scalar(ScalarType::Int.image()),
+            GArg::Struct(type_id) => match records.struct_by_type(type_id) {
+                Some(info) => DurableValueShape::Struct(
+                    info.fields
+                        .iter()
+                        .map(|field| self.build_value_shape(records, field.ty, depth + 1))
+                        .collect(),
+                ),
+                None => {
+                    self.reject_value("this struct value");
+                    DurableValueShape::Struct(Vec::new())
+                }
+            },
+            GArg::Enum(enum_id) => self.build_enum_value_shape(records, enum_id, depth),
+            GArg::Collection(_) => {
+                self.reject_value(
+                    "a collection stored directly in a durable field (a large collection \
+                     belongs under a keyed branch)",
+                );
+                DurableValueShape::Scalar(ScalarType::Int.image())
+            }
+            GArg::Param(_) => {
+                self.reject_value("this value type");
+                DurableValueShape::Scalar(ScalarType::Int.image())
+            }
+        }
+    }
+
+    /// Build the value shape of a durable-reachable closed enum, resolving its sum
+    /// and per-member ledger identities once (anchored at the enum's canonical
+    /// spelling and `<spelling>.<member>`). Member order is declaration order, so
+    /// append-only member evolution preserves every existing member's id and code.
+    fn build_enum_value_shape(
+        &mut self,
+        records: &TypeRegistry,
+        enum_id: marrow_image::EnumId,
+        depth: usize,
+    ) -> DurableValueShape {
+        let spelling = records.enum_anchor_spelling(enum_id);
+        let Some(variants) = records.enum_variants(enum_id) else {
+            self.reject_value("this enum value");
+            return DurableValueShape::Scalar(ScalarType::Int.image());
+        };
+        // Resolve (and gap-report) an enum's anchors only the first time it is
+        // reached; a later occurrence looks its ids up quietly.
+        let first_time = self.seen_enums.insert(spelling.clone());
+        let sum = self.resolve_enum_anchor(IdentityKind::Sum, &spelling, first_time);
+        let members = variants
+            .iter()
+            .map(|(name, payload)| {
+                let id = self.resolve_enum_anchor(
+                    IdentityKind::Member,
+                    &format!("{spelling}.{name}"),
+                    first_time,
+                );
+                let payload = payload
+                    .iter()
+                    .map(|arg| self.build_value_shape(records, *arg, depth + 1))
+                    .collect();
+                DurableEnumMemberShape { id, payload }
+            })
+            .collect();
+        DurableValueShape::Enum { sum, members }
+    }
+
+    /// Resolve one enum sum/member anchor. On the enum's first occurrence this is the
+    /// ordinary gap-reporting `resolve`; on a later occurrence it looks the id up
+    /// quietly, since the first occurrence already reported any gap and discarded the
+    /// graph.
+    fn resolve_enum_anchor(
+        &mut self,
+        kind: IdentityKind,
+        path: &str,
+        report: bool,
+    ) -> LedgerIdBytes {
+        if report {
+            return self.resolve(kind, path);
+        }
+        match self.ledger.and_then(|ledger| ledger.lookup(kind, path)) {
+            Some(id) => LedgerIdBytes::from_bytes(*id.bytes()),
+            None => LedgerIdBytes::from_bytes([0u8; 16]),
+        }
+    }
+
+    /// Report a durable field value type outside the closed acyclic durable value set
+    /// and mark the graph incomplete, so its placeholder value shape never reaches
+    /// the image.
+    fn reject_value(&mut self, subject: &str) {
+        self.complete = false;
+        self.diagnostics
+            .push(unsupported(self.file, self.span, subject));
     }
 
     /// Resolve one anchor to its live ledger id. On a gap this reports the precise
@@ -512,9 +624,11 @@ impl<'a> IdentityResolver<'a> {
         fields
     }
 
-    /// One stored scalar field of a group or branch: its ledger id, scalar, and
-    /// required flag. A keyed scalar leaf or a non-scalar field is a precise
-    /// `check.unsupported` rejection and marks the graph incomplete.
+    /// One stored scalar field of a group or branch: its ledger id, required flag,
+    /// and scalar value shape. Group and branch leaves stay scalar-only on this line
+    /// (top-level resource fields carry the widened value set); a keyed scalar leaf
+    /// or a non-scalar group/branch field is a precise `check.unsupported` rejection
+    /// and marks the graph incomplete.
     fn build_field(
         &mut self,
         records: &TypeRegistry,
@@ -529,22 +643,18 @@ impl<'a> IdentityResolver<'a> {
         }
         let Some(scalar) = scalar_of(&records.expand(&field.ty)) else {
             self.complete = false;
-            self.diagnostics.push(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
+            self.diagnostics.push(unsupported(
                 self.file,
                 field.span,
-                format!(
-                    "a stored field has a scalar type; `{}` is not a scalar",
-                    field.name
-                ),
+                "a non-scalar field of a group or branch",
             ));
             return None;
         };
         let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
         Some(DurableMemberDef::Field {
             id,
-            scalar: scalar.image(),
             required: field.required,
+            value: DurableValueShape::Scalar(scalar.image()),
         })
     }
 }

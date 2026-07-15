@@ -53,6 +53,13 @@ pub const MAX_KEY_COLUMNS: usize = 8;
 /// materialized record's flat field list).
 pub const MAX_DURABLE_MEMBERS: usize = 256;
 
+/// Nesting depth of a durable field's stored value shape: a top-level field value
+/// is depth 1, a struct leaf or an enum member payload leaf one deeper. The bound
+/// stops a hostile image from driving unbounded recursion in the value-shape
+/// decoder before it allocates (§ law 9), comfortably above any source-shaped
+/// value nesting the checker's own acyclic value graph admits.
+pub const MAX_DURABLE_VALUE_DEPTH: usize = 32;
+
 /// Nesting depth of the durable-graph member tree: a top-level member is depth 1,
 /// a member of a group or branch is one deeper. The bound stops a hostile or
 /// divergent image from driving unbounded recursion in the member-tree decoder

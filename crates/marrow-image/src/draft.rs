@@ -12,7 +12,7 @@
 //! rechecks every bound against the received bytes; the draft's checks are a
 //! producer-side guard, not the trust boundary.
 
-use crate::durable_id::LedgerIdBytes;
+use crate::durable_id::{DurableValueShape, LedgerIdBytes};
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::ty::{ImageType, Scalar};
@@ -159,7 +159,8 @@ pub struct RootIdentity {
 }
 
 /// One member of a durable resource's shape as the draft carries it, in source
-/// declaration order: a stored scalar field, a static `group` field-path
+/// declaration order: a stored field (its ledger id, required flag, and value shape
+/// from the closed acyclic durable value set), a static `group` field-path
 /// namespace, or a keyed `branch` placement. Groups and branches recurse. This is
 /// the image-side owner of the durable member tree; the verifier decodes an
 /// independent copy and the contract id is computed over both.
@@ -167,8 +168,8 @@ pub struct RootIdentity {
 pub enum DurableMemberDef {
     Field {
         id: LedgerIdBytes,
-        scalar: Scalar,
         required: bool,
+        value: DurableValueShape,
     },
     Group {
         id: LedgerIdBytes,
@@ -290,6 +291,7 @@ pub enum ImageBuildError {
     TooManyKeyColumns,
     TooManyDurableMembers,
     DurableTreeTooDeep,
+    DurableValueTooDeep,
     TooManySites,
     TooManyFunctions,
     TooManyParams,

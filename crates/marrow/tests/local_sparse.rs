@@ -180,10 +180,14 @@ fn unsetting_a_durable_place_is_a_check_type_diagnostic() {
     assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
 }
 
-/// A resource carrying a non-scalar (`Option`) field has no durable
-/// representation, so backing a `store` with it is a typed `check.type`.
+/// A resource carrying an `Option` field is identity-complete: the store is
+/// accepted and its durable identities are minted, including the sum and member ids
+/// of the `Option[string]` reachable through it (`Option` is a closed enum). The
+/// `Option`-valued field is not part of the kernel-executable flat scalar record, so
+/// a durable operation over the store is a precise `check.unsupported`; it is no
+/// longer a `check.type` on the declaration.
 #[test]
-fn a_store_over_an_option_field_resource_is_a_check_type_diagnostic() {
+fn a_store_over_an_option_field_resource_is_identity_complete() {
     let temp = TempDir::new("store-option");
     project(
         &temp,
@@ -198,8 +202,12 @@ fn a_store_over_an_option_field_resource_is_a_check_type_diagnostic() {
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
-    assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":0"#), "{stdout}");
+    let ids = std::fs::read_to_string(temp.join("marrow.ids")).expect("marrow.ids written");
+    assert!(ids.contains("sum Option[string] "), "{ids}");
+    assert!(ids.contains("member Option[string].none "), "{ids}");
+    assert!(ids.contains("member Option[string].some "), "{ids}");
 }
 
 /// An `Option[string]` sparse field keeps three states distinct through the VM:

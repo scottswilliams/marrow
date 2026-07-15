@@ -30,10 +30,27 @@ pub fn title(id: int): string?
 Each identity column is drawn from the closed orderable durable-key scalar set:
 `int`, `string`, `bool`, `bytes`, `date`, or `instant` (a nominal type over one
 of these is admitted through its base scalar). `duration` is a span rather than
-an identity and is not a durable key. A resource declares scalar fields that are
+an identity and is not a durable key. A resource declares fields that are
 `required` or sparse; a sparse field may be absent. The store root is
 project-wide: any module uses the declared root shape directly, and function
 visibility does not change root access.
+
+### Durable Field Values
+
+A stored field holds a value from the closed acyclic durable value set:
+
+| Field value | Notes |
+|---|---|
+| a scalar | `int`, `bool`, `string`, `bytes`, `date`, `instant`, `duration` |
+| a nominal scalar | stored as its base scalar |
+| a dense `struct` | its leaves stored inline; the struct's leaves are structure, not separately named durable declarations |
+| a closed `enum` | a user `enum`, `Option`, or `Result`; each variant is a member |
+| an `Option` of any of the above | `Option[T]` where `T` is itself an admitted value |
+
+The value graph must be acyclic (a struct or enum may not contain itself,
+directly or transitively). A collection is not stored directly in a field — a
+large collection belongs under a keyed `branch` — and a field does not store a
+nested sparse resource, a place, a function, or a handle.
 
 A `store` root is either a *singleton* or a *keyed tuple*. A singleton root
 omits the key list and holds a single entry:
@@ -68,20 +85,25 @@ A stored resource may also declare static `group` namespaces and keyed `branch`
 placements (see [Resources](resources.md#groups-and-branches)). These are part of
 the durable graph and complete their identity like a root.
 
-The *flat* single-column keyed root is the executable durable shape in this
-preview: a root with one key column and no groups or branches, whose entries are
-read and written through the operations below. A singleton root, a composite-key
-root, or a root whose resource declares a group or a branch declares and verifies
-its full identity, but its read and write operations are not yet executable — an
-operation over one is the typed `check.unsupported` rejection rather than a silent
-drop, until the wider durable runtime lands.
+The *flat scalar* single-column keyed root is the executable durable shape in
+this preview: a root with one key column, no groups or branches, and only plain
+scalar fields, whose entries are read and written through the operations below. A
+singleton root, a composite-key root, a root whose resource declares a group or a
+branch, or a root whose resource declares a widened field (a nominal scalar,
+struct, enum, or `Option` value) declares and verifies its full identity, but its
+read and write operations are not yet executable — an operation over one is the
+typed `check.unsupported` rejection rather than a silent drop, until the wider
+durable runtime lands. (Declaring such a store is no longer a `check.type` on the
+resource, as it was before durable field values widened; the store is
+identity-complete, only its operations are deferred.)
 
 ## Durable Identity
 
 Every durable declaration — the application, a store root, each of its key
 columns, the stored resource, each stored field, each static `group` namespace,
-and each keyed `branch` placement together with its own key columns and fields —
-has its own durable
+each keyed `branch` placement together with its own key columns and fields, and
+each closed `enum` reachable through a durable field (its sum identity and one
+member identity per variant) — has its own durable
 identity: an opaque 128-bit id minted once from OS entropy and recorded in the
 project's committed identity ledger, `marrow.ids` (see
 [Projects](../tools/projects.md#the-identity-ledger)). The ledger is machine
@@ -97,11 +119,16 @@ A program's whole durable graph additionally carries a stable 32-byte
 **durable-contract identity**, computed over the graph's ledger ids and shape:
 each root's ordered key tuple — scalar and identity per column — and its
 resource's ordered **member tree**. The member tree is the resource's stored
-fields (scalar type and `required` flag per field) interleaved with its static
-`group` namespaces (each an identity and its own member tree) and its keyed
-`branch` placements (each an identity, an ordered key tuple, and its own member
-tree). Key-column and member order are part of the identity. The compiler derives
-it from
+fields (the `required` flag and the stored value shape per field) interleaved
+with its static `group` namespaces (each an identity and its own member tree) and
+its keyed `branch` placements (each an identity, an ordered key tuple, and its own
+member tree). A field's value shape records its scalar, dense struct leaves, or
+closed-enum members; a durable-reachable enum contributes its sum identity and
+one member identity per variant, so appending an enum member (which preserves the
+existing members' identities and order) is a distinct evolution from renaming or
+re-typing one. A nested struct's leaves are structure, not separate durable
+declarations, so they mint no identities of their own. Key-column and member
+order are part of the identity. The compiler derives it from
 the resolved
 graph and records it in the program image; the independent verifier rebuilds
 the descriptor from the image tables, recomputes the identity, and rejects any

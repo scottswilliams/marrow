@@ -884,6 +884,21 @@ impl TypeRegistry {
         }
     }
 
+    /// The durable-ledger anchor spelling of an enum value: a concrete user `enum`
+    /// by its declared name, and a generic enum instantiation (`Option`, `Result`, a
+    /// user generic) by its space-free `Name[arg,...]` spelling. Space-free so the
+    /// result is a valid `marrow.ids` anchor path (printable ASCII, no spaces). The
+    /// spelling is stable across appending an enum member, so an append preserves the
+    /// sum anchor while minting only the new member.
+    pub(crate) fn enum_anchor_spelling(&self, id: EnumId) -> String {
+        if let Some(info) = self.enum_by_id(id) {
+            return info.name.clone();
+        }
+        self.inst_spelling(TypeInstId::Enum(id))
+            .map(|spelling| spelling.replace(' ', ""))
+            .unwrap_or_else(|| format!("enum#{}", id.index()))
+    }
+
     /// The source spelling of a generic type instantiation, `Name[arg, ...]`, if
     /// `id` names one.
     pub(crate) fn inst_spelling(&self, id: TypeInstId) -> Option<String> {
@@ -2228,8 +2243,14 @@ fn fill_record(
             diagnostics.push(unsupported(file, field.span, "a keyed field"));
             continue;
         }
+        // A resource field is a value drawn from the closed acyclic durable value
+        // set: a scalar, a nominal scalar, a dense struct, or a closed enum
+        // (`Option`/`Result`/a user `enum`). A collection is not a durable field
+        // value (a large collection belongs under a keyed branch); an abstract
+        // parameter never reaches a concrete record. The durable-graph owner decides
+        // which of these shapes the kernel can yet execute.
         let field_ty = match registry.resolve_garg(draft, &field.ty) {
-            Some(ty @ (GArg::Scalar(_) | GArg::Enum(_))) => ty,
+            Some(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
             _ => {
                 diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
                 continue;

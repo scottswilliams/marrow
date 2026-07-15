@@ -1,0 +1,24 @@
+module accounts
+
+resource Account
+    required id: int
+    required kind: Access
+    balance: Money
+    owner: Name
+    note: Option[string]
+
+struct Name
+    first: string
+    last: string
+
+enum Access
+    reader
+    writer
+    admin
+
+type Money: int in 0..=1000000
+
+store ^accounts(id: int): Account
+
+pub fn label(): string
+    return "accounts"

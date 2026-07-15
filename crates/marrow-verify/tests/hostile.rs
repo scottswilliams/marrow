@@ -9,9 +9,9 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    DurableMemberDef, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef,
-    SiteTarget, SpanEntry, VariantDef, image_id,
+    DurableEnumMemberShape, DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef,
+    FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -22,13 +22,13 @@ fn counters_members() -> Vec<DurableMemberDef> {
     vec![
         DurableMemberDef::Field {
             id: LedgerIdBytes::from_bytes([0x0e; 16]),
-            scalar: Scalar::Int,
             required: true,
+            value: DurableValueShape::Scalar(Scalar::Int),
         },
         DurableMemberDef::Field {
             id: LedgerIdBytes::from_bytes([0x0f; 16]),
-            scalar: Scalar::Text,
             required: false,
+            value: DurableValueShape::Scalar(Scalar::Text),
         },
     ]
 }
@@ -548,8 +548,8 @@ fn executable_site_over_a_composite_root_rejects() {
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
             members: vec![DurableMemberDef::Field {
                 id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                scalar: Scalar::Int,
                 required: true,
+                value: DurableValueShape::Scalar(Scalar::Int),
             }],
         },
     });
@@ -618,15 +618,15 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    scalar: Scalar::Text,
                     required: true,
+                    value: DurableValueShape::Scalar(Scalar::Text),
                 },
                 DurableMemberDef::Group {
                     id: LedgerIdBytes::from_bytes([0x20; 16]),
                     members: vec![DurableMemberDef::Field {
                         id: LedgerIdBytes::from_bytes([0x21; 16]),
-                        scalar: Scalar::Int,
                         required: false,
+                        value: DurableValueShape::Scalar(Scalar::Int),
                     }],
                 },
                 DurableMemberDef::Branch {
@@ -637,8 +637,8 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
                     }],
                     members: vec![DurableMemberDef::Field {
                         id: LedgerIdBytes::from_bytes([0x32; 16]),
-                        scalar: Scalar::Text,
                         required: true,
+                        value: DurableValueShape::Scalar(Scalar::Text),
                     }],
                 },
             ],
@@ -1761,27 +1761,61 @@ fn deep_acyclic_record_chain_verifies() {
     assert_eq!(value_graph_code(&mut draft), "VERIFIED");
 }
 
-#[test]
-fn durable_root_with_a_non_scalar_field_rejects() {
-    // A durable root record carrying an enum-valued field has no store
-    // representation, so the durable table rejects it.
+/// A two-variant payloadless enum's durable value shape, with a sum id and one
+/// member id per variant.
+fn access_enum_value(members: Vec<DurableEnumMemberShape>) -> DurableValueShape {
+    DurableValueShape::Enum {
+        sum: LedgerIdBytes::from_bytes([0x50; 16]),
+        members,
+    }
+}
+
+/// Two payloadless members with distinct ids, matching a `reader`/`writer` enum.
+fn access_members() -> Vec<DurableEnumMemberShape> {
+    vec![
+        DurableEnumMemberShape {
+            id: LedgerIdBytes::from_bytes([0x51; 16]),
+            payload: Vec::new(),
+        },
+        DurableEnumMemberShape {
+            id: LedgerIdBytes::from_bytes([0x52; 16]),
+            payload: Vec::new(),
+        },
+    ]
+}
+
+/// A valid widened durable image: `Widget { id:int required, kind:Access required }`
+/// stored at `^widgets(id:int)`, where `Access` is a two-variant payloadless enum.
+/// The `kind` field's durable value shape is a closed enum carrying a sum id and one
+/// member id per variant, so the member tree matches the materialized record's
+/// widened value shape. The root is not executable (it has a widened field), so it
+/// carries no operation sites — a storeless export completes the image.
+fn widened_draft(kind_value: DurableValueShape) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let src = draft.intern_string("src/main.mw");
-    let rname = draft.intern_string("R");
-    let ename = draft.intern_string("E");
-    let vname = draft.intern_string("only");
-    let idn = draft.intern_string("id");
-    let tagn = draft.intern_string("tag");
+    let access = draft.intern_string("Access");
+    let reader = draft.intern_string("reader");
+    let writer = draft.intern_string("writer");
     draft.add_enum_type(EnumTypeDef {
-        name: ename,
-        variants: vec![VariantDef {
-            name: vname,
-            category: false,
-            payload: Vec::new(),
-        }],
+        name: access,
+        variants: vec![
+            VariantDef {
+                name: reader,
+                category: false,
+                payload: Vec::new(),
+            },
+            VariantDef {
+                name: writer,
+                category: false,
+                payload: Vec::new(),
+            },
+        ],
     });
+    let widget = draft.intern_string("Widget");
+    let idn = draft.intern_string("id");
+    let kindn = draft.intern_string("kind");
     let rec = draft.add_record_type(RecordTypeDef {
-        name: rname,
+        name: widget,
         fields: vec![
             FieldDef {
                 name: idn,
@@ -1789,34 +1823,39 @@ fn durable_root_with_a_non_scalar_field_rejects() {
                 required: true,
             },
             FieldDef {
-                name: tagn,
+                name: kindn,
                 ty: ImageType::Enum {
                     idx: 0,
                     optional: false,
                 },
-                required: false,
+                required: true,
             },
         ],
     });
-    let root = draft.intern_string("boxes");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x1a; 16]));
+    let root = draft.intern_string("widgets");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     draft.add_root(RootDef {
         name: root,
         keys: vec![KeyColumn {
             scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x1c; 16]),
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
         }],
         record: rec,
         identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x1b; 16]),
-            product: LedgerIdBytes::from_bytes([0x1d; 16]),
-            // The durable member tree carries only the scalar field; the enum field
-            // has no durable representation and is what makes verification reject.
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes([0x1e; 16]),
-                scalar: Scalar::Int,
-                required: true,
-            }],
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0f; 16]),
+                    required: true,
+                    value: kind_value,
+                },
+            ],
         },
     });
     let zero = draft.intern_int(0);
@@ -1832,5 +1871,105 @@ fn durable_root_with_a_non_scalar_field_rejects() {
         code,
     });
     draft.add_export(ExportId::of_local("", "f"), func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+    draft
+}
+
+#[test]
+fn a_widened_enum_field_image_verifies() {
+    // A durable resource with a closed-enum field is now identity-complete and
+    // verifies when its member tree's value shape matches the record's enum field.
+    assert_eq!(
+        code_of(
+            &widened_draft(access_enum_value(access_members()))
+                .encode()
+                .unwrap()
+                .bytes
+        ),
+        "VERIFIED"
+    );
+}
+
+#[test]
+fn rehashed_mutated_enum_member_id_breaks_the_contract_id() {
+    // An enum member id (kind 6) is part of the durable member tree the verifier
+    // recomputes the contract over. Flipping it and rehashing the outer digest leaves
+    // the carried contract id stale, so the recomputation rejects — the contract
+    // binds each member's identity, so append-only evolution has stable codes.
+    let mut bytes = widened_draft(access_enum_value(access_members()))
+        .encode()
+        .unwrap()
+        .bytes;
+    flip_ledger_id(&mut bytes, [0x51; 16]);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn forged_duplicate_enum_member_id_rejects() {
+    // Entropy-minted ids are pairwise distinct; two members claiming one id forge a
+    // duplicate identity in the durable table and reject before the contract
+    // recomputation, so a hostile image cannot alias two members to one code.
+    let dup = vec![
+        DurableEnumMemberShape {
+            id: LedgerIdBytes::from_bytes([0x51; 16]),
+            payload: Vec::new(),
+        },
+        DurableEnumMemberShape {
+            id: LedgerIdBytes::from_bytes([0x51; 16]),
+            payload: Vec::new(),
+        },
+    ];
+    assert_eq!(
+        code_of(
+            &widened_draft(access_enum_value(dup))
+                .encode()
+                .unwrap()
+                .bytes
+        ),
+        "image.table"
+    );
+}
+
+#[test]
+fn enum_value_shape_that_mismatches_the_record_rejects() {
+    // The member tree's value shape must match the materialized record's enum field.
+    // A value shape with three members when the enum table has two variants cannot be
+    // reconciled, so the cross-check rejects — a hostile image cannot claim one
+    // durable identity while its executable record carries a different value shape.
+    let mut extra = access_members();
+    extra.push(DurableEnumMemberShape {
+        id: LedgerIdBytes::from_bytes([0x53; 16]),
+        payload: Vec::new(),
+    });
+    assert_eq!(
+        code_of(
+            &widened_draft(access_enum_value(extra))
+                .encode()
+                .unwrap()
+                .bytes
+        ),
+        "image.table"
+    );
+}
+
+#[test]
+fn out_of_domain_durable_value_tag_rejects() {
+    // The durable value shape is self-describing (scalar 0, struct 1, enum 2).
+    // Mutating the `kind` field's value tag to an unknown value (and rehashing the
+    // digest) is an out-of-domain value shape the decoder refuses.
+    let mut bytes = widened_draft(access_enum_value(access_members()))
+        .encode()
+        .unwrap()
+        .bytes;
+    // Find the `kind` field (member id 0x0f) followed by its required flag (0x01) and
+    // its value tag (0x02, enum), and corrupt the tag.
+    let mut needle = vec![0x0f_u8; 16];
+    needle.extend_from_slice(&[0x01, 0x02]);
+    let at = bytes
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())
+        .expect("the kind field value tag appears in the image");
+    bytes[at + needle.len() - 1] = 0x7f;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
 }

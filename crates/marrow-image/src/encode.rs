@@ -14,7 +14,7 @@ use crate::draft::{
 };
 use crate::durable_id::{
     DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
-    DurableKeyShape, DurableMemberShape, DurableRootShape,
+    DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape,
 };
 use crate::instr::Instr;
 use crate::ty::ImageType;
@@ -544,23 +544,25 @@ fn encode_key_tuple(body: &mut Vec<u8>, keys: &[KeyColumn]) {
 }
 
 /// Encode a durable member tree into the DURABLE section: `u16(count) ‖ member*`.
-/// A field is tag `0x00`, its ledger id, its bare scalar, and a required flag; a
+/// A field is tag `0x00`, its ledger id, a required flag, and its value shape; a
 /// group is tag `0x01`, its ledger id, and its own members; a branch is tag
 /// `0x02`, its placement id, its key tuple, and its own members. Recurses through
-/// groups and branches in source declaration order.
+/// groups and branches in source declaration order. A field's value shape is the
+/// canonical [`DurableValueShape`] encoding, so a durable field and its
+/// contract-identity contribution spell the value one way.
 fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef]) {
     push_u16(body, members.len() as u16);
     for member in members {
         match member {
             DurableMemberDef::Field {
                 id,
-                scalar,
                 required,
+                value,
             } => {
                 body.push(0x00);
                 body.extend_from_slice(id.bytes());
-                ImageType::scalar(*scalar).encode(body);
                 body.push(u8::from(*required));
+                encode_value_shape_section(body, value);
             }
             DurableMemberDef::Group { id, members } => {
                 body.push(0x01);
@@ -599,7 +601,9 @@ fn validate_member_tree(
             return Err(ImageBuildError::TooManyDurableMembers);
         }
         match member {
-            DurableMemberDef::Field { .. } => {}
+            DurableMemberDef::Field { value, .. } => {
+                validate_value_shape(value, 1)?;
+            }
             DurableMemberDef::Group { members, .. } => {
                 validate_member_tree(members, depth + 1, count)?;
             }
@@ -608,6 +612,77 @@ fn validate_member_tree(
                     return Err(ImageBuildError::TooManyKeyColumns);
                 }
                 validate_member_tree(members, depth + 1, count)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Encode a durable field value shape into the DURABLE section: `u8(value_tag) ‖
+/// body`. A scalar is tag `0x00` and a bare scalar tag; a struct is tag `0x01`,
+/// `u16(leaf_count)`, and its leaves; an enum is tag `0x02`, its raw 16-byte sum id,
+/// `u16(member_count)`, and per member a raw 16-byte id, `u16(payload_count)`, and
+/// its payload leaves. Ledger ids are raw 16 bytes here (as everywhere in this
+/// section); the canonical contract-identity payload re-encodes them as kind-tagged
+/// IDREFs through [`DurableValueShape::encode`], which the verifier recomputes.
+fn encode_value_shape_section(body: &mut Vec<u8>, value: &DurableValueShape) {
+    match value {
+        DurableValueShape::Scalar(scalar) => {
+            body.push(0x00);
+            body.push(scalar.tag());
+        }
+        DurableValueShape::Struct(leaves) => {
+            body.push(0x01);
+            push_u16(body, leaves.len() as u16);
+            for leaf in leaves {
+                encode_value_shape_section(body, leaf);
+            }
+        }
+        DurableValueShape::Enum { sum, members } => {
+            body.push(0x02);
+            body.extend_from_slice(sum.bytes());
+            push_u16(body, members.len() as u16);
+            for member in members {
+                body.extend_from_slice(member.id.bytes());
+                push_u16(body, member.payload.len() as u16);
+                for leaf in &member.payload {
+                    encode_value_shape_section(body, leaf);
+                }
+            }
+        }
+    }
+}
+
+/// Recheck a durable field value shape's nesting depth against
+/// [`bounds::MAX_DURABLE_VALUE_DEPTH`], and every struct-leaf / enum-variant /
+/// payload fan-out against the existing value-type bounds, so a well-formed draft
+/// always encodes within the limits the verifier rechecks (§ law 9). `depth` is 1
+/// for a top-level field value.
+fn validate_value_shape(value: &DurableValueShape, depth: usize) -> Result<(), ImageBuildError> {
+    if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
+        return Err(ImageBuildError::DurableValueTooDeep);
+    }
+    match value {
+        DurableValueShape::Scalar(_) => {}
+        DurableValueShape::Struct(leaves) => {
+            if leaves.len() > bounds::MAX_FIELDS {
+                return Err(ImageBuildError::TooManyFields);
+            }
+            for leaf in leaves {
+                validate_value_shape(leaf, depth + 1)?;
+            }
+        }
+        DurableValueShape::Enum { members, .. } => {
+            if members.len() > bounds::MAX_VARIANTS {
+                return Err(ImageBuildError::TooManyVariants);
+            }
+            for member in members {
+                if member.payload.len() > bounds::MAX_PAYLOAD_FIELDS {
+                    return Err(ImageBuildError::TooManyPayloadFields);
+                }
+                for leaf in &member.payload {
+                    validate_value_shape(leaf, depth + 1)?;
+                }
             }
         }
     }
@@ -633,12 +708,12 @@ fn member_shapes(members: &[DurableMemberDef]) -> Vec<DurableMemberShape> {
         .map(|member| match member {
             DurableMemberDef::Field {
                 id,
-                scalar,
                 required,
+                value,
             } => DurableMemberShape::Field(DurableFieldShape {
                 id: *id,
-                scalar: *scalar,
                 required: *required,
+                value: value.clone(),
             }),
             DurableMemberDef::Group { id, members } => {
                 DurableMemberShape::Group(DurableGroupShape {

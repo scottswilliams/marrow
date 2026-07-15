@@ -297,8 +297,14 @@ fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
 /// A resource backing a `store` still admits only scalar fields: a user-enum field
 /// on a stored resource is a typed `check.type` at the store (the durable-root
 /// scalar-only rule is unchanged by the local-value nesting work).
+/// A stored resource with a closed-enum field is now identity-complete: the store
+/// declaration is accepted and its durable identities (including the enum's sum and
+/// per-member ids) are minted, so a storeless export over the project runs. The
+/// enum-valued field is not part of the kernel-executable flat scalar record, so a
+/// durable operation over the store is a precise `check.unsupported` (covered in the
+/// durable-field widening suite); it is no longer a `check.type` on the declaration.
 #[test]
-fn a_stored_resource_with_an_enum_field_is_rejected() {
+fn a_stored_resource_with_an_enum_field_is_identity_complete() {
     let temp = TempDir::new("stored-enum-field");
     project(
         &temp,
@@ -317,6 +323,12 @@ fn a_stored_resource_with_an_enum_field_is_rejected() {
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
-    assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""outcome":"value""#), "{stdout}");
+    assert!(stdout.contains(r#""data":0"#), "{stdout}");
+    // The enum reachable through the store gained sum and per-member identities.
+    let ids = std::fs::read_to_string(temp.join("marrow.ids")).expect("marrow.ids written");
+    assert!(ids.contains("sum Color "), "{ids}");
+    assert!(ids.contains("member Color.red "), "{ids}");
+    assert!(ids.contains("member Color.green "), "{ids}");
 }

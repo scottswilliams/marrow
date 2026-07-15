@@ -13,28 +13,29 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableFieldShape,
-    DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape, ExportId, ImageId,
-    ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
-    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
-    OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
-    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
-    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
-    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
-    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
-    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT,
-    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION,
-    OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION,
-    OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
-    OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
-    OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
-    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET,
-    OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
-    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
-    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
-    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
-    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM,
-    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableEnumMemberShape,
+    DurableFieldShape, DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
+    DurableValueShape, ExportId, ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT,
+    OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
+    OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
+    OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
+    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
+    OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT,
+    OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES,
+    OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET,
+    OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT,
+    OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED,
+    OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL,
+    OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB,
+    OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN,
+    OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
+    OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
+    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
+    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
+    TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -115,8 +116,8 @@ struct DecodedRoot {
 enum DecodedMember {
     Field {
         id: LedgerIdBytes,
-        scalar: Scalar,
         required: bool,
+        value: DurableValueShape,
     },
     Group {
         id: LedgerIdBytes,
@@ -133,6 +134,21 @@ impl DecodedMember {
     /// Whether this member is a group or a keyed branch (not a flat field).
     fn is_extra(&self) -> bool {
         !matches!(self, DecodedMember::Field { .. })
+    }
+
+    /// Whether this member is a top-level field whose stored value is not a plain
+    /// scalar (a nominal erases to a scalar; a struct or enum does not). Such a field
+    /// carries a complete identity but is not part of the kernel-executable flat
+    /// scalar record, so — like a group or branch — it makes a root not yet
+    /// executable.
+    fn is_nonscalar_field(&self) -> bool {
+        matches!(
+            self,
+            DecodedMember::Field {
+                value: DurableValueShape::Struct(_) | DurableValueShape::Enum { .. },
+                ..
+            }
+        )
     }
 }
 
@@ -250,7 +266,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
-    let (roots, sites, durable_contract) = decode_durable(sections[2].1, &strings, &types)?;
+    let (roots, sites, durable_contract) = decode_durable(sections[2].1, &strings, &types, &enums)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(
         sections[4].1,
@@ -932,6 +948,7 @@ fn decode_durable(
     body: &[u8],
     strings: &[Rc<str>],
     types: &[DecodedRecordType],
+    enums: &[DecodedEnum],
 ) -> Result<(Vec<DecodedRoot>, Vec<DecodedSite>, DurableContractId), VerifyRejection> {
     let string_count = strings.len();
     let mut reader = Reader::new(body);
@@ -980,50 +997,32 @@ fn decode_durable(
                 "root record type index out of range",
             ));
         }
-        // A durable record is stored as scalar leaves; a non-scalar (enum) field
-        // has no store representation, so a resource carrying one cannot be a
-        // durable root. This keeps the store-schema projection total.
-        if types[record as usize]
-            .fields
-            .iter()
-            .any(|field| !matches!(field.ty, ImageType::Scalar { .. }))
-        {
-            return Err(reject(
-                VerifyPhase::Table,
-                "a durable root record must have only scalar fields",
-            ));
-        }
         let placement = take_distinct_id(&mut reader, &mut ledger_ids, "short placement identity")?;
         let product = take_distinct_id(&mut reader, &mut ledger_ids, "short product identity")?;
         // The resource's durable member tree: top-level fields interleaved with
-        // static `group` namespaces and keyed `branch` placements.
+        // static `group` namespaces and keyed `branch` placements. A field's stored
+        // value is drawn from the closed acyclic durable value set (a bare scalar, a
+        // dense struct, or a closed enum with sum/member ids).
         let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
         let members = decode_members(&mut reader, 1, &mut member_budget, &mut ledger_ids)?;
         // The member tree's top-level fields are exactly the materialized record's
-        // stored fields, in order: this ties the durable identity to the executable
-        // record so a hostile image cannot claim one identity while executing over a
-        // different field shape.
+        // stored fields, in order and value shape: this ties the durable identity to
+        // the executable record so a hostile image cannot claim one identity while
+        // executing over a different field shape. The value-shape match recurses
+        // through the record and enum tables, so a widened field (a nominal, struct,
+        // or enum) is checked as thoroughly as a plain scalar.
         let record_fields = &types[record as usize].fields;
         let mut top_fields = members.iter().filter_map(|member| match member {
             DecodedMember::Field {
-                scalar, required, ..
-            } => Some((*scalar, *required)),
+                value, required, ..
+            } => Some((value, *required)),
             _ => None,
         });
         for field in record_fields {
-            let ImageType::Scalar {
-                scalar,
-                optional: false,
-            } = field.ty
-            else {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "a durable root record must have only scalar fields",
-                ));
-            };
             match top_fields.next() {
-                Some((member_scalar, member_required))
-                    if member_scalar == scalar && member_required == field.required => {}
+                Some((value, member_required))
+                    if member_required == field.required
+                        && value_shape_matches(value, field.ty, types, enums) => {}
                 _ => {
                     return Err(reject(
                         VerifyPhase::Table,
@@ -1202,13 +1201,6 @@ fn decode_members(
         let member = match tag {
             0x00 => {
                 let id = take_distinct_id(reader, seen, "short durable field identity")?;
-                let scalar_tag = reader
-                    .u8()
-                    .ok_or(reject(VerifyPhase::Table, "short durable field type"))?;
-                let scalar = decode_bare_scalar(scalar_tag).ok_or(reject(
-                    VerifyPhase::Table,
-                    "durable field type must be a bare scalar",
-                ))?;
                 let required = match reader.u8().ok_or(reject(
                     VerifyPhase::Table,
                     "short durable field required flag",
@@ -1222,10 +1214,11 @@ fn decode_members(
                         ));
                     }
                 };
+                let value = decode_value_shape(reader, 1, seen)?;
                 DecodedMember::Field {
                     id,
-                    scalar,
                     required,
+                    value,
                 }
             }
             0x01 => {
@@ -1255,6 +1248,154 @@ fn decode_members(
         members.push(member);
     }
     Ok(members)
+}
+
+/// Decode a durable field's stored value shape: `u8(value_tag) ‖ body`. A scalar is
+/// tag `0x00` (a bare scalar); a dense struct is tag `0x01` (`u16(count) ‖ value*`);
+/// a closed enum is tag `0x02` (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖
+/// value*]*`). Every sum and member id is a distinct ledger id across the durable
+/// table (via `seen`). `depth` bounds nesting so a hostile image cannot drive
+/// unbounded recursion before the value shape is rechecked (§ law 9).
+fn decode_value_shape(
+    reader: &mut Reader<'_>,
+    depth: usize,
+    seen: &mut Vec<LedgerIdBytes>,
+) -> Result<DurableValueShape, VerifyRejection> {
+    if depth > marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH {
+        return Err(reject(
+            VerifyPhase::Table,
+            "durable field value shape too deep",
+        ));
+    }
+    let tag = reader
+        .u8()
+        .ok_or(reject(VerifyPhase::Table, "short durable value tag"))?;
+    match tag {
+        0x00 => {
+            let scalar_tag = reader
+                .u8()
+                .ok_or(reject(VerifyPhase::Table, "short durable value scalar"))?;
+            let scalar = decode_bare_scalar(scalar_tag).ok_or(reject(
+                VerifyPhase::Table,
+                "durable value scalar must be a bare scalar",
+            ))?;
+            Ok(DurableValueShape::Scalar(scalar))
+        }
+        0x01 => {
+            let count = reader.u16().ok_or(reject(
+                VerifyPhase::Table,
+                "short durable struct leaf count",
+            ))? as usize;
+            if count > marrow_image::bounds::MAX_FIELDS {
+                return Err(reject(VerifyPhase::Table, "too many durable struct leaves"));
+            }
+            let mut leaves = Vec::with_capacity(count);
+            for _ in 0..count {
+                leaves.push(decode_value_shape(reader, depth + 1, seen)?);
+            }
+            Ok(DurableValueShape::Struct(leaves))
+        }
+        0x02 => {
+            let sum = take_distinct_id(reader, seen, "short durable enum sum identity")?;
+            let member_count = reader.u16().ok_or(reject(
+                VerifyPhase::Table,
+                "short durable enum member count",
+            ))? as usize;
+            if member_count > marrow_image::bounds::MAX_VARIANTS {
+                return Err(reject(VerifyPhase::Table, "too many durable enum members"));
+            }
+            let mut members = Vec::with_capacity(member_count);
+            for _ in 0..member_count {
+                let id = take_distinct_id(reader, seen, "short durable enum member identity")?;
+                let payload_count = reader.u16().ok_or(reject(
+                    VerifyPhase::Table,
+                    "short durable enum member payload count",
+                ))? as usize;
+                if payload_count > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "too many durable enum member payload leaves",
+                    ));
+                }
+                let mut payload = Vec::with_capacity(payload_count);
+                for _ in 0..payload_count {
+                    payload.push(decode_value_shape(reader, depth + 1, seen)?);
+                }
+                members.push(DurableEnumMemberShape { id, payload });
+            }
+            Ok(DurableValueShape::Enum { sum, members })
+        }
+        _ => Err(reject(VerifyPhase::Table, "unknown durable value tag")),
+    }
+}
+
+/// Whether a decoded durable field value shape structurally matches the materialized
+/// record field type it claims, recursing through the record and enum tables. The
+/// ledger ids a value shape carries (a struct records none; an enum a sum and per-
+/// member id) are durable identity, verified by pairwise distinctness and the
+/// contract-id recomputation — this match ties the *structure* to the executable
+/// record so a hostile image cannot claim one durable identity while its record
+/// carries a different value shape. A nominal field erases to its base scalar, so it
+/// matches a bare scalar exactly like a plain scalar field.
+fn value_shape_matches(
+    shape: &DurableValueShape,
+    ty: ImageType,
+    types: &[DecodedRecordType],
+    enums: &[DecodedEnum],
+) -> bool {
+    match (shape, ty) {
+        (
+            DurableValueShape::Scalar(shape_scalar),
+            ImageType::Scalar {
+                scalar,
+                optional: false,
+            },
+        ) => *shape_scalar == scalar,
+        (
+            DurableValueShape::Struct(leaves),
+            ImageType::Record {
+                idx,
+                optional: false,
+            },
+        ) => {
+            let Some(record) = types.get(idx as usize) else {
+                return false;
+            };
+            // A durable struct value is dense: every leaf is a required bare field,
+            // matched positionally.
+            record.fields.len() == leaves.len()
+                && record.fields.iter().zip(leaves).all(|(field, leaf)| {
+                    field.required && value_shape_matches(leaf, field.ty, types, enums)
+                })
+        }
+        (
+            DurableValueShape::Enum { members, .. },
+            ImageType::Enum {
+                idx,
+                optional: false,
+            },
+        ) => {
+            let Some(enum_def) = enums.get(idx as usize) else {
+                return false;
+            };
+            enum_def.variants.len() == members.len()
+                && enum_def
+                    .variants
+                    .iter()
+                    .zip(members)
+                    .all(|(variant, member)| {
+                        variant.payload.len() == member.payload.len()
+                            && variant
+                                .payload
+                                .iter()
+                                .zip(&member.payload)
+                                .all(|(leaf_ty, leaf)| {
+                                    value_shape_matches(leaf, *leaf_ty, types, enums)
+                                })
+                    })
+        }
+        _ => false,
+    }
 }
 
 /// Rebuild the canonical durable-graph descriptor from the decoded tables. This is
@@ -1299,12 +1440,12 @@ fn member_shapes(members: &[DecodedMember]) -> Vec<DurableMemberShape> {
         .map(|member| match member {
             DecodedMember::Field {
                 id,
-                scalar,
                 required,
+                value,
             } => DurableMemberShape::Field(DurableFieldShape {
                 id: *id,
-                scalar: *scalar,
                 required: *required,
+                value: value.clone(),
             }),
             DecodedMember::Group { id, members } => DurableMemberShape::Group(DurableGroupShape {
                 id: *id,
@@ -1805,7 +1946,12 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
             name: decoded.strings[root.name as usize].clone(),
             keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
             record: root.record,
-            has_extras: root.members.iter().any(DecodedMember::is_extra),
+            // A root is not the kernel-executable flat scalar root when it declares a
+            // group or branch, or any top-level widened (non-scalar) field.
+            has_extras: root
+                .members
+                .iter()
+                .any(|member| member.is_extra() || member.is_nonscalar_field()),
         })
         .collect();
     let sites: Vec<SealedSite> = decoded

@@ -440,24 +440,17 @@ fn a_terminal_argument_outside_the_interval_faults_on_entry() {
     assert!(stdout.contains(r#""code":"run.range""#), "{stdout}");
 }
 
-/// Nominal types are not yet admitted as constant types, resource field types,
-/// or store key types: each position reports `check.unsupported`, as the
-/// reference documents, until its owning lane lands.
+/// Nominal types are not yet admitted as constant types or store key types: each
+/// position reports `check.unsupported`, as the reference documents, until its
+/// owning lane lands. (A nominal *resource field* is admitted — it erases to its
+/// base scalar in the durable value shape — so it is not tested here.)
 #[test]
-fn nominal_types_are_unsupported_in_const_field_and_key_positions() {
+fn nominal_types_are_unsupported_in_const_and_key_positions() {
     for source in [
         // Constant type.
         "type Age: int in 0..=150\n\
          \n\
          const A: Age = 5\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 1\n",
-        // Resource field type.
-        "type Age: int in 0..=150\n\
-         \n\
-         resource Person\n\
-         \x20   required age: Age\n\
          \n\
          pub fn f(): int\n\
          \x20   return 1\n",
