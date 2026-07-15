@@ -9,8 +9,8 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    DurableContractDescriptor, DurableContractId, ExportId, ImageId, ImageType, Scalar,
-    SemanticNode, SemanticPath, SemanticTarget,
+    DurableContractDescriptor, DurableContractId, DurableIndexComponent, ExportId, ImageId,
+    ImageType, LedgerIdBytes, Scalar, SemanticNode, SemanticPath, SemanticTarget,
 };
 
 /// A resolved constant value.
@@ -336,6 +336,45 @@ impl SealedRoot {
     }
 }
 
+/// A verified managed index of a durable root: its stable `Index` ledger id, the
+/// index of the root it belongs to, its `unique` flag, and its ordered projection of
+/// leaf references (each a top-level `field` or identity `key` of the same root). The
+/// verifier reconstructs it by re-resolving every projected leaf against the decoded
+/// root, so a projection over a non-existent leaf never seals. An index has no
+/// application write opcode; maintenance is compiler-owned and runs at E05.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealedIndex {
+    pub(crate) id: LedgerIdBytes,
+    pub(crate) root: u16,
+    pub(crate) unique: bool,
+    pub(crate) components: Vec<DurableIndexComponent>,
+}
+
+impl SealedIndex {
+    /// The index's stable `Index` ledger identity — the sole `IndexId` a durable
+    /// operation algebra `unique_index_collision` outcome reveals.
+    pub fn id(&self) -> LedgerIdBytes {
+        self.id
+    }
+
+    /// The index of the durable root this index belongs to.
+    pub fn root(&self) -> u16 {
+        self.root
+    }
+
+    /// Whether this is a unique index (a complete-key exact lookup yielding at most
+    /// one source key) rather than a nonunique ordered index.
+    pub fn unique(&self) -> bool {
+        self.unique
+    }
+
+    /// The ordered projection: each component references a top-level `field` or
+    /// identity `key` leaf of the root, by ledger id.
+    pub fn components(&self) -> &[DurableIndexComponent] {
+        &self.components
+    }
+}
+
 /// A sealed record field: its name, bare value type, and whether it is required.
 /// The type is a scalar for a durable-storable field or a closed enum for a
 /// local-only value field. The name is carried so the path kernel can key
@@ -540,6 +579,7 @@ pub struct VerifiedImage {
     pub(crate) enums: Vec<SealedEnumType>,
     pub(crate) collections: Vec<SealedCollectionType>,
     pub(crate) roots: Vec<SealedRoot>,
+    pub(crate) indexes: Vec<SealedIndex>,
     pub(crate) sites: Vec<SealedSite>,
     pub(crate) durable_contract: DurableContractId,
     pub(crate) durable_descriptor: DurableContractDescriptor,
@@ -607,6 +647,43 @@ impl VerifiedImage {
     /// The durable operation sites, indexed by image site index.
     pub fn sites(&self) -> &[SealedSite] {
         &self.sites
+    }
+
+    /// The verified managed indexes, in image declaration order. Each is a narrow
+    /// compiler-maintained ordered projection of a durable root; the verifier
+    /// reconstructed its projection against the decoded graph.
+    pub fn indexes(&self) -> &[SealedIndex] {
+        &self.indexes
+    }
+
+    /// The verifier-derived `FieldId → [IndexId]` incidence: the stable ids of every
+    /// managed index whose projection includes the stored field `field`. This is the
+    /// maintenance consequence of mutating that field — the set of indexes a later
+    /// exact-field write must keep coherent (E05). Identity-key projection components
+    /// are excluded: a key is immutable, so it triggers no field maintenance. Derived
+    /// from the sealed indexes, never trusted from the image.
+    pub fn field_incidence(&self, field: LedgerIdBytes) -> Vec<LedgerIdBytes> {
+        self.indexes
+            .iter()
+            .filter(|index| {
+                index
+                    .components
+                    .contains(&DurableIndexComponent::Field(field))
+            })
+            .map(|index| index.id)
+            .collect()
+    }
+
+    /// The verifier-derived `RootId → [IndexId]` incidence: the stable ids of every
+    /// managed index of the root at index `root`. This is the maintenance consequence
+    /// of a whole-entry create/replace/erase on that root — every index must be kept
+    /// coherent (E05). Derived from the sealed indexes, never trusted from the image.
+    pub fn root_incidence(&self, root: u16) -> Vec<LedgerIdBytes> {
+        self.indexes
+            .iter()
+            .filter(|index| index.root == root)
+            .map(|index| index.id)
+            .collect()
     }
 
     pub fn consts(&self) -> &[SealedConst] {

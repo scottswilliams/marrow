@@ -38,6 +38,11 @@
 //!   root    = IDREF(0x03, placement) ‖ IDREF(0x01, product)
 //!             ‖ u16_be(key_count) ‖ key*                       (key columns in tuple order)
 //!             ‖ members                                        (the resource's durable member tree)
+//!             ‖ indexes                                        (the root's managed indexes)
+//!   indexes = u16_be(index_count) ‖ index*                    (in source declaration order)
+//!   index   = IDREF(0x08, index) ‖ u8(unique?1:0)
+//!             ‖ u16_be(component_count) ‖ component*           (projection leaves in projection order)
+//!   component = IDREF(0x02, field) | IDREF(0x04, key)          (a projected top-level field or identity key)
 //!   members = u16_be(member_count) ‖ member*                  (in source declaration order)
 //!   member  = u8(member_tag) ‖ member_body
 //!     field(0)  = IDREF(0x02, field) ‖ u8(required?1:0) ‖ value
@@ -77,8 +82,18 @@
 //! no groups or branches is executable in this preview; the wider shapes complete
 //! their identity and verify but run at E01.
 //!
+//! A root's **managed indexes** follow its member tree: each is a narrow
+//! compiler-maintained ordered projection from the keyed root, contributing its own
+//! `Index` identity (kind 8), its `unique` flag, and its ordered projection of leaf
+//! references — each a top-level stored `field` (kind 2) or an identity `key`
+//! (kind 4) of the same root. An index stores no data of its own; it is derived from
+//! the source leaves it projects, so its identity payload carries only leaf
+//! references, never a value shape. Index order is source declaration order and is
+//! part of the identity.
+//!
 //! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0,
-//! product 1, field 2, root/branch placement 3, key 4, group 7; 5-6 reserved). An
+//! product 1, field 2, root/branch placement 3, key 4, group 7, index 8; 5-6 durable
+//! enum sum/member). An
 //! empty graph (no roots) has no application component: a storeless project needs
 //! no ledger, so its contract commits to nothing. Scalar tags are the frozen
 //! [`Scalar::tag`] bytes. The `member_tag` bytes (field 0, group 1, branch 2) are
@@ -112,6 +127,7 @@ const IDREF_KEY: u8 = 4;
 const IDREF_SUM: u8 = 5;
 const IDREF_MEMBER: u8 = 6;
 const IDREF_GROUP: u8 = 7;
+const IDREF_INDEX: u8 = 8;
 
 /// The frozen value-shape tag bytes distinguishing a durable field's stored value
 /// kinds within the canonical payload. Internal to this encoding and separate from
@@ -254,15 +270,46 @@ pub enum DurableMemberShape {
     Branch(DurableBranchShape),
 }
 
+/// One projected leaf of a managed index, as it contributes to the contract
+/// identity: a top-level stored `field` or an identity `key` of the index's root,
+/// referenced by its ledger id. An index stores no data of its own, so a component
+/// is a leaf reference, never a value shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableIndexComponent {
+    Field(LedgerIdBytes),
+    Key(LedgerIdBytes),
+}
+
+impl DurableIndexComponent {
+    /// The referenced leaf's ledger id.
+    pub fn id(self) -> LedgerIdBytes {
+        match self {
+            DurableIndexComponent::Field(id) | DurableIndexComponent::Key(id) => id,
+        }
+    }
+}
+
+/// One narrow compiler-maintained managed index of a keyed root, as it contributes
+/// to the contract identity: its own `Index` ledger id, its `unique` flag, and its
+/// ordered projection of leaf references. Projection order is the declared component
+/// order and is part of the identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableIndexShape {
+    pub id: LedgerIdBytes,
+    pub unique: bool,
+    pub components: Vec<DurableIndexComponent>,
+}
+
 /// One durable root, as it contributes to the contract identity: its placement id,
-/// the stored product's id, its ordered key tuple (empty for a singleton root),
-/// and the ordered member tree of its resource.
+/// the stored product's id, its ordered key tuple (empty for a singleton root), the
+/// ordered member tree of its resource, and its ordered managed indexes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRootShape {
     pub placement: LedgerIdBytes,
     pub product: LedgerIdBytes,
     pub keys: Vec<DurableKeyShape>,
     pub members: Vec<DurableMemberShape>,
+    pub indexes: Vec<DurableIndexShape>,
 }
 
 /// The canonical descriptor of a program's durable graph. This is the single owner
@@ -346,8 +393,27 @@ impl DurableContractDescriptor {
             push_idref(&mut out, IDREF_PRODUCT, &root.product);
             push_keys(&mut out, &root.keys);
             push_members(&mut out, &root.members);
+            push_indexes(&mut out, &root.indexes);
         }
         out
+    }
+}
+
+/// Append a root's managed indexes: `u16_be(count) ‖ index*`, each an `Index` IDREF,
+/// its `unique` flag byte, and its ordered projection of leaf-reference IDREFs (a
+/// `field` (2) or `key` (4) IDREF per component). Projection order is load-bearing.
+fn push_indexes(out: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
+    out.extend_from_slice(&(indexes.len() as u16).to_be_bytes());
+    for index in indexes {
+        push_idref(out, IDREF_INDEX, &index.id);
+        out.push(u8::from(index.unique));
+        out.extend_from_slice(&(index.components.len() as u16).to_be_bytes());
+        for component in &index.components {
+            match component {
+                DurableIndexComponent::Field(id) => push_idref(out, IDREF_FIELD, id),
+                DurableIndexComponent::Key(id) => push_idref(out, IDREF_KEY, id),
+            }
+        }
     }
 }
 
@@ -488,8 +554,9 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 mod tests {
     use super::{
         DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor,
-        DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableKeyShape,
-        DurableMemberShape, DurableRootShape, DurableValueShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
+        DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableIndexComponent,
+        DurableIndexShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
+        DurableValueShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::ty::Scalar;
     use sha2::{Digest, Sha256};
@@ -532,6 +599,7 @@ mod tests {
                     field(0x0e, Scalar::Int, true),
                     field(0x0f, Scalar::Text, false),
                 ],
+                indexes: Vec::new(),
             }],
         )
     }
@@ -571,6 +639,7 @@ mod tests {
                         ],
                     }),
                 ],
+                indexes: Vec::new(),
             }],
         )
     }
@@ -605,7 +674,7 @@ mod tests {
         // The frozen value itself.
         assert_eq!(
             counters_graph().contract_id().to_hex(),
-            "0f633844944d599db964e76f209a1bc97d3785234db58e38bb478361660009bb",
+            "db84b11b9d27fce7931f308596a8fcb20eb7e2c6bfbd5709c12148a54e41ee1f",
         );
     }
 
@@ -620,7 +689,7 @@ mod tests {
         );
         assert_eq!(
             library_graph().contract_id().to_hex(),
-            "6c3cf722b607626d4dcb22edd79947521bf382166b5e93b9f1e2b509682e17b6",
+            "51aa42f995a8c81ece8146d417bc1f574680cb985a9024de72e81a1d47a3b714",
         );
         assert_ne!(
             library_graph().contract_id(),
@@ -703,11 +772,26 @@ mod tests {
         if let Some(application) = &descriptor.application {
             idref(&mut graph, 0, application);
         }
+        fn indexes(out: &mut Vec<u8>, list: &[DurableIndexShape]) {
+            out.extend_from_slice(&(list.len() as u16).to_be_bytes());
+            for index in list {
+                idref(out, 8, &index.id);
+                out.push(u8::from(index.unique));
+                out.extend_from_slice(&(index.components.len() as u16).to_be_bytes());
+                for component in &index.components {
+                    match component {
+                        DurableIndexComponent::Field(id) => idref(out, 2, id),
+                        DurableIndexComponent::Key(id) => idref(out, 4, id),
+                    }
+                }
+            }
+        }
         for root in &descriptor.roots {
             idref(&mut graph, 3, &root.placement);
             idref(&mut graph, 1, &root.product);
             keys(&mut graph, &root.keys);
             member_tree(&mut graph, &root.members);
+            indexes(&mut graph, &root.indexes);
         }
         let mut payload: Vec<u8> = Vec::new();
         lp(&mut payload, LOCAL_ROOT_LINEAGE);
@@ -898,6 +982,7 @@ mod tests {
                         },
                     ),
                 ],
+                indexes: Vec::new(),
             }],
         )
     }
@@ -913,7 +998,7 @@ mod tests {
         );
         assert_eq!(
             widened_graph().contract_id().to_hex(),
-            "85b281494717c06e47bbe63ef7d243222c5e1b37a2b30f85cd09c7c4467d43aa",
+            "9e2b73b8c9e5f26ca656ed4c05b0468683b36b2753a483da8f960fc94cbd045e",
         );
         assert_ne!(
             widened_graph().contract_id(),
@@ -998,6 +1083,7 @@ mod tests {
                 product: id(0x0d),
                 keys: Vec::new(),
                 members: vec![field(0x0e, Scalar::Text, true)],
+                indexes: Vec::new(),
             }],
         );
         assert_eq!(singleton.contract_id().to_hex(), independent_id(&singleton));
@@ -1018,6 +1104,7 @@ mod tests {
                     },
                 ],
                 members: Vec::new(),
+                indexes: Vec::new(),
             }],
         );
         assert_eq!(composite.contract_id().to_hex(), independent_id(&composite));
@@ -1027,6 +1114,89 @@ mod tests {
         let mut swapped = composite.clone();
         swapped.roots[0].keys.swap(0, 1);
         assert_ne!(composite.contract_id(), swapped.contract_id());
+    }
+
+    /// The `counters` graph plus two managed indexes: a nonunique `byLabel(label, name)`
+    /// projecting the `label` field then the `name` key, and a unique `byValue(value)`
+    /// projecting the `value` field. Fixed index ids `0x70`/`0x71`.
+    fn indexed_graph() -> DurableContractDescriptor {
+        let mut graph = counters_graph();
+        graph.roots[0].indexes = vec![
+            DurableIndexShape {
+                id: id(0x70),
+                unique: false,
+                components: vec![
+                    DurableIndexComponent::Field(id(0x0f)),
+                    DurableIndexComponent::Key(id(0x0c)),
+                ],
+            },
+            DurableIndexShape {
+                id: id(0x71),
+                unique: true,
+                components: vec![DurableIndexComponent::Field(id(0x0e))],
+            },
+        ];
+        graph
+    }
+
+    /// Known-answer test for a durable graph carrying managed indexes: pins the
+    /// `Index` IDREF tag (8), the `unique` flag byte, the projection encoding, and the
+    /// per-root `u16(index_count)` that now follows every root's member tree.
+    #[test]
+    fn durable_contract_id_with_indexes_known_answer() {
+        assert_eq!(
+            indexed_graph().contract_id().to_hex(),
+            independent_id(&indexed_graph())
+        );
+        assert_eq!(
+            indexed_graph().contract_id().to_hex(),
+            "8965d84ad46e7cf0f31de46f0c3d45f2fb8fa555ab1ed99e30a76e694763e773",
+        );
+        // Indexes are part of the identity: dropping them is the plain counters graph.
+        assert_ne!(
+            indexed_graph().contract_id(),
+            counters_graph().contract_id()
+        );
+    }
+
+    /// Managed-index identity follows the ledger ids: a rename preserves it (ids
+    /// unchanged), while re-minting an index id, flipping `unique`, reordering
+    /// components, adding a component, or reordering two indexes changes it.
+    #[test]
+    fn index_identity_follows_the_ledger_ids() {
+        let base = indexed_graph().contract_id();
+        assert_eq!(base, indexed_graph().contract_id());
+
+        // Re-minting an index id (delete-then-re-add of the index) changes the id.
+        let mut re_minted = indexed_graph();
+        re_minted.roots[0].indexes[0].id = id(0x7f);
+        assert_ne!(base, re_minted.contract_id());
+
+        // Flipping the unique flag changes the id.
+        let mut uniqued = indexed_graph();
+        uniqued.roots[0].indexes[0].unique = true;
+        assert_ne!(base, uniqued.contract_id());
+
+        // Reordering the projection components changes the id (projection order is
+        // load-bearing).
+        let mut reordered = indexed_graph();
+        reordered.roots[0].indexes[0].components.swap(0, 1);
+        assert_ne!(base, reordered.contract_id());
+
+        // Re-pointing a component at a different leaf changes the id.
+        let mut re_pointed = indexed_graph();
+        re_pointed.roots[0].indexes[1].components[0] = DurableIndexComponent::Field(id(0x0f));
+        assert_ne!(base, re_pointed.contract_id());
+
+        // A field component and a key component of the same id are distinct.
+        let mut field_vs_key = indexed_graph();
+        field_vs_key.roots[0].indexes[1].components[0] = DurableIndexComponent::Key(id(0x0e));
+        assert_ne!(base, field_vs_key.contract_id());
+
+        // Index declaration order is load-bearing.
+        let mut swapped = indexed_graph();
+        swapped.roots[0].indexes.swap(0, 1);
+        assert_ne!(base, swapped.contract_id());
     }
 
     #[test]

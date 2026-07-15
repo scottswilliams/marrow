@@ -13,7 +13,8 @@ use crate::draft::{
 };
 use crate::durable_id::{
     DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
-    DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape,
+    DurableIndexComponent, DurableIndexShape, DurableKeyShape, DurableMemberShape,
+    DurableRootShape, DurableValueShape,
 };
 use crate::instr::Instr;
 use crate::semantic::{SemanticPath, SemanticTarget};
@@ -116,6 +117,14 @@ impl ImageDraft {
             }
             let mut member_count = 0usize;
             validate_member_tree(&root.identity.members, 1, &mut member_count)?;
+            if root.identity.indexes.len() > bounds::MAX_INDEXES {
+                return Err(ImageBuildError::TooManyIndexes);
+            }
+            for index in &root.identity.indexes {
+                if index.components.len() > bounds::MAX_INDEX_COMPONENTS {
+                    return Err(ImageBuildError::TooManyIndexComponents);
+                }
+            }
         }
         if self.sites().len() > bounds::MAX_SITES {
             return Err(ImageBuildError::TooManySites);
@@ -276,6 +285,7 @@ impl ImageDraft {
             body.extend_from_slice(root.identity.placement.bytes());
             body.extend_from_slice(root.identity.product.bytes());
             encode_durable_members(&mut body, &root.identity.members);
+            encode_durable_indexes(&mut body, &root.identity.indexes);
         }
         push_u16(&mut body, self.sites().len() as u16);
         for site in self.sites() {
@@ -313,6 +323,7 @@ impl ImageDraft {
                 product: root.identity.product,
                 keys: key_shapes(&root.keys),
                 members: member_shapes(&root.identity.members),
+                indexes: root.identity.indexes.clone(),
             })
             .collect();
         Ok(DurableContractDescriptor::new(application, roots))
@@ -602,6 +613,28 @@ fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef]) {
                 encode_key_tuple(body, keys);
                 encode_durable_members(body, members);
             }
+        }
+    }
+}
+
+/// Encode a root's managed indexes into the DURABLE section: `u16(count) ‖ index*`.
+/// Each index is its raw 16-byte `Index` ledger id, a `unique` flag byte, a
+/// `u16(component_count)`, and per component a one-byte leaf kind (`0x02` field,
+/// `0x04` key — the frozen IDREF kind bytes) and the leaf's raw 16-byte ledger id.
+/// An index carries no value shape: it is derived from the leaves it projects.
+fn encode_durable_indexes(body: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
+    push_u16(body, indexes.len() as u16);
+    for index in indexes {
+        body.extend_from_slice(index.id.bytes());
+        body.push(u8::from(index.unique));
+        push_u16(body, index.components.len() as u16);
+        for component in &index.components {
+            let (kind, id) = match component {
+                DurableIndexComponent::Field(id) => (0x02u8, id),
+                DurableIndexComponent::Key(id) => (0x04u8, id),
+            };
+            body.push(kind);
+            body.extend_from_slice(id.bytes());
         }
     }
 }

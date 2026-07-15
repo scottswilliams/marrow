@@ -45,7 +45,8 @@ const MAX_PATH_BYTES: usize = 512;
 /// in the durable graph, distinguished by their nested anchor path. A `Sum` (5)
 /// anchors a durable-reachable closed enum's identity and a `Member` (6) one of its
 /// variants, so append-only enum member evolution has stable per-member codes;
-/// `Group` (7) anchors an unkeyed static field-path namespace.
+/// `Group` (7) anchors an unkeyed static field-path namespace; `Index` (8) anchors a
+/// narrow compiler-maintained managed index of a keyed store root.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IdentityKind {
     /// The application itself (one per project; anchor path `.`).
@@ -67,6 +68,9 @@ pub enum IdentityKind {
     /// An unkeyed static field-path namespace (`group`) inside a resource,
     /// branch, or group.
     Group,
+    /// A narrow compiler-maintained managed index of a keyed store root, anchored
+    /// at `<root>.<index name>`.
+    Index,
 }
 
 impl IdentityKind {
@@ -80,6 +84,7 @@ impl IdentityKind {
         IdentityKind::Sum,
         IdentityKind::Member,
         IdentityKind::Group,
+        IdentityKind::Index,
     ];
 
     /// The frozen numeric tag (also the canonical sort major).
@@ -93,6 +98,7 @@ impl IdentityKind {
             IdentityKind::Sum => 5,
             IdentityKind::Member => 6,
             IdentityKind::Group => 7,
+            IdentityKind::Index => 8,
         }
     }
 
@@ -107,6 +113,7 @@ impl IdentityKind {
             IdentityKind::Sum => "sum",
             IdentityKind::Member => "member",
             IdentityKind::Group => "group",
+            IdentityKind::Index => "index",
         }
     }
 
@@ -830,9 +837,9 @@ mod tests {
     #[test]
     fn the_kind_tag_space_is_frozen_and_reserved() {
         // The frozen kind tag space: application/product/field/root/key, sum/member
-        // (durable enum identity), and group.
+        // (durable enum identity), group, and index (managed-index identity).
         let tags: Vec<u8> = IdentityKind::ALL.iter().map(|kind| kind.tag()).collect();
-        assert_eq!(tags, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(tags, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
         for kind in IdentityKind::ALL {
             assert_eq!(
                 IdentityKind::from_keyword(kind.keyword()),

@@ -235,6 +235,7 @@ fn a_durable_image() -> Vec<u8> {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
@@ -353,6 +354,7 @@ fn a_strict_durable_image() -> Vec<u8> {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
@@ -480,6 +482,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
@@ -684,6 +687,7 @@ fn a_widened_durable_image() -> Vec<u8> {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
@@ -801,6 +805,7 @@ fn a_multi_site_durable_image() -> Vec<u8> {
         identity: RootIdentity {
             placement,
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: field_ids
                 .iter()
                 .map(|id| DurableMemberDef::Field {

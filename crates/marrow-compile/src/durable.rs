@@ -26,13 +26,14 @@ use std::collections::BTreeSet;
 
 use marrow_codes::Code;
 use marrow_image::{
-    DurableEnumMemberShape, DurableMemberDef, DurableValueShape, ImageDraft, KeyColumn,
-    LedgerIdBytes, RootDef, RootIdentity, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
-    bounds,
+    DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
+    DurableValueShape, ImageDraft, KeyColumn, LedgerIdBytes, RootDef, RootIdentity, Scalar,
+    SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
 };
 use marrow_project::{IdentityKind, IdentityLedger};
 use marrow_syntax::{
-    FieldDecl, GroupDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl, TypeExpr,
+    FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
+    TypeExpr,
 };
 
 use crate::diag::{IdentityGap, SourceDiagnostic};
@@ -42,6 +43,33 @@ use crate::types::{GArg, TypeRegistry};
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
 const APPLICATION_ANCHOR_PATH: &str = ".";
+
+/// One top-level stored field as an index-projection candidate: its source name, its
+/// ledger id, and whether its stored value is an orderable durable-key scalar (the
+/// predicate a projected leaf must satisfy).
+struct IndexFieldLeaf {
+    name: String,
+    id: LedgerIdBytes,
+    orderable_key: bool,
+}
+
+/// Whether a durable field's stored value shape is an orderable durable-key scalar —
+/// the closed set an index component may project (int, string, bool, bytes, date,
+/// instant; a nominal erases to its base scalar). A dense struct, a closed enum, or
+/// any non-scalar value is not a durable key and cannot be indexed.
+fn is_orderable_key_value(value: &DurableValueShape) -> bool {
+    matches!(
+        value,
+        DurableValueShape::Scalar(
+            Scalar::Int
+                | Scalar::Text
+                | Scalar::Bool
+                | Scalar::Bytes
+                | Scalar::Date
+                | Scalar::Instant
+        )
+    )
+}
 
 /// One resolved durable field site.
 pub(crate) struct DurableField {
@@ -129,10 +157,6 @@ impl DurableRegistry {
             return Self::default();
         };
 
-        if !store.indexes.is_empty() {
-            diagnostics.push(unsupported(file, store.span, "a store index"));
-            return Self::default();
-        }
         if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
             diagnostics.push(unsupported(
                 file,
@@ -212,6 +236,44 @@ impl DurableRegistry {
             .collect();
         let (groups_and_branches, has_extras) =
             resolver.build_extras(records, &resource.members, &store.resource);
+
+        // Resolve the root's managed indexes before appending the group/branch members
+        // (an index projects only the root's identity keys and top-level fields, so it
+        // resolves against exactly those leaves). `members[0..record.fields.len()]` is
+        // the top-level field member set, in record order, so each field's ledger id
+        // and value shape is read from it. An index admission violation is a precise
+        // `check.type` diagnostic that also marks the graph incomplete, so a rejected
+        // index discards the whole durable graph rather than emitting a partial one.
+        let key_entries: Vec<(String, LedgerIdBytes)> = store
+            .root
+            .keys
+            .iter()
+            .zip(&key_ids)
+            .map(|(key_param, id)| (key_param.name.clone(), *id))
+            .collect();
+        let field_entries: Vec<IndexFieldLeaf> = record
+            .fields
+            .iter()
+            .zip(&members)
+            .map(|(field, member)| {
+                let (id, value) = match member {
+                    DurableMemberDef::Field { id, value, .. } => (*id, value),
+                    _ => unreachable!("the first members are the record's top-level fields"),
+                };
+                IndexFieldLeaf {
+                    name: field.name.clone(),
+                    id,
+                    orderable_key: is_orderable_key_value(value),
+                }
+            })
+            .collect();
+        let indexes = resolver.build_indexes(
+            &store.root.root,
+            &key_entries,
+            &field_entries,
+            &store.indexes,
+        );
+
         members.extend(groups_and_branches);
 
         // Every identity must resolve before the graph enters the image; a single
@@ -264,6 +326,7 @@ impl DurableRegistry {
                 placement,
                 product,
                 members,
+                indexes,
             },
         });
 
@@ -668,6 +731,170 @@ impl<'a> IdentityResolver<'a> {
             required: field.required,
             value: DurableValueShape::Scalar(scalar.image()),
         })
+    }
+
+    /// Resolve a root's managed indexes into their durable identity shapes, enforcing
+    /// the closed narrow-index admission rules against the root's identity keys and
+    /// top-level fields. A `store` index is either a nonunique ordered projection that
+    /// must end with every identity key in declaration order (so each row is distinct)
+    /// or a `unique` projection that may omit the identity keys. Every projected leaf
+    /// must be one identity key or one top-level field whose stored value is an
+    /// orderable durable-key scalar; a nested path, a name resolving to nothing, a
+    /// group/branch or non-key-scalar leaf, a singleton root, or an index name
+    /// colliding with a key/field/earlier index is a precise `check.type` rejection.
+    /// Any violation marks the graph incomplete, so a rejected index discards the whole
+    /// durable graph. The index's own `Index` ledger identity resolves through the
+    /// ledger like every other durable anchor (a gap is `check.durable_identity`).
+    fn build_indexes(
+        &mut self,
+        root: &str,
+        keys: &[(String, LedgerIdBytes)],
+        fields: &[IndexFieldLeaf],
+        indexes: &[IndexDecl],
+    ) -> Vec<DurableIndexShape> {
+        let mut shapes = Vec::with_capacity(indexes.len());
+        let mut seen_names: Vec<&str> = Vec::new();
+        for index in indexes {
+            // The index name shares the root's source namespace with the identity keys,
+            // the stored fields, and the other indexes; a collision has no unambiguous
+            // address.
+            let name_collision = keys.iter().any(|(name, _)| name == &index.name)
+                || fields.iter().any(|leaf| leaf.name == index.name)
+                || seen_names.contains(&index.name.as_str());
+            if name_collision {
+                self.reject_index(
+                    index.span,
+                    format!(
+                        "index `{}` collides with an identity key, a stored field, or another \
+                         index of `{root}`",
+                        index.name
+                    ),
+                );
+                continue;
+            }
+            seen_names.push(&index.name);
+
+            // An index entry points at one stored identity, so a singleton root (no
+            // identity to point to) admits none.
+            if keys.is_empty() {
+                self.reject_index(
+                    index.span,
+                    format!("index `{}` requires a keyed store root", index.name),
+                );
+                continue;
+            }
+
+            let Some(components) = self.resolve_index_components(index, keys, fields) else {
+                continue;
+            };
+            let id = self.resolve(IdentityKind::Index, &format!("{root}.{}", index.name));
+            shapes.push(DurableIndexShape {
+                id,
+                unique: index.unique,
+                components,
+            });
+        }
+        shapes
+    }
+
+    /// Resolve and validate one index's ordered projection into leaf references, or
+    /// `None` (with a diagnostic and the graph marked incomplete) on any violation. A
+    /// component resolves to an identity key or a top-level orderable-key field; a
+    /// nonunique index must additionally end with every identity key in declaration
+    /// order and carry no identity key in a leading position.
+    fn resolve_index_components(
+        &mut self,
+        index: &IndexDecl,
+        keys: &[(String, LedgerIdBytes)],
+        fields: &[IndexFieldLeaf],
+    ) -> Option<Vec<DurableIndexComponent>> {
+        let mut components = Vec::with_capacity(index.args.len());
+        let mut leading_key = false;
+        let trailing_start = index.args.len().saturating_sub(keys.len());
+        let mut ok = true;
+        for (position, arg) in index.args.iter().enumerate() {
+            let span = index.arg_spans.get(position).copied().unwrap_or(index.span);
+            if arg.contains('.') {
+                self.reject_index(
+                    span,
+                    format!(
+                        "index `{}` component `{arg}` reaches through a nested member; an index \
+                         projects only top-level fields and identity keys",
+                        index.name
+                    ),
+                );
+                ok = false;
+                continue;
+            }
+            if let Some((_, key_id)) = keys.iter().find(|(name, _)| name == arg) {
+                if !index.unique && position < trailing_start {
+                    leading_key = true;
+                }
+                components.push(DurableIndexComponent::Key(*key_id));
+            } else if let Some(leaf) = fields.iter().find(|leaf| &leaf.name == arg) {
+                if !leaf.orderable_key {
+                    self.reject_index(
+                        span,
+                        format!(
+                            "index `{}` component `{arg}` is not an orderable durable-key scalar",
+                            index.name
+                        ),
+                    );
+                    ok = false;
+                    continue;
+                }
+                components.push(DurableIndexComponent::Field(leaf.id));
+            } else {
+                self.reject_index(
+                    span,
+                    format!(
+                        "index `{}` component `{arg}` names no identity key or stored field of \
+                         this root",
+                        index.name
+                    ),
+                );
+                ok = false;
+            }
+        }
+        if !ok {
+            return None;
+        }
+        // A nonunique index distinguishes rows by ending with the complete identity
+        // suffix, in declaration order, with no identity key appearing earlier.
+        if !index.unique {
+            let ends_with_identity = index.args.len() >= keys.len()
+                && keys.iter().enumerate().all(|(offset, (_, key_id))| {
+                    matches!(
+                        components.get(trailing_start + offset),
+                        Some(DurableIndexComponent::Key(id)) if *id == *key_id
+                    )
+                });
+            if leading_key || !ends_with_identity {
+                self.reject_index(
+                    index.span,
+                    format!(
+                        "non-unique index `{}` must end with the store's identity keys in \
+                         declaration order",
+                        index.name
+                    ),
+                );
+                return None;
+            }
+        }
+        Some(components)
+    }
+
+    /// Report a managed-index admission violation and mark the durable graph
+    /// incomplete, so a rejected index discards the whole graph rather than emitting a
+    /// partial one.
+    fn reject_index(&mut self, span: SourceSpan, message: String) {
+        self.complete = false;
+        self.diagnostics.push(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            span,
+            message,
+        ));
     }
 }
 

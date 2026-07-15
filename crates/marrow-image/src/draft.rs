@@ -12,7 +12,7 @@
 //! rechecks every bound against the received bytes; the draft's checks are a
 //! producer-side guard, not the trust boundary.
 
-use crate::durable_id::{DurableValueShape, LedgerIdBytes};
+use crate::durable_id::{DurableIndexShape, DurableValueShape, LedgerIdBytes};
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::semantic::{SemanticPath, SemanticTarget};
@@ -157,6 +157,11 @@ pub struct RootIdentity {
     pub placement: LedgerIdBytes,
     pub product: LedgerIdBytes,
     pub members: Vec<DurableMemberDef>,
+    /// The root's narrow compiler-maintained managed indexes, in source declaration
+    /// order. Each projects an ordered leaf reference set from this root; it stores
+    /// no data of its own and contributes only its identity and projection to the
+    /// durable contract.
+    pub indexes: Vec<DurableIndexShape>,
 }
 
 /// One member of a durable resource's shape as the draft carries it, in source
@@ -304,6 +309,8 @@ pub enum ImageBuildError {
     TooManyPayloadFields,
     TooManyCollections,
     TooManyRoots,
+    TooManyIndexes,
+    TooManyIndexComponents,
     TooManyKeyColumns,
     TooManyDurableMembers,
     DurableTreeTooDeep,

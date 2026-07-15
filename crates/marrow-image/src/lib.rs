@@ -26,8 +26,9 @@ pub use draft::{
 };
 pub use durable_id::{
     DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableContractId,
-    DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableKeyShape,
-    DurableMemberShape, DurableRootShape, DurableValueShape, LedgerIdBytes,
+    DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableIndexComponent,
+    DurableIndexShape, DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape,
+    LedgerIdBytes,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};

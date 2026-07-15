@@ -1,0 +1,258 @@
+//! D03 slice 1: narrow managed indexes — declaration, admission, identity, and
+//! image growth, observed through the full production path capture -> compile ->
+//! verify.
+//!
+//! A `store` root may declare narrow compiler-maintained ordered indexes: a
+//! nonunique index ending with the complete identity suffix, or a `unique` index
+//! that may omit it. Each projects only the root's identity keys and top-level
+//! orderable-key fields. Each index carries its own `Index` ledger identity, and the
+//! verifier independently reconstructs the index set and derives the field/root
+//! incidence — the maintenance consequence a later exact write must keep coherent
+//! (runtime maintenance and traversal land at E05).
+
+use marrow_verify::{DurableIndexComponent, LedgerIdBytes};
+
+fn rep(byte: u8) -> LedgerIdBytes {
+    LedgerIdBytes::from_bytes([byte; 16])
+}
+
+/// A `Book` resource with an indexed `shelf` and a unique `isbn`, over a keyed root
+/// with two managed indexes: nonunique `byShelf(shelf, id)` and unique `byIsbn(isbn)`.
+const INDEXED_SOURCE: &str = "resource Book\n\
+     \x20   required title: string\n\
+     \x20   shelf: string\n\
+     \x20   isbn: string\n\
+     \n\
+     store ^books(id: int): Book\n\
+     \x20   index byShelf(shelf, id)\n\
+     \x20   index byIsbn(isbn) unique\n\
+     \n\
+     pub fn label(): string\n\
+     \x20   return \"books\"\n";
+
+/// A complete ledger for the indexed graph, including both `Index` anchors.
+const INDEXED_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.shelf 10101010101010101010101010101010\n\
+     id field Book.isbn 11111111111111111111111111111111\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id index books.byShelf 70707070707070707070707070707070\n\
+     id index books.byIsbn 71717171717171717171717171717171\n\
+     high-water 0\n\
+     end\n";
+
+fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage, String> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(ids.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&project)
+        .map_err(|diags| diags.iter().map(|d| d.code).collect::<Vec<_>>().join(","))?;
+    marrow_verify::verify(&compiled.image.bytes).map_err(|r| format!("verify: {r:?}"))
+}
+
+/// The `check.*` codes a compile reports, in order. Used for admission rejections.
+fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(ids.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => Vec::new(),
+        Err(diags) => diags.iter().map(|d| d.code).collect(),
+    }
+}
+
+#[test]
+fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_identity() {
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("indexed graph verifies");
+    let indexes = image.indexes();
+    assert_eq!(indexes.len(), 2, "two managed indexes seal");
+
+    let by_shelf = &indexes[0];
+    assert_eq!(by_shelf.id(), rep(0x70));
+    assert_eq!(by_shelf.root(), 0);
+    assert!(!by_shelf.unique(), "byShelf is nonunique");
+    assert_eq!(
+        by_shelf.components(),
+        &[
+            DurableIndexComponent::Field(rep(0x10)), // shelf
+            DurableIndexComponent::Key(rep(0x0c)),   // id (complete identity suffix)
+        ],
+    );
+
+    let by_isbn = &indexes[1];
+    assert_eq!(by_isbn.id(), rep(0x71));
+    assert!(by_isbn.unique(), "byIsbn is unique");
+    assert_eq!(
+        by_isbn.components(),
+        &[DurableIndexComponent::Field(rep(0x11))], // isbn (identity omitted)
+    );
+}
+
+#[test]
+fn the_verifier_derives_field_and_root_incidence() {
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+
+    // FieldId -> [IndexId]: mutating `shelf` maintains byShelf; `isbn` maintains
+    // byIsbn; `title` (unindexed) maintains nothing.
+    assert_eq!(image.field_incidence(rep(0x10)), vec![rep(0x70)]);
+    assert_eq!(image.field_incidence(rep(0x11)), vec![rep(0x71)]);
+    assert!(image.field_incidence(rep(0x0e)).is_empty());
+
+    // An identity-key projection component is not a field-maintenance trigger: the
+    // key `id` (0x0c) appears in byShelf's projection but keys are immutable.
+    assert!(image.field_incidence(rep(0x0c)).is_empty());
+
+    // RootId -> [IndexId]: a whole-entry write on root 0 maintains both indexes.
+    assert_eq!(image.root_incidence(0), vec![rep(0x70), rep(0x71)]);
+}
+
+#[test]
+fn a_missing_index_identity_is_a_precise_mintable_gap() {
+    // Drop the byIsbn index anchor: the declaration is well-formed but its identity
+    // is incomplete, so the compile fails with the mintable durable-identity gap.
+    let missing = INDEXED_IDS.replace(
+        "id index books.byIsbn 71717171717171717171717171717171\n",
+        "",
+    );
+    let codes = compile_codes(INDEXED_SOURCE, &missing);
+    assert_eq!(codes, vec!["check.durable_identity"]);
+}
+
+// --- admission rejections (extracted from the tag's compile_resource_index family) ---
+
+/// A ledger with the base graph fully identified but no index anchors — used for
+/// admission rejections, where the invalid index never resolves its own identity.
+const BASE_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.shelf 10101010101010101010101010101010\n\
+     id field Book.author 12121212121212121212121212121212\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+fn base_source(store_body: &str) -> String {
+    format!(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         \x20   author: string\n\
+         \n\
+         store ^books(id: int): Book\n{store_body}\
+         \n\
+         pub fn label(): string\n\
+         \x20   return \"books\"\n"
+    )
+}
+
+#[test]
+fn an_index_argument_naming_no_member_is_rejected() {
+    let source = base_source("    index byMissing(missing, id)\n");
+    assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
+}
+
+#[test]
+fn a_nonunique_index_omitting_the_identity_key_is_rejected() {
+    let source = base_source("    index byShelf(shelf)\n");
+    assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
+}
+
+#[test]
+fn a_nonunique_index_with_the_identity_key_not_last_is_rejected() {
+    let source = base_source("    index byShelf(id, shelf)\n");
+    assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
+}
+
+#[test]
+fn an_index_component_that_is_not_an_orderable_key_scalar_is_rejected() {
+    // A dense `struct`-typed field is a widened durable value, not an orderable
+    // durable-key scalar, so it cannot be a projection leaf.
+    let source = "struct Money\n\
+         \x20   cents: int\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   price: Money\n\
+         \n\
+         store ^books(id: int): Book\n\
+         \x20   index byPrice(price, id)\n\
+         \n\
+         pub fn label(): string\n\
+         \x20   return \"books\"\n";
+    let ids = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+         id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+         id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+         id field Book.price 10101010101010101010101010101010\n\
+         id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+         id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+         high-water 0\n\
+         end\n";
+    assert_eq!(compile_codes(source, ids), vec!["check.type"]);
+}
+
+#[test]
+fn an_index_name_colliding_with_a_field_is_rejected() {
+    let source = base_source("    index shelf(author, id)\n");
+    assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
+}
+
+#[test]
+fn a_duplicate_index_name_is_rejected() {
+    // The first `byShelf` is well-formed (so it resolves its `Index` anchor); the
+    // second collides on the name. Its anchor is present so the collision is the sole
+    // diagnostic.
+    let ids = BASE_IDS.replace(
+        "high-water 0\n",
+        "id index books.byShelf 70707070707070707070707070707070\nhigh-water 0\n",
+    );
+    let source = base_source("    index byShelf(shelf, id)\n    index byShelf(title, id)\n");
+    assert_eq!(compile_codes(&source, &ids), vec!["check.type"]);
+}
+
+#[test]
+fn an_index_on_a_singleton_root_is_rejected() {
+    let source = "resource Settings\n\
+         \x20   theme: string\n\
+         \n\
+         store ^settings: Settings\n\
+         \x20   index byTheme(theme)\n\
+         \n\
+         pub fn label(): string\n\
+         \x20   return \"s\"\n";
+    let ids = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+         id product Settings 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+         id field Settings.theme 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+         id root settings 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+         high-water 0\n\
+         end\n";
+    assert_eq!(compile_codes(source, ids), vec!["check.type"]);
+}

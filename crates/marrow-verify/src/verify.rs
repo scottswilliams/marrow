@@ -15,25 +15,26 @@ use std::rc::Rc;
 
 use marrow_image::{
     DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableEnumMemberShape,
-    DurableFieldShape, DurableGroupShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
-    DurableValueShape, ExportId, ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT,
-    OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
-    OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
-    OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
-    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
-    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
-    OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
-    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
-    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT,
-    OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE,
-    OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD,
-    OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
-    OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED,
-    OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET,
-    OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
-    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
-    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
-    OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    DurableFieldShape, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
+    DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape, ExportId, ImageId,
+    ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
+    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
+    OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
+    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
+    OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD,
+    OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB,
+    OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE,
+    OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET,
+    OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE,
+    OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
+    OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
+    OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED,
+    OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
+    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
+    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
+    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, SemanticNode,
     SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL,
     TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD,
@@ -44,8 +45,8 @@ use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
     Demand, RetShape, SealedCollectionType, SealedConst, SealedEnumType, SealedExport, SealedField,
-    SealedFunction, SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget,
-    SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
+    SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot, SealedSite,
+    SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -110,6 +111,17 @@ struct DecodedRoot {
     placement: LedgerIdBytes,
     product: LedgerIdBytes,
     members: Vec<DecodedMember>,
+    indexes: Vec<DecodedIndex>,
+}
+
+/// A decoded managed index of a root: its `Index` ledger id, its `unique` flag, and
+/// its ordered projection of leaf references. Each component is re-resolved against
+/// the root's own top-level fields and identity keys during decode, so a component
+/// referencing no real leaf is refused.
+struct DecodedIndex {
+    id: LedgerIdBytes,
+    unique: bool,
+    components: Vec<DurableIndexComponent>,
 }
 
 /// One decoded durable member, in the image's declaration order: a stored scalar
@@ -1044,6 +1056,11 @@ fn decode_durable(
                 "root member tree has more top-level fields than the record",
             ));
         }
+        // The root's managed indexes follow its member tree. Each index's `Index`
+        // ledger id is a distinct id across the whole table; each projected component
+        // must reference a real top-level field or identity key of this same root, so a
+        // hostile image cannot forge a projection over a leaf that does not exist.
+        let indexes = decode_indexes(&mut reader, &keys, &members, &mut ledger_ids)?;
         roots.push(DecodedRoot {
             name,
             keys,
@@ -1051,6 +1068,7 @@ fn decode_durable(
             placement,
             product,
             members,
+            indexes,
         });
     }
 
@@ -1395,6 +1413,111 @@ fn decode_members(
     Ok(members)
 }
 
+/// Decode a root's managed indexes: `u16(count) ‖ index*`. Each index is its distinct
+/// `Index` ledger id, a `unique` flag byte, a `u16(component_count)`, and per component
+/// a one-byte leaf kind (`0x02` field, `0x04` key) and the leaf's 16-byte ledger id.
+/// Every component id is re-resolved against this root's own top-level field ids
+/// (kind `0x02`) or identity key ids (kind `0x04`), so a projection over a leaf that
+/// does not exist on the root is refused. The index id is distinct across the whole
+/// durable table (via `seen`); component ids are references to already-seen leaf ids
+/// and so are not added to `seen`.
+fn decode_indexes(
+    reader: &mut Reader<'_>,
+    keys: &[(Scalar, LedgerIdBytes)],
+    members: &[DecodedMember],
+    seen: &mut Vec<LedgerIdBytes>,
+) -> Result<Vec<DecodedIndex>, VerifyRejection> {
+    let field_ids: Vec<LedgerIdBytes> = members
+        .iter()
+        .filter_map(|member| match member {
+            DecodedMember::Field { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short durable index count"))? as usize;
+    if count > marrow_image::bounds::MAX_INDEXES {
+        return Err(reject(VerifyPhase::Table, "too many durable indexes"));
+    }
+    let mut indexes = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = take_distinct_id(reader, seen, "short durable index identity")?;
+        let unique = match reader.u8().ok_or(reject(
+            VerifyPhase::Table,
+            "short durable index unique flag",
+        ))? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "durable index unique flag must be 0 or 1",
+                ));
+            }
+        };
+        let component_count = reader.u16().ok_or(reject(
+            VerifyPhase::Table,
+            "short durable index component count",
+        ))? as usize;
+        if component_count > marrow_image::bounds::MAX_INDEX_COMPONENTS {
+            return Err(reject(
+                VerifyPhase::Table,
+                "too many durable index components",
+            ));
+        }
+        let mut components = Vec::with_capacity(component_count);
+        for _ in 0..component_count {
+            let kind = reader.u8().ok_or(reject(
+                VerifyPhase::Table,
+                "short durable index component kind",
+            ))?;
+            let leaf: [u8; 16] = reader
+                .take(16)
+                .ok_or(reject(
+                    VerifyPhase::Table,
+                    "short durable index component identity",
+                ))?
+                .try_into()
+                .expect("take(16) yields 16 bytes");
+            let leaf = LedgerIdBytes::from_bytes(leaf);
+            let component = match kind {
+                0x02 => {
+                    if !field_ids.contains(&leaf) {
+                        return Err(reject(
+                            VerifyPhase::Table,
+                            "durable index field component names no top-level field of its root",
+                        ));
+                    }
+                    DurableIndexComponent::Field(leaf)
+                }
+                0x04 => {
+                    if !keys.iter().any(|(_, key_id)| *key_id == leaf) {
+                        return Err(reject(
+                            VerifyPhase::Table,
+                            "durable index key component names no identity key of its root",
+                        ));
+                    }
+                    DurableIndexComponent::Key(leaf)
+                }
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "unknown durable index component kind",
+                    ));
+                }
+            };
+            components.push(component);
+        }
+        indexes.push(DecodedIndex {
+            id,
+            unique,
+            components,
+        });
+    }
+    Ok(indexes)
+}
+
 /// Decode a durable field's stored value shape: `u8(value_tag) ‖ body`. A scalar is
 /// tag `0x00` (a bare scalar); a dense struct is tag `0x01` (`u16(count) ‖ value*`);
 /// a closed enum is tag `0x02` (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖
@@ -1562,9 +1685,22 @@ fn durable_descriptor(
             product: root.product,
             keys: key_shapes(&root.keys),
             members: member_shapes(&root.members),
+            indexes: index_shapes(&root.indexes),
         })
         .collect();
     DurableContractDescriptor::new(application, shapes)
+}
+
+/// The descriptor index shapes for a decoded root's managed indexes.
+fn index_shapes(indexes: &[DecodedIndex]) -> Vec<DurableIndexShape> {
+    indexes
+        .iter()
+        .map(|index| DurableIndexShape {
+            id: index.id,
+            unique: index.unique,
+            components: index.components.clone(),
+        })
+        .collect()
 }
 
 /// The descriptor key-tuple shapes for a decoded placement's key columns.
@@ -2099,6 +2235,22 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 .any(|member| member.is_extra() || member.is_nonscalar_field()),
         })
         .collect();
+    // The managed indexes seal from the decoded roots, each carrying the index of the
+    // root it belongs to. Their projections were re-resolved against the decoded graph
+    // in `decode_indexes`, so the sealed set trusts no image-side incidence summary.
+    let indexes: Vec<SealedIndex> = decoded
+        .roots
+        .iter()
+        .enumerate()
+        .flat_map(|(root_index, root)| {
+            root.indexes.iter().map(move |index| SealedIndex {
+                id: index.id,
+                root: root_index as u16,
+                unique: index.unique,
+                components: index.components.clone(),
+            })
+        })
+        .collect();
     let sites: Vec<SealedSite> = decoded.sites.clone();
     // Function signatures feed the per-function `Call` type check (phase 3).
     let signatures: Vec<FnSig> = decoded
@@ -2171,6 +2323,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         enums,
         collections,
         roots,
+        indexes,
         sites,
         durable_contract: decoded.durable_contract,
         durable_descriptor: decoded.durable_descriptor,

@@ -37,6 +37,15 @@ pub const MAX_COLLECTIONS: usize = 64;
 pub const MAX_ROOTS: usize = 1;
 pub const MAX_SITES: usize = 64;
 
+/// Managed indexes per durable root, and projected leaf components per index. Each
+/// index projects an ordered leaf set (top-level fields and identity keys); the
+/// component count is bounded independently of `MAX_KEY_COLUMNS` and `MAX_FIELDS`
+/// since a projection may combine both. Both bounds keep the image and verifier
+/// index decoders allocating within a fixed limit (§ law 9), comfortably above any
+/// narrow index a personal-product journey needs.
+pub const MAX_INDEXES: usize = 32;
+pub const MAX_INDEX_COMPONENTS: usize = MAX_FIELDS + MAX_KEY_COLUMNS;
+
 /// Steps in one operation site's semantic path: the application step, the root
 /// placement step, and up to `MAX_DURABLE_DEPTH` nested member steps down to the
 /// addressed node. The bound keeps the image and verifier site-path decoders

@@ -15,13 +15,13 @@ mod verify;
 mod vtype;
 
 pub use marrow_image::{
-    DurableContractId, ExportId, ImageId, ImageType, Scalar, SemanticNode, SemanticNodeKind,
-    SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    DurableContractId, DurableIndexComponent, ExportId, ImageId, ImageType, LedgerIdBytes, Scalar,
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
 };
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{
     Demand, RetShape, SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction,
-    SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry,
-    SealedVariant, SpanRow, VerifiedImage,
+    SealedIndex, SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget,
+    SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
 };
 pub use verify::verify;

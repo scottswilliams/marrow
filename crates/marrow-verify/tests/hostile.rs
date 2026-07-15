@@ -401,6 +401,7 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: counters_members(),
         },
     });
@@ -574,6 +575,7 @@ fn executable_site_over_a_composite_root_rejects() {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![DurableMemberDef::Field {
                 id: LedgerIdBytes::from_bytes([0x0e; 16]),
                 required: true,
@@ -640,6 +642,7 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
@@ -2302,6 +2305,7 @@ fn widened_draft(kind_value: DurableValueShape) -> ImageDraft {
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
             members: vec![
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes([0x0e; 16]),
