@@ -503,10 +503,11 @@ fn build_apply(
     {
         return Ok(None);
     }
+    // Any identifier head introduces a generic type application: the reserved
+    // `Option`/`Result`/`List`/`Map` or a user-declared generic `struct`/`enum`.
+    // The semantic owner resolves the head; an unknown one is a checker diagnostic,
+    // not a parse error.
     let head = tokens[0].text(source).to_string();
-    if !matches!(head.as_str(), "Option" | "Result" | "List" | "Map") {
-        return Ok(None);
-    }
     let inner = &tokens[open + 1..last];
     let mut args = Vec::new();
     for part in split_top_level_commas(inner) {

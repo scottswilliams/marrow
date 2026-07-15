@@ -386,6 +386,7 @@ fn format_struct(source: &str, decl: &StructDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     out.push_str("struct ");
     out.push_str(&decl.name);
+    out.push_str(&format_type_params(&decl.type_params));
     let body = format_resource_body(source, &decl.members, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');
@@ -413,7 +414,11 @@ fn format_store(source: &str, decl: &StoreDecl) -> String {
 fn format_enum(source: &str, decl: &EnumDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
-    out.push_str(&format!("{visibility}enum {}", decl.name));
+    out.push_str(&format!(
+        "{visibility}enum {}{}",
+        decl.name,
+        format_type_params(&decl.type_params)
+    ));
     let body = format_enum_body(source, &decl.members, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');

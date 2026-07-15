@@ -2,10 +2,10 @@
 //! headers, the index declaration, the parenthesized key-parameter list, and the
 //! resource field-or-group member head.
 
-use super::params::match_paren;
+use super::params::{match_bracket, match_paren, parse_type_params_tokens};
 use super::tokens::{line_span_or, parse_type, split_top_level_commas, strip_comment_tokens};
 use super::{MemberHead, ParseError, ParseResult};
-use crate::ast::{EnumPayloadField, IndexDecl, KeyParam, SavedRoot};
+use crate::ast::{EnumPayloadField, IndexDecl, KeyParam, SavedRoot, TypeParamDecl};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -16,7 +16,7 @@ use crate::token::{Keyword, Token, TokenKind};
 pub(super) fn parse_enum_head(
     source: &str,
     tokens: &[Token],
-) -> ParseResult<(bool, String, SourceSpan)> {
+) -> ParseResult<(bool, String, SourceSpan, Vec<TypeParamDecl>)> {
     let (public, rest) = if matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Pub))
@@ -46,13 +46,65 @@ pub(super) fn parse_enum_head(
             ));
         }
     };
-    if rest.len() > 1 {
+    let (type_params, rest) = parse_optional_type_params(source, &rest[1..])?;
+    if !rest.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::EnumHeader),
-            "an enum header is just `enum Name`",
+            "an enum header is `enum Name` or `enum Name[T, ...]`",
         ));
     }
-    Ok((public, name, name_span))
+    Ok((public, name, name_span, type_params))
+}
+
+/// Parse a struct header's tokens after the `struct` keyword: `Name` or
+/// `Name[T, ...]`. The generic type-parameter list uses the same bracket
+/// convention as a type application (`List[T]`); a leading `[` after the name
+/// introduces the parameters. A struct field's `name: Type` body is parsed
+/// separately from the indented block, reusing the resource-member machinery.
+pub(super) fn parse_struct_head(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(String, SourceSpan, Vec<TypeParamDecl>)> {
+    let (name, name_span) = match tokens.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
+        _ => {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
+                "expected struct name",
+            ));
+        }
+    };
+    let (type_params, rest) = parse_optional_type_params(source, &tokens[1..])?;
+    if !rest.is_empty() {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceHeader),
+            "a struct header is `struct Name` or `struct Name[T, ...]`",
+        ));
+    }
+    Ok((name, name_span, type_params))
+}
+
+/// Parse an optional generic type-parameter list at the start of `tokens`: a
+/// leading `[T, ...]` yields the parameters and the tokens after the `]`; anything
+/// else yields an empty list and the unconsumed tokens.
+fn parse_optional_type_params<'t>(
+    source: &str,
+    tokens: &'t [Token],
+) -> ParseResult<(Vec<TypeParamDecl>, &'t [Token])> {
+    if !matches!(
+        tokens.first().map(|token| token.kind),
+        Some(TokenKind::LeftBracket)
+    ) {
+        return Ok((Vec::new(), tokens));
+    }
+    let close = match_bracket(tokens).ok_or(ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceHeader),
+        "expected `]` to close the type-parameter list",
+    ))?;
+    let params = parse_type_params_tokens(source, &tokens[1..close])?;
+    Ok((params, &tokens[close + 1..]))
 }
 
 /// A parsed enum member header: the member name and category flag plus its dense

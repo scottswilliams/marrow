@@ -63,11 +63,40 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn fixture_dir() -> PathBuf {
+    conformance_dir("generics")
+}
+
+fn conformance_dir(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
         .expect("workspace root two levels above the crate manifest")
-        .join("fixtures/v01/conformance/generics")
+        .join("fixtures/v01/conformance")
+        .join(name)
+}
+
+/// The generic value-types conformance fixture passes end to end: user generic
+/// `struct`/`enum` construction, field access, `match`, constrained instantiation,
+/// nesting, generic-typed function parameters, and the refounded `Option`/`Result`
+/// (ordinary generic enums) all report `passed` through the production path.
+#[test]
+fn generic_types_conformance_fixture_passes_on_the_production_path() {
+    let output = Command::new(MARROW)
+        .args(["test", "--format", "jsonl"])
+        .current_dir(conformance_dir("generic_types"))
+        .output()
+        .expect("run marrow binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "generic_types fixture must pass: {output:?}\n{stdout}"
+    );
+    let summary = stdout
+        .lines()
+        .find(|line| line.contains(r#""kind":"summary""#))
+        .unwrap_or_else(|| panic!("no summary record: {stdout}"));
+    assert!(summary.contains(r#""failed":0"#), "{summary}");
+    assert!(summary.contains(r#""total":10"#), "{summary}");
 }
 
 /// The generics conformance fixture passes end to end: identity, first, swap-style

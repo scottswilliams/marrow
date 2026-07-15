@@ -296,13 +296,15 @@ after invalidation.
 
 ## Option And Result
 
-`Option[T]` and `Result[T, E]` are built-in closed enum value types. They ride the
-same machinery as a user `enum` — constructed, matched, and compared by value —
-and their type arguments may be any value type, including nested `Option` and
-`Result`. `Option[T]` has the members `none` and `some(v)`; `Result[T, E]` has
-`ok(v)` and `err(e)`. `Option` and `Result` are reserved type names that cannot be
-redeclared. Their constructors `some`, `none`, `ok`, and `err` are reserved value
-names: a function, constant, parameter, or local binding that reuses one is a
+`Option[T]` and `Result[T, E]` are ordinary generic enums the toolchain defines
+(see [Generic types](#generic-types)); they are not a built-in special case. Each is
+monomorphized by its type arguments through the same machinery a user generic enum
+uses — constructed, matched, and compared by value — and their type arguments may be
+any value type, including nested `Option` and `Result`. `Option[T]` has the members
+`none` and `some(v)`; `Result[T, E]` has `ok(v)` and `err(e)`. `Option` and `Result`
+are reserved type names that cannot be redeclared. Their constructors `some`,
+`none`, `ok`, and `err` are reserved value names that resolve to those enums'
+variants: a function, constant, parameter, or local binding that reuses one is a
 `check.name_conflict` at the declaration, so the constructor is never silently
 shadowed.
 
@@ -435,6 +437,61 @@ verifier re-rejects any such cycle in the image). An unknown field type name is 
 field argument, and an unnamed (positional) argument, are `check.type`
 diagnostics; a struct name that collides with another declared type is a
 `check.name_conflict`.
+
+## Generic Types
+
+A `struct` or `enum` may declare rank-1 type parameters in brackets after its name,
+making it a generic value type. Each distinct application `Name[Args]` is a separate
+monomorphized value type; the type arguments substitute for the parameters in the
+fields (a struct) or variant payloads (an enum).
+
+```mw
+struct Pair[A, B]
+    first: A
+    second: B
+
+enum Box[T]
+    empty
+    full(value: T)
+```
+
+A type parameter is a bare name, optionally carrying one closed constraint —
+`T supports equality` or `T supports order` — spelled the same way as on a
+[generic function](modules-and-functions.md#generic-functions). The constraint
+licenses `==`/`!=` (equality) or `<`/`>` and equality (order) over the parameter,
+and every application revalidates that the concrete argument supports it; an
+argument that does not is a `check.type`. An unconstrained parameter admits neither
+operator over its values.
+
+A generic value is constructed with the ordinary literal spelling; there is no
+explicit `Name[Args]` construction form. The type arguments are inferred from the
+field or payload values, so every parameter must appear in a value the construction
+supplies:
+
+```mw
+const p = Pair(first: 7, second: "hello")   ; Pair[int, string]
+const b = Box::full(value: 9)               ; Box[int]
+```
+
+A parameter that no value determines cannot be inferred at the construction site and
+is a `check.type`. A generic type is also written in a type annotation
+(`Pair[int, string]`, `Box[int]`), which drives the same monomorphization; a field,
+parameter, return, or local may name one.
+
+`Option[T]`, `Result[T, E]`, `List[T]`, and `Map[K, V]` are the toolchain's own
+generic types over this one mechanism: `Option` and `Result` are generic enums (see
+[Option and Result](#option-and-result)), and `List`/`Map` are the compiler
+collections. Their names are reserved and cannot be redeclared.
+
+A monomorphized instantiation is a private, image-local value type with no stable
+identity; two applications with the same arguments are the same type, and
+`Pair[int, string]` and `Pair[string, int]` are distinct. Acyclicity applies per
+instantiation: a generic type whose instantiation contains itself — `struct Tree[T]`
+with a `child: Tree[T]` field — is an infinite value and a `check.recursion` at the
+template, while a self-reference broken by a collection (`kids: List[Tree[T]]`) is
+finite and admitted. A program monomorphizes finitely many instantiations; a
+divergent generic that nests inside itself over an ever-growing argument exceeds the
+fixed instantiation bound and is a `check.instantiation_limit`.
 
 ## Lists And Maps
 

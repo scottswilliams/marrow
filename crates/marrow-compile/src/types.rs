@@ -178,37 +178,153 @@ pub(crate) enum CollSpec {
     Map { key: GArg, value: GArg },
 }
 
-/// A built-in generic instantiation: which built-in type an image enum index came
-/// from, and with which argument(s). Recovered by [`TypeRegistry::generic_inst`]
-/// so `match`, construction, and spelling can treat an `Option`/`Result` value
-/// like the built-in it is rather than a user `enum`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GenericInst {
-    Option(GArg),
-    Result(GArg, GArg),
-}
-
 /// The `none`/`some` and `ok`/`err` variant indices, fixed for every `Option` and
 /// `Result` instantiation so construction, `match`, and `try` agree on the tag.
+/// They follow from the declaration order of the reserved templates' variants.
 pub(crate) const OPTION_NONE: u16 = 0;
 pub(crate) const OPTION_SOME: u16 = 1;
 pub(crate) const RESULT_OK: u16 = 0;
 pub(crate) const RESULT_ERR: u16 = 1;
 
-/// Whether `name` is a built-in generic type the user cannot redeclare.
+/// The maximum number of distinct generic instantiations (functions and value
+/// types together) one program may mint. A well-typed program with an acyclic call
+/// and containment graph produces a finite set; this bound (campaign law 9) fails a
+/// divergent monomorphization — a generic that recurses into itself over an
+/// ever-growing type — with a typed `check.instantiation_limit` before the
+/// worklist allocates unboundedly, rather than looping.
+pub(crate) const MAX_INSTANTIATIONS: usize = 4096;
+
+/// The maximum nesting depth of generic type instantiation minting. A member of a
+/// minted type may itself mint a type, recursing natively; this bound (at the
+/// parser's type-nesting limit, so any finite source-shaped nesting fits) stops a
+/// divergent chain — a generic type whose field grows the argument at every level —
+/// before it can exhaust the native stack, reporting `check.instantiation_limit`.
+pub(crate) const MINT_DEPTH_LIMIT: usize = 256;
+
+/// Whether `name` is a reserved generic type name the user cannot redeclare. The
+/// toolchain owns `Option`/`Result` (as generic enums) and `List`/`Map` (as
+/// compiler collections).
 pub(crate) fn is_reserved_type_name(name: &str) -> bool {
     matches!(name, "Option" | "Result" | "List" | "Map")
 }
 
-/// The lazily-monomorphized built-in generic instantiations. Interior-mutable so a
-/// shared `&TypeRegistry` can mint a fresh instantiation into the image draft the
-/// first time a concrete `Option`/`Result` is used, while every later use of the
-/// same argument reuses the same image enum index.
+/// Which reserved toolchain generic a template is. `Option` and `Result` are
+/// ordinary generic enums the toolchain registers through the same instantiation
+/// machinery user generic enums use; only their names and constructor spellings
+/// (`none`/`some`/`ok`/`err`, prefix `try`) are reserved, so the lowerer recovers
+/// them from the minting template rather than a bespoke instantiation table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reserved {
+    Option,
+    Result,
+}
+
+/// One payload leaf of a generic enum template variant: its field name and the
+/// type expression it carries (over the template's type parameters).
+#[derive(Clone)]
+struct TemplatePayload {
+    name: String,
+    ty: TypeExpr,
+}
+
+/// One variant of a generic enum template: its name and named payload fields.
+#[derive(Clone)]
+struct TemplateVariant {
+    name: String,
+    payload: Vec<TemplatePayload>,
+}
+
+/// The member shape of a generic type template: a `struct`'s named fields or an
+/// `enum`'s variants, each carried as a type expression over the template's type
+/// parameters and substituted at instantiation.
+#[derive(Clone)]
+enum TemplateBody {
+    Struct(Vec<(String, TypeExpr)>),
+    Enum(Vec<TemplateVariant>),
+}
+
+/// One generic value-type template: a `struct Name[T, ...]` or `enum Name[T, ...]`
+/// (or a reserved toolchain generic), held for lazy monomorphization. A template
+/// mints no image index of its own; each distinct `Name[Args]` application mints one
+/// through the shared instantiation owner.
+#[derive(Clone)]
+struct TypeTemplate {
+    name: String,
+    file: String,
+    name_span: SourceSpan,
+    reserved: Option<Reserved>,
+    type_params: Vec<(String, Option<TypeConstraint>)>,
+    body: TemplateBody,
+}
+
+impl TypeTemplate {
+    fn is_enum(&self) -> bool {
+        matches!(self.body, TemplateBody::Enum(_))
+    }
+}
+
+/// The resolved member shape of one minted type instantiation, read by the lowerer
+/// for construction, `match`, field access, and cycle checking without re-resolving
+/// the template.
+#[derive(Clone)]
+pub(crate) enum InstBody {
+    Struct(Vec<(String, GArg)>),
+    Enum(Vec<InstVariant>),
+}
+
+/// One resolved variant of a minted enum instantiation: its name and the concrete
+/// value types its payload fields carry, in declaration order.
+#[derive(Clone)]
+pub(crate) struct InstVariant {
+    pub(crate) name: String,
+    pub(crate) payload: Vec<(String, GArg)>,
+}
+
+/// The image index a minted type instantiation occupies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeInstId {
+    Record(TypeId),
+    Enum(EnumId),
+}
+
+/// One minted generic type instantiation: which template and concrete arguments
+/// produced it, the image index it occupies, and its resolved member shape.
+#[derive(Clone)]
+struct TypeInst {
+    template: usize,
+    args: Vec<GArg>,
+    id: TypeInstId,
+    body: InstBody,
+}
+
+/// One minted generic function instantiation awaiting body lowering: its function
+/// template index (into the lowerer's generic registry), concrete arguments, and
+/// the reserved image function index.
+#[derive(Clone)]
+struct FnInst {
+    template: usize,
+    args: Vec<GArg>,
+    func: u16,
+}
+
+/// The single owner of generic instantiation identity across functions and value
+/// types. Interior-mutable so a shared `&TypeRegistry` mints instances during field
+/// resolution and body lowering. Type instantiations mint their image record/enum
+/// eagerly (declare-then-fill, so a self-referential instantiation terminates and
+/// the containment-cycle check rejects it); function instantiations reserve an image
+/// index and enqueue their body for the driver to drain in mint order.
 #[derive(Default, Clone)]
-struct Generics {
-    options: Vec<(GArg, EnumId)>,
-    results: Vec<(GArg, GArg, EnumId)>,
-    by_id: Vec<(EnumId, GenericInst)>,
+struct Monomorph {
+    type_insts: Vec<TypeInst>,
+    fn_base: u16,
+    fn_insts: Vec<FnInst>,
+    fn_queue: std::collections::VecDeque<FnInst>,
+    /// The current native recursion depth of type-instantiation minting, bounded by
+    /// [`MINT_DEPTH_LIMIT`] so a divergent chain cannot overflow the stack.
+    fill_depth: usize,
+    /// Diagnostics recorded while minting type instantiations (the instantiation
+    /// limit), drained once by the driver after all resolution.
+    pending: Vec<SourceDiagnostic>,
 }
 
 /// The closed capability set a nominal declaration's `supports` list unlocks.
@@ -334,7 +450,11 @@ pub(crate) struct TypeRegistry {
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
     record: Option<RecordInfo>,
-    generics: RefCell<Generics>,
+    /// The generic value-type templates: the reserved toolchain generics
+    /// (`Option`/`Result`) followed by the user `struct`/`enum` templates. Fixed
+    /// after `build`; instantiations reference a template by index.
+    type_templates: Vec<TypeTemplate>,
+    generics: RefCell<Monomorph>,
     /// The concrete collection instantiations minted so far, in image COLLTYPES
     /// order. Interior-mutable so a shared `&TypeRegistry` can mint one on first use
     /// of a concrete `List`/`Map`, deduping by source element/key/value types.
@@ -342,98 +462,125 @@ pub(crate) struct TypeRegistry {
 }
 
 impl TypeRegistry {
-    /// The image enum index of `Option[inner]`, minting it into `draft` on first
-    /// use and reusing it thereafter. Variant `0` is `none` (no payload) and
-    /// variant `1` is `some` (the argument as its single payload leaf).
-    pub(crate) fn instantiate_option(&self, draft: &mut ImageDraft, inner: GArg) -> EnumId {
-        if let Some((_, id)) = self
-            .generics
-            .borrow()
-            .options
-            .iter()
-            .find(|(arg, _)| *arg == inner)
-        {
-            return *id;
+    /// The image enum index of the reserved `Option[inner]`, minting it on first use.
+    pub(crate) fn instantiate_reserved_option(
+        &self,
+        draft: &mut ImageDraft,
+        inner: GArg,
+    ) -> EnumId {
+        let template = self.reserved_template(Reserved::Option);
+        match self.mint_type_instance(draft, template, &[inner]) {
+            Some(TypeInstId::Enum(id)) => id,
+            _ => unreachable!("the reserved Option template mints an enum for one value argument"),
         }
-        let name = draft.intern_string("Option");
-        let none = draft.intern_string("none");
-        let some = draft.intern_string("some");
-        let id = draft.add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![
-                VariantDef {
-                    name: none,
-                    category: false,
-                    payload: Vec::new(),
-                },
-                VariantDef {
-                    name: some,
-                    category: false,
-                    payload: vec![inner.image()],
-                },
-            ],
-        });
-        let mut generics = self.generics.borrow_mut();
-        generics.options.push((inner, id));
-        generics.by_id.push((id, GenericInst::Option(inner)));
-        id
     }
 
-    /// The image enum index of `Result[ok, err]`, minting it into `draft` on first
-    /// use and reusing it thereafter. Variant `0` is `ok` and variant `1` is `err`,
-    /// each carrying its argument as its single payload leaf.
-    pub(crate) fn instantiate_result(&self, draft: &mut ImageDraft, ok: GArg, err: GArg) -> EnumId {
-        if let Some((_, _, id)) = self
-            .generics
-            .borrow()
-            .results
+    /// The template index of a reserved toolchain generic.
+    fn reserved_template(&self, reserved: Reserved) -> usize {
+        self.type_templates
             .iter()
-            .find(|(o, e, _)| *o == ok && *e == err)
-        {
-            return *id;
+            .position(|template| template.reserved == Some(reserved))
+            .expect("the reserved Option/Result templates are registered at build")
+    }
+
+    /// The template index of a generic value type named `head` (a reserved
+    /// `Option`/`Result` or a user `struct`/`enum` template), if one exists.
+    pub(crate) fn type_template_by_name(&self, head: &str) -> Option<usize> {
+        self.type_templates
+            .iter()
+            .position(|template| template.name == head)
+    }
+
+    /// Whether a generic type template's head names an enum (versus a struct).
+    pub(crate) fn template_is_enum(&self, template: usize) -> bool {
+        self.type_templates[template].is_enum()
+    }
+
+    /// The declared type-parameter names and constraints of a generic type template.
+    pub(crate) fn template_type_params(
+        &self,
+        template: usize,
+    ) -> &[(String, Option<TypeConstraint>)] {
+        &self.type_templates[template].type_params
+    }
+
+    /// The source name of a generic type template.
+    pub(crate) fn template_name(&self, template: usize) -> &str {
+        &self.type_templates[template].name
+    }
+
+    /// The declared field names and type expressions (over the template's type
+    /// parameters) of a generic struct template, for construction inference. `None`
+    /// if the template is an enum.
+    pub(crate) fn template_struct_fields(
+        &self,
+        template: usize,
+    ) -> Option<Vec<(String, TypeExpr)>> {
+        match &self.type_templates[template].body {
+            TemplateBody::Struct(fields) => Some(fields.clone()),
+            TemplateBody::Enum(_) => None,
         }
-        let name = draft.intern_string("Result");
-        let ok_name = draft.intern_string("ok");
-        let err_name = draft.intern_string("err");
-        let id = draft.add_enum_type(EnumTypeDef {
-            name,
-            variants: vec![
-                VariantDef {
-                    name: ok_name,
-                    category: false,
-                    payload: vec![ok.image()],
-                },
-                VariantDef {
-                    name: err_name,
-                    category: false,
-                    payload: vec![err.image()],
-                },
-            ],
-        });
-        let mut generics = self.generics.borrow_mut();
-        generics.results.push((ok, err, id));
-        generics.by_id.push((id, GenericInst::Result(ok, err)));
-        id
+    }
+
+    /// The declared payload field names and type expressions of one variant of a
+    /// generic enum template, for construction inference. `None` if the template is a
+    /// struct or has no such variant. The `Some` result also reports whether the
+    /// variant exists (an empty payload is `Some(vec![])`).
+    pub(crate) fn template_variant_payload(
+        &self,
+        template: usize,
+        variant: &str,
+    ) -> Option<Vec<(String, TypeExpr)>> {
+        match &self.type_templates[template].body {
+            TemplateBody::Enum(variants) => variants
+                .iter()
+                .find(|candidate| candidate.name == variant)
+                .map(|candidate| {
+                    candidate
+                        .payload
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.clone()))
+                        .collect()
+                }),
+            TemplateBody::Struct(_) => None,
+        }
     }
 
     /// Resolve a type annotation to a bare value type (a [`GArg`]), monomorphizing
-    /// an `Option`/`Result` application into `draft` on first use. `None` for an
-    /// optional, a sequence, the resource record, or a name not yet declared as a
-    /// value type. Resource field-type resolution uses this to admit a scalar or a
-    /// built-in `Option`/`Result` field; because the record builds before the enum
-    /// table, a name resolving to a user `enum` is not yet visible here.
+    /// any `Option`/`Result`/user generic application into `draft` on first use.
+    /// `None` for an optional, a sequence, the resource record, or a name not yet
+    /// declared as a value type.
     pub(crate) fn resolve_garg(
         &self,
         draft: &mut ImageDraft,
         annotation: &TypeExpr,
     ) -> Option<GArg> {
-        self.resolve_garg_expanded(draft, &self.expand(annotation))
+        self.resolve_garg_expanded(draft, &self.expand(annotation), &[])
     }
 
-    fn resolve_garg_expanded(&self, draft: &mut ImageDraft, ty: &TypeExpr) -> Option<GArg> {
+    /// Resolve a type expression under a substitution environment (`param name ->
+    /// concrete argument`), used when a generic template body is monomorphized. The
+    /// expression is already alias-expanded.
+    fn resolve_garg_env(
+        &self,
+        draft: &mut ImageDraft,
+        ty: &TypeExpr,
+        subst: &[(String, GArg)],
+    ) -> Option<GArg> {
+        self.resolve_garg_expanded(draft, &self.expand(ty), subst)
+    }
+
+    fn resolve_garg_expanded(
+        &self,
+        draft: &mut ImageDraft,
+        ty: &TypeExpr,
+        subst: &[(String, GArg)],
+    ) -> Option<GArg> {
         match ty {
             TypeExpr::Name { text, .. } => {
-                if let Some(scalar) = ScalarType::from_spelling(text) {
+                if let Some((_, arg)) = subst.iter().find(|(name, _)| name == text) {
+                    Some(*arg)
+                } else if let Some(scalar) = ScalarType::from_spelling(text) {
                     Some(GArg::Scalar(scalar))
                 } else if let Some((id, _)) = self.nominal_by_name(text) {
                     Some(GArg::Nominal(id))
@@ -444,41 +591,356 @@ impl TypeRegistry {
                 }
             }
             TypeExpr::Apply { head, args, .. } => match head.as_str() {
-                "Option" => {
-                    let [arg] = args.as_slice() else { return None };
-                    let inner = self.resolve_garg(draft, arg)?;
-                    Some(GArg::Enum(self.instantiate_option(draft, inner)))
-                }
-                "Result" => {
-                    let [ok, err] = args.as_slice() else {
-                        return None;
-                    };
-                    let ok = self.resolve_garg(draft, ok)?;
-                    let err = self.resolve_garg(draft, err)?;
-                    Some(GArg::Enum(self.instantiate_result(draft, ok, err)))
-                }
                 "List" => {
                     let [elem] = args.as_slice() else { return None };
-                    let elem = self.resolve_garg(draft, elem)?;
+                    let elem = self.resolve_garg_expanded(draft, &self.expand(elem), subst)?;
                     Some(GArg::Collection(self.instantiate_list(draft, elem)))
                 }
                 "Map" => {
                     let [key, value] = args.as_slice() else {
                         return None;
                     };
-                    let key = self.resolve_garg(draft, key)?;
+                    let key = self.resolve_garg_expanded(draft, &self.expand(key), subst)?;
                     // A map key is drawn from the durable-key scalar family; a struct,
                     // enum, collection, or decimal key is not admitted.
                     if !key.is_key_type() {
                         return None;
                     }
-                    let value = self.resolve_garg(draft, value)?;
+                    let value = self.resolve_garg_expanded(draft, &self.expand(value), subst)?;
                     Some(GArg::Collection(self.instantiate_map(draft, key, value)))
                 }
-                _ => None,
+                _ => {
+                    let template = self.type_template_by_name(head)?;
+                    let mut resolved = Vec::with_capacity(args.len());
+                    for arg in args {
+                        resolved.push(self.resolve_garg_expanded(
+                            draft,
+                            &self.expand(arg),
+                            subst,
+                        )?);
+                    }
+                    if resolved.len() != self.type_templates[template].type_params.len() {
+                        return None;
+                    }
+                    // Concrete constraint revalidation: every resolved argument (a
+                    // `Param` only reaches here in the throwaway template-check draft)
+                    // must support its parameter's constraint.
+                    for ((_, constraint), arg) in self.type_templates[template]
+                        .type_params
+                        .iter()
+                        .zip(&resolved)
+                    {
+                        if let Some(constraint) = constraint
+                            && !matches!(arg, GArg::Param(_))
+                            && !arg.satisfies(*constraint)
+                        {
+                            return None;
+                        }
+                    }
+                    self.mint_type_instance(draft, template, &resolved)
+                        .map(|id| match id {
+                            TypeInstId::Record(ty) => GArg::Struct(ty),
+                            TypeInstId::Enum(id) => GArg::Enum(id),
+                        })
+                }
             },
             _ => None,
         }
+    }
+
+    /// Mint (or reuse) the instantiation of a generic type template at concrete
+    /// arguments, returning its image index. Declare-then-fill: the reserved record/
+    /// enum and a placeholder body are recorded before the members are resolved, so a
+    /// self-referential instantiation dedups against the reserved entry and
+    /// terminates; the containment-cycle check then rejects a real value cycle.
+    /// `None` once the shared instantiation bound is exceeded (a divergent
+    /// monomorphization), recording one `check.instantiation_limit`.
+    pub(crate) fn mint_type_instance(
+        &self,
+        draft: &mut ImageDraft,
+        template: usize,
+        args: &[GArg],
+    ) -> Option<TypeInstId> {
+        if let Some(inst) = self
+            .generics
+            .borrow()
+            .type_insts
+            .iter()
+            .find(|inst| inst.template == template && inst.args == args)
+        {
+            return Some(inst.id);
+        }
+        {
+            let generics = self.generics.borrow();
+            let over_count =
+                generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS;
+            let over_depth = generics.fill_depth >= MINT_DEPTH_LIMIT;
+            if over_count || over_depth {
+                drop(generics);
+                let tmpl = &self.type_templates[template];
+                let mut generics = self.generics.borrow_mut();
+                if generics.pending.is_empty() {
+                    generics.pending.push(SourceDiagnostic::at(
+                        Code::CheckInstantiationLimit.as_str(),
+                        &tmpl.file,
+                        tmpl.name_span,
+                        format!(
+                            "monomorphizing this program requires more than {MAX_INSTANTIATIONS} \
+                             generic instantiations; a generic type likely nests inside itself over \
+                             an ever-growing type"
+                        ),
+                    ));
+                }
+                return None;
+            }
+        }
+        // Reserve the image index and a placeholder body before filling, so a member
+        // that names this same instantiation finds it and the fill terminates.
+        let name_id = draft.intern_string(&self.type_templates[template].name);
+        let (id, placeholder) = if self.type_templates[template].is_enum() {
+            let enum_id = draft.add_enum_type(EnumTypeDef {
+                name: name_id,
+                variants: Vec::new(),
+            });
+            (TypeInstId::Enum(enum_id), InstBody::Enum(Vec::new()))
+        } else {
+            let type_id = draft.add_record_type(RecordTypeDef {
+                name: name_id,
+                fields: Vec::new(),
+            });
+            (TypeInstId::Record(type_id), InstBody::Struct(Vec::new()))
+        };
+        let inst_index = {
+            let mut generics = self.generics.borrow_mut();
+            let index = generics.type_insts.len();
+            generics.type_insts.push(TypeInst {
+                template,
+                args: args.to_vec(),
+                id,
+                body: placeholder,
+            });
+            index
+        };
+        // Fill the reserved members. A member may recursively mint further
+        // instantiations; the depth counter bounds that native recursion so a
+        // divergent chain (an ever-growing argument) trips the limit before it can
+        // overflow the stack, while any finite nesting (source nesting is itself
+        // depth-bounded) completes.
+        self.generics.borrow_mut().fill_depth += 1;
+        let filled = self.fill_type_body(draft, template, id, args);
+        self.generics.borrow_mut().fill_depth -= 1;
+        let filled = filled?;
+        self.generics.borrow_mut().type_insts[inst_index].body = filled;
+        Some(id)
+    }
+
+    /// Resolve a reserved type instantiation's members under its argument
+    /// substitution, writing the image record/enum fields and returning the resolved
+    /// body. `None` if any member type fails to resolve or the depth bound is hit.
+    fn fill_type_body(
+        &self,
+        draft: &mut ImageDraft,
+        template: usize,
+        id: TypeInstId,
+        args: &[GArg],
+    ) -> Option<InstBody> {
+        let subst: Vec<(String, GArg)> = self.type_templates[template]
+            .type_params
+            .iter()
+            .map(|(name, _)| name.clone())
+            .zip(args.iter().copied())
+            .collect();
+        let body = self.type_templates[template].body.clone();
+        Some(match body {
+            TemplateBody::Struct(fields) => {
+                let mut resolved = Vec::with_capacity(fields.len());
+                let mut defs = Vec::with_capacity(fields.len());
+                for (fname, fty) in &fields {
+                    let arg = self.resolve_garg_env(draft, fty, &subst)?;
+                    defs.push(FieldDef {
+                        name: draft.intern_string(fname),
+                        ty: arg.image(),
+                        required: true,
+                    });
+                    resolved.push((fname.clone(), arg));
+                }
+                if let TypeInstId::Record(ty) = id {
+                    draft.set_record_fields(ty, defs);
+                }
+                InstBody::Struct(resolved)
+            }
+            TemplateBody::Enum(variants) => {
+                let mut resolved = Vec::with_capacity(variants.len());
+                let mut defs = Vec::with_capacity(variants.len());
+                for variant in &variants {
+                    let mut payload = Vec::with_capacity(variant.payload.len());
+                    let mut leaves = Vec::with_capacity(variant.payload.len());
+                    for field in &variant.payload {
+                        let arg = self.resolve_garg_env(draft, &field.ty, &subst)?;
+                        leaves.push(arg.image());
+                        payload.push((field.name.clone(), arg));
+                    }
+                    defs.push(VariantDef {
+                        name: draft.intern_string(&variant.name),
+                        category: false,
+                        payload: leaves,
+                    });
+                    resolved.push(InstVariant {
+                        name: variant.name.clone(),
+                        payload,
+                    });
+                }
+                if let TypeInstId::Enum(enum_id) = id {
+                    draft.set_enum_variants(enum_id, defs);
+                }
+                InstBody::Enum(resolved)
+            }
+        })
+    }
+
+    /// The template index and concrete arguments a minted type instantiation came
+    /// from, if `id` names one. Used by generic-function inference to unify a
+    /// parameter type `Pair[T, U]` against an argument's instantiation.
+    pub(crate) fn instantiation_of(&self, id: TypeInstId) -> Option<(usize, Vec<GArg>)> {
+        self.generics
+            .borrow()
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == id)
+            .map(|inst| (inst.template, inst.args.clone()))
+    }
+
+    /// The resolved member shape of a minted type instantiation, if `id` names one.
+    pub(crate) fn type_inst_body(&self, id: TypeInstId) -> Option<InstBody> {
+        self.generics
+            .borrow()
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == id)
+            .map(|inst| inst.body.clone())
+    }
+
+    /// The `Option[T]` argument an enum instantiation carries, if it is the reserved
+    /// `Option` template's.
+    pub(crate) fn as_option(&self, id: EnumId) -> Option<GArg> {
+        let generics = self.generics.borrow();
+        let inst = generics
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == TypeInstId::Enum(id))?;
+        (self.type_templates[inst.template].reserved == Some(Reserved::Option))
+            .then(|| inst.args[0])
+    }
+
+    /// The `Result[T, E]` arguments an enum instantiation carries, if it is the
+    /// reserved `Result` template's.
+    pub(crate) fn as_result(&self, id: EnumId) -> Option<(GArg, GArg)> {
+        let generics = self.generics.borrow();
+        let inst = generics
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == TypeInstId::Enum(id))?;
+        (self.type_templates[inst.template].reserved == Some(Reserved::Result))
+            .then(|| (inst.args[0], inst.args[1]))
+    }
+
+    /// The variants (name plus resolved payload types) of an enum value, whether a
+    /// concrete user `enum` or a generic enum instantiation, for `match` lowering.
+    pub(crate) fn enum_variants(&self, id: EnumId) -> Option<Vec<(String, Vec<GArg>)>> {
+        if let Some(info) = self.enum_by_id(id) {
+            return Some(
+                info.variants
+                    .iter()
+                    .map(|variant| {
+                        (
+                            variant.name.clone(),
+                            variant
+                                .payload
+                                .iter()
+                                .map(|field| GArg::Scalar(field.scalar))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        match self.type_inst_body(TypeInstId::Enum(id))? {
+            InstBody::Enum(variants) => Some(
+                variants
+                    .into_iter()
+                    .map(|variant| {
+                        (
+                            variant.name,
+                            variant.payload.into_iter().map(|(_, arg)| arg).collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+            InstBody::Struct(_) => None,
+        }
+    }
+
+    /// The source spelling of a generic type instantiation, `Name[arg, ...]`, if
+    /// `id` names one.
+    pub(crate) fn inst_spelling(&self, id: TypeInstId) -> Option<String> {
+        let generics = self.generics.borrow();
+        let inst = generics.type_insts.iter().find(|inst| inst.id == id)?;
+        let name = self.type_templates[inst.template].name.clone();
+        let args: Vec<String> = inst
+            .args
+            .iter()
+            .map(|arg| garg_spelling(self, *arg))
+            .collect();
+        Some(format!("{name}[{}]", args.join(", ")))
+    }
+
+    /// Set the base image function index for generic function instantiations, once
+    /// every monomorphic function and test has consumed its index.
+    pub(crate) fn set_fn_base(&self, base: u16) {
+        self.generics.borrow_mut().fn_base = base;
+    }
+
+    /// Reserve the image function index for `(fn template, args)`, minting and
+    /// enqueuing a fresh instance on first request and reusing it thereafter. `None`
+    /// once the shared instantiation bound is exceeded.
+    pub(crate) fn reserve_fn_instance(&self, template: usize, args: Vec<GArg>) -> Option<u16> {
+        let mut generics = self.generics.borrow_mut();
+        if let Some(inst) = generics
+            .fn_insts
+            .iter()
+            .find(|inst| inst.template == template && inst.args == args)
+        {
+            return Some(inst.func);
+        }
+        if generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS {
+            return None;
+        }
+        let func = generics.fn_base + generics.fn_insts.len() as u16;
+        let inst = FnInst {
+            template,
+            args,
+            func,
+        };
+        generics.fn_insts.push(inst.clone());
+        generics.fn_queue.push_back(inst);
+        Some(func)
+    }
+
+    /// The next generic function instance awaiting body lowering: its template index,
+    /// concrete arguments, and reserved image function index.
+    pub(crate) fn next_fn_pending(&self) -> Option<(usize, Vec<GArg>, u16)> {
+        self.generics
+            .borrow_mut()
+            .fn_queue
+            .pop_front()
+            .map(|inst| (inst.template, inst.args, inst.func))
+    }
+
+    /// Drain the diagnostics recorded while minting type instantiations (currently
+    /// the instantiation-limit diagnostic), reported once by the driver after all
+    /// resolution has completed.
+    pub(crate) fn take_generic_diagnostics(&self) -> Vec<SourceDiagnostic> {
+        std::mem::take(&mut self.generics.borrow_mut().pending)
     }
 
     /// The image COLLTYPES index of `List[elem]`, minting it into `draft` on first
@@ -530,17 +992,6 @@ impl TypeRegistry {
                 garg_spelling(self, value)
             ),
         }
-    }
-
-    /// The built-in instantiation an image enum index came from, or `None` for a
-    /// user-declared `enum`.
-    pub(crate) fn generic_inst(&self, id: EnumId) -> Option<GenericInst> {
-        self.generics
-            .borrow()
-            .by_id
-            .iter()
-            .find(|(eid, _)| *eid == id)
-            .map(|(_, inst)| *inst)
     }
 
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
@@ -606,18 +1057,6 @@ impl TypeRegistry {
         }
     }
 
-    /// Every generic `Option`/`Result` instantiation minted so far, paired with its
-    /// image enum index. The value-type cycle check reads these so a nesting routed
-    /// through a built-in generic (`struct S` with a `some(S)` field) is caught.
-    pub(crate) fn generic_instantiations(&self) -> Vec<(EnumId, GenericInst)> {
-        self.generics
-            .borrow()
-            .by_id
-            .iter()
-            .map(|(id, inst)| (*id, *inst))
-            .collect()
-    }
-
     /// Build the registry: the alias table (duplicates, resource-name collisions,
     /// and cycles rejected; targets pre-expanded to alias-free form and validated
     /// against the known types), then the value types in two passes.
@@ -649,25 +1088,52 @@ impl TypeRegistry {
             structs: Vec::new(),
             enums: Vec::new(),
             record: None,
+            type_templates: reserved_templates(),
             generics: RefCell::default(),
             collections: RefCell::default(),
         };
         registry.nominals =
             build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
 
+        // A generic `struct`/`enum` (one carrying type parameters) is a template
+        // monomorphized on use, not a concrete image type; the concrete declarations
+        // are declared-then-filled below, the templates registered aside.
+        let concrete_structs: Vec<(String, &StructDecl)> = structs
+            .iter()
+            .filter(|(_, decl)| decl.type_params.is_empty())
+            .map(|(file, decl)| (file.clone(), *decl))
+            .collect();
+        let concrete_enums: Vec<(String, &EnumDecl)> = enums
+            .iter()
+            .filter(|(_, decl)| decl.type_params.is_empty())
+            .map(|(file, decl)| (file.clone(), *decl))
+            .collect();
+        register_type_templates(&mut registry, structs, enums, resources, diagnostics);
+
         // Pass one: reserve every value type's image index with empty members and
         // decide name conflicts. The record reserves first (image index 0).
         let record_decl = declare_record(draft, &mut registry, resources, diagnostics);
-        let struct_decls = declare_structs(draft, &mut registry, structs, resources, diagnostics);
-        let enum_decls = declare_enums(draft, &mut registry, enums, resources, diagnostics);
+        let struct_decls = declare_structs(
+            draft,
+            &mut registry,
+            &concrete_structs,
+            resources,
+            diagnostics,
+        );
+        let enum_decls = declare_enums(
+            draft,
+            &mut registry,
+            &concrete_enums,
+            resources,
+            diagnostics,
+        );
 
         // Pass two: resolve and fill each definition's members against the full
-        // registry, monomorphizing any `Option`/`Result` field type on first use.
+        // registry, monomorphizing any generic field type on first use.
         fill_record(draft, &mut registry, record_decl.as_ref(), diagnostics);
         fill_structs(draft, &mut registry, &struct_decls, diagnostics);
         fill_enums(draft, &mut registry, &enum_decls, diagnostics);
 
-        reject_value_cycles(&registry, structs, resources, diagnostics);
         validate_alias_targets(&registry, aliases, diagnostics);
         registry
     }
@@ -687,10 +1153,247 @@ impl TypeRegistry {
             structs: self.structs.clone(),
             enums: self.enums.clone(),
             record: self.record.clone(),
+            type_templates: self.type_templates.clone(),
             generics: RefCell::new(self.generics.borrow().clone()),
             collections: RefCell::new(self.collections.borrow().clone()),
         }
     }
+}
+
+/// The reserved toolchain generic templates, in fixed order (`Option` then
+/// `Result`), registered before any user template. They are ordinary generic enums
+/// defined here rather than by user source: the `some`/`none`/`ok`/`err` payload
+/// leaves reference the templates' own type parameters, so instantiation
+/// monomorphizes them exactly like a user generic enum, and the lowerer recovers
+/// their reserved constructor/`try`/spelling behavior from the minting template.
+fn reserved_templates() -> Vec<TypeTemplate> {
+    let param = |name: &str| TypeExpr::Name {
+        text: name.to_string(),
+        span: SourceSpan::default(),
+    };
+    let payload = |ty: TypeExpr| TemplatePayload {
+        name: "value".to_string(),
+        ty,
+    };
+    vec![
+        TypeTemplate {
+            name: "Option".to_string(),
+            file: String::new(),
+            name_span: SourceSpan::default(),
+            reserved: Some(Reserved::Option),
+            type_params: vec![("T".to_string(), None)],
+            body: TemplateBody::Enum(vec![
+                TemplateVariant {
+                    name: "none".to_string(),
+                    payload: Vec::new(),
+                },
+                TemplateVariant {
+                    name: "some".to_string(),
+                    payload: vec![payload(param("T"))],
+                },
+            ]),
+        },
+        TypeTemplate {
+            name: "Result".to_string(),
+            file: String::new(),
+            name_span: SourceSpan::default(),
+            reserved: Some(Reserved::Result),
+            type_params: vec![("T".to_string(), None), ("E".to_string(), None)],
+            body: TemplateBody::Enum(vec![
+                TemplateVariant {
+                    name: "ok".to_string(),
+                    payload: vec![payload(param("T"))],
+                },
+                TemplateVariant {
+                    name: "err".to_string(),
+                    payload: vec![payload(param("E"))],
+                },
+            ]),
+        },
+    ]
+}
+
+/// Register every generic `struct`/`enum` (one carrying type parameters) as a
+/// value-type template, after the reserved toolchain generics. A template mints no
+/// concrete image type; a name collision with a scalar, reserved name, alias,
+/// nominal, resource, or another declared type is a `check.name_conflict`, and a
+/// structurally unadmitted member (a group, key, `required` keyword, optional field,
+/// or category/nested enum member) is a `check.unsupported`; a defective template is
+/// dropped so no `Name[Args]` use resolves against it.
+fn register_type_templates(
+    registry: &mut TypeRegistry,
+    structs: &[(String, &StructDecl)],
+    enums: &[(String, &EnumDecl)],
+    resources: &[(String, &ResourceDecl)],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    let type_param_names =
+        |params: &[marrow_syntax::TypeParamDecl]| -> Vec<(String, Option<TypeConstraint>)> {
+            params
+                .iter()
+                .map(|param| {
+                    (
+                        param.name.clone(),
+                        param.constraint.map(TypeConstraint::from_syntax),
+                    )
+                })
+                .collect()
+        };
+    let name_taken = |registry: &TypeRegistry, name: &str| -> bool {
+        ScalarType::from_spelling(name).is_some()
+            || registry.aliases.contains_key(name)
+            || registry.nominal_by_name(name).is_some()
+            || resources.iter().any(|(_, r)| r.name == name)
+            || structs
+                .iter()
+                .filter(|(_, d)| d.type_params.is_empty())
+                .any(|(_, d)| d.name == name)
+            || enums
+                .iter()
+                .filter(|(_, d)| d.type_params.is_empty())
+                .any(|(_, d)| d.name == name)
+            || registry
+                .type_templates
+                .iter()
+                .any(|template| template.name == name)
+    };
+    for (file, decl) in structs {
+        if decl.type_params.is_empty() {
+            continue;
+        }
+        if is_reserved_type_name(&decl.name) {
+            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            continue;
+        }
+        if name_taken(registry, &decl.name) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as a type", decl.name),
+            ));
+            continue;
+        }
+        let Some(fields) = template_struct_fields(file, decl, diagnostics) else {
+            continue;
+        };
+        registry.type_templates.push(TypeTemplate {
+            name: decl.name.clone(),
+            file: file.clone(),
+            name_span: decl.name_span,
+            reserved: None,
+            type_params: type_param_names(&decl.type_params),
+            body: TemplateBody::Struct(fields),
+        });
+    }
+    for (file, decl) in enums {
+        if decl.type_params.is_empty() {
+            continue;
+        }
+        if is_reserved_type_name(&decl.name) {
+            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            continue;
+        }
+        if name_taken(registry, &decl.name) {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as a type", decl.name),
+            ));
+            continue;
+        }
+        let Some(variants) = template_enum_variants(file, decl, diagnostics) else {
+            continue;
+        };
+        registry.type_templates.push(TypeTemplate {
+            name: decl.name.clone(),
+            file: file.clone(),
+            name_span: decl.name_span,
+            reserved: None,
+            type_params: type_param_names(&decl.type_params),
+            body: TemplateBody::Enum(variants),
+        });
+    }
+}
+
+/// The named field-type expressions of a generic struct template, or `None` if any
+/// member is not the bare `name: Type` form (matching the concrete-struct rule; the
+/// field types themselves are resolved per instantiation).
+fn template_struct_fields(
+    file: &str,
+    decl: &StructDecl,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<Vec<(String, TypeExpr)>> {
+    let mut fields = Vec::new();
+    let mut ok = true;
+    for member in &decl.members {
+        let ResourceMember::Field(field) = member else {
+            diagnostics.push(unsupported(file, member.span(), "a struct group"));
+            ok = false;
+            continue;
+        };
+        if !field.keys.is_empty() {
+            diagnostics.push(unsupported(file, field.span, "a keyed struct field"));
+            ok = false;
+            continue;
+        }
+        if field.required {
+            diagnostics.push(unsupported(
+                file,
+                field.span,
+                "the `required` keyword on a struct field (struct fields are always required)",
+            ));
+            ok = false;
+            continue;
+        }
+        if matches!(field.ty, TypeExpr::Optional { .. }) {
+            diagnostics.push(unsupported(
+                file,
+                field.ty.span(),
+                "an optional struct field type",
+            ));
+            ok = false;
+            continue;
+        }
+        fields.push((field.name.clone(), field.ty.clone()));
+    }
+    ok.then_some(fields)
+}
+
+/// The variants (name plus named payload leaves) of a generic enum template, or
+/// `None` if any member is a `category` or a nested member (a generic enum is flat;
+/// its payload field types are resolved per instantiation).
+fn template_enum_variants(
+    file: &str,
+    decl: &EnumDecl,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<Vec<TemplateVariant>> {
+    let mut variants = Vec::new();
+    let mut ok = true;
+    for member in &decl.members {
+        if member.category || !member.members.is_empty() {
+            diagnostics.push(unsupported(
+                file,
+                member.span,
+                "a category or nested member on a generic enum",
+            ));
+            ok = false;
+            continue;
+        }
+        variants.push(TemplateVariant {
+            name: member.name.clone(),
+            payload: member
+                .payload
+                .iter()
+                .map(|field| TemplatePayload {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                })
+                .collect(),
+        });
+    }
+    ok.then_some(variants)
 }
 
 /// Resolve the alias declarations to an alias-free name → target map. A
@@ -1556,7 +2259,7 @@ fn fill_record(
 /// is reported at its declaration with the cycle path; the verifier independently
 /// re-rejects any cycle that still reaches it, so this is a source-facing check, not
 /// the trust boundary.
-fn reject_value_cycles(
+pub(crate) fn reject_value_cycles(
     registry: &TypeRegistry,
     structs: &[(String, &StructDecl)],
     resources: &[(String, &ResourceDecl)],
@@ -1581,6 +2284,29 @@ fn reject_value_cycles(
             .map(|(file, decl)| (file.clone(), decl.name_span))
             .expect("a reserved record has a surviving declaration");
         diagnostics.push(value_cycle_diagnostic(&file, span, &record.name, &path));
+    }
+    // A monomorphized generic type on a cycle (`Tree[int]` containing `Tree[int]`)
+    // is an ordinary record/enum cycle per instantiation; report each once at its
+    // template's declaration.
+    let mut reported: Vec<usize> = Vec::new();
+    for inst in &registry.generics.borrow().type_insts {
+        let node = match inst.id {
+            TypeInstId::Record(ty) => ValueNode::Record(ty),
+            TypeInstId::Enum(id) => ValueNode::Enum(id),
+        };
+        if reported.contains(&inst.template) {
+            continue;
+        }
+        if let Some(path) = graph.cycle_through(node) {
+            reported.push(inst.template);
+            let template = &registry.type_templates[inst.template];
+            diagnostics.push(value_cycle_diagnostic(
+                &template.file,
+                template.name_span,
+                &template.name,
+                &path,
+            ));
+        }
     }
 }
 
@@ -1635,9 +2361,15 @@ impl ValueGraph {
         for info in &registry.enums {
             push(ValueNode::Enum(info.enum_id), info.name.clone());
         }
-        for (id, inst) in registry.generic_instantiations() {
-            let label = garg_arg_to_lty_spelling(registry, inst);
-            push(ValueNode::Enum(id), label);
+        for inst in &registry.generics.borrow().type_insts {
+            let node = match inst.id {
+                TypeInstId::Record(ty) => ValueNode::Record(ty),
+                TypeInstId::Enum(id) => ValueNode::Enum(id),
+            };
+            let label = registry
+                .inst_spelling(inst.id)
+                .unwrap_or_else(|| "instantiation".to_string());
+            push(node, label);
         }
         let index_of = |target: ValueNode| nodes.iter().position(|node| *node == target);
         let arg_target = |arg: GArg| match arg {
@@ -1649,6 +2381,27 @@ impl ValueGraph {
             // A `Param` never enters the real registry's value graph (the cycle
             // check runs only on concrete named types).
             GArg::Scalar(_) | GArg::Nominal(_) | GArg::Collection(_) | GArg::Param(_) => None,
+        };
+        // The outgoing value-containment arguments of each minted instantiation,
+        // keyed by its image node: a struct's field types, an enum's payload leaves.
+        let inst_targets = |node: ValueNode| -> Option<Vec<GArg>> {
+            registry
+                .generics
+                .borrow()
+                .type_insts
+                .iter()
+                .find(|inst| match (node, inst.id) {
+                    (ValueNode::Record(a), TypeInstId::Record(b)) => a == b,
+                    (ValueNode::Enum(a), TypeInstId::Enum(b)) => a == b,
+                    _ => false,
+                })
+                .map(|inst| match &inst.body {
+                    InstBody::Struct(fields) => fields.iter().map(|(_, arg)| *arg).collect(),
+                    InstBody::Enum(variants) => variants
+                        .iter()
+                        .flat_map(|variant| variant.payload.iter().map(|(_, arg)| *arg))
+                        .collect(),
+                })
         };
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
         for (from, node) in nodes.iter().enumerate() {
@@ -1663,14 +2416,11 @@ impl ValueGraph {
                             .struct_by_type(*ty)
                             .map(|info| info.fields.iter().map(|field| field.ty).collect())
                     })
+                    .or_else(|| inst_targets(*node))
                     .unwrap_or_default(),
-                ValueNode::Enum(id) => match registry.generic_inst(*id) {
-                    Some(GenericInst::Option(arg)) => vec![arg],
-                    Some(GenericInst::Result(ok, err)) => vec![ok, err],
-                    // A user enum's payload leaves are bare scalars, so it has no
-                    // outgoing value-containment edges.
-                    None => Vec::new(),
-                },
+                // A concrete user enum's payload leaves are bare scalars (no edges); a
+                // generic enum instantiation's payloads come from its resolved body.
+                ValueNode::Enum(_) => inst_targets(*node).unwrap_or_default(),
             };
             for arg in targets {
                 if let Some(target) = arg_target(arg)
@@ -1727,40 +2477,25 @@ impl ValueGraph {
     }
 }
 
-/// The source-facing spelling of the value type a built-in instantiation denotes,
-/// used to label an `Option`/`Result` node in a reported value-type cycle.
-fn garg_arg_to_lty_spelling(registry: &TypeRegistry, inst: GenericInst) -> String {
-    match inst {
-        GenericInst::Option(arg) => format!("Option[{}]", garg_spelling(registry, arg)),
-        GenericInst::Result(ok, err) => format!(
-            "Result[{}, {}]",
-            garg_spelling(registry, ok),
-            garg_spelling(registry, err)
-        ),
-    }
-}
-
-/// The source spelling of a bare value-type argument for cycle labels.
-fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
+/// The source spelling of a bare value-type argument, recursing through nested
+/// generic instantiations. Shared by cycle labels and diagnostics.
+pub(crate) fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
     match arg {
         GArg::Scalar(scalar) => scalar.spelling().to_string(),
         GArg::Nominal(id) => registry.nominal(id).name.clone(),
         GArg::Struct(ty) => registry
-            .struct_by_type(ty)
-            .map(|info| info.name.clone())
+            .inst_spelling(TypeInstId::Record(ty))
+            .or_else(|| registry.struct_by_type(ty).map(|info| info.name.clone()))
             .or_else(|| {
                 registry
                     .by_name_for_type(ty)
                     .map(|record| record.name.clone())
             })
             .unwrap_or_else(|| "struct".to_string()),
-        GArg::Enum(id) => match registry.generic_inst(id) {
-            Some(inst) => garg_arg_to_lty_spelling(registry, inst),
-            None => registry
-                .enum_by_id(id)
-                .map(|info| info.name.clone())
-                .unwrap_or_else(|| "enum".to_string()),
-        },
+        GArg::Enum(id) => registry
+            .inst_spelling(TypeInstId::Enum(id))
+            .or_else(|| registry.enum_by_id(id).map(|info| info.name.clone()))
+            .unwrap_or_else(|| "enum".to_string()),
         GArg::Collection(idx) => registry.collection_spelling(idx),
         // A `Param` never enters the real registry's cycle labels; it only exists
         // in the discarded template-check draft.

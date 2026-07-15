@@ -134,11 +134,13 @@ type actually supports the constraint, so instantiating an order-constrained
 parameter with a type that has no order (such as `bool`) is a `check.type` error
 at the call site.
 
-Generic type parameters apply to functions only: there are no generic resources,
-places, or host imports, and a type parameter may not be a `Map` key. Because the
-call graph is acyclic, monomorphization always terminates; a bound
-(`check.instantiation_limit`) fails a program whose monomorphization would
-otherwise diverge.
+Type parameters also apply to `struct` and `enum` value types (see
+[Generic types](types-and-values.md#generic-types)); a function and a value type
+share one monomorphization mechanism and the same `supports` constraints. There are
+no generic resources, places, or host imports, and a type parameter may not be a
+`Map` key. Because the call and value-containment graphs are acyclic,
+monomorphization always terminates; a bound (`check.instantiation_limit`) fails a
+program whose monomorphization would otherwise diverge.
 
 ## Parameters Are By Value
 

@@ -486,22 +486,24 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
     );
     assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
 
+    // An identifier head carrying a `[...]` group parses as a generic application,
+    // whose canonical spelling separates arguments with `", "`.
     let function = parsed.file.function("f").expect("function f");
-    assert_eq!(function.params[0].ty.to_string(), "FutureBox[string,int]");
+    assert_eq!(function.params[0].ty.to_string(), "FutureBox[string, int]");
     assert_eq!(
         function
             .return_type
             .as_ref()
             .map(ToString::to_string)
             .as_deref(),
-        Some("FutureBox[string,int]")
+        Some("FutureBox[string, int]")
     );
 
     let book = parsed.file.resource("Book").expect("Book resource");
     let ResourceMember::Field(scores) = &book.members[0] else {
         panic!("expected scores field, got {:#?}", book.members[0]);
     };
-    assert_eq!(scores.keys[0].ty.to_string(), "FutureBox[string,int]");
+    assert_eq!(scores.keys[0].ty.to_string(), "FutureBox[string, int]");
     assert_eq!(scores.ty.to_string(), "sequence[]");
 }
 

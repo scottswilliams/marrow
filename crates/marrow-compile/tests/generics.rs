@@ -243,3 +243,178 @@ fn divergent_monomorphization_hits_the_instantiation_bound() {
         "{diagnostics:#?}"
     );
 }
+
+// --- user-definable generic value types (slice 3) ---
+
+/// A generic `struct` and `enum` are templates, not concrete image types: they mint
+/// nothing until used, and neither a template nor any of its instantiations is a
+/// stable export. The only exports are the monomorphic `pub` functions.
+#[test]
+fn generic_type_instantiations_mint_no_stable_identity() {
+    let compiled = compile_ok(
+        "module main\n\
+         \n\
+         struct Pair[A, B]\n\
+         \x20   first: A\n\
+         \x20   second: B\n\
+         \n\
+         enum Box[T]\n\
+         \x20   empty\n\
+         \x20   full(value: T)\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   const p = Pair(first: 1, second: \"x\")\n\
+         \x20   const q = Pair(first: true, second: 2)\n\
+         \x20   const b = Box::full(value: 9)\n\
+         \x20   return p.first\n",
+    );
+    let exports: Vec<&str> = compiled.exports.iter().map(|e| e.item.as_str()).collect();
+    assert_eq!(exports, vec!["run"]);
+}
+
+/// A generic struct field is read at the concrete substituted type; a wrong field
+/// name is a typed error against the instantiation, not a panic.
+#[test]
+fn a_generic_struct_field_is_typed_by_its_instantiation() {
+    let diagnostics = compile_err(
+        "module main\n\
+         \n\
+         struct Wrapper[T]\n\
+         \x20   value: T\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   const w = Wrapper(value: 3)\n\
+         \x20   return w.missing\n",
+    );
+    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+}
+
+/// A generic type's `supports order` constraint is revalidated at construction: an
+/// argument that does not support ordering is rejected.
+#[test]
+fn a_generic_type_constraint_is_revalidated_at_construction() {
+    let diagnostics = compile_err(
+        "module main\n\
+         \n\
+         struct Ordered[T supports order]\n\
+         \x20   lo: T\n\
+         \x20   hi: T\n\
+         \n\
+         struct Point\n\
+         \x20   x: int\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   const o = Ordered(lo: Point(x: 1), hi: Point(x: 2))\n\
+         \x20   return 0\n",
+    );
+    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+}
+
+/// A monomorphized generic type cycle (`Tree[int]` directly containing `Tree[int]`)
+/// is an ordinary value cycle per instantiation and is rejected as recursion at the
+/// template's declaration.
+#[test]
+fn a_generic_type_containing_itself_is_a_value_cycle() {
+    let diagnostics = compile_err(
+        "module main\n\
+         \n\
+         struct Tree[T]\n\
+         \x20   value: T\n\
+         \x20   child: Tree[T]\n\
+         \n\
+         fn useTree(t: Tree[int]): int\n\
+         \x20   return t.value\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   return 0\n",
+    );
+    assert!(
+        has_code(&diagnostics, "check.recursion"),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A cycle broken by a collection (`struct Node[T]` whose field is `List[Node[T]]`)
+/// is a finite value and is admitted: a list terminates, so it adds no containment
+/// edge.
+#[test]
+fn a_generic_type_cycle_through_a_collection_is_admitted() {
+    compile_ok(
+        "module main\n\
+         \n\
+         struct Node[T]\n\
+         \x20   value: T\n\
+         \x20   kids: List[Node[T]]\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   var kids: List[Node[int]] = List()\n\
+         \x20   const n = Node(value: 1, kids: kids)\n\
+         \x20   return n.value\n",
+    );
+}
+
+/// A generic type recursing over an ever-growing argument (`Grow[T]` whose field is
+/// `Grow[List[T]]`) diverges under monomorphization and hits the shared
+/// instantiation bound rather than looping.
+#[test]
+fn a_divergent_generic_type_hits_the_instantiation_bound() {
+    let diagnostics = compile_err(
+        "module main\n\
+         \n\
+         struct Grow[T]\n\
+         \x20   value: T\n\
+         \x20   next: Grow[List[T]]\n\
+         \n\
+         fn useGrow(g: Grow[int]): int\n\
+         \x20   return g.value\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   return 0\n",
+    );
+    assert!(
+        has_code(&diagnostics, "check.instantiation_limit"),
+        "{diagnostics:#?}"
+    );
+}
+
+/// `Option` and `Result` are ordinary generic enums the toolchain registers, not a
+/// built-in special case: a user cannot redeclare their reserved names.
+#[test]
+fn the_reserved_generic_names_cannot_be_redeclared() {
+    let diagnostics = compile_err(
+        "module main\n\
+         \n\
+         enum Option[T]\n\
+         \x20   nothing\n\
+         \x20   something(value: T)\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   return 0\n",
+    );
+    assert!(
+        has_code(&diagnostics, "check.name_conflict"),
+        "{diagnostics:#?}"
+    );
+}
+
+/// `Option[Option[int]]` is a distinct instantiation from `Option[int]`: the reserved
+/// generic enum monomorphizes by argument exactly like a user generic enum.
+#[test]
+fn nested_option_is_a_distinct_instantiation() {
+    compile_ok(
+        "module main\n\
+         \n\
+         pub fn run(): int\n\
+         \x20   const inner: Option[int] = some(1)\n\
+         \x20   const outer: Option[Option[int]] = some(inner)\n\
+         \x20   match outer\n\
+         \x20       none\n\
+         \x20           return 0\n\
+         \x20       some(v)\n\
+         \x20           match v\n\
+         \x20               none\n\
+         \x20                   return 0\n\
+         \x20               some(k)\n\
+         \x20                   return k\n",
+    );
+}

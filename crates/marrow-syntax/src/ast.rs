@@ -495,6 +495,10 @@ pub struct StructDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub name_span: SourceSpan,
+    /// Declared generic type parameters, `[T, U supports order]`, empty for an
+    /// ordinary monomorphic struct. A non-empty list makes the struct a template
+    /// monomorphized at each `Name[Args]` use.
+    pub type_params: Vec<TypeParamDecl>,
     pub members: Vec<ResourceMember>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
@@ -612,6 +616,10 @@ pub struct EnumDecl {
     pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
+    /// Declared generic type parameters, `[T, U supports order]`, empty for an
+    /// ordinary monomorphic enum. A non-empty list makes the enum a template
+    /// monomorphized at each `Name[Args]` use.
+    pub type_params: Vec<TypeParamDecl>,
     pub members: Vec<EnumMember>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
@@ -954,10 +962,10 @@ pub enum TypeExpr {
         span: SourceSpan,
     },
     /// A generic type application `Head[Arg, ...]`, spelled with the same bracket
-    /// syntax as `sequence[T]`. The current line resolves the built-in value types
-    /// `Option[T]`/`Result[T, E]` and the finite collection types `List[T]`/
-    /// `Map[K, V]`; a user-declared generic head is a later slice. `head` is the
-    /// applied name and `args` its type arguments in source order.
+    /// syntax as `sequence[T]`. The head is any identifier: the toolchain generics
+    /// `Option[T]`/`Result[T, E]`/`List[T]`/`Map[K, V]` or a user-declared generic
+    /// `struct`/`enum` template. `head` is the applied name and `args` its type
+    /// arguments in source order; the semantic owner resolves the head.
     Apply {
         head: String,
         args: Vec<TypeExpr>,

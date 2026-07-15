@@ -135,7 +135,10 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
 /// constraint (`Name supports equality` / `Name supports order`). An empty list,
 /// a missing name, a repeated `supports`, or an unknown capability is a pointed
 /// parse error so a malformed header does not silently drop type parameters.
-fn parse_type_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<TypeParamDecl>> {
+pub(super) fn parse_type_params_tokens(
+    source: &str,
+    inner: &[Token],
+) -> ParseResult<Vec<TypeParamDecl>> {
     if inner.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
@@ -222,7 +225,7 @@ fn parse_type_constraint(source: &str, token: &Token) -> ParseResult<TypeConstra
 }
 
 /// Index of the `]` matching the leading `[` of `tokens`, if balanced.
-fn match_bracket(tokens: &[Token]) -> Option<usize> {
+pub(super) fn match_bracket(tokens: &[Token]) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {

@@ -3,7 +3,7 @@
 //! and function declarations and delegates statement and expression parsing.
 
 use super::FunctionHead;
-use super::head::{parse_enum_head, parse_resource_head, parse_store_head};
+use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_struct_head};
 use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
@@ -703,11 +703,11 @@ impl<'a> DeclParser<'a> {
     fn parse_struct(&mut self, docs: Vec<String>) -> StructDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let (name, name_span) = match parse_resource_head(self.source, &header[1..]) {
+        let (name, name_span, type_params) = match parse_struct_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.report(span, error);
-                (String::new(), SourceSpan::default())
+                (String::new(), SourceSpan::default(), Vec::new())
             }
         };
         let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
@@ -725,6 +725,7 @@ impl<'a> DeclParser<'a> {
             docs,
             name,
             name_span,
+            type_params,
             members,
             comments,
             span,
@@ -766,11 +767,11 @@ impl<'a> DeclParser<'a> {
     fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let (public, name, name_span) = match parse_enum_head(self.source, header) {
+        let (public, name, name_span, type_params) = match parse_enum_head(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.report(span, error);
-                (false, String::new(), SourceSpan::default())
+                (false, String::new(), SourceSpan::default(), Vec::new())
             }
         };
         let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
@@ -795,6 +796,7 @@ impl<'a> DeclParser<'a> {
             public,
             name,
             name_span,
+            type_params,
             members,
             comments,
             span,

@@ -8,7 +8,6 @@
 //! and patched to instruction indices once the target position is known; the
 //! encoder rewrites indices to byte offsets.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
@@ -25,8 +24,8 @@ use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
-    CollSpec, GArg, GenericInst, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK,
-    SupportSet, TypeConstraint, TypeRegistry,
+    CollSpec, GArg, MAX_INSTANTIATIONS, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK,
+    SupportSet, TypeConstraint, TypeInstId, TypeRegistry,
 };
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
@@ -178,26 +177,16 @@ impl LTy {
             LTy::Record { optional, .. } => ("record".to_string(), optional),
             LTy::Struct { ty, optional } => (
                 records
-                    .struct_by_type(ty)
-                    .map(|info| info.name.clone())
+                    .inst_spelling(TypeInstId::Record(ty))
+                    .or_else(|| records.struct_by_type(ty).map(|info| info.name.clone()))
                     .unwrap_or_else(|| "struct".to_string()),
                 optional,
             ),
             LTy::Enum { ty, optional } => {
-                let base = match records.generic_inst(ty) {
-                    Some(GenericInst::Option(inner)) => {
-                        format!("Option[{}]", garg_spelling(inner, records))
-                    }
-                    Some(GenericInst::Result(ok, err)) => format!(
-                        "Result[{}, {}]",
-                        garg_spelling(ok, records),
-                        garg_spelling(err, records)
-                    ),
-                    None => records
-                        .enum_by_id(ty)
-                        .map(|info| info.name.clone())
-                        .unwrap_or_else(|| "enum".to_string()),
-                };
+                let base = records
+                    .inst_spelling(TypeInstId::Enum(ty))
+                    .or_else(|| records.enum_by_id(ty).map(|info| info.name.clone()))
+                    .unwrap_or_else(|| "enum".to_string());
                 (base, optional)
             }
             LTy::Collection { idx, optional } => (records.collection_spelling(idx), optional),
@@ -795,78 +784,11 @@ impl<'p> GenericTemplate<'p> {
     }
 }
 
-/// The maximum number of distinct generic instantiations one program may mint. A
-/// well-typed program with an acyclic call graph produces a finite set; this bound
-/// (campaign law 9) fails a divergent monomorphization — a generic that recurses
-/// into itself over an ever-growing type — with a typed check error before the
-/// worklist allocates unboundedly, rather than looping.
-const MAX_INSTANTIATIONS: usize = 4096;
-
-/// One monomorphized instance awaiting body lowering: its template, the concrete
-/// arguments substituted for the type parameters (in declaration order), and the
-/// image function index reserved for it.
-struct PendingInstance {
-    template: usize,
-    args: Vec<GArg>,
-    func: u16,
-}
-
-/// The single owner of generic instantiation identity: the concrete instances
-/// minted so far (deduped by template and argument list) and the queue of instances
-/// whose bodies are not yet lowered. Image function indices for instances start at
-/// `base` (the count of monomorphic functions plus tests) and are assigned in
-/// discovery order, so draining the queue in order adds them to the image in
-/// index order. Interior-mutable, so a shared `&RefCell<MonoState>` mints instances
-/// during body lowering exactly as the type registry mints built-in generics.
-pub(crate) struct MonoState {
-    base: u16,
-    /// `(template index, concrete args) -> reserved image function index`.
-    table: Vec<(usize, Vec<GArg>, u16)>,
-    queue: std::collections::VecDeque<PendingInstance>,
-}
-
-impl MonoState {
-    pub(crate) fn new(base: u16) -> Self {
-        MonoState {
-            base,
-            table: Vec::new(),
-            queue: std::collections::VecDeque::new(),
-        }
-    }
-
-    /// The reserved image function index for `(template, args)`, minting and enqueuing
-    /// a fresh instance on first request and reusing it thereafter. `None` once the
-    /// instantiation bound is exceeded.
-    fn instantiate(&mut self, template: usize, args: Vec<GArg>) -> Option<u16> {
-        if let Some((_, _, func)) = self
-            .table
-            .iter()
-            .find(|(t, a, _)| *t == template && *a == args)
-        {
-            return Some(*func);
-        }
-        if self.table.len() >= MAX_INSTANTIATIONS {
-            return None;
-        }
-        let func = self.base + self.table.len() as u16;
-        self.table.push((template, args.clone(), func));
-        self.queue.push_back(PendingInstance {
-            template,
-            args,
-            func,
-        });
-        Some(func)
-    }
-
-    /// The next instance awaiting body lowering: its template index, concrete
-    /// arguments, and reserved image function index. The driver drains these in
-    /// order, lowering each body (which may enqueue further instances).
-    pub(crate) fn next_pending(&mut self) -> Option<(usize, Vec<GArg>, u16)> {
-        self.queue
-            .pop_front()
-            .map(|pending| (pending.template, pending.args, pending.func))
-    }
-}
+// Generic instantiation identity — for functions and value types together — is
+// owned by the [`TypeRegistry`]'s single monomorphization table (see
+// `reserve_fn_instance`/`next_fn_pending`), keyed by `(template, args)` and bounded
+// by `MAX_INSTANTIATIONS`. The lowerer mints function instances through the shared
+// `records` registry, exactly as it mints generic type instantiations.
 
 /// Which lowering pass a body is in: an ordinary or instance body that emits an
 /// image function and monomorphizes its generic calls, or the once-checked template
@@ -900,9 +822,6 @@ pub(crate) struct FnLowerer<'a> {
     functions: &'a FunctionRegistry,
     /// The generic function templates, for resolving a generic call target.
     generics: &'a GenericRegistry<'a>,
-    /// The single instantiation owner, shared across every body so one concrete
-    /// application maps to one image function.
-    mono: &'a RefCell<MonoState>,
     consts: &'a ConstRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
     file: &'a str,
@@ -942,7 +861,6 @@ impl<'a> FnLowerer<'a> {
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
-        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -956,7 +874,6 @@ impl<'a> FnLowerer<'a> {
             durable,
             functions,
             generics,
-            mono,
             consts,
             diagnostics,
             file,
@@ -987,7 +904,6 @@ impl<'a> FnLowerer<'a> {
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
-        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -1000,7 +916,6 @@ impl<'a> FnLowerer<'a> {
             durable,
             functions,
             generics,
-            mono,
             consts,
             diagnostics,
             file,
@@ -1014,8 +929,8 @@ impl<'a> FnLowerer<'a> {
     /// Lower one monomorphized instance of a generic template: bind each type
     /// parameter to its concrete argument, then lower the template body exactly like
     /// an ordinary function into the real draft. The returned [`FuncId`] must equal
-    /// the index the [`MonoState`] reserved for this instance (asserted by the
-    /// driver), since instances are added to the image in the order they were minted.
+    /// the index the registry reserved for this instance (asserted by the driver),
+    /// since instances are added to the image in the order they were minted.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_instance(
         draft: &'a mut ImageDraft,
@@ -1023,7 +938,6 @@ impl<'a> FnLowerer<'a> {
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
-        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         template: &'a GenericTemplate<'a>,
@@ -1044,7 +958,6 @@ impl<'a> FnLowerer<'a> {
             durable,
             functions,
             generics,
-            mono,
             consts,
             diagnostics,
             &template.file,
@@ -1081,7 +994,6 @@ impl<'a> FnLowerer<'a> {
         // the emitted code land only in the discarded clones.
         let check_records = records.clone_for_generic_check();
         let mut throwaway = draft.clone();
-        let throwaway_mono = RefCell::new(MonoState::new(0));
         // Each parameter's position in this vector is its abstract `LTy::Param`
         // index, and its constraint is read back from here by `constraint_at`.
         let type_env = template
@@ -1098,7 +1010,6 @@ impl<'a> FnLowerer<'a> {
             durable,
             functions,
             generics,
-            &throwaway_mono,
             consts,
             diagnostics,
             file,
@@ -1120,7 +1031,6 @@ impl<'a> FnLowerer<'a> {
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
-        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -1157,7 +1067,6 @@ impl<'a> FnLowerer<'a> {
             durable,
             functions,
             generics,
-            mono,
             consts,
             diagnostics,
             file,
@@ -1244,7 +1153,6 @@ impl<'a> FnLowerer<'a> {
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
-        mono: &'a RefCell<MonoState>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         file: &'a str,
@@ -1258,7 +1166,6 @@ impl<'a> FnLowerer<'a> {
             durable,
             functions,
             generics,
-            mono,
             consts,
             diagnostics,
             file,
@@ -1981,48 +1888,18 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         };
         // The scrutinee's variants: member name plus payload type list, owned so the
-        // arm loop can borrow `self` mutably while resolving each arm. A built-in
-        // `Option`/`Result` supplies its fixed members and monomorphized payload
-        // types; a user `enum` reads them from the type registry.
-        let (enum_name, variants): (String, Vec<(String, Vec<LTy>)>) =
-            match self.records.generic_inst(enum_id) {
-                Some(GenericInst::Option(inner)) => (
-                    scrut_ty.spelling(self.records),
-                    vec![
-                        ("none".to_string(), Vec::new()),
-                        ("some".to_string(), vec![garg_to_lty(inner)]),
-                    ],
-                ),
-                Some(GenericInst::Result(ok, err)) => (
-                    scrut_ty.spelling(self.records),
-                    vec![
-                        ("ok".to_string(), vec![garg_to_lty(ok)]),
-                        ("err".to_string(), vec![garg_to_lty(err)]),
-                    ],
-                ),
-                None => {
-                    let info = self
-                        .records
-                        .enum_by_id(enum_id)
-                        .expect("a bare user enum resolves to enum info");
-                    (
-                        info.name.clone(),
-                        info.variants
-                            .iter()
-                            .map(|variant| {
-                                (
-                                    variant.name.clone(),
-                                    variant
-                                        .payload
-                                        .iter()
-                                        .map(|field| LTy::bare_scalar(field.scalar))
-                                        .collect(),
-                                )
-                            })
-                            .collect(),
-                    )
-                }
-            };
+        // arm loop can borrow `self` mutably while resolving each arm. A concrete
+        // user `enum`, a generic enum instantiation, and the reserved `Option`/
+        // `Result` (themselves generic enums) all supply their variants through the
+        // one enum-shape owner.
+        let enum_name = scrut_ty.spelling(self.records);
+        let variants: Vec<(String, Vec<LTy>)> = self
+            .records
+            .enum_variants(enum_id)
+            .expect("a bare enum value resolves to enum variants")
+            .into_iter()
+            .map(|(name, payload)| (name, payload.into_iter().map(garg_to_lty).collect()))
+            .collect();
 
         let scrut_slot = self.alloc_slot();
         self.push(Instr::LocalSet(scrut_slot), span);
@@ -3378,6 +3255,18 @@ impl<'a> FnLowerer<'a> {
             [enum_name, item] if self.records.enum_by_name(enum_name).is_some() => self
                 .lower_enum_construct(enum_name, item, args, span)
                 .map(CallResult::Value),
+            // A generic enum template's variant infers its instantiation from the
+            // payload values.
+            [enum_name, item]
+                if self
+                    .records
+                    .type_template_by_name(enum_name)
+                    .is_some_and(|t| self.records.template_is_enum(t)) =>
+            {
+                let template = self.records.type_template_by_name(enum_name).unwrap();
+                self.lower_generic_enum_construct(template, item, args, span)
+                    .map(CallResult::Value)
+            }
             [prefix @ .., item] => self.lower_qualified_call(prefix, item, args, span),
             [] => {
                 self.fail(unsupported(self.file, span, "this call"));
@@ -3467,6 +3356,14 @@ impl<'a> FnLowerer<'a> {
         if self.records.struct_by_name(name).is_some() {
             return self
                 .lower_struct_literal(name, args, span)
+                .map(CallResult::Value);
+        }
+        // A generic struct template infers its instantiation from the field values.
+        if let Some(template) = self.records.type_template_by_name(name)
+            && !self.records.template_is_enum(template)
+        {
+            return self
+                .lower_generic_struct_literal(template, args, span)
                 .map(CallResult::Value);
         }
         if self.records.by_name(name).is_some() {
@@ -3735,7 +3632,7 @@ impl<'a> FnLowerer<'a> {
                 })
             }
             LowerMode::Concrete => {
-                let func = match self.mono.borrow_mut().instantiate(template_index, concrete) {
+                let func = match self.records.reserve_fn_instance(template_index, concrete) {
                     Some(func) => func,
                     None => {
                         self.fail(SourceDiagnostic::at(
@@ -4034,6 +3931,276 @@ impl<'a> FnLowerer<'a> {
         })
     }
 
+    /// Lower a generic struct construction `Pair(first: v, second: w)`: infer each
+    /// type parameter from the field values (there is no explicit `Pair[int, string]`
+    /// construction syntax), monomorphize the instantiation, and construct the record.
+    /// Field values are lowered in declaration order so evaluation order is stable.
+    fn lower_generic_struct_literal(
+        &mut self,
+        template: usize,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let name = self.records.template_name(template).to_string();
+        let fields = self
+            .records
+            .template_struct_fields(template)
+            .expect("a struct template has struct fields");
+        if !self.check_named_args(
+            &name,
+            args,
+            &fields.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+            span,
+        ) {
+            return None;
+        }
+        let params = self.records.template_type_params(template).to_vec();
+        let mut subst: Vec<Option<GArg>> = vec![None; params.len()];
+        for (field_name, field_ty) in &fields {
+            let Some(argument) = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(field_name.as_str()))
+            else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("missing field `{field_name}`"),
+                ));
+                return None;
+            };
+            let got = self.lower_expr(&argument.value)?;
+            let expanded = self.records.expand(field_ty);
+            if let Err(message) =
+                unify_type_param(self.records, &params, &expanded, got, &mut subst)
+            {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    message,
+                ));
+                return None;
+            }
+        }
+        let concrete = self.determined_args(&name, &params, &subst, span)?;
+        if !self.constraints_satisfied(template, &name, &concrete, span) {
+            return None;
+        }
+        let TypeInstId::Record(type_id) = self
+            .records
+            .mint_type_instance(self.draft, template, &concrete)?
+        else {
+            return None;
+        };
+        self.push(Instr::RecordNew(type_id.index()), span);
+        Some(LTy::Struct {
+            ty: type_id,
+            optional: false,
+        })
+    }
+
+    /// Lower a generic enum construction `Maybe::just(value: v)`: infer each type
+    /// parameter from the variant's payload values, monomorphize the instantiation,
+    /// and construct the variant. A payloadless variant or one that does not
+    /// determine every parameter cannot be inferred at the construction site.
+    fn lower_generic_enum_construct(
+        &mut self,
+        template: usize,
+        variant_name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let name = self.records.template_name(template).to_string();
+        let Some(payload) = self
+            .records
+            .template_variant_payload(template, variant_name)
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!("enum `{name}` has no member `{variant_name}`"),
+            ));
+            return None;
+        };
+        if !self.check_named_args(
+            &format!("{name}::{variant_name}"),
+            args,
+            &payload.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+            span,
+        ) {
+            return None;
+        }
+        let params = self.records.template_type_params(template).to_vec();
+        let mut subst: Vec<Option<GArg>> = vec![None; params.len()];
+        for (field_name, field_ty) in &payload {
+            let Some(argument) = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(field_name.as_str()))
+            else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("missing payload field `{field_name}`"),
+                ));
+                return None;
+            };
+            let got = self.lower_expr(&argument.value)?;
+            let expanded = self.records.expand(field_ty);
+            if let Err(message) =
+                unify_type_param(self.records, &params, &expanded, got, &mut subst)
+            {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    message,
+                ));
+                return None;
+            }
+        }
+        let concrete = self.determined_args(&name, &params, &subst, span)?;
+        if !self.constraints_satisfied(template, &name, &concrete, span) {
+            return None;
+        }
+        let TypeInstId::Enum(enum_id) = self
+            .records
+            .mint_type_instance(self.draft, template, &concrete)?
+        else {
+            return None;
+        };
+        let variant_index = self
+            .records
+            .enum_variants(enum_id)
+            .and_then(|variants| variants.iter().position(|(v, _)| v == variant_name))?
+            as u16;
+        self.push(
+            Instr::EnumConstruct {
+                enum_idx: enum_id.index(),
+                variant: variant_index,
+            },
+            span,
+        );
+        Some(LTy::Enum {
+            ty: enum_id,
+            optional: false,
+        })
+    }
+
+    /// Validate that every argument is named, names a known field, and is set once.
+    /// Shared by generic struct and enum construction. Returns whether the arguments
+    /// are well-formed; each defect is reported.
+    fn check_named_args(
+        &mut self,
+        subject: &str,
+        args: &[Argument],
+        field_names: &[String],
+        _span: SourceSpan,
+    ) -> bool {
+        let mut ok = true;
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for argument in args {
+            let Some(arg_name) = &argument.name else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{subject}` fields are named, as `{subject}(field: value, ...)`"),
+                ));
+                ok = false;
+                continue;
+            };
+            if !field_names.iter().any(|name| name == arg_name) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{subject}` has no field `{arg_name}`"),
+                ));
+                ok = false;
+                continue;
+            }
+            if !seen.insert(arg_name.as_str()) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("field `{arg_name}` is set more than once"),
+                ));
+                ok = false;
+            }
+        }
+        ok
+    }
+
+    /// Per-application constraint revalidation for an inferred instantiation: every
+    /// concrete argument must support its parameter's constraint. Construction always
+    /// infers concrete arguments, so no abstract-parameter entailment applies here.
+    fn constraints_satisfied(
+        &mut self,
+        template: usize,
+        name: &str,
+        concrete: &[GArg],
+        span: SourceSpan,
+    ) -> bool {
+        for ((param_name, constraint), arg) in self
+            .records
+            .template_type_params(template)
+            .iter()
+            .zip(concrete)
+        {
+            if let Some(constraint) = constraint
+                && !arg.satisfies(*constraint)
+            {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "type parameter `{param_name}` of `{name}` is instantiated with `{}`, \
+                         which does not `supports {}`",
+                        garg_to_lty(*arg).spelling(self.records),
+                        constraint.spelling(),
+                    ),
+                ));
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Turn an inference substitution into the concrete argument list, reporting an
+    /// undetermined type parameter (which the construction site cannot resolve).
+    fn determined_args(
+        &mut self,
+        name: &str,
+        params: &[(String, Option<TypeConstraint>)],
+        subst: &[Option<GArg>],
+        span: SourceSpan,
+    ) -> Option<Vec<GArg>> {
+        let mut concrete = Vec::with_capacity(params.len());
+        for (slot, (param_name, _)) in subst.iter().zip(params) {
+            match slot {
+                Some(arg) => concrete.push(*arg),
+                None => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!(
+                            "cannot infer type parameter `{param_name}` of `{name}`; \
+                             a field value must determine it"
+                        ),
+                    ));
+                    return None;
+                }
+            }
+        }
+        Some(concrete)
+    }
+
     /// Lower an enum construction `Enum::member` or `Enum::member(field: v, ...)`.
     /// A payloadless member takes no arguments; a payload member takes the exact
     /// named payload set, each coerced to its declared scalar in payload
@@ -4153,15 +4320,17 @@ impl<'a> FnLowerer<'a> {
         })
     }
 
-    /// The image enum index of `Option[inner]`, minting it on first use.
+    /// The image enum index of the reserved `Option[inner]`, minting it on first use.
     fn opt_enum(&mut self, inner: GArg) -> EnumId {
-        self.records.instantiate_option(self.draft, inner)
+        self.records.instantiate_reserved_option(self.draft, inner)
     }
 
-    /// Lower a built-in `Option`/`Result` constructor directed by an expected type:
+    /// Lower a reserved `Option`/`Result` constructor directed by an expected type:
     /// `none`, `some(v)`, `ok(v)`, or `err(e)`. The expected type supplies the exact
     /// instantiation, so the argument (if any) is coerced to the matching member
-    /// type. A constructor used where its built-in is not expected is a typed error.
+    /// type. A constructor used where its reserved enum is not expected is a typed
+    /// error. `Option`/`Result` are ordinary generic enums; these reserved spellings
+    /// resolve to their variants recovered from the minting template.
     fn lower_ctor_as(&mut self, kind: CtorKind, expr: &Expression, expected: LTy) -> Option<()> {
         let span = expr.span();
         let LTy::Enum {
@@ -4181,8 +4350,10 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        match (kind, self.records.generic_inst(enum_id)) {
-            (CtorKind::None, Some(GenericInst::Option(_))) => {
+        let option_arg = self.records.as_option(enum_id);
+        let result_args = self.records.as_result(enum_id);
+        match (kind, option_arg, result_args) {
+            (CtorKind::None, Some(_), _) => {
                 self.push(
                     Instr::EnumConstruct {
                         enum_idx: enum_id.index(),
@@ -4192,7 +4363,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 Some(())
             }
-            (CtorKind::Some, Some(GenericInst::Option(inner))) => {
+            (CtorKind::Some, Some(inner), _) => {
                 let arg = self.single_ctor_arg(expr, "some")?;
                 self.lower_as(arg, garg_to_lty(inner))?;
                 self.push(
@@ -4204,7 +4375,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 Some(())
             }
-            (CtorKind::Ok, Some(GenericInst::Result(ok, _))) => {
+            (CtorKind::Ok, _, Some((ok, _))) => {
                 let arg = self.single_ctor_arg(expr, "ok")?;
                 self.lower_as(arg, garg_to_lty(ok))?;
                 self.push(
@@ -4216,7 +4387,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 Some(())
             }
-            (CtorKind::Err, Some(GenericInst::Result(_, err))) => {
+            (CtorKind::Err, _, Some((_, err))) => {
                 let arg = self.single_ctor_arg(expr, "err")?;
                 self.lower_as(arg, garg_to_lty(err))?;
                 self.push(
@@ -4320,8 +4491,8 @@ impl<'a> FnLowerer<'a> {
         let inner_ty = self.lower_expr(inner)?;
         let src = inner_ty
             .bare_enum()
-            .and_then(|id| self.records.generic_inst(id));
-        let Some(GenericInst::Result(t_arg, e_arg)) = src else {
+            .and_then(|id| self.records.as_result(id));
+        let Some((t_arg, e_arg)) = src else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -4337,8 +4508,8 @@ impl<'a> FnLowerer<'a> {
             RetType::Value(ty) => ty.bare_enum(),
             RetType::Unit => None,
         };
-        let ret_result = ret_id.and_then(|id| self.records.generic_inst(id).map(|inst| (id, inst)));
-        let Some((ret_id, GenericInst::Result(_, ret_err))) = ret_result else {
+        let ret_result = ret_id.and_then(|id| self.records.as_result(id).map(|args| (id, args)));
+        let Some((ret_id, (_, ret_err))) = ret_result else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -4443,20 +4614,36 @@ impl<'a> FnLowerer<'a> {
                 ty,
                 optional: false,
             } => {
-                let info = self
-                    .records
-                    .struct_by_type(ty)
-                    .expect("a bare struct type resolves to a struct info");
-                let Some((index, field)) = info.field(name) else {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        field_span,
-                        format!("`{}` has no field `{name}`", info.name),
-                    ));
-                    return None;
+                // A concrete struct reads its fields from the registry; a generic
+                // struct instantiation reads them from its resolved body.
+                if let Some(info) = self.records.struct_by_type(ty) {
+                    let Some((index, field)) = info.field(name) else {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            field_span,
+                            format!("`{}` has no field `{name}`", info.name),
+                        ));
+                        return None;
+                    };
+                    return Some((index, field.ty, field.required));
+                }
+                let fields = match self.records.type_inst_body(TypeInstId::Record(ty)) {
+                    Some(crate::types::InstBody::Struct(fields)) => fields,
+                    _ => panic!("a bare struct type resolves to a struct info or instantiation"),
                 };
-                Some((index, field.ty, field.required))
+                match fields.iter().position(|(fname, _)| fname == name) {
+                    Some(index) => Some((index as u16, fields[index].1, true)),
+                    None => {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            field_span,
+                            format!("`{}` has no field `{name}`", base_ty.spelling(self.records)),
+                        ));
+                        None
+                    }
+                }
             }
             _ => {
                 self.fail(SourceDiagnostic::at(
@@ -5289,11 +5476,14 @@ fn resolve_expanded(
     }
 }
 
-/// Resolve a built-in generic application `Option[T]`/`Result[T, E]` to a bare
-/// enum instantiation, monomorphizing it into the draft on first use. A wrong
-/// arity or an argument that is not a value type (an optional or the resource
-/// record) yields `None`, so the caller reports it as an unsupported type. A
-/// user-defined generic head is a later slice and resolves to `None` here.
+/// Resolve a generic type application to a bare instantiation, monomorphizing it
+/// into the draft on first use. `List`/`Map` are the compiler collections; every
+/// other head is a value-type template (the reserved `Option`/`Result` or a user
+/// `struct`/`enum`) resolved through the one instantiation owner. A wrong arity, an
+/// argument that is not a value type, or a constraint violation yields `None`, so
+/// the caller reports it as an unsupported type. An argument may itself be an
+/// abstract type parameter in the once-checked template pass; its constraint then
+/// stands in for the concrete one during revalidation.
 fn resolve_generic(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
@@ -5302,23 +5492,6 @@ fn resolve_generic(
     env: TypeEnv,
 ) -> Option<LTy> {
     match head {
-        "Option" => {
-            let [arg] = args else { return None };
-            let inner = resolve_expanded(records, draft, arg, env)?.as_garg()?;
-            Some(LTy::Enum {
-                ty: records.instantiate_option(draft, inner),
-                optional: false,
-            })
-        }
-        "Result" => {
-            let [ok, err] = args else { return None };
-            let ok = resolve_expanded(records, draft, ok, env)?.as_garg()?;
-            let err = resolve_expanded(records, draft, err, env)?.as_garg()?;
-            Some(LTy::Enum {
-                ty: records.instantiate_result(draft, ok, err),
-                optional: false,
-            })
-        }
         "List" => {
             let [elem] = args else { return None };
             let elem = resolve_expanded(records, draft, elem, env)?.as_garg()?;
@@ -5342,7 +5515,49 @@ fn resolve_generic(
                 optional: false,
             })
         }
-        _ => None,
+        _ => {
+            let template = records.type_template_by_name(head)?;
+            let params = records.template_type_params(template);
+            if args.len() != params.len() {
+                return None;
+            }
+            let mut resolved = Vec::with_capacity(args.len());
+            for arg in args {
+                resolved.push(resolve_expanded(records, draft, arg, env)?.as_garg()?);
+            }
+            // Per-application constraint revalidation: a concrete argument must
+            // support the constraint; an abstract parameter satisfies it when its own
+            // declared constraint does.
+            for ((_, constraint), arg) in
+                records.template_type_params(template).iter().zip(&resolved)
+            {
+                if let Some(constraint) = constraint {
+                    let satisfied = match arg {
+                        GArg::Param(index) => {
+                            env.constraint_at(*index)
+                                .is_some_and(|outer| match constraint {
+                                    TypeConstraint::Equality => outer.admits_equality(),
+                                    TypeConstraint::Order => outer.admits_order(),
+                                })
+                        }
+                        other => other.satisfies(*constraint),
+                    };
+                    if !satisfied {
+                        return None;
+                    }
+                }
+            }
+            match records.mint_type_instance(draft, template, &resolved)? {
+                TypeInstId::Record(ty) => Some(LTy::Struct {
+                    ty,
+                    optional: false,
+                }),
+                TypeInstId::Enum(id) => Some(LTy::Enum {
+                    ty: id,
+                    optional: false,
+                }),
+            }
+        }
     }
 }
 
@@ -5467,32 +5682,42 @@ fn unify_apply(
                 CollSpec::List { .. } => Err(mismatch("Map")),
             }
         }
-        "Option" => {
-            let [inner] = args else {
-                return Err("`Option` takes one type argument".to_string());
-            };
-            match got.bare_enum().and_then(|id| records.generic_inst(id)) {
-                Some(GenericInst::Option(arg)) => {
-                    unify_type_param(records, type_params, inner, garg_to_lty(arg), subst)
-                }
-                _ => Err(mismatch("Option")),
+        // Every other generic head is a value-type template (the reserved
+        // `Option`/`Result` or a user `struct`/`enum`): the argument must be an
+        // instantiation of the same template, and each type argument unifies
+        // positionally against its parameter.
+        _ => {
+            let template = records
+                .type_template_by_name(head)
+                .ok_or_else(|| format!("`{head}` is not a generic type usable in a parameter"))?;
+            if args.len() != records.template_type_params(template).len() {
+                return Err(format!(
+                    "`{head}` takes {} type argument(s)",
+                    records.template_type_params(template).len()
+                ));
             }
-        }
-        "Result" => {
-            let [ok, err] = args else {
-                return Err("`Result` takes two type arguments".to_string());
+            let inst_id = match got {
+                LTy::Struct {
+                    ty,
+                    optional: false,
+                } => TypeInstId::Record(ty),
+                LTy::Enum {
+                    ty,
+                    optional: false,
+                } => TypeInstId::Enum(ty),
+                _ => return Err(mismatch(head)),
             };
-            match got.bare_enum().and_then(|id| records.generic_inst(id)) {
-                Some(GenericInst::Result(ok_arg, err_arg)) => {
-                    unify_type_param(records, type_params, ok, garg_to_lty(ok_arg), subst)?;
-                    unify_type_param(records, type_params, err, garg_to_lty(err_arg), subst)
-                }
-                _ => Err(mismatch("Result")),
+            let (got_template, got_args) = records
+                .instantiation_of(inst_id)
+                .ok_or_else(|| mismatch(head))?;
+            if got_template != template {
+                return Err(mismatch(head));
             }
+            for (arg, got_arg) in args.iter().zip(&got_args) {
+                unify_type_param(records, type_params, arg, garg_to_lty(*got_arg), subst)?;
+            }
+            Ok(())
         }
-        _ => Err(format!(
-            "`{head}` is not a generic type usable in a parameter"
-        )),
     }
 }
 

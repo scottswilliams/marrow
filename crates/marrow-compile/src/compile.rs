@@ -6,7 +6,6 @@
 //! outside the current subset is a typed `check.unsupported` diagnostic, never a
 //! silent drop.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
@@ -21,8 +20,7 @@ use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    FnLowerer, FunctionRegistry, GenericRegistry, MonoState, is_reserved_builtin_name,
-    reserved_builtin_name,
+    FnLowerer, FunctionRegistry, GenericRegistry, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::TypeRegistry;
 
@@ -402,7 +400,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         0
     };
     let base = signatures.concrete_count() + test_count;
-    let mono = RefCell::new(MonoState::new(base));
+    records.set_fn_base(base);
 
     // Lower each function, in the same order the registry assigned indices, minting
     // an export for each public function from its declaration path and recording its
@@ -425,7 +423,6 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                         &durable,
                         &signatures,
                         &generics,
-                        &mono,
                         &constants,
                         &mut diagnostics,
                         &module.file,
@@ -518,7 +515,6 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     &durable,
                     &signatures,
                     &generics,
-                    &mono,
                     &constants,
                     &mut diagnostics,
                     &module.file,
@@ -550,18 +546,12 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
 
     // Drain the generic instantiation worklist: lower each monomorphized instance's
     // body into the image, in the order the instances were minted (so each instance's
-    // image index equals the one the `MonoState` reserved). Lowering an instance body
+    // image index equals the one the registry reserved). Lowering an instance body
     // may mint further instances, which the loop continues to drain. Only run when the
     // monomorphic pass is clean, so every function and test has already consumed its
     // image index and instances append after them.
     if diagnostics.is_empty() {
-        loop {
-            // Bind the pop to its own statement so the `borrow_mut` is released
-            // before lowering the instance body, which itself borrows the mono state.
-            let next = mono.borrow_mut().next_pending();
-            let Some((template_index, args, reserved)) = next else {
-                break;
-            };
+        while let Some((template_index, args, reserved)) = records.next_fn_pending() {
             let template = &generics.templates()[template_index];
             let Some(result) = FnLowerer::lower_instance(
                 &mut draft,
@@ -569,7 +559,6 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 &durable,
                 &signatures,
                 &generics,
-                &mono,
                 &constants,
                 &mut diagnostics,
                 template,
@@ -591,6 +580,14 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             });
         }
     }
+
+    // Report any diagnostics recorded while minting generic type instantiations
+    // (the shared instantiation limit) and reject a value-containment cycle over the
+    // full set of concrete types and generic instantiations minted anywhere (a
+    // monomorphized `Tree[int]` containing `Tree[int]` is an ordinary record cycle),
+    // now that every field and body annotation has been resolved.
+    diagnostics.extend(records.take_generic_diagnostics());
+    crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics);
 
     // The compiled subset does not admit recursion: the direct-call graph must be
     // acyclic. Reported at check time so the source carries the diagnostic. The

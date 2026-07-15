@@ -35,11 +35,17 @@ fn a_scalar_or_named_spelling_is_a_name() {
 }
 
 #[test]
-fn a_bracket_or_paren_bearing_name_stays_a_name() {
-    // Only `sequence[...]` and `Id(^root)` are recognized forms; any other name
-    // that carries a group is an unresolvable name the checker reports, not a
-    // structural sequence or identity.
-    assert!(matches!(field_type("Foo[bar]"), TypeExpr::Name { text, .. } if text == "Foo[bar]"));
+fn a_bracket_bearing_name_is_a_generic_application() {
+    // Any identifier head carrying a `[...]` group is a generic type application
+    // (`Option[T]`, `List[T]`, or a user `struct`/`enum` template); the semantic
+    // owner resolves the head, so the parser accepts an arbitrary one. A
+    // paren-bearing name is not an application: it stays an unresolvable name the
+    // checker reports.
+    let TypeExpr::Apply { head, args, .. } = field_type("Foo[bar]") else {
+        panic!("expected a generic application for `Foo[bar]`");
+    };
+    assert_eq!(head, "Foo");
+    assert!(matches!(args.as_slice(), [TypeExpr::Name { text, .. }] if text == "bar"));
     assert!(matches!(field_type("Foo(bar)"), TypeExpr::Name { text, .. } if text == "Foo(bar)"));
 }
 
