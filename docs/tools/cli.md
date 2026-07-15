@@ -58,7 +58,7 @@ manifest or source tree is invalid reports the matching `config.invalid` or
 ## `marrow run`
 
 ```text
-marrow run <export> [--store <path>] [--format text | jsonl] [-- <args>...]
+marrow run <export> [--format text | jsonl] [-- <args>...]
 ```
 
 Runs one exported (`pub fn`) function of the [project](projects.md) at the
@@ -68,19 +68,21 @@ export; the compiler opens no store and cannot mint a verified image. Arguments
 after `--` are decoded positionally against the export's scalar parameter types
 (`int`, `bool`, `string`).
 
-An export that reads or writes durable data requires `--store <path>`, an
-ordered-byte store that `run` opens (creating it on first write). A mutating
-export runs inside its single transaction; a read-only export observes one
-pinned snapshot. When the export has no durable demand, `--store` is unnecessary
-and unused.
+Only a storeless export runs. A durable export — one whose verified demand reads
+or writes durable data — compiles, verifies, and completes its durable identity,
+but durable execution is in the trough: the CLI no longer opens a store in
+process, so a durable `run` reports the typed `cli.durable_unsupported` outcome
+(exit `1`) rather than executing. Durable execution returns as the
+ephemeral-memory preview and later the persistent companion path; see
+[Project status](../status.md).
 
 When a fresh durable declaration has no identity in the project's
-[identity ledger](projects.md#the-identity-ledger), `run` mints one from OS
+[identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
 entropy and publishes the updated `marrow.ids` atomically before compiling
-again — commit that file. This convenience is `run`-only (every other command
-fails precisely with `check.durable_identity`) and is superseded by the
-accepted change-review `apply` action when that lane lands; a retired identity
-is never minted over.
+again — commit that file — and then parks the durable export. This convenience is
+`run`-only (every other command fails precisely with `check.durable_identity`)
+and is superseded by the accepted change-review `apply` action when that lane
+lands; a retired identity is never minted over.
 
 Output is text by default — the returned value, or `absent` for a vacant
 optional. `--format jsonl` prints one canonical JSON object: an outcome of
@@ -89,8 +91,9 @@ four failure families distinct. A source diagnostic (`check.*`, `parse.*`), an
 image rejection (`image.*`), a source-mapped runtime fault (`run.*`), and an
 operational error (`store.*`, `io.*`) never collapse into one another.
 
-Exit `0` carries the value; exit `1` is any failure family; exit `2` is a usage
-error (an unknown export, a bad argument, or a missing `--store`).
+Exit `0` carries the value; exit `1` is any failure family (including a durable
+export parked in the trough); exit `2` is a usage error (an unknown export or a
+bad argument).
 
 ## `marrow test`
 

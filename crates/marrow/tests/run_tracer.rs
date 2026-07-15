@@ -985,8 +985,13 @@ fn direct_self_recursion_is_a_check_time_diagnostic() {
     );
 }
 
-// --- Durable tracer (slices K.6/K.7): the counter CLI travels the full path
-// through redb, and a store written by one process is read by the next. ---
+// --- Durable tracer (D00): the durable-run trough. The CLI compiles, verifies,
+// and completes the identity of a durable program, but T01's in-process `--store`
+// open died at D00, so a durable `run` reports the typed `cli.durable_unsupported`
+// trough outcome rather than executing. Durable execution returns as the
+// ephemeral-memory preview (E01); the persistent terminal path — one process
+// writing a store, a fresh process reading it back — returns at F02b over the
+// companion runner, and its end-to-end CLI restart gate returns with it. ---
 
 const COUNTER_SOURCE: &str = "resource Counter\n\
      \x20   required value: int\n\
@@ -999,158 +1004,46 @@ const COUNTER_SOURCE: &str = "resource Counter\n\
      \x20       ^counters(name) = Counter(value: v)\n\
      \n\
      pub fn get(name: string): int?\n\
-     \x20   return ^counters(name).value\n\
-     \n\
-     pub fn bump(name: string)\n\
-     \x20   transaction\n\
-     \x20       const current = ^counters(name).value ?? 0\n\
-     \x20       ^counters(name).value = current + 1\n\
-     \n\
-     pub fn label(name: string, text: string)\n\
-     \x20   transaction\n\
-     \x20       ^counters(name).label = text\n\
-     \n\
-     pub fn remove(name: string)\n\
-     \x20   transaction\n\
-     \x20       delete ^counters(name)\n\
-     \n\
-     pub fn total(): int\n\
-     \x20   var sum = 0\n\
-     \x20   for k in ^counters\n\
-     \x20       sum = sum + (^counters(k).value ?? 0)\n\
-     \x20   return sum\n";
+     \x20   return ^counters(name).value\n";
 
-fn run_counter(dir: &Path, store: &Path, export: &str, call: &[&str]) -> Output {
-    let mut args = vec!["run", export, "--store"];
-    let store = store.to_str().expect("utf-8 store path");
-    args.push(store);
-    args.push("--");
-    args.extend_from_slice(call);
-    run_in(dir, &args)
-}
+/// A durable export compiles, verifies, mints its identity, and then parks: the
+/// CLI reports the typed `cli.durable_unsupported` trough outcome and never opens
+/// a store. The reads-or-writes export reaches this only after the whole pipeline
+/// (capture → compile → verify → resolve) succeeded, so a park is positive
+/// evidence the durable image is well-formed and identity-complete.
+#[test]
+fn a_durable_export_parks_in_the_trough() {
+    let temp = TempDir::new("counter-trough");
+    project(&temp, COUNTER_SOURCE);
 
-fn stdout_of(output: &Output) -> String {
+    // A read-only durable export: `run` mints the fresh identities, then parks.
+    let get = run_in(&temp, &["run", "get", "--format", "jsonl", "--", "hits"]);
+    assert!(!get.status.success(), "a durable run parks: {get:?}");
+    let out = String::from_utf8_lossy(&get.stdout);
+    assert!(out.contains(r#""outcome":"error""#), "{get:?}");
+    assert!(out.contains("cli.durable_unsupported"), "{get:?}");
     assert!(
-        output.status.success(),
-        "run failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        temp.join("marrow.ids").exists(),
+        "the mint pre-pass published marrow.ids before parking"
     );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
 
-#[test]
-fn durable_set_then_get_round_trips_on_redb() {
-    let temp = TempDir::new("counter-set-get");
-    project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-
-    stdout_of(&run_counter(&temp, &store, "set", &["hits", "5"]));
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
-        "5\n"
+    // A mutating durable export parks the same way.
+    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    assert!(!set.status.success(), "{set:?}");
+    assert!(
+        String::from_utf8_lossy(&set.stdout).contains("cli.durable_unsupported"),
+        "{set:?}"
     );
 }
 
+/// `--store` no longer names a CLI open path: it died at D00 and returns at F02b.
+/// Until then it is an unknown option, a usage error before the command body.
 #[test]
-fn durable_full_algebra_travels_the_path() {
-    let temp = TempDir::new("counter-algebra");
+fn the_store_flag_is_gone() {
+    let temp = TempDir::new("counter-store-flag");
     project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-
-    // A read of an absent entry is absent.
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
-        "absent\n"
-    );
-    // Bump creates the entry (field-by-field creation at commit).
-    stdout_of(&run_counter(&temp, &store, "bump", &["hits"]));
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
-        "1\n"
-    );
-    // A sparse field write leaves the required value intact.
-    stdout_of(&run_counter(&temp, &store, "label", &["hits", "primary"]));
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
-        "1\n"
-    );
-    // Erase removes the whole entry.
-    stdout_of(&run_counter(&temp, &store, "remove", &["hits"]));
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "get", &["hits"])),
-        "absent\n"
-    );
-}
-
-/// The exit gate: one process writes and exits; a fresh process reads the same
-/// redb file back. Each `run_counter` spawns the built binary anew.
-#[test]
-fn a_store_survives_a_process_restart() {
-    let temp = TempDir::new("counter-restart");
-    project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-
-    // First process: write and exit.
-    stdout_of(&run_counter(&temp, &store, "set", &["visits", "41"]));
-    stdout_of(&run_counter(&temp, &store, "bump", &["visits"]));
-
-    // Second process: read it back.
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "get", &["visits"])),
-        "42\n"
-    );
-}
-
-#[test]
-fn a_durable_export_without_a_store_is_a_usage_error() {
-    let temp = TempDir::new("counter-nostore");
-    project(&temp, COUNTER_SOURCE);
-    let output = run_in(&temp, &["run", "get", "--", "hits"]);
+    let output = run_in(&temp, &["run", "get", "--store", "s", "--", "hits"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
-}
-
-#[test]
-fn durable_iteration_totals_entries() {
-    let temp = TempDir::new("counter-total");
-    project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-    stdout_of(&run_counter(&temp, &store, "set", &["a", "10"]));
-    stdout_of(&run_counter(&temp, &store, "set", &["b", "20"]));
-    stdout_of(&run_counter(&temp, &store, "set", &["c", "30"]));
-    let output = run_in(&temp, &["run", "total", "--store", store.to_str().unwrap()]);
-    assert_eq!(stdout_of(&output), "60\n");
-}
-
-/// The frozen closed orderable durable-key set (D00) admits `date` as a key. A
-/// `date`-keyed store round-trips through the full production path and redb, the
-/// key encoded by the order-preserving key codec the kernel already owns.
-const DATE_STORE_SOURCE: &str = "resource Event\n\
-     \x20   required name: string\n\
-     \n\
-     store ^events(day: date): Event\n\
-     \n\
-     pub fn record(day: date, name: string)\n\
-     \x20   transaction\n\
-     \x20       ^events(day) = Event(name: name)\n\
-     \n\
-     pub fn nameOn(day: date): string?\n\
-     \x20   return ^events(day).name\n";
-
-#[test]
-fn a_date_keyed_store_round_trips_on_redb() {
-    let temp = TempDir::new("date-store");
-    project(&temp, DATE_STORE_SOURCE);
-    let store = temp.join("store");
-    stdout_of(&run_counter(
-        &temp,
-        &store,
-        "record",
-        &["2024-01-15", "launch"],
-    ));
-    assert_eq!(
-        stdout_of(&run_counter(&temp, &store, "nameOn", &["2024-01-15"])),
-        "launch\n"
-    );
 }
 
 /// `duration` is a span, not an identity, so it is not in the durable-key set: a
@@ -1171,24 +1064,16 @@ fn a_duration_keyed_store_is_a_source_diagnostic() {
     assert!(run_diagnostic_code(&temp, "get").contains("check.type"));
 }
 
-/// The checked-in tracer fixture app compiles and runs through the built binary.
+/// The checked-in tracer fixture stays a compile/verify/identity fixture: its
+/// committed `marrow.ids` is complete, so a durable export travels the full
+/// pipeline and parks in the trough (its runtime journey returns at E01/F02b).
 #[test]
-fn tracer_fixture_app_runs() {
+fn tracer_fixture_compiles_verifies_and_parks() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/v01/conformance/tracer_counter");
-    let store = TempDir::new("fixture-store");
-    let store_path = store.join("s");
-    let store_arg = store_path.to_str().unwrap();
-    let set = run_in(
-        &fixture,
-        &["run", "set", "--store", store_arg, "--", "hits", "9"],
-    );
-    assert!(set.status.success(), "{set:?}");
-    let bump = run_in(
-        &fixture,
-        &["run", "bump", "--store", store_arg, "--", "hits"],
-    );
-    assert!(bump.status.success(), "{bump:?}");
-    let total = run_in(&fixture, &["run", "total", "--store", store_arg]);
-    assert_eq!(stdout_of(&total), "10\n");
+    let output = run_in(&fixture, &["run", "get", "--format", "jsonl", "--", "hits"]);
+    assert!(!output.status.success(), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains(r#""outcome":"error""#), "{output:?}");
+    assert!(out.contains("cli.durable_unsupported"), "{output:?}");
 }

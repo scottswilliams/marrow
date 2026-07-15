@@ -70,7 +70,7 @@ pub struct InvocationGrant {
 }
 
 impl InvocationGrant {
-    /// A full grant on the store (T01 `--store` default).
+    /// A full grant on the store.
     pub fn full_store() -> Self {
         Self {
             read: true,

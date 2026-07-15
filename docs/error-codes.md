@@ -107,11 +107,14 @@ Formatter refusals.
 
 ### `cli.*` — kind `tooling`
 
-Commands recognized but not yet available on this beta line.
+Capabilities the CLI recognizes but cannot yet serve on this beta line: a command
+whose owning capability is being refounded, and a durable `marrow run` whose
+execution is in the trough.
 
 | Code | Meaning |
 |---|---|
 | `cli.command_unsupported` | A command name is recognized but not yet available on this beta line: its owning capability is being refounded and returns through a later lane. `marrow fmt`, `marrow --version`, and `marrow --help` are the currently available commands. |
+| `cli.durable_unsupported` | `marrow run` resolved a durable export — one whose verified demand reads or writes durable data — that the beta line cannot yet execute. The export compiled, independently verified, and completed its durable identity, but the CLI no longer opens a store in process (T01's in-process open ended at D00, where the durable-run trough begins). Durable execution returns as the ephemeral-memory preview and later the persistent companion path. A storeless export is unaffected. |
 
 ### `check.*` — kind `check`
 

@@ -138,28 +138,24 @@ fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
 // --- The `marrow run` convenience mint (the one interim mint action; deleted
 // when the accepted apply action lands at F03). ---
 
-/// `marrow run` mints the missing identities from OS entropy, publishes a
-/// well-formed `marrow.ids`, and a second run reuses the artifact byte-for-byte
-/// (mint fires only for a genuinely new declaration).
+/// `marrow run` mints the missing identities from OS entropy and publishes a
+/// well-formed `marrow.ids` before the durable export parks in the trough, and a
+/// second run reuses the artifact byte-for-byte: the mint pass is the only writer
+/// and re-running on a complete ledger is a no-op (mint fires only for a genuinely
+/// new declaration).
 #[test]
 fn run_mints_missing_identities_once_and_reuses_them() {
     let temp = TempDir::new("run-mints");
     project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
 
-    let set = run_in(
-        &temp,
-        &[
-            "run",
-            "set",
-            "--store",
-            store.to_str().unwrap(),
-            "--",
-            "hits",
-            "5",
-        ],
+    // The durable export parks in the trough, but the mint pre-pass publishes
+    // marrow.ids from OS entropy first.
+    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    assert!(
+        combined(&set).contains("cli.durable_unsupported"),
+        "a durable run parks in the trough: {}",
+        combined(&set)
     );
-    assert!(set.status.success(), "{set:?}");
     let published = fs::read(temp.join("marrow.ids")).expect("run published marrow.ids");
     let text = String::from_utf8(published.clone()).expect("artifact is UTF-8");
     assert!(text.starts_with("marrow ids v0\n"), "header: {text}");
@@ -182,19 +178,15 @@ fn run_mints_missing_identities_once_and_reuses_them() {
         "no temp file survives a successful publication"
     );
 
-    let get = run_in(
-        &temp,
-        &[
-            "run",
-            "get",
-            "--store",
-            store.to_str().unwrap(),
-            "--",
-            "hits",
-        ],
+    // A second durable run finds a complete ledger: it mints nothing and leaves the
+    // committed artifact byte-identical (re-running on a complete ledger is a no-op),
+    // before parking in the trough again.
+    let get = run_in(&temp, &["run", "get", "--", "hits"]);
+    assert!(
+        combined(&get).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&get)
     );
-    assert!(get.status.success(), "{get:?}");
-    assert_eq!(String::from_utf8_lossy(&get.stdout), "5\n");
     assert_eq!(
         fs::read(temp.join("marrow.ids")).unwrap(),
         published,
@@ -209,20 +201,13 @@ fn run_mints_missing_identities_once_and_reuses_them() {
 fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
     let temp = TempDir::new("clone-src");
     project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-    let set = run_in(
-        &temp,
-        &[
-            "run",
-            "set",
-            "--store",
-            store.to_str().unwrap(),
-            "--",
-            "hits",
-            "1",
-        ],
+    // The durable export parks, but its mint pre-pass publishes the committed ids.
+    let set = run_in(&temp, &["run", "set", "--", "hits", "1"]);
+    assert!(
+        combined(&set).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&set)
     );
-    assert!(set.status.success(), "{set:?}");
     let committed = fs::read(temp.join("marrow.ids")).expect("committed artifact");
 
     // Clone: manifest, source, and marrow.ids — no store, as a checkout would be.
@@ -238,24 +223,16 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
     fs::write(clone.join("marrow.ids"), &committed).expect("clone the artifact");
 
     // The storeless CI path compiles and passes in the clone (identity is
-    // complete from the committed artifact alone), and run works against a
-    // fresh store — with the artifact untouched in both.
+    // complete from the committed artifact alone), and a durable run parks in the
+    // trough — with the artifact untouched in both.
     let test = run_in(&clone, &["test"]);
     assert!(test.status.success(), "{test:?}");
-    let clone_store = clone.join("store");
-    let run = run_in(
-        &clone,
-        &[
-            "run",
-            "set",
-            "--store",
-            clone_store.to_str().unwrap(),
-            "--",
-            "hits",
-            "2",
-        ],
+    let run = run_in(&clone, &["run", "set", "--", "hits", "2"]);
+    assert!(
+        combined(&run).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&run)
     );
-    assert!(run.status.success(), "{run:?}");
     assert_eq!(
         fs::read(clone.join("marrow.ids")).unwrap(),
         committed,
@@ -270,20 +247,13 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
 fn conflicted_and_double_minted_artifacts_reject_whole() {
     let temp = TempDir::new("merge-conflict");
     project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-    let seeded = run_in(
-        &temp,
-        &[
-            "run",
-            "set",
-            "--store",
-            store.to_str().unwrap(),
-            "--",
-            "hits",
-            "1",
-        ],
+    // The durable run parks, but its mint pre-pass seeds a well-formed marrow.ids.
+    let seeded = run_in(&temp, &["run", "set", "--", "hits", "1"]);
+    assert!(
+        combined(&seeded).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&seeded)
     );
-    assert!(seeded.status.success(), "{seeded:?}");
     let good = fs::read_to_string(temp.join("marrow.ids")).unwrap();
 
     // Unresolved Git conflict markers.
@@ -329,20 +299,13 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
 fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
     let temp = TempDir::new("torn");
     project(&temp, COUNTER_SOURCE);
-    let store = temp.join("store");
-    let seeded = run_in(
-        &temp,
-        &[
-            "run",
-            "set",
-            "--store",
-            store.to_str().unwrap(),
-            "--",
-            "hits",
-            "1",
-        ],
+    // The durable run parks, but its mint pre-pass seeds a well-formed marrow.ids.
+    let seeded = run_in(&temp, &["run", "set", "--", "hits", "1"]);
+    assert!(
+        combined(&seeded).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&seeded)
     );
-    assert!(seeded.status.success(), "{seeded:?}");
     let good = fs::read_to_string(temp.join("marrow.ids")).unwrap();
 
     let torn = good.replace("end\n", "");
@@ -385,19 +348,7 @@ fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
                end\n";
     fs::write(temp.join("marrow.ids"), ids).unwrap();
 
-    let store = temp.join("store");
-    for command in [
-        &["test"][..],
-        &[
-            "run",
-            "set",
-            "--store",
-            store.to_str().unwrap(),
-            "--",
-            "hits",
-            "1",
-        ][..],
-    ] {
+    for command in [&["test"][..], &["run", "set", "--", "hits", "1"][..]] {
         let output = run_in(&temp, command);
         assert!(!output.status.success(), "{output:?}");
         assert!(

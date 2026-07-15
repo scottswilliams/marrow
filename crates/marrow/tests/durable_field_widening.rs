@@ -96,6 +96,28 @@ fn a_widened_field_resource_completes_its_identity_and_verifies() {
     assert_eq!(id, contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS), "stable");
 }
 
+/// The enum sum/member ids (and every other kind) cannot drift under an unrelated
+/// edit: adding unrelated storeless code and reordering declarations leaves the
+/// widened graph's contract id — computed over the sum/member tree — unchanged.
+#[test]
+fn unrelated_source_edits_do_not_drift_the_widened_contract_id() {
+    let base = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
+
+    let appended = format!("{ACCOUNT_SOURCE}\npub fn unrelated(n: int): int\n    return n + 1\n");
+    assert_eq!(
+        base,
+        contract_of(&appended, ACCOUNT_IDS),
+        "unrelated storeless code does not drift the enum sum/member identity"
+    );
+
+    let reordered = format!("pub fn unrelated(n: int): int\n    return n + 1\n\n{ACCOUNT_SOURCE}");
+    assert_eq!(
+        base,
+        contract_of(&reordered, ACCOUNT_IDS),
+        "declaration order does not drift the widened durable identity"
+    );
+}
+
 #[test]
 fn a_missing_enum_sum_identity_fails_precisely() {
     let without_sum = ACCOUNT_IDS.replace("id sum Access 50505050505050505050505050505050\n", "");

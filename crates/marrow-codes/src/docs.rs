@@ -144,12 +144,14 @@ Formatter refusals.
         r#"
 ### `cli.*` — kind `tooling`
 
-Commands recognized but not yet available on this beta line.
+Capabilities the CLI recognizes but cannot yet serve on this beta line: a command
+whose owning capability is being refounded, and a durable `marrow run` whose
+execution is in the trough.
 
 | Code | Meaning |
 |---|---|"#
             .to_string(),
-        rows(&[Code::CliCommandUnsupported]),
+        rows(&[Code::CliCommandUnsupported, Code::CliDurableUnsupported]),
         r#"
 ### `check.*` — kind `check`
 

@@ -18,7 +18,7 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
-  marrow run <export> [--store <path>] [--format jsonl] [-- <args>...]
+  marrow run <export> [--format jsonl] [-- <args>...]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow --version
   marrow --help

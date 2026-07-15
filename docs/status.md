@@ -60,24 +60,29 @@ deployment ceiling and an invocation grant, before the first engine call),
 carries the durable operation algebra, and drives the ordered-byte engine over a
 versioned store profile with an in-transaction commit witness.
 
-`marrow run <export>` drives this path end to end: a small durable counter
-program can declare a keyed resource, read and write and iterate its entries
-inside one transaction, and survive a process restart on the redb backend. A
-store root is a singleton (no key), a single-column keyed root, or a composite
-keyed tuple of up to eight ordered columns; each key column is a scalar in the
-closed orderable durable-key set (`int`, `string`, `bool`, `bytes`, `date`,
-`instant`). Every root — and each of its key columns — is a distinct durable
-graph node with a complete entropy-minted identity in the committed
-machine-written `marrow.ids` ledger (minted by `marrow run`, required by every
-path, tombstoned on retirement), and the program's durable graph carries a
-stable 32-byte durable-contract identity computed over those ledger ids and the
-graph shape (including key-column order) — so a rename preserves durable
-identity — which the verifier independently recomputes from the image and rejects
-on mismatch. The executable durable shape is the single-column keyed root;
-singleton and composite-key roots declare and verify their identity but their
-operations are not yet executable. The admitted subset is narrow and grows lane
-by lane; a well-formed construct outside it is a typed `check.unsupported`
-diagnostic.
+`marrow run <export>` drives this path end to end for a storeless export. A
+durable program — a keyed resource, a store root, its transactions, reads, and
+bounded iteration — compiles, independently verifies, and completes its durable
+identity, but durable execution is in the trough: T01's in-process store open
+died at D00, so `marrow run` no longer opens a store and reports a durable export
+with the typed `cli.durable_unsupported` outcome. Durable execution returns as
+the ephemeral-memory preview (E01) and, for the persistent terminal path, over a
+companion runner (F02b); the CLI never opens a store again. A store root is a
+singleton (no key), a single-column keyed root, or a composite keyed tuple of up
+to eight ordered columns; each key column is a scalar in the closed orderable
+durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every
+root — and each of its key columns — is a distinct durable graph node with a
+complete entropy-minted identity in the committed machine-written `marrow.ids`
+ledger (minted by `marrow run`, required by every path, tombstoned on
+retirement), and the program's durable graph carries a stable 32-byte
+durable-contract identity computed over those ledger ids and the graph shape
+(including key-column order) — so a rename preserves durable identity — which the
+verifier independently recomputes from the image and rejects on mismatch. The
+compiler fully lowers operations over the single-column keyed root; singleton,
+composite-key, group/branch, and widened-field roots declare and verify their
+identity but their operations are not yet lowered. The admitted subset is narrow
+and grows lane by lane; a well-formed construct outside it is a typed
+`check.unsupported` diagnostic.
 
 ### Deleted at B00
 

@@ -1,29 +1,26 @@
-//! `marrow run <export> [--store <path>] [--format jsonl] [-- <args>...]`.
+//! `marrow run <export> [--format jsonl] [-- <args>...]`.
 //!
 //! The production run path: capture the project at the working directory, compile
 //! it to canonical image bytes, verify them into a sealed image, resolve the named
-//! export, and execute it on the VM. Each of the four failure families surfaces as
-//! its own typed [`Record`]; the value or the first failure sets the exit code.
+//! export, and run a storeless export on the VM. Each of the four failure families
+//! surfaces as its own typed [`Record`]; the value or the first failure sets the
+//! exit code.
 //!
-//! Durable execution opens an in-process store for an export with nonempty demand
-//! (an interim seam that dies with the durable-run trough). A fresh durable
-//! declaration with no ledger identity is minted here — `run` is the one
-//! convenience mint action; see [`mint_missing_identities`].
+//! Durable execution is in the trough. A durable export (nonempty verified demand)
+//! compiles, verifies, and completes its identity here, but the CLI no longer opens
+//! a store — T01's in-process open died at D00. The export is reported with the
+//! typed `cli.durable_unsupported` outcome; durable execution returns as the
+//! ephemeral-memory preview (E01) and later the persistent companion path (F02b).
+//! A fresh durable declaration with no ledger identity is still minted here — `run`
+//! is the one convenience mint action; see [`mint_missing_identities`].
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
 use marrow_compile::{ExportEntry, ExportId, SourceDiagnostic, compile};
-use marrow_kernel::codec::value::ScalarKind;
-use marrow_kernel::durable::{
-    DurableStore, ExportDemand, FieldSchema, InvocationGrant, SessionError, SiteSpec,
-    SiteTarget as KernelSiteTarget, StoreSchema,
-};
 use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
-use marrow_verify::{
-    ImageType, Scalar, SealedEnumType, SealedRecordType, SealedSiteTarget, VerifiedImage,
-};
+use marrow_verify::{ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage};
 use marrow_vm::Value;
 
 use crate::outcome::Record;
@@ -38,7 +35,6 @@ enum Format {
 
 struct RunArgs {
     export: String,
-    store: Option<PathBuf>,
     format: Format,
     call_args: Vec<String>,
 }
@@ -149,6 +145,23 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     let func_index = export.function();
     let demand = export.demand();
 
+    // Durable execution is in the trough: T01's in-process store open died at D00.
+    // The export has compiled, verified, and completed its identity, but the CLI no
+    // longer opens a store, so a durable export (nonempty demand) is reported with
+    // the typed trough outcome rather than run. Durable execution returns as the
+    // ephemeral-memory preview (E01) and later the persistent companion path (F02b).
+    if !demand.is_empty() {
+        return emit(
+            args.format,
+            &[Record::OperationalError {
+                code: marrow_codes::Code::CliDurableUnsupported.as_str(),
+            }],
+            &[],
+            &[],
+            ExitCode::FAILURE,
+        );
+    }
+
     // Positional call arguments are decoded against the verified export signature.
     let function = image.function(func_index);
     let call_args = match decode_args(function.params(), &args.call_args) {
@@ -156,16 +169,8 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         Err(message) => return usage(&message),
     };
 
-    // Family 3: source-mapped runtime fault, or the value. A durable export (nonempty
-    // demand) runs against an in-process store opened here (interim; dies at D00).
-    let record = if demand.is_empty() {
-        run_storeless(&image, func_index, call_args)
-    } else {
-        let Some(store_path) = &args.store else {
-            return usage("this export reads or writes durable data; pass `--store <path>`");
-        };
-        run_durable(&image, func_index, call_args, store_path, demand)
-    };
+    // Family 3: source-mapped runtime fault, or the value.
+    let record = run_storeless(&image, func_index, call_args);
 
     let exit = match &record {
         Record::Value(_) => ExitCode::SUCCESS,
@@ -341,134 +346,6 @@ fn run_storeless(image: &VerifiedImage, func_index: u16, call_args: Vec<Value>) 
     }
 }
 
-/// Open the store in-process, resolve authority, and run the durable export.
-fn run_durable(
-    image: &VerifiedImage,
-    func_index: u16,
-    call_args: Vec<Value>,
-    store_path: &Path,
-    demand: marrow_verify::Demand,
-) -> Record {
-    let schema = build_schema(image);
-    let sites = build_sites(image);
-    let mut store = match DurableStore::open(store_path, schema, sites) {
-        Ok(store) => store,
-        Err(error) => return Record::OperationalError { code: error.code() },
-    };
-    let grant = InvocationGrant::full_store();
-    let kernel_demand = ExportDemand {
-        read: demand.read,
-        write: demand.write,
-    };
-    // A mutating export drives a transaction session; a read-only export a read
-    // session over a pinned snapshot.
-    if demand.write {
-        match store.txn_session(grant, kernel_demand) {
-            Ok(mut session) => run_session(image, func_index, call_args, &mut session),
-            Err(error) => session_error_record(image, func_index, error),
-        }
-    } else {
-        match store.read_session(grant, kernel_demand) {
-            Ok(mut session) => run_session(image, func_index, call_args, &mut session),
-            Err(error) => session_error_record(image, func_index, error),
-        }
-    }
-}
-
-fn run_session(
-    image: &VerifiedImage,
-    func_index: u16,
-    call_args: Vec<Value>,
-    session: &mut dyn marrow_kernel::durable::Durable,
-) -> Record {
-    match marrow_vm::run_durable(image, func_index, call_args, session) {
-        Ok(value) => Record::Value(value),
-        Err(fault) => Record::Fault {
-            code: fault.code(),
-            line: fault.line(),
-            column: fault.column(),
-            detail: fault.detail().map(str::to_owned),
-        },
-    }
-}
-
-/// Map a session-setup failure to a typed record. An authority denial is a
-/// source-uncatchable fault at the export entry; a profile mismatch or engine
-/// failure is an operational error.
-fn session_error_record(image: &VerifiedImage, func_index: u16, error: SessionError) -> Record {
-    match error {
-        SessionError::Denied => {
-            let (line, column) = image.function(func_index).span_at(0).unwrap_or((1, 1));
-            Record::Fault {
-                code: marrow_codes::Code::RunAuthority.as_str(),
-                line,
-                column,
-                detail: None,
-            }
-        }
-        SessionError::ProfileMismatch => Record::OperationalError {
-            code: marrow_codes::Code::StoreCorruption.as_str(),
-        },
-        SessionError::Engine(store) => Record::OperationalError { code: store.code() },
-    }
-}
-
-/// The kernel store schema derived from the verified image's single root. The
-/// in-process store seam serves only the single-column keyed root (the executable
-/// durable subset); the verifier rejects an executable site over any other key
-/// arity, so a root reaching this schema builder has exactly one key column.
-fn build_schema(image: &VerifiedImage) -> StoreSchema {
-    let root = &image.roots()[0];
-    let record = image.record_type(root.record());
-    let [key] = root.keys() else {
-        unreachable!("the store seam serves only single-column keyed roots");
-    };
-    StoreSchema {
-        root_name: root.name().to_string(),
-        key: scalar_kind(*key),
-        fields: record
-            .fields()
-            .iter()
-            .map(|field| FieldSchema {
-                name: field.name.to_string(),
-                // A durable root record is verified to carry only scalar fields.
-                kind: match field.ty {
-                    ImageType::Scalar { scalar, .. } => scalar_kind(scalar),
-                    _ => unreachable!("a durable field is a scalar"),
-                },
-                required: field.required,
-            })
-            .collect(),
-    }
-}
-
-/// The kernel site specs derived from the verified image's site table.
-fn build_sites(image: &VerifiedImage) -> Vec<SiteSpec> {
-    image
-        .sites()
-        .iter()
-        .map(|site| SiteSpec {
-            target: match site.target {
-                SealedSiteTarget::Entry => KernelSiteTarget::Entry,
-                SealedSiteTarget::Field(field) => KernelSiteTarget::Field(field),
-            },
-        })
-        .collect()
-}
-
-/// The kernel scalar kind for an image scalar type.
-fn scalar_kind(scalar: Scalar) -> ScalarKind {
-    match scalar {
-        Scalar::Int => ScalarKind::Int,
-        Scalar::Bool => ScalarKind::Bool,
-        Scalar::Text => ScalarKind::Str,
-        Scalar::Bytes => ScalarKind::Bytes,
-        Scalar::Date => ScalarKind::Date,
-        Scalar::Instant => ScalarKind::Instant,
-        Scalar::Duration => ScalarKind::Duration,
-    }
-}
-
 /// Decode positional CLI arguments against the export's parameter types. A scalar
 /// parameter decodes from its text; a record (`struct`) parameter has no
 /// command-line spelling, so an export taking one cannot be run from the terminal.
@@ -541,7 +418,6 @@ fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
 
 fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
     let mut export: Option<String> = None;
-    let mut store: Option<PathBuf> = None;
     let mut format = Format::Text;
     let mut call_args: Vec<String> = Vec::new();
     let mut iter = rest.iter();
@@ -550,12 +426,6 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
             "--" => {
                 call_args.extend(iter.by_ref().cloned());
                 break;
-            }
-            "--store" => {
-                let Some(path) = iter.next() else {
-                    return Err(usage("`--store` needs a path"));
-                };
-                store = Some(PathBuf::from(path));
             }
             "--format" => match iter.next().map(String::as_str) {
                 Some("jsonl") => format = Format::Jsonl,
@@ -577,7 +447,6 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
     };
     Ok(RunArgs {
         export,
-        store,
         format,
         call_args,
     })

@@ -85,17 +85,26 @@ A stored resource may also declare static `group` namespaces and keyed `branch`
 placements (see [Resources](resources.md#groups-and-branches)). These are part of
 the durable graph and complete their identity like a root.
 
-The *flat scalar* single-column keyed root is the executable durable shape in
-this preview: a root with one key column, no groups or branches, and only plain
-scalar fields, whose entries are read and written through the operations below. A
-singleton root, a composite-key root, a root whose resource declares a group or a
-branch, or a root whose resource declares a widened field (a nominal scalar,
-struct, enum, or `Option` value) declares and verifies its full identity, but its
-read and write operations are not yet executable — an operation over one is the
-typed `check.unsupported` rejection rather than a silent drop, until the wider
-durable runtime lands. (Declaring such a store is no longer a `check.type` on the
-resource, as it was before durable field values widened; the store is
-identity-complete, only its operations are deferred.)
+Durable declarations compile, verify, and complete their identity, but durable
+execution is currently in the trough: the CLI no longer opens a store, so a
+durable export does not run from `marrow run` (it reports the typed
+`cli.durable_unsupported` outcome). The operations described below are the current
+durable *language* — they are checked and their identity is complete — and their
+execution returns as the ephemeral-memory preview and later the persistent
+companion path; see [Project status](../status.md).
+
+Within that checked language, the *flat scalar* single-column keyed root is the
+form whose operations the compiler fully lowers: a root with one key column, no
+groups or branches, and only plain scalar fields, whose entries are read and
+written through the operations below. A singleton root, a composite-key root, a
+root whose resource declares a group or a branch, or a root whose resource
+declares a widened field (a nominal scalar, struct, enum, or `Option` value)
+declares and verifies its full identity, but its read and write operations are
+not yet lowered — an operation over one is the typed `check.unsupported` rejection
+rather than a silent drop, until the wider durable runtime lands. (Declaring such
+a store is no longer a `check.type` on the resource, as it was before durable
+field values widened; the store is identity-complete, only its operations are
+deferred.)
 
 ## Durable Identity
 

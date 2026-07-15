@@ -84,6 +84,33 @@ fn a_group_and_branch_resource_completes_its_identity_and_verifies() {
     assert_eq!(id, contract_of(LIBRARY_SOURCE, LIBRARY_IDS));
 }
 
+/// The durable-contract identity tracks the durable graph, not the surrounding
+/// program: adding unrelated storeless code and reordering declarations leaves
+/// every root, key, group, branch placement, and field id — and so the contract
+/// id — from drifting. This is the id-stability-under-unrelated-edits property
+/// across the widened graph's kinds.
+#[test]
+fn unrelated_source_edits_do_not_drift_the_contract_id() {
+    let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
+
+    // Append an unrelated storeless function: the durable graph is untouched.
+    let appended = format!("{LIBRARY_SOURCE}\npub fn unrelated(n: int): int\n    return n + 1\n");
+    assert_eq!(
+        base,
+        contract_of(&appended, LIBRARY_IDS),
+        "unrelated storeless code does not drift the durable identity"
+    );
+
+    // Declare the same unrelated function ahead of the resource: declaration order
+    // is not part of the identity either.
+    let reordered = format!("pub fn unrelated(n: int): int\n    return n + 1\n\n{LIBRARY_SOURCE}");
+    assert_eq!(
+        base,
+        contract_of(&reordered, LIBRARY_IDS),
+        "declaration order does not drift the durable identity"
+    );
+}
+
 #[test]
 fn a_missing_group_identity_fails_precisely() {
     let without_group = LIBRARY_IDS.replace(
