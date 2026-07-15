@@ -1,11 +1,13 @@
-//! Ephemeral-memory durable test execution (E01).
+//! Ephemeral-memory durable execution (E01 tests; E02 export transactions).
 //!
 //! The executor derives a durable [`StoreSchema`] and site table from a
-//! [`VerifiedImage`] — the only source of a valid schema — mints a fresh
-//! [`EphemeralAttachment`] bounded by the test-image demand union, opens one
-//! session for the invocation's own demand under a full test grant, and runs the
-//! test on the VM. Each durable source test runs against its own fresh attachment,
-//! so tests never observe one another's writes.
+//! [`VerifiedImage`] — the only source of a valid schema — mints an
+//! [`EphemeralAttachment`], opens the session an invocation's demand requires under
+//! a full grant, and runs on the VM. [`run_durable_test`] mints a fresh attachment
+//! per durable source test, so tests never observe one another's writes.
+//! [`mint_ephemeral`] plus [`run_export`] instead keep one attachment across several
+//! export invocations, so a mutating export's committed `transaction` region is
+//! observable by a later read invocation and a rolled-back one is not (E02).
 //!
 //! Only the flat single-column keyed root of scalar fields is executable here (the
 //! read kernel E01 lands); a wider durable shape — a composite key, a nested branch
@@ -18,8 +20,8 @@ use marrow_kernel::durable::{
     InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_verify::{
-    CeilingDescriptor, ImageType, Scalar, SealedSite, SealedSiteTarget, SealedTestEntry,
-    VerifiedImage,
+    CeilingDescriptor, ExportDemand, ImageType, Scalar, SealedExport, SealedSite, SealedSiteTarget,
+    SealedTestEntry, VerifiedImage,
 };
 
 use crate::fault::RuntimeFault;
@@ -47,16 +49,8 @@ pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> Durab
         return DurableRun::Parked;
     };
 
-    // The deployment ceiling admits exactly the test-image demand union. Building the
-    // descriptor from that union derives both the read/write coverage the kernel
-    // checks and the 32-byte ceiling-id binding token from the same verified atoms,
-    // so a wider ceiling would carry a different id — the ceiling is bound to the
-    // verified image, never supplied independently.
-    let ceiling_descriptor = CeilingDescriptor::from_demand_union(image.test_demand_union());
-    let ceiling = DeploymentCeiling::new(
-        coverage(ceiling_descriptor.reads(), ceiling_descriptor.writes()),
-        CeilingIdToken::new(*ceiling_descriptor.ceiling_id().bytes()),
-    );
+    // The deployment ceiling admits exactly the test-image demand union.
+    let ceiling = deployment_ceiling(image.test_demand_union());
     let mut attachment = match EphemeralAttachment::mint(schema, sites, ceiling) {
         Ok(attachment) => attachment,
         Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
@@ -88,6 +82,82 @@ pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> Durab
 
 fn coverage(read: bool, write: bool) -> DemandCoverage {
     DemandCoverage { read, write }
+}
+
+/// Derive the deployment ceiling a fresh attachment is bounded by from a demand
+/// union. Building the descriptor from the union derives both the read/write
+/// coverage the kernel checks and the 32-byte ceiling-id binding token from the same
+/// verified atoms, so a wider ceiling would carry a different id — the ceiling is
+/// bound to the verified image, never supplied independently.
+fn deployment_ceiling(union: ExportDemand) -> DeploymentCeiling {
+    let descriptor = CeilingDescriptor::from_demand_union(union);
+    DeploymentCeiling::new(
+        coverage(descriptor.reads(), descriptor.writes()),
+        CeilingIdToken::new(*descriptor.ceiling_id().bytes()),
+    )
+}
+
+/// Whether a persistent ephemeral attachment could be minted for a whole image.
+pub enum Ephemeral {
+    /// A minted attachment over the image's flat executable durable shape. The caller
+    /// keeps it and drives several export invocations against the same store.
+    Ready(EphemeralAttachment),
+    /// The image's durable shape is not yet executable by the flat kernel (a
+    /// composite key, a nested member tree, or a non-scalar field).
+    Parked,
+    /// Minting the attachment failed operationally; the stable code names why.
+    Failed(&'static str),
+}
+
+/// Mint one persistent ephemeral attachment for a whole verified image: a single
+/// in-memory durable store bound to the image's schema, sites, and whole-program
+/// demand-union ceiling, which serves every export invocation in sequence. The
+/// persistent counterpart of [`run_durable_test`]'s per-test mint — here the caller
+/// retains the attachment and drives several exports against the same store, so a
+/// committed transaction is observable by a later read and a rolled-back one is not.
+pub fn mint_ephemeral(image: &VerifiedImage) -> Ephemeral {
+    let Some((schema, sites)) = derive_schema(image) else {
+        return Ephemeral::Parked;
+    };
+    let ceiling = deployment_ceiling(image.demand_union());
+    match EphemeralAttachment::mint(schema, sites, ceiling) {
+        Ok(attachment) => Ephemeral::Ready(attachment),
+        Err(_) => Ephemeral::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
+    }
+}
+
+/// Run one export against a persistent attachment, opening the session its verified
+/// demand requires: a transaction session for a mutating export (whose own
+/// `transaction` region commits the staged writes) and a read session for a
+/// read-only one, both under a full grant. Because the attachment persists across
+/// calls, a mutating export's committed writes are visible to a later read invocation
+/// on the same attachment, and a mutating export that faults before its commit leaves
+/// the store unchanged.
+pub fn run_export(
+    image: &VerifiedImage,
+    attachment: &mut EphemeralAttachment,
+    export: &SealedExport,
+    args: Vec<Value>,
+) -> DurableRun {
+    let grant = InvocationGrant::full_store();
+    let demand = coverage(export.demand().reads(), export.demand().writes());
+    let func = export.function();
+    let result = if demand.write {
+        match attachment.txn_session(grant, demand) {
+            Ok(mut session) => run_durable(image, func, args, &mut session),
+            Err(_) => {
+                return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
+            }
+        }
+    } else {
+        match attachment.read_session(grant, demand) {
+            Ok(mut session) => run_durable(image, func, args, &mut session),
+            Err(_) => {
+                return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
+            }
+        }
+    };
+    DurableRun::Ran(result)
 }
 
 /// Derive the flat store schema and index-aligned site table from a verified image,

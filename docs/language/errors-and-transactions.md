@@ -65,10 +65,26 @@ the transaction back with `run.required_missing` rather than committing a
 partial entry — so several required fields may be populated across separate
 statements in one transaction and validated together at commit.
 
+A mutating export observes durable data *inside* its transaction, where reads see
+the staged writes, and returns values it captured there. Because the commit closes
+the transaction, no durable operation — read or write — may follow it; to return a
+committed value, read it into a local inside the region and return that local after
+the block:
+
+```mw
+pub fn setAndReport(name: string, v: int): int?
+    var reported: int? = absent
+    transaction
+        ^counters(name) = Counter(value: v)
+        reported = ^counters(name).value
+    return reported
+```
+
 The transaction ownership law is checked when the program image is verified: a
 transaction is opened exactly once and committed on every path, every mutation
-sits inside the region, and a transaction owner is never called. An image that
-violates the law is rejected with `image.flow` before it can run.
+sits inside the region, no durable read or write follows the commit, and a
+transaction owner is never called. An image that violates the law is rejected with
+`image.flow` before it can run.
 
 ## Indeterminate Commit
 

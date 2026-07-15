@@ -2783,6 +2783,21 @@ impl Effects {
                             "a mutation sits outside the transaction region",
                         ));
                     }
+                    // The commit consumes the session's engine transaction, so no
+                    // durable operation — read or write, direct or through a callee's
+                    // closure — may follow it. A mutating export observes the store
+                    // inside its region and returns values it captured there; a read
+                    // after commit is refused here so the runtime never reaches a
+                    // consumed transaction.
+                    let durable_here = is_mutation(instr)
+                        || is_durable_read(instr)
+                        || matches!(instr, SealedInstr::Call(target) if !self.atoms_closure[*target as usize].is_empty());
+                    if durable_here && state == State::AfterCommit {
+                        return Err(reject(
+                            VerifyPhase::Flow,
+                            "a durable operation follows the transaction's commit",
+                        ));
+                    }
                     state
                 }
             };

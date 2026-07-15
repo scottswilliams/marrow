@@ -13,7 +13,7 @@ mod fault;
 mod run;
 mod value;
 
-pub use attach::{DurableRun, run_durable_test};
+pub use attach::{DurableRun, Ephemeral, mint_ephemeral, run_durable_test, run_export};
 pub use fault::RuntimeFault;
 pub use run::{run, run_durable};
 pub use value::Value;
