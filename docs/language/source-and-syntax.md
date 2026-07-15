@@ -131,13 +131,12 @@ member or collection places may appear on the left of assignment.
 | String | `"text"`, `"line\n"` | UTF-8 text with escapes |
 | Interpolated string | `$"id: {id}"` | Expressions occur inside `{...}` |
 | Bytes | `b"Marrow"`, `b"\x00\xff"` | Byte string |
-| Duration | `10.seconds`, `1.day` | Whole-number duration literal |
+| Duration | `duration("PT600S")` | Canonical text constructor (see [temporal values](types-and-values.md#temporal-values)) |
 | Absence | `absent` | The missing case of an optional value |
 
 String escapes are `\\`, `\"`, `\n`, `\r`, and `\t`; other Unicode characters
 may appear directly in UTF-8 source. Byte strings accept those five escapes plus
-`\xNN`. Date and instant values are obtained with conversions or `std::clock`
-functions rather than dedicated source literals.
+`\xNN`. Date and instant values are constructed from one canonical text literal each — `date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock builtin.
 
 Duration units are `second`, `minute`, `hour`, `day`, and `week`, with singular
 and plural spellings. Months and years are not fixed durations.

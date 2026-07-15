@@ -75,7 +75,7 @@ pub fn printShelf(shelf: string)
             print($"{id}: {title}")
 
 pub fn main()
-    const now: instant = std::clock::now()
+    const now: instant = instant("2026-07-15T12:00:00Z")
     const id = add(
         title: "Small Gods",
         author: "Terry Pratchett",

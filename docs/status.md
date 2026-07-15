@@ -40,7 +40,7 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
 
 - A private ordered-byte engine contract with in-memory and redb backends under
   one conformance suite. The engine orders opaque bytes; the logical
-  key/value/civil-date codecs that give those bytes meaning are owned by the
+  key/value codecs that give those bytes meaning are owned by the
   path kernel (`marrow-kernel`), which is the engine's source-language consumer
   through a narrow byte seam.
 

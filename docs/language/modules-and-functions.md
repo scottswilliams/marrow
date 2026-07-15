@@ -24,16 +24,15 @@ its own namespace and is not imported by module path.
 name:
 
 ```text
-use std::clock
 use shelf::books
 
 fn example()
-    const today = clock::today()
     const id = books::add("Small Gods")
+    const due = date_add_days(date("2026-07-15"), 10)
 ```
 
 The import does not place individual declarations into the local namespace.
-Fully qualified calls such as `std::clock::today()` remain valid. There are no
+Fully qualified calls such as `shelf::books::titleOf(id)` remain valid. There are no
 wildcard or explicitly renamed imports. Two imports with the same final segment
 are ambiguous.
 

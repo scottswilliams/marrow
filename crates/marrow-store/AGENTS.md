@@ -4,7 +4,7 @@ On the beta line this is the raw ordered-byte engine: the private byte-oriented
 engine contract (`ByteEngine`) with in-memory and redb backends under one
 conformance suite. It orders opaque bytes and knows no `.mw` syntax and no
 logical value meaning. The tree-cell key layer and the logical
-key/value/civil-date codecs it briefly hosted were relocated to the path kernel
+key/value codecs it briefly hosted were relocated to the path kernel (calendar and temporal text semantics live in `marrow-temporal`)
 (`marrow-kernel`) at T01; the prototype's logical tree facade, admission,
 catalog, backup, `decimal`, the page-level recovery probe, and the
 process-global panic-hook swap were deleted at B00. The kernel is the engine's

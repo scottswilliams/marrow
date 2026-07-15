@@ -243,7 +243,7 @@ fn an_uninferable_bare_constructor_is_reported() {
 /// its use site (surfacing later as a confusing `check.type`).
 #[test]
 fn redeclaring_a_reserved_builtin_value_name_is_reported() {
-    const NAMES: [&str; 9] = [
+    const NAMES: [&str; 11] = [
         "none",
         "some",
         "ok",
@@ -251,6 +251,8 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
         "exists",
         "unreachable",
         "isEmpty",
+        "date_add_days",
+        "date_days_between",
         "contains",
         "trim",
     ];

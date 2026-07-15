@@ -4,7 +4,7 @@
 B00. It defines a crate-private byte-oriented engine contract and the two
 implementors that back it. It orders opaque bytes: it does not parse `.mw`
 source, resolve schemas, assign language identity, or interpret key or value
-bytes. The logical key/value/civil-date codecs that give those bytes meaning
+bytes. The logical key/value codecs that give those bytes meaning
 were relocated to the path kernel (`marrow-kernel`), which is now the engine's
 sole consumer: every logical read and write reaches these bytes through the
 kernel's typed sessions.
