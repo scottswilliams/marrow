@@ -26,6 +26,8 @@ pub enum Family {
     Io,
     Config,
     Project,
+    Wire,
+    Runner,
 }
 
 impl Family {
@@ -43,6 +45,8 @@ impl Family {
             Self::Io => "io",
             Self::Config => "config",
             Self::Project => "project",
+            Self::Wire => "wire",
+            Self::Runner => "runner",
         }
     }
 
@@ -58,7 +62,9 @@ impl Family {
             Self::Value => "runtime",
             Self::Store => "storage",
             Self::Io => "io",
-            Self::Fmt | Self::Cli | Self::Config | Self::Project => "tooling",
+            Self::Fmt | Self::Cli | Self::Config | Self::Project | Self::Wire | Self::Runner => {
+                "tooling"
+            }
         }
     }
 }
@@ -208,6 +214,16 @@ codes! {
     ProjectCaptureLimit => r#"project.capture_limit"#, Project, Error, NotApplicable, Active, r#"A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. The bound guards the compiler against an unbounded project tree."#;
     ProjectIdsCorrupt => r#"project.ids_corrupt"#, Project, Error, NotApplicable, Active, r#"The committed `marrow.ids` identity artifact is corrupt and is rejected whole, never half-read: unresolved Git conflict markers, a malformed or duplicate row, two rows claiming one `(kind, path)` anchor or one id (the signature of a conflicting double-mint on parallel branches), a retired id reissued by a live row, an inconsistent retirement high-water, a truncated (torn) file missing its end marker, or a size past the fixed artifact bound. `marrow.ids` is machine-written only: restore it from version control rather than editing it."#;
     ProjectIdsMint => r#"project.ids_mint"#, Project, Error, NotApplicable, Active, r#"`marrow run` could not mint a missing durable identity: the OS entropy source was unavailable, or a freshly drawn id collided with an existing or retired one (minting never retries a draw). The `marrow.ids` artifact is left byte-for-byte unchanged; rerun to draw fresh entropy."#;
+    WireFrameTooLarge => r#"wire.frame_too_large"#, Wire, Error, NotApplicable, Active, r#"A local-wire frame declared a payload longer than the fixed maximum frame size, so the framed message is rejected before its body is read or allocated (campaign law 9). The single wire owner rejects an oversized frame rather than buffering unbounded bytes off the socket."#;
+    WireDepthLimit => r#"wire.depth_limit"#, Wire, Error, NotApplicable, Active, r#"A local-wire message's canonical JSON nests arrays or objects deeper than the fixed maximum depth, so decoding is refused before the structure is fully materialized (campaign law 9). The bound fails a pathologically nested payload closed rather than recursing unboundedly."#;
+    WireStringLimit => r#"wire.string_limit"#, Wire, Error, NotApplicable, Active, r#"A local-wire message's canonical JSON contains a string longer than the fixed maximum string size (campaign law 9). The bound fails an oversized string closed rather than allocating it."#;
+    WireUnsupportedVersion => r#"wire.unsupported_version"#, Wire, Error, NotApplicable, Active, r#"A local-wire frame carried a protocol version byte this build does not speak. The runner and the generated client are a matched release pair; a version this build does not recognize is rejected at the frame boundary before the body is interpreted."#;
+    WireMalformed => r#"wire.malformed"#, Wire, Error, NotApplicable, Active, r#"A local-wire frame body is not a well-formed protocol message: its bytes are not valid JSON, carry a fractional or exponent number Marrow has no value for, name an unknown message kind, omit a required field, use a field of the wrong JSON type, or leave trailing bytes after the value. The single wire owner rejects it rather than acting on a partially understood message."#;
+    WireNoncanonical => r#"wire.noncanonical"#, Wire, Error, NotApplicable, Active, r#"A local-wire frame body is valid JSON but not in canonical form: it carries insignificant whitespace, object keys that are unsorted or duplicated, a non-minimal number spelling, or a non-canonical string escape. The single wire owner accepts only the one canonical encoding so a message has exactly one byte spelling."#;
+    RunnerHandshake => r#"runner.handshake"#, Runner, Error, NotApplicable, Active, r#"A local-wire connection failed the runner handshake and was closed fail-closed: the connecting peer did not present the expected launch nonce, spoke an unsupported protocol version, or sent a malformed hello. No session is established and no request is served over the connection."#;
+    RunnerUnknownExport => r#"runner.unknown_export"#, Runner, Error, NotApplicable, Active, r#"A local-wire request named an export identity the served program image does not carry. The runner dispatches only on a verified export id present in the image it was launched with; an unknown id is rejected without running anything."#;
+    RunnerArgMismatch => r#"runner.arg_mismatch"#, Runner, Error, NotApplicable, Active, r#"A local-wire request's arguments do not match the target export's verified signature: the argument count differs, or an argument value does not decode into the declared parameter type. The runner rejects the request before running rather than coercing a mismatched value."#;
+    RunnerDurableUnsupported => r#"runner.durable_unsupported"#, Runner, Error, NotApplicable, Active, r#"A local-wire request named an export whose verified demand reads or writes durable data. The stock runner executes only storeless exports on this beta line; durable execution returns with the ephemeral-memory attachment and later the persistent companion path. A storeless export is unaffected."#;
 }
 
 impl Code {

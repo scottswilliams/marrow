@@ -6,6 +6,7 @@ members = [
     "crates/marrow-compile",
     "crates/marrow-image",
     "crates/marrow-kernel",
+    "crates/marrow-local-wire",
     "crates/marrow-verify",
     "crates/marrow-vm",
     "crates/marrow-project",

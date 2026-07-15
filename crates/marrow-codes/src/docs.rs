@@ -116,7 +116,7 @@ Tools derive `kind` from the first dotted segment of `code`:
 | `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| everything else (`cli`, `config`, `fmt`, `project`) | `tooling` |
+| everything else (`cli`, `config`, `fmt`, `project`, `wire`, `runner`) | `tooling` |
 
 ## Code Reference
 
@@ -300,6 +300,43 @@ identity artifact, or a failed identity mint.
             Code::ProjectCaptureLimit,
             Code::ProjectIdsCorrupt,
             Code::ProjectIdsMint,
+        ]),
+        r#"
+### `wire.*` — kind `tooling`
+
+Local-wire protocol rejections raised by the single wire owner while framing or
+decoding a message between the generated client and the runner. A frame is
+rejected at the earliest bound or grammar rule it violates — an oversized frame,
+a too-deep or too-long value, an unrecognized protocol version, a malformed
+body, or a non-canonical encoding — before its content is acted on.
+
+| Code | Meaning |
+|---|---|"#
+            .to_string(),
+        rows(&[
+            Code::WireFrameTooLarge,
+            Code::WireDepthLimit,
+            Code::WireStringLimit,
+            Code::WireUnsupportedVersion,
+            Code::WireMalformed,
+            Code::WireNoncanonical,
+        ]),
+        r#"
+### `runner.*` — kind `tooling`
+
+Runner request rejections raised while admitting a local-wire connection and
+serving a request against the launched program image: a failed handshake, a
+request naming an unknown export, arguments that do not match the export
+signature, or a durable export the stock runner cannot yet execute.
+
+| Code | Meaning |
+|---|---|"#
+            .to_string(),
+        rows(&[
+            Code::RunnerHandshake,
+            Code::RunnerUnknownExport,
+            Code::RunnerArgMismatch,
+            Code::RunnerDurableUnsupported,
         ]),
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),

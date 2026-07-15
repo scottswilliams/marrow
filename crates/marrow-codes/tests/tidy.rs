@@ -23,6 +23,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-compile",
     "marrow-image",
     "marrow-kernel",
+    "marrow-local-wire",
     "marrow-project",
     "marrow-store",
     "marrow-syntax",
@@ -240,6 +241,19 @@ fn cargo_dag_respects_the_trust_boundaries() {
         assert!(
             !compile.edges.iter().any(|(dep, _)| dep == forbidden),
             "marrow-compile must not depend on {forbidden}"
+        );
+    }
+
+    // marrow-local-wire is the pure protocol owner: framing, limits, the closed
+    // grammar, and canonical JSON with no execution, storage, or process edge. Its
+    // only internal dependency is the diagnostic-code registry, so a regression that
+    // reached the VM, verifier, kernel, image, or store from the wire crate — the
+    // exact coupling the pure-crate boundary forbids — is conspicuous here.
+    let wire = find("marrow-local-wire");
+    for (dep, _) in &wire.edges {
+        assert_eq!(
+            dep, "marrow-codes",
+            "marrow-local-wire must depend on marrow-codes alone; found an edge to {dep}"
         );
     }
 

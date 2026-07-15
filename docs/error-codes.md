@@ -81,7 +81,7 @@ Tools derive `kind` from the first dotted segment of `code`:
 | `value` | `runtime` |
 | `store` | `storage` |
 | `io` | `io` |
-| everything else (`cli`, `config`, `fmt`, `project`) | `tooling` |
+| everything else (`cli`, `config`, `fmt`, `project`, `wire`, `runner`) | `tooling` |
 
 ## Code Reference
 
@@ -248,6 +248,37 @@ identity artifact, or a failed identity mint.
 | `project.capture_limit` | A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. The bound guards the compiler against an unbounded project tree. |
 | `project.ids_corrupt` | The committed `marrow.ids` identity artifact is corrupt and is rejected whole, never half-read: unresolved Git conflict markers, a malformed or duplicate row, two rows claiming one `(kind, path)` anchor or one id (the signature of a conflicting double-mint on parallel branches), a retired id reissued by a live row, an inconsistent retirement high-water, a truncated (torn) file missing its end marker, or a size past the fixed artifact bound. `marrow.ids` is machine-written only: restore it from version control rather than editing it. |
 | `project.ids_mint` | `marrow run` could not mint a missing durable identity: the OS entropy source was unavailable, or a freshly drawn id collided with an existing or retired one (minting never retries a draw). The `marrow.ids` artifact is left byte-for-byte unchanged; rerun to draw fresh entropy. |
+
+### `wire.*` — kind `tooling`
+
+Local-wire protocol rejections raised by the single wire owner while framing or
+decoding a message between the generated client and the runner. A frame is
+rejected at the earliest bound or grammar rule it violates — an oversized frame,
+a too-deep or too-long value, an unrecognized protocol version, a malformed
+body, or a non-canonical encoding — before its content is acted on.
+
+| Code | Meaning |
+|---|---|
+| `wire.frame_too_large` | A local-wire frame declared a payload longer than the fixed maximum frame size, so the framed message is rejected before its body is read or allocated (campaign law 9). The single wire owner rejects an oversized frame rather than buffering unbounded bytes off the socket. |
+| `wire.depth_limit` | A local-wire message's canonical JSON nests arrays or objects deeper than the fixed maximum depth, so decoding is refused before the structure is fully materialized (campaign law 9). The bound fails a pathologically nested payload closed rather than recursing unboundedly. |
+| `wire.string_limit` | A local-wire message's canonical JSON contains a string longer than the fixed maximum string size (campaign law 9). The bound fails an oversized string closed rather than allocating it. |
+| `wire.unsupported_version` | A local-wire frame carried a protocol version byte this build does not speak. The runner and the generated client are a matched release pair; a version this build does not recognize is rejected at the frame boundary before the body is interpreted. |
+| `wire.malformed` | A local-wire frame body is not a well-formed protocol message: its bytes are not valid JSON, carry a fractional or exponent number Marrow has no value for, name an unknown message kind, omit a required field, use a field of the wrong JSON type, or leave trailing bytes after the value. The single wire owner rejects it rather than acting on a partially understood message. |
+| `wire.noncanonical` | A local-wire frame body is valid JSON but not in canonical form: it carries insignificant whitespace, object keys that are unsorted or duplicated, a non-minimal number spelling, or a non-canonical string escape. The single wire owner accepts only the one canonical encoding so a message has exactly one byte spelling. |
+
+### `runner.*` — kind `tooling`
+
+Runner request rejections raised while admitting a local-wire connection and
+serving a request against the launched program image: a failed handshake, a
+request naming an unknown export, arguments that do not match the export
+signature, or a durable export the stock runner cannot yet execute.
+
+| Code | Meaning |
+|---|---|
+| `runner.handshake` | A local-wire connection failed the runner handshake and was closed fail-closed: the connecting peer did not present the expected launch nonce, spoke an unsupported protocol version, or sent a malformed hello. No session is established and no request is served over the connection. |
+| `runner.unknown_export` | A local-wire request named an export identity the served program image does not carry. The runner dispatches only on a verified export id present in the image it was launched with; an unknown id is rejected without running anything. |
+| `runner.arg_mismatch` | A local-wire request's arguments do not match the target export's verified signature: the argument count differs, or an argument value does not decode into the declared parameter type. The runner rejects the request before running rather than coercing a mismatched value. |
+| `runner.durable_unsupported` | A local-wire request named an export whose verified demand reads or writes durable data. The stock runner executes only storeless exports on this beta line; durable execution returns with the ephemeral-memory attachment and later the persistent companion path. A storeless export is unaffected. |
 
 ### Internal Codes
 
