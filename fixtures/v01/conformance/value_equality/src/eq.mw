@@ -1,0 +1,56 @@
+; Value equality across the C02 domain. `==`/`!=` are exact equality, owned by
+; the kernel value-equality relation and computed by the VM's `Eq*` opcodes: a
+; nominal compares by its base int, and a closed sum (`Option`, `Result`, a user
+; `enum`) by exact `(variant, payload)`.
+module eq
+
+type Age: int in 0..150
+
+enum Color
+    red
+    green
+    blue
+
+; A nominal compares by its base int: equal values are equal, distinct differ.
+pub fn nominalEqual(a: int, b: int): bool
+    return Age(a) == Age(b)
+
+; A user enum compares by variant.
+pub fn colorEqual(): bool
+    return Color::green == Color::green
+
+pub fn colorDiffer(): bool
+    return Color::red != Color::blue
+
+; Option compares by (variant, payload): none == none, some by payload.
+pub fn optionNoneEqual(): bool
+    const a: Option[int] = none
+    const b: Option[int] = none
+    return a == b
+
+pub fn optionSomeEqual(): bool
+    return some(3) == some(3)
+
+pub fn optionSomeDiffer(): bool
+    return some(3) != some(4)
+
+pub fn optionNoneVsSome(): bool
+    const n: Option[int] = none
+    return n != some(0)
+
+; Nested Option distinguishes the nesting depth.
+pub fn nestedOption(): bool
+    const a: Option[Option[int]] = some(none)
+    const b: Option[Option[int]] = some(some(1))
+    return a != b
+
+; Result compares by (variant, payload), across both arms.
+pub fn resultOkEqual(): bool
+    const a: Result[int, string] = ok(1)
+    const b: Result[int, string] = ok(1)
+    return a == b
+
+pub fn resultOkVsErr(): bool
+    const a: Result[int, string] = ok(1)
+    const b: Result[int, string] = err("e")
+    return a != b
