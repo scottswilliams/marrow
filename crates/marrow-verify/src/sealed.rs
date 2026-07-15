@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use marrow_image::{
     DurableContractDescriptor, DurableContractId, ExportId, ImageId, ImageType, Scalar,
-    SemanticNode,
+    SemanticNode, SemanticPath, SemanticTarget,
 };
 
 /// A resolved constant value.
@@ -263,14 +263,30 @@ pub enum SealedSiteTarget {
     FieldLeaf(u16),
 }
 
-/// A verified durable operation site: the root index its semantic path resolved to
-/// plus the resolved target. The verifier reconstructs both by resolving the image's
-/// site path against its own derived node set — it trusts no compiler-side site
-/// summary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SealedSite {
-    pub root: u16,
-    pub target: SealedSiteTarget,
+/// A verified durable operation site. The verifier reconstructs it by resolving the
+/// image's site path against its own derived node set and re-deriving the executable
+/// coordinates — it trusts no compiler-side site summary.
+///
+/// A site is [`SealedSite::Flat`] exactly when the single-root kernel can execute
+/// over it: a whole-payload or top-level-field site on the flat single-column keyed
+/// root of plain scalar fields. Every other resolved site — a singleton or
+/// composite-key root, a nested `branch` placement, a group-scoped field, or a
+/// widened-field leaf — is [`SealedSite::Parked`]: its identity is complete and its
+/// path and target agree with the reconstructed graph, but physical execution is
+/// parked until the path kernel widens (E01). A durable opcode may reference only a
+/// `Flat` site; a reference to a `Parked` site is refused in phase 3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SealedSite {
+    /// Executable on the flat single-column keyed root: the root index it resolved to
+    /// and the whole-payload or resolved-field-index target.
+    Flat { root: u16, target: SealedSiteTarget },
+    /// A sealed but not-yet-executable site over the wider durable graph. It carries
+    /// the resolved node path and target so the widened kernel derives its physical
+    /// coordinates at E01 without re-parsing the image.
+    Parked {
+        path: SemanticPath,
+        target: SemanticTarget,
+    },
 }
 
 /// A verified durable root: one placement of a record type over its ordered key

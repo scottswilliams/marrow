@@ -752,6 +752,71 @@ fn executable_site_over_a_group_bearing_root_rejects() {
     );
 }
 
+/// The semantic path of the group/branch graph's `notes.text` branch field:
+/// application -> root placement -> branch placement -> field (four steps), the
+/// deepest concrete address in that graph.
+fn branch_field_path() -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes([0x0a; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x0b; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x30; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Field,
+            LedgerIdBytes::from_bytes([0x32; 16]),
+        ),
+    ])
+}
+
+#[test]
+fn a_deep_nested_branch_field_site_seals() {
+    // D02 S3: a whole-graph site over the deepest concrete address — a keyed branch's
+    // field — now resolves against the reconstructed node set and seals (parked),
+    // rather than being refused as not-yet-emitted. No opcode references it, so the
+    // image verifies: its identity is complete, execution deferred to E01.
+    let mut draft = group_branch_draft(false);
+    draft.add_site(SiteDef::field_leaf(branch_field_path()));
+    assert!(
+        verify(&draft.encode().unwrap().bytes).is_ok(),
+        "a nested branch-field site seals"
+    );
+}
+
+#[test]
+fn an_opcode_over_a_parked_branch_field_site_rejects() {
+    // The seal-but-park split: a nested branch-field site seals, but a durable opcode
+    // that references it is refused during per-function typing (`image.function`) — a
+    // parked site is not executable, independently of the compiler's own boundary.
+    let mut draft = group_branch_draft(false);
+    let site = draft.add_site(SiteDef::field_leaf(branch_field_path()));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("read");
+    let code = vec![
+        Instr::LocalGet(0),
+        Instr::DurReadField(site.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Text)],
+        ret: ImageType::opt_scalar(Scalar::Text),
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "read"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
 /// The tracer durable schema plus a verifying `put` export, with `extra` appended to
 /// the site table. The image carries an encoder-computed digest, so any rejection is
 /// the site table's own resolution, not a stale digest.

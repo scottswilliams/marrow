@@ -12,7 +12,7 @@ use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{CommitResult, Durable, EntryValue, NextKey, Presence};
-use marrow_verify::{SealedConst, SealedFunction, SealedInstr, VerifiedImage};
+use marrow_verify::{SealedConst, SealedFunction, SealedInstr, SealedSite, VerifiedImage};
 
 use crate::fault::RuntimeFault;
 use crate::value::{Value, key_bytes, list_bytes};
@@ -1148,8 +1148,14 @@ fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
     Value::Record(ty, slots.into_boxed_slice())
 }
 
-/// The record type index of the entry a site's root addresses.
+/// The record type index of the entry a site's root addresses. The verifier admits a
+/// durable opcode only over a flat executable site, so the referenced site is `Flat`.
 fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
-    let root = image.sites()[site as usize].root;
+    let root = match &image.sites()[site as usize] {
+        SealedSite::Flat { root, .. } => *root,
+        SealedSite::Parked { .. } => {
+            unreachable!("the verifier admits a durable opcode only over a flat site")
+        }
+    };
     image.roots()[root as usize].record()
 }

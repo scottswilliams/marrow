@@ -34,9 +34,9 @@ use marrow_image::{
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, SemanticNode,
-    SemanticNodeKind, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL, TAG_BYTES,
-    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT,
-    TAG_UNIT, image_id,
+    SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL,
+    TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD,
+    TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -153,12 +153,6 @@ impl DecodedMember {
     }
 }
 
-/// A decoded durable site: root index and entry-or-field target.
-struct DecodedSite {
-    root: u16,
-    target: SealedSiteTarget,
-}
-
 struct DecodedFunction {
     name: u16,
     source: u16,
@@ -176,7 +170,7 @@ struct DecodedImage {
     enums: Vec<DecodedEnum>,
     collections: Vec<SealedCollectionType>,
     roots: Vec<DecodedRoot>,
-    sites: Vec<DecodedSite>,
+    sites: Vec<SealedSite>,
     durable_contract: DurableContractId,
     durable_descriptor: DurableContractDescriptor,
     consts: Vec<SealedConst>,
@@ -956,7 +950,7 @@ fn decode_durable(
 ) -> Result<
     (
         Vec<DecodedRoot>,
-        Vec<DecodedSite>,
+        Vec<SealedSite>,
         DurableContractId,
         DurableContractDescriptor,
     ),
@@ -1071,14 +1065,13 @@ fn decode_durable(
     if site_count > marrow_image::bounds::MAX_SITES {
         return Err(reject(VerifyPhase::Table, "too many durable sites"));
     }
-    let mut sites: Vec<DecodedSite> = Vec::with_capacity(site_count);
+    let mut sites: Vec<SealedSite> = Vec::with_capacity(site_count);
     for _ in 0..site_count {
         let site = decode_site(&mut reader, &nodes, &roots)?;
-        // Sites are unique by their resolved (root, target).
-        if sites
-            .iter()
-            .any(|existing| existing.root == site.root && existing.target == site.target)
-        {
+        // Sites are unique by their resolved identity: a flat site by (root, target),
+        // a parked site by (path, target). Full structural equality covers both, and a
+        // flat and a parked site can never collide.
+        if sites.contains(&site) {
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
         sites.push(site);
@@ -1119,7 +1112,7 @@ fn decode_site(
     reader: &mut Reader<'_>,
     nodes: &[SemanticNode],
     roots: &[DecodedRoot],
-) -> Result<DecodedSite, VerifyRejection> {
+) -> Result<SealedSite, VerifyRejection> {
     let step_count = reader
         .u8()
         .ok_or(reject(VerifyPhase::Table, "short site path length"))? as usize;
@@ -1157,17 +1150,21 @@ fn decode_site(
     resolve_site(&steps, target, nodes, roots)
 }
 
-/// Resolve a decoded site path plus target kind to the physical [`DecodedSite`] the
-/// executable path consumes. A path that names no reconstructed node, or a target
-/// whose kind disagrees with the resolved node's kind, is refused; the root index
-/// and (for a field leaf) the record field index are re-derived from the resolved
-/// graph, never trusted from the image.
+/// Resolve a decoded site path plus target kind to a [`SealedSite`]. A path that
+/// names no reconstructed node, or a target whose kind disagrees with the resolved
+/// node's kind, is refused. A site over the flat single-column keyed root of plain
+/// scalar fields seals as [`SealedSite::Flat`] with its re-derived root index and (for
+/// a field leaf) top-level field index; every other resolved site — a singleton or
+/// composite-key root, a nested `branch` placement, a group-scoped field, or a
+/// widened-field leaf — seals as [`SealedSite::Parked`], carrying the resolved path
+/// and target for the widened kernel (E01). Both forms re-derive everything from the
+/// reconstructed graph, never trusting the image.
 fn resolve_site(
     steps: &[SemanticStep],
     target: SemanticTarget,
     nodes: &[SemanticNode],
     roots: &[DecodedRoot],
-) -> Result<DecodedSite, VerifyRejection> {
+) -> Result<SealedSite, VerifyRejection> {
     let node = nodes
         .iter()
         .find(|node| node.path.steps() == steps)
@@ -1187,49 +1184,64 @@ fn resolve_site(
             ));
         }
     }
-    // Every node under a root carries that root's placement as its second step, so
-    // the root index is that placement's position. The kernel-executable flat root
-    // is the only shape with operation sites at this stage: a whole-payload site is
-    // the root itself, a field-leaf site a direct top-level field. Deeper sites
-    // carry a complete identity but are not yet executable and are refused here.
+    // Every node carries its enclosing root's placement as its second step, so the
+    // root index is that placement's position. Only the flat single-column keyed root
+    // of plain scalar fields is kernel-executable; a site over it is a whole-payload
+    // site on the root itself or a field-leaf site on a direct top-level field. Any
+    // other resolved site — a nested placement, a group-scoped or widened field, or a
+    // site on a non-flat root — seals as parked (identity complete, execution deferred).
     let placement = steps[1].id;
-    let root = roots
+    let root_index = roots
         .iter()
         .position(|root| root.placement == placement)
         .ok_or(reject(
             VerifyPhase::Table,
             "durable site path is not rooted at a durable root",
         ))? as u16;
+    let root = &roots[root_index as usize];
+    let parked = || SealedSite::Parked {
+        path: SemanticPath::from_steps(steps.to_vec()),
+        target,
+    };
+    if !is_flat_executable_root(root) {
+        return Ok(parked());
+    }
     let sealed = match target {
         SemanticTarget::WholePayload => {
             if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "a whole-payload operation site over a nested placement is not yet executable",
-                ));
+                return Ok(parked());
             }
-            SealedSiteTarget::WholePayload
+            SealedSite::Flat {
+                root: root_index,
+                target: SealedSiteTarget::WholePayload,
+            }
         }
         SemanticTarget::FieldLeaf => {
             if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "a field operation site over a nested field is not yet executable",
-                ));
+                return Ok(parked());
             }
-            let field_id = steps[2].id;
-            let field_index = top_level_field_index(&roots[root as usize].members, field_id)
-                .ok_or(reject(
-                    VerifyPhase::Table,
-                    "a field operation site does not name a top-level field",
-                ))?;
-            SealedSiteTarget::FieldLeaf(field_index)
+            match top_level_field_index(&root.members, steps[2].id) {
+                Some(field_index) => SealedSite::Flat {
+                    root: root_index,
+                    target: SealedSiteTarget::FieldLeaf(field_index),
+                },
+                None => parked(),
+            }
         }
     };
-    Ok(DecodedSite {
-        root,
-        target: sealed,
-    })
+    Ok(sealed)
+}
+
+/// Whether a decoded root is the flat single-column keyed root the single-root kernel
+/// executes: exactly one key column and a member tree of only plain top-level scalar
+/// fields (no group, branch, or widened field). Re-derived from the decoded graph, so
+/// the flat/parked classification never trusts a compiler summary.
+fn is_flat_executable_root(root: &DecodedRoot) -> bool {
+    root.keys.len() == 1
+        && root
+            .members
+            .iter()
+            .all(|member| !member.is_extra() && !member.is_nonscalar_field())
 }
 
 /// The index of the top-level field with ledger id `field_id` among a root's member
@@ -2086,14 +2098,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 .any(|member| member.is_extra() || member.is_nonscalar_field()),
         })
         .collect();
-    let sites: Vec<SealedSite> = decoded
-        .sites
-        .iter()
-        .map(|site| SealedSite {
-            root: site.root,
-            target: site.target,
-        })
-        .collect();
+    let sites: Vec<SealedSite> = decoded.sites.clone();
     // Function signatures feed the per-function `Call` type check (phase 3).
     let signatures: Vec<FnSig> = decoded
         .functions
@@ -3791,16 +3796,26 @@ fn apply_durable(
         VerifyPhase::Function,
         "durable site index out of range",
     ))?;
-    let root = ctx.roots.get(site.root as usize).ok_or(reject(
+    // A durable opcode may reference only a kernel-executable flat site. A parked
+    // site (a nested placement, a group-scoped or widened field, or a site on a
+    // singleton, composite-key, or group/branch-bearing root) carries a complete
+    // identity but no executable operation; an opcode over one is a forged or
+    // not-yet-executable image and is refused here, independently of the compiler.
+    let (site_root, site_target) = match site {
+        SealedSite::Flat { root, target } => (*root, *target),
+        SealedSite::Parked { .. } => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "a durable operation site is not yet executable",
+            ));
+        }
+    };
+    let root = ctx.roots.get(site_root as usize).ok_or(reject(
         VerifyPhase::Function,
         "durable site root out of range",
     ))?;
-    // The executable durable subset served by the single-root kernel is the flat
-    // single-column keyed root: one key column and no groups or branches. A
-    // singleton, composite-key, or group/branch-bearing root carries a complete
-    // identity but has no executable operation sites; a site over one is a forged
-    // or not-yet-executable image and is refused here, independently of the
-    // compiler's own boundary.
+    // Defense in depth: a flat site's root is single-column and free of groups,
+    // branches, and widened fields by construction, but recheck at the opcode.
     if root.has_extras {
         return Err(reject(
             VerifyPhase::Function,
@@ -3821,18 +3836,18 @@ fn apply_durable(
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurReadField(_) => {
-            let field = field_of(ctx, site, root)?;
+            let field = field_of(ctx, site_target, root)?;
             let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, key_ty)?;
             stack.push(value);
         }
         SealedInstr::DurReadEntry(_) => {
-            require_entry(site)?;
+            require_entry(site_target)?;
             expect(pop(stack)?, key_ty)?;
             stack.push(VType::bare_record(root.record).to_optional());
         }
         SealedInstr::DurSetRequired(_) => {
-            let field = field_of(ctx, site, root)?;
+            let field = field_of(ctx, site_target, root)?;
             if !field.required {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -3844,7 +3859,7 @@ fn apply_durable(
             expect(pop(stack)?, key_ty)?;
         }
         SealedInstr::DurSetSparse(_) => {
-            let field = field_of(ctx, site, root)?;
+            let field = field_of(ctx, site_target, root)?;
             if field.required {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -3856,12 +3871,12 @@ fn apply_durable(
             expect(pop(stack)?, key_ty)?;
         }
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
-            require_entry(site)?;
+            require_entry(site_target)?;
             expect(pop(stack)?, VType::bare_record(root.record))?;
             expect(pop(stack)?, key_ty)?;
         }
         SealedInstr::DurEraseField(_) => {
-            let field = field_of(ctx, site, root)?;
+            let field = field_of(ctx, site_target, root)?;
             if field.required {
                 return Err(reject(
                     VerifyPhase::Function,
@@ -3871,11 +3886,11 @@ fn apply_durable(
             expect(pop(stack)?, key_ty)?;
         }
         SealedInstr::DurEraseEntry(_) => {
-            require_entry(site)?;
+            require_entry(site_target)?;
             expect(pop(stack)?, key_ty)?;
         }
         SealedInstr::DurNextKey(_) => {
-            require_entry(site)?;
+            require_entry(site_target)?;
             let opt_key = key_ty.to_optional();
             expect(pop(stack)?, opt_key)?;
             stack.push(opt_key);
@@ -3889,10 +3904,10 @@ fn apply_durable(
 /// entry site.
 fn field_of<'a>(
     ctx: &'a Ctx,
-    site: &SealedSite,
+    target: SealedSiteTarget,
     root: &SealedRoot,
 ) -> Result<&'a SealedField, VerifyRejection> {
-    let SealedSiteTarget::FieldLeaf(field) = site.target else {
+    let SealedSiteTarget::FieldLeaf(field) = target else {
         return Err(reject(
             VerifyPhase::Function,
             "operation requires a field site",
@@ -3914,8 +3929,8 @@ fn durable_field_vtype(field: &SealedField) -> VType {
 }
 
 /// Require an entry-target site.
-fn require_entry(site: &SealedSite) -> Result<(), VerifyRejection> {
-    match site.target {
+fn require_entry(target: SealedSiteTarget) -> Result<(), VerifyRejection> {
+    match target {
         SealedSiteTarget::WholePayload => Ok(()),
         SealedSiteTarget::FieldLeaf(_) => Err(reject(
             VerifyPhase::Function,

@@ -106,6 +106,18 @@ a store is no longer a `check.type` on the resource, as it was before durable
 field values widened; the store is identity-complete, only its operations are
 deferred.)
 
+The compiler emits an **operation site** for every node of the whole durable graph
+— a whole-payload site for each keyed placement (the store root and every nested
+`branch`) and a field-leaf site for each stored field (top-level, group-scoped, or
+branch-scoped) — and the verifier seals each one by resolving its concrete address
+against the graph it independently reconstructs. A site on the flat executable root
+seals as executable; every other site — over a nested placement, a group-scoped or
+widened field, or a non-flat root — seals with a complete identity but parks, so its
+concrete address is checked and recorded while its execution waits for the wider
+kernel. The site table holds one entry per graph node regardless of how many
+operations reference it, and appending a sparse field adds one field-leaf site
+without disturbing any existing site.
+
 ## Durable Identity
 
 Every durable declaration — the application, a store root, each of its key

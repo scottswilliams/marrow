@@ -231,16 +231,29 @@ impl DurableRegistry {
             })
             .collect();
 
-        // The top-level field ledger ids, in record order, for the operation-site
-        // paths below — captured before the member tree moves into the draft.
-        let field_ids: Vec<LedgerIdBytes> = members
-            .iter()
-            .take(record.fields.len())
-            .map(|member| match member {
-                DurableMemberDef::Field { id, .. } => *id,
-                _ => unreachable!("a resource's leading members are its top-level fields"),
-            })
-            .collect();
+        // Emit the complete operation-site set for the whole durable graph now: one
+        // whole-payload site per keyed placement (this root and every nested
+        // `branch`) and one field-leaf site per stored field (top-level, group-scoped,
+        // and branch-scoped, including a widened-field leaf). A site names its target
+        // node by the node's semantic path — the chain of kind-tagged ledger ids from
+        // the application down — so it follows the graph's ledger ids. The verifier
+        // re-derives every site from its own reconstructed node set, so this path is a
+        // producer claim, not a trusted address: a nested site completes its identity
+        // and seals even though the flat-root kernel cannot execute over it yet. Sites
+        // are emitted from the graph, not per operation, so the site table scales with
+        // the graph rather than with operation count. The flat executable root's entry
+        // and top-level-field sites are captured here for the lowerer.
+        let root_steps = vec![
+            SemanticStep::new(SemanticStepKind::Application, application),
+            SemanticStep::new(SemanticStepKind::Placement, placement),
+        ];
+        let entry_site = draft
+            .add_site(SiteDef::whole_payload(SemanticPath::from_steps(
+                root_steps.clone(),
+            )))
+            .index();
+        let mut top_field_sites: Vec<u16> = Vec::new();
+        emit_member_sites(draft, &root_steps, &members, &mut top_field_sites, true);
 
         let root_name = draft.intern_string(&store.root.root);
         draft.add_root(RootDef {
@@ -254,13 +267,12 @@ impl DurableRegistry {
             },
         });
 
-        // Operation sites — and therefore executable durable operations — exist only
-        // for the flat single-column keyed root of plain scalar fields the kernel can
-        // serve. A singleton, composite-key, group/branch-bearing, or widened-field
-        // root (any top-level field that is a nominal scalar, struct, enum, or
-        // `Option` rather than a plain base scalar) carries its identity but no sites;
-        // the lowerer reports any operation over it as not yet executable. This keeps
-        // the executable flat-scalar path exactly as before value widening.
+        // Executable durable operations exist only for the flat single-column keyed
+        // root of plain scalar fields the kernel can serve. A singleton, composite-key,
+        // group/branch-bearing, or widened-field root (any top-level field that is a
+        // nominal scalar, struct, enum, or `Option` rather than a plain base scalar)
+        // carries its identity and its full site set, but the lowerer reports any
+        // operation over it as not yet executable — its sites seal and park.
         let all_scalar_fields = record
             .fields
             .iter()
@@ -271,39 +283,20 @@ impl DurableRegistry {
         if has_extras || !all_scalar_fields {
             return Self::declared(&store.root.root);
         }
-        // A site names its target node by the node's semantic path — the chain of
-        // kind-tagged ledger ids from the application down. The executable flat root
-        // yields a whole-payload site at `[application, placement]` and one field-leaf
-        // site per top-level field at `[application, placement, field]`. The verifier
-        // re-derives every site from its own reconstructed node set, so this path is a
-        // producer claim, not a trusted address.
-        let root_path = SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, application),
-            SemanticStep::new(SemanticStepKind::Placement, placement),
-        ]);
-        let entry_site = draft
-            .add_site(SiteDef::whole_payload(root_path.clone()))
-            .index();
+        // A flat root has only top-level scalar fields, so `top_field_sites[i]` is the
+        // field-leaf site of `record.fields[i]` (both in member/record order).
         let fields = record
             .fields
             .iter()
             .enumerate()
-            .map(|(index, field)| {
-                let field_path = SemanticPath::from_steps(vec![
-                    SemanticStep::new(SemanticStepKind::Application, application),
-                    SemanticStep::new(SemanticStepKind::Placement, placement),
-                    SemanticStep::new(SemanticStepKind::Field, field_ids[index]),
-                ]);
-                let site = draft.add_site(SiteDef::field_leaf(field_path)).index();
-                DurableField {
-                    name: field.name.clone(),
-                    site,
-                    scalar: field
-                        .ty
-                        .as_scalar()
-                        .expect("a stored resource field is a scalar"),
-                    required: field.required,
-                }
+            .map(|(index, field)| DurableField {
+                name: field.name.clone(),
+                site: top_field_sites[index],
+                scalar: field
+                    .ty
+                    .as_scalar()
+                    .expect("a stored resource field is a scalar"),
+                required: field.required,
             })
             .collect();
 
@@ -675,6 +668,53 @@ impl<'a> IdentityResolver<'a> {
             required: field.required,
             value: DurableValueShape::Scalar(scalar.image()),
         })
+    }
+}
+
+/// Walk one member tree under `parent_steps` (the semantic path of its containing
+/// placement), emitting the field-leaf and whole-payload sites of every node below
+/// it: a stored field yields a field-leaf site, a static `group` recurses without a
+/// site of its own (a group is a namespace, not an addressable payload or leaf), and
+/// a keyed `branch` yields a whole-payload site and recurses. The paths mirror
+/// [`marrow_image::DurableContractDescriptor::semantic_nodes`], so every emitted site
+/// resolves against the verifier's independently reconstructed node set. `is_top`
+/// marks the root's own direct fields, whose sites feed the flat executable root's
+/// field lowering in record order.
+fn emit_member_sites(
+    draft: &mut ImageDraft,
+    parent_steps: &[SemanticStep],
+    members: &[DurableMemberDef],
+    top_field_sites: &mut Vec<u16>,
+    is_top: bool,
+) {
+    for member in members {
+        match member {
+            DurableMemberDef::Field { id, .. } => {
+                let mut steps = parent_steps.to_vec();
+                steps.push(SemanticStep::new(SemanticStepKind::Field, *id));
+                let site = draft
+                    .add_site(SiteDef::field_leaf(SemanticPath::from_steps(steps)))
+                    .index();
+                if is_top {
+                    top_field_sites.push(site);
+                }
+            }
+            DurableMemberDef::Group { id, members } => {
+                let mut steps = parent_steps.to_vec();
+                steps.push(SemanticStep::new(SemanticStepKind::Group, *id));
+                emit_member_sites(draft, &steps, members, top_field_sites, false);
+            }
+            DurableMemberDef::Branch {
+                placement, members, ..
+            } => {
+                let mut steps = parent_steps.to_vec();
+                steps.push(SemanticStep::new(SemanticStepKind::Placement, *placement));
+                draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(
+                    steps.clone(),
+                )));
+                emit_member_sites(draft, &steps, members, top_field_sites, false);
+            }
+        }
     }
 }
 

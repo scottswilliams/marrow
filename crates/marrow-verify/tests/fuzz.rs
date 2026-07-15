@@ -375,6 +375,52 @@ fn a_group_branch_durable_image() -> Vec<u8> {
             ],
         },
     });
+    // The whole-graph operation sites the compiler emits for a nested graph: a
+    // whole-payload site per keyed placement (root and `notes` branch) and a
+    // field-leaf site per stored field (`title`, `details.pages`, `notes.text`).
+    // Every site seals as parked; mutating the image reaches the nested-site path
+    // decode and node resolution a flat root never exercises.
+    let app = SemanticStep::new(
+        SemanticStepKind::Application,
+        LedgerIdBytes::from_bytes([0x0a; 16]),
+    );
+    let root_place = SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes([0x0b; 16]),
+    );
+    let group = SemanticStep::new(
+        SemanticStepKind::Group,
+        LedgerIdBytes::from_bytes([0x20; 16]),
+    );
+    let branch = SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes([0x30; 16]),
+    );
+    let field =
+        |id: [u8; 16]| SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(id));
+    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
+        app, root_place,
+    ])));
+    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
+        app,
+        root_place,
+        field([0x0e; 16]),
+    ])));
+    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
+        app,
+        root_place,
+        group,
+        field([0x21; 16]),
+    ])));
+    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
+        app, root_place, branch,
+    ])));
+    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
+        app,
+        root_place,
+        branch,
+        field([0x32; 16]),
+    ])));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
     let zero = draft.intern_int(0);
