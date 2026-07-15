@@ -194,7 +194,6 @@ base_type        = scalar_type
                  | qualified_name
                  | "Error"
                  | identity_type
-                 | sequence_type
                  | generic_type ;
 
 scalar_type      = "int" | "bool" | "string" | "bytes"
@@ -202,17 +201,16 @@ scalar_type      = "int" | "bool" | "string" | "bytes"
                  | "ErrorCode" | "unknown" ;
 
 identity_type    = "Id", "(", saved_root, ")" ;
-sequence_type    = "sequence", "[", type, "]" ;
-generic_type     = ("Option" | "Result" | "List" | "Map"),
-                   "[", type, {",", type}, "]" ;
+generic_type     = identifier, "[", type, {",", type}, "]" ;
 ```
 
-`generic_type` is a built-in generic application, spelled with the same bracket
-group as `sequence_type`. The recognized heads on the current line are the value
-types `Option[T]` and `Result[T, E]` and the finite collection types `List[T]`
-and `Map[K, V]`; a user-defined generic head is a future direction. The applied
-argument arity (`Option` and `List` take one type, `Result` and `Map` take two) is
-a checker rule.
+`generic_type` is a generic type application: any identifier head carrying a
+bracket group of comma-separated type arguments. The head is either a reserved
+toolchain generic — the value types `Option[T]` and `Result[T, E]` and the finite
+collection types `List[T]` and `Map[K, V]` — or a user-declared generic
+`struct`/`enum` template. The parser accepts any head; the checker resolves it and
+enforces argument arity (`Option` and `List` take one type, `Result` and `Map`
+take two; a user template takes its declared number).
 
 Keyed local-collection shapes are written on declarations, not as standalone
 type annotations.

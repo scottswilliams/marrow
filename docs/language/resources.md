@@ -63,12 +63,12 @@ cells(row: int, column: int): decimal
 ```
 
 Keys must be supported ordered scalar types. Optional, decimal, resource,
-sequence, and entry-identity types are not accepted as resource key columns.
+collection, and entry-identity types are not accepted as resource key columns.
 Key parameter names share the member namespace at their layer.
 
-A one-column `int` leaf such as `tags(pos: int): string` has sequence behavior:
-positive integer positions, 1-based append, and holes. Other key shapes are
-ordinary ordered keyed layers.
+A one-column `int` leaf such as `tags(pos: int): string` has positional
+behavior: positive integer positions, 1-based append, and holes. Other key
+shapes are ordinary ordered keyed layers.
 
 ## Local Resource Values
 

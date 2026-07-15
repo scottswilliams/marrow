@@ -168,8 +168,10 @@ remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
 `run.divide_by_zero`, and `i64::MIN / -1` (like `i64::MIN % -1`) raises
 `run.overflow` because its result is unrepresentable.
 
-Whole resources, sequences, keyed collections, and `Error` values have no
-equality operator. Arithmetic overflow, invalid division, and invalid temporal
+Whole resources, lists, maps, and `Error` values have no top-level equality
+operator, though a list or map reached inside a compared struct or enum
+participates in that aggregate's structural equality. Arithmetic overflow,
+invalid division, and invalid temporal
 arithmetic raise typed runtime errors. Range endpoint and step combinations are
 defined under [Traversal and indexes](traversal-and-indexes.md#ranges).
 
@@ -225,9 +227,8 @@ implementation limitation, not a separate persisted scalar representation.
 ## Optional Values
 
 `T?` contains either a present `T` or `absent`. Optional types do not nest.
-Fields, key columns, keyed leaf declarations, and sequence element declarations
-cannot themselves be optional; `sequence[T]?` is valid because the optionality
-applies to the sequence value.
+Fields, key columns, and keyed leaf declarations cannot themselves be optional;
+`List[T]?` is valid because the optionality applies to the collection value.
 
 Optional values arise from sparse reads, lookup operations, optional returns,
 and optional standard-library functions. Four constructs consume them:
@@ -551,26 +552,13 @@ A collection has fixed representational bounds: at most 65536 elements and at mo
 1 MiB of aggregate value size. An `append` or `insert` that would exceed either
 faults `run.collection_limit` rather than allocating unboundedly.
 
-## Sequences And Keyed Collections
-
-`sequence[T]` is a local or declared positional collection whose keys are
-positive integers. A declaration such as `var scores(name: string): int`
-creates a local keyed collection. Declared resource layers and keyed local
-collections may have several typed key columns and may contain resource entries
-rather than scalar leaves.
-
-A collection read at a key has type `T?` because the position may be absent.
-Iteration visits only present entries. Sequences may be passed and returned by
-value. A keyed local collection may be passed to a parameter with the same keyed
-shape, but the language has no keyed-collection return-type syntax.
-
 ## Key Types
 
 Store identity columns, resource keyed layers, and local keyed collections
 accept `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration` keys.
 The `ErrorCode` spelling is also accepted, but current key compilation erases
 its refinement: the key behaves as `string` and is not grammar-validated.
-`decimal`, enums, entry identities, resources, sequences, optionals, and
+`decimal`, enums, entry identities, resources, collections, optionals, and
 `unknown` are not accepted in those key positions. Declared index components may
 also project enum and entry-identity fields; `decimal` remains unavailable.
 

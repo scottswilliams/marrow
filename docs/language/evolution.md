@@ -57,7 +57,7 @@ evolve
 The value may be a `bool`, `int`, `decimal`, or string literal; a negated numeric
 literal; or `date("...")`, `instant("...")`, `duration("...")`, or `bytes("...")`
 over one string literal. Bare duration and bytes literals are not accepted here.
-Enums, identities, resources, sequences, other calls, durable reads, arithmetic
+Enums, identities, resources, collections, other calls, durable reads, arithmetic
 computations, and per-record expressions require another approach. Use a
 transform when records need different values.
 

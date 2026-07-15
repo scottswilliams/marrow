@@ -75,6 +75,11 @@ Marrow does not overload functions. A module has at most one function with a
 given name. Recursion is not admitted: a function may not call itself, directly
 or through a cycle of other functions; the direct-call graph is acyclic.
 
+A function may not reuse a reserved built-in name (`List`, `Map`, the text floor,
+and the value constructors); the common collection verbs `append`, `insert`,
+`get`, and `length` are not reserved, so declaring one shadows the corresponding
+built-in throughout that module (see [Built-ins](builtins.md#collections)).
+
 ## Generic Functions
 
 A function may declare rank-1 generic type parameters in a bracket list after its
@@ -144,11 +149,9 @@ program whose monomorphization would otherwise diverge.
 
 ## Parameters Are By Value
 
-Scalars, structs, resources, and sequences are passed by value. A local keyed collection
-may be passed to a parameter with the same keyed shape, but it has no return-type
-syntax. Parameters cannot be assigned. A helper that changes a local resource or
-sequence returns the replacement value; keyed collection parameters are
-read-only.
+Scalars, structs, resources, lists, and maps are passed by value. Parameters
+cannot be assigned. A helper that changes a local resource or collection returns
+the replacement value.
 
 ```mw
 module docs::parameters

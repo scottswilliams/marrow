@@ -27,7 +27,7 @@ pub fn printAll()
 ```
 
 With one variable, a store root yields `Id(^root)` values, a keyed child layer
-yields its next key, and a local sequence yields its 1-based integer positions.
+yields its next key, and a local list yields its elements in insertion order.
 With two variables, the second binding is the entry or leaf value.
 
 Durable traversal is lazy. It visits stored entries without first creating a
@@ -64,30 +64,17 @@ first key can repeat. `keys(local)` likewise materializes distinct first keys;
 columns are not exposed by current local iteration, and direct lookup requires
 all declared keys.
 
-## Sequences
+## Positional Keyed Leaves
 
-`sequence[T]` and a one-`int`-key leaf use positive, 1-based positions. Entries
-may have holes. Reads at zero or a negative position are absent. A dynamic write
-to a non-positive position fails at runtime.
+A durable one-`int`-key leaf such as `tags(pos: int): string` uses positive,
+1-based positions. Entries may have holes. Reads at zero or a negative position
+are absent, and a dynamic write to a non-positive position fails at runtime.
+`append(place, value)` writes after the greatest present positive position and
+returns that position; it does not fill an earlier hole, and iteration visits
+present positions only.
 
-`append(collection, value)` writes after the greatest present positive
-position and returns that position. It does not fill an earlier hole. Iteration
-visits present positions only.
-
-```mw
-module docs::sequences
-
-pub fn labels(): int
-    var values: sequence[string]
-    append(values, "first")
-    values(3) = "third"
-
-    var seen = 0
-    for position, value in values
-        print($"{position}: {value}")
-        seen += 1
-    return seen
-```
+Local ordered values use the `List[T]` and `Map[K, V]` collections instead; see
+[Lists and maps](types-and-values.md#lists-and-maps).
 
 ## Ranges
 
@@ -120,8 +107,8 @@ return the neighboring present key, if any; the place supplies both its layer
 and current key. For an entry identity, `key(value)` returns its sole declared
 raw key.
 
-`keys(local)` and `values(local)` materialize local sequences from a local
-sequence or keyed collection. They do not accept durable collections. They also
+`keys(local)` and `values(local)` materialize local lists from a local list or
+map. They do not accept durable collections. They also
 cannot appear directly as a `for` head; bind their result first if a copied view
 is needed.
 
@@ -167,7 +154,7 @@ branch yields store identities in index order. A complete unique lookup returns
 
 Each index argument names either one store identity column or one plain
 top-level field of the stored resource. A field nested through an unkeyed group,
-a keyed child layer, and a sequence field cannot be an index component. Index
+a keyed child layer, and a keyed positional leaf cannot be an index component. Index
 components must be orderable key values. In addition to the ordinary scalar key
 types, a plain top-level enum or entry-identity field may be indexed.
 

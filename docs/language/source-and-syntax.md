@@ -40,7 +40,7 @@ enum category match is evolve rename default retire transform
 if else while for in reversed by
 break continue transaction try catch throw delete
 and or not true false absent
-int bool string bytes decimal date instant duration sequence unknown Error ErrorCode Id
+int bool string bytes decimal date instant duration unknown Error ErrorCode Id
 ```
 
 `surface` begins a reachable legacy declaration and is intentionally outside
@@ -144,9 +144,10 @@ and plural spellings. Months and years are not fixed durations.
 
 ## Collection And Resource Construction
 
-Sequences and keyed local collections are introduced by `var` declarations and
-populated by assignment or `append`. Resource constructors name the resource
-and use named members.
+Lists and maps are introduced by `var` declarations, constructed with `List()`
+or `Map()`, and grown with `append` or `insert`; because collections are values,
+each operation yields an updated collection that the binding is reassigned to.
+Resource constructors name the resource and use named members.
 
 ```mw
 module docs::literals
@@ -157,15 +158,10 @@ resource Point
     label: string
 
 pub fn origin(): Point
-    var xs: sequence[int]
-    append(xs, 1)
-    append(xs, 2)
-    append(xs, 3)
-    var labels(axis: string): string
-    labels("x") = "horizontal"
-    labels("y") = "vertical"
-    print(count(xs))
-    print(count(labels))
+    var xs: List[int] = List()
+    xs = append(xs, 1)
+    xs = append(xs, 2)
+    xs = append(xs, 3)
     return Point(x: 0, y: 0)
 ```
 

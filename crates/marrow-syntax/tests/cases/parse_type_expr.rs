@@ -1,5 +1,6 @@
 //! The structural type node the parser owns. Every type spelling is classified
-//! once here — `sequence[T]`, `Id(^root)`, the `?` suffix, and otherwise a name —
+//! once here — a generic application `Head[..]`, `Id(^root)`, the `?` suffix, and
+//! otherwise a name —
 //! and downstream crates match on the node rather than re-reading the spelling.
 //! These tests pin the node shape and the whitespace-free render that the
 //! formatter and the durable digest depend on.
@@ -50,16 +51,16 @@ fn a_bracket_bearing_name_is_a_generic_application() {
 }
 
 #[test]
-fn sequence_recurses_on_its_element() {
-    let TypeExpr::Sequence { element, .. } = field_type("sequence[int]") else {
-        panic!("expected a sequence");
+fn a_generic_application_recurses_on_its_arguments() {
+    let TypeExpr::Apply { head, args, .. } = field_type("Map[string, List[int]]") else {
+        panic!("expected a generic application");
     };
-    assert!(matches!(*element, TypeExpr::Name { text, .. } if text == "int"));
-
-    let TypeExpr::Sequence { element, .. } = field_type("sequence[sequence[int]]") else {
-        panic!("expected a nested sequence");
-    };
-    assert!(matches!(*element, TypeExpr::Sequence { .. }));
+    assert_eq!(head, "Map");
+    assert!(matches!(
+        args.as_slice(),
+        [TypeExpr::Name { text, .. }, TypeExpr::Apply { head, .. }]
+            if text == "string" && head == "List"
+    ));
 }
 
 #[test]
@@ -107,11 +108,11 @@ fn a_trailing_question_wraps_the_base_as_optional() {
     };
     assert!(matches!(*inner, TypeExpr::Identity(_)));
 
-    // A `?` inside a sequence element rides with the element.
-    let TypeExpr::Sequence { element, .. } = field_type("sequence[int?]") else {
-        panic!("expected a sequence of optionals");
+    // A `?` inside a generic argument rides with the argument.
+    let TypeExpr::Apply { args, .. } = field_type("List[int?]") else {
+        panic!("expected a generic application of optionals");
     };
-    assert!(matches!(*element, TypeExpr::Optional { .. }));
+    assert!(matches!(args.as_slice(), [TypeExpr::Optional { .. }]));
 }
 
 #[test]
@@ -120,20 +121,20 @@ fn display_round_trips_the_whitespace_free_spelling() {
     // parsed spelling renders back byte-identically, dropping only whitespace.
     for spelling in [
         "int",
-        "sequence[int]",
-        "sequence[sequence[int]]",
+        "List[int]",
+        "List[List[int]]",
         "Id(^books)",
         "string?",
         "Id(^books)?",
-        "sequence[int?]",
-        "sequence[Id(^books)]",
+        "List[int?]",
+        "List[Id(^books)]",
         "Foo[bar]",
         "shelf::Book",
     ] {
         assert_eq!(field_type(spelling).to_string(), spelling);
     }
     // Whitespace inside a spelling is dropped in the stored render.
-    assert_eq!(field_type("sequence[ int ]").to_string(), "sequence[int]");
+    assert_eq!(field_type("List[ int ]").to_string(), "List[int]");
 }
 
 /// The structurally malformed spellings the parser now rejects, each paired with

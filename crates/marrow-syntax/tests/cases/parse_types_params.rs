@@ -63,7 +63,7 @@ fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
         default.diagnostics
     );
 
-    let nested = parse_source("module app\nfn f(x: sequence[a = b])\n    return\n");
+    let nested = parse_source("module app\nfn f(x: List[a = b])\n    return\n");
     assert!(
         nested.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == parse_reason(ParseDiagnosticReason::Expected(
@@ -441,7 +441,7 @@ fn valid_signature_with_types_and_return_parses() {
 fn rejects_structural_equal_inside_type_annotations() {
     for (source, expected) in [
         (
-            "module app\nconst Max: sequence[a = b] = 1\n",
+            "module app\nconst Max: List[a = b] = 1\n",
             ExpectedSyntax::ConstType,
         ),
         (
@@ -482,7 +482,7 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
          fn f(rows: FutureBox[string, int]): FutureBox[string, int]\n\
          \x20   return 1\n\
          resource Book\n\
-         \x20   scores(k: FutureBox[string, int]): sequence[]\n",
+         \x20   scores(k: FutureBox[string, int]): Box[]\n",
     );
     assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
 
@@ -504,7 +504,7 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
         panic!("expected scores field, got {:#?}", book.members[0]);
     };
     assert_eq!(scores.keys[0].ty.to_string(), "FutureBox[string, int]");
-    assert_eq!(scores.ty.to_string(), "sequence[]");
+    assert_eq!(scores.ty.to_string(), "Box[]");
 }
 
 #[test]
@@ -690,20 +690,20 @@ fn multi_line_call_arguments_still_parse() {
 fn parameter_type_wrapped_inside_brackets_stays_one_parameter() {
     // A type may span physical lines inside its brackets; the line break sits at
     // a depth above the parameter list, so it must not split the parameter.
-    let source = "module app\nfn f(\n    rows: sequence[\n        Book\n    ]\n)\n    return\n";
+    let source = "module app\nfn f(\n    rows: List[\n        Book\n    ]\n)\n    return\n";
     assert_eq!(
         param_shape(source),
-        vec![("rows".to_string(), "sequence[Book]".to_string(), Vec::new(),)]
+        vec![("rows".to_string(), "List[Book]".to_string(), Vec::new(),)]
     );
 }
 
 #[test]
 fn parameter_with_wrapped_bracketed_type_and_a_following_parameter_parses_both() {
-    let source = "module app\nfn f(\n    rows: sequence[\n        Book\n    ]\n    shelf: string\n)\n    return\n";
+    let source = "module app\nfn f(\n    rows: List[\n        Book\n    ]\n    shelf: string\n)\n    return\n";
     assert_eq!(
         param_shape(source),
         vec![
-            ("rows".to_string(), "sequence[Book]".to_string(), Vec::new(),),
+            ("rows".to_string(), "List[Book]".to_string(), Vec::new(),),
             ("shelf".to_string(), "string".to_string(), Vec::new()),
         ]
     );

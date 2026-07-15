@@ -924,7 +924,7 @@ pub struct ParamDecl {
     pub name: String,
     /// Key parameters when the parameter is a local keyed collection
     /// (`scores(player: string): int`), spelled like the local declaration head.
-    /// Empty for an ordinary scalar, resource, sequence, or identity parameter,
+    /// Empty for an ordinary scalar, resource, collection, or identity parameter,
     /// where `ty` alone is the parameter type.
     pub keys: Vec<KeyParam>,
     pub ty: TypeExpr,
@@ -937,7 +937,7 @@ pub struct KeyParam {
 }
 
 /// A type annotation, parsed once into its structure. The parser classifies the
-/// `sequence[T]`, `Id(^root)`, and trailing-`?` forms here, so downstream
+/// generic-application `Head[..]`, `Id(^root)`, and trailing-`?` forms here, so downstream
 /// consumers match on this node instead of re-reading the source spelling. The
 /// grammar of type spellings has exactly one owner: the type parser that builds
 /// this node.
@@ -949,11 +949,6 @@ pub enum TypeExpr {
     /// `unknown`, or a named type is a resolution concern that needs project
     /// knowledge, so it stays with the semantic owner.
     Name { text: String, span: SourceSpan },
-    /// `sequence[T]` element-type sugar.
-    Sequence {
-        element: Box<TypeExpr>,
-        span: SourceSpan,
-    },
     /// `Id(^root)`, a saved-store identity type.
     Identity(IdentityTypeExpr),
     /// `T?`, an optional value type.
@@ -961,8 +956,8 @@ pub enum TypeExpr {
         inner: Box<TypeExpr>,
         span: SourceSpan,
     },
-    /// A generic type application `Head[Arg, ...]`, spelled with the same bracket
-    /// syntax as `sequence[T]`. The head is any identifier: the toolchain generics
+    /// A generic type application `Head[Arg, ...]`. The head is any identifier: the
+    /// toolchain generics
     /// `Option[T]`/`Result[T, E]`/`List[T]`/`Map[K, V]` or a user-declared generic
     /// `struct`/`enum` template. `head` is the applied name and `args` its type
     /// arguments in source order; the semantic owner resolves the head.
@@ -994,7 +989,6 @@ impl TypeExpr {
     pub fn span(&self) -> SourceSpan {
         match self {
             TypeExpr::Name { span, .. }
-            | TypeExpr::Sequence { span, .. }
             | TypeExpr::Optional { span, .. }
             | TypeExpr::Apply { span, .. } => *span,
             TypeExpr::Identity(identity) => identity.span,
@@ -1009,7 +1003,6 @@ impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypeExpr::Name { text, .. } => f.write_str(text),
-            TypeExpr::Sequence { element, .. } => write!(f, "sequence[{element}]"),
             TypeExpr::Identity(identity) => write!(f, "Id(^{})", identity.root),
             TypeExpr::Optional { inner, .. } => write!(f, "{inner}?"),
             // The canonical spelling separates arguments with `", "`. Any source

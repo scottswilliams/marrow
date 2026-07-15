@@ -58,7 +58,7 @@ The pages are arranged from source text to durable behavior:
 - [Durable places](durable-places.md) defines stores, identities, presence,
   reads, writes, clearing, and deletion.
 - [Traversal and indexes](traversal-and-indexes.md) defines ordered iteration,
-  ranges, sequences, and maintained alternate orderings.
+  ranges, positional keyed leaves, and maintained alternate orderings.
 - [Control flow](control-flow.md) defines branches, loops, matching, and
   evaluation order.
 - [Errors and transactions](errors-and-transactions.md) defines thrown values,

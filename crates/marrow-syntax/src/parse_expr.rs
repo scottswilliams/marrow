@@ -895,8 +895,8 @@ impl<'a> ExprParser<'a> {
                 ParseDiagnosticReason::Unsupported(UnsupportedSyntax::BracketCollectionLiterals),
                 "bracket collection literals are not part of expression grammar".to_string(),
                 Some(
-                    "build a local sequence with `var xs: sequence[T]` and \
-                    `append(xs, value)`, or call a function that returns a sequence"
+                    "build a list with `var xs: List[T] = List()` and \
+                    `xs = append(xs, value)`, or call a function that returns a list"
                         .to_string(),
                 ),
             ),

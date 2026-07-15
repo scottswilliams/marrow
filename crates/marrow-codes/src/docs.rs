@@ -306,5 +306,5 @@ already close. They are not ordinary user-facing diagnostics.
             .to_string(),
         rows(&internal()),
     ];
-    parts.join("\n")
+    format!("{}\n", parts.join("\n"))
 }

@@ -324,7 +324,7 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
     let source = "module app\n\
          fn main()\n\
          \x20   print(two_num([1,2,3], 3))\n\
-         fn two_num(nums: sequence[int], target: int): sequence[int]\n\
+         fn two_num(nums: List[int], target: int): List[int]\n\
          \x20   return nums\n";
     let parsed = parse_source(source);
 
@@ -359,11 +359,11 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
 fn local_bindings_reject_structural_equal_inside_type_annotations() {
     let cases = [
         (
-            "fn f()\n    var x: sequence[a = b] = 1\n",
+            "fn f()\n    var x: List[a = b] = 1\n",
             ExpectedSyntax::ParameterType,
         ),
         (
-            "fn f()\n    const x: sequence[a = b] = 1\n",
+            "fn f()\n    const x: List[a = b] = 1\n",
             ExpectedSyntax::ConstType,
         ),
     ];

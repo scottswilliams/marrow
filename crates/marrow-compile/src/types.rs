@@ -548,7 +548,7 @@ impl TypeRegistry {
 
     /// Resolve a type annotation to a bare value type (a [`GArg`]), monomorphizing
     /// any `Option`/`Result`/user generic application into `draft` on first use.
-    /// `None` for an optional, a sequence, the resource record, or a name not yet
+    /// `None` for an optional, the resource record, or a name not yet
     /// declared as a value type.
     pub(crate) fn resolve_garg(
         &self,
@@ -1044,10 +1044,6 @@ impl TypeRegistry {
                 inner: Box::new(self.expand(inner)),
                 span: *span,
             },
-            TypeExpr::Sequence { element, span } => TypeExpr::Sequence {
-                element: Box::new(self.expand(element)),
-                span: *span,
-            },
             TypeExpr::Apply { head, args, span } => TypeExpr::Apply {
                 head: head.clone(),
                 args: args.iter().map(|arg| self.expand(arg)).collect(),
@@ -1521,7 +1517,6 @@ fn referenced_names<'t>(ty: &'t TypeExpr, visit: &mut impl FnMut(&'t str)) {
     match ty {
         TypeExpr::Name { text, .. } => visit(text),
         TypeExpr::Optional { inner, .. } => referenced_names(inner, visit),
-        TypeExpr::Sequence { element, .. } => referenced_names(element, visit),
         TypeExpr::Apply { args, .. } => {
             for arg in args {
                 referenced_names(arg, visit);
@@ -1541,10 +1536,6 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
         },
         TypeExpr::Optional { inner, span } => TypeExpr::Optional {
             inner: Box::new(expand_in(table, inner)),
-            span: *span,
-        },
-        TypeExpr::Sequence { element, span } => TypeExpr::Sequence {
-            element: Box::new(expand_in(table, element)),
             span: *span,
         },
         TypeExpr::Apply { head, args, span } => TypeExpr::Apply {

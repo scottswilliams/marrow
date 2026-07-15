@@ -40,12 +40,12 @@ decoding failure.
 
 | Form | Result |
 |---|---|
-| `keys(local)` | `sequence[K]` of present keys |
-| `values(local)` | `sequence[V]` of present values |
+| `keys(local)` | `List[K]` of present keys |
+| `values(local)` | `List[V]` of present values |
 | `count(place)` | Number of immediate present children, or scalar presence |
 
-`keys` and `values` accept local sequences and local keyed collections. They do
-not accept a durable path. They materialize a new local sequence in key order.
+`keys` and `values` accept local lists and maps. They do not accept a durable
+path. They materialize a new local list in key order.
 
 `count` returns `0` for an absent empty place, `1` for a present scalar or
 resource node without children, and otherwise the number of immediate present
@@ -104,7 +104,16 @@ pub fn size(): int
 ```
 
 `isEmpty` also accepts a `string` (the text floor form above). `length` reports a
-collection's element or entry count; a string's length is `std::text::length`.
+collection's element or entry count.
+
+The collection constructors `List` and `Map`, together with the text floor names
+`isEmpty`, `contains`, `trim`, `split`, `lines`, and `join`, are reserved: a
+`fn`, `const`, parameter, or local binding may not redeclare them, because a bare
+use of one of these names always resolves to the built-in. The collection
+operations `append`, `insert`, `get`, and `length` are deliberately *not*
+reserved — they are common verbs — so a same-module function of one of those
+names is admitted, wins at every call site in that module, and totally shadows
+the built-in collection operation there.
 
 ## Ordered Neighbors
 
@@ -122,12 +131,13 @@ Neighbors follow the same typed key order as traversal and skip holes. A bare
 layer selects an edge entry. Stepping beyond an edge returns `absent`. These
 calls are stateless and do not create a cursor.
 
-## Sequence Append
+## Positional Append
 
-`append(collection, value): int` writes after the greatest populated positive
-integer position and returns the written 1-based position. An empty collection
-starts at `1`; holes are not filled. It accepts a local sequence or a durable
-one-`int` keyed leaf.
+`append(place, value): int` writes after the greatest populated positive integer
+position of a durable one-`int` keyed leaf and returns the written 1-based
+position. An empty leaf starts at `1`; holes are not filled. (The `append` that
+grows a local `List` is the collection form above, which yields the updated
+list.)
 
 ```mw
 module docs::builtins_append
@@ -159,7 +169,7 @@ column. It is rejected for a composite identity.
 ## Output
 
 `print(value)` writes one renderable value followed by a newline. Scalars,
-enums, entry identities, and sequences of renderable elements are supported.
+enums, entry identities, and lists of renderable elements are supported.
 Resources and local or durable trees have no direct print representation.
 
 Interpolation and `print` use the same scalar renderings. Bytes render as

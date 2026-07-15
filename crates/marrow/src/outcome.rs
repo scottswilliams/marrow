@@ -283,7 +283,7 @@ fn render_value_text(
             out
         }
         // A list renders `[a, b, ...]` in insertion order.
-        Value::List(_, items) => {
+        Value::List(_, _, items) => {
             let mut out = String::from("[");
             for (position, item) in items.iter().enumerate() {
                 if position > 0 {
@@ -296,7 +296,7 @@ fn render_value_text(
         }
         // A map renders `[k: v, ...]` in ascending key order (the entries are stored
         // sorted), matching the type-directed map literal spelling.
-        Value::Map(_, entries) => {
+        Value::Map(_, _, entries) => {
             let mut out = String::from("[");
             for (position, (key, value)) in entries.iter().enumerate() {
                 if position > 0 {
@@ -402,7 +402,7 @@ fn render_data(
             out
         }
         // A list renders as a JSON array in insertion order.
-        Some(Value::List(_, items)) => {
+        Some(Value::List(_, _, items)) => {
             let mut rendered = Vec::with_capacity(items.len());
             for item in items.iter() {
                 rendered.push(render_data(Some(item), types, enums)?);
@@ -415,7 +415,7 @@ fn render_data(
         }
         // A map renders as a JSON object with string-rendered keys in ascending key
         // order (entries are stored sorted).
-        Some(Value::Map(_, entries)) => {
+        Some(Value::Map(_, _, entries)) => {
             let mut out = String::from("{");
             for (position, (key, value)) in entries.iter().enumerate() {
                 if position > 0 {

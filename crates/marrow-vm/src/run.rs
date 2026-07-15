@@ -15,7 +15,7 @@ use marrow_kernel::durable::{CommitResult, Durable, EntryValue, NextKey, Presenc
 use marrow_verify::{SealedConst, SealedFunction, SealedInstr, VerifiedImage};
 
 use crate::fault::RuntimeFault;
-use crate::value::Value;
+use crate::value::{Value, key_bytes, list_bytes};
 
 // The VM is the sole owner of one invocation's dynamic limits. They are private
 // constants: `run`/`run_durable` take no budget or limit parameter, so no runner,
@@ -376,7 +376,7 @@ fn execute<'s>(
                 };
                 let items = bounded_text_list(pieces)
                     .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
-                stack.push(Value::List(*idx, Rc::new(items)));
+                stack.push(Value::list(*idx, Rc::new(items)));
                 pc += 1;
             }
             SealedInstr::TextLines(idx) => {
@@ -391,7 +391,7 @@ fn execute<'s>(
                     .collect();
                 let items = bounded_text_list(pieces)
                     .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
-                stack.push(Value::List(*idx, Rc::new(items)));
+                stack.push(Value::list(*idx, Rc::new(items)));
                 pc += 1;
             }
             SealedInstr::TextJoin => {
@@ -687,20 +687,26 @@ fn execute<'s>(
                 pc += 1;
             }
             SealedInstr::ListNew(idx) => {
-                stack.push(Value::List(*idx, Rc::new(Vec::new())));
+                stack.push(Value::list(*idx, Rc::new(Vec::new())));
                 pc += 1;
             }
             SealedInstr::ListAppend => {
                 let value = pop(&mut stack);
-                let (idx, mut items) = as_list(pop(&mut stack));
+                let Value::List(idx, old_bytes, mut items) = pop(&mut stack) else {
+                    unreachable!("verifier proved a list operand");
+                };
+                // Delta against the cached aggregate: the pre-append list already
+                // satisfied both bounds, so one element grows the size by exactly its
+                // own structural bytes. Both faults match the whole-list re-measure.
                 if items.len() + 1 > MAX_COLLECTION_LEN {
                     return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
                 }
-                Rc::make_mut(&mut items).push(value);
-                if list_bytes(&items) > MAX_AGGREGATE_BYTES {
+                let new_bytes = old_bytes + value.structural_bytes();
+                if new_bytes > MAX_AGGREGATE_BYTES {
                     return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
                 }
-                stack.push(Value::List(idx, items));
+                Rc::make_mut(&mut items).push(value);
+                stack.push(Value::List(idx, new_bytes, items));
                 pc += 1;
             }
             SealedInstr::ListLen => {
@@ -718,26 +724,41 @@ fn execute<'s>(
                 pc += 1;
             }
             SealedInstr::MapNew(idx) => {
-                stack.push(Value::Map(*idx, Rc::new(Vec::new())));
+                stack.push(Value::map(*idx, Rc::new(Vec::new())));
                 pc += 1;
             }
             SealedInstr::MapInsert => {
                 let value = pop(&mut stack);
                 let key = pop_key(&mut stack);
-                let (idx, mut entries) = as_map(pop(&mut stack));
+                let Value::Map(idx, old_bytes, mut entries) = pop(&mut stack) else {
+                    unreachable!("verifier proved a map operand");
+                };
+                let value_bytes = value.structural_bytes();
+                // Delta against the cached aggregate. A replace swaps one value's
+                // bytes; an insert adds a key and a value. The fault matches the
+                // whole-map re-measure at the same boundary.
                 match entries.binary_search_by(|(k, _)| k.cmp(&key)) {
-                    Ok(position) => Rc::make_mut(&mut entries)[position].1 = value,
+                    Ok(position) => {
+                        let new_bytes =
+                            old_bytes - entries[position].1.structural_bytes() + value_bytes;
+                        if new_bytes > MAX_AGGREGATE_BYTES {
+                            return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
+                        }
+                        Rc::make_mut(&mut entries)[position].1 = value;
+                        stack.push(Value::Map(idx, new_bytes, entries));
+                    }
                     Err(position) => {
                         if entries.len() + 1 > MAX_COLLECTION_LEN {
                             return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
                         }
+                        let new_bytes = old_bytes + key_bytes(&key) + value_bytes;
+                        if new_bytes > MAX_AGGREGATE_BYTES {
+                            return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
+                        }
                         Rc::make_mut(&mut entries).insert(position, (key, value));
+                        stack.push(Value::Map(idx, new_bytes, entries));
                     }
                 }
-                if map_bytes(&entries) > MAX_AGGREGATE_BYTES {
-                    return Err(fault(function, pc, Code::RunCollectionLimit.as_str()));
-                }
-                stack.push(Value::Map(idx, entries));
                 pc += 1;
             }
             SealedInstr::MapGet => {
@@ -868,14 +889,14 @@ fn as_enum(value: Value) -> (u16, u16, Box<[Value]>) {
 
 fn as_list(value: Value) -> (u16, Rc<Vec<Value>>) {
     match value {
-        Value::List(idx, items) => (idx, items),
+        Value::List(idx, _, items) => (idx, items),
         _ => unreachable!("verifier proved a list operand"),
     }
 }
 
 fn as_map(value: Value) -> (u16, Rc<Vec<(KeyScalar, Value)>>) {
     match value {
-        Value::Map(idx, entries) => (idx, entries),
+        Value::Map(idx, _, entries) => (idx, entries),
         _ => unreachable!("verifier proved a map operand"),
     }
 }
@@ -890,50 +911,6 @@ fn bounded_text_list(items: Vec<Value>) -> Option<Vec<Value>> {
         return None;
     }
     Some(items)
-}
-
-/// The aggregate value size of a list, used for the law-9 byte bound. Measured, not
-/// serialized: a cheap structural size (scalar payload bytes plus one byte of
-/// framing per node) that bounds runtime memory without depending on any wire codec.
-fn list_bytes(items: &[Value]) -> usize {
-    items.iter().map(value_bytes).sum()
-}
-
-fn map_bytes(entries: &[(KeyScalar, Value)]) -> usize {
-    entries
-        .iter()
-        .map(|(key, value)| key_bytes(key) + value_bytes(value))
-        .sum()
-}
-
-fn value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Int(_) => 8,
-        Value::Bool(_) => 1,
-        Value::Text(text) => text.len(),
-        Value::Bytes(bytes) => bytes.len(),
-        Value::Optional(None) => 1,
-        Value::Optional(Some(inner)) => 1 + value_bytes(inner),
-        Value::Record(_, slots) => {
-            1 + slots
-                .iter()
-                .map(|slot| slot.as_ref().map_or(1, value_bytes))
-                .sum::<usize>()
-        }
-        Value::Enum(_, _, payload) => 1 + payload.iter().map(value_bytes).sum::<usize>(),
-        Value::List(_, items) => 1 + list_bytes(items),
-        Value::Map(_, entries) => 1 + map_bytes(entries),
-    }
-}
-
-fn key_bytes(key: &KeyScalar) -> usize {
-    match key {
-        KeyScalar::Bool(_) => 1,
-        KeyScalar::Int(_) | KeyScalar::Date(_) => 8,
-        KeyScalar::Duration(_) | KeyScalar::Instant(_) => 16,
-        KeyScalar::Str(text) => text.len(),
-        KeyScalar::Bytes(bytes) => bytes.len(),
-    }
 }
 
 fn const_value(value: &SealedConst) -> Value {

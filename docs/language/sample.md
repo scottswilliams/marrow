@@ -1,7 +1,7 @@
 # Reference Sample
 
 This shelf module combines resources, durable paths, typed identities,
-transactions, keyed children, sequences, and index traversal.
+transactions, keyed children, positional leaves, and index traversal.
 
 ```mw
 module shelf::sample
@@ -91,6 +91,6 @@ writes the entry in the same transaction. `nextId` does not reserve its result;
 the durable write is what makes that key present.
 
 The example also shows required and sparse fields, keyed resource children,
-1-based sequence append, explicit history entries, exact path deletion, and
+1-based positional append, explicit history entries, exact path deletion, and
 ordered traversal through `^books.byShelf(...)`. Each write that changes
 `shelf` updates the declared index as part of the same durable operation.

@@ -387,7 +387,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
 
     // Generic instances are image functions with no stable identity, indexed after
     // every monomorphic function and test. `base` is that boundary; the shared
-    // `MonoState` assigns each distinct instance the next index from `base` in
+    // `Monomorph` assigns each distinct instance the next index from `base` in
     // discovery order, so draining its queue in order appends them to the image in
     // index order.
     let test_count: u16 = if mode == TestMode::Include {

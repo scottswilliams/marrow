@@ -300,15 +300,15 @@ pub(super) fn expr_of_in_header(source: &str, tokens: &[Token]) -> Option<Expres
 /// Parse a type annotation from its token slice into the structural [`TypeExpr`],
 /// the one owner of type-spelling grammar. The slice must be exactly one type
 /// production; a malformed or over-long spelling reports the same diagnostic the
-/// caller's `expected`/`message` name. `sequence[T]`, `Id(^root)`, and the `?`
-/// suffix are classified here so no downstream crate re-reads the spelling.
+/// caller's `expected`/`message` name. Generic applications `Head[..]`, `Id(^root)`,
+/// and the `?` suffix are classified here so no downstream crate re-reads the spelling.
 pub(super) fn parse_type(
     source: &str,
     tokens: &[Token],
     expected: ExpectedSyntax,
     message: &'static str,
 ) -> ParseResult<TypeExpr> {
-    // A type production nests recursively downstream (sequence-element resolution
+    // A type production nests recursively downstream (generic-argument resolution
     // and every later type walk), so its bracket nesting must fail closed here
     // against the same limit expression and layout nesting do, rather than
     // overflowing the native stack at resolution time.
@@ -438,8 +438,8 @@ fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
 }
 /// Classify one validated type production into its structure, mirroring the
 /// language's spelling grammar: a trailing `?` is the optional suffix,
-/// `sequence[T]` recurses on its element, `Id(^root)` is a saved-store identity,
-/// and everything else is a name resolved downstream. As the sole owner of type
+/// a generic application `Head[..]` recurses on its arguments, `Id(^root)` is a
+/// saved-store identity, and everything else is a name resolved downstream. As the sole owner of type
 /// grammar, it rejects a structurally malformed identity or a `?` with no base
 /// here rather than deferring a misleading semantic error downstream.
 fn build_type_expr(
@@ -468,9 +468,6 @@ fn build_type_expr(
     if opens_as_identity(tokens) {
         return build_identity(source, tokens, span, expected);
     }
-    if let Some(sequence) = build_sequence(source, tokens, span, expected)? {
-        return Ok(sequence);
-    }
     if let Some(apply) = build_apply(source, tokens, span, expected)? {
         return Ok(apply);
     }
@@ -480,12 +477,12 @@ fn build_type_expr(
     })
 }
 
-/// A built-in generic application `Option[T]`, `Result[T, E]`, `List[T]`, or
-/// `Map[K, V]`, spelled with the same bracket group as `sequence[T]`: the head name
-/// whose `[...]` group spans the whole tail, with comma-separated type arguments.
-/// Only these built-in heads are recognized; any other `Name[..]` stays a plain name
-/// (a user-defined generic head is a later slice). The applied argument arity is a
-/// checker concern, so a wrong arity structures and reports semantically.
+/// A generic type application `Head[Arg, ...]`: any identifier head whose `[...]`
+/// group spans the whole tail, with comma-separated type arguments. The head is
+/// either a reserved toolchain generic (`Option`/`Result`/`List`/`Map`) or a
+/// user-declared generic `struct`/`enum`; the semantic owner resolves it. The
+/// applied argument arity is a checker concern, so a wrong arity structures and
+/// reports semantically.
 fn build_apply(
     source: &str,
     tokens: &[Token],
@@ -583,43 +580,6 @@ fn build_identity(
         keyword_span: tokens[0].span,
         caret_span: tokens[caret].span,
         root_span: root.span,
-        span,
-    }))
-}
-
-/// A `sequence[T]` whose bracket group spans the whole tail, recursing on the
-/// element spelling. `Ok(None)` for any other spelling, including a name that
-/// merely carries a bracket group (`Foo[bar]`), which stays a name.
-fn build_sequence(
-    source: &str,
-    tokens: &[Token],
-    span: SourceSpan,
-    expected: ExpectedSyntax,
-) -> ParseResult<Option<TypeExpr>> {
-    let open = 1;
-    let Some(last) = tokens.len().checked_sub(1) else {
-        return Ok(None);
-    };
-    if tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(Keyword::Sequence))
-        || tokens.get(open).map(|token| token.kind) != Some(TokenKind::LeftBracket)
-        || tokens[last].kind != TokenKind::RightBracket
-        || balanced_group_end(tokens, open) != Some(last)
-    {
-        return Ok(None);
-    }
-    let inner = &tokens[open + 1..last];
-    let element = if inner.is_empty() {
-        // `sequence[]` names no element; an empty name resolves as an unresolvable
-        // named type, matching the whole-spelling classification.
-        TypeExpr::Name {
-            text: String::new(),
-            span: join_spans(tokens[open].span, tokens[last].span),
-        }
-    } else {
-        build_type_expr(source, inner, expected)?
-    };
-    Ok(Some(TypeExpr::Sequence {
-        element: Box::new(element),
         span,
     }))
 }

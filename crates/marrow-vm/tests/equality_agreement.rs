@@ -2,9 +2,10 @@
 //! `value_equality`, the one owner of the relation (C02 V6).
 //!
 //! The VM's `Eq*` opcodes compute equality as `Value == Value` (a structural
-//! derive). The kernel `value_equality` over [`ValueDomain`] is the specification.
-//! Rather than convert on every comparison (the crate DAG allows delegation, but it
-//! would only add cost to a structural derive), this test pins that the two agree
+//! comparison over contents; a collection's cached size never participates). The
+//! kernel `value_equality` over [`ValueDomain`] is the specification. Rather than
+//! convert on every comparison (the crate DAG allows delegation, but it would only
+//! add cost to a structural comparison), this test pins that the two agree
 //! over the C02 value domain: for every pair of representative values, the kernel
 //! relation and the runtime `==` return the same verdict.
 
@@ -42,11 +43,11 @@ fn to_domain(value: &Value) -> ValueDomain {
         // No top-level `collection == collection` operator exists, but a collection
         // reached inside a compared struct or enum payload participates in that
         // aggregate's structural equality, so the domain must project it.
-        Value::List(idx, items) => ValueDomain::List {
+        Value::List(idx, _, items) => ValueDomain::List {
             idx: *idx,
             items: items.iter().map(to_domain).collect(),
         },
-        Value::Map(idx, entries) => ValueDomain::Map {
+        Value::Map(idx, _, entries) => ValueDomain::Map {
             idx: *idx,
             entries: entries
                 .iter()
@@ -120,22 +121,22 @@ fn corpus() -> Vec<Value> {
         // relation must recurse through them. Lists differing by element, order,
         // length, and instantiation index; the empty list; a list of structs holding
         // Options; and maps differing by value, key, and enum-valued payload.
-        Value::List(7, Rc::new(vec![Value::Int(1), Value::Int(2)])),
-        Value::List(7, Rc::new(vec![Value::Int(2), Value::Int(1)])),
-        Value::List(7, Rc::new(vec![Value::Int(1)])),
-        Value::List(7, Rc::new(vec![])),
+        Value::list(7, Rc::new(vec![Value::Int(1), Value::Int(2)])),
+        Value::list(7, Rc::new(vec![Value::Int(2), Value::Int(1)])),
+        Value::list(7, Rc::new(vec![Value::Int(1)])),
+        Value::list(7, Rc::new(vec![])),
         // A different list instantiation with equal elements: unequal by index.
-        Value::List(8, Rc::new(vec![Value::Int(1), Value::Int(2)])),
+        Value::list(8, Rc::new(vec![Value::Int(1), Value::Int(2)])),
         // A list of structs, each holding an Option leaf: recursion through list,
         // product, and sum. The two members differ only in the inner Option presence.
-        Value::List(
+        Value::list(
             9,
             Rc::new(vec![Value::Record(
                 2,
                 Box::new([Some(Value::Enum(3, 1, Box::new([Value::Int(5)])))]),
             )]),
         ),
-        Value::List(
+        Value::list(
             9,
             Rc::new(vec![Value::Record(
                 2,
@@ -143,14 +144,14 @@ fn corpus() -> Vec<Value> {
             )]),
         ),
         // Maps in ascending key order, differing by a value and by a key.
-        Value::Map(
+        Value::map(
             10,
             Rc::new(vec![
                 (KeyScalar::Str("ada".into()), Value::Int(10)),
                 (KeyScalar::Str("grace".into()), Value::Int(12)),
             ]),
         ),
-        Value::Map(
+        Value::map(
             10,
             Rc::new(vec![
                 (KeyScalar::Str("ada".into()), Value::Int(10)),
@@ -158,14 +159,14 @@ fn corpus() -> Vec<Value> {
             ]),
         ),
         // A map with enum values: recursion reaches the sum payload.
-        Value::Map(
+        Value::map(
             11,
             Rc::new(vec![(
                 KeyScalar::Int(1),
                 Value::Enum(3, 1, Box::new([Value::Int(7)])),
             )]),
         ),
-        Value::Map(
+        Value::map(
             11,
             Rc::new(vec![(KeyScalar::Int(1), Value::Enum(3, 0, Box::new([])))]),
         ),
