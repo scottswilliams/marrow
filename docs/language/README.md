@@ -63,6 +63,8 @@ The pages are arranged from source text to durable behavior:
   evaluation order.
 - [Errors and transactions](errors-and-transactions.md) defines thrown values,
   catchable faults, commit, and rollback.
+- [Tests](tests.md) defines the `test` declaration and the owned `assert`
+  statement that `marrow test` runs.
 - [Evolution](evolution.md) defines source declarations for compatible changes
   to populated durable data.
 - [Built-ins](builtins.md) and the
@@ -104,9 +106,9 @@ interprets the checked program. Expressions evaluate from left to right, with
 short-circuit behavior for `and`, `or`, and `??`. Durable reads inside a
 transaction observe staged changes from that transaction.
 
-Normal project tests use a fresh in-memory saved-data store. They may read and
-write durable syntax without opening the configured persistent store. See
-[Standard library: testing](standard-library.md#testing).
+A project's `test` declarations run storeless through `marrow test`: each is a
+named zero-argument body whose owned `assert` statement checks a condition. See
+[Tests](tests.md).
 
 ## Current Scope
 

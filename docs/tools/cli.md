@@ -4,9 +4,9 @@ The installed command is `marrow`. A bare invocation and an unknown command are
 usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
-The beta line's CLI is deliberately thin. `init`, `fmt`, `run`, `--help`, and
-`--version` are the available commands; every other recognized command name
-belongs to a capability being refounded and reports the typed code
+The beta line's CLI is deliberately thin. `init`, `fmt`, `run`, `test`,
+`--help`, and `--version` are the available commands; every other recognized
+command name belongs to a capability being refounded and reports the typed code
 `cli.command_unsupported` with exit `1`, so a script never mistakes absence for
 success. [Project status](../status.md) states what returns through which
 direction.
@@ -18,7 +18,8 @@ direction.
 | `init` | Create a new project directory (this page). |
 | `fmt` | Format a `.mw` file or every module of a project (this page). |
 | `run` | Compile, verify, and run an exported function (this page). |
-| `check`, `test`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
+| `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
+| `check`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
 ## `marrow init`
 
@@ -82,6 +83,26 @@ operational error (`store.*`, `io.*`) never collapse into one another.
 
 Exit `0` carries the value; exit `1` is any failure family; exit `2` is a usage
 error (an unknown export, a bad argument, or a missing `--store`).
+
+## `marrow test`
+
+```text
+marrow test [--format text | jsonl] [--filter <substring>]
+```
+
+Discovers every `test "name"` declaration in the [project](projects.md) at the
+working directory, compiles them into a separately verified image carrying a
+closed test-entry table, and runs each one storeless through the VM. A test
+whose every `assert` holds passes; a false `assert` (`run.assert`) fails it; any
+other runtime fault errors it. Tests open no store — a durable operation in a
+test is rejected before it runs.
+
+`--filter` selects tests whose name contains the given substring and fails when
+none match. Output is human text by default — one line per test and a summary —
+or, with `--format jsonl`, one `kind: "test"` object per test and a final
+`kind: "summary"` object. The command exits `0` when every selected test passes,
+`1` when any fails or errors, and `2` on a usage error. See
+[Tests](tests.md) for the report grammar and the `test`/`assert` language.
 
 ## Usage and exit codes
 

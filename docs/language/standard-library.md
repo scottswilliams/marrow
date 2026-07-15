@@ -240,18 +240,8 @@ forbidden inside transactions.
 
 ## Testing
 
-```text
-std::assert::isTrue(condition: bool)
-std::assert::isFalse(condition: bool)
-std::assert::equal(actual: T, expected: T)
-std::assert::isAbsent(value: T?)
-std::assert::fail(message: string)
-```
-
-Assertions throw on failure. `equal` accepts matching scalar types; it does not
-deep-compare resources or collections.
-
-Each project test function runs with a fresh in-memory saved-data store. A test
-may freely read and write declared durable paths, but it never opens or changes
-the persistent store configured for normal program execution. Tests therefore
-start independent of one another.
+Tests are a language construct, not a standard-library module. A `test "name"`
+declaration is a named zero-argument body, and `assert <condition>` is the
+owned assertion legal only inside one. Tests run storeless through `marrow test`.
+See [Tests](tests.md) for the declaration and the assertion, and
+[`tools/tests.md`](../tools/tests.md) for how the command runs and reports them.
