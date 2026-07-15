@@ -1,6 +1,6 @@
 # marrow CLI Contributor Notes
 
-On the beta line this is a thin CLI with three implemented commands. `marrow
+On the beta line this is a thin CLI with four implemented commands. `marrow
 init` creates a project, and `marrow fmt` formats a single `.mw` file or every
 module of a project directory through the retained formatter. `marrow run
 <export>` drives the production path: capture the project at the working
@@ -8,9 +8,12 @@ directory, compile it to canonical image bytes, verify them into a sealed
 image, open a store in-process when the export's verified demand is nonempty
 (`--store <path>`; an interim seam that dies at D00), execute on the VM, and
 render the value or the first failure as text or, under `--format jsonl`, as
-one canonical typed record per line. Every other command name (`check`,
-`test`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore`) is
-recognized and reports a typed `cli.command_unsupported` response until its
+one canonical typed record per line. `marrow test` drives the same path over
+the project's `test` declarations: it compiles them into a separately verified
+image carrying the closed TEST-ENTRY table and runs each one storeless,
+reporting pass/fail/error per test plus a summary. Every other command name
+(`check`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore`)
+is recognized and reports a typed `cli.command_unsupported` response until its
 refounding lane lands it. The binary depends on `marrow-codes`,
 `marrow-project`, `marrow-syntax`, `marrow-compile`, `marrow-verify`,
 `marrow-vm`, and `marrow-kernel`; the physical project-capture adapter here

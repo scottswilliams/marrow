@@ -1,0 +1,13 @@
+; Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)
+; Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/control_test.mw
+; Replaces: the T01 manifest-indirected `marrow run` comparison
+module control_checks
+
+test "cSumTo"
+    assert control::sumTo(5) == 15
+
+test "cFirstEvenOver"
+    assert control::firstEvenOver(5) == 6
+
+test "cSign"
+    assert control::sign(-3) == -1

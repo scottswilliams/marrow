@@ -1,0 +1,31 @@
+; Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)
+; Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/arith_test.mw
+; Replaces: the T01 manifest-indirected `marrow run` comparison
+module arith_checks
+
+test "aSub"
+    assert arith::sub(10, 3) == 7
+
+test "aMul"
+    assert arith::mul(6, 7) == 42
+
+test "aRemDividendNeg"
+    assert arith::remDividendNeg() == -1
+
+test "aRemDivisorNeg"
+    assert arith::remDivisorNeg() == 1
+
+test "aBigInRange"
+    assert arith::bigInRange() == 9000000000000000000
+
+test "aNegMax"
+    assert arith::negMax() == -9223372036854775807
+
+test "aEq"
+    assert arith::eq(4, 4) == true
+
+test "aLe"
+    assert arith::le(4, 5) == true
+
+test "aAndOr"
+    assert arith::andOr(false, false) == true
