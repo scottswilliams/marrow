@@ -85,13 +85,18 @@ A stored resource may also declare static `group` namespaces and keyed `branch`
 placements (see [Resources](resources.md#groups-and-branches)). These are part of
 the durable graph and complete their identity like a root.
 
-Durable declarations compile, verify, and complete their identity, but durable
-execution is currently in the trough: the CLI no longer opens a store, so a
-durable export does not run from `marrow run` (it reports the typed
-`cli.durable_unsupported` outcome). The operations described below are the current
-durable *language* — they are checked and their identity is complete — and their
-execution returns as the ephemeral-memory preview and later the persistent
-companion path; see [Project status](../status.md).
+Durable declarations compile, verify, and complete their identity. Durable
+execution has returned for source tests: a `test` whose body reads or writes
+durable data runs against a fresh in-memory *ephemeral attachment*, so the
+operations below execute through the read kernel under `marrow test`. Each durable
+test gets its own attachment minted from the verified test image with a ceiling
+equal to the test-image demand union, so one test never observes another's writes,
+and the attachment is discarded when the test ends — there is no persistent store.
+Persistent `marrow run` execution is still in the trough: the CLI no longer opens a
+store, so a durable export does not run from `marrow run` (it reports the typed
+`cli.durable_unsupported` outcome) until the persistent companion runner lands
+(F02). The operations described below are the current durable *language* — they are
+checked and their identity is complete; see [Project status](../status.md).
 
 Within that checked language, the *flat scalar* single-column keyed root is the
 form whose operations the compiler fully lowers: a root with one key column, no

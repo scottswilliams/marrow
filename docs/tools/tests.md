@@ -2,11 +2,22 @@
 
 `marrow test` discovers every `test "name"` declaration in the project at the
 working directory, compiles them into a separately verified image, and runs each
-one storeless through the bytecode VM. It reports each test's outcome and a final
-summary.
+one through the bytecode VM. It reports each test's outcome and a final summary.
 
 The `test` declaration and the `assert` statement it runs are defined in
 [language/tests.md](../language/tests.md).
+
+## Storeless And Durable Tests
+
+A test whose body touches no durable data runs storeless: the VM executes it with
+no session. A test whose body reads or writes durable data runs against a fresh
+in-memory *ephemeral attachment* minted from the verified test image, with a
+ceiling equal to the test-image demand union. Each durable test gets its own
+attachment, so one test never observes another's writes, and no raw seeder exists —
+a test that needs a present durable value writes it in its own body first. The
+attachment is discarded when the test ends; `marrow test` never opens a persistent
+store. See [Durable places](../language/durable-places.md) for the durable
+operations available and [Project status](../status.md) for the execution state.
 
 ## Usage
 

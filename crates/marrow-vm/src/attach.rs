@@ -97,6 +97,12 @@ fn coverage(read: bool, write: bool) -> DemandCoverage {
 fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> {
     // v0 carries at most one durable root; a durable test with demand has exactly
     // one. A flat executable root is single-column keyed with no member tree.
+    //
+    // E01 ships the flat single-column scalar root. Widening this park boundary is
+    // owned downstream: sparse structural maintenance over nested branches, groups,
+    // and widened field values is E03, and composite keys with bounded nested
+    // traversal are E04. A shape this derivation parks below stays parked until the
+    // owning lane lands it; E01 never widens the physical layout.
     let root = image.roots().first()?;
     if root.has_extras() {
         return None;

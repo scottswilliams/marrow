@@ -18,15 +18,15 @@ through which direction.
 
 | Crate | Current responsibility | Read next |
 |---|---|---|
-| `marrow` | CLI: `init`, `fmt`, and `run` (compile, verify, execute an export), plus typed not-yet-supported responses for refounding command names | — |
+| `marrow` | CLI: `init`, `fmt`, `run` (compile, verify, execute a storeless export), and `test` (compile a verified test image and run each `test`, driving a durable test against its own fresh ephemeral attachment), plus typed not-yet-supported responses for refounding command names | — |
 | `marrow-codes` | Typed diagnostic-code registry and generated code reference | — |
 | `marrow-project` | Pure project-input owner: manifest schema, contained discovery, the `marrow.ids` durable-identity ledger, immutable captured input | — |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics | [Syntax](syntax.md) |
 | `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft: it emits the whole durable graph's operation sites and lowers named `place` bindings with a once-evaluated key tuple and structured present-entry analysis | — |
-| `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest; a durable graph node's derived semantic path and a durable operation site's closed whole-payload/field-leaf target; the durable access-demand model (operation class, atom, and the `DemandSetId` demand-set identity) | — |
+| `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest; a durable graph node's derived semantic path and a durable operation site's closed whole-payload/field-leaf target; the durable access-demand model (operation class, atom, and the `DemandSetId` demand-set identity); and the deployment-ceiling descriptor whose read/write coverage and 32-byte ceiling-id are both derived from a demand union, binding a ceiling to its verified image | — |
 | `marrow-verify` | The only image decoder and the phased verifier producing the sealed `VerifiedImage`; it resolves each operation site's semantic path against its own reconstructed node set and re-derives the site rather than trusting a compiler-side summary, and reconstructs each export's access demand from the sealed sites its call closure reaches | — |
-| `marrow-vm` | Stack VM over the sealed instruction tape, with source-mapped runtime faults | — |
-| `marrow-kernel` | Stub path kernel: durable operation algebra, authority triple, store profile, commit witness, and runtime logical codecs | [Storage](storage.md) |
+| `marrow-vm` | Stack VM over the sealed instruction tape, with source-mapped runtime faults; the ephemeral-attachment executor derives the flat store schema and site table from a verified image and runs a durable test against a freshly minted attachment | — |
+| `marrow-kernel` | Path kernel: durable operation algebra, authority triple, store profile, commit witness, runtime logical codecs, and the production ephemeral-memory attachment (nonforgeable attachment id, deployment ceiling, per-invocation grant) minted from a verified image | [Storage](storage.md) |
 | `marrow-store` | Ordered-byte engine contract, memory and redb backends, engine conformance suite | [Storage](storage.md) |
 
 ## Guides

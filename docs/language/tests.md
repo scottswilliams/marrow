@@ -2,8 +2,10 @@
 
 A `test` declaration is a named, zero-argument body that `marrow test` runs. Its
 statements are ordinary Marrow, plus one construct legal only here: the `assert`
-statement. Tests are storeless — a test that reads or writes durable data is
-rejected at compile time.
+statement. A test that touches no durable data runs storeless; a test that reads
+or writes durable data runs against its own fresh in-memory ephemeral attachment
+(see [durable places](durable-places.md) and [tools/tests](../tools/tests.md)), so
+no test opens a persistent store or observes another test's writes.
 
 ## Declaring a test
 

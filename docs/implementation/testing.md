@@ -7,7 +7,7 @@ unit tests do not substitute for production-pipeline or crash tests.
 |---|---|
 | Unit tests | Local parser, formatter, codec, and engine invariants. |
 | Source-driven parser tests | `.mw` source through the production lexer/parser/formatter. |
-| Source tests (`marrow test`) | `test`/`assert` declarations run storeless through the compiled pipeline (capture → compile → verify → VM). |
+| Source tests (`marrow test`) | `test`/`assert` declarations run through the compiled pipeline (capture → compile → verify → VM); a durable test runs against its own fresh ephemeral attachment, a storeless test with no session. |
 | Engine conformance laws | Identical byte-level traces over the memory and redb backends. |
 | Differential-oracle harness | Hash-verified invocation of the frozen prototype binary over preserved-semantics fixtures (skeleton at B00; comparison arrives with the tracer lane). |
 | Architecture/absence tests | Workspace membership, forbidden legacy families, and generated drift. |

@@ -70,10 +70,11 @@ after `--` are decoded positionally against the export's scalar parameter types
 
 Only a storeless export runs. A durable export — one whose verified demand reads
 or writes durable data — compiles, verifies, and completes its durable identity,
-but durable execution is in the trough: the CLI no longer opens a store in
+but persistent execution is in the trough: the CLI no longer opens a store in
 process, so a durable `run` reports the typed `cli.durable_unsupported` outcome
-(exit `1`) rather than executing. Durable execution returns as the
-ephemeral-memory preview and later the persistent companion path; see
+(exit `1`) rather than executing. Durable execution has returned for source tests
+against a fresh ephemeral attachment (see [`marrow test`](#marrow-test)); the
+persistent `run` path waits for the companion runner; see
 [Project status](../status.md).
 
 When a fresh durable declaration has no identity in the project's
@@ -106,10 +107,11 @@ marrow test [--format text | jsonl] [--filter <substring>]
 
 Discovers every `test "name"` declaration in the [project](projects.md) at the
 working directory, compiles them into a separately verified image carrying a
-closed test-entry table, and runs each one storeless through the VM. A test
+closed test-entry table, and runs each one through the VM. A test
 whose every `assert` holds passes; a false `assert` (`run.assert`) fails it; any
-other runtime fault errors it. Tests open no store — a durable operation in a
-test is rejected before it runs.
+other runtime fault errors it. A test that touches no durable data runs storeless;
+a test that reads or writes durable data runs against its own fresh ephemeral
+attachment, so no test opens a persistent store or observes another test's writes.
 
 `--filter` selects tests whose name contains the given substring and fails when
 none match. Output is human text by default — one line per test and a summary —

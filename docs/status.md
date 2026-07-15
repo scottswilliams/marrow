@@ -63,10 +63,16 @@ versioned store profile with an in-transaction commit witness.
 `marrow run <export>` drives this path end to end for a storeless export. A
 durable program — a keyed resource, a store root, its transactions, reads, and
 bounded iteration — compiles, independently verifies, and completes its durable
-identity, but durable execution is in the trough: T01's in-process store open
-died at D00, so `marrow run` no longer opens a store and reports a durable export
-with the typed `cli.durable_unsupported` outcome. Durable execution returns as
-the ephemeral-memory preview (E01) and, for the persistent terminal path, over a
+identity. Durable execution has returned for source tests (E01): a `test` whose
+body reads or writes durable data runs against a fresh in-memory ephemeral
+attachment, minted from the verified test image with a ceiling equal to the
+test-image demand union, so the read kernel drives the store under `marrow test`
+without any raw seeder. The flat single-column scalar root — entry and field
+presence, field reads and coalesce, required and sparse field writes — executes
+this way; wider durable shapes stay parked with their owning lanes. Persistent
+execution is still in the trough: T01's in-process store open died at D00, so
+`marrow run` no longer opens a store and reports a durable export with the typed
+`cli.durable_unsupported` outcome until the persistent terminal path lands over a
 companion runner (F02b); the CLI never opens a store again. A store root is a
 singleton (no key), a single-column keyed root, or a composite keyed tuple of up
 to eight ordered columns; each key column is a scalar in the closed orderable

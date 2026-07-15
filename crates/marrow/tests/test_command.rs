@@ -210,6 +210,112 @@ fn a_failing_durable_assert_reports_run_assert() {
     assert!(durable.contains("run.assert"), "{durable}");
 }
 
+/// The flat-executable durable read/write behaviors extracted from the frozen
+/// prototype's `eval_saved_*`/`eval_keyed_*` runtime families, ported as durable
+/// source tests that run against a fresh ephemeral attachment (E01). Each block is
+/// one behavioral pair from the tag: entry/field presence, field coalesce
+/// present/absent, required and sparse field writes that persist and read back,
+/// last-write-wins, the `if const` binding guard over a present and an absent
+/// field, and cross-test attachment isolation. No raw seeder mints the state — a
+/// block that observes a present value writes it itself, and the fresh-attachment
+/// block proves one test never observes another's write.
+///
+/// The tag's wider families are out of the flat read kernel's scope and stay with
+/// their owning lanes: whole-record read/coalesce and the whole-entry
+/// marker/presence-after-partial-write law (E03, the marker is written only at
+/// commit); the transaction region, required-completeness at commit, nested
+/// transactions, and delete/erase (E02); keyed-leaf/sequence collections, nested
+/// layers, and saved-root/layer streaming loops (E03/E04); composite keys and
+/// nested group/branch hops (the codec-widening deferral, E03/E04). The
+/// output-only, local-keyed-parameter, error-code, and compile-time key/type
+/// families are not durable read-kernel behaviors at all.
+#[test]
+fn flat_durable_place_behaviors_run_as_source_tests() {
+    let temp = TempDir::new("flat-durable-extraction");
+    project(
+        &temp,
+        "resource Counter\n\
+         \x20   required value: int\n\
+         \x20   label: string\n\
+         \n\
+         store ^counters(id: int): Counter\n\
+         \n\
+         test \"entry absent on a fresh attachment\"\n\
+         \x20   assert exists(^counters(9)) == false\n\
+         \n\
+         test \"field absent on a fresh attachment\"\n\
+         \x20   assert exists(^counters(1).value) == false\n\
+         \n\
+         test \"field present after a write\"\n\
+         \x20   ^counters(1).value = 5\n\
+         \x20   assert exists(^counters(1).value)\n\
+         \n\
+         test \"field coalesce returns the default when absent\"\n\
+         \x20   assert (^counters(1).value ?? 0) == 0\n\
+         \n\
+         test \"field coalesce returns the value when present\"\n\
+         \x20   ^counters(1).value = 5\n\
+         \x20   assert (^counters(1).value ?? 0) == 5\n\
+         \n\
+         test \"required field write persists and reads back\"\n\
+         \x20   ^counters(1).value = 7\n\
+         \x20   assert (^counters(1).value ?? 0) == 7\n\
+         \n\
+         test \"sparse field write persists and reads back\"\n\
+         \x20   ^counters(1).label = \"hi\"\n\
+         \x20   assert (^counters(1).label ?? \"x\") == \"hi\"\n\
+         \n\
+         test \"sparse field coalesce returns the default when absent\"\n\
+         \x20   assert (^counters(1).label ?? \"none\") == \"none\"\n\
+         \n\
+         test \"overwrite keeps the last write\"\n\
+         \x20   ^counters(1).value = 1\n\
+         \x20   ^counters(1).value = 2\n\
+         \x20   assert (^counters(1).value ?? 0) == 2\n\
+         \n\
+         test \"binding guard skips an absent field\"\n\
+         \x20   if const v = ^counters(1).value\n\
+         \x20       assert false\n\
+         \x20   assert true\n\
+         \n\
+         test \"binding guard reads a present field\"\n\
+         \x20   ^counters(1).value = 42\n\
+         \x20   if const v = ^counters(1).value\n\
+         \x20       assert v == 42\n\
+         \x20   else\n\
+         \x20       assert false\n\
+         \n\
+         test \"one test writes a field\"\n\
+         \x20   ^counters(77).value = 1\n\
+         \x20   assert (^counters(77).value ?? 0) == 1\n\
+         \n\
+         test \"a fresh attachment does not observe another test's write\"\n\
+         \x20   assert (^counters(77).value ?? -1) == -1\n",
+    );
+    write(&temp.join("marrow.ids"), COUNTERS_IDS);
+
+    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "every extracted durable behavior must pass: {output:?}"
+    );
+    // No block was dropped to `cli.durable_unsupported`, and none failed or turned
+    // into a diagnostic: the summary accounts for all thirteen as passed.
+    assert!(!stdout.contains("cli.durable_unsupported"), "{stdout}");
+    assert!(!stdout.contains(r#""outcome":"failed""#), "{stdout}");
+    assert!(!stdout.contains(r#""outcome":"diagnostic""#), "{stdout}");
+    assert!(!stdout.contains(r#""outcome":"error""#), "{stdout}");
+    let summary = stdout
+        .lines()
+        .find(|l| l.contains(r#""kind":"summary""#))
+        .unwrap_or_else(|| panic!("no summary record: {stdout}"));
+    assert!(summary.contains(r#""total":13"#), "{summary}");
+    assert!(summary.contains(r#""passed":13"#), "{summary}");
+    assert!(summary.contains(r#""failed":0"#), "{summary}");
+    assert!(summary.contains(r#""errored":0"#), "{summary}");
+}
+
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
 fn filter_selects_a_subset_by_name() {
