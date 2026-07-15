@@ -15,10 +15,10 @@ use crate::ast::{
     FunctionDecl, ModuleDecl, ParsedSource, ResourceDecl, SavedRoot, SourceFile, StoreDecl,
     TestDecl, TypeExpr, UseDecl,
 };
-use crate::literal::decode_string_literal;
 use crate::diagnostic::{
     Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax,
 };
+use crate::literal::decode_string_literal;
 use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword, tokens_in_range};
 
 /// Recursive-descent parser for top-level declarations over the file-wide token

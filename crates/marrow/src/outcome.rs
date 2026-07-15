@@ -137,7 +137,9 @@ impl TestRecord {
                 json_string(&self.name),
                 span_object(self.decl_line, self.decl_column),
             ),
-            TestOutcome::Failed { code, line, column } => self.fault_jsonl("failed", code, *line, *column),
+            TestOutcome::Failed { code, line, column } => {
+                self.fault_jsonl("failed", code, *line, *column)
+            }
             TestOutcome::Errored { code, line, column } => {
                 self.fault_jsonl("errored", code, *line, *column)
             }
@@ -179,12 +181,12 @@ pub(crate) struct TestSummary {
 
 impl TestSummary {
     /// The number of tests actually run (selected by any filter).
-    fn selected(&self) -> usize {
+    fn selected(self) -> usize {
         self.passed + self.failed + self.errored
     }
 
     /// The canonical JSONL summary object, keys in ascending byte order.
-    pub(crate) fn to_jsonl(&self) -> String {
+    pub(crate) fn to_jsonl(self) -> String {
         format!(
             r#"{{"errored":{},"failed":{},"kind":"summary","passed":{},"selected":{},"total":{}}}"#,
             self.errored,
@@ -196,7 +198,7 @@ impl TestSummary {
     }
 
     /// The plain-text summary line.
-    pub(crate) fn to_text(&self) -> String {
+    pub(crate) fn to_text(self) -> String {
         format!(
             "{} passed, {} failed, {} errored ({}/{} selected)",
             self.passed,
