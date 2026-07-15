@@ -85,6 +85,20 @@ pub enum Declaration {
     Function(FunctionDecl),
     Enum(EnumDecl),
     Evolve(EvolveDecl),
+    Test(TestDecl),
+}
+
+/// A `test "name"` declaration: a named, zero-argument, storeless body run by
+/// `marrow test`. Its body is the only place the owned `assert` statement is
+/// legal. The name is the decoded string-literal title; it is a report label, not
+/// an export, interface, or durable identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestDecl {
+    pub docs: Vec<String>,
+    pub name: String,
+    pub name_span: SourceSpan,
+    pub body: Block,
+    pub span: SourceSpan,
 }
 
 /// An `evolve` block: the source's explicit intent for durable entities. A bare
@@ -601,6 +615,13 @@ pub enum Statement {
         value: Expression,
         span: SourceSpan,
     },
+    /// `assert <expr>`: the compiler/image/verifier/VM-owned test assertion. Legal
+    /// only inside a `test` body; the checker rejects it elsewhere. Its `value` is a
+    /// bool condition whose falsity faults the running test.
+    Assert {
+        value: Expression,
+        span: SourceSpan,
+    },
     Expr {
         value: Expression,
         span: SourceSpan,
@@ -763,6 +784,7 @@ impl Statement {
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Throw { span, .. }
+            | Self::Assert { span, .. }
             | Self::Expr { span, .. }
             | Self::If { span, .. }
             | Self::IfConst { span, .. }

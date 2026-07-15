@@ -13,8 +13,9 @@ use super::tokens::{
 use crate::ast::{
     Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl, Expression,
     FunctionDecl, ModuleDecl, ParsedSource, ResourceDecl, SavedRoot, SourceFile, StoreDecl,
-    TypeExpr, UseDecl,
+    TestDecl, TypeExpr, UseDecl,
 };
+use crate::literal::decode_string_literal;
 use crate::diagnostic::{
     Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax,
 };
@@ -134,6 +135,13 @@ impl<'a> DeclParser<'a> {
                 let trailing_comment = self.peek_header_trailing_comment();
                 let evolve = self.parse_evolve();
                 file.declarations.push(Declaration::Evolve(evolve));
+                file.comments.extend(trailing_comment);
+            }
+            Some(TokenKind::Keyword(Keyword::Test)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let test = self.parse_test(decl_docs);
+                file.declarations.push(Declaration::Test(test));
                 file.comments.extend(trailing_comment);
             }
             _ if self.starts_enum_header() => {
@@ -524,6 +532,51 @@ impl<'a> DeclParser<'a> {
             name: head.name,
             params: head.params,
             return_type: head.return_type,
+            body,
+            span,
+        }
+    }
+
+    /// Parse a `test "name"` declaration: the header is the `test` keyword followed
+    /// by exactly one string literal (the report title), then an indented body of
+    /// statements, where the owned `assert` is legal. A missing or non-string title
+    /// reports `parse.syntax` and yields an empty name so parsing stays total.
+    fn parse_test(&mut self, docs: Vec<String>) -> TestDecl {
+        let span = self.header_span();
+        let header = self.take_header_line();
+        let (name, name_span) = match header.get(1) {
+            Some(token) if token.kind == TokenKind::String => {
+                let name = decode_string_literal(token.text(self.source)).unwrap_or_default();
+                (name, token.span)
+            }
+            other => {
+                let name_span = other.map_or(span, |token| token.span);
+                self.error_span(
+                    name_span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::TestName),
+                    "a test declaration is `test \"name\"` with a string-literal title",
+                );
+                (String::new(), name_span)
+            }
+        };
+        let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
+            self.parse_function_body()
+        } else {
+            self.error_span(
+                span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::TestBody),
+                "expected an indented test body",
+            );
+            Block {
+                statements: Vec::new(),
+                comments: Vec::new(),
+                span,
+            }
+        };
+        TestDecl {
+            docs,
+            name,
+            name_span,
             body,
             span,
         }

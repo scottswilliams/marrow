@@ -188,6 +188,7 @@ impl<'a> StmtParser<'a> {
             }
             TokenKind::Keyword(Keyword::Try) => return Some(self.try_stmt()),
             TokenKind::Keyword(Keyword::Match) => return Some(self.match_stmt()),
+            TokenKind::Keyword(Keyword::Assert) => return Some(self.assert_stmt()),
             TokenKind::Keyword(keyword) if is_stray_block_clause_keyword(keyword) => {
                 self.skip_compound();
                 return None;
@@ -441,6 +442,16 @@ impl<'a> StmtParser<'a> {
                 span: join_spans(start, end),
             },
         }
+    }
+
+    /// Parse `assert <expr>`: the header keyword, then a bool condition running to
+    /// the end of the line. The checker owns the rule that `assert` is legal only in
+    /// a `test` body; the parser only structures it.
+    fn assert_stmt(&mut self) -> Statement {
+        let keyword = self.advance().span; // `assert`
+        let value = self.header_expression(keyword);
+        let span = join_spans(keyword, value.span());
+        Statement::Assert { value, span }
     }
 
     fn transaction_stmt(&mut self) -> Statement {

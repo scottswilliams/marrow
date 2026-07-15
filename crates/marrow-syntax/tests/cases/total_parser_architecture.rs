@@ -126,6 +126,7 @@ fn stmt_has_error(stmt: &Statement) -> bool {
         Statement::Error { .. } => true,
         Statement::Const { value, .. }
         | Statement::Throw { value, .. }
+        | Statement::Assert { value, .. }
         | Statement::Expr { value, .. } => expr_has_error(value),
         Statement::Var { value, .. } | Statement::Return { value, .. } => {
             value.as_ref().is_some_and(expr_has_error)

@@ -45,6 +45,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn strings()\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n",
         "module app\n\nfn guard(a: int, b: int): int\n    const q: int = checked a / b\n        on out_of_range\n            return 0\n        on zero_divisor\n            return 0\n    return q\n",
         "module app\n\nfn guardReturn(a: int, b: int): int\n    return checked a + b\n        on out_of_range\n            return 0\n",
+        "module app\n\ntest \"adds two numbers\"\n    const sum = 1 + 1\n    assert sum == 2\n",
+        "module app\n\ntest \"a plain assertion\"\n    assert true\n",
     ]
     .into_iter()
     .map(str::to_string)

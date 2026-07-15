@@ -461,6 +461,10 @@ fn collect_declaration_suppression(
                 collect_evolve_step_suppression(step, type_refs, declarations);
             }
         }
+        Declaration::Test(test) => {
+            declarations.push(test.span);
+            collect_block_type_refs(&test.body, type_refs);
+        }
     }
 }
 
@@ -588,6 +592,7 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
+        | Statement::Assert { .. }
         | Statement::Expr { .. }
         | Statement::Error { .. } => {}
     }
@@ -858,6 +863,7 @@ fn declaration_header_span_contains(
         Declaration::Function(decl) => span_contains(decl.span, byte),
         Declaration::Enum(decl) => span_contains(decl.span, byte),
         Declaration::Evolve(decl) => span_contains(decl.span, byte),
+        Declaration::Test(decl) => span_contains(decl.span, byte),
     }
 }
 

@@ -141,6 +141,8 @@ pub enum ExpectedSyntax {
     Statement,
     StoreRoot,
     StoreResourceName,
+    TestBody,
+    TestName,
     TransformBody,
     VariableName,
 }

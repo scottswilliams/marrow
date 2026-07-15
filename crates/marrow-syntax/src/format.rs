@@ -12,6 +12,7 @@ use crate::{
     ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
     ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, ParamDecl,
     ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
+    encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -160,6 +161,7 @@ fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingComme
         }
         Declaration::Enum(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Evolve(_) => TrailingCommentLine::Line(0),
+        Declaration::Test(decl) => TrailingCommentLine::Line(decl.docs.len()),
     }
 }
 
@@ -205,6 +207,7 @@ fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
         Declaration::Function(decl) => decl.docs.len(),
         Declaration::Enum(decl) => decl.docs.len(),
         Declaration::Evolve(_) => 0,
+        Declaration::Test(decl) => decl.docs.len(),
     };
     docs as u32
 }
@@ -239,6 +242,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
         Declaration::Evolve(decl) => decl.span,
+        Declaration::Test(decl) => decl.span,
     }
 }
 
@@ -253,6 +257,7 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(source, decl),
         Declaration::Evolve(decl) => format_evolve(source, decl),
+        Declaration::Test(decl) => format_test(source, decl),
     }
 }
 
@@ -652,6 +657,13 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
     out
 }
 
+fn format_test(source: &str, decl: &crate::TestDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str(&format!("test {}", encode_string_literal(&decl.name)));
+    append_body_block(&mut out, &format_block(source, &decl.body, 1));
+    out
+}
+
 /// Render a parameter list. A list whose parameters carry documentation prints
 /// one parameter per line so each doc sits on the line above its parameter, with
 /// a trailing comma after the last so adding a parameter never edits the line
@@ -963,6 +975,9 @@ fn format_statement_with_comments(
         Statement::Continue { .. } => format!("{pad}continue"),
         Statement::Throw { value, .. } => {
             format!("{pad}throw {}", format_expression_at(value, level))
+        }
+        Statement::Assert { value, .. } => {
+            format!("{pad}assert {}", format_expression_at(value, level))
         }
         Statement::Expr { value, .. } => format!("{pad}{}", format_expression_at(value, level)),
         Statement::If {

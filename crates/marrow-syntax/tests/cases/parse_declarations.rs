@@ -552,6 +552,7 @@ fn normalize(title: string): string
             Declaration::Function(decl) => decl.name.as_str(),
             Declaration::Enum(decl) => decl.name.as_str(),
             Declaration::Evolve(_) => "evolve",
+            Declaration::Test(decl) => decl.name.as_str(),
         })
         .collect::<Vec<_>>();
     assert_eq!(names, ["MaxLoans", "Book", "books", "normalize"]);
