@@ -14,6 +14,7 @@ use marrow_syntax::{ConstDecl, Expression, LiteralKind, TypeExpr, UnaryOp, decod
 use crate::diag::SourceDiagnostic;
 use crate::lower::parse_int;
 use crate::scalar::ScalarType;
+use crate::types::TypeRegistry;
 
 /// A folded module-constant value: one scalar literal.
 #[derive(Debug, Clone)]
@@ -56,6 +57,7 @@ impl ConstRegistry {
     /// dotted module and its file identity (for the diagnostic span).
     pub(crate) fn build(
         consts: &[(String, String, &ConstDecl)],
+        types: &TypeRegistry,
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
         let mut entries: BTreeMap<String, Vec<(String, ConstScalar)>> = BTreeMap::new();
@@ -73,7 +75,7 @@ impl ConstRegistry {
                 ));
                 continue;
             }
-            let Some(value) = evaluate(file, decl, diagnostics) else {
+            let Some(value) = evaluate(file, decl, types, diagnostics) else {
                 continue;
             };
             module_entries.push((decl.name.clone(), value));
@@ -87,6 +89,7 @@ impl ConstRegistry {
 fn evaluate(
     file: &str,
     decl: &ConstDecl,
+    types: &TypeRegistry,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<ConstScalar> {
     let Some(expression) = &decl.value else {
@@ -95,8 +98,8 @@ fn evaluate(
     };
     let value = literal_value(file, expression, diagnostics)?;
     if let Some(annotation) = &decl.ty {
-        let declared = match annotation {
-            TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
+        let declared = match types.expand(annotation) {
+            TypeExpr::Name { text, .. } => ScalarType::from_spelling(&text),
             _ => None,
         };
         match declared {

@@ -12,8 +12,8 @@ mod diag;
 mod durable;
 mod konst;
 mod lower;
-mod record;
 mod scalar;
+mod types;
 
 pub use compile::{Compiled, CompiledTests, ExportEntry, TestEntry, compile, compile_with_tests};
 pub use diag::SourceDiagnostic;

@@ -424,6 +424,10 @@ fn collect_declaration_suppression(
     declarations: &mut ByteRanges,
 ) {
     match declaration {
+        Declaration::Alias(decl) => {
+            collect_optional_type_ref(decl.ty.as_ref(), type_refs);
+            declarations.push(decl.span);
+        }
         Declaration::Const(decl) => {
             collect_optional_type_ref(decl.ty.as_ref(), type_refs);
             declarations.push(const_header_suppression_span(parsed, decl));
@@ -857,6 +861,7 @@ fn declaration_header_span_contains(
     byte: usize,
 ) -> bool {
     match declaration {
+        Declaration::Alias(decl) => span_contains(decl.span, byte),
         Declaration::Const(decl) => const_header_span_contains(parsed, decl, byte),
         Declaration::Resource(decl) => span_contains(decl.span, byte),
         Declaration::Store(decl) => span_contains(decl.span, byte),

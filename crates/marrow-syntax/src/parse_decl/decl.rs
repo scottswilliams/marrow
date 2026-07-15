@@ -11,13 +11,11 @@ use super::tokens::{
     line_span_or, line_text_end_before, module_name, parse_type,
 };
 use crate::ast::{
-    Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl, Expression,
-    FunctionDecl, ModuleDecl, ParsedSource, ResourceDecl, SavedRoot, SourceFile, StoreDecl,
-    TestDecl, TypeExpr, UseDecl,
+    AliasDecl, Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl,
+    Expression, FunctionDecl, ModuleDecl, ParsedSource, ResourceDecl, SavedRoot, SourceFile,
+    StoreDecl, TestDecl, TypeExpr, UseDecl,
 };
-use crate::diagnostic::{
-    Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, UnsupportedSyntax,
-};
+use crate::diagnostic::{Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::literal::decode_string_literal;
 use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword, tokens_in_range};
 
@@ -114,6 +112,13 @@ impl<'a> DeclParser<'a> {
                 file.declarations.push(Declaration::Const(decl));
                 file.comments.extend(trailing_comment);
             }
+            Some(TokenKind::Keyword(Keyword::Alias)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let decl = self.parse_alias(decl_docs);
+                file.declarations.push(Declaration::Alias(decl));
+                file.comments.extend(trailing_comment);
+            }
             Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
@@ -170,21 +175,11 @@ impl<'a> DeclParser<'a> {
                 );
                 self.dispatch_top_level(file, docs, saw_top_level_item);
             }
-            // `type` is not a keyword in Marrow; it lexes as an identifier.
-            Some(TokenKind::Identifier)
-                if self.identifier_is(self.pos, "type") && self.keyword_introduces_decl() =>
-            {
-                self.flush_docs_as_comments(docs, &mut file.comments);
-                self.error_header(
-                    ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TypeAliases),
-                    "type aliases are not used in Marrow; declare a resource or use a builtin type directly",
-                );
-            }
             _ => {
                 self.flush_docs_as_comments(docs, &mut file.comments);
                 self.error_header(
                     ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
-                    "expected module, use, const, resource, store, or fn declaration",
+                    "expected module, use, alias, const, resource, store, or fn declaration",
                 );
             }
         }
@@ -395,6 +390,81 @@ impl<'a> DeclParser<'a> {
             None
         });
         (name, ty)
+    }
+
+    /// Parse an `alias Name = Type` header line: a transparent type alias. The
+    /// name is one identifier; the target type runs from `=` to end of line and
+    /// is parsed by the shared type grammar. A missing `=`, keyword name, or
+    /// malformed type reports at the header and keeps the declaration node so
+    /// parsing stays total.
+    fn parse_alias(&mut self, docs: Vec<String>) -> AliasDecl {
+        let span = self.header_span();
+        let header = self.take_header_line();
+        let equal = find_top_level_equal(&header[1..]).map(|index| index + 1);
+        let (name_tokens, type_tokens): (&[Token], Option<&[Token]>) = match equal {
+            Some(equal) => (&header[1..equal], Some(&header[equal + 1..])),
+            None => {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::AliasType),
+                    "an alias declaration is `alias Name = Type`",
+                );
+                (&header[1..], None)
+            }
+        };
+        let (name, name_span) = match name_tokens {
+            [token] if token.kind == TokenKind::Identifier => {
+                (token.text(self.source).to_string(), token.span)
+            }
+            _ => {
+                let name = match name_tokens.first().zip(name_tokens.last()) {
+                    Some((first, last)) => self.source[first.span.start_byte..last.span.end_byte]
+                        .trim()
+                        .to_string(),
+                    None => String::new(),
+                };
+                let message = if keyword(&name).is_some() {
+                    format!("`{name}` is a keyword and cannot be used as an alias name")
+                } else {
+                    "expected an alias name before `=`".to_string()
+                };
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::AliasName),
+                    message,
+                );
+                (name, span)
+            }
+        };
+        let ty = type_tokens.and_then(|tokens| {
+            if tokens.is_empty() {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::AliasType),
+                    "expected a target type after `=`",
+                );
+                return None;
+            }
+            match parse_type(
+                self.source,
+                tokens,
+                ExpectedSyntax::AliasType,
+                "expected an alias target type",
+            ) {
+                Ok(parsed) => Some(parsed),
+                Err(error) => {
+                    self.report(span, error);
+                    None
+                }
+            }
+        });
+        AliasDecl {
+            docs,
+            name,
+            name_span,
+            ty,
+            span,
+        }
     }
 
     fn parse_resource(&mut self, docs: Vec<String>) -> ResourceDecl {

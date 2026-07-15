@@ -180,12 +180,6 @@ impl<'a> DeclParser<'a> {
         token
     }
 
-    pub(super) fn identifier_is(&self, index: usize, text: &str) -> bool {
-        self.tokens.get(index).is_some_and(|token| {
-            token.kind == TokenKind::Identifier && token.text(self.source) == text
-        })
-    }
-
     /// Whether the source byte immediately after `token` is a space. A keyword
     /// introduces a declaration only when a space follows it, so `module x` is a
     /// module declaration but `module::x` is a name path.

@@ -531,6 +531,7 @@ module later
 fn keeps_top_level_declarations_in_source_order() {
     let parsed = parse_source(
         r#"module app
+alias Title = string
 const MaxLoans: int = 5
 resource Book
     title: string
@@ -546,6 +547,7 @@ fn normalize(title: string): string
         .declarations
         .iter()
         .map(|decl| match decl {
+            Declaration::Alias(decl) => decl.name.as_str(),
             Declaration::Const(decl) => decl.name.as_str(),
             Declaration::Resource(decl) => decl.name.as_str(),
             Declaration::Store(decl) => decl.root.root.as_str(),
@@ -555,7 +557,7 @@ fn normalize(title: string): string
             Declaration::Test(decl) => decl.name.as_str(),
         })
         .collect::<Vec<_>>();
-    assert_eq!(names, ["MaxLoans", "Book", "books", "normalize"]);
+    assert_eq!(names, ["Title", "MaxLoans", "Book", "books", "normalize"]);
 }
 
 #[test]

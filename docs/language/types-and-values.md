@@ -22,6 +22,39 @@ and `bytes`. `decimal` and the temporal types (`date`, `instant`, `duration`) ar
 recorded here as direction and are not yet accepted by the compiler; a program that
 uses one reports `check.unsupported` until its lane lands.
 
+## Type Aliases
+
+`alias Name = Type` declares a transparent alias: the name denotes exactly its
+target type wherever a type annotation is written. An alias mints no new type
+identity and no constructor — `alias Count = int` makes `Count` and `int` the
+same type, and a `Count` value is an `int` value. Alias names are unique across
+the project alongside resource names.
+
+```mw
+module docs::aliases
+
+alias Count = int
+alias MaybeCount = Count?
+
+fn maybe(present: bool): MaybeCount
+    if present
+        return 1
+    return absent
+
+pub fn firstOr(present: bool, fallback: Count): Count
+    if const value = maybe(present)
+        return value
+    return fallback
+```
+
+Aliases may chain; a cyclic chain reports `check.recursion` at each alias on
+the cycle. An alias whose target names no known type reports `check.type`, even
+when the alias is unused. Expansion happens before every other type rule, so an
+alias cannot express anything its expansion could not — in particular `M?`
+where `M` is itself optional is still a rejected nested optional. Alias names
+are type annotations only: they are not conversion or constructor names in
+expressions.
+
 ## Nominal Values
 
 An enum value belongs to one declared enum and names one of its members.

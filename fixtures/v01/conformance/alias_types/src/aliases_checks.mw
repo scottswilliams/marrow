@@ -1,0 +1,21 @@
+; Layer: check+runtime (transparent alias: `alias Name = Type` denotes its target type)
+; Oracle: `marrow test` typed outcomes on the beta stack. `alias` is beta-only
+; syntax absent from the frozen tag, so this fixture is not in the
+; preserved-semantics manifest and has no oracle pairing.
+module aliases_checks
+
+test "an alias parameter accepts its target type"
+    assert aliases::double(21) == 42
+
+test "an alias return type is its target type"
+    assert aliases::tag("x") == "x"
+
+test "an alias names a constant's type"
+    assert aliases::limit() == 10
+
+test "an alias chain reaching an optional is that optional"
+    assert aliases::maybeZeroOr(true, 5) == 0
+    assert aliases::maybeZeroOr(false, 5) == 5
+
+test "an alias names a resource field type"
+    assert aliases::itemCount() == 3

@@ -135,22 +135,59 @@ fn rejects_user_defined_generics_on_functions() {
 }
 
 #[test]
-fn rejects_top_level_type_aliases() {
-    let parsed = parse_source("module app\ntype Title = string\n");
+fn parses_alias_declarations() {
+    let parsed = parse_source("module app\nalias Count = int\nalias MaybeCount = Count?\n");
 
-    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
-    let diagnostic = parsed
-        .diagnostics
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let aliases: Vec<_> = parsed
+        .file
+        .declarations
         .iter()
-        .find(|diagnostic| {
-            diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Unsupported(
-                    UnsupportedSyntax::TypeAliases,
-                ))
+        .filter_map(|decl| match decl {
+            marrow_syntax::Declaration::Alias(alias) => Some(alias),
+            _ => None,
         })
-        .expect("expected type-aliases diagnostic");
-    assert_eq!(diagnostic.code, "parse.syntax");
-    assert_eq!(diagnostic.span.line, 2);
+        .collect();
+    assert_eq!(aliases.len(), 2);
+    assert_eq!(aliases[0].name, "Count");
+    assert_eq!(
+        aliases[0].ty.as_ref().map(ToString::to_string).as_deref(),
+        Some("int")
+    );
+    assert_eq!(aliases[1].name, "MaybeCount");
+    assert_eq!(
+        aliases[1].ty.as_ref().map(ToString::to_string).as_deref(),
+        Some("Count?")
+    );
+}
+
+#[test]
+fn alias_names_and_targets_are_validated() {
+    // A keyword name, a missing `=`, and a missing target each report one typed
+    // expectation at the header line, and parsing stays total.
+    for (source, expected) in [
+        (
+            "module app\nalias int = string\n",
+            ExpectedSyntax::AliasName,
+        ),
+        (
+            "module app\nalias Title string\n",
+            ExpectedSyntax::AliasType,
+        ),
+        ("module app\nalias Title =\n", ExpectedSyntax::AliasType),
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
+            })
+            .unwrap_or_else(|| panic!("expected {expected:?} for:\n{source}"));
+        assert_eq!(diagnostic.code, "parse.syntax");
+        assert_eq!(diagnostic.span.line, 2);
+    }
 }
 
 #[test]

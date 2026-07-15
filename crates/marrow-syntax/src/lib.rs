@@ -21,12 +21,12 @@ pub use active_call::{
     ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
 };
 pub use ast::{
-    Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep,
-    Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl, IdentityTypeExpr,
-    IndexDecl, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm, ModuleDecl,
-    ParamDecl, ParsedSource, RangeExpr, ResourceDecl, ResourceMember, SavedRoot, SourceFile,
-    Statement, StoreDecl, TestDecl, TypeExpr, UnaryOp, UseDecl, range_expr,
+    AliasDecl, Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker,
+    CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
+    EvolveDecl, EvolveStep, Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl,
+    IdentityTypeExpr, IndexDecl, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
+    ModuleDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl, ResourceMember, SavedRoot,
+    SourceFile, Statement, StoreDecl, TestDecl, TypeExpr, UnaryOp, UseDecl, range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,

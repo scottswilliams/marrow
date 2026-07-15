@@ -79,6 +79,7 @@ pub struct UseDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declaration {
+    Alias(AliasDecl),
     Const(ConstDecl),
     Resource(ResourceDecl),
     Store(StoreDecl),
@@ -86,6 +87,20 @@ pub enum Declaration {
     Enum(EnumDecl),
     Evolve(EvolveDecl),
     Test(TestDecl),
+}
+
+/// A transparent type alias: `alias Name = Type`. The name denotes exactly its
+/// target type — it mints no new identity and no constructor — so downstream
+/// resolution expands it before classifying the annotation. Chains are allowed;
+/// a cyclic chain is a check-time diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasDecl {
+    pub docs: Vec<String>,
+    pub name: String,
+    pub name_span: SourceSpan,
+    /// `None` when the target type did not parse; the parser reports the error.
+    pub ty: Option<TypeExpr>,
+    pub span: SourceSpan,
 }
 
 /// A `test "name"` declaration: a named, zero-argument, storeless body run by

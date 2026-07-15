@@ -99,6 +99,8 @@ impl ParseDiagnosticReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpectedSyntax {
+    AliasName,
+    AliasType,
     CloseParen,
     Comma,
     CheckedBody,
@@ -161,7 +163,6 @@ pub enum UnsupportedSyntax {
     ParameterModes,
     ParameterDefaults,
     QuotedFieldSegments,
-    TypeAliases,
     UserDefinedGenerics,
 }
 

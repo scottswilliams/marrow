@@ -55,12 +55,15 @@ module_decl     = "module", qualified_name, NEWLINE ;
 use_decl        = "use", qualified_name, NEWLINE ;
 
 top_level_decl  = {doc_comment},
-                  (const_decl
+                  (alias_decl
+                 | const_decl
                  | resource_decl
                  | store_decl
                  | enum_decl
                  | function_decl
                  | evolve_decl) ;
+
+alias_decl      = "alias", identifier, "=", type, NEWLINE ;
 
 const_decl      = "const", identifier, type_annotation?,
                   "=", expression, NEWLINE ;

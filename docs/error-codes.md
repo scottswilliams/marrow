@@ -126,7 +126,7 @@ Static errors found while checking source.
 | `check.module_path` | A file's `module` header does not match the module name derived from its source-root-relative path. The path is the authority for module identity, so `src/shelf/books.mw` must declare `module shelf::books`; the message names the expected path. |
 | `check.import` | A `use` import cannot be resolved: it names a module the project does not contain, or two imports in one module bind the same final segment and are ambiguous. The message names the offending import. |
 | `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to expose it across the module boundary. |
-| `check.recursion` | A function is part of a direct or mutual recursion cycle. The compiled subset does not admit recursion; the call graph must be acyclic. The message names the cycle. This is reported at check time so the source, not the image, carries the diagnostic. |
+| `check.recursion` | A definition is part of a cycle the language requires to be acyclic: a function on a direct or mutual recursion cycle (the compiled subset does not admit recursion), or a type alias whose expansion reaches itself. The message names the cycle. This is reported at check time so the source, not the image, carries the diagnostic. |
 | `check.assert_outside_test` | An `assert` statement appears outside a `test` declaration. `assert` is the test-owned assertion: it is legal only inside a `test "name"` body, never in an ordinary function. Move the assertion into a test, or use `unreachable("...")` for an in-program invariant fault. |
 
 ### `image.*` — kind `artifact`

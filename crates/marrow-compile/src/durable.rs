@@ -10,8 +10,8 @@ use marrow_image::{ImageDraft, RootDef, SiteDef, SiteTarget};
 use marrow_syntax::{SourceSpan, StoreDecl};
 
 use crate::diag::SourceDiagnostic;
-use crate::record::RecordRegistry;
 use crate::scalar::ScalarType;
+use crate::types::TypeRegistry;
 
 /// One resolved durable field site.
 pub(crate) struct DurableField {
@@ -53,7 +53,7 @@ impl DurableRegistry {
     /// key are rejected.
     pub(crate) fn build(
         draft: &mut ImageDraft,
-        records: &RecordRegistry,
+        records: &TypeRegistry,
         stores: &[(String, &StoreDecl)],
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
@@ -82,7 +82,7 @@ impl DurableRegistry {
             ));
             return Self::default();
         };
-        let Some(key) = scalar_of(&key_param.ty) else {
+        let Some(key) = scalar_of(&records.expand(&key_param.ty)) else {
             diagnostics.push(unsupported(file, store.root.span, "this key type"));
             return Self::default();
         };

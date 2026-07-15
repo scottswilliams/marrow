@@ -12,15 +12,15 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
-    ConstDecl, Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan, StoreDecl,
-    parse_source,
+    AliasDecl, ConstDecl, Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan,
+    StoreDecl, parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{FnLowerer, FunctionRegistry};
-use crate::record::RecordRegistry;
+use crate::types::TypeRegistry;
 
 /// One resolved public export: its dotted module, its item name, and the stable
 /// [`ExportId`] the image carries. This directory is the only place a human export
@@ -244,9 +244,22 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         })
         .collect();
 
-    // Build the single project record type and the function signatures before body
-    // lowering, so constructors, field reads, and forward calls resolve.
+    // Build the named types — transparent aliases plus the single project record
+    // type — and the function signatures before body lowering, so annotations,
+    // constructors, field reads, and forward calls resolve.
     let mut draft = ImageDraft::new();
+    let aliases: Vec<(String, &AliasDecl)> = parsed
+        .iter()
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
+                if let Declaration::Alias(alias) = decl {
+                    Some((module.file.clone(), alias))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
     let resources: Vec<(String, &ResourceDecl)> = parsed
         .iter()
         .flat_map(|module| {
@@ -259,7 +272,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
-    let records = RecordRegistry::build(&mut draft, &resources, &mut diagnostics);
+    let records = TypeRegistry::build(&mut draft, &aliases, &resources, &mut diagnostics);
     let stores: Vec<(String, &StoreDecl)> = parsed
         .iter()
         .flat_map(|module| {
@@ -289,7 +302,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
-    let constants = ConstRegistry::build(&const_decls, &mut diagnostics);
+    let constants = ConstRegistry::build(&const_decls, &records, &mut diagnostics);
 
     // Lower each function, in the same order the registry assigned indices, minting
     // an export for each public function from its declaration path and recording its
@@ -350,10 +363,12 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                         });
                     }
                 }
-                // Constants are evaluated into the const registry above; resources
-                // and stores are handled by their own registries; test declarations
-                // are lowered separately below, after every function has an index.
-                Declaration::Const(_)
+                // Constants are evaluated into the const registry above; aliases,
+                // resources, and stores are handled by their own registries; test
+                // declarations are lowered separately below, after every function
+                // has an index.
+                Declaration::Alias(_)
+                | Declaration::Const(_)
                 | Declaration::Resource(_)
                 | Declaration::Store(_)
                 | Declaration::Test(_) => {}
@@ -526,6 +541,7 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
 
 fn declaration_span(declaration: &Declaration) -> SourceSpan {
     match declaration {
+        Declaration::Alias(decl) => decl.span,
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
         Declaration::Store(decl) => decl.span,

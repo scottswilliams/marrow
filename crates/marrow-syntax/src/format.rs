@@ -8,10 +8,10 @@
 //! the minimum needed to preserve operator precedence and associativity.
 
 use crate::{
-    Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
-    ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, ParamDecl,
-    ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
+    AliasDecl, Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker,
+    CommentPlacement, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep,
+    Expression, ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm,
+    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
     encode_string_literal,
 };
 
@@ -153,7 +153,7 @@ fn merge_trailing_comment_sections(sections: Vec<FormatSection>) -> Vec<FormatSe
 
 fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingCommentLine {
     match declaration {
-        Declaration::Const(_) => TrailingCommentLine::Last,
+        Declaration::Alias(_) | Declaration::Const(_) => TrailingCommentLine::Last,
         Declaration::Resource(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Store(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Function(decl) => {
@@ -201,6 +201,7 @@ fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str
 /// how far the section's first rendered line sits above its header span.
 fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
     let docs = match declaration {
+        Declaration::Alias(decl) => decl.docs.len(),
         Declaration::Const(decl) => decl.docs.len(),
         Declaration::Resource(decl) => decl.docs.len(),
         Declaration::Store(decl) => decl.docs.len(),
@@ -236,6 +237,7 @@ fn normalized_comment_tokens(source: &str) -> Vec<(CommentMarker, String)> {
 
 fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     match declaration {
+        Declaration::Alias(decl) => decl.span,
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
         Declaration::Store(decl) => decl.span,
@@ -251,6 +253,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
 /// for any statement body.
 pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
+        Declaration::Alias(decl) => format_alias(decl),
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(source, decl),
         Declaration::Store(decl) => format_store(source, decl),
@@ -316,6 +319,15 @@ fn evolve_step_trailing_comment_line(step: &EvolveStep) -> TrailingCommentLine {
             TrailingCommentLine::Last
         }
     }
+}
+
+fn format_alias(decl: &AliasDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str(&format!("alias {} = ", decl.name));
+    if let Some(ty) = &decl.ty {
+        out.push_str(&ty.to_string());
+    }
+    out
 }
 
 fn format_const(decl: &ConstDecl) -> String {

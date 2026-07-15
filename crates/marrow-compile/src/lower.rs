@@ -20,8 +20,8 @@ use marrow_syntax::{
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
-use crate::record::RecordRegistry;
 use crate::scalar::ScalarType;
+use crate::types::TypeRegistry;
 
 /// A lowered value type: a scalar or the project record, each bare or optional.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +205,7 @@ impl FunctionRegistry {
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
     /// `functions` pairs each declaration with its dotted module name.
     pub(crate) fn build(
-        records: &RecordRegistry,
+        records: &TypeRegistry,
         functions: &[(String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
@@ -215,8 +215,8 @@ impl FunctionRegistry {
             let params = function
                 .params
                 .iter()
-                .filter_map(|param| match &param.ty {
-                    TypeExpr::Name { text, .. } => ScalarType::from_spelling(text),
+                .filter_map(|param| match records.expand(&param.ty) {
+                    TypeExpr::Name { text, .. } => ScalarType::from_spelling(&text),
                     _ => None,
                 })
                 .collect();
@@ -314,7 +314,7 @@ struct LoopCtx {
 
 pub(crate) struct FnLowerer<'a> {
     draft: &'a mut ImageDraft,
-    records: &'a RecordRegistry,
+    records: &'a TypeRegistry,
     durable: &'a DurableRegistry,
     functions: &'a FunctionRegistry,
     consts: &'a ConstRegistry,
@@ -345,7 +345,7 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         draft: &'a mut ImageDraft,
-        records: &'a RecordRegistry,
+        records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         consts: &'a ConstRegistry,
@@ -384,7 +384,7 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
-        records: &'a RecordRegistry,
+        records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         consts: &'a ConstRegistry,
@@ -478,7 +478,7 @@ impl<'a> FnLowerer<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower_test(
         draft: &'a mut ImageDraft,
-        records: &'a RecordRegistry,
+        records: &'a TypeRegistry,
         durable: &'a DurableRegistry,
         functions: &'a FunctionRegistry,
         consts: &'a ConstRegistry,
@@ -2429,16 +2429,16 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn param_scalar(&mut self, ty: &TypeExpr) -> Option<ScalarType> {
-        match ty {
-            TypeExpr::Name { text, span } => match ScalarType::from_spelling(text) {
+        match self.records.expand(ty) {
+            TypeExpr::Name { text, .. } => match ScalarType::from_spelling(&text) {
                 Some(scalar) => Some(scalar),
                 None => {
-                    self.fail(unsupported(self.file, *span, "this parameter type"));
+                    self.fail(unsupported(self.file, ty.span(), "this parameter type"));
                     None
                 }
             },
-            other => {
-                self.fail(unsupported(self.file, other.span(), "this parameter type"));
+            _ => {
+                self.fail(unsupported(self.file, ty.span(), "this parameter type"));
                 None
             }
         }
@@ -2446,8 +2446,14 @@ impl<'a> FnLowerer<'a> {
 }
 
 /// Resolve a type annotation into a lowered type, or `None` for an unsupported
-/// spelling.
-fn resolve_type(records: &RecordRegistry, annotation: &TypeExpr) -> Option<LTy> {
+/// spelling. Aliases expand first, so classification reads only scalar spellings
+/// and declared type names; the no-nested-optional rule applies to the expanded
+/// form, so an alias cannot smuggle a doubled optional.
+fn resolve_type(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy> {
+    resolve_expanded(records, &records.expand(annotation))
+}
+
+fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy> {
     match annotation {
         TypeExpr::Name { text, .. } => {
             if let Some(scalar) = ScalarType::from_spelling(text) {
@@ -2460,7 +2466,7 @@ fn resolve_type(records: &RecordRegistry, annotation: &TypeExpr) -> Option<LTy> 
             }
         }
         TypeExpr::Optional { inner, .. } => {
-            let inner = resolve_type(records, inner)?;
+            let inner = resolve_expanded(records, inner)?;
             if inner.is_optional() {
                 None
             } else {

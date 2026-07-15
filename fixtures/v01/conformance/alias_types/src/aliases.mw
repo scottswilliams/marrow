@@ -1,0 +1,34 @@
+module aliases
+
+alias Count = int
+alias Label = string
+alias MaybeCount = Count?
+
+const LIMIT: Count = 10
+
+resource Item
+    required count: Count
+    note: Label
+
+pub fn double(n: Count): int
+    return n + n
+
+pub fn tag(text: Label): Label
+    return text
+
+pub fn limit(): Count
+    return LIMIT
+
+fn maybeZero(present: bool): MaybeCount
+    if present
+        return 0
+    return absent
+
+pub fn maybeZeroOr(present: bool, fallback: int): int
+    if const value = maybeZero(present)
+        return value
+    return fallback
+
+pub fn itemCount(): int
+    const item: Item = Item(count: 3)
+    return item.count
