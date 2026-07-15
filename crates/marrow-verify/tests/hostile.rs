@@ -9,8 +9,8 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, RootDef, Scalar,
-    SiteDef, SiteTarget, SpanEntry, image_id,
+    ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef, RootDef,
+    Scalar, SiteDef, SiteTarget, SpanEntry, image_id,
 };
 use marrow_verify::verify;
 
@@ -501,4 +501,316 @@ fn create_on_a_field_site_rejects_at_function() {
         Instr::Return,
     ]);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+// --- TEST-ENTRY section and OP_ASSERT hostiles (P00b). ---
+
+/// A well-formed image with one storeless test entry whose body asserts a
+/// constant true, returning the draft and the test function's id. The
+/// TEST-ENTRY hostiles derive from this.
+fn test_entry_image() -> (ImageDraft, FuncId) {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let title = draft.intern_string("holds");
+    let truth = draft.intern_bool(true);
+    let code = vec![
+        Instr::ConstLoad(truth.index()),
+        Instr::Assert,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name: title,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_test_entry(title, func);
+    (draft, func)
+}
+
+#[test]
+fn assert_in_a_test_entry_verifies() {
+    // The well-formed baseline the TEST-ENTRY hostiles derive from.
+    let (draft, _) = test_entry_image();
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+#[test]
+fn assert_outside_a_test_entry_rejects() {
+    // The same asserting function, exported instead of test-entered: `assert`
+    // is legal only inside a test entry.
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f");
+    let truth = draft.intern_bool(true);
+    let code = vec![
+        Instr::ConstLoad(truth.index()),
+        Instr::Assert,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+}
+
+#[test]
+fn assert_on_a_non_bool_operand_rejects_at_function() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let title = draft.intern_string("holds");
+    let seven = draft.intern_int(7);
+    let code = vec![
+        Instr::ConstLoad(seven.index()),
+        Instr::Assert,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name: title,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_test_entry(title, func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+#[test]
+fn test_entry_that_is_also_an_export_rejects() {
+    let (mut draft, func) = test_entry_image();
+    draft.add_export(ExportId::of_local("", "holds"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+}
+
+#[test]
+fn test_entry_with_a_parameter_rejects() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let title = draft.intern_string("holds");
+    let code = vec![Instr::LocalGet(0), Instr::Assert, Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: title,
+        source: src,
+        params: vec![Scalar::Bool],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_test_entry(title, func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+}
+
+#[test]
+fn test_entry_with_a_non_unit_return_rejects() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let title = draft.intern_string("holds");
+    let seven = draft.intern_int(7);
+    let code = vec![Instr::ConstLoad(seven.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: title,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_test_entry(title, func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+}
+
+#[test]
+fn test_entry_with_durable_demand_rejects() {
+    // A test entry whose body reads durable data: demand must be empty.
+    let mut draft = ImageDraft::new();
+    let (entry_site, _value, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let title = draft.intern_string("holds");
+    let key = draft.intern_text("x");
+    let code = vec![
+        Instr::ConstLoad(key.index()),
+        Instr::DurExists(entry_site),
+        Instr::Assert,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name: title,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_test_entry(title, func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+}
+
+#[test]
+fn test_entry_as_a_call_target_rejects() {
+    // An exported function that calls the test entry: a test entry is an entry
+    // point and may never be a call target.
+    let (mut draft, _) = test_entry_image();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let code = vec![Instr::Call(0), Instr::Return];
+    let main = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "main"), main);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
+}
+
+/// The TEST-ENTRY section frame (id 8) of an encoded image.
+fn test_entry_section(bytes: &[u8]) -> (usize, usize) {
+    let (_, body, len) = *sections(bytes).iter().find(|(id, ..)| *id == 8).unwrap();
+    (body, len)
+}
+
+/// A two-test image whose TEST-ENTRY section rows the byte-patch hostiles edit.
+fn two_test_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let truth = draft.intern_bool(true);
+    for title_text in ["alpha", "beta"] {
+        let title = draft.intern_string(title_text);
+        let code = vec![
+            Instr::ConstLoad(truth.index()),
+            Instr::Assert,
+            Instr::Return,
+        ];
+        let func = draft.add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_test_entry(title, func);
+    }
+    draft.encode().expect("encode").bytes
+}
+
+#[test]
+fn rehashed_test_entry_function_out_of_range_rejects_at_table() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    // Row layout: count(u16), then per row name(u16) func(u16).
+    let func_field = body + 2 + 2;
+    bytes[func_field] = 0xFF;
+    bytes[func_field + 1] = 0xFF;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_test_entry_name_out_of_range_rejects_at_table() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    let name_field = body + 2;
+    bytes[name_field] = 0xFF;
+    bytes[name_field + 1] = 0xFF;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_duplicate_test_entry_name_rejects_at_table() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    // Copy the first row's name onto the second row: names must strictly ascend.
+    let first_name = [bytes[body + 2], bytes[body + 3]];
+    bytes[body + 6..body + 8].copy_from_slice(&first_name);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_descending_test_entry_names_reject_at_table() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    // Swap the two 4-byte rows so their name indices descend.
+    let row0: [u8; 4] = bytes[body + 2..body + 6].try_into().unwrap();
+    let row1: [u8; 4] = bytes[body + 6..body + 10].try_into().unwrap();
+    bytes[body + 2..body + 6].copy_from_slice(&row1);
+    bytes[body + 6..body + 10].copy_from_slice(&row0);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_test_entry_count_past_body_rejects_at_table() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    // Claim three rows while the body carries two: the third row read runs short.
+    bytes[body..body + 2].copy_from_slice(&3u16.to_be_bytes());
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_test_entry_count_short_of_body_rejects_at_table() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    // Claim one row while the body carries two: the second row is trailing bytes.
+    bytes[body..body + 2].copy_from_slice(&1u16.to_be_bytes());
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_aliased_test_entry_function_rejects() {
+    let mut bytes = two_test_image();
+    let (body, _) = test_entry_section(&bytes);
+    // Point the second row's function at the first row's function: two names may
+    // not alias one test function.
+    let first_func = [bytes[body + 4], bytes[body + 5]];
+    bytes[body + 8..body + 10].copy_from_slice(&first_func);
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.test_entry");
+}
+
+#[test]
+fn transaction_marker_in_a_test_entry_rejects_at_flow() {
+    // A TxnBegin inside a test entry: a transaction marker may only sit in a
+    // mutating export entry, so the flow phase rejects it before the TestEntry
+    // phase ever runs.
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let title = draft.intern_string("holds");
+    let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: title,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_test_entry(title, func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }

@@ -339,6 +339,43 @@ pub(crate) struct FnLowerer<'a> {
 }
 
 impl<'a> FnLowerer<'a> {
+    /// A fresh lowerer over an empty body, for one function or test body. The
+    /// shared field set has this single owner; `ret` and `body_kind` are the only
+    /// per-body-kind inputs.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        draft: &'a mut ImageDraft,
+        records: &'a RecordRegistry,
+        durable: &'a DurableRegistry,
+        functions: &'a FunctionRegistry,
+        consts: &'a ConstRegistry,
+        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        file: &'a str,
+        module: &'a str,
+        ret: RetType,
+        body_kind: BodyKind,
+    ) -> Self {
+        FnLowerer {
+            draft,
+            records,
+            durable,
+            functions,
+            consts,
+            diagnostics,
+            file,
+            module,
+            code: Vec::new(),
+            spans: Vec::new(),
+            calls: Vec::new(),
+            locals: Vec::new(),
+            loops: Vec::new(),
+            slot_count: 0,
+            ret,
+            body_kind,
+            failed: false,
+        }
+    }
+
     /// Lower `function` and add it to the draft, returning its assigned [`FuncId`]
     /// and the indices of the functions it calls directly. Export minting is the
     /// caller's job: it holds the dotted module name needed to compute the export's
@@ -371,7 +408,7 @@ impl<'a> FnLowerer<'a> {
             },
         };
 
-        let mut lowerer = FnLowerer {
+        let mut lowerer = FnLowerer::new(
             draft,
             records,
             durable,
@@ -380,16 +417,9 @@ impl<'a> FnLowerer<'a> {
             diagnostics,
             file,
             module,
-            code: Vec::new(),
-            spans: Vec::new(),
-            calls: Vec::new(),
-            locals: Vec::new(),
-            loops: Vec::new(),
-            slot_count: 0,
             ret,
-            body_kind: BodyKind::Function,
-            failed: false,
-        };
+            BodyKind::Function,
+        );
 
         // Params occupy the first slots as bare scalars (design §C: params are bare
         // scalar type refs), pre-initialized to their type.
@@ -458,7 +488,7 @@ impl<'a> FnLowerer<'a> {
         name: &str,
         body: &Block,
     ) -> Option<Lowered> {
-        let mut lowerer = FnLowerer {
+        let mut lowerer = FnLowerer::new(
             draft,
             records,
             durable,
@@ -467,16 +497,9 @@ impl<'a> FnLowerer<'a> {
             diagnostics,
             file,
             module,
-            code: Vec::new(),
-            spans: Vec::new(),
-            calls: Vec::new(),
-            locals: Vec::new(),
-            loops: Vec::new(),
-            slot_count: 0,
-            ret: RetType::Unit,
-            body_kind: BodyKind::Test,
-            failed: false,
-        };
+            RetType::Unit,
+            BodyKind::Test,
+        );
         // A test body is a unit-returning block: control that falls through ends with
         // an implicit return, exactly like a unit function.
         if lowerer.lower_block(body) == Flow::Fallthrough {

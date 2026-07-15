@@ -19,7 +19,7 @@ mod ty;
 pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
 pub use draft::{
     ConstId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, RecordTypeDef, RootDef,
-    SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TestEntryDef, TypeId,
+    SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TypeId,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};

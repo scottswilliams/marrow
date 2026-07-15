@@ -140,7 +140,7 @@ struct ExportDef {
 /// `marrow test` runs. Unlike an export it carries no wire identity — the name is a
 /// human report label only, never an interface, demand, or durable identity.
 #[derive(Debug, Clone)]
-pub struct TestEntryDef {
+struct TestEntryDef {
     name: StrId,
     func: FuncId,
 }

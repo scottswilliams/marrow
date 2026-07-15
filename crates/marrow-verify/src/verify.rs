@@ -888,7 +888,15 @@ fn check_test_entries(
 ) -> Result<Vec<SealedTestEntry>, VerifyRejection> {
     let mut is_test_entry = vec![false; functions.len()];
     for (_, func) in &decoded.test_entries {
-        // The decoder proved every function index in range.
+        // The decoder proved every function index in range. Two names aliasing
+        // one function would make the report double-count it; entries are unique
+        // by function as well as by name.
+        if is_test_entry[*func as usize] {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "duplicate test-entry function index",
+            ));
+        }
         is_test_entry[*func as usize] = true;
     }
 
