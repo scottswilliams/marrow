@@ -13,8 +13,8 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    ExportId, ImageId, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE,
-    OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
+    ExportId, ImageId, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT,
+    OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL,
     OP_CONV_STRING_INT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS,
     OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
     OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_INT, OP_EQ_TEXT,
@@ -31,7 +31,8 @@ use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
     Demand, RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
-    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SpanRow, VerifiedImage,
+    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SpanRow,
+    VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -100,6 +101,9 @@ struct DecodedImage {
     consts: Vec<SealedConst>,
     functions: Vec<DecodedFunction>,
     exports: Vec<(ExportId, u16)>,
+    /// Decoded TEST-ENTRY rows: `(name-string-index, function-index)`, ascending by
+    /// name index.
+    test_entries: Vec<(u16, u16)>,
 }
 
 fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
@@ -134,12 +138,12 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let section_count = reader
         .u8()
         .ok_or(reject(VerifyPhase::Envelope, "short section count"))?;
-    if section_count != 7 {
-        return Err(reject(VerifyPhase::Envelope, "section count must be 7"));
+    if section_count != 8 {
+        return Err(reject(VerifyPhase::Envelope, "section count must be 8"));
     }
-    let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(7);
+    let mut sections: Vec<(u8, &[u8])> = Vec::with_capacity(8);
     let mut last_id = 0u8;
-    for _ in 0..7 {
+    for _ in 0..8 {
         let id = reader
             .u8()
             .ok_or(reject(VerifyPhase::Envelope, "short section id"))?;
@@ -165,12 +169,12 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
             "trailing bytes after sections",
         ));
     }
-    // Section ids strictly ascend and there are exactly 7, so they are exactly 1..7.
+    // Section ids strictly ascend and there are exactly 8, so they are exactly 1..8.
     for (index, (id, _)) in sections.iter().enumerate() {
         if *id != (index as u8 + 1) {
             return Err(reject(
                 VerifyPhase::Envelope,
-                "section ids must be exactly 1..7",
+                "section ids must be exactly 1..8",
             ));
         }
     }
@@ -184,6 +188,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     let mut functions = decode_functions(sections[4].1, strings.len())?;
     let exports = decode_exports(sections[5].1, functions.len())?;
     decode_spans(sections[6].1, &mut functions)?;
+    let test_entries = decode_test_entries(sections[7].1, strings.len(), functions.len())?;
 
     Ok(DecodedImage {
         image_id: image_id(payload),
@@ -194,7 +199,67 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         consts,
         functions,
         exports,
+        test_entries,
     })
+}
+
+/// Decode the TEST-ENTRY table (section 0x08): a count, then each `u16 name index
+/// ‖ u16 function index` entry in strictly ascending, unique name-index order. The
+/// name index resolves a report label; the function index a storeless test body.
+/// Structural violations are phase-`Table` rejections; the test-entry semantic
+/// constraints (assert legality, storelessness, disjointness from exports) are
+/// checked in the later TestEntry phase.
+fn decode_test_entries(
+    body: &[u8],
+    string_count: usize,
+    function_count: usize,
+) -> Result<Vec<(u16, u16)>, VerifyRejection> {
+    let mut reader = Reader::new(body);
+    let count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short test-entry count"))? as usize;
+    if count > marrow_image::bounds::MAX_TEST_ENTRIES {
+        return Err(reject(VerifyPhase::Table, "too many test entries"));
+    }
+    let mut entries = Vec::with_capacity(count);
+    let mut previous_name: Option<u16> = None;
+    for _ in 0..count {
+        let name = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short test-entry name"))?;
+        let func = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short test-entry function"))?;
+        if name as usize >= string_count {
+            return Err(reject(
+                VerifyPhase::Table,
+                "test-entry name index out of range",
+            ));
+        }
+        if func as usize >= function_count {
+            return Err(reject(
+                VerifyPhase::Table,
+                "test-entry function index out of range",
+            ));
+        }
+        if let Some(prev) = previous_name
+            && name <= prev
+        {
+            return Err(reject(
+                VerifyPhase::Table,
+                "test entries must be sorted and unique by name",
+            ));
+        }
+        previous_name = Some(name);
+        entries.push((name, func));
+    }
+    if !reader.is_empty() {
+        return Err(reject(
+            VerifyPhase::Table,
+            "trailing bytes in test-entry table",
+        ));
+    }
+    Ok(entries)
 }
 
 fn decode_strings(body: &[u8]) -> Result<Vec<Rc<str>>, VerifyRejection> {
@@ -797,6 +862,8 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         functions[*func as usize].mutating = effects.mutates_closure[*func as usize];
     }
 
+    let test_entries = check_test_entries(&decoded, &functions, &export_entries, &effects)?;
+
     Ok(VerifiedImage {
         image_id: decoded.image_id,
         types,
@@ -805,7 +872,90 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         consts: decoded.consts,
         functions,
         exports,
+        test_entries,
     })
+}
+
+/// The test-entry phase (design §E extension): the TEST-ENTRY table names storeless
+/// zero-argument entry points, `assert` is legal only inside one, and a test entry
+/// is never an export, a mutating/reading closure, or a call target. Returns the
+/// sealed entries in the table's ascending-name order.
+fn check_test_entries(
+    decoded: &DecodedImage,
+    functions: &[SealedFunction],
+    export_entries: &[bool],
+    effects: &Effects,
+) -> Result<Vec<SealedTestEntry>, VerifyRejection> {
+    let mut is_test_entry = vec![false; functions.len()];
+    for (_, func) in &decoded.test_entries {
+        // The decoder proved every function index in range.
+        is_test_entry[*func as usize] = true;
+    }
+
+    // `assert` may appear only in a test-entry function.
+    for (index, function) in functions.iter().enumerate() {
+        let has_assert = function
+            .instrs()
+            .iter()
+            .any(|instr| matches!(instr, SealedInstr::Assert));
+        if has_assert && !is_test_entry[index] {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "an assert instruction sits outside a test entry",
+            ));
+        }
+    }
+
+    // Each test entry is a storeless zero-argument entry point, disjoint from the
+    // export table.
+    for (_, func) in &decoded.test_entries {
+        let function = &functions[*func as usize];
+        if export_entries[*func as usize] {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "a test entry is also an export",
+            ));
+        }
+        if !function.params.is_empty() {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "a test entry takes no parameters",
+            ));
+        }
+        if function.ret != RetShape::Unit {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "a test entry must return unit",
+            ));
+        }
+        if !effects.demand(*func).is_empty() {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "a test entry reads or writes durable data",
+            ));
+        }
+    }
+
+    // A test entry is an entry point: no function may call one.
+    for function in functions {
+        for callee in call_targets(function) {
+            if is_test_entry[callee] {
+                return Err(reject(
+                    VerifyPhase::TestEntry,
+                    "a test entry may not be called",
+                ));
+            }
+        }
+    }
+
+    Ok(decoded
+        .test_entries
+        .iter()
+        .map(|(name, func)| SealedTestEntry {
+            name: decoded.strings[*name as usize].clone(),
+            func: *func,
+        })
+        .collect())
 }
 
 /// The sealed tables the per-function checks consult.
@@ -1197,6 +1347,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_VACANT_LOAD => SealedInstr::VacantLoad(decode_optional_scalar_operand(&mut reader)?),
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
             OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(&mut reader)?),
+            OP_ASSERT => SealedInstr::Assert,
             OP_CALL => SealedInstr::Call(operand_u16(&mut reader)?),
             OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(&mut reader)?),
             OP_DUR_READ_FIELD => SealedInstr::DurReadField(operand_u16(&mut reader)?),
@@ -1619,6 +1770,12 @@ fn apply(
         SealedInstr::JumpIfFalse(target) => {
             expect_scalar(pop(stack)?, Scalar::Bool)?;
             Ok(Control::Branch(*target))
+        }
+        SealedInstr::Assert => {
+            // Pops the bool condition and pushes nothing; the test-entry phase
+            // separately proves it appears only in a test-entry function.
+            expect_scalar(pop(stack)?, Scalar::Bool)?;
+            Ok(Control::Fallthrough)
         }
         SealedInstr::IntAdd
         | SealedInstr::IntSub

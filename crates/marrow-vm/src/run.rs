@@ -398,6 +398,16 @@ fn execute<'s>(
                     text,
                 ));
             }
+            SealedInstr::Assert => {
+                // A test assertion: on a false condition the running test fails with a
+                // source-mapped `run.assert` fault; the verifier proved this appears
+                // only in a test-entry function.
+                if as_bool(pop(&mut stack)) {
+                    pc += 1;
+                } else {
+                    return Err(fault(function, pc, Code::RunAssert.as_str()));
+                }
+            }
             SealedInstr::Call(target) => {
                 if depth + 1 > MAX_CALL_DEPTH {
                     return Err(fault(function, pc, Code::RunCallDepth.as_str()));

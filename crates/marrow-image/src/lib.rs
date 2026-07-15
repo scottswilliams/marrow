@@ -19,12 +19,13 @@ mod ty;
 pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
 pub use draft::{
     ConstId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, RecordTypeDef, RootDef,
-    SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TypeId,
+    SiteDef, SiteId, SiteTarget, SpanEntry, StrId, TestEntryDef, TypeId,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};
 pub use instr::{
-    Instr, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT,
+    Instr, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE,
+    OP_BYTES_LT,
     OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT,
     OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY,
     OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED,

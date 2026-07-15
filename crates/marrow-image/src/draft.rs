@@ -136,6 +136,15 @@ struct ExportDef {
     func: FuncId,
 }
 
+/// A test entry: a report-name string bound to a storeless zero-argument function
+/// `marrow test` runs. Unlike an export it carries no wire identity — the name is a
+/// human report label only, never an interface, demand, or durable identity.
+#[derive(Debug, Clone)]
+pub struct TestEntryDef {
+    name: StrId,
+    func: FuncId,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ConstValue {
     Int(i64),
@@ -159,6 +168,7 @@ pub enum ImageBuildError {
     TooManyParams,
     TooManyLocals,
     TooManyExports,
+    TooManyTestEntries,
     CodeTooLong,
     LocalCountBelowParams,
     ImageTooLarge,
@@ -183,6 +193,7 @@ pub struct ImageDraft {
     sites: Vec<SiteDef>,
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
+    test_entries: Vec<TestEntryDef>,
 }
 
 impl ImageDraft {
@@ -257,6 +268,13 @@ impl ImageDraft {
         self.exports.push(ExportDef { id, func });
     }
 
+    /// Bind the report name `name` to the storeless test function `func`. Test names
+    /// are unique across the project (the compiler rejects a duplicate), so the
+    /// encoder sorts entries by their final name-string index.
+    pub fn add_test_entry(&mut self, name: StrId, func: FuncId) {
+        self.test_entries.push(TestEntryDef { name, func });
+    }
+
     // --- accessors used by the encoder ---
     pub(crate) fn strings(&self) -> &[String] {
         &self.strings
@@ -282,6 +300,15 @@ impl ImageDraft {
         self.exports
             .iter()
             .map(|export| (export.id, export.func.0))
+            .collect()
+    }
+
+    /// The `(raw name StrId, function-index)` pairs for the TEST-ENTRY table. The
+    /// encoder remaps the name index through the string sort map and sorts.
+    pub(crate) fn test_entry_rows(&self) -> Vec<(u16, u16)> {
+        self.test_entries
+            .iter()
+            .map(|entry| (entry.name.raw(), entry.func.0))
             .collect()
     }
 }

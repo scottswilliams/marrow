@@ -98,6 +98,9 @@ pub enum SealedInstr {
     /// Fault with `run.unreachable`, carrying the static text at const index `_0`.
     /// Terminates the frame; it never falls through.
     Unreachable(u16),
+    /// Pop a bool; on false fault with `run.assert` at this instruction's span, else
+    /// fall through. The verifier admits it only in a test-entry function.
+    Assert,
     /// Call function `_0` directly: pop its arguments (a0 pushed first, lands in
     /// callee local 0) and push its return value (nothing for a Unit return).
     Call(u16),
@@ -320,6 +323,27 @@ impl SealedExport {
     }
 }
 
+/// A verified test entry: a report name bound to the storeless zero-argument
+/// function `marrow test` runs. It carries no wire identity — unlike an export the
+/// name is a human report label, never an interface, demand, or durable identity.
+#[derive(Debug, Clone)]
+pub struct SealedTestEntry {
+    pub(crate) name: Rc<str>,
+    pub(crate) func: u16,
+}
+
+impl SealedTestEntry {
+    /// The report name (the `test "..."` title).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The image function index this test runs.
+    pub fn func(&self) -> u16 {
+        self.func
+    }
+}
+
 /// The verified, sealed program image.
 #[derive(Debug, Clone)]
 pub struct VerifiedImage {
@@ -330,6 +354,7 @@ pub struct VerifiedImage {
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
+    pub(crate) test_entries: Vec<SealedTestEntry>,
 }
 
 impl VerifiedImage {
@@ -365,6 +390,12 @@ impl VerifiedImage {
 
     pub fn exports(&self) -> &[SealedExport] {
         &self.exports
+    }
+
+    /// The test entries, in ascending report-name order. `marrow test` runs each
+    /// storeless; a test entry is never dispatched as an export.
+    pub fn test_entries(&self) -> &[SealedTestEntry] {
+        &self.test_entries
     }
 
     /// The export bound to `id`, if any. The VM and CLI dispatch only through this

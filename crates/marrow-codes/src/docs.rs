@@ -167,6 +167,7 @@ Static errors found while checking source.
             Code::CheckImport,
             Code::CheckVisibility,
             Code::CheckRecursion,
+            Code::CheckAssertOutsideTest,
         ]),
         r#"
 ### `image.*` — kind `artifact`
@@ -185,6 +186,7 @@ VM can run it.
             Code::ImageFunction,
             Code::ImageClosure,
             Code::ImageFlow,
+            Code::ImageTestEntry,
         ]),
         r#"
 ### `run.*` — kind `runtime`
@@ -204,6 +206,7 @@ program.
             Code::RunDivideByZero,
             Code::RunTextLimit,
             Code::RunUnreachable,
+            Code::RunAssert,
             Code::RunCallDepth,
             Code::RunBudget,
             Code::RunAuthority,

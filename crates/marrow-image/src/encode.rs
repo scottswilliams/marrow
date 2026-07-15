@@ -15,7 +15,7 @@ use crate::ty::ImageType;
 /// Container magic and version.
 const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
-const SECTION_COUNT: u8 = 7;
+const SECTION_COUNT: u8 = 8;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -44,6 +44,7 @@ impl ImageDraft {
         push_section(&mut tail, 0x05, function_offsets.body)?;
         push_section(&mut tail, 0x06, self.encode_exports())?;
         push_section(&mut tail, 0x07, self.encode_spans(&function_offsets.per_fn))?;
+        push_section(&mut tail, 0x08, self.encode_test_entries(&str_map))?;
 
         let id = image_id(&tail);
         let mut bytes = Vec::with_capacity(37 + tail.len());
@@ -92,6 +93,9 @@ impl ImageDraft {
         }
         if self.export_entries().len() > bounds::MAX_EXPORTS {
             return Err(ImageBuildError::TooManyExports);
+        }
+        if self.test_entry_rows().len() > bounds::MAX_TEST_ENTRIES {
+            return Err(ImageBuildError::TooManyTestEntries);
         }
         for function in self.functions() {
             if function.params.len() > bounds::MAX_PARAMS {
@@ -223,6 +227,27 @@ impl ImageDraft {
         push_u16(&mut body, entries.len() as u16);
         for (id, func) in entries {
             body.extend_from_slice(id.bytes());
+            push_u16(&mut body, func);
+        }
+        body
+    }
+
+    /// Encode the TEST-ENTRY table (section 0x08): a count, then each
+    /// `u16 name-string-index ‖ u16 function-index` entry in strictly ascending
+    /// name-index order. The name index is remapped through the string sort map;
+    /// names are unique across the project, so the sort is total and the verifier
+    /// rechecks the strict ordering.
+    fn encode_test_entries(&self, str_map: &[u16]) -> Vec<u8> {
+        let mut entries: Vec<(u16, u16)> = self
+            .test_entry_rows()
+            .into_iter()
+            .map(|(name, func)| (str_map[name as usize], func))
+            .collect();
+        entries.sort_by_key(|(name, _)| *name);
+        let mut body = Vec::new();
+        push_u16(&mut body, entries.len() as u16);
+        for (name, func) in entries {
+            push_u16(&mut body, name);
             push_u16(&mut body, func);
         }
         body

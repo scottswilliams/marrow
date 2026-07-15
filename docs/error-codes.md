@@ -127,6 +127,7 @@ Static errors found while checking source.
 | `check.import` | A `use` import cannot be resolved: it names a module the project does not contain, or two imports in one module bind the same final segment and are ambiguous. The message names the offending import. |
 | `check.visibility` | A call from one module names a function in another module that is not `pub`. A function without `pub` is callable only within its own module; mark it `pub` to expose it across the module boundary. |
 | `check.recursion` | A function is part of a direct or mutual recursion cycle. The compiled subset does not admit recursion; the call graph must be acyclic. The message names the cycle. This is reported at check time so the source, not the image, carries the diagnostic. |
+| `check.assert_outside_test` | An `assert` statement appears outside a `test` declaration. `assert` is the test-owned assertion: it is legal only inside a `test "name"` body, never in an ordinary function. Move the assertion into a test, or use `unreachable("...")` for an in-program invariant fault. |
 
 ### `image.*` — kind `artifact`
 
@@ -142,6 +143,7 @@ VM can run it.
 | `image.function` | A program image failed per-function verification (phase 3): the bytecode does not decode to instruction boundaries, a jump leaves the function or lands off a boundary, an instruction is unreachable or a path falls off the end without returning, the typed operand stack does not agree at a merge or a return, a local is read before it is initialized, or a per-opcode rule is violated. |
 | `image.closure` | A program image failed call/effect-closure verification (phase 4): the call graph contains a cycle (recursion is not admitted), or a recorded call or effect does not close consistently across the function set. |
 | `image.flow` | A program image failed transaction-flow verification (phase 5): a transaction is begun outside an export entry, a mutation or mutating call sits outside the single owned transaction region, the region is not opened exactly once and closed on every path, or a read-only export contains a mutation. |
+| `image.test_entry` | A program image failed test-entry verification: the closed non-wire TEST-ENTRY table is malformed (an out-of-range or duplicate/unsorted name or function index), an `assert` instruction sits in a function that is not a test entry, or a test entry is also an export, takes parameters, does not return unit, reads or writes durable data, or is called by another function. A test entry is a storeless zero-argument entry point, never an export or durable identity. |
 
 ### `run.*` — kind `runtime`
 
@@ -158,6 +160,7 @@ program.
 | `run.divide_by_zero` | A division or remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
 | `run.text_limit` | A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program. |
 | `run.unreachable` | A program reached an `unreachable("...")` statement, the sole application-declared invariant fault. The static text records the invariant the author believed held; reaching the statement means it did not. The fault is mapped to the statement's source span and is not catchable inside the program. |
+| `run.assert` | A `test`'s `assert` condition was false at runtime, so the test fails. `marrow test` reports the test as failed and maps the fault to the assertion's source span. Only a `test` body can produce this fault; it is not catchable inside the program. |
 | `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
 | `run.budget` | A running program exhausted the fixed per-invocation instruction budget, shared across the whole call tree so total work stays bounded regardless of loop or call structure. A non-terminating loop faults here rather than running forever. The fault stops execution and is not catchable inside the program. |
 | `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |

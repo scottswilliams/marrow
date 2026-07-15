@@ -20,6 +20,8 @@ pub enum VerifyPhase {
     Closure,
     /// Phase 5: transaction-flow validation.
     Flow,
+    /// Test-entry phase: the TEST-ENTRY table and `assert` legality.
+    TestEntry,
 }
 
 impl VerifyPhase {
@@ -31,6 +33,7 @@ impl VerifyPhase {
             VerifyPhase::Function => Code::ImageFunction.as_str(),
             VerifyPhase::Closure => Code::ImageClosure.as_str(),
             VerifyPhase::Flow => Code::ImageFlow.as_str(),
+            VerifyPhase::TestEntry => Code::ImageTestEntry.as_str(),
         }
     }
 }

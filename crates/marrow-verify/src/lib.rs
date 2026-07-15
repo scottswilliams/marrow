@@ -18,6 +18,7 @@ pub use marrow_image::{ExportId, ImageId, Scalar};
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{
     Demand, RetShape, SealedConst, SealedExport, SealedField, SealedFunction, SealedInstr,
-    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SpanRow, VerifiedImage,
+    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SpanRow,
+    VerifiedImage,
 };
 pub use verify::verify;

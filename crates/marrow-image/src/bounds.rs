@@ -33,6 +33,11 @@ pub const MAX_CODE_BYTES: usize = 64 * 1024;
 /// Exports.
 pub const MAX_EXPORTS: usize = 32;
 
+/// Test entries (the closed non-wire TEST-ENTRY table). A test entry names a
+/// storeless zero-argument function `marrow test` runs; it is never an export,
+/// interface, or durable identity.
+pub const MAX_TEST_ENTRIES: usize = 256;
+
 /// The computed operand-stack depth ceiling (verifier-sealed, never read from
 /// the image).
 pub const MAX_STACK_DEPTH: usize = 256;
