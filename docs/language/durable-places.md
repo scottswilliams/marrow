@@ -205,6 +205,52 @@ a keyed entry directly is optional, because that key may be absent.
 Store roots have ordered typed keys. Iteration visits only present entries in
 key order; see [Traversal and indexes](traversal-and-indexes.md).
 
+## Named Places
+
+A `place` binding names one concrete durable entry address inside a function:
+
+```mw
+module docs::durable_place
+
+resource Book
+    required title: string
+    subtitle: string
+
+store ^books(id: int): Book
+
+pub fn retitle(id: int, title: string)
+    transaction
+        place book = ^books(id)
+        book = Book(title: title)
+        book.subtitle = "revised"
+
+pub fn subtitleOf(id: int): string?
+    place book = ^books(id)
+    return book.subtitle
+```
+
+The right-hand side is a whole durable entry address `^root(key...)`. The key
+tuple is evaluated **exactly once**, at the binding. Every later operation through
+the name — a field read `book.subtitle`, a field assignment `book.subtitle = v`, a
+whole-entry replacement `book = Book(...)`, an `exists(book)` test, a
+`delete book`, or an `if const c = book` guard — resolves through that one
+evaluated address without re-running the key operand. Two reads of `book` therefore
+address the same entry even if the key expression contains a function call or a
+checked computation, which runs once.
+
+A place binding is a `const`: it is not re-assignable and does not shadow an
+existing name. Writing `book = Book(...)` replaces the durable entry the place
+addresses; it does not rebind the place to a different address. A place names a
+durable designation rather than a fetched value, so its bare name is not itself a
+value: read a field with `place.field`, bind the whole entry with `if const`, or
+test presence with `exists`. Binding a place to a non-durable value, to a field
+address (`^books(id).title`), or to another place is rejected.
+
+A place binds an address the same way an inline `^root(key...)` operation does, so a
+place over a store shape whose operations are not yet lowered (a singleton,
+composite-key, group- or branch-bearing, or widened-field root) reports the same
+not-yet-executable result as the inline form.
+
 ## Field Assignment
 
 Assigning one field changes that field and preserves the entry's other fields:

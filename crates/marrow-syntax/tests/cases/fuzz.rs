@@ -44,6 +44,7 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn label(s: Status)\n    match s\n        active\n            print(\"a\")\n        archived\n            print(\"b\")\n",
         "module app\n\nfn area(s: Shape): int\n    match s\n        dot\n            return 0\n        circle(r)\n            return r\n        rect(w, h)\n            return w\n",
         "module app\n\nfn commit(id: Id(^books))\n    transaction\n        ^books(id).title = title\n",
+        "module app\n\nfn edit(id: int)\n    transaction\n        place b = ^books(id)\n        b.title = \"x\"\n        b = Book(title: \"y\")\n        delete b\n",
         "module app\n\nfn risky(): Result[int, string]\n    const x = try run()\n    return ok(x)\n",
         "module app\n\nfn nested(o: Option[Option[int]]): int\n    match o\n        none\n            return 0\n        some(inner)\n            return depth(inner)\n",
         "module app\n\nfn find(): Result[Option[int], string]\n    const x = try lookup()\n    return ok(some(x))\n",

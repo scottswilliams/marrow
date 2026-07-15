@@ -977,3 +977,60 @@ fn checked_form_formats_idempotently() {
     // The formatted output re-parses cleanly.
     assert!(parse_source(&once).diagnostics.is_empty());
 }
+
+/// `place name = ^root(key)` parses to a `PlaceBinding` naming the entry-address
+/// expression; the compiler owns the durable checks, the parser only structures it.
+#[test]
+fn parses_a_place_binding() {
+    let parsed = parse_source(
+        "module app\n\
+         fn main(id: int)\n\
+         \x20   place book = ^books(id)\n\
+         \x20   book.title = \"x\"\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::PlaceBinding { name, place: Expression::Call { .. }, .. }
+                if name == "book"
+        ),
+        "stmt 0: {:?}",
+        main.body.statements[0]
+    );
+}
+
+/// `place` in name position is a keyword, so a missing name or missing `=` is a
+/// single bounded parse error rather than a dropped or cascading line.
+#[test]
+fn a_malformed_place_binding_is_one_parse_error() {
+    let missing_name = parse_source(
+        "module app\n\
+         fn main()\n\
+         \x20   place = 1\n",
+    );
+    assert!(!missing_name.diagnostics.is_empty());
+
+    let missing_equals = parse_source(
+        "module app\n\
+         fn main(id: int)\n\
+         \x20   place book ^books(id)\n",
+    );
+    assert!(!missing_equals.diagnostics.is_empty());
+}
+
+/// A `place` binding formats idempotently and re-parses cleanly.
+#[test]
+fn place_binding_formats_idempotently() {
+    let source = "module app\n\
+         fn main(id: int)\n\
+         \x20   place book = ^books(id)\n\
+         \x20   book.title = \"x\"\n\
+         \x20   delete book\n";
+    let once = format_source(source);
+    let twice = format_source(&once);
+    assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
+    assert!(once.contains("place book = ^books(id)"), "{once}");
+    assert!(parse_source(&once).diagnostics.is_empty());
+}

@@ -1077,3 +1077,63 @@ fn tracer_fixture_compiles_verifies_and_parks() {
     assert!(out.contains(r#""outcome":"error""#), "{output:?}");
     assert!(out.contains("cli.durable_unsupported"), "{output:?}");
 }
+
+// --- Named `place` bindings (D02): a source-local binding names one durable entry
+// address whose key tuple is evaluated once. A durable export using places travels
+// the whole pipeline (parse -> compile -> verify -> resolve) and parks in the
+// trough exactly like the inline address forms; execution returns at E01/F02b. ---
+
+const PLACE_SOURCE: &str = "resource Counter\n\
+     \x20   required value: int\n\
+     \x20   label: string\n\
+     \n\
+     store ^counters(name: string): Counter\n\
+     \n\
+     pub fn bump(name: string, v: int)\n\
+     \x20   transaction\n\
+     \x20       place p = ^counters(name)\n\
+     \x20       p = Counter(value: v)\n\
+     \x20       p.label = \"tag\"\n\
+     \n\
+     pub fn get(name: string): int?\n\
+     \x20   place p = ^counters(name)\n\
+     \x20   return p.value\n";
+
+/// A durable export written with named `place` bindings compiles, verifies, mints
+/// its identities, and parks: the pipeline reaching the trough is positive evidence
+/// the place image is well-formed and identity-complete.
+#[test]
+fn a_place_binding_export_parks_in_the_trough() {
+    let temp = TempDir::new("place-trough");
+    project(&temp, PLACE_SOURCE);
+
+    let get = run_in(&temp, &["run", "get", "--format", "jsonl", "--", "hits"]);
+    assert!(!get.status.success(), "a durable place run parks: {get:?}");
+    let out = String::from_utf8_lossy(&get.stdout);
+    assert!(out.contains(r#""outcome":"error""#), "{get:?}");
+    assert!(out.contains("cli.durable_unsupported"), "{get:?}");
+    assert!(
+        temp.join("marrow.ids").exists(),
+        "the mint pre-pass published marrow.ids before parking"
+    );
+
+    let bump = run_in(&temp, &["run", "bump", "--", "hits", "5"]);
+    assert!(!bump.status.success(), "{bump:?}");
+    assert!(
+        String::from_utf8_lossy(&bump.stdout).contains("cli.durable_unsupported"),
+        "{bump:?}"
+    );
+}
+
+/// The checked-in `place_counter` fixture: a complete `marrow.ids`, so a place-based
+/// durable export travels the full pipeline and parks in the trough.
+#[test]
+fn place_fixture_compiles_verifies_and_parks() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/v01/conformance/place_counter");
+    let output = run_in(&fixture, &["run", "get", "--format", "jsonl", "--", "hits"]);
+    assert!(!output.status.success(), "{output:?}");
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert!(out.contains(r#""outcome":"error""#), "{output:?}");
+    assert!(out.contains("cli.durable_unsupported"), "{output:?}");
+}

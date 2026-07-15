@@ -1058,6 +1058,9 @@ fn format_statement_with_comments(
         Statement::Delete { path, .. } => {
             format!("{pad}delete {}", format_expression_at(path, level))
         }
+        Statement::PlaceBinding { name, place, .. } => {
+            format!("{pad}place {name} = {}", format_expression_at(place, level))
+        }
         Statement::Unset { place, .. } => {
             format!("{pad}unset {}", format_expression_at(place, level))
         }

@@ -220,6 +220,7 @@ type annotations.
 ```ebnf
 statement       = const_stmt
                 | var_stmt
+                | place_stmt
                 | assignment_stmt
                 | compound_assignment_stmt
                 | delete_stmt
@@ -245,6 +246,8 @@ assignment_stmt = assignable, "=", expression, NEWLINE ;
 compound_assignment_stmt =
                   assignable, compound_op, expression, NEWLINE ;
 compound_op     = "+=" | "-=" | "*=" | "/=" | "%=" ;
+
+place_stmt      = "place", identifier, "=", expression, NEWLINE ;
 
 delete_stmt     = "delete", path_expr, NEWLINE ;
 break_stmt      = "break", NEWLINE ;

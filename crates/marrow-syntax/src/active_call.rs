@@ -602,6 +602,7 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         Statement::Assign { .. }
         | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
+        | Statement::PlaceBinding { .. }
         | Statement::Unset { .. }
         | Statement::Return { .. }
         | Statement::Break { .. }

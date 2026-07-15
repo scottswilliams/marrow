@@ -719,6 +719,19 @@ pub enum Statement {
         path: Expression,
         span: SourceSpan,
     },
+    /// `place name = ^root(key...)`: a function-local binding naming one concrete
+    /// durable entry address. The key tuple in `place` is evaluated exactly once at
+    /// the binding; the binding is immutable (a place is not re-assignable) and is
+    /// not a first-class value. Later uses (`name.field`, `name = Record(...)`,
+    /// `exists(name)`, `delete name`, `if const x = name`) resolve the operation
+    /// through the pre-evaluated address. `place` is the durable entry address
+    /// `^root(key...)`; the checker rejects a non-durable or field-projected target.
+    PlaceBinding {
+        name: String,
+        name_span: SourceSpan,
+        place: Expression,
+        span: SourceSpan,
+    },
     /// `unset place`: clear a local product's sparse field to absent. The `place`
     /// is a field access on a local (`r.note`); the checker rejects a required
     /// field, a non-field place, and a durable place.
@@ -898,6 +911,7 @@ impl Statement {
             | Self::Assign { span, .. }
             | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
+            | Self::PlaceBinding { span, .. }
             | Self::Unset { span, .. }
             | Self::Return { span, .. }
             | Self::Break { span, .. }

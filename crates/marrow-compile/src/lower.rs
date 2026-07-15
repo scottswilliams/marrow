@@ -524,12 +524,38 @@ enum DurShape {
     Field,
 }
 
-/// A resolved durable place: its key expression, key type, and target.
+/// How a durable operation's key tuple reaches the stack.
+#[derive(Clone, Copy)]
+enum PlaceKey<'e> {
+    /// A key operand expression, lowered — and therefore evaluated — at the
+    /// operation site (the inline `^root(key)` form).
+    Expr(&'e Expression),
+    /// A key already evaluated once into a local slot (a named `place`); each use
+    /// reads the slot with `LocalGet`, so the operand runs exactly once at the
+    /// binding no matter how many operations flow through the place.
+    Bound(u16),
+}
+
+/// A resolved durable place: how its key reaches the stack, its key type, and its
+/// target. The key is an inline operand expression or a source-local `place`'s
+/// pre-evaluated slot; the target is the whole entry or one field.
 struct DurablePlace<'e> {
-    key: &'e Expression,
+    key: PlaceKey<'e>,
     key_ty: ScalarType,
     target: DurTarget,
     span: SourceSpan,
+}
+
+/// A source-local named `place`: a durable entry designation whose single key
+/// column was evaluated exactly once into `key_slot` at the binding. Whole-entry
+/// and field operations through the place read that slot rather than re-evaluating
+/// the key operand, and the field sites are re-derived from the executable root.
+struct PlaceLocal {
+    name: String,
+    key_slot: u16,
+    key_ty: ScalarType,
+    entry_site: u16,
+    record: TypeId,
 }
 
 /// A resolved durable target: the whole entry or one field.
@@ -862,6 +888,8 @@ pub(crate) struct FnLowerer<'a> {
     /// order. The caller uses these to detect a recursive call cycle at check time.
     calls: Vec<u16>,
     locals: Vec<Local>,
+    /// In-scope source-local named `place` bindings, scoped like `locals`.
+    places: Vec<PlaceLocal>,
     loops: Vec<LoopCtx>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
@@ -905,6 +933,7 @@ impl<'a> FnLowerer<'a> {
             spans: Vec::new(),
             calls: Vec::new(),
             locals: Vec::new(),
+            places: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
             ret,
@@ -1317,6 +1346,7 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_block(&mut self, block: &Block) -> Flow {
         let mark = self.locals.len();
+        let place_mark = self.places.len();
         let mut flow = Flow::Fallthrough;
         for statement in &block.statements {
             if flow == Flow::Terminates {
@@ -1331,6 +1361,7 @@ impl<'a> FnLowerer<'a> {
             flow = self.lower_statement(statement);
         }
         self.locals.truncate(mark);
+        self.places.truncate(place_mark);
         flow
     }
 
@@ -1457,6 +1488,15 @@ impl<'a> FnLowerer<'a> {
                 self.lower_durable_delete(path, *span);
                 Flow::Fallthrough
             }
+            Statement::PlaceBinding {
+                name,
+                name_span,
+                place,
+                ..
+            } => {
+                self.lower_place_binding(name, *name_span, place);
+                Flow::Fallthrough
+            }
             Statement::Unset { place, span } => {
                 self.lower_unset(place, *span);
                 Flow::Fallthrough
@@ -1506,6 +1546,17 @@ impl<'a> FnLowerer<'a> {
             self.fail(reserved_builtin_name(self.file, value.span(), name));
             return;
         }
+        // A `const`/`var` never reuses an in-scope `place` name: the place and its
+        // designation stay distinct, so a name resolves to exactly one of them.
+        if self.lookup_place(name).is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                value.span(),
+                format!("`{name}` is already bound as a place in this scope"),
+            ));
+            return;
+        }
         let ty = if let Some(annotation) = annotation {
             let Some(expected) = self.resolve(annotation) else {
                 self.fail(unsupported(
@@ -1536,7 +1587,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_assign(&mut self, target: &Expression, value: &Expression) {
-        if Self::durable_shape(target).is_some() {
+        if self.durable_access(target).is_some() {
             if let Some(place) = self.resolve_durable(target) {
                 self.lower_durable_assign(place, value);
             }
@@ -1830,8 +1881,22 @@ impl<'a> FnLowerer<'a> {
             self.fail(reserved_builtin_name(self.file, value.span(), name));
             return Flow::Fallthrough;
         }
-        let Some(optional) = self.lower_expr(value) else {
-            return Flow::Fallthrough;
+        // A whole durable entry address (`if const book = ^books(id)` or the named
+        // `place` form) reads the entry here; a bare place name is otherwise not a
+        // value, so the entry guard is its whole-entry read form.
+        let optional = if matches!(self.durable_access(value), Some(DurShape::Entry)) {
+            let Some(place) = self.resolve_durable(value) else {
+                return Flow::Fallthrough;
+            };
+            match self.lower_durable_read(place) {
+                Some(ty) => ty,
+                None => return Flow::Fallthrough,
+            }
+        } else {
+            let Some(optional) = self.lower_expr(value) else {
+                return Flow::Fallthrough;
+            };
+            optional
         };
         if !optional.is_optional() {
             self.fail(SourceDiagnostic::at(
@@ -2652,7 +2717,15 @@ impl<'a> FnLowerer<'a> {
 
     /// Lower `expr`, emitting code that pushes its value and returning its type.
     fn lower_expr(&mut self, expr: &Expression) -> Option<LTy> {
+        // Inline `^root(key)` addresses and a field projected off a named `place`
+        // read here; a bare place name is a durable designation, handled below.
         if Self::durable_shape(expr).is_some() {
+            let place = self.resolve_durable(expr)?;
+            return self.lower_durable_read(place);
+        }
+        if let Expression::Field { base, .. } = expr
+            && self.is_place_name(base)
+        {
             let place = self.resolve_durable(expr)?;
             return self.lower_durable_read(place);
         }
@@ -2676,6 +2749,21 @@ impl<'a> FnLowerer<'a> {
                         let (slot, ty) = (local.slot, local.ty);
                         self.push(Instr::LocalGet(slot), *span);
                         return Some(ty);
+                    }
+                    // A place is a durable designation, not a first-class value:
+                    // its bare name cannot be read, passed, or returned.
+                    if self.lookup_place(name).is_some() {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            *span,
+                            format!(
+                                "`{name}` is a durable place, not a value; read a field with \
+                                 `{name}.field`, guard the entry with `if const x = {name}`, \
+                                 or test it with `exists({name})`"
+                            ),
+                        ));
+                        return None;
                     }
                     // A module-private constant, folded to a constant load. Locals
                     // and parameters shadow it (checked first).
@@ -4741,7 +4829,10 @@ impl<'a> FnLowerer<'a> {
 
     // --- durable places (design §D) ---
 
-    /// Detect the durable shape of a place expression, if any (no diagnostics).
+    /// Detect the inline durable shape of a place expression (an `^root(key)`
+    /// address), if any (no diagnostics). Does not see source-local `place`
+    /// bindings, which need instance state; use [`Self::durable_access`] for the
+    /// full detection.
     fn durable_shape(expr: &Expression) -> Option<DurShape> {
         match expr {
             Expression::Call { callee, .. }
@@ -4761,10 +4852,198 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// The most recent in-scope `place` binding named `name`, if any.
+    fn lookup_place(&self, name: &str) -> Option<&PlaceLocal> {
+        self.places.iter().rev().find(|place| place.name == name)
+    }
+
+    /// Whether `name` names an in-scope `place`.
+    fn is_place_name(&self, expr: &Expression) -> bool {
+        matches!(
+            expr,
+            Expression::Name { segments, .. }
+                if matches!(segments.as_slice(), [name] if self.lookup_place(name).is_some())
+        )
+    }
+
+    /// The durable shape of a place expression, extending [`Self::durable_shape`]
+    /// with source-local `place` bindings: a bare place name is a whole-entry
+    /// address, and a field access on a place name is a field address.
+    fn durable_access(&self, expr: &Expression) -> Option<DurShape> {
+        if let Some(shape) = Self::durable_shape(expr) {
+            return Some(shape);
+        }
+        match expr {
+            Expression::Name { .. } if self.is_place_name(expr) => Some(DurShape::Entry),
+            Expression::Field { base, .. } if self.is_place_name(base) => Some(DurShape::Field),
+            _ => None,
+        }
+    }
+
+    /// Resolve a source-local `place` access (`p` whole-entry, or `p.field`) to its
+    /// pre-evaluated address, or `None` when `expr` is not a place access. A missing
+    /// field is a precise diagnostic.
+    fn resolve_place_access<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+        match expr {
+            Expression::Name { segments, span, .. } => {
+                let [name] = segments.as_slice() else {
+                    return None;
+                };
+                let place = self.lookup_place(name)?;
+                Some(DurablePlace {
+                    key: PlaceKey::Bound(place.key_slot),
+                    key_ty: place.key_ty,
+                    target: DurTarget::Entry {
+                        entry_site: place.entry_site,
+                        record: place.record,
+                    },
+                    span: *span,
+                })
+            }
+            Expression::Field {
+                base,
+                name: field_name,
+                name_span,
+                span,
+                ..
+            } => {
+                let Expression::Name { segments, .. } = &**base else {
+                    return None;
+                };
+                let [name] = segments.as_slice() else {
+                    return None;
+                };
+                let place = self.lookup_place(name)?;
+                let (key_slot, key_ty) = (place.key_slot, place.key_ty);
+                // The field sites are re-derived from the one executable root a place
+                // implies; copy the scalar facts out before any diagnostic borrow.
+                let field = self
+                    .durable
+                    .root()
+                    .and_then(|root| root.field(field_name))
+                    .map(|field| (field.site, field.scalar, field.required));
+                match field {
+                    Some((site, scalar, required)) => Some(DurablePlace {
+                        key: PlaceKey::Bound(key_slot),
+                        key_ty,
+                        target: DurTarget::Field {
+                            site,
+                            scalar,
+                            required,
+                        },
+                        span: *span,
+                    }),
+                    None => {
+                        let root_name = self
+                            .durable
+                            .root()
+                            .map(|root| root.name.clone())
+                            .unwrap_or_default();
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            *name_span,
+                            format!("`{root_name}` has no field `{field_name}`"),
+                        ));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Emit the key operand of a durable operation: lower the inline key expression
+    /// (evaluating it here) or read the `place`'s pre-evaluated key slot.
+    fn emit_key(&mut self, key: PlaceKey, key_ty: ScalarType, span: SourceSpan) -> Option<()> {
+        match key {
+            PlaceKey::Expr(expr) => self.lower_as(expr, LTy::bare_scalar(key_ty)),
+            PlaceKey::Bound(slot) => {
+                self.push(Instr::LocalGet(slot), span);
+                Some(())
+            }
+        }
+    }
+
+    /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple
+    /// exactly once into a fresh local slot and record the binding. The binding is
+    /// immutable and does not shadow an existing name; the target must be a whole
+    /// durable entry address (not a field, another place, or a non-durable value).
+    /// A place over a not-yet-executable root reports the same trough diagnostic as
+    /// an inline operation over it.
+    fn lower_place_binding(&mut self, name: &str, name_span: SourceSpan, place_expr: &Expression) {
+        if is_reserved_builtin_name(name) {
+            self.fail(reserved_builtin_name(self.file, name_span, name));
+            return;
+        }
+        if self.lookup(name).is_some() || self.lookup_place(name).is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                name_span,
+                format!("`{name}` is already bound in this scope"),
+            ));
+            return;
+        }
+        if !matches!(self.durable_access(place_expr), Some(DurShape::Entry)) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                place_expr.span(),
+                "a `place` names a whole durable entry address such as `^root(key)`".to_string(),
+            ));
+            return;
+        }
+        let Some(place) = self.resolve_durable(place_expr) else {
+            return;
+        };
+        let DurTarget::Entry { entry_site, record } = place.target else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                place_expr.span(),
+                "a `place` names a whole durable entry address such as `^root(key)`, not a field"
+                    .to_string(),
+            ));
+            return;
+        };
+        let PlaceKey::Expr(key_expr) = place.key else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                place_expr.span(),
+                "a `place` names a store address `^root(key)`, not another place".to_string(),
+            ));
+            return;
+        };
+        let key_ty = place.key_ty;
+        let key_slot = self.alloc_slot();
+        if self.lower_as(key_expr, LTy::bare_scalar(key_ty)).is_none() {
+            return;
+        }
+        self.push(Instr::LocalSet(key_slot), place.span);
+        self.places.push(PlaceLocal {
+            name: name.to_string(),
+            key_slot,
+            key_ty,
+            entry_site,
+            record,
+        });
+    }
+
     /// Resolve a durable place against the store root, reporting a diagnostic on a
     /// bad root name, key arity, or field name. The returned place holds no borrow of
     /// the registry.
     fn resolve_durable<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+        // A source-local named place resolves through its pre-evaluated address.
+        let is_place_access = match expr {
+            Expression::Name { .. } => self.is_place_name(expr),
+            Expression::Field { base, .. } => self.is_place_name(base),
+            _ => false,
+        };
+        if is_place_access {
+            return self.resolve_place_access(expr);
+        }
         let Some(root) = self.durable.root() else {
             let diagnostic = self.no_executable_root_diagnostic(
                 expr.span(),
@@ -4787,7 +5066,7 @@ impl<'a> FnLowerer<'a> {
                 self.check_root_name(root, name, *root_span)?;
                 let key = self.single_key_arg(args, *span)?;
                 Some(DurablePlace {
-                    key,
+                    key: PlaceKey::Expr(key),
                     key_ty: root.key,
                     target: DurTarget::Entry {
                         entry_site: root.entry_site,
@@ -4825,7 +5104,7 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 Some(DurablePlace {
-                    key,
+                    key: PlaceKey::Expr(key),
                     key_ty: root.key,
                     target: DurTarget::Field {
                         site: field.site,
@@ -4872,9 +5151,9 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Lower a durable read (`^r(k)` entry or `^r(k).f` field).
+    /// Lower a durable read (`^r(k)` entry or `^r(k).f` field, or the place forms).
     fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
-        self.lower_as(place.key, LTy::bare_scalar(place.key_ty))?;
+        self.emit_key(place.key, place.key_ty, place.span)?;
         Some(match place.target {
             DurTarget::Entry { entry_site, record } => {
                 self.push(Instr::DurReadEntry(entry_site), place.span);
@@ -4901,17 +5180,17 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        if Self::durable_shape(&arg.value).is_none() {
+        if self.durable_access(&arg.value).is_none() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
                 arg.value.span(),
-                "`exists` takes a store place such as `^root(key)`".to_string(),
+                "`exists` takes a store place such as `^root(key)` or a named `place`".to_string(),
             ));
             return None;
         }
         let place = self.resolve_durable(&arg.value)?;
-        self.lower_as(place.key, LTy::bare_scalar(place.key_ty))?;
+        self.emit_key(place.key, place.key_ty, place.span)?;
         let site = match place.target {
             DurTarget::Entry { entry_site, .. } => entry_site,
             DurTarget::Field { site, .. } => site,
@@ -5511,10 +5790,7 @@ impl<'a> FnLowerer<'a> {
                 scalar,
                 required,
             } => {
-                if self
-                    .lower_as(place.key, LTy::bare_scalar(place.key_ty))
-                    .is_none()
-                {
+                if self.emit_key(place.key, place.key_ty, place.span).is_none() {
                     return;
                 }
                 let expected = if required {
@@ -5539,7 +5815,7 @@ impl<'a> FnLowerer<'a> {
     /// `DurExists` decides `replace` vs `create` against the coherent staged view.
     fn lower_upsert(
         &mut self,
-        key: &Expression,
+        key: PlaceKey,
         key_ty: ScalarType,
         entry_site: u16,
         record: TypeId,
@@ -5547,7 +5823,7 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
     ) -> Option<()> {
         let key_slot = self.alloc_slot();
-        self.lower_as(key, LTy::bare_scalar(key_ty))?;
+        self.emit_key(key, key_ty, span)?;
         self.push(Instr::LocalSet(key_slot), span);
         let rec_slot = self.alloc_slot();
         self.lower_as(
@@ -5580,17 +5856,14 @@ impl<'a> FnLowerer<'a> {
 
     /// Lower `delete ^r(k)` (entry erase) or `delete ^r(k).f` (sparse-field erase).
     fn lower_durable_delete(&mut self, path: &Expression, span: SourceSpan) {
-        if Self::durable_shape(path).is_none() {
+        if self.durable_access(path).is_none() {
             self.fail(unsupported(self.file, span, "this delete target"));
             return;
         }
         let Some(place) = self.resolve_durable(path) else {
             return;
         };
-        if self
-            .lower_as(place.key, LTy::bare_scalar(place.key_ty))
-            .is_none()
-        {
+        if self.emit_key(place.key, place.key_ty, place.span).is_none() {
             return;
         }
         match place.target {

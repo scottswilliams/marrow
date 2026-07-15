@@ -82,6 +82,7 @@ pub(super) fn parse_simple_statement(
                 place,
             })
         }
+        TokenKind::Keyword(Keyword::Place) => parse_place(source, line, diagnostics),
         TokenKind::Keyword(Keyword::Merge) => {
             diagnostics.push(Diagnostic {
                 code: PARSE_SYNTAX,
@@ -235,6 +236,53 @@ fn parse_var_keys(
         ))?;
     let keys = parse_key_params_tokens(source, &line[open_index + 1..close])?;
     Ok((keys, close + 1))
+}
+
+/// Parse `place name = <durable address>`: the `place` keyword, a fresh binding
+/// name, a required `=`, and the entry-address expression. The name must be an
+/// identifier (a keyword is reported like a `const` name), and the address is
+/// checked by the compiler — the parser only structures the binding.
+fn parse_place(
+    source: &str,
+    line: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Statement> {
+    let keyword = line[0];
+    let Some(name_token) = line.get(1) else {
+        return expected_statement(line, diagnostics);
+    };
+    if name_token.kind != TokenKind::Identifier {
+        if matches!(name_token.kind, TokenKind::Keyword(_)) {
+            diagnostics.push(Diagnostic {
+                code: ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName).code(),
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ConstName,
+                )),
+                severity: Severity::Error,
+                message: format!(
+                    "expected place name; `{}` is a keyword",
+                    name_token.text(source)
+                ),
+                help: Some("choose an identifier that is not reserved".to_string()),
+                span: name_token.span,
+            });
+            return None;
+        }
+        return expected_statement(line, diagnostics);
+    }
+    let name = name_token.text(source).to_string();
+    let name_span = name_token.span;
+    if line.get(2).map(|token| token.kind) != Some(TokenKind::Equal) {
+        return expected_statement(line, diagnostics);
+    }
+    let equal = line[2];
+    let place = expr_of_after(source, &line[3..], equal.span, diagnostics)?;
+    Some(Statement::PlaceBinding {
+        span: join_spans(keyword.span, place.span()),
+        name,
+        name_span,
+        place,
+    })
 }
 
 fn parse_return(
