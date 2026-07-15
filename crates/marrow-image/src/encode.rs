@@ -9,7 +9,9 @@
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, SiteTarget};
-use crate::durable_id::{DurableContractDescriptor, DurableFieldShape, DurableRootShape};
+use crate::durable_id::{
+    DurableContractDescriptor, DurableFieldShape, DurableKeyShape, DurableRootShape,
+};
 use crate::instr::Instr;
 use crate::ty::ImageType;
 
@@ -103,6 +105,11 @@ impl ImageDraft {
         }
         if self.roots().len() > bounds::MAX_ROOTS {
             return Err(ImageBuildError::TooManyRoots);
+        }
+        for root in self.roots() {
+            if root.keys.len() > bounds::MAX_KEY_COLUMNS {
+                return Err(ImageBuildError::TooManyKeyColumns);
+            }
         }
         if self.sites().len() > bounds::MAX_SITES {
             return Err(ImageBuildError::TooManySites);
@@ -244,9 +251,15 @@ impl ImageDraft {
         }
         for root in self.roots() {
             push_u16(&mut body, str_map[root.name.raw() as usize]);
-            ImageType::scalar(root.key).encode(&mut body);
+            // The key tuple: a count, then each column's scalar type and ledger id.
+            // Zero columns is a singleton root; more than one is a composite key.
+            push_u16(&mut body, root.keys.len() as u16);
+            for key in &root.keys {
+                ImageType::scalar(key.scalar).encode(&mut body);
+                body.extend_from_slice(key.id.bytes());
+            }
             push_u16(&mut body, root.record.0);
-            // The root's ledger identity block: placement, product, and key ids,
+            // The root's remaining ledger identity block: placement and product,
             // then one field id per record field in declaration order.
             let record = &self.types()[root.record.index() as usize];
             if root.identity.fields.len() != record.fields.len() {
@@ -254,7 +267,6 @@ impl ImageDraft {
             }
             body.extend_from_slice(root.identity.placement.bytes());
             body.extend_from_slice(root.identity.product.bytes());
-            body.extend_from_slice(root.identity.key.bytes());
             push_u16(&mut body, root.identity.fields.len() as u16);
             for field_id in &root.identity.fields {
                 body.extend_from_slice(field_id.bytes());
@@ -312,11 +324,18 @@ impl ImageDraft {
                         _ => None,
                     })
                     .collect();
+                let keys = root
+                    .keys
+                    .iter()
+                    .map(|key| DurableKeyShape {
+                        scalar: key.scalar,
+                        id: key.id,
+                    })
+                    .collect();
                 DurableRootShape {
                     placement: root.identity.placement,
                     product: root.identity.product,
-                    key: root.key,
-                    key_id: root.identity.key,
+                    keys,
                     fields,
                 }
             })

@@ -9,7 +9,7 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr,
+    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
     LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry,
     VariantDef, image_id,
 };
@@ -338,12 +338,14 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     draft.add_root(RootDef {
         name: root,
-        key: Scalar::Text,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
         record,
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            key: LedgerIdBytes::from_bytes([0x0c; 16]),
             fields: vec![
                 LedgerIdBytes::from_bytes([0x0e; 16]),
                 LedgerIdBytes::from_bytes([0x0f; 16]),
@@ -469,13 +471,99 @@ fn rehashed_duplicated_ledger_id_rejects_at_table() {
     // one durable table and is rejected before the contract recomputation.
     let mut bytes = good_durable_image();
     let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 3).unwrap();
-    // DURABLE: count(2) | application(16) | root: name(2) key-tag(1) record(2) placement(16)…
+    // DURABLE: count(2) | application(16) | root: name(2) key_count(2)
+    //   [key-tag(1) key_id(16)] record(2) placement(16)…
     let application0 = body + 2;
-    let placement0 = body + 2 + 16 + 2 + 1 + 2;
+    let placement0 = body + 2 + 16 + 2 + 2 + (1 + 16) + 2;
     let application: [u8; 16] = bytes[application0..application0 + 16].try_into().unwrap();
     bytes[placement0..placement0 + 16].copy_from_slice(&application);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn rehashed_mutated_key_id_breaks_the_contract_id() {
+    // A key column's ledger id travels inside the key tuple. Flipping one byte of
+    // it mutates the graph the verifier recomputes the contract over, so the
+    // carried id no longer matches — the contract binds each key column's identity.
+    let mut bytes = good_durable_image();
+    let (_, body, _) = *sections(&bytes).iter().find(|(id, ..)| *id == 3).unwrap();
+    // Into the single key column: past count(2) application(16) name(2)
+    // key_count(2) key-tag(1) to the 16-byte key id.
+    let key_id0 = body + 2 + 16 + 2 + 2 + 1;
+    bytes[key_id0] ^= 0xFF;
+    rehash(&mut bytes);
+    assert_eq!(code_of(&bytes), "image.table");
+}
+
+#[test]
+fn executable_site_over_a_composite_root_rejects() {
+    // A composite-key root carries a complete identity but is not executable: the
+    // single-root kernel serves only single-column keyed roots. A forged image that
+    // adds an operation site over a two-column root is refused independently during
+    // flow validation, regardless of the compiler's own boundary.
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![FieldDef {
+            name: value,
+            ty: ImageType::scalar(Scalar::Int),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("pairs");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![
+            KeyColumn {
+                scalar: Scalar::Text,
+                id: LedgerIdBytes::from_bytes([0x0c; 16]),
+            },
+            KeyColumn {
+                scalar: Scalar::Int,
+                id: LedgerIdBytes::from_bytes([0x1c; 16]),
+            },
+        ],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            fields: vec![LedgerIdBytes::from_bytes([0x0e; 16])],
+        },
+    });
+    let value_site = draft.add_site(SiteDef {
+        root: 0,
+        target: SiteTarget::Field(0),
+    });
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site.index()),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    // The composite-key root is rejected during per-function structural/type
+    // recording (the `image.function` phase), where the operation site is typed.
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
 #[test]
@@ -1550,12 +1638,14 @@ fn durable_root_with_a_non_scalar_field_rejects() {
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x1a; 16]));
     draft.add_root(RootDef {
         name: root,
-        key: Scalar::Int,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x1c; 16]),
+        }],
         record: rec,
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x1b; 16]),
             product: LedgerIdBytes::from_bytes([0x1d; 16]),
-            key: LedgerIdBytes::from_bytes([0x1c; 16]),
             fields: vec![
                 LedgerIdBytes::from_bytes([0x1e; 16]),
                 LedgerIdBytes::from_bytes([0x1f; 16]),

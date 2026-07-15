@@ -413,13 +413,19 @@ fn session_error_record(image: &VerifiedImage, func_index: u16, error: SessionEr
     }
 }
 
-/// The kernel store schema derived from the verified image's single root.
+/// The kernel store schema derived from the verified image's single root. The
+/// in-process store seam serves only the single-column keyed root (the executable
+/// durable subset); the verifier rejects an executable site over any other key
+/// arity, so a root reaching this schema builder has exactly one key column.
 fn build_schema(image: &VerifiedImage) -> StoreSchema {
     let root = &image.roots()[0];
     let record = image.record_type(root.record());
+    let [key] = root.keys() else {
+        unreachable!("the store seam serves only single-column keyed roots");
+    };
     StoreSchema {
         root_name: root.name().to_string(),
-        key: scalar_kind(root.key()),
+        key: scalar_kind(*key),
         fields: record
             .fields()
             .iter()

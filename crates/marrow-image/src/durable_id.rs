@@ -36,11 +36,16 @@
 //!             ‖ [ IDREF(0x00, application) when root_count > 0 ]
 //!             ‖ root*                                          (roots in image order)
 //!   root    = IDREF(0x03, placement) ‖ IDREF(0x01, product)
-//!             ‖ u8(key_scalar_tag) ‖ IDREF(0x04, key)
+//!             ‖ u16_be(key_count) ‖ key*                       (key columns in tuple order)
 //!             ‖ u16_be(field_count) ‖ field*                   (fields in image order)
+//!   key     = u8(key_scalar_tag) ‖ IDREF(0x04, key)
 //!   field   = IDREF(0x02, field) ‖ u8(field_scalar_tag) ‖ u8(required?1:0)
 //!   IDREF(k, id) = u8(k) ‖ u64_be(16) ‖ id                     (kind-tagged, LP 16 bytes)
 //! ```
+//!
+//! A root's key tuple is length-prefixed, so a singleton root (`key_count = 0`)
+//! and a composite root (`key_count > 1`) are the same shape as the ordinary
+//! single-column root, and key-column order is part of the identity.
 //!
 //! The `IDREF` kind tags mirror the ledger's frozen kind space (application 0,
 //! product 1, field 2, root placement 3, key 4; 5-7 reserved). An empty graph
@@ -99,15 +104,23 @@ pub struct DurableFieldShape {
     pub required: bool,
 }
 
+/// One key column of a durable root, as it contributes to the contract identity:
+/// its orderable durable-key scalar and its ledger id. Column order is the
+/// declared tuple order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableKeyShape {
+    pub scalar: Scalar,
+    pub id: LedgerIdBytes,
+}
+
 /// One durable root, as it contributes to the contract identity: its placement id,
-/// the stored product's id, the key column's scalar and id, and the ordered stored
-/// field profile of its record.
+/// the stored product's id, its ordered key tuple (empty for a singleton root),
+/// and the ordered stored field profile of its record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRootShape {
     pub placement: LedgerIdBytes,
     pub product: LedgerIdBytes,
-    pub key: Scalar,
-    pub key_id: LedgerIdBytes,
+    pub keys: Vec<DurableKeyShape>,
     pub fields: Vec<DurableFieldShape>,
 }
 
@@ -159,8 +172,11 @@ impl DurableContractDescriptor {
         for root in &self.roots {
             push_idref(&mut out, IDREF_ROOT, &root.placement);
             push_idref(&mut out, IDREF_PRODUCT, &root.product);
-            out.push(root.key.tag());
-            push_idref(&mut out, IDREF_KEY, &root.key_id);
+            out.extend_from_slice(&(root.keys.len() as u16).to_be_bytes());
+            for key in &root.keys {
+                out.push(key.scalar.tag());
+                push_idref(&mut out, IDREF_KEY, &key.id);
+            }
             out.extend_from_slice(&(root.fields.len() as u16).to_be_bytes());
             for field in &root.fields {
                 push_idref(&mut out, IDREF_FIELD, &field.id);
@@ -229,8 +245,8 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DURABLE_CONTRACT_KIND, DurableContractDescriptor, DurableFieldShape, DurableRootShape,
-        LOCAL_ROOT_LINEAGE, LedgerIdBytes,
+        DURABLE_CONTRACT_KIND, DurableContractDescriptor, DurableFieldShape, DurableKeyShape,
+        DurableRootShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::ty::Scalar;
     use sha2::{Digest, Sha256};
@@ -247,8 +263,10 @@ mod tests {
             vec![DurableRootShape {
                 placement: id(0x0b),
                 product: id(0x0d),
-                key: Scalar::Text,
-                key_id: id(0x0c),
+                keys: vec![DurableKeyShape {
+                    scalar: Scalar::Text,
+                    id: id(0x0c),
+                }],
                 fields: vec![
                     DurableFieldShape {
                         id: id(0x0e),
@@ -281,11 +299,12 @@ mod tests {
     /// Known-answer test for the frozen canonical payload of the tracer's `counters`
     /// graph over ledger ids. Freezing this hex pins the domain-separation,
     /// length-delimiting, IDREF kind tags, and graph layout so a later reader can
-    /// reconstruct it independently. This value supersedes the slice-1 name-based
-    /// KAT (`5bc9122a…`): the payload now carries ledger ids in place of names, so
-    /// a rename preserves the identity. If this value must change, the
-    /// durable-contract identity has changed and every stored/derived id changes
-    /// with it.
+    /// reconstruct it independently. This value supersedes the slice-2 KAT
+    /// (`8f1d8fc8…`): the root's single `key`/`key_id` pair is now a
+    /// length-prefixed key tuple (`u16(key_count) ‖ key*`), so a singleton and a
+    /// composite root are the same shape as the single-column root. If this value
+    /// must change, the durable-contract identity has changed and every
+    /// stored/derived id changes with it.
     #[test]
     fn durable_contract_id_known_answer() {
         assert_eq!(
@@ -295,7 +314,7 @@ mod tests {
         // The frozen value itself.
         assert_eq!(
             counters_graph().contract_id().to_hex(),
-            "8f1d8fc8addf6d274f82f5a4e9d25223d7ab851a39889e394f736ac1942b129f",
+            "4f8def5f34a4ace8506ded103bf0dfd7cc44fa4d2cd13d2a63f9144a37017245",
         );
     }
 
@@ -319,8 +338,11 @@ mod tests {
         for root in &descriptor.roots {
             idref(&mut graph, 3, &root.placement);
             idref(&mut graph, 1, &root.product);
-            graph.push(root.key.tag());
-            idref(&mut graph, 4, &root.key_id);
+            graph.extend_from_slice(&(root.keys.len() as u16).to_be_bytes());
+            for key in &root.keys {
+                graph.push(key.scalar.tag());
+                idref(&mut graph, 4, &key.id);
+            }
             graph.extend_from_slice(&(root.fields.len() as u16).to_be_bytes());
             for field in &root.fields {
                 idref(&mut graph, 2, &field.id);
@@ -368,8 +390,21 @@ mod tests {
 
         // A changed key type changes the id.
         let mut rekeyed = counters_graph();
-        rekeyed.roots[0].key = Scalar::Int;
+        rekeyed.roots[0].keys[0].scalar = Scalar::Int;
         assert_ne!(base, rekeyed.contract_id());
+
+        // A re-minted key id changes the id.
+        let mut rekey_id = counters_graph();
+        rekey_id.roots[0].keys[0].id = id(0x2c);
+        assert_ne!(base, rekey_id.contract_id());
+
+        // An added key column (single → composite) changes the id.
+        let mut composite = counters_graph();
+        composite.roots[0].keys.push(DurableKeyShape {
+            scalar: Scalar::Int,
+            id: id(0x3c),
+        });
+        assert_ne!(base, composite.contract_id());
 
         // A field made required changes the id.
         let mut required = counters_graph();
@@ -385,6 +420,53 @@ mod tests {
         let mut other_app = counters_graph();
         other_app.application = Some(id(0x2a));
         assert_ne!(base, other_app.contract_id());
+    }
+
+    /// A singleton root (empty key tuple) and a composite root (two key columns)
+    /// are ordinary shapes under the length-prefixed key encoding: each agrees with
+    /// the independent decoder and is distinct from the single-key graph.
+    #[test]
+    fn singleton_and_composite_roots_encode_and_reconstruct() {
+        let singleton = DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: Vec::new(),
+                fields: vec![DurableFieldShape {
+                    id: id(0x0e),
+                    scalar: Scalar::Text,
+                    required: true,
+                }],
+            }],
+        );
+        assert_eq!(singleton.contract_id().to_hex(), independent_id(&singleton));
+
+        let composite = DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: vec![
+                    DurableKeyShape {
+                        scalar: Scalar::Text,
+                        id: id(0x0c),
+                    },
+                    DurableKeyShape {
+                        scalar: Scalar::Int,
+                        id: id(0x1c),
+                    },
+                ],
+                fields: Vec::new(),
+            }],
+        );
+        assert_eq!(composite.contract_id().to_hex(), independent_id(&composite));
+        assert_ne!(singleton.contract_id(), composite.contract_id());
+
+        // Key-column order matters: swapping the two columns is a different graph.
+        let mut swapped = composite.clone();
+        swapped.roots[0].keys.swap(0, 1);
+        assert_ne!(composite.contract_id(), swapped.contract_id());
     }
 
     #[test]

@@ -1294,6 +1294,21 @@ impl<'a> FnLowerer<'a> {
         self.failed = true;
     }
 
+    /// The diagnostic for a durable operation reaching no executable root: a
+    /// not-yet-executable rejection when a singleton or composite-key root is
+    /// declared (its identity is complete but the kernel cannot serve its key
+    /// arity), or the caller's no-store rejection when no root is declared at all.
+    fn no_executable_root_diagnostic(
+        &self,
+        span: SourceSpan,
+        no_store_subject: &str,
+    ) -> SourceDiagnostic {
+        match self.durable.not_yet_executable_root() {
+            Some(root) => not_yet_executable(self.file, span, root),
+            None => unsupported(self.file, span, no_store_subject),
+        }
+    }
+
     fn lookup(&self, name: &str) -> Option<&Local> {
         self.locals.iter().rev().find(|local| local.name == name)
     }
@@ -2092,11 +2107,9 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         };
         let Some(root) = self.durable.root() else {
-            self.fail(unsupported(
-                self.file,
-                *root_span,
-                "iterating without a store",
-            ));
+            let diagnostic =
+                self.no_executable_root_diagnostic(*root_span, "iterating without a store");
+            self.fail(diagnostic);
             return Flow::Fallthrough;
         };
         if self.check_root_name(root, name, *root_span).is_none() {
@@ -4753,11 +4766,11 @@ impl<'a> FnLowerer<'a> {
     /// the registry.
     fn resolve_durable<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
         let Some(root) = self.durable.root() else {
-            self.fail(unsupported(
-                self.file,
+            let diagnostic = self.no_executable_root_diagnostic(
                 expr.span(),
                 "durable access without a declared store",
-            ));
+            );
+            self.fail(diagnostic);
             return None;
         };
         match expr {
@@ -6144,6 +6157,23 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
         file,
         span,
         format!("{subject} is not yet supported on the beta line"),
+    )
+}
+
+/// A durable operation over a declared-but-not-executable root (a singleton or
+/// composite-key placement): the shape's identity is complete and in the image,
+/// but the single-root kernel serves only single-column keyed roots at this stage,
+/// so the operation is rejected precisely rather than silently dropped.
+fn not_yet_executable(file: &str, span: SourceSpan, root: &str) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckUnsupported.as_str(),
+        file,
+        span,
+        format!(
+            "durable operations over `^{root}` are not yet executable: only a single-column \
+             keyed root runs on the beta line so far (singleton and composite-key roots \
+             declare and verify their identity but cannot yet be read or written)"
+        ),
     )
 }
 

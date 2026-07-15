@@ -145,25 +145,34 @@ pub enum CollectionTypeDef {
 }
 
 /// The ledger identity block of a durable root: the entropy-minted ids of the
-/// placement, the stored product, the key column, and each stored field of the
-/// root's record (aligned with the record's field order). The contract id is
-/// computed over these, so a rename — which moves a ledger anchor while its id
-/// stays — preserves the durable identity.
+/// placement, the stored product, and each stored field of the root's record
+/// (aligned with the record's field order). Each key column's id travels with
+/// its scalar in [`KeyColumn`]. The contract id is computed over these, so a
+/// rename — which moves a ledger anchor while its id stays — preserves the
+/// durable identity.
 #[derive(Debug, Clone)]
 pub struct RootIdentity {
     pub placement: LedgerIdBytes,
     pub product: LedgerIdBytes,
-    pub key: LedgerIdBytes,
     pub fields: Vec<LedgerIdBytes>,
 }
 
-/// A durable root: one keyed placement of a record type, plus its ledger
-/// identity block.
+/// One key column of a durable root placement: its orderable durable-key scalar
+/// and the entropy-minted ledger id anchored at `<root>.<column>`. Column order
+/// is the declared tuple order and is part of the durable identity.
+#[derive(Debug, Clone)]
+pub struct KeyColumn {
+    pub scalar: Scalar,
+    pub id: LedgerIdBytes,
+}
+
+/// A durable root placement of a record type, plus its ledger identity block. A
+/// singleton root has an empty key tuple; a keyed root has one or more ordered
+/// [`KeyColumn`]s drawn from the closed orderable durable-key scalar set.
 #[derive(Debug, Clone)]
 pub struct RootDef {
     pub name: StrId,
-    /// The key column type (`Int` or `Text` at v0).
-    pub key: Scalar,
+    pub keys: Vec<KeyColumn>,
     pub record: TypeId,
     pub identity: RootIdentity,
 }
@@ -254,6 +263,7 @@ pub enum ImageBuildError {
     TooManyPayloadFields,
     TooManyCollections,
     TooManyRoots,
+    TooManyKeyColumns,
     TooManySites,
     TooManyFunctions,
     TooManyParams,

@@ -63,16 +63,21 @@ versioned store profile with an in-transaction commit witness.
 `marrow run <export>` drives this path end to end: a small durable counter
 program can declare a keyed resource, read and write and iterate its entries
 inside one transaction, and survive a process restart on the redb backend. A
-store root is keyed by any scalar in the closed orderable durable-key set
-(`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every durable declaration
-holds an entropy-minted identity in the committed machine-written `marrow.ids`
-ledger (minted by `marrow run`, required by every path, tombstoned on
-retirement), and the program's durable graph carries a stable 32-byte
-durable-contract identity computed over those ledger ids — so a rename
-preserves durable identity — which the verifier independently recomputes from
-the image and rejects on mismatch. The admitted
-subset is narrow and grows lane by lane; a well-formed construct outside it is a
-typed `check.unsupported` diagnostic.
+store root is a singleton (no key), a single-column keyed root, or a composite
+keyed tuple of up to eight ordered columns; each key column is a scalar in the
+closed orderable durable-key set (`int`, `string`, `bool`, `bytes`, `date`,
+`instant`). Every root — and each of its key columns — is a distinct durable
+graph node with a complete entropy-minted identity in the committed
+machine-written `marrow.ids` ledger (minted by `marrow run`, required by every
+path, tombstoned on retirement), and the program's durable graph carries a
+stable 32-byte durable-contract identity computed over those ledger ids and the
+graph shape (including key-column order) — so a rename preserves durable
+identity — which the verifier independently recomputes from the image and rejects
+on mismatch. The executable durable shape is the single-column keyed root;
+singleton and composite-key roots declare and verify their identity but their
+operations are not yet executable. The admitted subset is narrow and grows lane
+by lane; a well-formed construct outside it is a typed `check.unsupported`
+diagnostic.
 
 ### Deleted at B00
 

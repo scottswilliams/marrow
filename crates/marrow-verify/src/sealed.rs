@@ -264,11 +264,16 @@ pub struct SealedSite {
     pub target: SealedSiteTarget,
 }
 
-/// A verified durable root: one keyed placement of a record type.
+/// A verified durable root: one placement of a record type over its ordered key
+/// tuple. The tuple is empty for a singleton root and holds one or more
+/// orderable durable-key scalars for a keyed root. The executable subset served
+/// by the single-root kernel is the single-column keyed root; wider key arities
+/// carry identity but reject at their operation sites (rechecked during flow
+/// validation).
 #[derive(Debug, Clone)]
 pub struct SealedRoot {
     pub(crate) name: Rc<str>,
-    pub(crate) key: Scalar,
+    pub(crate) keys: Vec<Scalar>,
     pub(crate) record: u16,
 }
 
@@ -276,8 +281,10 @@ impl SealedRoot {
     pub fn name(&self) -> &str {
         &self.name
     }
-    pub fn key(&self) -> Scalar {
-        self.key
+    /// The ordered key tuple: empty for a singleton root, one scalar per column
+    /// otherwise.
+    pub fn keys(&self) -> &[Scalar] {
+        &self.keys
     }
     pub fn record(&self) -> u16 {
         self.record

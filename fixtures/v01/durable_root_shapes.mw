@@ -1,0 +1,20 @@
+module school
+
+resource Settings
+    required locale: string
+
+resource Counter
+    required value: int
+
+resource Enrollment
+    required grade: int
+
+store ^settings: Settings
+
+store ^counters(name: string): Counter
+
+store ^enrollments(student: string, course: string): Enrollment
+
+pub fn bump(name: string)
+    transaction
+        ^counters(name).value = 1

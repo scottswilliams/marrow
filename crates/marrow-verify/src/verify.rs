@@ -13,23 +13,23 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    DurableContractDescriptor, DurableContractId, DurableFieldShape, DurableRootShape, ExportId,
-    ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT, OP_BYTES_GE,
-    OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
-    OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE,
-    OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
-    OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD,
-    OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DURATION_ADD, OP_DURATION_GE,
-    OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT,
-    OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION,
-    OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET,
-    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
-    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
-    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
-    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
-    OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
-    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    DurableContractDescriptor, DurableContractId, DurableFieldShape, DurableKeyShape,
+    DurableRootShape, ExportId, ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT,
+    OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
+    OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
+    OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
+    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
+    OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT,
+    OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES,
+    OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET,
+    OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT,
+    OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED,
+    OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL,
+    OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB,
+    OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN,
+    OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
+    OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES,
@@ -96,16 +96,16 @@ struct DecodedVariant {
     payload: Vec<ImageType>,
 }
 
-/// A decoded durable root: name string index, key scalar, record type index, and
-/// the root's ledger identity block (placement, product, and key ids plus one id
-/// per record field).
+/// A decoded durable root: name string index, its ordered key tuple (each column a
+/// scalar and its ledger id; empty for a singleton root), record type index, and
+/// the rest of the root's ledger identity block (placement, product, and one id per
+/// record field).
 struct DecodedRoot {
     name: u16,
-    key: Scalar,
+    keys: Vec<(Scalar, LedgerIdBytes)>,
     record: u16,
     placement: LedgerIdBytes,
     product: LedgerIdBytes,
-    key_id: LedgerIdBytes,
     field_ids: Vec<LedgerIdBytes>,
 }
 
@@ -944,28 +944,41 @@ fn decode_durable(
         if name as usize >= string_count {
             return Err(reject(VerifyPhase::Table, "root name index out of range"));
         }
-        let key_tag = reader
-            .u8()
-            .ok_or(reject(VerifyPhase::Table, "short root key type"))?;
-        // The closed orderable durable-key scalar set (frozen at C04): int, string,
-        // bool, bytes, date, and instant. `duration` is a span, not an identity, and
-        // is not admitted as a key.
-        let key = match decode_bare_scalar(key_tag) {
-            Some(
-                scalar @ (Scalar::Int
-                | Scalar::Text
-                | Scalar::Bool
-                | Scalar::Bytes
-                | Scalar::Date
-                | Scalar::Instant),
-            ) => scalar,
-            _ => {
-                return Err(reject(
-                    VerifyPhase::Table,
-                    "root key type must be an orderable durable-key scalar",
-                ));
-            }
-        };
+        // The key tuple: a count, then each column's scalar type and distinct
+        // ledger id. Zero columns is a singleton root; the closed orderable
+        // durable-key scalar set (frozen at C04) admits int, string, bool, bytes,
+        // date, and instant per column (`duration` is a span, not an identity).
+        let key_count = reader
+            .u16()
+            .ok_or(reject(VerifyPhase::Table, "short root key count"))?
+            as usize;
+        if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
+            return Err(reject(VerifyPhase::Table, "too many root key columns"));
+        }
+        let mut keys = Vec::with_capacity(key_count);
+        for _ in 0..key_count {
+            let key_tag = reader
+                .u8()
+                .ok_or(reject(VerifyPhase::Table, "short root key type"))?;
+            let scalar = match decode_bare_scalar(key_tag) {
+                Some(
+                    scalar @ (Scalar::Int
+                    | Scalar::Text
+                    | Scalar::Bool
+                    | Scalar::Bytes
+                    | Scalar::Date
+                    | Scalar::Instant),
+                ) => scalar,
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "root key type must be an orderable durable-key scalar",
+                    ));
+                }
+            };
+            let key_id = distinct_id(&mut reader, "short key identity")?;
+            keys.push((scalar, key_id));
+        }
         let record = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short root record"))?;
@@ -990,7 +1003,6 @@ fn decode_durable(
         }
         let placement = distinct_id(&mut reader, "short placement identity")?;
         let product = distinct_id(&mut reader, "short product identity")?;
-        let key_id = distinct_id(&mut reader, "short key identity")?;
         let field_id_count = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short field identity count"))?
@@ -1008,11 +1020,10 @@ fn decode_durable(
         }
         roots.push(DecodedRoot {
             name,
-            key,
+            keys,
             record,
             placement,
             product,
-            key_id,
             field_ids,
         });
     }
@@ -1121,11 +1132,18 @@ fn durable_descriptor(
                     _ => None,
                 })
                 .collect();
+            let keys = root
+                .keys
+                .iter()
+                .map(|(scalar, id)| DurableKeyShape {
+                    scalar: *scalar,
+                    id: *id,
+                })
+                .collect();
             DurableRootShape {
                 placement: root.placement,
                 product: root.product,
-                key: root.key,
-                key_id: root.key_id,
+                keys,
                 fields,
             }
         })
@@ -1613,7 +1631,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .iter()
         .map(|root| SealedRoot {
             name: decoded.strings[root.name as usize].clone(),
-            key: root.key,
+            keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
             record: root.record,
         })
         .collect();
@@ -3325,7 +3343,18 @@ fn apply_durable(
         VerifyPhase::Function,
         "durable site root out of range",
     ))?;
-    let key_ty = VType::bare_scalar(root.key);
+    // The executable durable subset served by the single-root kernel is the
+    // single-column keyed root. A singleton or composite-key root carries a
+    // complete identity but has no executable operation sites; a site over one is
+    // a forged or not-yet-executable image and is refused here, independently of
+    // the compiler's own boundary.
+    let [key] = root.keys.as_slice() else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "a durable operation site requires a single-column keyed root",
+        ));
+    };
+    let key_ty = VType::bare_scalar(*key);
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurExists(_) => {

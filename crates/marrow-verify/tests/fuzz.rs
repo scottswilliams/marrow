@@ -7,9 +7,9 @@
 //! the default suite. A minimized counterexample becomes a permanent fixture.
 
 use marrow_image::{
-    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, LedgerIdBytes,
-    RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry, VariantDef,
-    image_id,
+    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SiteDef, SiteTarget, SpanEntry,
+    VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -226,12 +226,14 @@ fn a_durable_image() -> Vec<u8> {
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     draft.add_root(RootDef {
         name: root,
-        key: Scalar::Text,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
         record,
         identity: RootIdentity {
             placement: LedgerIdBytes::from_bytes([0x0b; 16]),
             product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            key: LedgerIdBytes::from_bytes([0x0c; 16]),
             fields: vec![
                 LedgerIdBytes::from_bytes([0x0e; 16]),
                 LedgerIdBytes::from_bytes([0x0f; 16]),

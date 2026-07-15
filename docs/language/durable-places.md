@@ -27,20 +27,56 @@ pub fn title(id: int): string?
     return ^books(id).title
 ```
 
-The identity column is a single key drawn from the closed orderable durable-key
-scalar set: `int`, `string`, `bool`, `bytes`, `date`, or `instant` (a nominal
-type over one of these is admitted through its base scalar). `duration` is a
-span rather than an identity and is not a durable key. A resource declares
-scalar fields that are `required` or sparse; a sparse field may be absent. The
-store root is project-wide: any module uses the declared root shape directly,
-and function visibility does not change root access.
+Each identity column is drawn from the closed orderable durable-key scalar set:
+`int`, `string`, `bool`, `bytes`, `date`, or `instant` (a nominal type over one
+of these is admitted through its base scalar). `duration` is a span rather than
+an identity and is not a durable key. A resource declares scalar fields that are
+`required` or sparse; a sparse field may be absent. The store root is
+project-wide: any module uses the declared root shape directly, and function
+visibility does not change root access.
+
+A `store` root is either a *singleton* or a *keyed tuple*. A singleton root
+omits the key list and holds a single entry:
+
+```mw
+module docs::durable_singleton
+
+resource Settings
+    required locale: string
+
+store ^settings: Settings
+```
+
+A keyed tuple has one or more ordered key columns (up to eight); a composite key
+identifies each entry by the whole tuple in column order:
+
+```mw
+module docs::durable_composite
+
+resource Enrollment
+    required grade: int
+
+store ^enrollments(student: string, course: string): Enrollment
+```
+
+Each root — singleton, single-column, or composite — is a distinct durable graph
+node with its own complete identity (its placement, its stored product, one
+identity per key column, and one per stored field; see
+[Durable Identity](#durable-identity)).
+
+The single-column keyed root is the executable durable shape in this preview: its
+entries are read and written through the operations below. A singleton or
+composite-key root declares and verifies its full identity, but its read and
+write operations are not yet executable — an operation over one is the typed
+`check.unsupported` rejection rather than a silent drop, until the wider durable
+runtime lands.
 
 ## Durable Identity
 
-Every durable declaration — the application, a store root, its key column, the
-stored resource, and each stored field — has its own durable identity: an
-opaque 128-bit id minted once from OS entropy and recorded in the project's
-committed identity ledger, `marrow.ids` (see
+Every durable declaration — the application, a store root, each of its key
+columns, the stored resource, and each stored field — has its own durable
+identity: an opaque 128-bit id minted once from OS entropy and recorded in the
+project's committed identity ledger, `marrow.ids` (see
 [Projects](../tools/projects.md#the-identity-ledger)). The ledger is machine
 written and machine read; developers never edit, copy, or cite ids. In ordinary
 development it is invisible: the first `marrow run` over a fresh durable
@@ -52,8 +88,10 @@ deleting a declaration and re-adding its name mints a fresh identity.
 
 A program's whole durable graph additionally carries a stable 32-byte
 **durable-contract identity**, computed over the graph's ledger ids and shape
-(each root's key scalar and its record's ordered stored field profile — scalar
-type and `required` flag per field). The compiler derives it from the resolved
+(each root's ordered key tuple — scalar and identity per column — and its
+record's ordered stored field profile — scalar type and `required` flag per
+field). Key-column order is part of the identity. The compiler derives it from
+the resolved
 graph and records it in the program image; the independent verifier rebuilds
 the descriptor from the image tables, recomputes the identity, and rejects any
 image whose recorded identity does not match its graph. Because the descriptor

@@ -37,6 +37,12 @@ pub const MAX_COLLECTIONS: usize = 64;
 pub const MAX_ROOTS: usize = 1;
 pub const MAX_SITES: usize = 64;
 
+/// Key columns per durable root placement. A singleton root has zero; a keyed
+/// root has an ordered tuple of one or more columns. The bound keeps every
+/// key-tuple decoder (image, verifier) allocating within a fixed limit (§ law 9);
+/// eight columns is far above any composite key a personal-product journey needs.
+pub const MAX_KEY_COLUMNS: usize = 8;
+
 /// Constant-pool entries.
 pub const MAX_CONSTS: usize = 1024;
 
