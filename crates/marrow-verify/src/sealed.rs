@@ -235,35 +235,6 @@ pub enum SealedInstr {
     MapValueAt,
 }
 
-impl SealedInstr {
-    /// Whether this instruction stages a durable mutation (design §D). Read and
-    /// iteration ops are not mutations; the transaction markers are not either.
-    pub fn is_mutation(&self) -> bool {
-        matches!(
-            self,
-            SealedInstr::DurSetRequired(_)
-                | SealedInstr::DurSetSparse(_)
-                | SealedInstr::DurSetSparsePresent { .. }
-                | SealedInstr::DurCreateEntry(_)
-                | SealedInstr::DurReplaceEntry(_)
-                | SealedInstr::DurEraseField(_)
-                | SealedInstr::DurEraseEntry(_)
-        )
-    }
-
-    /// Whether this instruction reads durable data (presence, field/entry read, or
-    /// iteration).
-    pub fn is_durable_read(&self) -> bool {
-        matches!(
-            self,
-            SealedInstr::DurExists(_)
-                | SealedInstr::DurReadField(_)
-                | SealedInstr::DurReadEntry(_)
-                | SealedInstr::DurNextKey(_)
-        )
-    }
-}
-
 /// The resolved physical form of a durable operation site's closed
 /// [`marrow_image::SemanticTarget`], as the verifier re-derives it from the site's
 /// semantic path: `WholePayload` over a keyed placement, or `FieldLeaf` carrying the

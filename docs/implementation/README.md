@@ -46,7 +46,7 @@ upstream owner; do not reconstruct it in the CLI, LSP, or tests.
 
 An export's durable access demand is a compiler fact the verifier reconstructs,
 not a serialized summary. `marrow-image` owns the demand vocabulary: an
-`OperationClass` (`read`, `write`, `presence`, `erase`, `index-read`) projected
+`OperationClass` (`read`, `write`, `presence`, `erase`, `iterate`) projected
 from the durable operation algebra, a `DemandAtom` pairing a semantic path with a
 class, an `ExportDemand` (the canonical sorted atom set with a read/write coverage
 projection and a program-wide union), and the `DemandSetId` demand-set identity —

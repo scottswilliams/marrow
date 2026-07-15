@@ -2775,7 +2775,7 @@ impl Effects {
                     continue; // no successors
                 }
                 _ => {
-                    let mutating_here = instr.is_mutation()
+                    let mutating_here = is_mutation(instr)
                         || matches!(instr, SealedInstr::Call(target) if self.mutates_closure[*target as usize]);
                     if mutating_here && state != State::InTxn {
                         return Err(reject(
@@ -4248,8 +4248,8 @@ fn map_kv(ctx: &Ctx, value: VType) -> Result<(u16, ImageType, ImageType), Verify
 /// Whether `instr` is handled by [`apply_durable`] (a durable op or a transaction
 /// marker).
 fn is_durable(instr: &SealedInstr) -> bool {
-    instr.is_mutation()
-        || instr.is_durable_read()
+    is_mutation(instr)
+        || is_durable_read(instr)
         || matches!(instr, SealedInstr::TxnBegin | SealedInstr::TxnCommit)
 }
 
@@ -4271,12 +4271,17 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
     }
 }
 
-/// The demand [`OperationClass`] a durable opcode makes at its site. The closed
-/// projection of the durable operation algebra onto authority atoms: `create`,
-/// `replace`, and required/sparse field sets are all writes; the two erases are
-/// erases; presence is a probe; field/entry reads are reads; and the next-key step
-/// is ordered traversal. Non-durable instructions and the transaction markers make
-/// no atom.
+/// The single owner of the durable-opcode → [`OperationClass`] partition. The
+/// closed projection of the durable operation algebra onto authority atoms:
+/// `create`, `replace`, and required/sparse field sets are all writes; the two
+/// erases are erases; presence is a probe; field/entry reads are reads; and the
+/// next-key step is ordered traversal. Transaction markers and every pure opcode
+/// make no atom.
+///
+/// The match is exhaustive with no `_` fallthrough, so a new durable opcode added
+/// to [`SealedInstr`] without a class here fails to compile rather than silently
+/// projecting to "no access". [`is_mutation`] and [`is_durable_read`] derive from
+/// this partition and never restate it.
 fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
     match instr {
         SealedInstr::DurExists(_) => Some(OperationClass::Presence),
@@ -4290,8 +4295,115 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
             Some(OperationClass::Erase)
         }
         SealedInstr::DurNextKey(_) => Some(OperationClass::IndexRead),
-        _ => None,
+        // Region markers open and close the transaction but stage no access.
+        SealedInstr::TxnBegin | SealedInstr::TxnCommit => None,
+        // The closed complement: every pure opcode stages no durable access.
+        SealedInstr::ConstLoad(_)
+        | SealedInstr::LocalGet(_)
+        | SealedInstr::LocalSet(_)
+        | SealedInstr::Pop
+        | SealedInstr::Return
+        | SealedInstr::Jump(_)
+        | SealedInstr::JumpIfFalse(_)
+        | SealedInstr::IntAdd
+        | SealedInstr::IntSub
+        | SealedInstr::IntMul
+        | SealedInstr::IntRem
+        | SealedInstr::IntDiv
+        | SealedInstr::IntNeg
+        | SealedInstr::BoolNot
+        | SealedInstr::IntLt
+        | SealedInstr::IntLe
+        | SealedInstr::IntGt
+        | SealedInstr::IntGe
+        | SealedInstr::EqInt
+        | SealedInstr::EqBool
+        | SealedInstr::EqText
+        | SealedInstr::TextConcat
+        | SealedInstr::TextLt
+        | SealedInstr::TextLe
+        | SealedInstr::TextGt
+        | SealedInstr::TextGe
+        | SealedInstr::EqBytes
+        | SealedInstr::BytesLt
+        | SealedInstr::BytesLe
+        | SealedInstr::BytesGt
+        | SealedInstr::BytesGe
+        | SealedInstr::ConvStringInt
+        | SealedInstr::ConvStringBool
+        | SealedInstr::ConvBytesText
+        | SealedInstr::TextIsEmpty
+        | SealedInstr::TextContains
+        | SealedInstr::TextTrim
+        | SealedInstr::TextSplit(_)
+        | SealedInstr::TextLines(_)
+        | SealedInstr::TextJoin
+        | SealedInstr::EqDate
+        | SealedInstr::DateLt
+        | SealedInstr::DateLe
+        | SealedInstr::DateGt
+        | SealedInstr::DateGe
+        | SealedInstr::EqInstant
+        | SealedInstr::InstantLt
+        | SealedInstr::InstantLe
+        | SealedInstr::InstantGt
+        | SealedInstr::InstantGe
+        | SealedInstr::EqDuration
+        | SealedInstr::DurationLt
+        | SealedInstr::DurationLe
+        | SealedInstr::DurationGt
+        | SealedInstr::DurationGe
+        | SealedInstr::DateAddDays
+        | SealedInstr::DateDaysBetween
+        | SealedInstr::DurationAdd
+        | SealedInstr::DurationSub
+        | SealedInstr::InstantAddDuration
+        | SealedInstr::InstantSubDuration
+        | SealedInstr::IntAddChecked(_)
+        | SealedInstr::IntSubChecked(_)
+        | SealedInstr::IntMulChecked(_)
+        | SealedInstr::IntNegChecked(_)
+        | SealedInstr::IntDivChecked(_)
+        | SealedInstr::IntRemChecked(_)
+        | SealedInstr::RangeGuard { .. }
+        | SealedInstr::RecordNew(_)
+        | SealedInstr::FieldGet(_)
+        | SealedInstr::FieldSet(_)
+        | SealedInstr::FieldUnset(_)
+        | SealedInstr::SomeWrap
+        | SealedInstr::VacantLoad(_)
+        | SealedInstr::EnumConstruct { .. }
+        | SealedInstr::EnumTag
+        | SealedInstr::EnumPayloadGet { .. }
+        | SealedInstr::EqEnum
+        | SealedInstr::BranchPresent(_)
+        | SealedInstr::Unreachable(_)
+        | SealedInstr::Assert
+        | SealedInstr::Call(_)
+        | SealedInstr::ListNew(_)
+        | SealedInstr::ListAppend
+        | SealedInstr::ListLen
+        | SealedInstr::ListGet
+        | SealedInstr::MapNew(_)
+        | SealedInstr::MapInsert
+        | SealedInstr::MapGet
+        | SealedInstr::MapLen
+        | SealedInstr::MapKeyAt
+        | SealedInstr::MapValueAt => None,
     }
+}
+
+/// Whether `instr` stages a durable mutation (a write or erase). Derived from the
+/// [`durable_op_class`] partition so the mutation set never drifts from the atom it
+/// projects.
+fn is_mutation(instr: &SealedInstr) -> bool {
+    durable_op_class(instr).is_some_and(|class| class.mutates())
+}
+
+/// Whether `instr` reads durable data — a presence probe, a field/entry read, or an
+/// ordered next-key step. The classified durable ops that are not mutations.
+fn is_durable_read(instr: &SealedInstr) -> bool {
+    durable_op_class(instr).is_some_and(|class| !class.mutates())
 }
 
 /// Mutably borrow two distinct elements of a slice. The demand fixpoint unions a
