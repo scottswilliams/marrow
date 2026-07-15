@@ -56,6 +56,12 @@ const SOURCE: &str = "resource Counter\n\
      \x20       ^counters(id) = Counter(value: 1)\n\
      \x20       ^counters(id).value = big + big\n\
      \n\
+     pub fn setThenMaybeDiverge(id: int, v: int, boom: bool)\n\
+     \x20   transaction\n\
+     \x20       ^counters(id) = Counter(value: v)\n\
+     \x20       if boom\n\
+     \x20           unreachable(\"the invariant broke mid-transaction\")\n\
+     \n\
      pub fn getValue(id: int): int?\n\
      \x20   return ^counters(id).value\n\
      \n\
@@ -349,5 +355,40 @@ fn a_durable_read_after_commit_is_rejected() {
             vec![Value::Int(1), Value::Int(5)]
         ),
         Some(Value::Optional(Some(Box::new(Value::Int(5)))))
+    );
+}
+
+/// An `unreachable` fault reached conditionally inside a transaction rolls the
+/// region back, exactly like an arithmetic fault: the C01 divergence machinery and
+/// the transaction effects compose. The non-diverging path commits normally.
+#[test]
+fn an_unreachable_fault_inside_a_transaction_rolls_back() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+
+    // The diverging path faults and discards the staged write.
+    let code = run_faulting(
+        &image,
+        &mut attachment,
+        "setThenMaybeDiverge",
+        vec![Value::Int(6), Value::Int(3), Value::Bool(true)],
+    );
+    assert_eq!(code, "run.unreachable");
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
+        Some(Value::Optional(None)),
+        "the unreachable fault rolled the transaction back"
+    );
+
+    // The same export on its non-diverging path commits the write.
+    run(
+        &image,
+        &mut attachment,
+        "setThenMaybeDiverge",
+        vec![Value::Int(6), Value::Int(3), Value::Bool(false)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(3)))))
     );
 }

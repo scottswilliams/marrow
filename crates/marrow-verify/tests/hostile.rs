@@ -1276,6 +1276,27 @@ fn flow_double_begin_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
+/// A durable operation after the commit is refused: the commit consumes the
+/// session's engine transaction, so a read placed after it would reach a dead
+/// transaction at runtime. Here the tape writes, commits, then reads the value
+/// field — the flow lattice rejects the post-commit read.
+#[test]
+fn flow_durable_read_after_commit_rejects() {
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::LocalGet(0),
+        Instr::DurReadField(value_site),
+        Instr::Pop,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
 /// Add a single mutating export with two `string` key params (slots 0 and 1) over
 /// the tracer schema in `draft`, whose body is `code`, and encode it. Used by the
 /// presence-lattice hostiles, where the guard proves one slot and the strict set
