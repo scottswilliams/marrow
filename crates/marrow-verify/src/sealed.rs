@@ -80,6 +80,13 @@ pub enum SealedInstr {
     IntNegChecked(usize),
     IntDivChecked(usize),
     IntRemChecked(usize),
+    /// Peek the int on top of the stack; fault `run.range` when it lies outside
+    /// the inclusive `[lo, hi]` interval, else fall through with no stack
+    /// effect. Decode rejects an empty interval (`lo > hi`).
+    RangeGuard {
+        lo: i64,
+        hi: i64,
+    },
     /// Construct a record of type index `_0` from its field values popped in
     /// reverse (f0 pushed first). The field count and per-field required flag come
     /// from the sealed record type.

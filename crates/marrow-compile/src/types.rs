@@ -3,7 +3,11 @@
 //! This is the single owner of what a source type name denotes. A transparent
 //! `alias Name = Type` denotes exactly its expansion — it mints no identity and
 //! no constructor — so every annotation classification calls [`TypeRegistry::expand`]
-//! before reading the spelling. The T01 subset admits exactly one record type per
+//! before reading the spelling. A nominal `type Name: int in lo..hi` mints a
+//! distinct type: the registry owns its identity — name, inclusive interval, and
+//! `supports` capability set — while the image records only its base scalar, so
+//! the interval is carried by the guard instructions the compiler emits, not by
+//! an image type table. The T01 subset admits exactly one record type per
 //! project: a `resource` with required and sparse scalar fields, no groups and no
 //! keyed children, lowered into the image [`RecordTypeDef`].
 
@@ -11,10 +15,38 @@ use std::collections::BTreeMap;
 
 use marrow_codes::Code;
 use marrow_image::{FieldDef, ImageDraft, RecordTypeDef, TypeId};
-use marrow_syntax::{AliasDecl, ResourceDecl, ResourceMember, SourceSpan, TypeExpr};
+use marrow_syntax::{
+    AliasDecl, Expression, LiteralKind, NominalDecl, ResourceDecl, ResourceMember, SourceSpan,
+    TypeExpr, UnaryOp, range_expr,
+};
 
 use crate::diag::SourceDiagnostic;
 use crate::scalar::ScalarType;
+
+/// The identity of a nominal type in [`TypeRegistry`] order, carried by the
+/// lowered type so classification never re-reads the source spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NominalId(pub(crate) u16);
+
+/// The closed capability set a nominal declaration's `supports` list unlocks.
+/// Each flag independently admits operators over the nominal (see the lowerer's
+/// operator mapping); construction and `.checked` need no capability.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SupportSet {
+    pub(crate) add: bool,
+    pub(crate) subtract: bool,
+    pub(crate) step: bool,
+    pub(crate) scale: bool,
+}
+
+/// One nominal type: a distinct int-based type whose every value lies in the
+/// inclusive interval `[lo, hi]`.
+pub(crate) struct NominalInfo {
+    pub(crate) name: String,
+    pub(crate) lo: i64,
+    pub(crate) hi: i64,
+    pub(crate) supports: SupportSet,
+}
 
 /// One resolved record field, in declaration order.
 pub(crate) struct FieldInfo {
@@ -47,12 +79,24 @@ pub(crate) struct TypeRegistry {
     /// `alias name -> alias-free expanded target`. Cyclic aliases are reported
     /// at build and never enter this map.
     aliases: BTreeMap<String, TypeExpr>,
+    nominals: Vec<NominalInfo>,
     record: Option<RecordInfo>,
 }
 
 impl TypeRegistry {
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
         self.record.as_ref().filter(|info| info.name == name)
+    }
+
+    pub(crate) fn nominal_by_name(&self, name: &str) -> Option<(NominalId, &NominalInfo)> {
+        self.nominals
+            .iter()
+            .position(|info| info.name == name)
+            .map(|index| (NominalId(index as u16), &self.nominals[index]))
+    }
+
+    pub(crate) fn nominal(&self, id: NominalId) -> &NominalInfo {
+        &self.nominals[id.0 as usize]
     }
 
     pub(crate) fn by_name_for_type(&self, ty: TypeId) -> Option<&RecordInfo> {
@@ -90,13 +134,16 @@ impl TypeRegistry {
     pub(crate) fn build(
         draft: &mut ImageDraft,
         aliases: &[(String, &AliasDecl)],
+        nominals: &[(String, &NominalDecl)],
         resources: &[(String, &ResourceDecl)],
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
         let mut registry = Self {
             aliases: build_alias_table(aliases, resources, diagnostics),
+            nominals: Vec::new(),
             record: None,
         };
+        registry.nominals = build_nominals(&registry, nominals, resources, diagnostics);
         registry.record = build_record(draft, &registry, resources, diagnostics);
         validate_alias_targets(&registry, aliases, diagnostics);
         registry
@@ -248,7 +295,10 @@ fn validate_alias_targets(
         };
         match head {
             TypeExpr::Name { text, .. } => {
-                if ScalarType::from_spelling(text).is_none() && registry.by_name(text).is_none() {
+                if ScalarType::from_spelling(text).is_none()
+                    && registry.by_name(text).is_none()
+                    && registry.nominal_by_name(text).is_none()
+                {
                     diagnostics.push(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         file,
@@ -264,6 +314,194 @@ fn validate_alias_targets(
             )),
         }
     }
+}
+
+/// Resolve the nominal type declarations against the aliases already installed
+/// in `registry`. A name collision with an alias, resource, or earlier nominal
+/// is a `check.name_conflict`; a base that does not expand to `int` is a
+/// `check.unsupported`; a non-literal, stepped, or empty interval is a
+/// `check.type`; the capability list must draw from the closed set without
+/// repeats. A declaration with a defect is dropped whole rather than admitted
+/// half-checked.
+fn build_nominals(
+    registry: &TypeRegistry,
+    nominals: &[(String, &NominalDecl)],
+    resources: &[(String, &ResourceDecl)],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Vec<NominalInfo> {
+    let mut built: Vec<NominalInfo> = Vec::new();
+    for (file, decl) in nominals {
+        // A parse error blocks compilation before this runs; a missing piece
+        // only means the declaration itself was reported, so skip it quietly.
+        let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
+            continue;
+        };
+        // Scalar spellings are keywords the parser already rejects as names;
+        // owning them here keeps the conflict predicate self-contained.
+        if ScalarType::from_spelling(&decl.name).is_some()
+            || registry.aliases.contains_key(&decl.name)
+            || resources
+                .iter()
+                .any(|(_, resource)| resource.name == decl.name)
+            || built.iter().any(|info| info.name == decl.name)
+        {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckNameConflict.as_str(),
+                file,
+                decl.name_span,
+                format!("`{}` is already declared as a type", decl.name),
+            ));
+            continue;
+        }
+        match scalar_of(&registry.expand(base)) {
+            Some(ScalarType::Int) => {}
+            Some(other) => {
+                diagnostics.push(unsupported(
+                    file,
+                    base.span(),
+                    &format!("a nominal type over `{}`", other.spelling()),
+                ));
+                continue;
+            }
+            None => {
+                diagnostics.push(unsupported(file, base.span(), "this nominal base type"));
+                continue;
+            }
+        }
+        let Some((lo, hi)) = nominal_interval(file, interval, diagnostics) else {
+            continue;
+        };
+        let Some(supports) = support_set(file, decl, diagnostics) else {
+            continue;
+        };
+        built.push(NominalInfo {
+            name: decl.name.clone(),
+            lo,
+            hi,
+            supports,
+        });
+    }
+    built
+}
+
+/// Evaluate a nominal `in` range to its inclusive `[lo, hi]` bounds. The range
+/// follows the language's range operators — `lo..hi` excludes the end, `lo..=hi`
+/// includes it — with int-literal bounds (a leading `-` allowed), no step, and
+/// at least one admitted value.
+fn nominal_interval(
+    file: &str,
+    interval: &Expression,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<(i64, i64)> {
+    let error = |diagnostics: &mut Vec<SourceDiagnostic>, span, message: &str| {
+        diagnostics.push(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            file,
+            span,
+            message.to_string(),
+        ));
+        None
+    };
+    let Some(range) = range_expr(interval) else {
+        return error(
+            diagnostics,
+            interval.span(),
+            "a nominal interval is a range of int literals, such as `0..150`",
+        );
+    };
+    if range.step.is_some() {
+        return error(diagnostics, range.span, "a nominal interval takes no step");
+    }
+    let (Some(start), Some(end)) = (range.start, range.end) else {
+        return error(
+            diagnostics,
+            range.span,
+            "a nominal interval needs both bounds",
+        );
+    };
+    let (Some(lo), Some(end_value)) = (literal_int(start), literal_int(end)) else {
+        return error(
+            diagnostics,
+            range.span,
+            "a nominal interval's bounds are int literals",
+        );
+    };
+    // Normalize the end-exclusive spelling to the inclusive upper bound. A
+    // literal never spells `i64::MIN`, so the exclusive form always has a
+    // representable predecessor; the checked form keeps that self-evident.
+    let hi = if range.inclusive_end {
+        Some(end_value)
+    } else {
+        end_value.checked_sub(1)
+    };
+    match hi {
+        Some(hi) if lo <= hi => Some((lo, hi)),
+        _ => error(diagnostics, range.span, "this interval admits no values"),
+    }
+}
+
+/// The value of an int literal, or a negated int literal, or `None`.
+fn literal_int(expr: &Expression) -> Option<i64> {
+    match expr {
+        Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            ..
+        } => crate::lower::parse_int(text),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => match &**operand {
+            Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                ..
+            } => crate::lower::parse_int(text).and_then(i64::checked_neg),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Resolve a declaration's `supports` spellings against the closed capability
+/// set, rejecting an unknown or repeated capability.
+fn support_set(
+    file: &str,
+    decl: &NominalDecl,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<SupportSet> {
+    let mut supports = SupportSet::default();
+    for spelling in &decl.supports {
+        let flag = match spelling.name.as_str() {
+            "add" => &mut supports.add,
+            "subtract" => &mut supports.subtract,
+            "step" => &mut supports.step,
+            "scale" => &mut supports.scale,
+            other => {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    file,
+                    spelling.span,
+                    format!(
+                        "unknown capability `{other}`; the capabilities are add, subtract, step, scale"
+                    ),
+                ));
+                return None;
+            }
+        };
+        if *flag {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                file,
+                spelling.span,
+                format!("capability `{}` is repeated", spelling.name),
+            ));
+            return None;
+        }
+        *flag = true;
+    }
+    Some(supports)
 }
 
 /// Build the one admitted record type, resolving field annotations through the

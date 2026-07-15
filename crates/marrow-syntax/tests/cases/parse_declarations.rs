@@ -548,6 +548,7 @@ fn normalize(title: string): string
         .iter()
         .map(|decl| match decl {
             Declaration::Alias(decl) => decl.name.as_str(),
+            Declaration::Nominal(decl) => decl.name.as_str(),
             Declaration::Const(decl) => decl.name.as_str(),
             Declaration::Resource(decl) => decl.name.as_str(),
             Declaration::Store(decl) => decl.root.root.as_str(),

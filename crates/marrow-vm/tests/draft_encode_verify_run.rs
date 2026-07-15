@@ -59,3 +59,51 @@ fn relocating_the_project_yields_identical_image_bytes() {
     assert_eq!(return_const_image(1), return_const_image(1));
     assert_ne!(return_const_image(1), return_const_image(2));
 }
+
+/// Build `guarded(n: int): int` that range-guards its argument against
+/// `[0, 150]` and returns it, exercising the guard through draft → encode →
+/// verify → run with no compiler.
+fn range_guard_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("guarded");
+    let source = draft.intern_string("src/main.mw");
+    let func = draft.add_function(FunctionDef {
+        name,
+        source,
+        params: vec![Scalar::Int],
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 1,
+        code: vec![
+            Instr::LocalGet(0),
+            Instr::RangeGuard { lo: 0, hi: 150 },
+            Instr::Return,
+        ],
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 3,
+            column: 5,
+        }],
+    });
+    draft.add_export(answer_id(), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// The range guard peeks: an in-interval int passes through unchanged at both
+/// boundaries, and an out-of-interval int faults `run.range` at the guarded
+/// instruction's source span, on both sides.
+#[test]
+fn a_range_guard_admits_the_interval_and_faults_outside_it() {
+    let bytes = range_guard_image();
+    let image = verify(&bytes).expect("image verifies");
+    let export = image.export_by_id(answer_id()).expect("export present");
+    for value in [0, 150, 42] {
+        let result = run(&image, export.function(), vec![Value::Int(value)]).expect("in range");
+        assert_eq!(result, Some(Value::Int(value)));
+    }
+    for value in [-1, 151, i64::MIN, i64::MAX] {
+        let fault = run(&image, export.function(), vec![Value::Int(value)])
+            .expect_err("out of range must fault");
+        assert_eq!(fault.code(), "run.range");
+        assert_eq!((fault.line(), fault.column()), (3, 5));
+    }
+}

@@ -12,8 +12,8 @@ use super::tokens::{
 };
 use crate::ast::{
     AliasDecl, Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl,
-    Expression, FunctionDecl, ModuleDecl, ParsedSource, ResourceDecl, SavedRoot, SourceFile,
-    StoreDecl, TestDecl, TypeExpr, UseDecl,
+    Expression, FunctionDecl, ModuleDecl, NominalDecl, ParsedSource, ResourceDecl, SavedRoot,
+    SourceFile, StoreDecl, SupportSpelling, TestDecl, TypeExpr, UseDecl,
 };
 use crate::diagnostic::{Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::literal::decode_string_literal;
@@ -119,6 +119,13 @@ impl<'a> DeclParser<'a> {
                 file.declarations.push(Declaration::Alias(decl));
                 file.comments.extend(trailing_comment);
             }
+            Some(TokenKind::Keyword(Keyword::Type)) if self.keyword_introduces_decl() => {
+                let trailing_comment = self.peek_header_trailing_comment();
+                let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
+                let decl = self.parse_nominal(decl_docs);
+                file.declarations.push(Declaration::Nominal(decl));
+                file.comments.extend(trailing_comment);
+            }
             Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
@@ -179,7 +186,7 @@ impl<'a> DeclParser<'a> {
                 self.flush_docs_as_comments(docs, &mut file.comments);
                 self.error_header(
                     ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
-                    "expected module, use, alias, const, resource, store, or fn declaration",
+                    "expected module, use, alias, type, const, resource, store, or fn declaration",
                 );
             }
         }
@@ -465,6 +472,190 @@ impl<'a> DeclParser<'a> {
             ty,
             span,
         }
+    }
+
+    /// Parse a nominal type header line: `type Name: base in lo..hi` with an
+    /// optional `supports cap, ...` tail. The name is one identifier; the base
+    /// type runs from `:` to the `in` keyword; the interval is one range
+    /// expression; the capabilities are comma-separated identifiers. Each missing
+    /// or malformed piece reports once and leaves its slot empty so parsing stays
+    /// total; base admission, the literal-range rule, and the closed capability
+    /// set are checker rules.
+    fn parse_nominal(&mut self, docs: Vec<String>) -> NominalDecl {
+        let span = self.header_span();
+        let header = self.take_header_line();
+        let rest = &header[1..];
+
+        let (name, name_span, rest) = match rest.first() {
+            Some(token) if token.kind == TokenKind::Identifier => {
+                (token.text(self.source).to_string(), token.span, &rest[1..])
+            }
+            Some(token) if matches!(token.kind, TokenKind::Keyword(_)) => {
+                let text = token.text(self.source).to_string();
+                self.error_span(
+                    token.span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::NominalName),
+                    format!("`{text}` is a keyword and cannot be used as a type name"),
+                );
+                (text, token.span, &rest[1..])
+            }
+            _ => {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::NominalName),
+                    "a nominal type declaration is `type Name: base in lo..hi`",
+                );
+                return NominalDecl {
+                    docs,
+                    name: String::new(),
+                    name_span: span,
+                    base: None,
+                    interval: None,
+                    supports: Vec::new(),
+                    span,
+                };
+            }
+        };
+
+        let rest = match rest.first() {
+            Some(token) if token.kind == TokenKind::Colon => &rest[1..],
+            _ => {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::NominalBase),
+                    "expected `:` and a base type after the nominal type name",
+                );
+                rest
+            }
+        };
+
+        // The base type runs to the `in` keyword; the interval to `supports` or
+        // end of line. Neither keyword occurs inside a type or range spelling.
+        let in_at = rest
+            .iter()
+            .position(|token| token.kind == TokenKind::Keyword(Keyword::In));
+        let (base_tokens, tail) = match in_at {
+            Some(index) => (&rest[..index], &rest[index + 1..]),
+            None => {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::NominalInterval),
+                    "a nominal type requires an `in lo..hi` interval",
+                );
+                (rest, &[][..])
+            }
+        };
+        let base = if base_tokens.is_empty() {
+            if in_at.is_some() {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::NominalBase),
+                    "expected a base type between `:` and `in`",
+                );
+            }
+            None
+        } else {
+            match parse_type(
+                self.source,
+                base_tokens,
+                ExpectedSyntax::NominalBase,
+                "expected a nominal base type",
+            ) {
+                Ok(parsed) => Some(parsed),
+                Err(error) => {
+                    self.report(span, error);
+                    None
+                }
+            }
+        };
+
+        let supports_at = tail
+            .iter()
+            .position(|token| token.kind == TokenKind::Keyword(Keyword::Supports));
+        let (interval_tokens, supports_tokens) = match supports_at {
+            Some(index) => (&tail[..index], &tail[index + 1..]),
+            None => (tail, &[][..]),
+        };
+        let interval = if interval_tokens.is_empty() {
+            if in_at.is_some() {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::NominalInterval),
+                    "expected an interval such as `0..150` after `in`",
+                );
+            }
+            None
+        } else {
+            let interval_span = line_span_or(interval_tokens, span);
+            self.parse_expr_with_fallback(
+                interval_tokens,
+                interval_span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::NominalInterval),
+                "expected an interval such as `0..150` after `in`",
+            )
+        };
+
+        let supports = self.parse_supports_list(span, supports_at.is_some(), supports_tokens);
+        NominalDecl {
+            docs,
+            name,
+            name_span,
+            base,
+            interval,
+            supports,
+            span,
+        }
+    }
+
+    /// Parse the `supports` capability tail of a nominal header: identifiers
+    /// separated by commas. A malformed tail reports once at the offending token.
+    fn parse_supports_list(
+        &mut self,
+        header_span: SourceSpan,
+        has_supports: bool,
+        tokens: &[Token],
+    ) -> Vec<SupportSpelling> {
+        if !has_supports {
+            return Vec::new();
+        }
+        if tokens.is_empty() {
+            self.error_span(
+                header_span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::NominalSupports),
+                "expected a capability list after `supports`",
+            );
+            return Vec::new();
+        }
+        let mut supports = Vec::new();
+        let mut expect_name = true;
+        for token in tokens {
+            match (expect_name, token.kind) {
+                (true, TokenKind::Identifier) => {
+                    supports.push(SupportSpelling {
+                        name: token.text(self.source).to_string(),
+                        span: token.span,
+                    });
+                    expect_name = false;
+                }
+                (false, TokenKind::Comma) => expect_name = true,
+                _ => {
+                    self.error_span(
+                        token.span,
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::NominalSupports),
+                        "a `supports` list is capability names separated by commas",
+                    );
+                    return supports;
+                }
+            }
+        }
+        if expect_name {
+            self.error_span(
+                header_span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::NominalSupports),
+                "expected a capability name after `,`",
+            );
+        }
+        supports
     }
 
     fn parse_resource(&mut self, docs: Vec<String>) -> ResourceDecl {

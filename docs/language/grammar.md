@@ -56,6 +56,7 @@ use_decl        = "use", qualified_name, NEWLINE ;
 
 top_level_decl  = {doc_comment},
                   (alias_decl
+                 | nominal_decl
                  | const_decl
                  | resource_decl
                  | store_decl
@@ -64,6 +65,10 @@ top_level_decl  = {doc_comment},
                  | evolve_decl) ;
 
 alias_decl      = "alias", identifier, "=", type, NEWLINE ;
+
+nominal_decl    = "type", identifier, ":", type,
+                  "in", expression,
+                  ("supports", identifier, {",", identifier})?, NEWLINE ;
 
 const_decl      = "const", identifier, type_annotation?,
                   "=", expression, NEWLINE ;

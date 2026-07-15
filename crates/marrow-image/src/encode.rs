@@ -334,6 +334,10 @@ fn encode_code(
                 push_u32(&mut out, byte_offset);
             }
             Instr::VacantLoad(ty) => ty.encode(&mut out),
+            Instr::RangeGuard { lo, hi } => {
+                out.extend_from_slice(&lo.to_be_bytes());
+                out.extend_from_slice(&hi.to_be_bytes());
+            }
             _ => {}
         }
     }

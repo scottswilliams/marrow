@@ -691,3 +691,119 @@ fn comment_lines_do_not_disturb_parameter_docs() {
         )]
     );
 }
+
+/// A nominal `type` declaration parses into its named parts: name, base type,
+/// `in` range expression, and `supports` capability list, with total recovery
+/// for each malformed piece.
+#[test]
+fn parses_nominal_type_declarations() {
+    use marrow_syntax::{Declaration, parse_source, range_expr};
+
+    let parsed = parse_source(
+        "module app\ntype Age: int in 0..=150 supports add, subtract\ntype Percent: int in 0..101\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let nominals: Vec<_> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|decl| match decl {
+            Declaration::Nominal(nominal) => Some(nominal),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(nominals.len(), 2);
+    assert_eq!(nominals[0].name, "Age");
+    assert_eq!(
+        nominals[0]
+            .base
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("int")
+    );
+    let range = range_expr(nominals[0].interval.as_ref().expect("interval"))
+        .expect("interval parses as a range");
+    assert!(range.inclusive_end);
+    let caps: Vec<&str> = nominals[0]
+        .supports
+        .iter()
+        .map(|support| support.name.as_str())
+        .collect();
+    assert_eq!(caps, ["add", "subtract"]);
+    assert_eq!(nominals[1].name, "Percent");
+    assert!(nominals[1].supports.is_empty());
+    let range = range_expr(nominals[1].interval.as_ref().expect("interval"))
+        .expect("interval parses as a range");
+    assert!(!range.inclusive_end);
+}
+
+/// Each malformed nominal header piece reports one diagnostic and keeps the
+/// declaration node (total parsing): a keyword name, a missing `in` interval,
+/// and a malformed `supports` tail.
+#[test]
+fn nominal_type_declaration_recovers_totally() {
+    use marrow_syntax::{Declaration, parse_source};
+
+    for (source, expected_message) in [
+        (
+            "type fn: int in 0..1\n",
+            "`fn` is a keyword and cannot be used as a type name",
+        ),
+        ("type Age: int\n", "requires an `in lo..hi` interval"),
+        ("type Age: int in\n", "expected an interval"),
+        ("type Age in 0..1\n", "expected `:` and a base type"),
+        (
+            "type Age: int in 0..1 supports\n",
+            "expected a capability list",
+        ),
+        (
+            "type Age: int in 0..1 supports add,\n",
+            "expected a capability name after `,`",
+        ),
+        (
+            "type Age: int in 0..1 supports add add\n",
+            "capability names separated by commas",
+        ),
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains(expected_message)),
+            "missing {expected_message:?} for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        assert!(
+            parsed
+                .file
+                .declarations
+                .iter()
+                .any(|decl| matches!(decl, Declaration::Nominal(_))),
+            "declaration node must survive recovery for {source:?}"
+        );
+        // One diagnostic per defect, not a cascade.
+        assert!(
+            parsed.diagnostics.len() <= 2,
+            "no cascade for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+/// The formatter renders a nominal declaration canonically and idempotently,
+/// including the docs, interval spelling, and capability list.
+#[test]
+fn formats_nominal_type_declarations() {
+    use marrow_syntax::format_source;
+
+    let source = "module app\n\ntype Age:   int   in 0..=150   supports add,subtract\n";
+    let formatted = format_source(source);
+    assert_eq!(
+        formatted,
+        "module app\n\ntype Age: int in 0..=150 supports add, subtract\n"
+    );
+    let reparsed = format_source(&formatted);
+    assert_eq!(formatted, reparsed, "formatting must be idempotent");
+}

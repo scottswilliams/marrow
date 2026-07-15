@@ -21,10 +21,11 @@ use marrow_image::{
     OP_FIELD_GET, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE,
     OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
     OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_LE,
-    OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
-    OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    OP_JUMP_IF_FALSE, OP_LOCAL_GET, OP_LOCAL_SET, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
+    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
+    OP_TEXT_LE, OP_TEXT_LT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
+    OP_VACANT_LOAD, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_INT, TAG_RECORD, TAG_TEXT,
+    TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -1324,6 +1325,17 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_INT_NEG_CHECKED => SealedInstr::IntNegChecked(operand_u32(&mut reader)? as usize),
             OP_INT_DIV_CHECKED => SealedInstr::IntDivChecked(operand_u32(&mut reader)? as usize),
             OP_INT_REM_CHECKED => SealedInstr::IntRemChecked(operand_u32(&mut reader)? as usize),
+            OP_RANGE_GUARD => {
+                let lo = operand_i64(&mut reader)?;
+                let hi = operand_i64(&mut reader)?;
+                if lo > hi {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "range-guard interval is empty",
+                    ));
+                }
+                SealedInstr::RangeGuard { lo, hi }
+            }
             OP_INT_NEG => SealedInstr::IntNeg,
             OP_BOOL_NOT => SealedInstr::BoolNot,
             OP_INT_LT => SealedInstr::IntLt,
@@ -1391,6 +1403,12 @@ fn operand_u32(reader: &mut Reader) -> Result<u32, VerifyRejection> {
     reader
         .u32()
         .ok_or(reject(VerifyPhase::Function, "short u32 operand"))
+}
+
+fn operand_i64(reader: &mut Reader) -> Result<i64, VerifyRejection> {
+    reader
+        .i64()
+        .ok_or(reject(VerifyPhase::Function, "short i64 operand"))
 }
 
 /// Decode a `VacantLoad` operand: a single type-ref tag that must be an optional
@@ -1816,6 +1834,16 @@ fn apply(
                 target: *target,
                 result: VType::bare_scalar(Scalar::Int),
             })
+        }
+        SealedInstr::RangeGuard { .. } => {
+            // Peeks the guarded value: the top of the stack must be a bare int,
+            // which the guard leaves in place (fault or fall through).
+            let top = *stack.last().ok_or(reject(
+                VerifyPhase::Function,
+                "range guard on an empty stack",
+            ))?;
+            expect_scalar(top, Scalar::Int)?;
+            Ok(Control::Fallthrough)
         }
         SealedInstr::BoolNot => {
             expect_scalar(pop(stack)?, Scalar::Bool)?;

@@ -194,8 +194,8 @@ VM can run it.
 Source-mapped runtime faults raised by the VM and the path kernel while running a
 verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant, call depth, an
-execution budget, an authority denial, a required field left unset at commit, an
-unconfirmed commit, and durable corruption. These are not catchable inside the
+execution budget, a nominal-interval violation, an authority denial, a required
+field left unset at commit, an unconfirmed commit, and durable corruption. These are not catchable inside the
 program.
 
 | Code | Meaning |
@@ -209,6 +209,7 @@ program.
             Code::RunAssert,
             Code::RunCallDepth,
             Code::RunBudget,
+            Code::RunRange,
             Code::RunAuthority,
             Code::RunRequiredMissing,
             Code::RunCommit,

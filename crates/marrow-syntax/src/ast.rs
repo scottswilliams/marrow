@@ -80,6 +80,7 @@ pub struct UseDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declaration {
     Alias(AliasDecl),
+    Nominal(NominalDecl),
     Const(ConstDecl),
     Resource(ResourceDecl),
     Store(StoreDecl),
@@ -100,6 +101,34 @@ pub struct AliasDecl {
     pub name_span: SourceSpan,
     /// `None` when the target type did not parse; the parser reports the error.
     pub ty: Option<TypeExpr>,
+    pub span: SourceSpan,
+}
+
+/// A nominal type declaration: `type Name: base in lo..hi supports cap, ...`.
+/// Unlike a transparent `alias`, the name mints a distinct type with its own
+/// constructor; the `in` range constrains every value of the type and the
+/// `supports` list names the capabilities that unlock arithmetic. The parser
+/// captures the spelled parts; base admission, the literal-range rule, and the
+/// closed capability set are checker rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NominalDecl {
+    pub docs: Vec<String>,
+    pub name: String,
+    pub name_span: SourceSpan,
+    /// `None` when the base type did not parse; the parser reports the error.
+    pub base: Option<TypeExpr>,
+    /// The `in` range expression as written (`0..150` or `0..=150`); `None` when
+    /// missing or unparsable, which the parser reports.
+    pub interval: Option<Expression>,
+    /// The `supports` capability spellings, in source order.
+    pub supports: Vec<SupportSpelling>,
+    pub span: SourceSpan,
+}
+
+/// One spelled capability in a nominal declaration's `supports` list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportSpelling {
+    pub name: String,
     pub span: SourceSpan,
 }
 

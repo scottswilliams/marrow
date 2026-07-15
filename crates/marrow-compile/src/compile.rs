@@ -12,8 +12,8 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
-    AliasDecl, ConstDecl, Declaration, FunctionDecl, ParsedSource, ResourceDecl, SourceSpan,
-    StoreDecl, parse_source,
+    AliasDecl, ConstDecl, Declaration, FunctionDecl, NominalDecl, ParsedSource, ResourceDecl,
+    SourceSpan, StoreDecl, parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -260,6 +260,18 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
+    let nominals: Vec<(String, &NominalDecl)> = parsed
+        .iter()
+        .flat_map(|module| {
+            module.parsed.file.declarations.iter().filter_map(|decl| {
+                if let Declaration::Nominal(nominal) = decl {
+                    Some((module.file.clone(), nominal))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
     let resources: Vec<(String, &ResourceDecl)> = parsed
         .iter()
         .flat_map(|module| {
@@ -272,7 +284,13 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
-    let records = TypeRegistry::build(&mut draft, &aliases, &resources, &mut diagnostics);
+    let records = TypeRegistry::build(
+        &mut draft,
+        &aliases,
+        &nominals,
+        &resources,
+        &mut diagnostics,
+    );
     let stores: Vec<(String, &StoreDecl)> = parsed
         .iter()
         .flat_map(|module| {
@@ -368,6 +386,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 // declarations are lowered separately below, after every function
                 // has an index.
                 Declaration::Alias(_)
+                | Declaration::Nominal(_)
                 | Declaration::Const(_)
                 | Declaration::Resource(_)
                 | Declaration::Store(_)
@@ -542,6 +561,7 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
 fn declaration_span(declaration: &Declaration) -> SourceSpan {
     match declaration {
         Declaration::Alias(decl) => decl.span,
+        Declaration::Nominal(decl) => decl.span,
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
         Declaration::Store(decl) => decl.span,

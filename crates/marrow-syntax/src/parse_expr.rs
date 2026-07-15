@@ -661,6 +661,11 @@ impl<'a> ExprParser<'a> {
         let text = segment.text(self.source);
         let (name, quoted) = match segment.kind {
             TokenKind::Identifier => (text.to_string(), false),
+            // `checked` is a keyword (the checked-arithmetic statement head), but in
+            // field position it is the nominal-type range-test member `Age.checked(n)`.
+            // The parser admits the spelling; which bases have such a member is a
+            // checker rule.
+            TokenKind::Keyword(Keyword::Checked) => (text.to_string(), false),
             TokenKind::String => {
                 return Err(self.error_expr(
                     join_spans(op.span, segment.span),

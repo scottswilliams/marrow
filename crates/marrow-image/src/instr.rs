@@ -62,6 +62,9 @@ pub const OP_INT_MUL_CHECKED: u8 = 0x72;
 pub const OP_INT_NEG_CHECKED: u8 = 0x73;
 pub const OP_INT_DIV_CHECKED: u8 = 0x74;
 pub const OP_INT_REM_CHECKED: u8 = 0x75;
+// Nominal-interval guard: peek the int on top of the stack; fault `run.range`
+// when it lies outside the inclusive `[lo, hi]` immediate. No stack effect.
+pub const OP_RANGE_GUARD: u8 = 0x76;
 pub const OP_RECORD_NEW: u8 = 0x20;
 pub const OP_FIELD_GET: u8 = 0x21;
 pub const OP_SOME_WRAP: u8 = 0x22;
@@ -142,6 +145,14 @@ pub enum Instr {
     IntNegChecked(u32),
     IntDivChecked(u32),
     IntRemChecked(u32),
+    /// Peek the int on top of the stack; fault `run.range` when it lies outside
+    /// the inclusive `[lo, hi]` immediate, else fall through with no stack
+    /// effect. The compiler emits one after every operation that produces a
+    /// nominal interval-constrained value; a well-formed guard has `lo <= hi`.
+    RangeGuard {
+        lo: i64,
+        hi: i64,
+    },
     RecordNew(u16),
     FieldGet(u16),
     SomeWrap,
@@ -211,6 +222,7 @@ impl Instr {
             Instr::IntNegChecked(_) => OP_INT_NEG_CHECKED,
             Instr::IntDivChecked(_) => OP_INT_DIV_CHECKED,
             Instr::IntRemChecked(_) => OP_INT_REM_CHECKED,
+            Instr::RangeGuard { .. } => OP_RANGE_GUARD,
             Instr::RecordNew(_) => OP_RECORD_NEW,
             Instr::FieldGet(_) => OP_FIELD_GET,
             Instr::SomeWrap => OP_SOME_WRAP,
@@ -263,6 +275,8 @@ impl Instr {
             // `VacantLoad` uses an optional scalar, which never carries a record
             // index, so the operand is exactly one byte.
             Instr::VacantLoad(_) => 1,
+            // Two big-endian `i64` interval bounds.
+            Instr::RangeGuard { .. } => 16,
             _ => 0,
         }
     }

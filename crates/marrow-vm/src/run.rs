@@ -323,6 +323,17 @@ fn execute<'s>(
                 let (a, b) = pop_ints(&mut stack);
                 checked_or_branch(&mut stack, a.checked_rem(b), *target, &mut pc);
             }
+            SealedInstr::RangeGuard { lo, hi } => {
+                // Peek the guarded value: the verifier proved a bare int on top.
+                let value = match stack.last() {
+                    Some(Value::Int(value)) => *value,
+                    _ => unreachable!("verifier proved an int under a range guard"),
+                };
+                if value < *lo || value > *hi {
+                    return Err(fault(function, pc, Code::RunRange.as_str()));
+                }
+                pc += 1;
+            }
             SealedInstr::TextIsEmpty => {
                 let s = as_text(pop(&mut stack));
                 stack.push(Value::Bool(s.is_empty()));

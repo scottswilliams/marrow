@@ -55,6 +55,76 @@ where `M` is itself optional is still a rejected nested optional. Alias names
 are type annotations only: they are not conversion or constructor names in
 expressions.
 
+## Nominal Int Types
+
+`type Name: int in lo..hi` declares a nominal type over `int`: a distinct type
+whose every value lies in the declared interval. Unlike a transparent `alias`,
+the name mints its own identity and constructor — an `int` is not a `Name` and
+a `Name` is not an `int`; each conversion point is explicit in the source.
+
+The interval follows the language's range operators: `in 0..150` admits `0`
+through `149` (the end is excluded), and `in 0..=150` admits `0` through `150`.
+The lower bound is always included. Both bounds are int literals (a leading `-`
+is allowed), the range takes no step, and the interval must admit at least one
+value; an empty interval reports `check.type`. The base type is `int` only;
+a nominal over another scalar reports `check.unsupported`.
+
+`Name(n)` constructs a value from an int expression. Construction validates the
+interval at runtime: an out-of-interval value faults `run.range` at the
+construction's source span, and the fault is not catchable inside the program.
+`Name.checked(n)` is the fault-free form: it returns `Name?`, present exactly
+when `n` lies in the interval and `absent` otherwise.
+
+A function parameter declared with a nominal type revalidates the interval on
+entry: in-language callers must already pass a value of the type, and a
+terminal caller supplying an export's argument as a plain int faults
+`run.range` when it lies outside the interval.
+
+The optional `supports` clause draws from the closed capability set `add`,
+`subtract`, `step`, `scale`. Each capability admits operators over the type;
+every operator that produces a value of the type revalidates the interval the
+same way construction does, so no expressible path yields an out-of-interval
+value:
+
+| Capability | Admits | Result |
+|---|---|---|
+| `add` | `Name + int`, `int + Name` | `Name`, revalidated |
+| `subtract` | `Name - int` | `Name`, revalidated |
+| `subtract` | `Name - Name` | plain `int`, no validation |
+| `step` | `Name + 1`, `Name - 1` (the literal `1`) | `Name`, revalidated |
+| `scale` | `Name * int`, `int * Name` | `Name`, revalidated |
+
+A difference of two values (`Name - Name`) is a count, not a value of the
+type, so it is a plain `int` and needs no interval. Comparisons between two
+values of the same nominal type (`==`, `!=`, `<`, `<=`, `>`, `>=`) are always
+admitted and need no capability: they compare the int representations and
+construct nothing. Applying an operator the type does not support, or mixing a
+nominal with a plain `int` in a comparison, reports `check.type` naming the
+missing capability or the operand types. A nominal type without a `supports`
+clause admits construction, `.checked`, and same-type comparisons only.
+
+```mw
+module docs::nominal
+
+type Age: int in 0..=150 supports add, subtract
+
+pub fn older(a: Age, years: int): Age
+    return a + years
+
+pub fn gap(a: Age, b: Age): int
+    return a - b
+
+pub fn tryAge(n: int): Age?
+    return Age.checked(n)
+```
+
+Nominal values are ordinary copied values with the same value semantics as
+`int`. Nominal type names share the project-wide type namespace with aliases
+and resource names; a collision reports `check.name_conflict`. `Name?` is an
+ordinary optional. Nominal types are not yet admitted as resource field types,
+store key types, or constant types; those positions report `check.unsupported`
+until their lanes land.
+
 ## Nominal Values
 
 An enum value belongs to one declared enum and names one of its members.

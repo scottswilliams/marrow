@@ -150,8 +150,8 @@ VM can run it.
 Source-mapped runtime faults raised by the VM and the path kernel while running a
 verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant, call depth, an
-execution budget, an authority denial, a required field left unset at commit, an
-unconfirmed commit, and durable corruption. These are not catchable inside the
+execution budget, a nominal-interval violation, an authority denial, a required
+field left unset at commit, an unconfirmed commit, and durable corruption. These are not catchable inside the
 program.
 
 | Code | Meaning |
@@ -163,6 +163,7 @@ program.
 | `run.assert` | A `test`'s `assert` condition was false at runtime, so the test fails. `marrow test` reports the test as failed and maps the fault to the assertion's source span. Only a `test` body can produce this fault; it is not catchable inside the program. |
 | `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
 | `run.budget` | A running program exhausted the fixed per-invocation instruction budget, shared across the whole call tree so total work stays bounded regardless of loop or call structure. A non-terminating loop faults here rather than running forever. The fault stops execution and is not catchable inside the program. |
+| `run.range` | A value outside a nominal type's declared interval reached a construction or arithmetic result at runtime: `Age(n)` or a `supports`-unlocked operation produced an int the type's `in` range does not admit. The fault is mapped to the source span of the operation and is not catchable inside the program; use `Type.checked(n)` for a fault-free range test. |
 | `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |
 | `run.required_missing` | A durable transaction reached its commit with an entry it created or staged that still leaves a required field unset. The transaction rolls back rather than committing a partial entry, and the fault is mapped to the transaction's source span. Not catchable inside the program. |
 | `run.commit` | A durable transaction commit did not confirm. The store handle is poisoned and every later operation fails; the process must exit and reopen, where the recorded witness classifies whether the commit completed. The fault is mapped to the transaction's source span and is not catchable inside the program. |

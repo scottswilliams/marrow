@@ -25,8 +25,9 @@ pub use ast::{
     CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
     EvolveDecl, EvolveStep, Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl,
     IdentityTypeExpr, IndexDecl, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
-    ModuleDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl, ResourceMember, SavedRoot,
-    SourceFile, Statement, StoreDecl, TestDecl, TypeExpr, UnaryOp, UseDecl, range_expr,
+    ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl, ResourceMember,
+    SavedRoot, SourceFile, Statement, StoreDecl, SupportSpelling, TestDecl, TypeExpr, UnaryOp,
+    UseDecl, range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,

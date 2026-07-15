@@ -11,8 +11,8 @@ use crate::{
     AliasDecl, Argument, BinaryOp, Block, CatchClause, CheckedBind, Comment, CommentMarker,
     CommentPlacement, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep,
     Expression, ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm,
-    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeExpr, UnaryOp,
-    encode_string_literal,
+    NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind,
+    TypeExpr, UnaryOp, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -153,7 +153,9 @@ fn merge_trailing_comment_sections(sections: Vec<FormatSection>) -> Vec<FormatSe
 
 fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingCommentLine {
     match declaration {
-        Declaration::Alias(_) | Declaration::Const(_) => TrailingCommentLine::Last,
+        Declaration::Alias(_) | Declaration::Nominal(_) | Declaration::Const(_) => {
+            TrailingCommentLine::Last
+        }
         Declaration::Resource(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Store(decl) => TrailingCommentLine::Line(decl.docs.len()),
         Declaration::Function(decl) => {
@@ -202,6 +204,7 @@ fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str
 fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
     let docs = match declaration {
         Declaration::Alias(decl) => decl.docs.len(),
+        Declaration::Nominal(decl) => decl.docs.len(),
         Declaration::Const(decl) => decl.docs.len(),
         Declaration::Resource(decl) => decl.docs.len(),
         Declaration::Store(decl) => decl.docs.len(),
@@ -238,6 +241,7 @@ fn normalized_comment_tokens(source: &str) -> Vec<(CommentMarker, String)> {
 fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
     match declaration {
         Declaration::Alias(decl) => decl.span,
+        Declaration::Nominal(decl) => decl.span,
         Declaration::Const(decl) => decl.span,
         Declaration::Resource(decl) => decl.span,
         Declaration::Store(decl) => decl.span,
@@ -254,6 +258,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
 pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
         Declaration::Alias(decl) => format_alias(decl),
+        Declaration::Nominal(decl) => format_nominal(decl),
         Declaration::Const(decl) => format_const(decl),
         Declaration::Resource(decl) => format_resource(source, decl),
         Declaration::Store(decl) => format_store(source, decl),
@@ -326,6 +331,26 @@ fn format_alias(decl: &AliasDecl) -> String {
     out.push_str(&format!("alias {} = ", decl.name));
     if let Some(ty) = &decl.ty {
         out.push_str(&ty.to_string());
+    }
+    out
+}
+
+fn format_nominal(decl: &NominalDecl) -> String {
+    let mut out = format_docs(&decl.docs, 0);
+    out.push_str(&format!("type {}", decl.name));
+    if let Some(base) = &decl.base {
+        out.push_str(&format!(": {base}"));
+    }
+    if let Some(interval) = &decl.interval {
+        out.push_str(&format!(" in {}", format_expression_at(interval, 0)));
+    }
+    if !decl.supports.is_empty() {
+        let list: Vec<&str> = decl
+            .supports
+            .iter()
+            .map(|support| support.name.as_str())
+            .collect();
+        out.push_str(&format!(" supports {}", list.join(", ")));
     }
     out
 }

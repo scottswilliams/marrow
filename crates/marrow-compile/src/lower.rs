@@ -21,12 +21,15 @@ use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
-use crate::types::TypeRegistry;
+use crate::types::{NominalId, SupportSet, TypeRegistry};
 
-/// A lowered value type: a scalar or the project record, each bare or optional.
+/// A lowered value type: a scalar, a nominal int type, or the project record,
+/// each bare or optional. A nominal is int-shaped in the image; its distinct
+/// check-time identity lives here and in the [`TypeRegistry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LTy {
     Scalar { scalar: ScalarType, optional: bool },
+    Nominal { id: NominalId, optional: bool },
     Record { ty: TypeId, optional: bool },
 }
 
@@ -40,7 +43,9 @@ impl LTy {
 
     fn is_optional(self) -> bool {
         match self {
-            LTy::Scalar { optional, .. } | LTy::Record { optional, .. } => optional,
+            LTy::Scalar { optional, .. }
+            | LTy::Nominal { optional, .. }
+            | LTy::Record { optional, .. } => optional,
         }
     }
 
@@ -50,6 +55,7 @@ impl LTy {
                 scalar,
                 optional: true,
             },
+            LTy::Nominal { id, .. } => LTy::Nominal { id, optional: true },
             LTy::Record { ty, .. } => LTy::Record { ty, optional: true },
         }
     }
@@ -57,6 +63,10 @@ impl LTy {
     fn to_bare(self) -> Self {
         match self {
             LTy::Scalar { scalar, .. } => LTy::bare_scalar(scalar),
+            LTy::Nominal { id, .. } => LTy::Nominal {
+                id,
+                optional: false,
+            },
             LTy::Record { ty, .. } => LTy::Record {
                 ty,
                 optional: false,
@@ -74,12 +84,34 @@ impl LTy {
         }
     }
 
-    fn spelling(self) -> String {
+    fn spelling(self, records: &TypeRegistry) -> String {
         let (base, optional) = match self {
             LTy::Scalar { scalar, optional } => (scalar.spelling().to_string(), optional),
+            LTy::Nominal { id, optional } => (records.nominal(id).name.clone(), optional),
             LTy::Record { optional, .. } => ("record".to_string(), optional),
         };
         if optional { format!("{base}?") } else { base }
+    }
+
+    /// The bare nominal identity, if this is one.
+    fn bare_nominal(self) -> Option<NominalId> {
+        match self {
+            LTy::Nominal {
+                id,
+                optional: false,
+            } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The bare image scalar a scalar-shaped value (scalar or nominal) lowers
+    /// to, derived from [`LTy::image`] so the erasure has one owner. Params are
+    /// scalar-shaped by [`param_type`].
+    fn image_scalar(self) -> Scalar {
+        match self.image() {
+            ImageType::Scalar { scalar, .. } => scalar,
+            _ => unreachable!("caller classified a scalar-shaped value"),
+        }
     }
 
     fn image(self) -> ImageType {
@@ -92,6 +124,12 @@ impl LTy {
                 scalar,
                 optional: true,
             } => ImageType::opt_scalar(scalar.image()),
+            // A nominal is int-shaped in the image; its interval is enforced by
+            // the emitted range guards, not by the recorded type.
+            LTy::Nominal {
+                optional: false, ..
+            } => ImageType::scalar(Scalar::Int),
+            LTy::Nominal { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
             LTy::Record { ty, optional } => ImageType::Record {
                 idx: ty.index(),
                 optional,
@@ -165,7 +203,7 @@ pub(crate) struct FnSignature {
     /// The dotted module the function is declared in (path-derived).
     module: String,
     index: u16,
-    params: Vec<ScalarType>,
+    params: Vec<LTy>,
     ret: RetType,
     public: bool,
 }
@@ -215,10 +253,7 @@ impl FunctionRegistry {
             let params = function
                 .params
                 .iter()
-                .filter_map(|param| match records.expand(&param.ty) {
-                    TypeExpr::Name { text, .. } => ScalarType::from_spelling(&text),
-                    _ => None,
-                })
+                .filter_map(|param| param_type(records, &param.ty))
                 .collect();
             let ret = match &function.return_type {
                 None => RetType::Unit,
@@ -427,16 +462,27 @@ impl<'a> FnLowerer<'a> {
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
             }
-            let Some(scalar) = lowerer.param_scalar(&param.ty) else {
+            let Some(ty) = lowerer.param_type(&param.ty) else {
                 continue;
             };
             let slot = lowerer.alloc_slot();
             lowerer.locals.push(Local {
                 name: param.name.clone(),
-                ty: LTy::bare_scalar(scalar),
+                ty,
                 mutable: false,
                 slot,
             });
+            // A nominal parameter revalidates its interval on entry. In-language
+            // callers already passed the type, but the image records only the base
+            // int, so a terminal or wire caller could otherwise inject an
+            // out-of-interval value into the type.
+            if let Some(id) = ty.bare_nominal() {
+                let info = lowerer.records.nominal(id);
+                let (lo, hi) = (info.lo, info.hi);
+                lowerer.push(Instr::LocalGet(slot), function.span);
+                lowerer.push(Instr::RangeGuard { lo, hi }, function.span);
+                lowerer.push(Instr::Pop, function.span);
+            }
         }
 
         let body_flow = lowerer.lower_block(&function.body);
@@ -459,10 +505,10 @@ impl<'a> FnLowerer<'a> {
             .params
             .iter()
             .zip(&lowerer.locals)
-            .map(|(_, local)| match local.ty {
-                LTy::Scalar { scalar, .. } => scalar.image(),
-                LTy::Record { .. } => unreachable!("params are scalars"),
-            })
+            // A nominal param erases to its base int in the image; in-language
+            // callers passed the type, and the entry guard emitted above
+            // revalidates the interval against out-of-language callers.
+            .map(|(_, local)| local.ty.image_scalar())
             .collect();
         let ret_ref = match ret {
             RetType::Unit => ImageType::Unit,
@@ -851,21 +897,30 @@ impl<'a> FnLowerer<'a> {
             ));
             return;
         }
-        let Some(scalar) = ty.bare_scalar_type() else {
+        if ty.bare_scalar_type().is_none() && ty.bare_nominal().is_none() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
                 span,
-                format!("cannot apply a compound assignment to {}", ty.spelling()),
+                format!(
+                    "cannot apply a compound assignment to {}",
+                    ty.spelling(self.records)
+                ),
             ));
             return;
-        };
+        }
         self.push(Instr::LocalGet(slot), span);
-        let Some(result) = self.lower_binary_op(op, LTy::bare_scalar(scalar), value) else {
+        let Some(result) = self.lower_binary_op(op, ty, value) else {
             return;
         };
         if result != ty {
-            self.fail(type_mismatch(self.file, value.span(), result, ty));
+            self.fail(type_mismatch(
+                self.records,
+                self.file,
+                value.span(),
+                result,
+                ty,
+            ));
             return;
         }
         self.push(Instr::LocalSet(slot), value.span());
@@ -1006,7 +1061,7 @@ impl<'a> FnLowerer<'a> {
                 value.span(),
                 format!(
                     "`if const` needs an optional, found {}",
-                    optional.spelling()
+                    optional.spelling(self.records)
                 ),
             ));
             return Flow::Fallthrough;
@@ -1016,7 +1071,13 @@ impl<'a> FnLowerer<'a> {
             && let Some(declared) = self.resolve(annotation)
             && declared != bound
         {
-            self.fail(type_mismatch(self.file, annotation.span(), bound, declared));
+            self.fail(type_mismatch(
+                self.records,
+                self.file,
+                annotation.span(),
+                bound,
+                declared,
+            ));
             return Flow::Fallthrough;
         }
 
@@ -1419,7 +1480,13 @@ impl<'a> FnLowerer<'a> {
         if target == int.to_optional() {
             self.push(Instr::SomeWrap, wrap_span);
         } else if target != int {
-            self.fail(type_mismatch(self.file, err_span, int, target));
+            self.fail(type_mismatch(
+                self.records,
+                self.file,
+                err_span,
+                int,
+                target,
+            ));
         }
     }
 
@@ -1430,7 +1497,10 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 expr.span(),
-                format!("condition must be bool, found {}", ty.spelling()),
+                format!(
+                    "condition must be bool, found {}",
+                    ty.spelling(self.records)
+                ),
             ));
             return None;
         }
@@ -1444,26 +1514,26 @@ impl<'a> FnLowerer<'a> {
     /// optional). Reports a diagnostic and returns `None` on mismatch.
     fn lower_as(&mut self, expr: &Expression, expected: LTy) -> Option<()> {
         if let Expression::Absent { span } = expr {
-            let LTy::Scalar {
-                scalar,
-                optional: true,
-            } = expected
-            else {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    *span,
-                    format!(
-                        "`absent` needs an optional type, found {}",
-                        expected.spelling()
-                    ),
-                ));
-                return None;
+            let vacant = match expected {
+                LTy::Scalar {
+                    scalar,
+                    optional: true,
+                } => ImageType::opt_scalar(scalar.image()),
+                LTy::Nominal { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
+                _ => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *span,
+                        format!(
+                            "`absent` needs an optional type, found {}",
+                            expected.spelling(self.records)
+                        ),
+                    ));
+                    return None;
+                }
             };
-            self.push(
-                Instr::VacantLoad(ImageType::opt_scalar(scalar.image())),
-                *span,
-            );
+            self.push(Instr::VacantLoad(vacant), *span);
             return Some(());
         }
         let got = self.lower_expr(expr)?;
@@ -1474,7 +1544,13 @@ impl<'a> FnLowerer<'a> {
             self.push(Instr::SomeWrap, expr.span());
             return Some(());
         }
-        self.fail(type_mismatch(self.file, expr.span(), got, expected));
+        self.fail(type_mismatch(
+            self.records,
+            self.file,
+            expr.span(),
+            got,
+            expected,
+        ));
         None
     }
 
@@ -1599,7 +1675,7 @@ impl<'a> FnLowerer<'a> {
         match op {
             UnaryOp::Neg => {
                 if ty != LTy::bare_scalar(ScalarType::Int) {
-                    self.fail(unary_error(self.file, span, "negate", ty));
+                    self.fail(unary_error(self.records, self.file, span, "negate", ty));
                     return None;
                 }
                 self.push(Instr::IntNeg, span);
@@ -1607,7 +1683,13 @@ impl<'a> FnLowerer<'a> {
             }
             UnaryOp::Not => {
                 if ty != LTy::bare_scalar(ScalarType::Bool) {
-                    self.fail(unary_error(self.file, span, "apply `not` to", ty));
+                    self.fail(unary_error(
+                        self.records,
+                        self.file,
+                        span,
+                        "apply `not` to",
+                        ty,
+                    ));
                     return None;
                 }
                 self.push(Instr::BoolNot, span);
@@ -1628,14 +1710,35 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Lower the right operand and the arithmetic/comparison operator, given the left
-    /// operand's already-pushed type. Both operands must be bare scalars.
+    /// operand's already-pushed type. Both operands must be bare scalars or bare
+    /// nominals; a nominal operand routes to the capability-gated nominal table.
     fn lower_binary_op(&mut self, op: BinaryOp, left_ty: LTy, right: &Expression) -> Option<LTy> {
+        // The `step` capability admits only the literal `1`, so the right operand's
+        // shape is read before it is lowered.
+        let right_is_one = matches!(
+            right,
+            Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                ..
+            } if parse_int(text) == Some(1)
+        );
         let right_ty = self.lower_expr(right)?;
         let span = right.span();
+        if left_ty.bare_nominal().is_some() || right_ty.bare_nominal().is_some() {
+            return self.lower_nominal_binary(op, left_ty, right_ty, right_is_one, span);
+        }
         let (Some(left), Some(right_scalar)) =
             (left_ty.bare_scalar_type(), right_ty.bare_scalar_type())
         else {
-            self.fail(binary_error(self.file, span, op, left_ty, right_ty));
+            self.fail(binary_error(
+                self.records,
+                self.file,
+                span,
+                op,
+                left_ty,
+                right_ty,
+            ));
             return None;
         };
         use ScalarType::{Bool, Bytes, Int, Text};
@@ -1646,10 +1749,9 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::Multiply, Int, Int) => (Instr::IntMul, Int),
             (BinaryOp::Remainder, Int, Int) => (Instr::IntRem, Int),
             (BinaryOp::Divide, Int, Int) => (Instr::IntDiv, Int),
-            (BinaryOp::Less, Int, Int) => (Instr::IntLt, Bool),
-            (BinaryOp::LessEqual, Int, Int) => (Instr::IntLe, Bool),
-            (BinaryOp::Greater, Int, Int) => (Instr::IntGt, Bool),
-            (BinaryOp::GreaterEqual, Int, Int) => (Instr::IntGe, Bool),
+            (op, Int, Int) if int_comparison(op).is_some() => {
+                (int_comparison(op).expect("guard matched"), Bool)
+            }
             (BinaryOp::Less, Text, Text) => (Instr::TextLt, Bool),
             (BinaryOp::LessEqual, Text, Text) => (Instr::TextLe, Bool),
             (BinaryOp::Greater, Text, Text) => (Instr::TextGt, Bool),
@@ -1665,12 +1767,166 @@ impl<'a> FnLowerer<'a> {
                 return Some(LTy::bare_scalar(Bool));
             }
             _ => {
-                self.fail(binary_error(self.file, span, op, left_ty, right_ty));
+                self.fail(binary_error(
+                    self.records,
+                    self.file,
+                    span,
+                    op,
+                    left_ty,
+                    right_ty,
+                ));
                 return None;
             }
         };
         self.push(instr, span);
         Some(LTy::bare_scalar(result))
+    }
+
+    /// Lower a binary operator with a bare nominal operand. The capability table
+    /// (documented in `docs/language/types-and-values.md`):
+    ///
+    /// - comparisons between two values of the same nominal are always admitted
+    ///   (they construct nothing);
+    /// - `add`: `N + int` and `int + N`, guarded to `N`;
+    /// - `subtract`: `N - int` guarded to `N`; `N - N` to plain `int`, unguarded
+    ///   (a difference is a count, not a value of the type);
+    /// - `scale`: `N * int` and `int * N`, guarded to `N`;
+    /// - `step`: `N + 1` and `N - 1` (the int literal `1`), guarded to `N`.
+    ///
+    /// Every operator that produces a nominal value re-guards the result, so no
+    /// path constructs an out-of-interval value. A missing capability is a typed
+    /// diagnostic naming it.
+    fn lower_nominal_binary(
+        &mut self,
+        op: BinaryOp,
+        left_ty: LTy,
+        right_ty: LTy,
+        right_is_one: bool,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
+        let int_ty = LTy::bare_scalar(ScalarType::Int);
+        let same_nominal = left_ty.bare_nominal().is_some() && left_ty == right_ty;
+        if same_nominal {
+            if let Some(instr) = int_comparison(op) {
+                self.push(instr, span);
+                return Some(bool_ty);
+            }
+            match op {
+                BinaryOp::Equal => {
+                    self.push(eq_instr(ScalarType::Int), span);
+                    return Some(bool_ty);
+                }
+                BinaryOp::NotEqual => {
+                    self.push(eq_instr(ScalarType::Int), span);
+                    self.push(Instr::BoolNot, span);
+                    return Some(bool_ty);
+                }
+                BinaryOp::Subtract => {
+                    return if self.nominal_supports(left_ty).subtract {
+                        self.push(Instr::IntSub, span);
+                        Some(int_ty)
+                    } else {
+                        self.fail_missing_capability(left_ty, "subtract", op, span);
+                        None
+                    };
+                }
+                _ => {
+                    self.fail(binary_error(
+                        self.records,
+                        self.file,
+                        span,
+                        op,
+                        left_ty,
+                        right_ty,
+                    ));
+                    return None;
+                }
+            }
+        }
+        // Mixed nominal/int arithmetic; the result is the nominal, re-guarded.
+        let (nominal, nominal_on_left) = match (left_ty.bare_nominal(), right_ty.bare_nominal()) {
+            (Some(_), None) if right_ty == int_ty => (left_ty, true),
+            (None, Some(_)) if left_ty == int_ty => (right_ty, false),
+            _ => {
+                self.fail(binary_error(
+                    self.records,
+                    self.file,
+                    span,
+                    op,
+                    left_ty,
+                    right_ty,
+                ));
+                return None;
+            }
+        };
+        let supports = self.nominal_supports(nominal);
+        let stepped = supports.step && nominal_on_left && right_is_one;
+        let instr = match op {
+            BinaryOp::Add if supports.add || stepped => Instr::IntAdd,
+            BinaryOp::Subtract if nominal_on_left && (supports.subtract || stepped) => {
+                Instr::IntSub
+            }
+            BinaryOp::Multiply if supports.scale => Instr::IntMul,
+            BinaryOp::Add => {
+                self.fail_missing_capability(nominal, "add", op, span);
+                return None;
+            }
+            BinaryOp::Subtract if nominal_on_left => {
+                self.fail_missing_capability(nominal, "subtract", op, span);
+                return None;
+            }
+            BinaryOp::Multiply => {
+                self.fail_missing_capability(nominal, "scale", op, span);
+                return None;
+            }
+            _ => {
+                self.fail(binary_error(
+                    self.records,
+                    self.file,
+                    span,
+                    op,
+                    left_ty,
+                    right_ty,
+                ));
+                return None;
+            }
+        };
+        self.push(instr, span);
+        let id = nominal.bare_nominal().expect("classified as a nominal");
+        let info = self.records.nominal(id);
+        self.push(
+            Instr::RangeGuard {
+                lo: info.lo,
+                hi: info.hi,
+            },
+            span,
+        );
+        Some(nominal)
+    }
+
+    fn nominal_supports(&self, ty: LTy) -> SupportSet {
+        let id = ty.bare_nominal().expect("caller classified a nominal");
+        self.records.nominal(id).supports
+    }
+
+    fn fail_missing_capability(
+        &mut self,
+        ty: LTy,
+        capability: &str,
+        op: BinaryOp,
+        span: SourceSpan,
+    ) {
+        let name = ty.spelling(self.records);
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            span,
+            format!(
+                "type `{name}` does not support `{capability}`, so `{}` is not defined for it",
+                operator_symbol(op)
+            ),
+        ));
     }
 
     /// `left ?? right`: yield the present value of the optional `left`, else `right`.
@@ -1684,7 +1940,7 @@ impl<'a> FnLowerer<'a> {
                 left.span(),
                 format!(
                     "`??` needs an optional on the left, found {}",
-                    left_ty.spelling()
+                    left_ty.spelling(self.records)
                 ),
             ));
             return None;
@@ -1709,7 +1965,13 @@ impl<'a> FnLowerer<'a> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
         let left_ty = self.lower_expr(left)?;
         if left_ty != bool_ty {
-            self.fail(logic_operand(self.file, left.span(), op, left_ty));
+            self.fail(logic_operand(
+                self.records,
+                self.file,
+                left.span(),
+                op,
+                left_ty,
+            ));
             return None;
         }
         match op {
@@ -1717,7 +1979,13 @@ impl<'a> FnLowerer<'a> {
                 let jif = self.push_jif(left.span());
                 let right_ty = self.lower_expr(right)?;
                 if right_ty != bool_ty {
-                    self.fail(logic_operand(self.file, right.span(), op, right_ty));
+                    self.fail(logic_operand(
+                        self.records,
+                        self.file,
+                        right.span(),
+                        op,
+                        right_ty,
+                    ));
                     return None;
                 }
                 let to_end = self.push_jump(right.span());
@@ -1737,7 +2005,13 @@ impl<'a> FnLowerer<'a> {
                 self.patch(jif, rhs_at);
                 let right_ty = self.lower_expr(right)?;
                 if right_ty != bool_ty {
-                    self.fail(logic_operand(self.file, right.span(), op, right_ty));
+                    self.fail(logic_operand(
+                        self.records,
+                        self.file,
+                        right.span(),
+                        op,
+                        right_ty,
+                    ));
                     return None;
                 }
                 let end = self.here();
@@ -1757,6 +2031,18 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
     ) -> Option<CallResult> {
         let Expression::Name { segments, .. } = callee else {
+            // `Age.checked(n)`: the nominal range test, the one member call the
+            // subset admits. Any other field-shaped callee stays unsupported.
+            if let Expression::Field { base, name, .. } = callee
+                && name == "checked"
+                && let Expression::Name { segments, .. } = &**base
+                && let [type_name] = segments.as_slice()
+                && let Some((id, _)) = self.records.nominal_by_name(type_name)
+            {
+                return self
+                    .lower_checked_nominal(id, args, span)
+                    .map(CallResult::Value);
+            }
             self.fail(unsupported(self.file, span, "this call"));
             return None;
         };
@@ -1795,6 +2081,11 @@ impl<'a> FnLowerer<'a> {
         if ScalarType::from_spelling(name).is_some() {
             return self
                 .lower_conversion(name, args, span)
+                .map(CallResult::Value);
+        }
+        if let Some((id, _)) = self.records.nominal_by_name(name) {
+            return self
+                .lower_nominal_construct(id, args, span)
                 .map(CallResult::Value);
         }
         if self.records.by_name(name).is_some() {
@@ -1851,7 +2142,7 @@ impl<'a> FnLowerer<'a> {
     fn lower_function_call(
         &mut self,
         index: u16,
-        params: &[ScalarType],
+        params: &[LTy],
         ret: RetType,
         args: &[Argument],
         span: SourceSpan,
@@ -1875,7 +2166,7 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return None;
             }
-            self.lower_as(&argument.value, LTy::bare_scalar(*param))?;
+            self.lower_as(&argument.value, *param)?;
         }
         self.push(Instr::Call(index), span);
         self.calls.push(index);
@@ -1883,6 +2174,98 @@ impl<'a> FnLowerer<'a> {
             RetType::Unit => CallResult::Unit,
             RetType::Value(ty) => CallResult::Value(ty),
         })
+    }
+
+    /// Lower a nominal construction `Age(n)`: coerce the one positional argument
+    /// to the base int, then guard it against the type's inclusive interval. An
+    /// out-of-interval value faults `run.range` at runtime; every path that
+    /// produces a value of the type revalidates the interval this way.
+    fn lower_nominal_construct(
+        &mut self,
+        id: NominalId,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let value = self.single_nominal_arg(id, args, span)?;
+        self.lower_as(value, LTy::bare_scalar(ScalarType::Int))?;
+        let info = self.records.nominal(id);
+        self.push(
+            Instr::RangeGuard {
+                lo: info.lo,
+                hi: info.hi,
+            },
+            span,
+        );
+        Some(LTy::Nominal {
+            id,
+            optional: false,
+        })
+    }
+
+    /// Lower the nominal range test `Age.checked(n): Age?`: present exactly when
+    /// the int lies in the interval, vacant otherwise, never a fault. Reuses the
+    /// comparison and optional ops; no dedicated opcode.
+    fn lower_checked_nominal(
+        &mut self,
+        id: NominalId,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let value = self.single_nominal_arg(id, args, span)?;
+        self.lower_as(value, LTy::bare_scalar(ScalarType::Int))?;
+        let slot = self.alloc_slot();
+        self.push(Instr::LocalSet(slot), span);
+        let (lo, hi) = {
+            let info = self.records.nominal(id);
+            (info.lo, info.hi)
+        };
+        // lo <= n && n <= hi, with each failed test jumping to the vacant edge.
+        let lo_const = self.draft.intern_int(lo);
+        self.push(Instr::LocalGet(slot), span);
+        self.push(Instr::ConstLoad(lo_const.index()), span);
+        let below = {
+            self.push(Instr::IntGe, span);
+            self.push_jif(span)
+        };
+        let hi_const = self.draft.intern_int(hi);
+        self.push(Instr::LocalGet(slot), span);
+        self.push(Instr::ConstLoad(hi_const.index()), span);
+        let above = {
+            self.push(Instr::IntLe, span);
+            self.push_jif(span)
+        };
+        self.push(Instr::LocalGet(slot), span);
+        self.push(Instr::SomeWrap, span);
+        let to_end = self.push_jump(span);
+        let vacant = self.here();
+        self.patch(below, vacant);
+        self.patch(above, vacant);
+        self.push(Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)), span);
+        let end = self.here();
+        self.patch(to_end, end);
+        Some(LTy::Nominal { id, optional: true })
+    }
+
+    /// The one positional argument of a nominal construction or range test.
+    fn single_nominal_arg<'e>(
+        &mut self,
+        id: NominalId,
+        args: &'e [Argument],
+        span: SourceSpan,
+    ) -> Option<&'e Expression> {
+        match args {
+            [arg] if arg.name.is_none() => Some(&arg.value),
+            _ => {
+                let name = self.records.nominal(id).name.clone();
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("`{name}` takes one positional int value"),
+                ));
+                None
+            }
+        }
     }
 
     /// Lower a record constructor: each field's argument in declaration order.
@@ -1972,7 +2355,10 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 base.span(),
-                format!("field access needs a record, found {}", base_ty.spelling()),
+                format!(
+                    "field access needs a record, found {}",
+                    base_ty.spelling(self.records)
+                ),
             ));
             return None;
         };
@@ -2249,7 +2635,7 @@ impl<'a> FnLowerer<'a> {
                 self.fail(unsupported(
                     self.file,
                     span,
-                    &format!("converting {} to {target}", source.spelling()),
+                    &format!("converting {} to {target}", source.spelling(self.records)),
                 ));
                 return None;
             }
@@ -2428,20 +2814,32 @@ impl<'a> FnLowerer<'a> {
         resolve_type(self.records, annotation)
     }
 
-    fn param_scalar(&mut self, ty: &TypeExpr) -> Option<ScalarType> {
-        match self.records.expand(ty) {
-            TypeExpr::Name { text, .. } => match ScalarType::from_spelling(&text) {
-                Some(scalar) => Some(scalar),
-                None => {
-                    self.fail(unsupported(self.file, ty.span(), "this parameter type"));
-                    None
-                }
-            },
-            _ => {
+    fn param_type(&mut self, ty: &TypeExpr) -> Option<LTy> {
+        match param_type(self.records, ty) {
+            Some(param) => Some(param),
+            None => {
                 self.fail(unsupported(self.file, ty.span(), "this parameter type"));
                 None
             }
         }
+    }
+}
+
+/// Resolve a parameter annotation to its lowered type: a bare scalar or a bare
+/// nominal. Optionals, records, and unresolved names are outside the parameter
+/// subset. One owner for signature building and body lowering, so the two can
+/// never disagree on a parameter's type.
+fn param_type(records: &TypeRegistry, ty: &TypeExpr) -> Option<LTy> {
+    match resolve_type(records, ty) {
+        Some(
+            param @ (LTy::Scalar {
+                optional: false, ..
+            }
+            | LTy::Nominal {
+                optional: false, ..
+            }),
+        ) => Some(param),
+        _ => None,
     }
 }
 
@@ -2458,6 +2856,11 @@ fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy
         TypeExpr::Name { text, .. } => {
             if let Some(scalar) = ScalarType::from_spelling(text) {
                 Some(LTy::bare_scalar(scalar))
+            } else if let Some((id, _)) = records.nominal_by_name(text) {
+                Some(LTy::Nominal {
+                    id,
+                    optional: false,
+                })
             } else {
                 records.by_name(text).map(|record| LTy::Record {
                     ty: record.type_id,
@@ -2475,6 +2878,19 @@ fn resolve_expanded(records: &TypeRegistry, annotation: &TypeExpr) -> Option<LTy
         }
         _ => None,
     }
+}
+
+/// The instruction an int ordering comparison lowers to, shared by the bare-int
+/// operator table and the same-nominal comparison path (one owner). Equality
+/// stays with [`eq_instr`].
+fn int_comparison(op: BinaryOp) -> Option<Instr> {
+    Some(match op {
+        BinaryOp::Less => Instr::IntLt,
+        BinaryOp::LessEqual => Instr::IntLe,
+        BinaryOp::Greater => Instr::IntGt,
+        BinaryOp::GreaterEqual => Instr::IntGe,
+        _ => return None,
+    })
 }
 
 fn eq_instr(scalar: ScalarType) -> Instr {
@@ -2545,29 +2961,42 @@ fn loop_error(file: &str, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
     )
 }
 
-fn type_mismatch(file: &str, span: SourceSpan, found: LTy, want: LTy) -> SourceDiagnostic {
+fn type_mismatch(
+    records: &TypeRegistry,
+    file: &str,
+    span: SourceSpan,
+    found: LTy,
+    want: LTy,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
         span,
         format!(
             "found {} where {} is required",
-            found.spelling(),
-            want.spelling()
+            found.spelling(records),
+            want.spelling(records)
         ),
     )
 }
 
-fn unary_error(file: &str, span: SourceSpan, verb: &str, ty: LTy) -> SourceDiagnostic {
+fn unary_error(
+    records: &TypeRegistry,
+    file: &str,
+    span: SourceSpan,
+    verb: &str,
+    ty: LTy,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
         span,
-        format!("cannot {verb} {}", ty.spelling()),
+        format!("cannot {verb} {}", ty.spelling(records)),
     )
 }
 
 fn binary_error(
+    records: &TypeRegistry,
     file: &str,
     span: SourceSpan,
     op: BinaryOp,
@@ -2581,13 +3010,19 @@ fn binary_error(
         format!(
             "`{}` is not defined for {} and {}",
             operator_symbol(op),
-            left.spelling(),
-            right.spelling()
+            left.spelling(records),
+            right.spelling(records)
         ),
     )
 }
 
-fn logic_operand(file: &str, span: SourceSpan, op: BinaryOp, ty: LTy) -> SourceDiagnostic {
+fn logic_operand(
+    records: &TypeRegistry,
+    file: &str,
+    span: SourceSpan,
+    op: BinaryOp,
+    ty: LTy,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
@@ -2595,7 +3030,7 @@ fn logic_operand(file: &str, span: SourceSpan, op: BinaryOp, ty: LTy) -> SourceD
         format!(
             "`{}` operand must be bool, found {}",
             operator_symbol(op),
-            ty.spelling()
+            ty.spelling(records)
         ),
     )
 }

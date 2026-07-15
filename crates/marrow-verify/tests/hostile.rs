@@ -835,3 +835,167 @@ fn transaction_marker_in_a_test_entry_rejects_at_flow() {
     draft.add_test_entry(title, func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
+
+/// A well-formed range guard over a bare int verifies: it peeks the int and
+/// leaves the stack unchanged, so the guarded value still returns.
+#[test]
+fn range_guard_over_a_bare_int_verifies() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let seven = draft.intern_int(7);
+    let code = vec![
+        Instr::ConstLoad(seven.index()),
+        Instr::RangeGuard { lo: 0, hi: 150 },
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "main"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+/// A range guard with nothing on the stack rejects at per-function
+/// verification: the guard peeks its operand, so an operand must exist.
+#[test]
+fn range_guard_on_an_empty_stack_rejects_at_function() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let seven = draft.intern_int(7);
+    let code = vec![
+        Instr::RangeGuard { lo: 0, hi: 150 },
+        Instr::ConstLoad(seven.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "main"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+/// A range guard over a non-int (here a bool) rejects at per-function
+/// verification: the guarded value must be a bare int.
+#[test]
+fn range_guard_on_a_non_int_rejects_at_function() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let flag = draft.intern_bool(true);
+    let code = vec![
+        Instr::ConstLoad(flag.index()),
+        Instr::RangeGuard { lo: 0, hi: 150 },
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Bool),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "main"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+/// A range guard whose interval is empty (`lo > hi`) rejects at decode: no
+/// value satisfies it, so a compiler never emits one and an image carrying one
+/// is hostile.
+#[test]
+fn range_guard_with_an_empty_interval_rejects_at_function() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let seven = draft.intern_int(7);
+    let code = vec![
+        Instr::ConstLoad(seven.index()),
+        Instr::RangeGuard { lo: 5, hi: 4 },
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "main"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+/// A function body truncated mid-way through a range guard's 16-byte interval
+/// immediate rejects at per-function verification (a short operand), not with
+/// a panic or an out-of-bounds read. The truncation shortens the code length,
+/// the section frame, and the payload consistently, then rehashes, so only the
+/// operand-boundary invariant is violated.
+#[test]
+fn range_guard_with_a_truncated_operand_rejects_at_function() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let seven = draft.intern_int(7);
+    let code = vec![
+        Instr::ConstLoad(seven.index()),
+        Instr::RangeGuard { lo: 0, hi: 150 },
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        // One span at instruction 0, so span offsets stay valid after the cut.
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 1,
+            column: 1,
+        }],
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "main"), func);
+    let mut bytes = draft.encode().unwrap().bytes;
+
+    // Locate the FUNCTIONS section (id 0x05) and its one function's code-length
+    // field: body = u16 count, u16 name, u16 source, u8 param_count, ret tag,
+    // u16 local_count, u32 code_len, code bytes.
+    let (offset, len) = sections(&bytes)
+        .into_iter()
+        .find_map(|(id, offset, len)| (id == 0x05).then_some((offset, len)))
+        .expect("functions section");
+    let code_len_at = offset + 2 + 2 + 2 + 1 + 1 + 2;
+    let code_len =
+        u32::from_be_bytes(bytes[code_len_at..code_len_at + 4].try_into().unwrap()) as usize;
+    let code_end = code_len_at + 4 + code_len;
+    assert_eq!(code_end, offset + len, "one function fills the section");
+
+    // Cut the final 9 bytes: the Return opcode plus the interval's second i64,
+    // leaving the RangeGuard opcode with a short immediate at end of code.
+    let cut = 9;
+    bytes.drain(code_end - cut..code_end);
+    let new_code_len = (code_len - cut) as u32;
+    bytes[code_len_at..code_len_at + 4].copy_from_slice(&new_code_len.to_be_bytes());
+    let new_section_len = (len - cut) as u32;
+    bytes[offset - 4..offset].copy_from_slice(&new_section_len.to_be_bytes());
+    rehash(&mut bytes);
+
+    assert_eq!(code_of(&bytes), "image.function");
+}
