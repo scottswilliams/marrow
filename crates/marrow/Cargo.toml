@@ -15,17 +15,15 @@ path = "src/main.rs"
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
 marrow-compile = { path = "../marrow-compile" }
+# The wire interface descriptor/`InterfaceId` owner: `marrow client typescript`
+# projects a verified image's interface through it and generates the client.
+marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
 marrow-project = { path = "../marrow-project" }
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-temporal = { path = "../marrow-temporal" }
 marrow-verify = { path = "../marrow-verify" }
 marrow-vm = { path = "../marrow-vm" }
-
-[dev-dependencies]
-# The wire interface descriptor/`InterfaceId` owner, reconstructed here from a
-# verified image to prove the G00a end-to-end derivation. Test-only.
-marrow-image = { path = "../marrow-image" }
 
 [lints]
 workspace = true

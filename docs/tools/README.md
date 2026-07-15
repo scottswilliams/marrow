@@ -11,8 +11,11 @@ they do not define a second language or saved-data model.
   declarations and reading its report.
 - [Projects](projects.md) covers the project layout, the `marrow.toml` manifest
   contract, and path-derived module identity.
+- [TypeScript client](typescript-client.md) covers `marrow client typescript`:
+  the generated strict client, the pinned Node supervision module, and the
+  closed loss classification for calls whose reply is lost.
 
 The prototype check/data/doctor/evolve/backup/restore tooling and the
 surface/client/serve commands were deleted at B00; each returns through its
-refounding lane. `run` and `test` have been refounded on the new pipeline. See
-[Project status](../status.md).
+refounding lane. `run`, `test`, and `client typescript` have been refounded on
+the new pipeline. See [Project status](../status.md).

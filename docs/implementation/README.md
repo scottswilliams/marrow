@@ -18,7 +18,7 @@ through which direction.
 
 | Crate | Current responsibility | Read next |
 |---|---|---|
-| `marrow` | CLI: `init`, `fmt`, `run` (compile, verify, execute a storeless export), and `test` (compile a verified test image and run each `test`, driving a durable test against its own fresh ephemeral attachment), plus typed not-yet-supported responses for refounding command names | — |
+| `marrow` | CLI: `init`, `fmt`, `run` (compile, verify, execute a storeless export), `test` (compile a verified test image and run each `test`, driving a durable test against its own fresh ephemeral attachment), and `client typescript` (the deterministic strict-TypeScript generator emitting the pinned Node supervision module beside the generated client), plus typed not-yet-supported responses for refounding command names | — |
 | `marrow-codes` | Typed diagnostic-code registry and generated code reference | — |
 | `marrow-project` | Pure project-input owner: manifest schema, contained discovery, the `marrow.ids` durable-identity ledger, immutable captured input | — |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics | [Syntax](syntax.md) |

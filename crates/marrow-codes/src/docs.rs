@@ -151,7 +151,11 @@ execution is in the trough.
 | Code | Meaning |
 |---|---|"#
             .to_string(),
-        rows(&[Code::CliCommandUnsupported, Code::CliDurableUnsupported]),
+        rows(&[
+            Code::CliCommandUnsupported,
+            Code::CliTransferExcluded,
+            Code::CliDurableUnsupported,
+        ]),
         r#"
 ### `check.*` — kind `check`
 

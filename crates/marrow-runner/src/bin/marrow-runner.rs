@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!(
                 "{}: {error}",
-                marrow_codes::Code::CliCommandUnsupported.as_str()
+                marrow_codes::Code::CliTransferExcluded.as_str()
             );
             return ExitCode::FAILURE;
         }

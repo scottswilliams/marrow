@@ -31,9 +31,11 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
   path-derived module identity, and an immutable project input. See
   [Projects](tools/projects.md).
 - `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
-  or every module of a project directory (`--check`/`--write`); `marrow
-  --version` and `marrow --help`. Every other command name is recognized but
-  reports `cli.command_unsupported` until its refounding lane lands.
+  or every module of a project directory (`--check`/`--write`); `marrow client
+  typescript` generates the strict TypeScript client and the pinned Node
+  supervision module; `marrow --version` and `marrow --help`. Every other
+  command name is recognized but reports `cli.command_unsupported` until its
+  refounding lane lands.
 - Linux and macOS source builds with the pinned Rust toolchain.
 
 ### Storage engine
@@ -91,6 +93,24 @@ composite-key, group/branch, and widened-field roots declare and verify their
 identity but their operations are not yet lowered. The admitted subset is narrow
 and grows lane by lane; a well-formed construct outside it is a typed
 `check.unsupported` diagnostic.
+
+### Local wire and TypeScript client
+
+A program's exported functions form a host-neutral wire interface reconstructed
+from the verified image (never serialized into it), with a deterministic
+32-byte `InterfaceId`; the closed transfer graph carries unit, the seven
+scalars, optionals, products, and sums, and excludes finite collections until
+the earned transfer extension. One pure wire owner (`marrow-local-wire`)
+defines the framed protocol — bounded frames, canonical JSON, a closed
+handshake/request/response/fault grammar, and the closed
+`not_started`/`interrupted`/`outcome_unknown` loss classification with no
+replay. The stock runner (`marrow-runner`) serves storeless exports over a
+private Unix socket under the supervised-channel law (mode-0700 directory,
+listener bound before the handshake, launch nonce, poll-based deadlines,
+explicit fail-closed teardown); a durable export is rejected with
+`runner.durable_unsupported` until the attachment lanes land. `marrow client
+typescript` emits the generated strict client and the pinned Node supervision
+module; see [TypeScript client](tools/typescript-client.md).
 
 ### Deleted at B00
 

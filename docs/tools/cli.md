@@ -5,7 +5,8 @@ usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
 The beta line's CLI is deliberately thin. `init`, `fmt`, `run`, `test`,
-`--help`, and `--version` are the available commands; every other recognized
+`client typescript`, `--help`, and `--version` are the available commands;
+every other recognized
 command name belongs to a capability being refounded and reports the typed code
 `cli.command_unsupported` with exit `1`, so a script never mistakes absence for
 success. [Project status](../status.md) states what returns through which
@@ -19,7 +20,8 @@ direction.
 | `fmt` | Format a `.mw` file or every module of a project (this page). |
 | `run` | Compile, verify, and run an exported function (this page). |
 | `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
-| `check`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
+| `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
+| `check`, `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
 ## `marrow init`
 
@@ -119,6 +121,25 @@ or, with `--format jsonl`, one `kind: "test"` object per test and a final
 `kind: "summary"` object. The command exits `0` when every selected test passes,
 `1` when any fails or errors, and `2` on a usage error. See
 [Tests](tests.md) for the report grammar and the `test`/`assert` language.
+
+## `marrow client`
+
+```text
+marrow client typescript [--out <dir>]
+```
+
+Compiles and verifies the [project](projects.md) at the working directory,
+reconstructs its wire interface from the verified image, and writes three files
+into the output directory (default `client`): the generated `client.mts` — one
+named `async` method per exported function with exact transfer types and
+runtime validation — and the pinned Node supervision module
+(`marrow-supervisor.mjs` plus its type declarations). Stable inputs yield
+byte-identical output. An export whose signature reaches a value outside the
+wire transfer graph (a finite collection, until the earned transfer extension)
+refuses the whole generation with `cli.transfer_excluded`. Unlike `run`, the
+generator never mints durable identities. See
+[TypeScript client](typescript-client.md) for the generated API, the
+supervision law, and the loss classification.
 
 ## Usage and exit codes
 

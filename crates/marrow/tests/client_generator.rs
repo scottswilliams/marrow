@@ -1,0 +1,390 @@
+//! `marrow client typescript`: deterministic strict-TypeScript generation and
+//! wire containment.
+//!
+//! The generated client is a presentation surface paired with typed semantic
+//! assertions (per the test-tier law): the golden snapshot freezes the exact
+//! bytes for a stable fixture, and the semantic tests assert the method
+//! signatures, the interface-id pin (against an independent in-process
+//! reconstruction through `marrow-image`), and the emitted supervisor files'
+//! byte-identity with the pinned tracked assets. Regenerate the golden with
+//! `MARROW_UPDATE_TS_GOLDEN=1` and review the diff.
+//!
+//! Containment: the pinned supervision module and the generated client speak
+//! only the single wire grammar — no built-in `JSON.parse`/`JSON.stringify`
+//! (a second, lossy JSON grammar), no TCP/HTTP transport, no `require`, and
+//! only `node:` built-in imports; and the Rust wire/runner sources open no TCP
+//! endpoint. A generic transport or second grammar fails here.
+
+use std::fs;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use marrow_image::{
+    EnumShape, ExportSignature, FieldShape, ImageType, Interface, RecordShape, VariantShape,
+};
+use marrow_verify::RetShape;
+
+const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+
+struct TempDir {
+    root: PathBuf,
+}
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("marrow-g02a-{name}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&root).expect("create temp dir");
+        TempDir { root }
+    }
+}
+
+impl Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.root).ok();
+    }
+}
+
+fn write(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent");
+    }
+    fs::write(path, contents).expect("write file");
+}
+
+fn run_in(dir: &Path, args: &[&str]) -> Output {
+    Command::new(MARROW)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run marrow binary")
+}
+
+/// The stable fixture: scalars, a record, an enum, and a unit return.
+const FIXTURE: &str = "struct Point\n\
+    \x20   x: int\n\
+    \x20   y: int\n\
+    \n\
+    enum Shape\n\
+    \x20   dot\n\
+    \x20   circle(radius: int)\n\
+    \n\
+    pub fn add(a: int, b: int): int\n\
+    \x20   return a + b\n\
+    \n\
+    pub fn shift(p: Point, dx: int): Point\n\
+    \x20   return Point(x: p.x + dx, y: p.y)\n\
+    \n\
+    pub fn grow(s: Shape): Shape\n\
+    \x20   match s\n\
+    \x20       dot\n\
+    \x20           return Shape::dot\n\
+    \x20       circle(r)\n\
+    \x20           return Shape::circle(radius: r + 1)\n\
+    \n\
+    pub fn ping()\n\
+    \x20   return\n";
+
+fn fixture_project(temp: &TempDir) -> PathBuf {
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), FIXTURE);
+    project
+}
+
+fn generate(project: &Path, out: &str) -> PathBuf {
+    let output = run_in(project, &["client", "typescript", "--out", out]);
+    assert!(
+        output.status.success(),
+        "generation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    project.join(out)
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root")
+        .to_path_buf()
+}
+
+/// The generated client is byte-identical across independent generations, and
+/// the emitted supervisor files are byte-identical to the pinned tracked assets.
+#[test]
+fn generation_is_deterministic_and_supervisor_is_pinned() {
+    let temp = TempDir::new("determinism");
+    let project = fixture_project(&temp);
+
+    let first = generate(&project, "gen-a");
+    let second = generate(&project, "gen-b");
+    for name in [
+        "client.mts",
+        "marrow-supervisor.mjs",
+        "marrow-supervisor.d.mts",
+    ] {
+        let a = fs::read(first.join(name)).expect("first output");
+        let b = fs::read(second.join(name)).expect("second output");
+        assert_eq!(a, b, "{name} differs between two generations");
+    }
+
+    let assets = workspace_root().join("crates/marrow/src/supervisor");
+    for name in ["marrow-supervisor.mjs", "marrow-supervisor.d.mts"] {
+        let emitted = fs::read(first.join(name)).expect("emitted supervisor");
+        let tracked = fs::read(assets.join(name)).expect("tracked asset");
+        assert_eq!(emitted, tracked, "{name} drifted from the pinned asset");
+    }
+}
+
+/// The golden snapshot: the exact generated bytes for the stable fixture.
+/// Paired with the semantic assertions below, per the presentation-snapshot law.
+#[test]
+fn generated_client_matches_the_golden() {
+    let temp = TempDir::new("golden");
+    let project = fixture_project(&temp);
+    let out = generate(&project, "gen");
+    let generated = fs::read_to_string(out.join("client.mts")).expect("generated client");
+
+    let golden_path = workspace_root().join("crates/marrow/tests/golden/client.mts");
+    if std::env::var_os("MARROW_UPDATE_TS_GOLDEN").is_some() {
+        write(&golden_path, &generated);
+        return;
+    }
+    let golden = fs::read_to_string(&golden_path)
+        .expect("golden client.mts; regenerate with MARROW_UPDATE_TS_GOLDEN=1 and review the diff");
+    assert_eq!(
+        generated, golden,
+        "generated client drifted from the golden; regenerate deliberately with \
+         MARROW_UPDATE_TS_GOLDEN=1 and review the diff as a wire-contract change"
+    );
+}
+
+/// Semantic assertions over the generated client: one named async method per
+/// export with the exact projected types, and the interface-id pin agrees with
+/// an independent in-process reconstruction from the verified image.
+#[test]
+fn generated_signatures_and_interface_pin_are_exact() {
+    let temp = TempDir::new("semantics");
+    let project = fixture_project(&temp);
+    let out = generate(&project, "gen");
+    let generated = fs::read_to_string(out.join("client.mts")).expect("generated client");
+
+    // One named method per export, in the exact projected types.
+    for signature in [
+        "async add(arg0: bigint, arg1: bigint): Promise<bigint>",
+        "async shift(arg0: { x: bigint; y: bigint }, arg1: bigint): Promise<{ x: bigint; y: bigint }>",
+        "async grow(arg0: { member: \"dot\"; payload: [] } | { member: \"circle\"; payload: [bigint] }): \
+         Promise<{ member: \"dot\"; payload: [] } | { member: \"circle\"; payload: [bigint] }>",
+        "async ping(): Promise<void>",
+    ] {
+        assert!(
+            generated.contains(signature),
+            "generated client lacks `{signature}`:\n{generated}"
+        );
+    }
+
+    // The INTERFACE_ID pin equals the independent reconstruction through the
+    // production compile -> verify -> Interface::build path.
+    let expected = reconstruct_interface_id();
+    assert!(
+        generated.contains(&format!("export const INTERFACE_ID = \"{expected}\";")),
+        "generated client pins a different interface id than the verified image yields"
+    );
+}
+
+/// Reconstruct the fixture's `InterfaceId` in process, sharing no code with the
+/// generator's projection beyond the one `marrow-image` owner.
+fn reconstruct_interface_id() -> String {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        FIXTURE.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        None,
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&project).expect("compile");
+    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
+
+    let records: Vec<RecordShape> = image
+        .record_types()
+        .iter()
+        .map(|record| RecordShape {
+            fields: record
+                .fields()
+                .iter()
+                .map(|field| FieldShape {
+                    name: field.name.to_string(),
+                    ty: field.ty,
+                    required: field.required,
+                })
+                .collect(),
+        })
+        .collect();
+    let enums: Vec<EnumShape> = image
+        .enums()
+        .iter()
+        .map(|enum_type| EnumShape {
+            variants: enum_type
+                .variants()
+                .iter()
+                .map(|variant| VariantShape {
+                    name: variant.name.to_string(),
+                    category: variant.category,
+                    payload: variant.payload.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    let exports: Vec<ExportSignature> = image
+        .exports()
+        .iter()
+        .map(|export| {
+            let function = image.function(export.function());
+            ExportSignature {
+                id: export.id(),
+                params: function.params().to_vec(),
+                ret: match function.ret() {
+                    RetShape::Unit => ImageType::Unit,
+                    RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
+                    RetShape::Record { idx, optional } => ImageType::Record { idx, optional },
+                    RetShape::Enum { idx, optional } => ImageType::Enum { idx, optional },
+                    RetShape::Collection { idx, optional } => {
+                        ImageType::Collection { idx, optional }
+                    }
+                },
+                demand_id: export.demand_id(),
+            }
+        })
+        .collect();
+    Interface::build(exports, &records, &enums)
+        .expect("interface")
+        .interface_id()
+        .to_hex()
+}
+
+/// A collection-touching export refuses the whole generation with the typed
+/// `cli.transfer_excluded` code naming the export.
+#[test]
+fn a_collection_export_refuses_generation() {
+    let temp = TempDir::new("excluded");
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(
+        &project.join("src/main.mw"),
+        "pub fn items(): List[int]\n\
+         \x20   var xs: List[int] = List()\n\
+         \x20   return xs\n",
+    );
+    let output = run_in(&project, &["client", "typescript", "--out", "gen"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cli.transfer_excluded") && stderr.contains("main.items"),
+        "expected a typed exclusion naming the export, got: {stderr}"
+    );
+    assert!(!project.join("gen").join("client.mts").exists());
+}
+
+/// Wire containment: one grammar, one local transport.
+///
+/// The pinned supervision module and the generated client never invoke the
+/// built-in JSON grammar, never open a TCP/HTTP endpoint, use no `require`,
+/// and import only `node:` built-ins; the Rust wire and runner sources open no
+/// TCP endpoint either.
+#[test]
+fn one_grammar_and_no_generic_transport() {
+    let temp = TempDir::new("containment");
+    let project = fixture_project(&temp);
+    let out = generate(&project, "gen");
+
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for name in [
+        "client.mts",
+        "marrow-supervisor.mjs",
+        "marrow-supervisor.d.mts",
+    ] {
+        sources.push((
+            name.to_string(),
+            fs::read_to_string(out.join(name)).expect("emitted file"),
+        ));
+    }
+
+    for (name, text) in &sources {
+        for forbidden in [
+            "JSON.parse",
+            "JSON.stringify",
+            "node:http",
+            "createServer",
+            ".listen(",
+            "require(",
+            "invokeRaw",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "{name} contains forbidden `{forbidden}`"
+            );
+        }
+        // Only Node built-in module imports.
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("import ") {
+                let module = rest.rsplit_once(" from ").map(|(_, m)| m).unwrap_or(rest);
+                let module = module.trim().trim_end_matches(';').trim_matches('"');
+                assert!(
+                    module.starts_with("node:") || module.starts_with("./"),
+                    "{name} imports a non-builtin, non-local module: {module}"
+                );
+            }
+        }
+    }
+
+    // The Rust wire owner and runner open no TCP endpoint and no second JSON
+    // grammar dependency (serde) anywhere in their sources.
+    let root = workspace_root();
+    for dir in ["crates/marrow-local-wire/src", "crates/marrow-runner/src"] {
+        let mut files = Vec::new();
+        collect_rs(&root.join(dir), &mut files);
+        assert!(!files.is_empty(), "{dir} scan found no files");
+        for path in files {
+            let text = fs::read_to_string(&path).expect("read source");
+            for forbidden in ["TcpListener", "TcpStream", "serde", "UdpSocket"] {
+                assert!(
+                    !text.contains(forbidden),
+                    "{} contains forbidden `{forbidden}`",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}

@@ -1,6 +1,6 @@
 # marrow CLI Contributor Notes
 
-On the beta line this is a thin CLI with four implemented commands. `marrow
+On the beta line this is a thin CLI with five implemented commands. `marrow
 init` creates a project, and `marrow fmt` formats a single `.mw` file or every
 module of a project directory through the retained formatter. `marrow run
 <export>` drives the production path: capture the project at the working
@@ -15,14 +15,18 @@ render the value or the first failure as text or, under `--format jsonl`, as
 one canonical typed record per line. `marrow test` drives the same path over
 the project's `test` declarations: it compiles them into a separately verified
 image carrying the closed TEST-ENTRY table and runs each one storeless,
-reporting pass/fail/error per test plus a summary. Every other command name
-(`check`, `data`, `doctor`, `evolve`, `serve`, `client`, `backup`, `restore`)
-is recognized and reports a typed `cli.command_unsupported` response until its
-refounding lane lands it. The binary depends on `marrow-codes`,
-`marrow-project`, `marrow-syntax`, `marrow-compile`, `marrow-verify`,
-`marrow-vm`, and `marrow-kernel`; the physical project-capture adapter here
-feeds the pure `marrow-project` owner and never rebuilds discovery or
-identity.
+reporting pass/fail/error per test plus a summary. `marrow client typescript`
+compiles and verifies the project, reconstructs its wire interface (the one
+transfer/identity owner is `marrow-image`), and emits the deterministic strict
+TypeScript client beside the pinned Node supervision module (`src/supervisor/`,
+emitted verbatim and drift-gated). Every other command name (`check`, `data`,
+`doctor`, `evolve`, `serve`, `backup`, `restore`) is recognized and reports a
+typed `cli.command_unsupported` response until its refounding lane lands it.
+The binary depends on `marrow-codes`, `marrow-project`, `marrow-syntax`,
+`marrow-compile`, `marrow-image`, `marrow-verify`, `marrow-vm`, and
+`marrow-kernel` — never on `marrow-runner` (the CLI→runner Rust edge is an
+absence target); the physical project-capture adapter here feeds the pure
+`marrow-project` owner and never rebuilds discovery or identity.
 
 `outcome` is the typed CLI outcome owner: the four failure families (source
 diagnostic, artifact rejection, source-mapped runtime fault, operational
