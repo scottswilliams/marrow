@@ -10,3 +10,4 @@
 
 pub mod key;
 pub mod value;
+pub(crate) mod varint;
