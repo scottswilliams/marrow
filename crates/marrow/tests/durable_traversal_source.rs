@@ -82,6 +82,63 @@ const SOURCE: &str = "resource Book\n\
      \x20       break\n\
      \x20   on more\n\
      \x20       total = total + 1000\n\
+     \x20   return total\n\
+     \n\
+     pub fn continueOnSecond(): int\n\
+     \x20   var total = 0\n\
+     \x20   for k in ^books at most 2\n\
+     \x20       if k == 2\n\
+     \x20           continue\n\
+     \x20       total += k\n\
+     \x20   on more\n\
+     \x20       total = total + 1000\n\
+     \x20   return total\n\
+     \n\
+     pub fn returnOnSecond(): int\n\
+     \x20   for k in ^books at most 2\n\
+     \x20       if k == 2\n\
+     \x20           return k\n\
+     \x20   on more\n\
+     \x20       return -1\n\
+     \x20   return 0\n\
+     \n\
+     pub fn faultOnSecond(): int\n\
+     \x20   for k in ^books at most 2\n\
+     \x20       if k == 2\n\
+     \x20           unreachable(\"boom\")\n\
+     \x20   on more\n\
+     \x20       return -1\n\
+     \x20   return 0\n\
+     \n\
+     pub fn nestedNotes(): int\n\
+     \x20   var total = 0\n\
+     \x20   for id in ^books at most 100\n\
+     \x20       for pos in ^books(id).notes at most 2\n\
+     \x20           total += pos\n\
+     \x20       on more\n\
+     \x20           total = total + 100\n\
+     \x20   on more\n\
+     \x20       total = total + 100000\n\
+     \x20   return total\n\
+     \n\
+     pub fn eraseWhileTraversing(): int\n\
+     \x20   var total = 0\n\
+     \x20   transaction\n\
+     \x20       for k in ^books at most 100\n\
+     \x20           total += k\n\
+     \x20           delete ^books(k)\n\
+     \x20       on more\n\
+     \x20           total = total + 1000\n\
+     \x20   return total\n\
+     \n\
+     pub fn createWhileTraversing(): int\n\
+     \x20   var total = 0\n\
+     \x20   transaction\n\
+     \x20       for k in ^books at most 2\n\
+     \x20           total += k\n\
+     \x20           ^books(k + 100) = Book(title: \"x\")\n\
+     \x20       on more\n\
+     \x20           total = total + 1000\n\
      \x20   return total\n";
 
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -205,6 +262,31 @@ fn a_branch_traversal_scopes_to_its_parent_entry() {
     );
 }
 
+/// Run a read-only export and return the dotted code of the runtime fault it raises.
+fn run_fault(
+    image: &VerifiedImage,
+    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    name: &str,
+    args: Vec<Value>,
+) -> String {
+    match run_export(image, attachment, export(image, name), args) {
+        DurableRun::Ran(Err(fault)) => fault.code().to_string(),
+        other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
+    }
+}
+
+struct DebugRun<'a>(&'a DurableRun);
+impl std::fmt::Debug for DebugRun<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            DurableRun::Ran(Ok(value)) => write!(f, "Ran(Ok({value:?}))"),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Parked => write!(f, "Parked"),
+            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+        }
+    }
+}
+
 #[test]
 fn a_body_break_skips_the_on_more_block() {
     let image = compile_verify(SOURCE);
@@ -216,5 +298,174 @@ fn a_body_break_skips_the_on_more_block() {
     assert_eq!(
         run(&image, &mut attachment, "breakAfterFirst", vec![]),
         Some(Value::Int(1))
+    );
+}
+
+#[test]
+fn the_population_boundary_decides_the_on_more_arm() {
+    // `sumFirst2` is `at most 2` over `^books`, adding 1000 in `on more`. Growing the
+    // population one entry at a time walks the 0 / 1 / N / N+1 boundary.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+
+    // 0 entries: no keys, no `on more`.
+    assert_eq!(
+        run(&image, &mut attachment, "sumFirst2", vec![]),
+        Some(Value::Int(0))
+    );
+    // 1 entry (< N): the one key, still no further key.
+    run(
+        &image,
+        &mut attachment,
+        "put",
+        vec![Value::Int(1), Value::Text("t".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "sumFirst2", vec![]),
+        Some(Value::Int(1))
+    );
+    // 2 entries (= N): both frozen, no (N+1)th key, so `on more` does not run.
+    run(
+        &image,
+        &mut attachment,
+        "put",
+        vec![Value::Int(2), Value::Text("t".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "sumFirst2", vec![]),
+        Some(Value::Int(3))
+    );
+    // 3 entries (N+1): frozen [1,2], a third existed, so `on more` adds 1000.
+    run(
+        &image,
+        &mut attachment,
+        "put",
+        vec![Value::Int(3), Value::Text("t".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "sumFirst2", vec![]),
+        Some(Value::Int(1003))
+    );
+}
+
+#[test]
+fn every_abnormal_body_exit_decides_the_on_more_timing() {
+    // Over books {1,2,3} with `at most 2`, a further key (3) always existed at freeze.
+    // `on more` runs iff the frozen bodies all completed normally.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books(&image, &mut attachment);
+
+    // `continue` completes the loop normally, so `on more` still runs: k=1 adds 1,
+    // k=2 continues, then `on more` adds 1000.
+    assert_eq!(
+        run(&image, &mut attachment, "continueOnSecond", vec![]),
+        Some(Value::Int(1001))
+    );
+    // `return` from a body leaves without running `on more`, even though a third key
+    // existed: it returns the key 2 directly.
+    assert_eq!(
+        run(&image, &mut attachment, "returnOnSecond", vec![]),
+        Some(Value::Int(2))
+    );
+    // A fault in a body aborts the whole traversal; `on more` is never reached.
+    assert_eq!(
+        run_fault(&image, &mut attachment, "faultOnSecond", vec![]),
+        "run.unreachable"
+    );
+}
+
+#[test]
+fn nested_root_and_branch_traversals_each_carry_their_own_on_more() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books(&image, &mut attachment);
+    // Book 1 carries three notes; the inner `at most 2` freezes two and its `on more`
+    // fires. Books 2 and 3 carry none.
+    for pos in [10i64, 20, 30] {
+        run(
+            &image,
+            &mut attachment,
+            "putNote",
+            vec![Value::Int(1), Value::Int(pos), Value::Text("n".into())],
+        );
+    }
+
+    // Inner over book 1: frozen [10,20] (sum 30) + inner `on more` 100 = 130. Books 2
+    // and 3 add nothing (empty inner layers, no inner `on more`). The outer layer has
+    // exactly three books, so the outer `on more` does not run.
+    assert_eq!(
+        run(&image, &mut attachment, "nestedNotes", vec![]),
+        Some(Value::Int(130))
+    );
+}
+
+#[test]
+fn the_frozen_key_set_is_immune_to_writes_the_bodies_perform() {
+    // A body that erases every entry it visits still visits all three frozen keys —
+    // the frozen set is captured before any body runs, so the erases cannot cut the
+    // traversal short. `at most 100`, so no `on more`.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books(&image, &mut attachment);
+    assert_eq!(
+        run(&image, &mut attachment, "eraseWhileTraversing", vec![]),
+        Some(Value::Int(6)),
+    );
+    // The erases committed: a re-run over the now-empty store visits nothing.
+    assert_eq!(
+        run(&image, &mut attachment, "eraseWhileTraversing", vec![]),
+        Some(Value::Int(0)),
+    );
+}
+
+#[test]
+fn the_on_more_decision_is_immune_to_entries_a_body_creates() {
+    // A body that creates new entries beyond the frozen bound does not change the
+    // `on more` decision: it was fixed at freeze. `at most 2` over {1,2,3} freezes
+    // [1,2]; a third key existed at freeze, so `on more` adds 1000 (= 1003) regardless
+    // of the two new books the bodies create.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books(&image, &mut attachment);
+    assert_eq!(
+        run(&image, &mut attachment, "createWhileTraversing", vec![]),
+        Some(Value::Int(1003)),
+    );
+}
+
+#[test]
+fn a_descendant_only_child_is_skipped_without_visiting_its_subtree() {
+    // Books 1 and 3 have payloads; book 2 has only notes (a descendant-only root, no
+    // title marker). A root traversal freezes only the payload-bearing books [1,3], so
+    // the descendant-only book 2 and its whole note subtree are skipped: `sumAll` is
+    // 1 + 3 = 4, never touching book 2's descendants. The O(1)-seek bound over a large
+    // fan-out is proven at the kernel tier.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "put",
+        vec![Value::Int(1), Value::Text("t".into())],
+    );
+    run(
+        &image,
+        &mut attachment,
+        "put",
+        vec![Value::Int(3), Value::Text("t".into())],
+    );
+    // Book 2 gets a fan-out of notes but no payload of its own.
+    for pos in 0..20i64 {
+        run(
+            &image,
+            &mut attachment,
+            "putNote",
+            vec![Value::Int(2), Value::Int(pos), Value::Text("n".into())],
+        );
+    }
+    assert_eq!(
+        run(&image, &mut attachment, "sumAll", vec![]),
+        Some(Value::Int(4)),
     );
 }
