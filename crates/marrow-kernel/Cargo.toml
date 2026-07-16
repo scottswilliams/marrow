@@ -13,5 +13,10 @@ marrow-codes = { path = "../marrow-codes" }
 marrow-store = { path = "../marrow-store", features = ["native"] }
 marrow-temporal = { path = "../marrow-temporal" }
 
+[dev-dependencies]
+# Already a normal in-workspace dependency; also needed by name in the widened-value
+# differential integration test for the canonical instant year-range bounds.
+marrow-temporal = { path = "../marrow-temporal" }
+
 [lints]
 workspace = true
