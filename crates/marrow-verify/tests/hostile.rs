@@ -677,6 +677,17 @@ fn executable_site_over_a_composite_root_rejects() {
 /// cross-check passes. When `with_site` is true, an operation site and a reading
 /// function are added — the not-yet-executable shape a forged image would need.
 fn group_branch_draft(with_site: bool) -> ImageDraft {
+    group_branch_draft_with_branch_record(with_site, true)
+}
+
+/// As [`group_branch_draft`], but the branch's materialized record marks its `text`
+/// field with `branch_record_required`. The branch *member* always marks `text`
+/// required, so passing `false` builds an image whose branch record disagrees with
+/// its member fields — the forgery `validate_branch_records` must reject.
+fn group_branch_draft_with_branch_record(
+    with_site: bool,
+    branch_record_required: bool,
+) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -689,6 +700,17 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
         }],
     });
     let root = draft.intern_string("books");
+    let notes = draft.intern_string("notes");
+    let notes_qualified = draft.intern_string("Book.notes");
+    let notes_text = draft.intern_string("text");
+    let notes_record = draft.add_record_type(RecordTypeDef {
+        name: notes_qualified,
+        fields: vec![FieldDef {
+            name: notes_text,
+            ty: ImageType::scalar(Scalar::Text),
+            required: branch_record_required,
+        }],
+    });
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     draft.add_root(RootDef {
         name: root,
@@ -717,6 +739,8 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
                 },
                 DurableMemberDef::Branch {
                     placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                    name: notes,
+                    record: notes_record,
                     keys: vec![KeyColumn {
                         scalar: Scalar::Text,
                         id: LedgerIdBytes::from_bytes([0x31; 16]),
@@ -989,6 +1013,21 @@ fn a_deep_nested_branch_field_site_seals() {
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a nested branch-field site seals"
     );
+}
+
+#[test]
+fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
+    // A branch's materialized record is surface (not identity), so the verifier ties
+    // it to the branch's own field members — order, value shape, and required flag —
+    // exactly as a root's record ties to its member tree. Here the branch record
+    // marks `text` sparse while the branch member marks it required; the image
+    // encodes (identity is unchanged), but the independent record/member cross-check
+    // refuses it at the table phase.
+    let bytes = group_branch_draft_with_branch_record(false, false)
+        .encode()
+        .unwrap()
+        .bytes;
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 #[test]

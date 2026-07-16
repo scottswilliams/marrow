@@ -27,8 +27,8 @@ use std::collections::BTreeSet;
 use marrow_codes::Code;
 use marrow_image::{
     DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
-    DurableValueShape, ImageDraft, KeyColumn, LedgerIdBytes, RootDef, RootIdentity, Scalar,
-    SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
+    DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
 };
 use marrow_project::{IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -235,7 +235,7 @@ impl DurableRegistry {
             })
             .collect();
         let (groups_and_branches, has_extras) =
-            resolver.build_extras(records, &resource.members, &store.resource);
+            resolver.build_extras(draft, records, &resource.members, &store.resource);
 
         // Resolve the root's managed indexes before appending the group/branch members
         // (an index projects only the root's identity keys and top-level fields, so it
@@ -627,6 +627,7 @@ impl<'a> IdentityResolver<'a> {
     /// group or branch is a precise `check.unsupported` rejection.
     fn build_extras(
         &mut self,
+        draft: &mut ImageDraft,
         records: &TypeRegistry,
         members: &[ResourceMember],
         container: &str,
@@ -639,17 +640,33 @@ impl<'a> IdentityResolver<'a> {
             };
             let path = format!("{container}.{}", group.name);
             if group.keys.is_empty() {
-                // A `group`: an unkeyed static field-path namespace.
+                // A `group`: an unkeyed static field-path namespace. Its direct fields
+                // flatten into the containing resource's namespace, so it mints no
+                // record type of its own.
                 let id = self.resolve(IdentityKind::Group, &path);
-                let inner = self.build_member_tree(records, group, &path);
+                let (inner, _record_fields) = self.build_member_tree(draft, records, group, &path);
                 groups.push(DurableMemberDef::Group { id, members: inner });
             } else {
-                // A keyed `branch`: a distinct keyed placement, like a root.
+                // A keyed `branch`: a distinct keyed placement, like a root. Its entry
+                // is a record of its own direct scalar fields; materialize that record
+                // type (ordered like the member tree) so a whole branch-entry read
+                // yields it and a create/replace supplies it. The record type name is
+                // the qualified `Resource.branch` path — the branch's constructor
+                // spelling; the branch's own `name` is the simple member name the
+                // physical layer keys its family by.
                 let placement = self.resolve(IdentityKind::Root, &path);
                 let keys = self.build_branch_keys(records, group, &path);
-                let inner = self.build_member_tree(records, group, &path);
+                let (inner, record_fields) = self.build_member_tree(draft, records, group, &path);
+                let record_name = draft.intern_string(&path);
+                let record = draft.add_record_type(RecordTypeDef {
+                    name: record_name,
+                    fields: record_fields,
+                });
+                let name = draft.intern_string(&group.name);
                 branches.push(DurableMemberDef::Branch {
                     placement,
+                    name,
+                    record,
                     keys,
                     members: inner,
                 });
@@ -697,22 +714,25 @@ impl<'a> IdentityResolver<'a> {
     /// then its nested groups and branches. Field anchors are `<path>.<field>`.
     fn build_member_tree(
         &mut self,
+        draft: &mut ImageDraft,
         records: &TypeRegistry,
         group: &GroupDecl,
         path: &str,
-    ) -> Vec<DurableMemberDef> {
-        let mut fields = Vec::new();
+    ) -> (Vec<DurableMemberDef>, Vec<FieldDef>) {
+        let mut members = Vec::new();
+        let mut record_fields = Vec::new();
         for member in &group.members {
             let ResourceMember::Field(field) = member else {
                 continue;
             };
-            if let Some(def) = self.build_field(records, field, path) {
-                fields.push(def);
+            if let Some((def, record_field)) = self.build_field(draft, records, field, path) {
+                members.push(def);
+                record_fields.push(record_field);
             }
         }
-        let (extras, _) = self.build_extras(records, &group.members, path);
-        fields.extend(extras);
-        fields
+        let (extras, _) = self.build_extras(draft, records, &group.members, path);
+        members.extend(extras);
+        (members, record_fields)
     }
 
     /// One stored scalar field of a group or branch: its ledger id, required flag,
@@ -722,10 +742,11 @@ impl<'a> IdentityResolver<'a> {
     /// and marks the graph incomplete.
     fn build_field(
         &mut self,
+        draft: &mut ImageDraft,
         records: &TypeRegistry,
         field: &FieldDecl,
         container: &str,
-    ) -> Option<DurableMemberDef> {
+    ) -> Option<(DurableMemberDef, FieldDef)> {
         if !field.keys.is_empty() {
             self.complete = false;
             self.diagnostics
@@ -742,11 +763,20 @@ impl<'a> IdentityResolver<'a> {
             return None;
         };
         let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
-        Some(DurableMemberDef::Field {
+        let member = DurableMemberDef::Field {
             id,
             required: field.required,
             value: DurableValueShape::Scalar(scalar.image()),
-        })
+        };
+        // The record field mirrors the durable member: same order, same scalar, same
+        // required flag. The branch entry's whole-payload read/create/replace flows
+        // through this record type.
+        let record_field = FieldDef {
+            name: draft.intern_string(&field.name),
+            ty: ImageType::scalar(scalar.image()),
+            required: field.required,
+        };
+        Some((member, record_field))
     }
 
     /// Resolve a root's managed indexes into their durable identity shapes, enforcing

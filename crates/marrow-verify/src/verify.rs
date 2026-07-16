@@ -139,6 +139,10 @@ enum DecodedMember {
     },
     Branch {
         placement: LedgerIdBytes,
+        /// The branch's simple name (string index), for the physical layer.
+        name: u16,
+        /// The branch entry's materialized record type index.
+        record: u16,
         keys: Vec<(Scalar, LedgerIdBytes)>,
         members: Vec<DecodedMember>,
     },
@@ -1062,6 +1066,10 @@ fn decode_durable(
                 "root member tree has more top-level fields than the record",
             ));
         }
+        // Every keyed `branch` nested in the tree ties its own materialized record to
+        // its direct field members the same way, one level down, so a hostile image
+        // cannot claim a branch identity while executing over a different record shape.
+        validate_branch_records(&members, types, enums, string_count)?;
         // The root's managed indexes follow its member tree. Each index's `Index`
         // ledger id is a distinct id across the whole table; each projected component
         // must reference a real top-level field or identity key of this same root, so a
@@ -1403,6 +1411,73 @@ fn decode_key_tuple(
     Ok(keys)
 }
 
+/// Validate every keyed `branch` in a decoded member tree: its surface name and
+/// materialized record type indices are in range, and its record's fields match its
+/// own direct scalar field members in order, value shape, and required flag — the
+/// same tie the root's record has to its member tree, one level down. Recurses
+/// through groups and branches. The name and record are surface (not identity), so
+/// this is the only place they are checked; a hostile image that names a branch
+/// record disagreeing with the branch's field shapes is refused here.
+fn validate_branch_records(
+    members: &[DecodedMember],
+    types: &[DecodedRecordType],
+    enums: &[DecodedEnum],
+    string_count: usize,
+) -> Result<(), VerifyRejection> {
+    for member in members {
+        match member {
+            DecodedMember::Field { .. } => {}
+            DecodedMember::Group { members, .. } => {
+                validate_branch_records(members, types, enums, string_count)?;
+            }
+            DecodedMember::Branch {
+                name,
+                record,
+                members,
+                ..
+            } => {
+                if *name as usize >= string_count {
+                    return Err(reject(VerifyPhase::Table, "branch name index out of range"));
+                }
+                if *record as usize >= types.len() {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "branch record type index out of range",
+                    ));
+                }
+                let record_fields = &types[*record as usize].fields;
+                let mut direct_fields = members.iter().filter_map(|member| match member {
+                    DecodedMember::Field {
+                        value, required, ..
+                    } => Some((value, *required)),
+                    _ => None,
+                });
+                for field in record_fields {
+                    match direct_fields.next() {
+                        Some((value, member_required))
+                            if member_required == field.required
+                                && value_shape_matches(value, field.ty, types, enums) => {}
+                        _ => {
+                            return Err(reject(
+                                VerifyPhase::Table,
+                                "branch member tree fields do not match its record fields",
+                            ));
+                        }
+                    }
+                }
+                if direct_fields.next().is_some() {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "branch member tree has more direct fields than its record",
+                    ));
+                }
+                validate_branch_records(members, types, enums, string_count)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Decode a durable member tree: `u16(count) ‖ member*`. A field is tag `0x00`; a
 /// group is tag `0x01`; a branch is tag `0x02`. `budget` bounds the total member
 /// records across the whole tree and `depth` bounds nesting, so a hostile image
@@ -1459,6 +1534,16 @@ fn decode_members(
             }
             0x02 => {
                 let placement = take_distinct_id(reader, seen, "short durable branch identity")?;
+                // The branch's surface name and materialized record type index follow
+                // the placement. Their ranges (against the string and type tables) and
+                // the record/member-field alignment are checked in
+                // `validate_branch_records`, where the type and enum tables are in scope.
+                let name = reader
+                    .u16()
+                    .ok_or(reject(VerifyPhase::Table, "short durable branch name"))?;
+                let record = reader
+                    .u16()
+                    .ok_or(reject(VerifyPhase::Table, "short durable branch record"))?;
                 let key_count = reader
                     .u16()
                     .ok_or(reject(VerifyPhase::Table, "short branch key count"))?
@@ -1470,6 +1555,8 @@ fn decode_members(
                 let inner = decode_members(reader, depth + 1, budget, seen)?;
                 DecodedMember::Branch {
                     placement,
+                    name,
+                    record,
                     keys,
                     members: inner,
                 }
@@ -1800,10 +1887,13 @@ fn member_shapes(members: &[DecodedMember]) -> Vec<DurableMemberShape> {
                 id: *id,
                 members: member_shapes(members),
             }),
+            // Name and record are surface, not identity: the descriptor carries only
+            // the branch's placement, key tuple, and member value shapes.
             DecodedMember::Branch {
                 placement,
                 keys,
                 members,
+                ..
             } => DurableMemberShape::Branch(DurableBranchShape {
                 placement: *placement,
                 keys: key_shapes(keys),

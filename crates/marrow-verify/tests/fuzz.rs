@@ -583,6 +583,17 @@ fn a_group_branch_durable_image() -> Vec<u8> {
         }],
     });
     let root = draft.intern_string("books");
+    let notes = draft.intern_string("notes");
+    let notes_qualified = draft.intern_string("Book.notes");
+    let notes_text = draft.intern_string("text");
+    let notes_record = draft.add_record_type(RecordTypeDef {
+        name: notes_qualified,
+        fields: vec![FieldDef {
+            name: notes_text,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
     draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
     draft.add_root(RootDef {
         name: root,
@@ -611,6 +622,8 @@ fn a_group_branch_durable_image() -> Vec<u8> {
                 },
                 DurableMemberDef::Branch {
                     placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                    name: notes,
+                    record: notes_record,
                     keys: vec![KeyColumn {
                         scalar: Scalar::Text,
                         id: LedgerIdBytes::from_bytes([0x31; 16]),

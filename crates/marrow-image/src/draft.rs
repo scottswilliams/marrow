@@ -183,6 +183,16 @@ pub enum DurableMemberDef {
     },
     Branch {
         placement: LedgerIdBytes,
+        /// The branch's source name, interned for the physical layer (which keys a
+        /// branch family by name at this stage) and for its qualified constructor
+        /// spelling. Like a root's name, it is carried for the surface and is not part
+        /// of the durable identity — a rename preserves the contract id.
+        name: StrId,
+        /// The branch entry's materialized record type: its own direct scalar fields,
+        /// named and ordered like the root's record. A whole branch-entry read yields
+        /// this record and a create/replace supplies it. Carried for the surface, not
+        /// the identity (the member tree's field value shapes carry the identity).
+        record: TypeId,
         keys: Vec<KeyColumn>,
         members: Vec<DurableMemberDef>,
     },

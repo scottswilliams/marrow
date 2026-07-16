@@ -284,7 +284,7 @@ impl ImageDraft {
             // with static `group` namespaces and keyed `branch` placements).
             body.extend_from_slice(root.identity.placement.bytes());
             body.extend_from_slice(root.identity.product.bytes());
-            encode_durable_members(&mut body, &root.identity.members);
+            encode_durable_members(&mut body, &root.identity.members, str_map);
             encode_durable_indexes(&mut body, &root.identity.indexes);
         }
         push_u16(&mut body, self.sites().len() as u16);
@@ -586,7 +586,7 @@ fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
 /// groups and branches in source declaration order. A field's value shape is the
 /// canonical [`DurableValueShape`] encoding, so a durable field and its
 /// contract-identity contribution spell the value one way.
-fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef]) {
+fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef], str_map: &[u16]) {
     push_u16(body, members.len() as u16);
     for member in members {
         match member {
@@ -603,17 +603,21 @@ fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef]) {
             DurableMemberDef::Group { id, members } => {
                 body.push(0x01);
                 body.extend_from_slice(id.bytes());
-                encode_durable_members(body, members);
+                encode_durable_members(body, members, str_map);
             }
             DurableMemberDef::Branch {
                 placement,
+                name,
+                record,
                 keys,
                 members,
             } => {
                 body.push(0x02);
                 body.extend_from_slice(placement.bytes());
+                push_u16(body, str_map[name.raw() as usize]);
+                push_u16(body, record.0);
                 encode_key_tuple(body, keys);
-                encode_durable_members(body, members);
+                encode_durable_members(body, members, str_map);
             }
         }
     }
@@ -779,10 +783,14 @@ fn member_shapes(members: &[DurableMemberDef]) -> Vec<DurableMemberShape> {
                     members: member_shapes(members),
                 })
             }
+            // The branch's name and record type are surface, not identity: the
+            // descriptor carries only its placement, key tuple, and member value
+            // shapes, so a rename or a record retype preserves the contract id.
             DurableMemberDef::Branch {
                 placement,
                 keys,
                 members,
+                ..
             } => DurableMemberShape::Branch(DurableBranchShape {
                 placement: *placement,
                 keys: key_shapes(keys),
