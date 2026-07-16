@@ -108,6 +108,14 @@ pub const MAX_STACK_DEPTH: usize = 256;
 /// Text-concatenation result ceiling (runtime bound, design §D `TextConcat`).
 pub const MAX_TEXT_BYTES: usize = 64 * 1024;
 
+/// The largest `at most N` bound a bounded durable traversal
+/// (`DurIterateBounded`) may declare. `N` is the compile-time count of immediate
+/// keys frozen per acquisition; the verifier rejects a larger or zero bound before
+/// the runtime allocates the frozen key list (§ law 9). Aligned with the VM's
+/// private `MAX_COLLECTION_LEN`, since the frozen keys materialize as one bounded
+/// `List[K]`.
+pub const MAX_TRAVERSAL_BOUND: u32 = 65_536;
+
 /// The node budget for structurally expanding one export's wire transfer graph
 /// (`crate::interface`). A record field or enum payload may itself be a record or
 /// enum, so a *verified acyclic* value graph can still expand exponentially (a

@@ -86,6 +86,7 @@ pub const OP_DUR_ERASE_FIELD: u8 = 0x37;
 pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
 pub const OP_DUR_NEXT_KEY: u8 = 0x39;
 pub const OP_DUR_SET_SPARSE_PRESENT: u8 = 0x3A;
+pub const OP_DUR_ITERATE_BOUNDED: u8 = 0x3B;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
 pub const OP_TXN_COMMIT: u8 = 0x3D;
 // Finite collection values (design §D collections). Element/key/value shapes come
@@ -302,6 +303,20 @@ pub enum Instr {
     DurEraseField(u16),
     DurEraseEntry(u16),
     DurNextKey(u16),
+    /// `[K?] → List[K], Bool`: the bounded nested traversal `for … at most N …
+    /// on more`. Freeze the first `limit` immediate keys of the layer the whole-entry
+    /// `site` belongs to — the root's entry family (a root site) or a keyed branch
+    /// family under a fixed parent entry (a branch site) — beginning inclusively at a
+    /// `from` key popped from the stack when `from` is set, then push the frozen key
+    /// list (bounded by `limit`) and whether a further key existed (the `on more` bit).
+    /// `limit` is the positive compile-time `N`. The keys are frozen before any loop
+    /// body runs, so a body's writes cannot change the set; no cursor, page, or
+    /// continuation is threaded — the frozen list is the whole result.
+    DurIterateBounded {
+        site: u16,
+        limit: u32,
+        from: bool,
+    },
     TxnBegin,
     TxnCommit,
     /// Push an empty `List` of the COLLTYPES index `_0`.
@@ -428,6 +443,7 @@ impl Instr {
             Instr::DurEraseField(_) => OP_DUR_ERASE_FIELD,
             Instr::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
             Instr::DurNextKey(_) => OP_DUR_NEXT_KEY,
+            Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
             Instr::TxnBegin => OP_TXN_BEGIN,
             Instr::TxnCommit => OP_TXN_COMMIT,
             Instr::ListNew(_) => OP_LIST_NEW,
@@ -488,6 +504,9 @@ impl Instr {
             Instr::EnumConstruct { .. }
             | Instr::EnumPayloadGet { .. }
             | Instr::DurSetSparsePresent { .. } => 4,
+            // A big-endian `u16` site, a big-endian `u32` bound, and a one-byte
+            // `from`-present flag.
+            Instr::DurIterateBounded { .. } => 7,
             _ => 0,
         }
     }
