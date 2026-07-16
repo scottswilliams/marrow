@@ -1,0 +1,338 @@
+; Graph Report: a storeless report over a small directed graph encoded as text.
+;
+; Input encoding (one statement per line):
+; - a blank line or a line beginning with `#` is ignored;
+; - `A -> B` declares a directed edge from node A to node B (duplicates collapse);
+; - `-> R` designates R as the reachability root (last one wins);
+; - a bare token with no `->` (or `A ->`) declares an isolated node;
+; - any other line is counted as malformed.
+;
+; Node names are the trimmed text on each side of `->`; the encoding carries no
+; numbers, because the beta text floor has no runtime `int(string)` parse.
+;
+; The report computes, deterministically: per-node out/in degree and role, the
+; set reachable from the root by a bounded fixpoint, a layered topological order,
+; and the nodes left in a cycle. All node iteration is over a `Map` keyed by name,
+; whose ascending key order makes every listing sorted without a sort primitive.
+module graph_report
+
+struct Pair
+    left: string
+    right: string
+
+struct Edge
+    src: string
+    dst: string
+
+enum Role
+    source
+    sink
+    internal
+    isolated
+
+; Read a map value or a fallback when the key is absent. One helper serves the
+; degree maps (`int`) and the reachability/visited maps (`bool`).
+fn getOr[V](m: Map[string, V], key: string, fallback: V): V
+    return get(m, key) ?? fallback
+
+; Whether `s` begins with `prefix`. The text floor has no `startsWith`, so this
+; splits on the prefix and checks that the first piece is empty with a separator
+; present.
+fn startsWith(s: string, prefix: string): bool
+    if isEmpty(prefix)
+        return true
+    const parts = split(s, prefix)
+    var idx: int = 0
+    var firstEmpty: bool = false
+    var hadSeparator: bool = false
+    for p in parts
+        if idx == 0
+            firstEmpty = isEmpty(p)
+        else
+            hadSeparator = true
+        idx = idx + 1
+    return firstEmpty and hadSeparator
+
+; Split `s` on the first separator into exactly two trimmed sides. The floor has
+; no positional element access on a `List`, so the two parts are read by counting
+; while iterating. A line with other than two parts yields `none`.
+fn parsePair(s: string, sep: string): Option[Pair]
+    const parts = split(s, sep)
+    var idx: int = 0
+    var left: string = ""
+    var right: string = ""
+    for p in parts
+        if idx == 0
+            left = trim(p)
+        else if idx == 1
+            right = trim(p)
+        idx = idx + 1
+    if idx == 2
+        return some(Pair(left: left, right: right))
+    return none
+
+fn classifyRole(outDegree: int, inDegree: int): Role
+    if outDegree == 0 and inDegree == 0
+        return Role::isolated
+    if inDegree == 0
+        return Role::source
+    if outDegree == 0
+        return Role::sink
+    return Role::internal
+
+fn roleName(r: Role): string
+    match r
+        source
+            return "source"
+        sink
+            return "sink"
+        internal
+            return "internal"
+        isolated
+            return "isolated"
+
+; The set of nodes reachable from `start`, computed by a bounded fixpoint: each
+; pass relaxes every edge whose source is already reachable, and a pass that adds
+; nothing stops. At most `nodeCount` passes add a node, so the loop terminates.
+fn reachableFrom(edges: List[Edge], start: string, nodeCount: int): Map[string, bool]
+    var reached: Map[string, bool] = Map()
+    reached = insert(reached, start, true)
+    var changed: bool = true
+    var passes: int = 0
+    while changed and passes <= nodeCount
+        changed = false
+        passes = passes + 1
+        for e in edges
+            if getOr(reached, e.src, false)
+                if not getOr(reached, e.dst, false)
+                    reached = insert(reached, e.dst, true)
+                    changed = true
+    return reached
+
+; A layered topological order (Kahn's algorithm). Each pass recomputes the
+; remaining in-degree counting only predecessors not yet emitted, emits every
+; node whose remaining in-degree is zero in ascending-name order, and stops when
+; a pass emits nothing. Nodes left unemitted are exactly those on or behind a
+; cycle. At most `nodeCount + 1` passes run.
+fn topoOrder(edges: List[Edge], nodes: Map[string, bool], nodeCount: int): List[string]
+    var order: List[string] = List()
+    var emitted: Map[string, bool] = Map()
+    var count: int = 0
+    var passes: int = 0
+    var progress: bool = true
+    while count < nodeCount and progress and passes <= nodeCount + 1
+        passes = passes + 1
+        var remaining: Map[string, int] = Map()
+        for e in edges
+            if not getOr(emitted, e.src, false)
+                remaining = insert(remaining, e.dst, getOr(remaining, e.dst, 0) + 1)
+        var ready: List[string] = List()
+        for n in nodes
+            if not getOr(emitted, n, false) and getOr(remaining, n, 0) == 0
+                ready = append(ready, n)
+        if isEmpty(ready)
+            progress = false
+        else
+            for n in ready
+                order = append(order, n)
+                emitted = insert(emitted, n, true)
+                count = count + 1
+    return order
+
+; Render one indented line per element, in list order.
+fn bulletLines(xs: List[string]): string
+    var out: string = ""
+    var first: bool = true
+    for x in xs
+        if first
+            out = "  " + x
+            first = false
+        else
+            out = out + "\n  " + x
+    return out
+
+; The nodes present as a map key but absent from `order`, in ascending order.
+fn missingFrom(order: List[string], nodes: Map[string, bool]): List[string]
+    var inOrder: Map[string, bool] = Map()
+    for n in order
+        inOrder = insert(inOrder, n, true)
+    var missing: List[string] = List()
+    for n in nodes
+        if not getOr(inOrder, n, false)
+            missing = append(missing, n)
+    return missing
+
+; The degree section: one line per node in ascending order with its out-degree,
+; in-degree, and role.
+fn renderDegrees(nodes: Map[string, bool], outDeg: Map[string, int], inDeg: Map[string, int]): string
+    var out: string = ""
+    var first: bool = true
+    for n in nodes
+        const o = getOr(outDeg, n, 0)
+        const i = getOr(inDeg, n, 0)
+        const line = "  " + n + " out=" + string(o) + " in=" + string(i) + " role=" + roleName(classifyRole(o, i))
+        if first
+            out = line
+            first = false
+        else
+            out = out + "\n" + line
+    return out
+
+; The reachability section body.
+fn renderReachable(edges: List[Edge], nodes: Map[string, bool], hasRoot: bool, root: string, nodeCount: int): string
+    if not hasRoot
+        return "  (no root)"
+    if not getOr(nodes, root, false)
+        return "  root " + root + " is not a node"
+    const reached = reachableFrom(edges, root, nodeCount)
+    var names: List[string] = List()
+    var reachedCount: int = 0
+    for n in nodes
+        if getOr(reached, n, false)
+            names = append(names, n)
+            reachedCount = reachedCount + 1
+    return "  from " + root + ": " + join(names, ", ") + " (" + string(reachedCount) + "/" + string(nodeCount) + ")"
+
+pub fn report(input: string): string
+    var edges: List[Edge] = List()
+    var seen: Map[string, bool] = Map()
+    var nodes: Map[string, bool] = Map()
+    var outDeg: Map[string, int] = Map()
+    var inDeg: Map[string, int] = Map()
+    var root: string = ""
+    var hasRoot: bool = false
+    var malformed: int = 0
+
+    for rawLine in lines(input)
+        const line = trim(rawLine)
+        if isEmpty(line)
+            continue
+        if startsWith(line, "#")
+            continue
+        if contains(line, "->")
+            match parsePair(line, "->")
+                some(pr)
+                    const left = pr.left
+                    const right = pr.right
+                    if isEmpty(left) and isEmpty(right)
+                        malformed = malformed + 1
+                    else if isEmpty(left)
+                        root = right
+                        hasRoot = true
+                        nodes = insert(nodes, right, true)
+                    else if isEmpty(right)
+                        nodes = insert(nodes, left, true)
+                    else
+                        const key = left + " -> " + right
+                        if not getOr(seen, key, false)
+                            seen = insert(seen, key, true)
+                            edges = append(edges, Edge(src: left, dst: right))
+                            nodes = insert(nodes, left, true)
+                            nodes = insert(nodes, right, true)
+                            outDeg = insert(outDeg, left, getOr(outDeg, left, 0) + 1)
+                            inDeg = insert(inDeg, right, getOr(inDeg, right, 0) + 1)
+                none
+                    malformed = malformed + 1
+        else
+            nodes = insert(nodes, line, true)
+
+    const nodeCount = length(nodes)
+    const edgeCount = length(edges)
+
+    const order = topoOrder(edges, nodes, nodeCount)
+    const cyclic = missingFrom(order, nodes)
+
+    var rootLabel: string = "-"
+    if hasRoot
+        rootLabel = root
+
+    var body: string = "Graph Report"
+    body = body + "\n" + "nodes=" + string(nodeCount) + " edges=" + string(edgeCount) + " root=" + rootLabel + " malformed=" + string(malformed)
+    body = body + "\n" + "-- degrees --"
+    if nodeCount > 0
+        body = body + "\n" + renderDegrees(nodes, outDeg, inDeg)
+    body = body + "\n" + "-- reachable --"
+    body = body + "\n" + renderReachable(edges, nodes, hasRoot, root, nodeCount)
+    body = body + "\n" + "-- order --"
+    if isEmpty(order)
+        body = body + "\n" + "  (none)"
+    else
+        body = body + "\n" + bulletLines(order)
+    body = body + "\n" + "-- cycle --"
+    if isEmpty(cyclic)
+        body = body + "\n" + "  none"
+    else
+        body = body + "\n" + "  " + join(cyclic, ", ")
+    return body
+
+test "an empty input reports an empty graph"
+    const r = report("")
+    assert r == "Graph Report\nnodes=0 edges=0 root=- malformed=0\n-- degrees --\n-- reachable --\n  (no root)\n-- order --\n  (none)\n-- cycle --\n  none"
+
+test "a simple chain reports degrees, roles, reachability, and order"
+    const input = "a -> b\nb -> c\n-> a"
+    const r = report(input)
+    const want = "Graph Report\n" + "nodes=3 edges=2 root=a malformed=0\n" + "-- degrees --\n" + "  a out=1 in=0 role=source\n" + "  b out=1 in=1 role=internal\n" + "  c out=0 in=1 role=sink\n" + "-- reachable --\n" + "  from a: a, b, c (3/3)\n" + "-- order --\n" + "  a\n  b\n  c\n" + "-- cycle --\n  none"
+    assert r == want
+
+test "duplicate edges collapse and comments and blanks are ignored"
+    const input = "# a dependency graph\n\na -> b\na -> b\n  a -> b  \n# trailing note\nb -> c"
+    const r = report(input)
+    assert r == "Graph Report\n" + "nodes=3 edges=2 root=- malformed=0\n" + "-- degrees --\n" + "  a out=1 in=0 role=source\n" + "  b out=1 in=1 role=internal\n" + "  c out=0 in=1 role=sink\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  a\n  b\n  c\n" + "-- cycle --\n  none"
+
+test "a cycle is detected and left out of the topological order"
+    const input = "a -> b\nb -> c\nc -> a\nd -> a"
+    const r = report(input)
+    ; d has no incoming edge, so it is the only node emittable; a, b, c form a cycle.
+    assert r == "Graph Report\n" + "nodes=4 edges=4 root=- malformed=0\n" + "-- degrees --\n" + "  a out=1 in=2 role=internal\n" + "  b out=1 in=1 role=internal\n" + "  c out=1 in=1 role=internal\n" + "  d out=1 in=0 role=source\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  d\n" + "-- cycle --\n" + "  a, b, c"
+
+test "reachability is transitive but respects edge direction"
+    const input = "-> a\na -> b\nb -> c\nx -> a"
+    const r = report(input)
+    ; from a you reach a, b, c but not x (x only points into a).
+    assert r == "Graph Report\n" + "nodes=4 edges=3 root=a malformed=0\n" + "-- degrees --\n" + "  a out=1 in=1 role=internal\n" + "  b out=1 in=1 role=internal\n" + "  c out=0 in=1 role=sink\n" + "  x out=1 in=0 role=source\n" + "-- reachable --\n" + "  from a: a, b, c (3/4)\n" + "-- order --\n" + "  x\n  a\n  b\n  c\n" + "-- cycle --\n  none"
+
+test "an isolated node is declared by a bare line and reported"
+    const input = "solo\na -> b"
+    const r = report(input)
+    assert r == "Graph Report\n" + "nodes=3 edges=1 root=- malformed=0\n" + "-- degrees --\n" + "  a out=1 in=0 role=source\n" + "  b out=0 in=1 role=sink\n" + "  solo out=0 in=0 role=isolated\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  a\n  solo\n  b\n" + "-- cycle --\n  none"
+
+test "a malformed multi-arrow line is counted"
+    const input = "a -> b -> c\na -> b"
+    const r = report(input)
+    assert r == "Graph Report\n" + "nodes=2 edges=1 root=- malformed=1\n" + "-- degrees --\n" + "  a out=1 in=0 role=source\n" + "  b out=0 in=1 role=sink\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  a\n  b\n" + "-- cycle --\n  none"
+
+test "a root that names no node is reported as such"
+    const input = "-> ghost\na -> b"
+    const r = report(input)
+    assert r == "Graph Report\n" + "nodes=3 edges=1 root=ghost malformed=0\n" + "-- degrees --\n" + "  a out=1 in=0 role=source\n" + "  b out=0 in=1 role=sink\n" + "  ghost out=0 in=0 role=isolated\n" + "-- reachable --\n" + "  from ghost: ghost (1/3)\n" + "-- order --\n" + "  a\n  ghost\n  b\n" + "-- cycle --\n  none"
+
+test "a self loop is a one-node cycle"
+    const input = "a -> a\nb -> a"
+    const r = report(input)
+    assert r == "Graph Report\n" + "nodes=2 edges=2 root=- malformed=0\n" + "-- degrees --\n" + "  a out=1 in=2 role=internal\n" + "  b out=1 in=0 role=source\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  b\n" + "-- cycle --\n  a"
+
+test "getOr falls back for an absent key"
+    var m: Map[string, int] = Map()
+    m = insert(m, "x", 5)
+    assert getOr(m, "x", 0) == 5
+    assert getOr(m, "y", -1) == -1
+
+test "startsWith matches a prefix and rejects a non-prefix"
+    assert startsWith("# comment", "#")
+    assert not startsWith("a -> b", "#")
+    assert startsWith("abc", "")
+    assert startsWith("abc", "abc")
+
+test "parsePair splits exactly two sides or reports none"
+    match parsePair("a -> b", "->")
+        some(pr)
+            assert pr.left == "a"
+            assert pr.right == "b"
+        none
+            assert false
+    match parsePair("a -> b -> c", "->")
+        some(pr)
+            assert false
+        none
+            assert true
