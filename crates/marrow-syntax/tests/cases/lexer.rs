@@ -506,6 +506,32 @@ fn lexes_interpolation_with_expression_boundaries() {
 }
 
 #[test]
+fn interpolation_recognizes_unicode_escape_before_hole() {
+    // `\u{41}` is a unicode escape in the text part, recognized before hole
+    // detection, so its `{` does not open an interpolation hole; only `{x}` does.
+    let source = "$\"a\\u{41}b{x}\"\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::InterpolationStart,
+            TokenKind::InterpolationText,
+            TokenKind::InterpolationExprStart,
+            TokenKind::Identifier,
+            TokenKind::InterpolationExprEnd,
+            TokenKind::InterpolationEnd,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+    assert_eq!(
+        texts(source),
+        vec!["$\"", "a\\u{41}b", "{", "x", "}", "\"", "\n", ""]
+    );
+    assert!(!has_errors(&lex_source(source)));
+}
+
+#[test]
 fn lexes_utf8_strings_bytes_and_interpolation_boundaries() {
     let source = "print(\"café\", b\"naïve\", $\"olá {name}: €\")\n";
     let lexed = lex_source(source);

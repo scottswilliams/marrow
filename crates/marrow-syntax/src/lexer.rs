@@ -434,11 +434,24 @@ impl<'a> Lexer<'a> {
 
             if ch == '\\' {
                 index += ch.len_utf8();
-                if let Some(escaped) = self
-                    .source
-                    .get(index..line.end_byte)
-                    .and_then(|tail| tail.chars().next())
-                {
+                let rest = self.source.get(index..line.end_byte);
+                if rest.is_some_and(|rest| rest.starts_with("u{")) {
+                    // `\u{...}` is a unicode escape recognized before hole
+                    // detection: consume through its closing `}` so the interior
+                    // `{` opens no interpolation hole. The whole escape stays in
+                    // the text part; `decode_string_escapes` validates the scalar.
+                    index += "u{".len();
+                    while let Some(escaped) = self
+                        .source
+                        .get(index..line.end_byte)
+                        .and_then(|tail| tail.chars().next())
+                    {
+                        index += escaped.len_utf8();
+                        if escaped == '}' {
+                            break;
+                        }
+                    }
+                } else if let Some(escaped) = rest.and_then(|tail| tail.chars().next()) {
                     index += escaped.len_utf8();
                 }
                 continue;

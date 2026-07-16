@@ -102,10 +102,50 @@ pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> 
             'n' => '\n',
             'r' => '\r',
             't' => '\t',
+            'u' => decode_unicode_escape(&mut chars, offset)?,
             _ => return Err(bad),
         });
     }
     Ok(decoded)
+}
+
+/// Decode the tail of a `\u{H}` string escape, positioned just after the `u`. The
+/// braces enclose one to six hexadecimal digits naming a Unicode scalar value; the
+/// scalar must be at most `0x10FFFF` and not a UTF-16 surrogate. An empty group,
+/// more than six digits, a missing brace, an unterminated escape, a non-hex digit,
+/// or a non-scalar value is a bad escape at `escape_offset`, the byte position of
+/// the opening backslash. This escape is text-only: [`decode_bytes_escapes`] does
+/// not admit it, keeping the byte/text boundary typed.
+fn decode_unicode_escape(
+    chars: &mut std::str::CharIndices,
+    escape_offset: usize,
+) -> Result<char, StringLiteralError> {
+    let bad = StringLiteralError::BadEscape {
+        offset: escape_offset,
+    };
+    if chars.next().map(|(_, ch)| ch) != Some('{') {
+        return Err(bad);
+    }
+    let mut value: u32 = 0;
+    let mut digits = 0u32;
+    loop {
+        let (_, ch) = chars.next().ok_or(bad)?;
+        if ch == '}' {
+            break;
+        }
+        let digit = ch.to_digit(16).ok_or(bad)?;
+        digits += 1;
+        if digits > 6 {
+            return Err(bad);
+        }
+        value = value * 16 + digit;
+    }
+    if digits == 0 {
+        return Err(bad);
+    }
+    // `char::from_u32` rejects both the surrogate range and values above the scalar
+    // ceiling, so it is the single validation of the decoded value.
+    char::from_u32(value).ok_or(bad)
 }
 
 /// Decode a full bytes literal — surrounding `b"` … `"` included — into its bytes.
@@ -218,13 +258,64 @@ mod tests {
 
     #[test]
     fn rejects_unknown_escapes() {
-        for bad in [r"\0", r"\x41", r"\a", r"\u", r"\1"] {
+        // `\u` alone is no longer a rejected escape lead — it opens the `\u{...}`
+        // form — so the malformed `\u` cases are covered by `rejects_malformed_unicode_escapes`.
+        for bad in [r"\0", r"\x41", r"\a", r"\1"] {
             assert_eq!(
                 decode_string_escapes(bad),
                 Err(StringLiteralError::BadEscape { offset: 0 }),
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn decodes_unicode_escapes() {
+        // One to six hex digits denote one Unicode scalar value; ASCII, an astral
+        // scalar, and NUL all decode.
+        assert_eq!(decode_string_escapes(r"\u{41}").unwrap(), "A");
+        assert_eq!(decode_string_escapes(r"\u{1F600}").unwrap(), "\u{1F600}");
+        assert_eq!(decode_string_escapes(r"\u{0}").unwrap(), "\u{0}");
+        assert_eq!(
+            decode_string_escapes(r"pre\u{e9}post").unwrap(),
+            "pre\u{e9}post"
+        );
+        // The offset shift through the full-literal decoder still points at the
+        // backslash.
+        assert_eq!(decode_string_literal(r#""x\u{41}""#).unwrap(), "xA");
+    }
+
+    #[test]
+    fn rejects_malformed_unicode_escapes() {
+        // Empty braces, a value past the scalar ceiling, a surrogate, more than six
+        // digits, a missing brace, an unterminated escape, and a non-hex digit are
+        // each a bad escape at the backslash offset.
+        for bad in [
+            r"\u{}",
+            r"\u{110000}",
+            r"\u{D800}",
+            r"\u{1234567}",
+            r"\u41",
+            r"\u{41",
+            r"\u{4G}",
+            r"\u",
+        ] {
+            assert_eq!(
+                decode_string_escapes(bad),
+                Err(StringLiteralError::BadEscape { offset: 0 }),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_reject_unicode_escapes() {
+        // A unicode escape spells a scalar, which is a text concept; bytes spell
+        // bytes with `\xNN`, so `\u{...}` stays rejected in a bytes literal.
+        assert_eq!(
+            decode_bytes_escapes(r"\u{41}"),
+            Err(BytesLiteralError::BadEscape { offset: 0 })
+        );
     }
 
     #[test]

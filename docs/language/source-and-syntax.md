@@ -133,9 +133,12 @@ member or collection places may appear on the left of assignment.
 | Duration | `duration("PT600S")` | Canonical text constructor (see [temporal values](types-and-values.md#temporal-values)) |
 | Absence | `absent` | The missing case of an optional value |
 
-String escapes are `\\`, `\"`, `\n`, `\r`, and `\t`; other Unicode characters
-may appear directly in UTF-8 source. Byte strings accept those five escapes plus
-`\xNN`. Date and instant values are constructed from one canonical text literal each — `date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock builtin.
+String escapes are `\\`, `\"`, `\n`, `\r`, `\t`, and `\u{H}`, where `H` is one to
+six hexadecimal digits naming a Unicode scalar value (at most `10FFFF` and not a
+surrogate); other Unicode characters may appear directly in UTF-8 source. In an
+interpolated string the `\u{H}` escape is recognized as text, so its braces do not
+open an expression hole. Byte strings accept the five non-unicode escapes plus
+`\xNN`; `\u{H}` is text-only and is not a byte escape. Date and instant values are constructed from one canonical text literal each — `date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock builtin.
 
 Duration units are `second`, `minute`, `hour`, `day`, and `week`, with singular
 and plural spellings. Months and years are not fixed durations.
