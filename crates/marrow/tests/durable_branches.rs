@@ -711,6 +711,16 @@ const FIELD_SOURCE: &str = "resource Book\n\
      \x20       return n.text\n\
      \x20   return absent\n\
      \n\
+     pub fn setPinnedViaPlace(id: int, nid: string, flag: bool)\n\
+     \x20   transaction\n\
+     \x20       place note = ^books(id).notes(nid)\n\
+     \x20       if exists(note)\n\
+     \x20           note.pinned = flag\n\
+     \n\
+     pub fn notePinnedViaPlace(id: int, nid: string): bool?\n\
+     \x20   place note = ^books(id).notes(nid)\n\
+     \x20   return note.pinned\n\
+     \n\
      pub fn rootPresent(id: int): bool\n\
      \x20   return exists(^books(id))\n";
 
@@ -931,5 +941,48 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
             vec![Value::Int(9), Value::Text("b".into())]
         ),
         some_text("two")
+    );
+}
+
+/// Field-exact operations thread through a two-key branch `place`: a field read and a
+/// guarded (`if exists`) sparse set address the branch entry through the place's
+/// pre-evaluated `[root, branch]` key-path, and the guarded set preserves the branch's
+/// required field.
+#[test]
+fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place() {
+    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let mut attachment = attach(&image);
+    let key = || vec![Value::Int(10), Value::Text("a".into())];
+
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(10),
+            Value::Text("a".into()),
+            Value::Text("hi".into()),
+        ],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePinnedViaPlace", key()),
+        absent()
+    );
+
+    run(
+        &image,
+        &mut attachment,
+        "setPinnedViaPlace",
+        vec![Value::Int(10), Value::Text("a".into()), Value::Bool(true)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePinnedViaPlace", key()),
+        some_bool(true),
+        "a branch-place field read and guarded set thread through the two-key place",
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteText", key()),
+        some_text("hi"),
+        "the guarded branch-place set preserved the required field",
     );
 }
