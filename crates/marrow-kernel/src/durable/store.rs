@@ -1002,40 +1002,45 @@ fn layer_step<V: ReadView>(
 
 /// The durable layer the whole-entry `site` traverses, resolving its parent entry from
 /// `ancestor_keys`: a root (`WholePayload`) site traverses the root's entry family with
-/// no ancestor key; a branch site traverses its branch family beneath the root entry
-/// the ancestor key-path names. The single owner of the site-to-traversed-layer
-/// mapping. The ancestor arity and each key's scalar kind are asserted against the
-/// site's declared root and hop kinds as defense in depth over the verifier's proof.
-fn layer_of(site: &AuthorizedSite, ancestor_keys: &[KeyScalar]) -> physical::Layer {
+/// no ancestor key; a branch site traverses its branch family beneath the parent entry
+/// the ancestor key-path names, one ancestor key per parent hop above the traversed
+/// branch. The single owner of the site-to-traversed-layer mapping. The verifier proves
+/// the ancestor arity and each key's scalar kind against the site's declared root and hop
+/// kinds, but this is the trust boundary the independently verified image crosses into
+/// the kernel, so a mismatch faults [`KernelFault::Corruption`] — matching [`node_stem`]'s
+/// hard backstop — rather than mis-layering the traversal to a shallower or wrong parent
+/// node.
+fn layer_of(
+    site: &AuthorizedSite,
+    ancestor_keys: &[KeyScalar],
+) -> Result<physical::Layer, KernelFault> {
     match site.branch.split_last() {
         None => {
-            debug_assert!(
-                ancestor_keys.is_empty(),
-                "the root layer has no ancestor key"
-            );
-            physical::Layer::root(&site.root)
+            if !ancestor_keys.is_empty() {
+                return Err(KernelFault::Corruption);
+            }
+            Ok(physical::Layer::root(&site.root))
         }
         Some((traversed, parent_hops)) => {
-            debug_assert_eq!(
-                ancestor_keys.len(),
-                1 + parent_hops.len(),
-                "a branch layer's ancestor key-path locates its parent entry",
-            );
-            debug_assert_eq!(
-                ancestor_keys[0].scalar_kind(),
-                site.key,
-                "the root key kind matches the site",
-            );
-            let mut stem = physical::marker_key(&site.root, &ancestor_keys[0]);
-            for (hop, key) in parent_hops.iter().zip(&ancestor_keys[1..]) {
-                debug_assert_eq!(
-                    key.scalar_kind(),
-                    hop.key,
-                    "the branch key kind matches the hop"
-                );
+            // A branch layer's ancestor key-path locates its parent entry: the root key
+            // then one key per parent hop above the traversed branch.
+            if ancestor_keys.len() != 1 + parent_hops.len() {
+                return Err(KernelFault::Corruption);
+            }
+            let (root_key, parent_keys) = ancestor_keys
+                .split_first()
+                .expect("ancestor arity checked at least one above");
+            if root_key.scalar_kind() != site.key {
+                return Err(KernelFault::Corruption);
+            }
+            let mut stem = physical::marker_key(&site.root, root_key);
+            for (hop, key) in parent_hops.iter().zip(parent_keys) {
+                if key.scalar_kind() != hop.key {
+                    return Err(KernelFault::Corruption);
+                }
                 stem = physical::branch_child_stem(&stem, &hop.name, key);
             }
-            physical::Layer::branch(&stem, &traversed.name)
+            Ok(physical::Layer::branch(&stem, &traversed.name))
         }
     }
 }
@@ -1054,7 +1059,7 @@ fn op_iterate_bounded<V: ReadView>(
     from: Option<KeyScalar>,
     limit: BoundedLimit,
 ) -> Result<BoundedKeys, KernelFault> {
-    let layer = layer_of(site, ancestor_keys);
+    let layer = layer_of(site, ancestor_keys)?;
     // Reserve a bounded spine rather than the full `limit`: a sparse layer freezes far
     // fewer keys than a large `at most N` permits, so the eager reservation is capped
     // and the Vec grows on demand within `limit`. Peak freeze memory is the frozen key
@@ -2310,6 +2315,45 @@ mod tests {
                 keys: vec![],
                 more: false,
             }),
+        );
+    }
+
+    /// `layer_of`'s hard backstop over the trust boundary (matching `node_stem`): a branch
+    /// layer's ancestor key-path must be the root key then one key per parent hop. A wrong
+    /// ancestor arity or a wrong ancestor key kind faults `Corruption` rather than
+    /// mis-layering the traversal to the root entry family (which would leak the wrong
+    /// layer's keys). The verifier proves the arity and kinds, so this is the release
+    /// backstop a forged image cannot slip past.
+    #[test]
+    fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
+        let (schema, sites) = branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let branch = read.site(1); // a single-level branch site (needs `[root_key]`)
+
+        // Empty ancestor path: a branch layer needs one ancestor key; zero is a wrong
+        // arity that must fault rather than mis-layer to the root's own entry family.
+        assert_eq!(
+            read.iterate_bounded(&branch, &[], None, bound(4)),
+            Err(KernelFault::Corruption),
+        );
+        // Two ancestor keys where the single-level branch layer needs one: wrong arity.
+        assert_eq!(
+            read.iterate_bounded(
+                &branch,
+                &[KeyScalar::Str("a".into()), KeyScalar::Str("b".into())],
+                None,
+                bound(4),
+            ),
+            Err(KernelFault::Corruption),
+        );
+        // Right arity, wrong ancestor kind: the root key is a string, so an int ancestor
+        // key is a scalar-kind mismatch at the trust boundary.
+        assert_eq!(
+            read.iterate_bounded(&branch, &[KeyScalar::Int(0)], None, bound(4)),
+            Err(KernelFault::Corruption),
         );
     }
 }
