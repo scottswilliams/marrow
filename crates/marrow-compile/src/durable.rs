@@ -79,20 +79,71 @@ pub(crate) struct DurableField {
     pub(crate) required: bool,
 }
 
-/// The project's single executable durable root and its operation sites. Only a
-/// flat single-column keyed root (one key column, no groups or branches) reaches
-/// this form; its single key scalar backs the kernel-serviceable read/write path.
-pub(crate) struct DurableRoot {
+/// One resolved scalar field of an executable branch entry: its source name, value
+/// scalar, and required flag. The branch's whole-payload create/replace flows through
+/// its materialized record, so a branch field carries no site of its own here
+/// (branch field-exact operations are a later slice).
+pub(crate) struct DurableBranchField {
+    pub(crate) name: String,
+    pub(crate) scalar: ScalarType,
+    pub(crate) required: bool,
+}
+
+/// One executable keyed `branch` of a flat-executable root: a single-level
+/// single-column-keyed scalar-field subtree one level below the root. Its
+/// whole-entry operations address the two-element key-path `[root_key, branch_key]`
+/// through `entry_site`, and its constructor `Resource.branch(field: value, …)`
+/// builds `record` from `fields` in declaration order.
+pub(crate) struct DurableBranch {
     pub(crate) name: String,
     pub(crate) key: ScalarType,
     pub(crate) record: marrow_image::TypeId,
     pub(crate) entry_site: u16,
+    pub(crate) fields: Vec<DurableBranchField>,
+}
+
+impl DurableBranch {
+    pub(crate) fn field(&self, name: &str) -> Option<&DurableBranchField> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// The declaration-order index and descriptor of the branch field `name` — the
+    /// index into the branch's materialized record slots, so a field read of a
+    /// materialized branch entry addresses the same slot the record types.
+    pub(crate) fn field_index(&self, name: &str) -> Option<(u16, &DurableBranchField)> {
+        self.fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name == name)
+            .map(|(index, field)| (index as u16, field))
+    }
+}
+
+/// The project's single executable durable root, its operation sites, and its
+/// executable branches. A flat single-column keyed root of plain scalar fields whose
+/// only nested placements are single-level single-column-keyed scalar-field branches
+/// reaches this form; its single key scalar backs the kernel-serviceable read/write
+/// path and each branch adds one key column below it.
+pub(crate) struct DurableRoot {
+    pub(crate) name: String,
+    /// The resource (product) name backing this store — the head of a branch's
+    /// qualified constructor path `Resource.branch(…)`.
+    pub(crate) resource: String,
+    pub(crate) key: ScalarType,
+    pub(crate) record: marrow_image::TypeId,
+    pub(crate) entry_site: u16,
     pub(crate) fields: Vec<DurableField>,
+    pub(crate) branches: Vec<DurableBranch>,
 }
 
 impl DurableRoot {
     pub(crate) fn field(&self, name: &str) -> Option<&DurableField> {
         self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// The executable branch declared with the simple name `name`, if any.
+    pub(crate) fn branch(&self, name: &str) -> Option<&DurableBranch> {
+        self.branches.iter().find(|branch| branch.name == name)
     }
 }
 
@@ -111,6 +162,17 @@ impl DurableRegistry {
     /// The executable flat single-column keyed root, if the project declares one.
     pub(crate) fn root(&self) -> Option<&DurableRoot> {
         self.executable.as_ref()
+    }
+
+    /// The executable branch whose materialized entry record is the image type `ty`, if
+    /// any — the owner that resolves a field of a materialized branch entry value read
+    /// through `if const n = ^root(k).branch(bk)`.
+    pub(crate) fn branch_by_record(&self, ty: marrow_image::TypeId) -> Option<&DurableBranch> {
+        self.executable
+            .as_ref()?
+            .branches
+            .iter()
+            .find(|branch| branch.record == ty)
     }
 
     /// The name of a declared root the kernel cannot yet serve (a singleton or
@@ -234,7 +296,7 @@ impl DurableRegistry {
                 value: resolver.build_value_shape(records, field.ty, 1),
             })
             .collect();
-        let (groups_and_branches, has_extras) =
+        let groups_and_branches =
             resolver.build_extras(draft, records, &resource.members, &store.resource);
 
         // Resolve the root's managed indexes before appending the group/branch members
@@ -315,7 +377,15 @@ impl DurableRegistry {
             )))
             .index();
         let mut top_field_sites: Vec<u16> = Vec::new();
-        emit_member_sites(draft, &root_steps, &members, &mut top_field_sites, true);
+        let mut top_branch_sites: Vec<u16> = Vec::new();
+        emit_member_sites(
+            draft,
+            &root_steps,
+            &members,
+            &mut top_field_sites,
+            &mut top_branch_sites,
+            true,
+        );
         // One read site per managed index: a nonunique index is a progressive-prefix
         // scan, a unique index a complete-key exact lookup. There is deliberately no
         // index-write site — maintenance is compiler-owned. Every index site seals as
@@ -333,6 +403,33 @@ impl DurableRegistry {
             draft.add_site(site);
         }
 
+        // Decide executability and capture the executable branch descriptors while the
+        // member tree (which carries each branch's materialized record type) is still in
+        // hand — it moves into the `RootDef` below.
+        //
+        // Executable durable operations exist for the flat single-column keyed root of
+        // plain scalar fields, together with its single-level single-column-keyed
+        // scalar-field branches — the shape the kernel serves. A singleton, composite-key,
+        // group-bearing, widened-field, or nested/composite-branch root (a top-level
+        // field that is a nominal scalar, struct, enum, or `Option`; a group; or a branch
+        // with more than one key column or any non-scalar/nested member) carries its
+        // identity and its full site set, but the lowerer reports any operation over it as
+        // not yet executable — its sites seal and park. `has_extras` (any group or branch)
+        // no longer parks on its own: a simple branch is executable and mirrors the
+        // verifier's independent `keeps_root_flat`.
+        let all_scalar_fields = record
+            .fields
+            .iter()
+            .all(|f| matches!(f.ty, GArg::Scalar(_)));
+        let single_key = matches!(key_scalars.as_slice(), [_]);
+        let members_flat = members.iter().all(member_keeps_root_flat);
+        let executable = single_key && all_scalar_fields && members_flat;
+        let branches = if executable {
+            build_executable_branches(records, resource, &members, &top_branch_sites)
+        } else {
+            Vec::new()
+        };
+
         let root_name = draft.intern_string(&store.root.root);
         draft.add_root(RootDef {
             name: root_name,
@@ -346,22 +443,12 @@ impl DurableRegistry {
             },
         });
 
-        // Executable durable operations exist only for the flat single-column keyed
-        // root of plain scalar fields the kernel can serve. A singleton, composite-key,
-        // group/branch-bearing, or widened-field root (any top-level field that is a
-        // nominal scalar, struct, enum, or `Option` rather than a plain base scalar)
-        // carries its identity and its full site set, but the lowerer reports any
-        // operation over it as not yet executable — its sites seal and park.
-        let all_scalar_fields = record
-            .fields
-            .iter()
-            .all(|f| matches!(f.ty, GArg::Scalar(_)));
-        let [key] = key_scalars.as_slice() else {
-            return Self::declared(&store.root.root);
-        };
-        if has_extras || !all_scalar_fields {
+        if !executable {
             return Self::declared(&store.root.root);
         }
+        let [key] = key_scalars.as_slice() else {
+            unreachable!("an executable root has exactly one key column");
+        };
         // A flat root has only top-level scalar fields, so `top_field_sites[i]` is the
         // field-leaf site of `record.fields[i]` (both in member/record order).
         let fields = record
@@ -382,10 +469,12 @@ impl DurableRegistry {
         Self {
             executable: Some(DurableRoot {
                 name: store.root.root.clone(),
+                resource: store.resource.clone(),
                 key: *key,
                 record: record.type_id,
                 entry_site,
                 fields,
+                branches,
             }),
             declared_root: Some(store.root.root.clone()),
         }
@@ -619,19 +708,19 @@ impl<'a> IdentityResolver<'a> {
     }
 
     /// Walk a resource's declared members, returning the durable member records for
-    /// its static `group` namespaces and keyed `branch` placements (its top-level
-    /// stored fields are anchored by the caller against the materialized record) and
-    /// whether any such group or branch is present. `container` is the anchor path
-    /// prefix — the resource name at the top level, extended by each group or branch
-    /// name as the walk descends. A keyed scalar leaf or a non-scalar field inside a
-    /// group or branch is a precise `check.unsupported` rejection.
+    /// its static `group` namespaces (first, in source order) then its keyed `branch`
+    /// placements (in source order) — its top-level stored fields are anchored by the
+    /// caller against the materialized record. `container` is the anchor path prefix —
+    /// the resource name at the top level, extended by each group or branch name as the
+    /// walk descends. A keyed scalar leaf or a non-scalar field inside a group or branch
+    /// is a precise `check.unsupported` rejection.
     fn build_extras(
         &mut self,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         members: &[ResourceMember],
         container: &str,
-    ) -> (Vec<DurableMemberDef>, bool) {
+    ) -> Vec<DurableMemberDef> {
         let mut groups = Vec::new();
         let mut branches = Vec::new();
         for member in members {
@@ -672,9 +761,8 @@ impl<'a> IdentityResolver<'a> {
                 });
             }
         }
-        let has_extras = !groups.is_empty() || !branches.is_empty();
         groups.extend(branches);
-        (groups, has_extras)
+        groups
     }
 
     /// The key tuple of a branch placement: each column's scalar and its ledger id
@@ -730,7 +818,7 @@ impl<'a> IdentityResolver<'a> {
                 record_fields.push(record_field);
             }
         }
-        let (extras, _) = self.build_extras(draft, records, &group.members, path);
+        let extras = self.build_extras(draft, records, &group.members, path);
         members.extend(extras);
         (members, record_fields)
     }
@@ -973,6 +1061,7 @@ fn emit_member_sites(
     parent_steps: &[SemanticStep],
     members: &[DurableMemberDef],
     top_field_sites: &mut Vec<u16>,
+    top_branch_sites: &mut Vec<u16>,
     is_top: bool,
 ) {
     for member in members {
@@ -990,20 +1079,124 @@ fn emit_member_sites(
             DurableMemberDef::Group { id, members } => {
                 let mut steps = parent_steps.to_vec();
                 steps.push(SemanticStep::new(SemanticStepKind::Group, *id));
-                emit_member_sites(draft, &steps, members, top_field_sites, false);
+                emit_member_sites(
+                    draft,
+                    &steps,
+                    members,
+                    top_field_sites,
+                    top_branch_sites,
+                    false,
+                );
             }
             DurableMemberDef::Branch {
                 placement, members, ..
             } => {
                 let mut steps = parent_steps.to_vec();
                 steps.push(SemanticStep::new(SemanticStepKind::Placement, *placement));
-                draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(
-                    steps.clone(),
-                )));
-                emit_member_sites(draft, &steps, members, top_field_sites, false);
+                let site = draft
+                    .add_site(SiteDef::whole_payload(SemanticPath::from_steps(
+                        steps.clone(),
+                    )))
+                    .index();
+                // A root's direct branches, in declaration order, back the executable
+                // branch list; the verifier's `branch_index` counts branch members the
+                // same way, so this whole-payload site is the one it seals as the
+                // matching `BranchEntry`. A nested branch (not `is_top`) parks.
+                if is_top {
+                    top_branch_sites.push(site);
+                }
+                emit_member_sites(
+                    draft,
+                    &steps,
+                    members,
+                    top_field_sites,
+                    top_branch_sites,
+                    false,
+                );
             }
         }
     }
+}
+
+/// Whether a durable member keeps its containing root flat-executable, mirroring the
+/// verifier's independent `keeps_root_flat`: a plain scalar field, or a single-level
+/// single-column-keyed branch whose direct members are all plain scalar fields. A
+/// group, a composite or nested branch, or a widened (struct/enum) field does not.
+fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
+    match member {
+        DurableMemberDef::Field { value, .. } => matches!(value, DurableValueShape::Scalar(_)),
+        DurableMemberDef::Group { .. } => false,
+        DurableMemberDef::Branch { keys, members, .. } => {
+            keys.len() == 1
+                && members.iter().all(|inner| {
+                    matches!(
+                        inner,
+                        DurableMemberDef::Field {
+                            value: DurableValueShape::Scalar(_),
+                            ..
+                        }
+                    )
+                })
+        }
+    }
+}
+
+/// The executable branch descriptors of a flat-executable root, in declaration order.
+/// Each branch's materialized record type comes from its member def, its whole-payload
+/// site from `branch_sites`, and its simple name, key, and field plan from the source
+/// resource declaration — all three in the same declaration order, so `branch_sites[i]`
+/// is the site of the i-th branch member, which the verifier seals as `BranchEntry(i)`.
+/// Called only when the caller has proven the root flat-executable, so every branch is a
+/// single-level single-column-keyed scalar-field branch.
+fn build_executable_branches(
+    records: &TypeRegistry,
+    resource: &ResourceDecl,
+    members: &[DurableMemberDef],
+    branch_sites: &[u16],
+) -> Vec<DurableBranch> {
+    let branch_records: Vec<marrow_image::TypeId> = members
+        .iter()
+        .filter_map(|member| match member {
+            DurableMemberDef::Branch { record, .. } => Some(*record),
+            _ => None,
+        })
+        .collect();
+    resource
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            ResourceMember::Group(group) if !group.keys.is_empty() => Some(group),
+            _ => None,
+        })
+        .enumerate()
+        .map(|(index, group)| {
+            let key = scalar_of(&records.expand(&group.keys[0].ty))
+                .expect("an executable branch has a single orderable-key-scalar column");
+            let fields = group
+                .members
+                .iter()
+                .filter_map(|member| match member {
+                    ResourceMember::Field(field) => {
+                        let scalar = scalar_of(&records.expand(&field.ty))
+                            .expect("an executable branch field is a scalar");
+                        Some(DurableBranchField {
+                            name: field.name.clone(),
+                            scalar,
+                            required: field.required,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            DurableBranch {
+                name: group.name.clone(),
+                key,
+                record: branch_records[index],
+                entry_site: branch_sites[index],
+                fields,
+            }
+        })
+        .collect()
 }
 
 fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {

@@ -1676,6 +1676,150 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
     assert_eq!(code_of(&bytes), "image.flow");
 }
 
+/// The tracer schema plus a string-keyed `notes(noteId:string)` branch of one required
+/// `text` field. The branch key is `string` to match the root key type, so a strict
+/// root-field set naming the branch key slot type-checks — isolating the presence
+/// lattice as the sole gate. Returns (draft, label field-leaf site, branch entry site,
+/// branch record index).
+fn branch_presence_schema() -> (ImageDraft, u16, u16, u16) {
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
+    });
+    let notes = draft.intern_string("notes");
+    let notes_qualified = draft.intern_string("Counter.notes");
+    let notes_text = draft.intern_string("text");
+    let notes_record = draft.add_record_type(RecordTypeDef {
+        name: notes_qualified,
+        fields: vec![FieldDef {
+            name: notes_text,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let mut members = counters_members();
+    members.push(DurableMemberDef::Branch {
+        placement: LedgerIdBytes::from_bytes([0x30; 16]),
+        name: notes,
+        record: notes_record,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x31; 16]),
+        }],
+        members: vec![DurableMemberDef::Field {
+            id: LedgerIdBytes::from_bytes([0x32; 16]),
+            required: true,
+            value: DurableValueShape::Scalar(Scalar::Text),
+        }],
+    });
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members,
+        },
+    });
+    draft.add_site(SiteDef::whole_payload(root_path()));
+    draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let label_site = draft.add_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
+    let branch_entry = draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x30; 16]),
+        ),
+    ])));
+    (
+        draft,
+        label_site.index(),
+        branch_entry.index(),
+        notes_record.index(),
+    )
+}
+
+/// A branch whole-entry create does not establish root-entry presence: it leaves the
+/// root descendant-only, so its marker is still absent. A forged image that creates a
+/// branch entry keyed by slot 1 and then does a strict present-entry root-field set
+/// naming slot 1 — relying on the branch create to dominate it — is refused at the flow
+/// phase. Without the `is_entry_site` gate in the presence lattice the branch create
+/// would wrongly mark slot 1 present and this image would verify. The branch key is
+/// `string` (the root key type), so the strict set type-checks and the presence lattice
+/// is the sole gate.
+#[test]
+fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
+    let (mut draft, label_site, branch_entry, notes_record) = branch_presence_schema();
+    let text = draft.intern_text("t");
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("e");
+    // Slots: 0 = root key (string param), 1 = branch key (string param), 2 = the branch
+    // record local (so the create matches the `LocalGet(rec); LocalGet(key)` shape the
+    // presence lattice keys on).
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::ConstLoad(text.index()),
+        Instr::RecordNew(notes_record),
+        Instr::LocalSet(2),
+        Instr::LocalGet(0), // root key
+        Instr::LocalGet(1), // branch key
+        Instr::LocalGet(2), // branch record
+        Instr::DurCreateEntry(branch_entry),
+        Instr::ConstLoad(text.index()),
+        Instr::SomeWrap,
+        // Claims slot 1's *root* entry is present, relying on the branch create above.
+        Instr::DurSetSparsePresent {
+            site: label_site,
+            key_slot: 1,
+        },
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Text),
+        ],
+        ret: ImageType::Unit,
+        local_count: 3,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
 #[test]
 fn flow_transaction_owner_may_not_be_called_rejects() {
     // A helper owns a transaction (contains TxnBegin); an export that calls it is a

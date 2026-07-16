@@ -3103,16 +3103,26 @@ fn presence_edges(
                 .map(|s| (s, present.clone()))
                 .collect(),
         },
-        SealedInstr::DurCreateEntry(_) => {
+        SealedInstr::DurCreateEntry(site) => {
             let mut next = present.clone();
-            if let Some(slot) = entry_write_key_slot(code, index) {
+            // Only a root whole-entry create establishes root-entry presence for its key
+            // slot. A branch create (a `BranchEntry` site) leaves the root
+            // descendant-only — its root marker is still absent — so it establishes no
+            // presence fact the strict root-field set could rely on.
+            if is_entry_site(ctx, *site)
+                && let Some(slot) = entry_write_key_slot(code, index)
+            {
                 next.insert(slot);
             }
             vec![(index + 1, next)]
         }
-        SealedInstr::DurEraseEntry(_) => {
+        SealedInstr::DurEraseEntry(site) => {
             let mut next = present.clone();
-            if let Some(slot) = adjacent_key_slot(code, index) {
+            // Symmetrically, only a root whole-entry erase kills a root-entry presence
+            // fact; a branch erase touches no root marker.
+            if is_entry_site(ctx, *site)
+                && let Some(slot) = adjacent_key_slot(code, index)
+            {
                 next.remove(&slot);
             }
             vec![(index + 1, next)]
@@ -3183,14 +3193,16 @@ fn read_entry_guard_slot(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Optio
 /// comes from the `LocalGet` two back when the record is a single local push.
 ///
 /// Soundness of shape-adjacent slot identification (this fn and `adjacent_key_slot`):
-/// on the phase-3 subset, create and erase target only the `WholePayload` site and the
-/// durable graph admits a single root (`MAX_ROOTS == 1`, `marrow_image::bounds`). With
-/// one root every entry key names the same containing entry, so a key slot alone fully
-/// discriminates which entry the write establishes or kills — the adjacent `LocalGet`
-/// is that key. When `MAX_ROOTS` widens this no longer holds: two writes through the
-/// same slot value could touch different roots' entries, and the presence lattice must
-/// key on (root, slot) rather than slot alone. Revisit both helpers for per-root slot
-/// discrimination before admitting more than one root.
+/// the caller applies these only to a root `WholePayload` create/erase (it gates each on
+/// `is_entry_site`), so a branch create/erase — whose key-path leaves a *branch* key
+/// adjacent to the op — never reaches here and never establishes root-entry presence.
+/// The durable graph admits a single root (`MAX_ROOTS == 1`, `marrow_image::bounds`), so
+/// for the gated root write every entry key names the same containing entry and a key
+/// slot alone fully discriminates which entry the write establishes or kills — the
+/// adjacent `LocalGet` is that key. When `MAX_ROOTS` widens this no longer holds: two
+/// writes through the same slot value could touch different roots' entries, and the
+/// presence lattice must key on (root, slot) rather than slot alone. Revisit both helpers
+/// for per-root slot discrimination before admitting more than one root.
 fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
     if index < 2 {
         return None;

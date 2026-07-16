@@ -524,7 +524,7 @@ enum DurShape {
     Field,
 }
 
-/// How a durable operation's key tuple reaches the stack.
+/// How one key column of a durable operation's key-path reaches the stack.
 #[derive(Clone, Copy)]
 enum PlaceKey<'e> {
     /// A key operand expression, lowered — and therefore evaluated — at the
@@ -536,26 +536,81 @@ enum PlaceKey<'e> {
     Bound(u16),
 }
 
-/// A resolved durable place: how its key reaches the stack, its key type, and its
-/// target. The key is an inline operand expression or a source-local `place`'s
-/// pre-evaluated slot; the target is the whole entry or one field.
-struct DurablePlace<'e> {
+/// One column of a durable operation's key-path: how it reaches the stack and its
+/// scalar type. A root entry is a one-column path `[root_key]`; a single-level branch
+/// entry is a two-column path `[root_key, branch_key]`, pushed root-first so the
+/// innermost key is on top (the order the kernel's `pop_key_path` expects).
+#[derive(Clone, Copy)]
+struct DurKey<'e> {
     key: PlaceKey<'e>,
     key_ty: ScalarType,
+}
+
+/// A resolved durable place: the key-path that addresses its node and its target. The
+/// path columns are inline operand expressions or a source-local `place`'s
+/// pre-evaluated slots; the target is the whole entry or one field.
+struct DurablePlace<'e> {
+    keys: Vec<DurKey<'e>>,
     target: DurTarget,
     span: SourceSpan,
 }
 
-/// A source-local named `place`: a durable entry designation whose single key
-/// column was evaluated exactly once into `key_slot` at the binding. Whole-entry
-/// and field operations through the place read that slot rather than re-evaluating
-/// the key operand, and the field sites are re-derived from the executable root.
+impl DurablePlace<'_> {
+    /// The single root key slot when this place's whole key-path is one pre-evaluated
+    /// `Bound` column — the shape a strict present-entry field set and a place-entry
+    /// presence guard require. `None` for an inline key or a nested (branch) path.
+    fn root_bound_slot(&self) -> Option<u16> {
+        match self.keys.as_slice() {
+            [
+                DurKey {
+                    key: PlaceKey::Bound(slot),
+                    ..
+                },
+            ] => Some(*slot),
+            _ => None,
+        }
+    }
+}
+
+/// A source-local named `place`: a durable entry designation whose key columns were
+/// evaluated exactly once into `key_slots` at the binding. Whole-entry and field
+/// operations through the place read those slots rather than re-evaluating the key
+/// operands. A root place has one column; a branch place has two (`[root, branch]`)
+/// and addresses a nested entry, over which only whole-entry operations lower.
 struct PlaceLocal {
     name: String,
-    key_slot: u16,
-    key_ty: ScalarType,
+    key_slots: Vec<(u16, ScalarType)>,
     entry_site: u16,
     record: TypeId,
+}
+
+impl PlaceLocal {
+    /// Whether this place addresses a nested (branch) entry rather than the root.
+    fn is_nested(&self) -> bool {
+        self.key_slots.len() > 1
+    }
+
+    /// The single root key slot when this is a root place (one key column) — the slot a
+    /// strict present-entry field set reads and a presence guard proves. `None` for a
+    /// branch place, whose field operations do not lower.
+    fn root_slot(&self) -> Option<u16> {
+        match self.key_slots.as_slice() {
+            [(slot, _)] => Some(*slot),
+            _ => None,
+        }
+    }
+
+    /// This place's key-path as resolved [`DurKey`] columns reading the pre-evaluated
+    /// slots, root column first.
+    fn bound_keys(&self) -> Vec<DurKey<'static>> {
+        self.key_slots
+            .iter()
+            .map(|(slot, ty)| DurKey {
+                key: PlaceKey::Bound(*slot),
+                key_ty: *ty,
+            })
+            .collect()
+    }
 }
 
 /// A resolved durable target: the whole entry or one field.
@@ -1911,9 +1966,9 @@ impl<'a> FnLowerer<'a> {
             let Some(place) = self.resolve_durable(value) else {
                 return Flow::Fallthrough;
             };
-            if let PlaceKey::Bound(slot) = place.key {
-                guard_slot = Some(slot);
-            }
+            // Only a root place read proves a strict-set-consumable presence fact; a
+            // branch place read has no field-exact consumer.
+            guard_slot = place.root_bound_slot();
             match self.lower_durable_read(place) {
                 Some(ty) => ty,
                 None => return Flow::Fallthrough,
@@ -3420,15 +3475,32 @@ impl<'a> FnLowerer<'a> {
         let Expression::Name { segments, .. } = callee else {
             // `Age.checked(n)`: the nominal range test, the one member call the
             // subset admits. Any other field-shaped callee stays unsupported.
-            if let Expression::Field { base, name, .. } = callee
-                && name == "checked"
-                && let Expression::Name { segments, .. } = &**base
-                && let [type_name] = segments.as_slice()
-                && let Some((id, _)) = self.records.nominal_by_name(type_name)
-            {
-                return self
-                    .lower_checked_nominal(id, args, span)
-                    .map(CallResult::Value);
+            if let Expression::Field { base, name, .. } = callee {
+                if name == "checked"
+                    && let Expression::Name { segments, .. } = &**base
+                    && let [type_name] = segments.as_slice()
+                    && let Some((id, _)) = self.records.nominal_by_name(type_name)
+                {
+                    return self
+                        .lower_checked_nominal(id, args, span)
+                        .map(CallResult::Value);
+                }
+                // `Resource.branch(field: value, …)`: a keyed branch entry constructor,
+                // symmetric with the root constructor `Resource(field: value, …)` and
+                // resolved through the one type-namespace owner (the store's resource and
+                // its executable branch).
+                if let Expression::Name {
+                    segments,
+                    span: head_span,
+                    ..
+                } = &**base
+                    && let [head] = segments.as_slice()
+                    && self.executable_branch(head, name).is_some()
+                {
+                    return self
+                        .lower_branch_constructor(head, name, *head_span, args, span)
+                        .map(CallResult::Value);
+                }
             }
             self.fail(unsupported(self.file, span, "this call"));
             return None;
@@ -4042,6 +4114,112 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::RecordNew(type_id.index()), span);
         Some(LTy::Record {
             ty: type_id,
+            optional: false,
+        })
+    }
+
+    /// The executable branch `resource.branch`, if `resource` is the store's executable
+    /// resource and `branch` is one of its single-level keyed branches. The returned
+    /// reference borrows the durable registry (lifetime `'a`), not `self`, so it stays
+    /// valid across later mutating calls.
+    fn executable_branch(
+        &self,
+        resource: &str,
+        branch: &str,
+    ) -> Option<&'a crate::durable::DurableBranch> {
+        let root = self.durable.root()?;
+        if root.resource != resource {
+            return None;
+        }
+        root.branch(branch)
+    }
+
+    /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
+    /// branch's materialized record is built from its declared scalar fields in
+    /// declaration order (f0 pushed first), each required field supplied and each sparse
+    /// field defaulting to vacant — the same shape as the root constructor, one level
+    /// down. The shadowing rule holds: a value binding may not shadow the resource type
+    /// name in dotted-constructor head position.
+    fn lower_branch_constructor(
+        &mut self,
+        resource: &str,
+        branch_name: &str,
+        head_span: SourceSpan,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                head_span,
+                format!(
+                    "`{resource}` is a resource type here (the head of a branch constructor \
+                     `{resource}.{branch_name}(…)`); a value binding may not shadow it"
+                ),
+            ));
+            return None;
+        }
+        let branch = self.executable_branch(resource, branch_name)?;
+        let record = branch.record;
+
+        // Validate argument names against the branch's fields before emitting, so
+        // evaluation order is the field declaration order.
+        for argument in args {
+            let Some(arg_name) = &argument.name else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    "constructor arguments must be named".to_string(),
+                ));
+                return None;
+            };
+            if branch.field(arg_name).is_none() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{resource}.{branch_name}` has no field `{arg_name}`"),
+                ));
+                return None;
+            }
+        }
+
+        // `branch` borrows the registry (lifetime independent of `self`), so it stays
+        // valid across the mutating `lower_as`/`push` calls below.
+        for field in &branch.fields {
+            let arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(field.name.as_str()));
+            let bare = LTy::bare_scalar(field.scalar);
+            let expected = if field.required {
+                bare
+            } else {
+                bare.to_optional()
+            };
+            match arg {
+                Some(argument) => {
+                    self.lower_as(&argument.value, expected)?;
+                }
+                None if field.required => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("missing required field `{}`", field.name),
+                    ));
+                    return None;
+                }
+                None => {
+                    // A sparse field defaults to a typed vacant optional.
+                    self.push(Instr::VacantLoad(bare.to_optional().image()), span);
+                }
+            }
+        }
+        self.push(Instr::RecordNew(record.index()), span);
+        Some(LTy::Record {
+            ty: record,
             optional: false,
         })
     }
@@ -4793,20 +4971,35 @@ impl<'a> FnLowerer<'a> {
                 ty,
                 optional: false,
             } => {
-                let Some(record) = self.records.by_name_for_type(ty) else {
-                    self.fail(unsupported(self.file, field_span, "this field access"));
-                    return None;
-                };
-                let Some((index, field)) = record.field(name) else {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        field_span,
-                        format!("record has no field `{name}`"),
-                    ));
-                    return None;
-                };
-                Some((index, field.ty, field.required))
+                if let Some(record) = self.records.by_name_for_type(ty) {
+                    let Some((index, field)) = record.field(name) else {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            field_span,
+                            format!("record has no field `{name}`"),
+                        ));
+                        return None;
+                    };
+                    return Some((index, field.ty, field.required));
+                }
+                // A materialized keyed branch entry value (from `if const n =
+                // ^root(k).branch(bk)`) is an image record the resource registry does not
+                // own; resolve its scalar fields against the branch's field layout.
+                if let Some(branch) = self.durable.branch_by_record(ty) {
+                    let Some((index, field)) = branch.field_index(name) else {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            field_span,
+                            format!("record has no field `{name}`"),
+                        ));
+                        return None;
+                    };
+                    return Some((index, GArg::Scalar(field.scalar), field.required));
+                }
+                self.fail(unsupported(self.file, field_span, "this field access"));
+                None
             }
             LTy::Struct {
                 ty,
@@ -4860,25 +5053,19 @@ impl<'a> FnLowerer<'a> {
 
     // --- durable places (design §D) ---
 
-    /// Detect the inline durable shape of a place expression (an `^root(key)`
-    /// address), if any (no diagnostics). Does not see source-local `place`
-    /// bindings, which need instance state; use [`Self::durable_access`] for the
-    /// full detection.
+    /// Detect the inline durable shape of a place expression (an `^root(key)` or
+    /// `^root(key).branch(bkey)` address, or an `^root(key).field` field), if any (no
+    /// diagnostics). Does not see source-local `place` bindings, which need instance
+    /// state; use [`Self::durable_access`] for the full detection.
     fn durable_shape(expr: &Expression) -> Option<DurShape> {
         match expr {
-            Expression::Call { callee, .. }
-                if matches!(&**callee, Expression::SavedRoot { .. }) =>
-            {
-                Some(DurShape::Entry)
-            }
-            Expression::Field { base, .. } => match &**base {
-                Expression::Call { callee, .. }
-                    if matches!(&**callee, Expression::SavedRoot { .. }) =>
-                {
-                    Some(DurShape::Field)
-                }
-                _ => None,
-            },
+            // `^root(key)` — a root whole-entry address.
+            Expression::Call { callee, .. } if is_saved_root(callee) => Some(DurShape::Entry),
+            // `^root(key).branch(bkey)` — a single-level branch whole-entry address: a
+            // call whose callee is a field selector on a root call.
+            Expression::Call { callee, .. } if is_root_field(callee) => Some(DurShape::Entry),
+            // `^root(key).field` — a root field address.
+            Expression::Field { base, .. } if is_root_call(base) => Some(DurShape::Field),
             _ => None,
         }
     }
@@ -4931,7 +5118,9 @@ impl<'a> FnLowerer<'a> {
         let [name] = segments.as_slice() else {
             return None;
         };
-        self.lookup_place(name).map(|place| place.key_slot)
+        // Only a root place carries a strict-set presence consumer; a branch place's
+        // field operations do not lower, so it establishes no guarded field slot.
+        self.lookup_place(name).and_then(PlaceLocal::root_slot)
     }
 
     /// Whether `name` names an in-scope `place`.
@@ -4968,8 +5157,7 @@ impl<'a> FnLowerer<'a> {
                 };
                 let place = self.lookup_place(name)?;
                 Some(DurablePlace {
-                    key: PlaceKey::Bound(place.key_slot),
-                    key_ty: place.key_ty,
+                    keys: place.bound_keys(),
                     target: DurTarget::Entry {
                         entry_site: place.entry_site,
                         record: place.record,
@@ -4991,9 +5179,20 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let place = self.lookup_place(name)?;
-                let (key_slot, key_ty) = (place.key_slot, place.key_ty);
-                // The field sites are re-derived from the one executable root a place
-                // implies; copy the scalar facts out before any diagnostic borrow.
+                // A branch place addresses a nested entry; its field-exact operations
+                // are not yet lowered (a later slice), so only whole-entry operations
+                // flow through it.
+                if place.is_nested() {
+                    self.fail(unsupported(
+                        self.file,
+                        *name_span,
+                        "a field of a keyed `branch` entry",
+                    ));
+                    return None;
+                }
+                let keys = place.bound_keys();
+                // The field sites are re-derived from the one executable root a root
+                // place implies; copy the scalar facts out before any diagnostic borrow.
                 let field = self
                     .durable
                     .root()
@@ -5001,8 +5200,7 @@ impl<'a> FnLowerer<'a> {
                     .map(|field| (field.site, field.scalar, field.required));
                 match field {
                     Some((site, scalar, required)) => Some(DurablePlace {
-                        key: PlaceKey::Bound(key_slot),
-                        key_ty,
+                        keys,
                         target: DurTarget::Field {
                             site,
                             scalar,
@@ -5030,7 +5228,7 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Emit the key operand of a durable operation: lower the inline key expression
+    /// Emit one key column of a durable operation: lower the inline key expression
     /// (evaluating it here) or read the `place`'s pre-evaluated key slot.
     fn emit_key(&mut self, key: PlaceKey, key_ty: ScalarType, span: SourceSpan) -> Option<()> {
         match key {
@@ -5040,6 +5238,16 @@ impl<'a> FnLowerer<'a> {
                 Some(())
             }
         }
+    }
+
+    /// Emit a durable operation's whole key-path, root column first, so the innermost
+    /// key is left on top — the order the kernel's `pop_key_path` reads back to a
+    /// root-first path. A one-column path is a root address; a two-column path a branch.
+    fn emit_key_path(&mut self, keys: &[DurKey], span: SourceSpan) -> Option<()> {
+        for column in keys {
+            self.emit_key(column.key, column.key_ty, span)?;
+        }
+        Some(())
     }
 
     /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple
@@ -5074,6 +5282,7 @@ impl<'a> FnLowerer<'a> {
         let Some(place) = self.resolve_durable(place_expr) else {
             return;
         };
+        let span = place.span;
         let DurTarget::Entry { entry_site, record } = place.target else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -5084,25 +5293,33 @@ impl<'a> FnLowerer<'a> {
             ));
             return;
         };
-        let PlaceKey::Expr(key_expr) = place.key else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                place_expr.span(),
-                "a `place` names a store address `^root(key)`, not another place".to_string(),
-            ));
-            return;
-        };
-        let key_ty = place.key_ty;
-        let key_slot = self.alloc_slot();
-        if self.lower_as(key_expr, LTy::bare_scalar(key_ty)).is_none() {
-            return;
+        // Evaluate each key column of the address exactly once into a fresh slot, root
+        // column first, so every later operation through the place reads the slots
+        // rather than re-running the key operands. A branch place binds two columns.
+        let mut key_slots = Vec::with_capacity(place.keys.len());
+        for column in place.keys {
+            let PlaceKey::Expr(key_expr) = column.key else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    place_expr.span(),
+                    "a `place` names a store address `^root(key)`, not another place".to_string(),
+                ));
+                return;
+            };
+            let key_slot = self.alloc_slot();
+            if self
+                .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
+                .is_none()
+            {
+                return;
+            }
+            self.push(Instr::LocalSet(key_slot), span);
+            key_slots.push((key_slot, column.key_ty));
         }
-        self.push(Instr::LocalSet(key_slot), place.span);
         self.places.push(PlaceLocal {
             name: name.to_string(),
-            key_slot,
-            key_ty,
+            key_slots,
             entry_site,
             record,
         });
@@ -5132,26 +5349,81 @@ impl<'a> FnLowerer<'a> {
         match expr {
             Expression::Call {
                 callee, args, span, ..
-            } => {
-                let Expression::SavedRoot {
+            } => match &**callee {
+                // `^root(key)` — a root whole-entry address.
+                Expression::SavedRoot {
                     name,
                     span: root_span,
-                } = &**callee
-                else {
-                    return None;
-                };
-                self.check_root_name(root, name, *root_span)?;
-                let key = self.single_key_arg(args, *span)?;
-                Some(DurablePlace {
-                    key: PlaceKey::Expr(key),
-                    key_ty: root.key,
-                    target: DurTarget::Entry {
-                        entry_site: root.entry_site,
-                        record: root.record,
-                    },
-                    span: *span,
-                })
-            }
+                } => {
+                    self.check_root_name(root, name, *root_span)?;
+                    let key = self.single_key_arg(args, *span)?;
+                    Some(DurablePlace {
+                        keys: vec![DurKey {
+                            key: PlaceKey::Expr(key),
+                            key_ty: root.key,
+                        }],
+                        target: DurTarget::Entry {
+                            entry_site: root.entry_site,
+                            record: root.record,
+                        },
+                        span: *span,
+                    })
+                }
+                // `^root(key).branch(bkey)` — a single-level branch whole-entry address.
+                Expression::Field {
+                    base,
+                    name: branch_name,
+                    name_span: branch_span,
+                    ..
+                } => {
+                    let Expression::Call {
+                        callee: root_callee,
+                        args: root_args,
+                        span: root_call_span,
+                        ..
+                    } = &**base
+                    else {
+                        return None;
+                    };
+                    let Expression::SavedRoot {
+                        name,
+                        span: root_span,
+                    } = &**root_callee
+                    else {
+                        return None;
+                    };
+                    self.check_root_name(root, name, *root_span)?;
+                    let root_key = self.single_key_arg(root_args, *root_call_span)?;
+                    let branch_key = self.single_key_arg(args, *span)?;
+                    let Some(branch) = root.branch(branch_name) else {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            *branch_span,
+                            format!("`{}` has no keyed branch `{branch_name}`", root.name),
+                        ));
+                        return None;
+                    };
+                    Some(DurablePlace {
+                        keys: vec![
+                            DurKey {
+                                key: PlaceKey::Expr(root_key),
+                                key_ty: root.key,
+                            },
+                            DurKey {
+                                key: PlaceKey::Expr(branch_key),
+                                key_ty: branch.key,
+                            },
+                        ],
+                        target: DurTarget::Entry {
+                            entry_site: branch.entry_site,
+                            record: branch.record,
+                        },
+                        span: *span,
+                    })
+                }
+                _ => None,
+            },
             Expression::Field {
                 base,
                 name: field_name,
@@ -5181,8 +5453,10 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 Some(DurablePlace {
-                    key: PlaceKey::Expr(key),
-                    key_ty: root.key,
+                    keys: vec![DurKey {
+                        key: PlaceKey::Expr(key),
+                        key_ty: root.key,
+                    }],
                     target: DurTarget::Field {
                         site: field.site,
                         scalar: field.scalar,
@@ -5228,9 +5502,10 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Lower a durable read (`^r(k)` entry or `^r(k).f` field, or the place forms).
+    /// Lower a durable read (`^r(k)` entry, `^r(k).branch(bk)` branch entry, `^r(k).f`
+    /// field, or the place forms).
     fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
-        self.emit_key(place.key, place.key_ty, place.span)?;
+        self.emit_key_path(&place.keys, place.span)?;
         Some(match place.target {
             DurTarget::Entry { entry_site, record } => {
                 self.push(Instr::DurReadEntry(entry_site), place.span);
@@ -5267,7 +5542,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         }
         let place = self.resolve_durable(&arg.value)?;
-        self.emit_key(place.key, place.key_ty, place.span)?;
+        self.emit_key_path(&place.keys, place.span)?;
         let site = match place.target {
             DurTarget::Entry { entry_site, .. } => entry_site,
             DurTarget::Field { site, .. } => site,
@@ -5849,24 +6124,21 @@ impl<'a> FnLowerer<'a> {
         Some(CallResult::Diverges)
     }
 
-    /// Lower a durable assignment: a whole-entry upsert or a field set.
+    /// Lower a durable assignment: a whole-entry upsert (root or branch) or a root
+    /// field set.
     fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
         match place.target {
             DurTarget::Entry { entry_site, record } => {
+                let root_slot = place.root_bound_slot();
                 if self
-                    .lower_upsert(
-                        place.key,
-                        place.key_ty,
-                        entry_site,
-                        record,
-                        value,
-                        place.span,
-                    )
+                    .lower_upsert(&place.keys, entry_site, record, value, place.span)
                     .is_some()
-                    && let PlaceKey::Bound(slot) = place.key
+                    && let Some(slot) = root_slot
                 {
-                    // The upsert leaves the entry present on every path from here, so
-                    // subsequent sparse sets through the place lower to the strict form.
+                    // A root upsert leaves the root entry present on every path from
+                    // here, so subsequent sparse sets through the root place lower to the
+                    // strict form. A branch upsert has no such consumer (branch
+                    // field-exact operations do not lower), so it marks nothing.
                     self.mark_present(slot);
                 }
             }
@@ -5875,13 +6147,14 @@ impl<'a> FnLowerer<'a> {
                 scalar,
                 required,
             } => {
-                // A sparse set through a `place` a presence fact dominates lowers to
-                // the strict present-entry form: it reads the entry key from the
-                // place's pre-evaluated slot and asserts the entry is present, so it
-                // pushes no key operand. Every other field set keeps the bare form
-                // (unchanged: create-or-reconcile at commit for a sparse set).
+                // A sparse set through a root `place` a presence fact dominates lowers to
+                // the strict present-entry form: it reads the entry key from the place's
+                // pre-evaluated slot and asserts the entry is present, so it pushes no key
+                // operand. Every other field set keeps the bare form (unchanged:
+                // create-or-reconcile at commit for a sparse set). Field targets are root
+                // fields only — branch field-exact operations do not resolve here.
                 if !required
-                    && let PlaceKey::Bound(slot) = place.key
+                    && let Some(slot) = place.root_bound_slot()
                     && self.is_present_slot(slot)
                 {
                     let expected = LTy::bare_scalar(scalar).to_optional();
@@ -5897,7 +6170,7 @@ impl<'a> FnLowerer<'a> {
                     );
                     return;
                 }
-                if self.emit_key(place.key, place.key_ty, place.span).is_none() {
+                if self.emit_key_path(&place.keys, place.span).is_none() {
                     return;
                 }
                 let expected = if required {
@@ -5918,30 +6191,36 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Lower `^r(k) = record` to the transaction-local presence branch (design §D):
-    /// `DurExists` decides `replace` vs `create` against the coherent staged view.
+    /// Lower `^r(k) = record` or `^r(k).branch(bk) = Resource.branch(...)` to the
+    /// transaction-local presence branch (design §D): `DurExists` over the entry's whole
+    /// key-path decides `replace` vs `create` against the coherent staged view. The
+    /// key-path is materialized into slots (one per column, root first) so the exists,
+    /// replace, and create ops all key off the same evaluated columns.
     fn lower_upsert(
         &mut self,
-        key: PlaceKey,
-        key_ty: ScalarType,
+        keys: &[DurKey],
         entry_site: u16,
         record: TypeId,
         value: &Expression,
         span: SourceSpan,
     ) -> Option<()> {
-        // A named place already holds its key in one pre-evaluated slot; reuse it so
-        // the create/replace ops key off the place's slot (the verifier's presence
-        // lattice recognizes the create as establishing that slot's entry). An inline
-        // address is evaluated once into a fresh slot.
-        let key_slot = match key {
-            PlaceKey::Bound(slot) => slot,
-            PlaceKey::Expr(_) => {
-                let slot = self.alloc_slot();
-                self.emit_key(key, key_ty, span)?;
-                self.push(Instr::LocalSet(slot), span);
-                slot
-            }
-        };
+        // A bound (place) column already holds its key in a pre-evaluated slot; reuse it
+        // so the create/replace ops key off it (the verifier's presence lattice
+        // recognizes a root create as establishing that slot's entry). An inline column
+        // is evaluated once into a fresh slot.
+        let mut key_slots = Vec::with_capacity(keys.len());
+        for column in keys {
+            let slot = match column.key {
+                PlaceKey::Bound(slot) => slot,
+                PlaceKey::Expr(_) => {
+                    let slot = self.alloc_slot();
+                    self.emit_key(column.key, column.key_ty, span)?;
+                    self.push(Instr::LocalSet(slot), span);
+                    slot
+                }
+            };
+            key_slots.push(slot);
+        }
         let rec_slot = self.alloc_slot();
         self.lower_as(
             value,
@@ -5952,18 +6231,18 @@ impl<'a> FnLowerer<'a> {
         )?;
         self.push(Instr::LocalSet(rec_slot), span);
 
-        self.push(Instr::LocalGet(key_slot), span);
+        self.emit_slots(&key_slots, span);
         self.push(Instr::DurExists(entry_site), span);
         let to_create = self.push_jif(span);
         // Present: replace.
-        self.push(Instr::LocalGet(key_slot), span);
+        self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
         self.push(Instr::DurReplaceEntry(entry_site), span);
         let to_end = self.push_jump(span);
         // Absent: create.
         let create_at = self.here();
         self.patch(to_create, create_at);
-        self.push(Instr::LocalGet(key_slot), span);
+        self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
         self.push(Instr::DurCreateEntry(entry_site), span);
         let end = self.here();
@@ -5971,7 +6250,16 @@ impl<'a> FnLowerer<'a> {
         Some(())
     }
 
-    /// Lower `delete ^r(k)` (entry erase) or `delete ^r(k).f` (sparse-field erase).
+    /// Push a durable operation's key-path from pre-evaluated slots, root column first,
+    /// so the innermost key lands on top — the order the kernel's `pop_key_path` reads.
+    fn emit_slots(&mut self, slots: &[u16], span: SourceSpan) {
+        for slot in slots {
+            self.push(Instr::LocalGet(*slot), span);
+        }
+    }
+
+    /// Lower `delete ^r(k)` / `delete ^r(k).branch(bk)` (entry payload erase) or
+    /// `delete ^r(k).f` (sparse-field erase).
     fn lower_durable_delete(&mut self, path: &Expression, span: SourceSpan) {
         if self.durable_access(path).is_none() {
             self.fail(unsupported(self.file, span, "this delete target"));
@@ -5980,15 +6268,16 @@ impl<'a> FnLowerer<'a> {
         let Some(place) = self.resolve_durable(path) else {
             return;
         };
-        if self.emit_key(place.key, place.key_ty, place.span).is_none() {
+        let root_slot = place.root_bound_slot();
+        if self.emit_key_path(&place.keys, place.span).is_none() {
             return;
         }
         match place.target {
             DurTarget::Entry { entry_site, .. } => {
                 self.push(Instr::DurEraseEntry(entry_site), place.span);
-                // The entry is gone; a later sparse set through the place must not
-                // assume presence.
-                if let PlaceKey::Bound(slot) = place.key {
+                // The entry's payload is gone; a later sparse set through a root place
+                // must not assume presence.
+                if let Some(slot) = root_slot {
                     self.clear_present(slot);
                 }
             }
@@ -6553,6 +6842,23 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
         span,
         format!("{subject} is not yet supported on the beta line"),
     )
+}
+
+/// Whether `expr` is a saved-data root spelling `^root`.
+fn is_saved_root(expr: &Expression) -> bool {
+    matches!(expr, Expression::SavedRoot { .. })
+}
+
+/// Whether `expr` is a root key application `^root(key)` — the whole-entry address of a
+/// root and the base of a branch address.
+fn is_root_call(expr: &Expression) -> bool {
+    matches!(expr, Expression::Call { callee, .. } if is_saved_root(callee))
+}
+
+/// Whether `expr` is a field selection on a root call, `^root(key).name` — either a
+/// root field address or the branch selector at the head of a branch address.
+fn is_root_field(expr: &Expression) -> bool {
+    matches!(expr, Expression::Field { base, .. } if is_root_call(base))
 }
 
 /// A durable operation over a declared-but-not-executable root (a singleton or
