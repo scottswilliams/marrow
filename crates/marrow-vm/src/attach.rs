@@ -9,10 +9,10 @@
 //! export invocations, so a mutating export's committed `transaction` region is
 //! observable by a later read invocation and a rolled-back one is not (E02).
 //!
-//! Only the flat single-column keyed root of scalar fields is executable here (the
-//! read kernel E01 lands); a wider durable shape — a composite key, a nested branch
-//! or group, or a non-scalar field — is [`DurableRun::Parked`], reported honestly
-//! rather than run against a partial store.
+//! The flat single-column keyed root of scalar fields, with single-column-keyed
+//! scalar-field branches nested to any depth, is executable here; a wider durable shape —
+//! a composite key, a group, or a non-scalar field — is [`DurableRun::Parked`], reported
+//! honestly rather than run against a partial store.
 
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{
@@ -34,8 +34,8 @@ pub enum DurableRun {
     /// The test ran; the inner result is its VM value or source-mapped fault.
     Ran(Result<Option<Value>, RuntimeFault>),
     /// The image's durable shape is not yet executable by the ephemeral read kernel
-    /// (a composite key, a nested member tree, or a non-scalar field). The durable
-    /// trough narrows to the flat single root; wider shapes stay parked.
+    /// (a composite key, a group, or a non-scalar field). Wider shapes stay parked;
+    /// single-column-keyed scalar-field branches nested to any depth are executable.
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
     Failed(&'static str),
@@ -103,7 +103,7 @@ pub enum Ephemeral {
     /// keeps it and drives several export invocations against the same store.
     Ready(EphemeralAttachment),
     /// The image's durable shape is not yet executable by the flat kernel (a
-    /// composite key, a nested member tree, or a non-scalar field).
+    /// composite key, a group, or a non-scalar field).
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
     Failed(&'static str),
@@ -168,14 +168,14 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // v0 carries at most one durable root; a durable test with demand has exactly
     // one. A flat executable root is single-column keyed with no member tree.
     //
-    // The executable layout is the single-column scalar root plus single-level,
-    // single-column-keyed scalar-field branches. Groups, nested or composite-keyed
-    // branches, widened field values, and composite root keys park; a parked shape
-    // stays parked until its owner lands it.
+    // The executable layout is the single-column scalar root plus single-column-keyed
+    // scalar-field branches nested to any depth. Groups, composite-keyed branches, widened
+    // field values, and composite root keys park; a parked shape stays parked until its
+    // owner lands it.
     let root = image.roots().first()?;
-    // A root with a group, a nested/composite branch, or a widened field is not yet
-    // executable (`has_extras`); a single-level single-column-keyed scalar-field
-    // branch is executable and does not set that flag.
+    // A root with a group, a composite branch key, or a widened field is not yet executable
+    // (`has_extras`); single-column-keyed scalar-field branches nested to any depth are
+    // executable and do not set that flag.
     if root.has_extras() {
         return None;
     }
@@ -186,20 +186,13 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
 
     let fields = scalar_fields(image, root.record())?;
 
-    // Each executable branch derives its own record from the image, one level below the
-    // root; the sealed branch list is in declaration order, so a `BranchEntry([idx])`
-    // site indexes into `branches`. A flat-executable root's branches are all
-    // single-level (a nested sub-branch parks the whole root), so each has no sub-branch
-    // of its own here; the recursive schema slot is present for the parked nested shape a
-    // later admission lane lands.
+    // Each executable branch derives its own record and nested branches from the image; the
+    // sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes it
+    // level by level. `branch_schema` recurses over the sealed sub-branch tree, so a whole
+    // nested branch shape becomes a recursive `BranchSchema` the store profile describes.
     let mut branches = Vec::with_capacity(root.branches().len());
     for branch in root.branches() {
-        branches.push(BranchSchema {
-            name: branch.name().to_string(),
-            key: scalar_kind(branch.key()),
-            fields: scalar_fields(image, branch.record())?,
-            branches: Vec::new(),
-        });
+        branches.push(branch_schema(image, branch)?);
     }
 
     let schema = StoreSchema {
@@ -251,6 +244,24 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         .collect();
 
     Some((schema, sites))
+}
+
+/// Derive one branch's recursive [`BranchSchema`] from the image: its name, single key
+/// scalar, materialized record fields, and — recursively — its own nested branches. `None`
+/// when any record field is non-scalar (the whole derivation parks), mirroring
+/// [`scalar_fields`]. The verifier proves an executable branch's fields are scalars and its
+/// sub-branches are simple, so this is defense in depth over that proof.
+fn branch_schema(image: &VerifiedImage, branch: &marrow_verify::SealedBranch) -> Option<BranchSchema> {
+    let mut branches = Vec::with_capacity(branch.branches().len());
+    for sub in branch.branches() {
+        branches.push(branch_schema(image, sub)?);
+    }
+    Some(BranchSchema {
+        name: branch.name().to_string(),
+        key: scalar_kind(branch.key()),
+        fields: scalar_fields(image, branch.record())?,
+        branches,
+    })
 }
 
 /// The kernel field schemas of a node's materialized record: one per field, in order,

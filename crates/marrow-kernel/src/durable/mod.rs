@@ -10,9 +10,9 @@
 //! attachment: a fresh in-memory store minted from a verified image's schema,
 //! sites, and deployment ceiling, driving read and single-write sessions bounded
 //! by `demand ∩ ceiling ∩ grant`. The executable physical layout is the
-//! name-keyed scalar-field root plus single-level, single-column-keyed
-//! scalar-field branches; groups, nested or composite-keyed branches, widened
-//! field values, and composite root keys stay parked until their owners land them.
+//! name-keyed scalar-field root plus single-column-keyed scalar-field branches
+//! nested to any depth; groups, composite-keyed branches, widened field values,
+//! and composite root keys stay parked until their owners land them.
 
 mod attach;
 mod physical;
@@ -34,9 +34,9 @@ use crate::codec::value::{RuntimeScalar, ScalarKind};
 
 /// The schema descriptor the store profile records and every session revalidates.
 /// One root; its top-level fields and its keyed branches in declaration (image)
-/// order. A branch is a keyed subtree nested beneath every root entry (E03 executes
-/// single-level, single-column-keyed branches; deeper nesting and composite branch
-/// keys are E04).
+/// order. A branch is a keyed subtree nested beneath every root entry; the schema is
+/// recursive, so single-column-keyed branches nest to any depth (composite branch keys
+/// are a later lane).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSchema {
     pub root_name: String,
@@ -284,8 +284,8 @@ pub enum Reopen {
 /// one of these plus a key-path, never a caller-asserted address or expected type.
 ///
 /// A site addresses one durable node: the root entry (`branch` empty) or a keyed
-/// branch entry nested beneath it (one hop per nested branch; E03 executes
-/// single-level branches, so at most one). The node's marker stem is the root marker
+/// branch entry nested beneath it (one hop per nested branch, to any depth). The node's
+/// marker stem is the root marker
 /// followed by one `branch_child_stem` per hop, over the operation's key-path
 /// (`[root_key]` for a root node, `[root_key, branch_key, …]` for a branch node); the
 /// key-path's scalar kinds must match `key` and each hop's `key`, which the kernel
@@ -361,8 +361,8 @@ impl AuthorizedSite {
     }
 
     /// The length of the key-path this site addresses: one element for a root node,
-    /// plus one per nested branch hop (E03 executes at most one). The VM pops exactly
-    /// this many key operands and assembles them root-first before calling an op.
+    /// plus one per nested branch hop (to any depth). The VM pops exactly this many key
+    /// operands and assembles them root-first before calling an op.
     pub fn key_arity(&self) -> usize {
         1 + self.branch.len()
     }
