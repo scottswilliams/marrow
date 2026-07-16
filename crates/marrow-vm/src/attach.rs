@@ -16,8 +16,8 @@
 
 use marrow_kernel::codec::value::ScalarKind;
 use marrow_kernel::durable::{
-    CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment, FieldSchema,
-    InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
+    BranchSchema, CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment,
+    FieldSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_verify::{
     CeilingDescriptor, ExportDemand, ImageType, Scalar, SealedExport, SealedSite, SealedSiteTarget,
@@ -174,6 +174,9 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // traversal are E04. A shape this derivation parks below stays parked until the
     // owning lane lands it; E01 never widens the physical layout.
     let root = image.roots().first()?;
+    // A root with a group, a nested/composite branch, or a widened field is not yet
+    // executable (`has_extras`); a single-level single-column-keyed scalar-field
+    // branch is executable and does not set that flag.
     if root.has_extras() {
         return None;
     }
@@ -182,18 +185,17 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     };
     let key = scalar_kind(*key);
 
-    let record = image.record_type(root.record());
-    let mut fields = Vec::with_capacity(record.fields().len());
-    for field in record.fields() {
-        let ImageType::Scalar { scalar, .. } = field.ty else {
-            // A non-scalar (enum or collection) field is not durably storable by the
-            // flat kernel; the shape stays parked.
-            return None;
-        };
-        fields.push(FieldSchema {
-            name: field.name.to_string(),
-            kind: scalar_kind(scalar),
-            required: field.required,
+    let fields = scalar_fields(image, root.record())?;
+
+    // Each executable branch derives its own record from the image, one level below the
+    // root; the sealed branch list is in declaration order, so a `BranchEntry(idx)` site
+    // indexes into `branches`.
+    let mut branches = Vec::with_capacity(root.branches().len());
+    for branch in root.branches() {
+        branches.push(BranchSchema {
+            name: branch.name().to_string(),
+            key: scalar_kind(branch.key()),
+            fields: scalar_fields(image, branch.record())?,
         });
     }
 
@@ -201,10 +203,7 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         root_name: root.name().to_string(),
         key,
         fields,
-        // Branch derivation from the image member tree lands with the verifier
-        // un-parking branch sites; the flat executable root this derivation admits
-        // carries no branches.
-        branches: Vec::new(),
+        branches,
     };
 
     // The site table is index-aligned with the image's sites so `Durable::site`
@@ -227,6 +226,12 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
             } => SiteSpec {
                 target: SiteTarget::FieldLeaf(*field),
             },
+            SealedSite::Flat {
+                target: SealedSiteTarget::BranchEntry(branch),
+                ..
+            } => SiteSpec {
+                target: SiteTarget::BranchEntry(*branch),
+            },
             SealedSite::Parked { .. } => SiteSpec {
                 target: SiteTarget::WholePayload,
             },
@@ -234,6 +239,27 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         .collect();
 
     Some((schema, sites))
+}
+
+/// The kernel field schemas of a node's materialized record: one per field, in order,
+/// each a plain durable scalar. `None` when a field is non-scalar — a shape the flat
+/// kernel does not store — so the whole derivation parks. The verifier proves an
+/// executable root's and branch's record fields are scalars, so this is defense in
+/// depth over that proof.
+fn scalar_fields(image: &VerifiedImage, record: u16) -> Option<Vec<FieldSchema>> {
+    let record = image.record_type(record);
+    let mut fields = Vec::with_capacity(record.fields().len());
+    for field in record.fields() {
+        let ImageType::Scalar { scalar, .. } = field.ty else {
+            return None;
+        };
+        fields.push(FieldSchema {
+            name: field.name.to_string(),
+            kind: scalar_kind(scalar),
+            required: field.required,
+        });
+    }
+    Some(fields)
 }
 
 /// Map an image scalar type to the runtime codec's scalar kind. Total over the

@@ -12,7 +12,9 @@ use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{CommitResult, Durable, EntryValue, NextKey, Presence};
-use marrow_verify::{SealedConst, SealedFunction, SealedInstr, SealedSite, VerifiedImage};
+use marrow_verify::{
+    SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
+};
 
 use crate::fault::RuntimeFault;
 use crate::value::{Value, key_bytes, list_bytes};
@@ -680,9 +682,9 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 let present = durable
-                    .presence(&authorized, std::slice::from_ref(&key))
+                    .presence(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 stack.push(Value::Bool(present == Presence::Present));
                 pc += 1;
@@ -692,9 +694,9 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 let value = durable
-                    .read_field(&authorized, std::slice::from_ref(&key))
+                    .read_field(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 stack.push(Value::Optional(value.map(|s| Box::new(scalar_to_value(s)))));
                 pc += 1;
@@ -704,9 +706,9 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 let entry = durable
-                    .read_entry(&authorized, std::slice::from_ref(&key))
+                    .read_entry(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 let ty = entry_record_type(image, *site);
                 stack.push(Value::Optional(
@@ -720,9 +722,9 @@ fn execute<'s>(
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
                 let value = value_to_scalar(pop(&mut stack));
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
-                    .set_required(&authorized, std::slice::from_ref(&key), value)
+                    .set_required(&authorized, &keys, value)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -732,9 +734,9 @@ fn execute<'s>(
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
                 let value = as_optional(pop(&mut stack)).map(value_to_scalar);
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
-                    .set_sparse(&authorized, std::slice::from_ref(&key), value)
+                    .set_sparse(&authorized, &keys, value)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -762,9 +764,9 @@ fn execute<'s>(
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
                 let entry = record_to_entry(pop(&mut stack));
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
-                    .create_entry(&authorized, std::slice::from_ref(&key), entry)
+                    .create_entry(&authorized, &keys, entry)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -774,9 +776,9 @@ fn execute<'s>(
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
                 let entry = record_to_entry(pop(&mut stack));
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
-                    .replace_entry(&authorized, std::slice::from_ref(&key), entry)
+                    .replace_entry(&authorized, &keys, entry)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -785,9 +787,9 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
-                    .erase_field(&authorized, std::slice::from_ref(&key))
+                    .erase_field(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -796,9 +798,9 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let key = pop_key(&mut stack);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
-                    .erase_entry(&authorized, std::slice::from_ref(&key))
+                    .erase_entry(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -1166,14 +1168,28 @@ fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
     Value::Record(ty, slots.into_boxed_slice())
 }
 
-/// The record type index of the entry a site's root addresses. The verifier admits a
-/// durable opcode only over a flat executable site, so the referenced site is `Flat`.
+/// The record type index of the entry a site addresses: the branch's record for a
+/// branch entry site, the root's otherwise. The verifier admits a durable opcode only
+/// over a flat executable site, so the referenced site is `Flat`.
 fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
-    let root = match &image.sites()[site as usize] {
-        SealedSite::Flat { root, .. } => *root,
+    let (root, target) = match &image.sites()[site as usize] {
+        SealedSite::Flat { root, target } => (*root, *target),
         SealedSite::Parked { .. } => {
             unreachable!("the verifier admits a durable opcode only over a flat site")
         }
     };
-    image.roots()[root as usize].record()
+    let root = &image.roots()[root as usize];
+    match target {
+        SealedSiteTarget::BranchEntry(branch) => root.branches()[branch as usize].record(),
+        SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => root.record(),
+    }
+}
+
+/// Pop a durable operation's key-path: `arity` key operands assembled root-first. The
+/// lowering pushes the root key then each branch key, so the innermost (branch) key is
+/// on top; pop `arity` keys and reverse to the root-first order the kernel expects.
+fn pop_key_path(stack: &mut Vec<Value>, arity: usize) -> Vec<KeyScalar> {
+    let mut keys: Vec<KeyScalar> = (0..arity).map(|_| pop_key(stack)).collect();
+    keys.reverse();
+    keys
 }

@@ -22,8 +22,9 @@ pub use marrow_image::{
 };
 pub use reject::{VerifyPhase, VerifyRejection};
 pub use sealed::{
-    AtomIncidence, NodeIncidence, RetShape, SealedConst, SealedEnumType, SealedExport, SealedField,
-    SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot, SealedSite,
-    SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
+    AtomIncidence, NodeIncidence, RetShape, SealedBranch, SealedConst, SealedEnumType,
+    SealedExport, SealedField, SealedFunction, SealedIndex, SealedInstr, SealedRecordType,
+    SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow,
+    VerifiedImage,
 };
 pub use verify::verify;

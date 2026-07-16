@@ -44,9 +44,9 @@ use marrow_image::{
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    RetShape, SealedCollectionType, SealedConst, SealedEnumType, SealedExport, SealedField,
-    SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot, SealedSite,
-    SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
+    RetShape, SealedBranch, SealedCollectionType, SealedConst, SealedEnumType, SealedExport,
+    SealedField, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
+    SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -149,11 +149,6 @@ enum DecodedMember {
 }
 
 impl DecodedMember {
-    /// Whether this member is a group or a keyed branch (not a flat field).
-    fn is_extra(&self) -> bool {
-        !matches!(self, DecodedMember::Field { .. })
-    }
-
     /// Whether this member is a top-level field whose stored value is not a plain
     /// scalar (a nominal erases to a scalar; a struct or enum does not). Such a field
     /// carries a complete identity but is not part of the kernel-executable flat
@@ -167,6 +162,32 @@ impl DecodedMember {
                 ..
             }
         )
+    }
+
+    /// Whether this member is a single-level single-column-keyed scalar-field branch —
+    /// the branch shape E03 executes. Its key is one column and every direct member is
+    /// a plain scalar field (no nested group or branch, no widened field). A composite
+    /// branch key or a deeper member tree is E04's, not this.
+    fn is_simple_branch(&self) -> bool {
+        matches!(
+            self,
+            DecodedMember::Branch { keys, members, .. }
+                if keys.len() == 1
+                    && members.iter().all(|inner| {
+                        matches!(inner, DecodedMember::Field { .. }) && !inner.is_nonscalar_field()
+                    })
+        )
+    }
+
+    /// Whether this member keeps its containing root flat-executable: a plain scalar
+    /// field or a simple branch. A group, a composite/nested branch, or a widened
+    /// field does not.
+    fn keeps_root_flat(&self) -> bool {
+        match self {
+            DecodedMember::Field { .. } => !self.is_nonscalar_field(),
+            DecodedMember::Group { .. } => false,
+            DecodedMember::Branch { .. } => self.is_simple_branch(),
+        }
     }
 }
 
@@ -1298,15 +1319,36 @@ fn resolve_site(
         return Ok(parked());
     }
     let sealed = match target {
-        SemanticTarget::WholePayload => {
-            if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS {
-                return Ok(parked());
+        SemanticTarget::WholePayload => match node.kind {
+            // The root's own whole entry: exactly the two root steps.
+            SemanticNodeKind::Root => {
+                if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS {
+                    return Ok(parked());
+                }
+                SealedSite::Flat {
+                    root: root_index,
+                    target: SealedSiteTarget::WholePayload,
+                }
             }
-            SealedSite::Flat {
-                root: root_index,
-                target: SealedSiteTarget::WholePayload,
+            // A direct single-level branch entry: the two root steps plus the branch
+            // placement step. A deeper (nested) branch — more steps — parks (E04). The
+            // root is flat-executable here, so every branch is a simple branch, and the
+            // branch's position among the root's branch members indexes the sealed
+            // branch list.
+            SemanticNodeKind::Branch => {
+                if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 {
+                    return Ok(parked());
+                }
+                match branch_index(&root.members, steps[2].id) {
+                    Some(index) => SealedSite::Flat {
+                        root: root_index,
+                        target: SealedSiteTarget::BranchEntry(index),
+                    },
+                    None => parked(),
+                }
             }
-        }
+            _ => unreachable!("a whole-payload target resolved to a root or branch node"),
+        },
         SemanticTarget::FieldLeaf => {
             if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 {
                 return Ok(parked());
@@ -1329,14 +1371,11 @@ fn resolve_site(
 
 /// Whether a decoded root is the flat single-column keyed root the single-root kernel
 /// executes: exactly one key column and a member tree of only plain top-level scalar
-/// fields (no group, branch, or widened field). Re-derived from the decoded graph, so
-/// the flat/parked classification never trusts a compiler summary.
+/// fields and single-level single-column-keyed scalar-field branches (no group, no
+/// nested or composite-key branch, no widened field). Re-derived from the decoded
+/// graph, so the flat/parked classification never trusts a compiler summary.
 fn is_flat_executable_root(root: &DecodedRoot) -> bool {
-    root.keys.len() == 1
-        && root
-            .members
-            .iter()
-            .all(|member| !member.is_extra() && !member.is_nonscalar_field())
+    root.keys.len() == 1 && root.members.iter().all(DecodedMember::keeps_root_flat)
 }
 
 /// The index of the top-level field with ledger id `field_id` among a root's member
@@ -1352,6 +1391,21 @@ fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> 
             _ => None,
         })
         .position(|id| id == field_id)
+        .map(|index| index as u16)
+}
+
+/// The index of the keyed `branch` with placement id `placement` among a root's
+/// declaration-ordered branch members. This is the index into the root's sealed
+/// branch list (both count only the direct branch members, in order), so a resolved
+/// branch-entry site addresses the same branch the schema derives.
+fn branch_index(members: &[DecodedMember], placement_id: LedgerIdBytes) -> Option<u16> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            DecodedMember::Branch { placement, .. } => Some(*placement),
+            _ => None,
+        })
+        .position(|id| id == placement_id)
         .map(|index| index as u16)
 }
 
@@ -2381,16 +2435,40 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
     let roots: Vec<SealedRoot> = decoded
         .roots
         .iter()
-        .map(|root| SealedRoot {
-            name: decoded.strings[root.name as usize].clone(),
-            keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
-            record: root.record,
-            // A root is not the kernel-executable flat scalar root when it declares a
-            // group or branch, or any top-level widened (non-scalar) field.
-            has_extras: root
-                .members
-                .iter()
-                .any(|member| member.is_extra() || member.is_nonscalar_field()),
+        .map(|root| {
+            let flat = is_flat_executable_root(root);
+            // A flat-executable root's branches are all single-level single-column
+            // scalar-field branches; seal them in declaration order so a BranchEntry
+            // site indexes into this list. A non-flat root parks every branch site, so
+            // it needs no sealed branch list (and a composite-key branch has no single
+            // key scalar to seal here).
+            let branches = if flat {
+                root.members
+                    .iter()
+                    .filter_map(|member| match member {
+                        DecodedMember::Branch {
+                            name, record, keys, ..
+                        } => Some(SealedBranch {
+                            name: decoded.strings[*name as usize].clone(),
+                            key: keys[0].0,
+                            record: *record,
+                        }),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            SealedRoot {
+                name: decoded.strings[root.name as usize].clone(),
+                keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
+                record: root.record,
+                // A root is flat-executable (no extras) when every member keeps it flat:
+                // a scalar field or a simple branch. A group, a nested/composite branch,
+                // or a widened field is an extra that parks the root's operations.
+                has_extras: !root.members.iter().all(DecodedMember::keeps_root_flat),
+                branches,
+            }
         })
         .collect();
     // The managed indexes seal from the decoded roots, each carrying the index of the
@@ -4557,11 +4635,12 @@ fn apply_durable(
         "durable site root out of range",
     ))?;
     // Defense in depth: a flat site's root is single-column and free of groups,
-    // branches, and widened fields by construction, but recheck at the opcode.
+    // nested/composite branches, and widened fields by construction (single-level
+    // scalar-field branches are executable), but recheck at the opcode.
     if root.has_extras {
         return Err(reject(
             VerifyPhase::Function,
-            "a durable operation site requires a resource with no groups or branches",
+            "a durable operation site requires a flat-executable root",
         ));
     }
     let [key] = root.keys.as_slice() else {
@@ -4571,22 +4650,39 @@ fn apply_durable(
         ));
     };
     let key_ty = VType::bare_scalar(*key);
+    // A branch entry site addresses the two-element key-path `[root_key, branch_key]`,
+    // pushed root-first so the branch key is on top; every other site addresses the
+    // single root key. `key_path` lists the key types in stack-pop order (branch key
+    // first), and `entry_record` is the record a whole-entry op reads or writes — the
+    // branch's own record for a branch site, the root's otherwise.
+    let (key_path, entry_record): (Vec<VType>, u16) = match site_target {
+        SealedSiteTarget::BranchEntry(branch) => {
+            let branch = root.branches.get(branch as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "durable branch index out of range",
+            ))?;
+            (vec![VType::bare_scalar(branch.key), key_ty], branch.record)
+        }
+        SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
+            (vec![key_ty], root.record)
+        }
+    };
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurExists(_) => {
-            expect(pop(stack)?, key_ty)?;
+            pop_key_path(stack, &key_path)?;
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurReadField(_) => {
             let field = field_of(ctx, site_target, root)?;
             let value = durable_field_vtype(field).to_optional();
-            expect(pop(stack)?, key_ty)?;
+            pop_key_path(stack, &key_path)?;
             stack.push(value);
         }
         SealedInstr::DurReadEntry(_) => {
             require_entry(site_target)?;
-            expect(pop(stack)?, key_ty)?;
-            stack.push(VType::bare_record(root.record).to_optional());
+            pop_key_path(stack, &key_path)?;
+            stack.push(VType::bare_record(entry_record).to_optional());
         }
         SealedInstr::DurSetRequired(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -4598,7 +4694,7 @@ fn apply_durable(
             }
             let value = durable_field_vtype(field);
             expect(pop(stack)?, value)?;
-            expect(pop(stack)?, key_ty)?;
+            pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurSetSparse(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -4610,7 +4706,7 @@ fn apply_durable(
             }
             let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, value)?;
-            expect(pop(stack)?, key_ty)?;
+            pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurSetSparsePresent { key_slot, .. } => {
             let field = field_of(ctx, site_target, root)?;
@@ -4643,8 +4739,8 @@ fn apply_durable(
         }
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
             require_entry(site_target)?;
-            expect(pop(stack)?, VType::bare_record(root.record))?;
-            expect(pop(stack)?, key_ty)?;
+            expect(pop(stack)?, VType::bare_record(entry_record))?;
+            pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurEraseField(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -4654,14 +4750,21 @@ fn apply_durable(
                     "erase targets a required field",
                 ));
             }
-            expect(pop(stack)?, key_ty)?;
+            pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurEraseEntry(_) => {
             require_entry(site_target)?;
-            expect(pop(stack)?, key_ty)?;
+            pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurNextKey(_) => {
-            require_entry(site_target)?;
+            // Ordered iteration visits a root's entries; iterating a branch's children
+            // under a fixed root key is bounded nested traversal (E04), not this lane.
+            if !matches!(site_target, SealedSiteTarget::WholePayload) {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "next-key requires a root entry site",
+                ));
+            }
             let opt_key = key_ty.to_optional();
             expect(pop(stack)?, opt_key)?;
             stack.push(opt_key);
@@ -4669,6 +4772,16 @@ fn apply_durable(
         _ => unreachable!("durable_site returned a site for this opcode"),
     }
     Ok(Control::Fallthrough)
+}
+
+/// Pop and type-check a durable operation's key-path against `key_path` (the key
+/// types in stack-pop order — the branch key then the root key for a branch entry
+/// site, the single root key otherwise).
+fn pop_key_path(stack: &mut Vec<VType>, key_path: &[VType]) -> Result<(), VerifyRejection> {
+    for ty in key_path {
+        expect(pop(stack)?, *ty)?;
+    }
+    Ok(())
 }
 
 /// The field a field-target site addresses, or a rejection when the site is an
@@ -4699,10 +4812,10 @@ fn durable_field_vtype(field: &SealedField) -> VType {
     VType::from_image(field.ty).expect("a durable field type is a bare scalar")
 }
 
-/// Require an entry-target site.
+/// Require an entry-target site: the root's whole payload or a keyed branch entry.
 fn require_entry(target: SealedSiteTarget) -> Result<(), VerifyRejection> {
     match target {
-        SealedSiteTarget::WholePayload => Ok(()),
+        SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => Ok(()),
         SealedSiteTarget::FieldLeaf(_) => Err(reject(
             VerifyPhase::Function,
             "operation requires an entry site",

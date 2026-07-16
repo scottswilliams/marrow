@@ -41,10 +41,12 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
                 match target {
                     SealedSiteTarget::WholePayload => "whole",
                     SealedSiteTarget::FieldLeaf(_) => "field",
+                    SealedSiteTarget::BranchEntry(_) => "branch",
                 },
                 match target {
                     SealedSiteTarget::WholePayload => 2,
                     SealedSiteTarget::FieldLeaf(_) => 3,
+                    SealedSiteTarget::BranchEntry(_) => 3,
                 },
             ),
             SealedSite::Parked { path, target } => (

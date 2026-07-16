@@ -244,6 +244,11 @@ pub enum SealedInstr {
 pub enum SealedSiteTarget {
     WholePayload,
     FieldLeaf(u16),
+    /// The whole payload of a single-level keyed branch entry nested beneath the
+    /// root: the branch's index among its root's declaration-ordered branch members
+    /// (into [`SealedRoot::branches`]). Its operations address the two-element
+    /// key-path `[root_key, branch_key]`.
+    BranchEntry(u16),
 }
 
 /// A verified durable operation site. The verifier reconstructs it by resolving the
@@ -284,10 +289,43 @@ pub struct SealedRoot {
     pub(crate) name: Rc<str>,
     pub(crate) keys: Vec<Scalar>,
     pub(crate) record: u16,
-    /// Whether the root's resource declares any static `group` namespace or keyed
-    /// `branch` placement — a member tree beyond flat top-level fields. Such a root
-    /// is not yet executable.
+    /// Whether the root's member tree holds a shape the flat single-column kernel
+    /// cannot execute: a static `group` namespace, a nested or composite-key branch,
+    /// or a widened (non-scalar) field. A single-level single-column-keyed branch of
+    /// scalar fields does *not* count — it is executable (E03), so a root of scalar
+    /// fields and such branches is flat-executable.
     pub(crate) has_extras: bool,
+    /// The root's single-level single-column-keyed scalar-field branches, in
+    /// declaration order. Populated only for a flat-executable root (where every
+    /// branch is such a branch); empty otherwise, so a [`SealedSiteTarget::BranchEntry`]
+    /// index into it is meaningful exactly when a branch site sealed executable.
+    pub(crate) branches: Vec<SealedBranch>,
+}
+
+/// A verified single-level keyed branch of a flat-executable root: its physical name,
+/// its single key column's scalar, and its materialized record type index. The branch
+/// entry is a distinct durable node one level below the root, reusing the root's
+/// marker/field topology; its whole-payload operations address `[root_key, branch_key]`.
+#[derive(Debug, Clone)]
+pub struct SealedBranch {
+    pub(crate) name: Rc<str>,
+    pub(crate) key: Scalar,
+    pub(crate) record: u16,
+}
+
+impl SealedBranch {
+    /// The branch's simple name, which the physical layer keys its family by.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// The branch's single key column scalar.
+    pub fn key(&self) -> Scalar {
+        self.key
+    }
+    /// The branch entry's materialized record type index.
+    pub fn record(&self) -> u16 {
+        self.record
+    }
 }
 
 impl SealedRoot {
@@ -302,9 +340,17 @@ impl SealedRoot {
     pub fn record(&self) -> u16 {
         self.record
     }
-    /// Whether the resource declares a group or branch (a non-flat member tree).
+    /// Whether the resource declares a member shape the flat kernel cannot execute (a
+    /// group, a nested/composite branch, or a widened field). A single-level
+    /// single-column-keyed scalar-field branch is executable and does not set this.
     pub fn has_extras(&self) -> bool {
         self.has_extras
+    }
+
+    /// The root's executable single-level branches, in declaration order. Empty unless
+    /// the root is flat-executable.
+    pub fn branches(&self) -> &[SealedBranch] {
+        &self.branches
     }
 }
 

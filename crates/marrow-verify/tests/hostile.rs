@@ -1057,6 +1057,193 @@ fn an_opcode_over_a_parked_branch_field_site_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
+/// Build a flat-executable `Book { title:string required }` root at `^books(id:int)`
+/// whose only extra is one single-level single-column-keyed scalar-field branch,
+/// `notes(noteId:string)` holding `text:string required` — the branch shape E03
+/// executes. No group, so the root is flat-executable and its branch whole-payload
+/// site seals executable. Returns the draft and the branch's materialized record type
+/// index (the whole branch-entry read's result type).
+fn flat_branch_draft() -> (ImageDraft, u16) {
+    let mut draft = ImageDraft::new();
+    let book = draft.intern_string("Book");
+    let title = draft.intern_string("title");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: book,
+        fields: vec![FieldDef {
+            name: title,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let notes = draft.intern_string("notes");
+    let notes_qualified = draft.intern_string("Book.notes");
+    let notes_text = draft.intern_string("text");
+    let notes_record = draft.add_record_type(RecordTypeDef {
+        name: notes_qualified,
+        fields: vec![FieldDef {
+            name: notes_text,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("books");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Text),
+                },
+                DurableMemberDef::Branch {
+                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                    name: notes,
+                    record: notes_record,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes([0x31; 16]),
+                    }],
+                    members: vec![DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes([0x32; 16]),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Text),
+                    }],
+                },
+            ],
+        },
+    });
+    (draft, notes_record.index())
+}
+
+/// The whole-payload site path of the flat-branch graph's `notes` branch entry:
+/// application -> root placement -> branch placement (three steps).
+fn branch_entry_path() -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes([0x0a; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x0b; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x30; 16]),
+        ),
+    ])
+}
+
+#[test]
+fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
+    // E03 S4: a single-level branch whole-payload site on a flat-executable root now
+    // seals executable, and a read over it type-checks the two-element key-path
+    // `[root_key, branch_key]` (int then string) and yields the branch's own record.
+    let (mut draft, branch_record) = flat_branch_draft();
+    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("note");
+    let code = vec![
+        Instr::LocalGet(0), // id: the root key
+        Instr::LocalGet(1), // noteId: the branch key, on top of the stack
+        Instr::DurReadEntry(site.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Text),
+        ],
+        ret: ImageType::Record {
+            idx: branch_record,
+            optional: true,
+        },
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "note"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+#[test]
+fn a_branch_entry_op_missing_its_root_key_rejects() {
+    // A branch entry op addresses `[root_key, branch_key]`. Pushing only the branch key
+    // leaves the second (root) key pop with an empty stack — a key-arity forgery the
+    // verifier refuses during per-function typing.
+    let (mut draft, branch_record) = flat_branch_draft();
+    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("note");
+    let code = vec![
+        Instr::LocalGet(1), // only the branch key; the root key is missing
+        Instr::DurReadEntry(site.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Text),
+        ],
+        ret: ImageType::Record {
+            idx: branch_record,
+            optional: true,
+        },
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "note"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+#[test]
+fn a_branch_entry_op_with_the_wrong_branch_key_type_rejects() {
+    // The branch key column is `string`; pushing an `int` where the branch key belongs
+    // is a type mismatch the two-element key-path check refuses.
+    let (mut draft, branch_record) = flat_branch_draft();
+    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("note");
+    let code = vec![
+        Instr::LocalGet(0), // id: the root key (int)
+        Instr::LocalGet(1), // an int where the branch key (string) belongs
+        Instr::DurReadEntry(site.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Int),
+        ],
+        ret: ImageType::Record {
+            idx: branch_record,
+            optional: true,
+        },
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "note"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
 /// A site path of exactly `n` steps: `Application`, `Placement`, then `n - 2` field
 /// steps carrying the distinctive id `0x91` so the first step can be located in the
 /// encoded bytes. The intermediate kinds are irrelevant to the length bound.

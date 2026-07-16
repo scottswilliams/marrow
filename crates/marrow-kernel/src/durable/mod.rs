@@ -298,4 +298,11 @@ impl AuthorizedSite {
     pub fn key_kind(&self) -> ScalarKind {
         self.key
     }
+
+    /// The length of the key-path this site addresses: one element for a root node,
+    /// plus one per nested branch hop (E03 executes at most one). The VM pops exactly
+    /// this many key operands and assembles them root-first before calling an op.
+    pub fn key_arity(&self) -> usize {
+        1 + self.branch.len()
+    }
 }
