@@ -97,7 +97,19 @@ const SOURCE_B: &str = "resource Grid\n\
      \x20   return ^grid(a, b).cell(c).mark(d).v\n\
      \n\
      pub fn markPresent(a: int, b: int, c: int, d: int): bool\n\
-     \x20   return exists(^grid(a, b).cell(c).mark(d))\n";
+     \x20   return exists(^grid(a, b).cell(c).mark(d))\n\
+     \n\
+     pub fn setCell(a: int, b: int, c: int, cval: int)\n\
+     \x20   transaction\n\
+     \x20       ^grid(a, b).cell(c) = Grid.cell(cval: cval)\n\
+     \n\
+     pub fn sumCells(a: int, b: int): int\n\
+     \x20   var total = 0\n\
+     \x20   for c in ^grid(a, b).cell at most 100\n\
+     \x20       total += c\n\
+     \x20   on more\n\
+     \x20       total = -1\n\
+     \x20   return total\n";
 
 fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -324,6 +336,53 @@ fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
             present(false),
         );
     }
+}
+
+/// A single-column branch layer under a COMPOSITE-keyed root traverses end to end: the
+/// `for c in ^grid(a, b).cell` head fixes the two-column ancestor `(a, b)` and iterates the
+/// single-column `cell` keys under it, so the ancestor key-path carries multiple columns
+/// through the traversal while the traversed layer stays single-column.
+#[test]
+fn a_single_column_branch_layer_traverses_under_a_composite_ancestor() {
+    let image = compile_verify(SOURCE_B, IDS_B);
+    let mut attachment = attach(&image);
+
+    for c in [3, 1, 5] {
+        run(
+            &image,
+            &mut attachment,
+            "setCell",
+            vec![Value::Int(1), Value::Int(2), Value::Int(c), Value::Int(0)],
+        );
+    }
+    // A cell under a different composite root entry, which must not be visited.
+    run(
+        &image,
+        &mut attachment,
+        "setCell",
+        vec![Value::Int(9), Value::Int(9), Value::Int(100), Value::Int(0)],
+    );
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sumCells",
+            vec![Value::Int(1), Value::Int(2)]
+        ),
+        Some(Value::Int(9)),
+        "the cell layer under (1, 2) iterates 1 + 3 + 5 = 9",
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sumCells",
+            vec![Value::Int(3), Value::Int(4)]
+        ),
+        Some(Value::Int(0)),
+        "an empty cell layer under a different composite ancestor sums to zero",
+    );
 }
 
 /// Bounded traversal over a composite-keyed layer parks: the language spells no

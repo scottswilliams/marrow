@@ -3870,3 +3870,42 @@ fn a_composite_root_opcode_with_transposed_column_types_rejects() {
     );
     assert_eq!(code_of(&bytes), "image.function");
 }
+
+#[test]
+fn a_bounded_traversal_over_a_composite_keyed_root_layer_rejects() {
+    // Bounded traversal iterates a single key column. A forged image that drives
+    // `DurIterateBounded` over a composite-keyed root (two key columns), bypassing the
+    // compiler's own park, is refused during per-function typing: the verifier computes the
+    // traversed layer's arity from the schema and rejects any layer that is not
+    // single-column, so no composite-key traversal reaches the kernel.
+    let (mut draft, entry) = composite_root_draft();
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("iter");
+    let code = vec![
+        Instr::DurIterateBounded {
+            site: entry,
+            limit: 2,
+            from: false,
+            list_ty,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "iter"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}

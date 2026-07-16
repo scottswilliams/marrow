@@ -3060,4 +3060,117 @@ mod tests {
             Err(KernelFault::Corruption)
         );
     }
+
+    /// A composite-keyed layer is not traversable — the traversal machinery decodes one
+    /// key per immediate child, so a multi-column traversed layer would mis-read. The
+    /// verifier parks composite-key traversal; a forged image reaching the kernel with a
+    /// composite whole-payload site faults at `layer_of` rather than mis-decoding.
+    #[test]
+    fn iterate_over_a_composite_keyed_root_layer_faults_corruption() {
+        let schema = StoreSchema {
+            root_name: "cells".into(),
+            key: vec![ScalarKind::Int, ScalarKind::Int],
+            fields: vec![FieldSchema {
+                name: "v".into(),
+                kind: ScalarKind::Int,
+                required: true,
+            }],
+            branches: Vec::new(),
+        };
+        let sites = vec![SiteSpec {
+            target: SiteTarget::WholePayload,
+        }];
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let entry = read.site(0);
+        // The traversed root layer has two key columns: layer_of's single-column guard
+        // faults corruption before any scan.
+        assert_eq!(
+            read.iterate_bounded(&entry, &[], None, bound(4)),
+            Err(KernelFault::Corruption),
+        );
+    }
+
+    /// A single-column branch layer beneath a COMPOSITE-keyed root traverses normally: the
+    /// ancestor key-path locating the parent entry is the root's whole two-column tuple, so
+    /// `layer_of` consumes it via `take_columns` over multiple ancestor columns. This is the
+    /// works-side counterpart to the composite-layer traversal park.
+    #[test]
+    fn iterate_a_single_column_branch_under_a_composite_root_consumes_multi_column_ancestors() {
+        let schema = StoreSchema {
+            root_name: "grid".into(),
+            key: vec![ScalarKind::Int, ScalarKind::Int],
+            fields: vec![FieldSchema {
+                name: "label".into(),
+                kind: ScalarKind::Str,
+                required: false,
+            }],
+            branches: vec![BranchSchema {
+                name: "cell".into(),
+                key: vec![ScalarKind::Int],
+                fields: vec![FieldSchema {
+                    name: "cval".into(),
+                    kind: ScalarKind::Int,
+                    required: true,
+                }],
+                branches: Vec::new(),
+            }],
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::BranchEntry(Box::from([0u16])),
+            },
+        ];
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let cell = txn.site(1);
+            // Three cells under the composite root entry (1, 2), inserted out of order.
+            for c in [3, 1, 2] {
+                txn.create_entry(
+                    &cell,
+                    &[ki(1), ki(2), ki(c)],
+                    EntryValue {
+                        fields: vec![Some(RuntimeScalar::Int(0))],
+                    },
+                )
+                .expect("create cell");
+            }
+            // A cell under a different composite root entry (9, 9), which must not appear.
+            txn.create_entry(
+                &cell,
+                &[ki(9), ki(9), ki(100)],
+                EntryValue {
+                    fields: vec![Some(RuntimeScalar::Int(0))],
+                },
+            )
+            .expect("create sibling cell");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let cell = read.site(1);
+        // Iterate the cell layer under the composite ancestor (1, 2): the two ancestor
+        // columns locate the parent entry, and the branch keys come back in order.
+        assert_eq!(
+            read.iterate_bounded(&cell, &[ki(1), ki(2)], None, bound(10)),
+            Ok(BoundedKeys {
+                keys: vec![ki(1), ki(2), ki(3)],
+                more: false,
+            }),
+        );
+        // A wrong-arity ancestor path (one column where two are needed) faults.
+        assert_eq!(
+            read.iterate_bounded(&cell, &[ki(1)], None, bound(10)),
+            Err(KernelFault::Corruption),
+        );
+    }
 }

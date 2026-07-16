@@ -286,7 +286,7 @@ pub enum SealedSiteTarget {
 /// coordinates — it trusts no compiler-side site summary.
 ///
 /// A site is [`SealedSite::Flat`] exactly when the single-root kernel can execute
-/// over it: a whole-payload or top-level-field site on the flat single-column keyed
+/// over it: a whole-payload or top-level-field site on the flat keyed
 /// root of plain scalar fields. Every other resolved site — a singleton or
 /// composite-key root, a nested `branch` placement, a group-scoped field, or a
 /// widened-field leaf — is [`SealedSite::Parked`]: its identity is complete and its
@@ -295,7 +295,7 @@ pub enum SealedSiteTarget {
 /// `Flat` site; a reference to a `Parked` site is refused in phase 3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedSite {
-    /// Executable on the flat single-column keyed root: the root index it resolved to
+    /// Executable on the flat keyed root: the root index it resolved to
     /// and the whole-payload or resolved-field-index target.
     Flat { root: u16, target: SealedSiteTarget },
     /// A sealed but not-yet-executable site over the wider durable graph. It carries
@@ -310,8 +310,8 @@ pub enum SealedSite {
 /// A verified durable root: one placement of a record type over its ordered key
 /// tuple. The tuple is empty for a singleton root and holds one or more
 /// orderable durable-key scalars for a keyed root. The executable subset served
-/// by the single-root kernel is the *flat* single-column keyed root — one key
-/// column and no groups or branches; a wider key arity or a resource declaring a
+/// by the single-root kernel is the *flat* keyed root — one or more
+/// key columns and no groups; a wider key arity or a resource declaring a
 /// group or branch (`has_extras`) carries identity but rejects at its operation
 /// sites (rechecked during flow validation).
 #[derive(Debug, Clone)]
@@ -319,13 +319,13 @@ pub struct SealedRoot {
     pub(crate) name: Rc<str>,
     pub(crate) keys: Vec<Scalar>,
     pub(crate) record: u16,
-    /// Whether the root's member tree holds a shape the flat single-column kernel
+    /// Whether the root's member tree holds a shape the flat kernel
     /// cannot execute: a static `group` namespace, a nested or composite-key branch,
-    /// or a widened (non-scalar) field. A single-level single-column-keyed branch of
+    /// or a widened (non-scalar) field. A scalar-field keyed branch of
     /// scalar fields does *not* count — it is executable (E03), so a root of scalar
     /// fields and such branches is flat-executable.
     pub(crate) has_extras: bool,
-    /// The root's single-column-keyed scalar-field branches, in declaration order, each
+    /// The root's scalar-field keyed branches, in declaration order, each
     /// carrying its own nested branches recursively. Populated only for a flat-executable
     /// root; empty otherwise, so a [`SealedSiteTarget::BranchEntry`] branch path into this
     /// tree is meaningful exactly when a branch site sealed executable.
@@ -380,7 +380,7 @@ impl SealedRoot {
     }
     /// Whether the resource declares a member shape the flat kernel cannot execute (a
     /// group, a nested/composite branch, or a widened field). A single-level
-    /// single-column-keyed scalar-field branch is executable and does not set this.
+    /// scalar-field keyed branch is executable and does not set this.
     pub fn has_extras(&self) -> bool {
         self.has_extras
     }

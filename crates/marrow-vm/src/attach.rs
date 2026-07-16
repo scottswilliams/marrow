@@ -9,7 +9,7 @@
 //! export invocations, so a mutating export's committed `transaction` region is
 //! observable by a later read invocation and a rolled-back one is not (E02).
 //!
-//! The flat single-column keyed root of scalar fields, with single-column-keyed
+//! The flat keyed root of scalar fields (one or more key columns), with keyed
 //! scalar-field branches nested to any depth, is executable here; a wider durable shape —
 //! a composite key, a group, or a non-scalar field — is [`DurableRun::Parked`], reported
 //! honestly rather than run against a partial store.
@@ -35,7 +35,7 @@ pub enum DurableRun {
     Ran(Result<Option<Value>, RuntimeFault>),
     /// The image's durable shape is not yet executable by the ephemeral read kernel
     /// (a composite key, a group, or a non-scalar field). Wider shapes stay parked;
-    /// single-column-keyed scalar-field branches nested to any depth are executable.
+    /// scalar-field keyed branches nested to any depth are executable.
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
     Failed(&'static str),
@@ -166,9 +166,9 @@ pub fn run_export(
 /// verified, so it can never reach this derivation.
 fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> {
     // v0 carries at most one durable root; a durable test with demand has exactly
-    // one. A flat executable root is single-column keyed with no member tree.
+    // one. A flat executable root is keyed (one or more columns) with no member tree.
     //
-    // The executable layout is the single-column scalar root plus single-column-keyed
+    // The executable layout is the keyed scalar root plus scalar-field keyed
     // scalar-field branches nested to any depth. Groups, composite-keyed branches, widened
     // field values, and composite root keys park; a parked shape stays parked until its
     // owner lands it.

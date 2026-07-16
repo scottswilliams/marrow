@@ -180,7 +180,7 @@ impl DecodedMember {
     }
 
     /// Whether this member keeps its containing root flat-executable: a plain scalar
-    /// field or a simple (recursively single-column scalar-field) branch. A group, a
+    /// field or a simple (recursively scalar-field, keyed) branch. A group, a
     /// composite branch, or a widened field does not.
     fn keeps_root_flat(&self) -> bool {
         match self {
@@ -1218,7 +1218,7 @@ fn decode_site(
 
 /// Resolve a decoded site path plus target kind to a [`SealedSite`]. A path that
 /// names no reconstructed node, or a target whose kind disagrees with the resolved
-/// node's kind, is refused. A site over the flat single-column keyed root of plain
+/// node's kind, is refused. A site over the flat keyed root of plain
 /// scalar fields seals as [`SealedSite::Flat`] with its re-derived root index and (for
 /// a field leaf) top-level field index; every other resolved site — a singleton or
 /// composite-key root, a nested `branch` placement, a group-scoped field, or a
@@ -1297,7 +1297,7 @@ fn resolve_site(
         });
     }
     // Every node carries its enclosing root's placement as its second step, so the
-    // root index is that placement's position. Only the flat single-column keyed root
+    // root index is that placement's position. Only the flat keyed root
     // of plain scalar fields is kernel-executable; a site over it is a whole-payload
     // site on the root itself or a field-leaf site on a direct top-level field. Any
     // other resolved site — a nested placement, a group-scoped or widened field, or a
@@ -1382,19 +1382,19 @@ fn resolve_site(
     Ok(sealed)
 }
 
-/// Whether a decoded root is the flat single-column keyed root the single-root kernel
-/// executes: exactly one key column and a member tree of only plain top-level scalar
-/// fields and single-level single-column-keyed scalar-field branches (no group, no
-/// nested or composite-key branch, no widened field). Re-derived from the decoded
-/// graph, so the flat/parked classification never trusts a compiler summary.
+/// Whether a decoded root is the flat keyed root the kernel executes: at least one key
+/// column and a member tree of only plain top-level scalar fields and scalar-field keyed
+/// branches (no group, no widened field). The key may be single-column or a composite
+/// tuple, at the root and at every branch. Re-derived from the decoded graph, so the
+/// flat/parked classification never trusts a compiler summary.
 fn is_flat_executable_root(root: &DecodedRoot) -> bool {
     !root.keys.is_empty() && root.members.iter().all(DecodedMember::keeps_root_flat)
 }
 
 /// Seal a member tree's keyed branches into the recursive [`SealedBranch`] tree, in
 /// declaration order, so a [`SealedSiteTarget::BranchEntry`] branch path indexes it level
-/// by level. Called only for a flat-executable root, so every branch is a single-column
-/// scalar-field branch (its `keys[0]` is its one key scalar) and its own members recurse
+/// by level. Called only for a flat-executable root, so every branch is a scalar-field
+/// keyed branch (its `keys` are its ordered key columns) and its own members recurse
 /// through the same rule.
 fn seal_branches(members: &[DecodedMember], strings: &[Rc<str>]) -> Vec<SealedBranch> {
     members
@@ -2502,11 +2502,10 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .iter()
         .map(|root| {
             let flat = is_flat_executable_root(root);
-            // A flat-executable root's branches are all single-column scalar-field
+            // A flat-executable root's branches are all scalar-field keyed
             // branches, each carrying its own nested branches; seal the whole tree in
             // declaration order so a BranchEntry branch path indexes it level by level. A
-            // non-flat root parks every branch site, so it needs no sealed branch list (and
-            // a composite-key branch has no single key scalar to seal here).
+            // non-flat root parks every branch site, so it needs no sealed branch list.
             let branches = if flat {
                 seal_branches(&root.members, &decoded.strings)
             } else {

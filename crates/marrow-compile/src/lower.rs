@@ -7238,19 +7238,20 @@ fn is_field_address(expr: &Expression) -> bool {
     matches!(expr, Expression::Field { base, .. } if is_entry_address(base))
 }
 
-/// A durable operation over a declared-but-not-executable root (a singleton or
-/// composite-key placement): the shape's identity is complete and in the image,
-/// but the single-root kernel serves only single-column keyed roots at this stage,
-/// so the operation is rejected precisely rather than silently dropped.
+/// A durable operation over a declared-but-not-executable root (a singleton root, or a
+/// root whose resource declares a static `group` or a widened field): the shape's identity
+/// is complete and in the image, but the kernel does not yet serve it, so the operation is
+/// rejected precisely rather than silently dropped. Keyed roots — single-column or a
+/// composite tuple — of scalar fields and their `branch` placements are executable.
 fn not_yet_executable(file: &str, span: SourceSpan, root: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,
         span,
         format!(
-            "durable operations over `^{root}` are not yet executable: only a single-column \
-             keyed root runs on the beta line so far (singleton and composite-key roots \
-             declare and verify their identity but cannot yet be read or written)"
+            "durable operations over `^{root}` are not yet executable: a singleton root, or a \
+             root whose resource declares a static `group` or a widened field, declares and \
+             verifies its identity but cannot yet be read or written"
         ),
     )
 }

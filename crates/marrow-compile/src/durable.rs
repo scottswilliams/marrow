@@ -13,9 +13,8 @@
 //! re-encodes.
 //!
 //! The executable durable subset the single-root kernel can serve at this stage is
-//! the flat single-column keyed root: one key column and no groups or branches. A
-//! singleton or composite-key root, or any root whose resource declares a group or
-//! a branch, completes its identity and verifies but has no executable operation
+//! a flat keyed root: one or more key columns and no groups. A
+//! singleton root, or any root whose resource declares a group or a widened field, completes its identity and verifies but has no executable operation
 //! sites — an operation over one is a precise typed `check.unsupported` rejection at
 //! lowering ("not yet executable"). The wider shapes run at E01. This module
 //! validates the declaration, adds the root, its member tree, and — for the
@@ -91,7 +90,7 @@ pub(crate) struct DurableBranchField {
     pub(crate) site: u16,
 }
 
-/// One executable keyed `branch` of a flat-executable root: a single-column-keyed
+/// One executable keyed `branch` of a flat-executable root: a scalar-field keyed
 /// scalar-field subtree one or more levels below the root, carrying its own nested
 /// branches recursively. Its whole-entry operations address the key-path
 /// `[root_key, branch_key, …]` through `entry_site`, and its constructor
@@ -130,9 +129,9 @@ impl DurableBranch {
 }
 
 /// The project's single executable durable root, its operation sites, and its
-/// executable branches. A flat single-column keyed root of plain scalar fields whose
-/// only nested placements are single-level single-column-keyed scalar-field branches
-/// reaches this form; its single key scalar backs the kernel-serviceable read/write
+/// executable branches. A flat keyed root of plain scalar fields whose
+/// only nested placements are scalar-field keyed branches
+/// reaches this form; its key columns back the kernel-serviceable read/write
 /// path and each branch adds one key column below it.
 pub(crate) struct DurableRoot {
     pub(crate) name: String,
@@ -159,7 +158,7 @@ impl DurableRoot {
 }
 
 /// The durable registry: zero or one root. `executable` is populated only for the
-/// flat single-column keyed root the kernel can serve; `declared_root` names any
+/// flat keyed root the kernel can serve; `declared_root` names any
 /// admitted root (singleton, single-column, composite, or one bearing groups or
 /// branches) so a durable operation over a not-yet-executable shape reports
 /// precisely rather than as "no store".
@@ -170,7 +169,7 @@ pub(crate) struct DurableRegistry {
 }
 
 impl DurableRegistry {
-    /// The executable flat single-column keyed root, if the project declares one.
+    /// The executable flat keyed root, if the project declares one.
     pub(crate) fn root(&self) -> Option<&DurableRoot> {
         self.executable.as_ref()
     }
@@ -195,10 +194,10 @@ impl DurableRegistry {
         find(&self.executable.as_ref()?.branches, ty)
     }
 
-    /// The name of a declared root the kernel cannot yet serve (a singleton or
-    /// composite key, or a resource with a group or branch). `Some` exactly when a
-    /// root is declared but not executable, so the lowerer can distinguish a
-    /// not-yet-executable operation from an operation with no store at all.
+    /// The name of a declared root the kernel cannot yet serve (a singleton root, or a
+    /// resource declaring a static `group` or a widened field). `Some` exactly when a root
+    /// is declared but not executable, so the lowerer can distinguish a not-yet-executable
+    /// operation from an operation with no store at all.
     pub(crate) fn not_yet_executable_root(&self) -> Option<&str> {
         match (&self.executable, &self.declared_root) {
             (None, Some(name)) => Some(name),
@@ -418,8 +417,8 @@ impl DurableRegistry {
         // member tree (which carries each branch's materialized record type) is still in
         // hand — it moves into the `RootDef` below.
         //
-        // Executable durable operations exist for the flat single-column keyed root of
-        // plain scalar fields, together with its single-level single-column-keyed
+        // Executable durable operations exist for the flat keyed root of
+        // plain scalar fields, together with its scalar-field keyed
         // scalar-field branches — the shape the kernel serves. A singleton, composite-key,
         // group-bearing, widened-field, or nested/composite-branch root (a top-level
         // field that is a nominal scalar, struct, enum, or `Option`; a group; or a branch
@@ -1220,9 +1219,9 @@ fn emit_subtree_sites(
 }
 
 /// Whether a durable member keeps its containing root flat-executable, mirroring the
-/// verifier's independent `keeps_root_flat`: a plain scalar field, or a single-level
-/// single-column-keyed branch whose direct members are all plain scalar fields. A
-/// group, a composite or nested branch, or a widened (struct/enum) field does not.
+/// verifier's independent `keeps_root_flat`: a plain scalar field, or a scalar-field keyed
+/// branch (one or more key columns) whose direct members recursively keep flat. A group or
+/// a widened (struct/enum) field does not.
 fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
     match member {
         DurableMemberDef::Field { value, .. } => matches!(value, DurableValueShape::Scalar(_)),
@@ -1239,7 +1238,7 @@ fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
 /// and nested branches from the source resource declaration — all in the same declaration
 /// order, so a branch path indexes both the sealed branch tree and this one identically.
 /// Called only when the caller has proven the root flat-executable, so every branch is a
-/// single-column-keyed scalar-field branch (its nested members are scalar fields and simple
+/// scalar-field keyed branch (its nested members are scalar fields and simple
 /// branches).
 fn build_executable_branches(
     records: &TypeRegistry,

@@ -10,7 +10,7 @@
 //! attachment: a fresh in-memory store minted from a verified image's schema,
 //! sites, and deployment ceiling, driving read and single-write sessions bounded
 //! by `demand ∩ ceiling ∩ grant`. The executable physical layout is the
-//! name-keyed scalar-field root plus single-column-keyed scalar-field branches
+//! name-keyed scalar-field root plus scalar-field keyed branches
 //! nested to any depth; groups, composite-keyed branches, widened field values,
 //! and composite root keys stay parked until their owners land them.
 
@@ -35,8 +35,7 @@ use crate::codec::value::{RuntimeScalar, ScalarKind};
 /// The schema descriptor the store profile records and every session revalidates.
 /// One root; its top-level fields and its keyed branches in declaration (image)
 /// order. A branch is a keyed subtree nested beneath every root entry; the schema is
-/// recursive, so single-column-keyed branches nest to any depth (composite branch keys
-/// are a later lane).
+/// recursive, so scalar-field branches with one or more key columns nest to any depth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSchema {
     pub root_name: String,
