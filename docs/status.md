@@ -84,8 +84,10 @@ keys are immune to writes the bodies perform. Durable traversal is always bounde
 the earlier unbounded durable `for k in ^root`, its value-binding `for k, v` durable
 form, and `reversed` durable iteration were removed with the unbounded next-key
 cursor family (opcode, kernel op, and neighbor `next`/`prev` built-ins) and have no
-owner. Wider durable shapes stay parked with their owning
-lanes. Persistent
+owner. Widened field values — a dense `struct`/record, a closed `enum`, and
+`Option`/`Result` — are stored inline in a field-leaf cell and execute end to end;
+nominal-typed fields stay parked with their owning lanes, and a collection in a field is
+rejected. Persistent
 execution is still in the trough: T01's in-process store open died at D00, so
 `marrow run` no longer opens a store and reports a durable export with the typed
 `cli.durable_unsupported` outcome until the persistent terminal path lands over a
@@ -103,12 +105,13 @@ ledger-model property; a rename becomes an anchor move under the future apply
 action, while the additive-only `run` mint does not) — which the verifier
 independently recomputes from the image and rejects on mismatch. The
 compiler fully lowers operations over a keyed root — single-column or a composite tuple
-— of scalar fields and its scalar-field `branch` placements (with one or more key
-columns each) nested to any depth; bounded traversal, however, iterates a single key
-column, so a `for` head over a composite-keyed layer parks. Singleton, group-bearing,
-and widened-field roots declare and verify their identity but their operations are not
-yet lowered. The admitted subset is narrow and grows lane by lane; a well-formed
-construct outside it is a typed `check.unsupported` diagnostic.
+— whose fields are each a scalar or a widened value (a dense `struct`/record, a closed
+`enum`, or an `Option`/`Result`), together with its `branch` placements (with one or more
+key columns each) nested to any depth; bounded traversal, however, iterates a single key
+column, so a `for` head over a composite-keyed layer parks. Singleton, group-bearing, and
+nominal-field roots declare and verify their identity but their operations are not yet
+lowered, and a collection in a field is rejected. The admitted subset is narrow and grows
+lane by lane; a well-formed construct outside it is a typed `check.unsupported` diagnostic.
 
 ### Local wire and TypeScript client
 

@@ -11,8 +11,12 @@ use crate::codec::value::{ScalarKind, VALUE_CODEC_VERSION, ValueShape};
 
 use super::{BranchSchema, FieldSchema, StoreSchema};
 
-/// The T01 profile version. D00 introduces a distinct version.
-const PROFILE_VERSION: u8 = 0x01;
+/// The T01 profile version. D00 introduces a distinct version; the E03w widened-value
+/// slice bumps it once more, because the canonical §A7 value-shape descriptor gives every
+/// field shape a leading discriminant byte (`0x00` scalar / `0x01` product / `0x02` sum),
+/// so even a scalar-only descriptor's bytes differ from the pre-slice form and a pre-slice
+/// store is refused a reopen by this toolchain (pre-beta, no stored user data).
+const PROFILE_VERSION: u8 = 0x02;
 
 /// The stable descriptor tag for a scalar kind. Independent of the language type
 /// tags and of the key order tags; a frozen wire byte for the profile only.
@@ -50,24 +54,30 @@ fn push_fields(out: &mut Vec<u8>, fields: &[FieldSchema]) {
     }
 }
 
-/// The composite-shape discriminants. Chosen outside the `kind_tag` range (`0x01..=0x07`)
-/// so a scalar field's descriptor stays byte-identical to the pre-widening form (no
-/// `PROFILE_VERSION` bump for adding composites): a leading byte `0x01..=0x07` is a scalar
-/// kind, `0xF1`/`0xF2` a product/sum. This interim recursive encoding fingerprints a
-/// composite field shape so the profile is well-formed and reopen agrees; the canonical
-/// prefix-free value-shape descriptor of §A7 (with its deliberate `PROFILE_VERSION` bump
-/// and drift KATs) supersedes it in the descriptor lane.
-const SHAPE_PRODUCT: u8 = 0xF1;
-const SHAPE_SUM: u8 = 0xF2;
+/// The canonical §A7 value-shape descriptor discriminants: a leading byte tags every shape
+/// node so the descriptor is prefix-free and an independent implementer parses it without the
+/// encoder. `0x00` precedes a scalar's `kind_tag`; `0x01` a product; `0x02` a sum
+/// (`enum`/`Option`/`Result`). Disjoint from the `kind_tag` range so the two never alias.
+const SHAPE_SCALAR: u8 = 0x00;
+const SHAPE_PRODUCT: u8 = 0x01;
+const SHAPE_SUM: u8 = 0x02;
 
-/// Append a field's value shape to the descriptor, recursively. A scalar emits its single
-/// kind tag (byte-identical to the pre-widening descriptor). A product emits its type
-/// index, leaf count, and each leaf shape in order; a sum emits its type index, variant
-/// count, and each variant's payload count and payload shapes. The structure and every
-/// leaf kind are covered, so a shape change at any depth changes the descriptor.
+/// Append a field's value shape to the descriptor in the canonical §A7 prefix-free form,
+/// recursively. Every node opens with a discriminant: a scalar is `0x00` then its single
+/// `kind_tag`; a product is `0x01` then its type index (u16, big-endian), leaf count (u16),
+/// and each leaf shape in declaration order; a sum is `0x02` then its type index (u16),
+/// variant count (u16), and per variant a payload count (u16) then that variant's payload
+/// shapes. Every u16 is big-endian (matching [`push_name`]/[`push_key`]). The structure,
+/// each type index, and every leaf kind are covered, so a shape change at any depth changes
+/// the descriptor. The type index carries the schema's nominal-type identity — it does not
+/// drive byte parsing (structure does), but a reopen refuses a different type identity at the
+/// same position and value equality compares it (`equality::value_equality`).
 fn push_shape(out: &mut Vec<u8>, shape: &ValueShape) {
     match shape {
-        ValueShape::Scalar(kind) => out.push(kind_tag(*kind)),
+        ValueShape::Scalar(kind) => {
+            out.push(SHAPE_SCALAR);
+            out.push(kind_tag(*kind));
+        }
         ValueShape::Product { ty, fields } => {
             out.push(SHAPE_PRODUCT);
             out.extend_from_slice(&ty.to_be_bytes());
@@ -199,6 +209,68 @@ mod tests {
     }
 
     #[test]
+    fn a7_descriptor_bytes_kat() {
+        // §A7 canonical prefix-free value-shape descriptor, frozen hex:
+        //   shape := 0x00 <scalar-kind-tag>
+        //          | 0x01 <type-index u16-BE> <leaf-count u16-BE> shape*
+        //          | 0x02 <type-index u16-BE> <variant-count u16-BE> ( <payload-count u16-BE> shape* )*
+        // A product `{int, Option[string]}` with product type index 3 and the inner
+        // Option's type index 4.
+        let shape = ValueShape::Product {
+            ty: 3,
+            fields: vec![
+                ValueShape::Scalar(ScalarKind::Int),
+                ValueShape::Sum {
+                    ty: 4,
+                    variants: vec![vec![], vec![ValueShape::Scalar(ScalarKind::Str)]],
+                },
+            ],
+        };
+        let mut out = Vec::new();
+        push_shape(&mut out, &shape);
+        assert_eq!(
+            out,
+            vec![
+                0x01, 0x00, 0x03, 0x00, 0x02, // product ty=3, 2 leaves
+                0x00, 0x02, // leaf 0: scalar int
+                0x02, 0x00, 0x04, 0x00, 0x02, // leaf 1: sum ty=4, 2 variants
+                0x00, 0x00, // variant 0: none, 0 payload leaves
+                0x00, 0x01, 0x00, 0x03, // variant 1: some, 1 payload leaf = scalar string
+            ],
+        );
+
+        // The empty product emits only its discriminant, type index, and a zero leaf count.
+        let empty = ValueShape::Product {
+            ty: 7,
+            fields: vec![],
+        };
+        let mut empty_out = Vec::new();
+        push_shape(&mut empty_out, &empty);
+        assert_eq!(empty_out, vec![0x01, 0x00, 0x07, 0x00, 0x00]);
+
+        // Scalar carries the 0x00 discriminant then the kind tag.
+        let mut scalar_out = Vec::new();
+        push_shape(&mut scalar_out, &ValueShape::Scalar(ScalarKind::Bool));
+        assert_eq!(scalar_out, vec![0x00, kind_tag(ScalarKind::Bool)]);
+    }
+
+    #[test]
+    fn descriptor_records_the_bumped_profile_version() {
+        let schema = StoreSchema {
+            root_name: "r".into(),
+            key: vec![ScalarKind::Int],
+            fields: vec![],
+            branches: Vec::new(),
+        };
+        let bytes = descriptor(&schema);
+        assert_eq!(bytes[0], PROFILE_VERSION);
+        assert_eq!(
+            PROFILE_VERSION, 0x02,
+            "the §A7 descriptor bumps the profile version once"
+        );
+    }
+
+    #[test]
     fn descriptor_distinguishes_widened_field_shapes() {
         let base = |shape: ValueShape| StoreSchema {
             root_name: "accounts".into(),
@@ -239,8 +311,8 @@ mod tests {
         });
         assert_ne!(descriptor(&sum), descriptor(&sum_other_ty));
 
-        // A scalar field's descriptor is byte-identical to the pre-widening form: a single
-        // kind tag with no composite discriminant. Adding composites bumps no version.
+        // A scalar field's descriptor is the canonical §A7 form: the `0x00` scalar
+        // discriminant then its kind tag. Byte-for-byte, against a hand-built descriptor.
         assert_eq!(descriptor(&scalar), {
             let mut out = vec![PROFILE_VERSION];
             out.extend_from_slice(&VALUE_CODEC_VERSION.to_be_bytes());
@@ -248,6 +320,7 @@ mod tests {
             push_key(&mut out, &[ScalarKind::Int]);
             out.extend_from_slice(&1u16.to_be_bytes());
             push_name(&mut out, "f");
+            out.push(SHAPE_SCALAR);
             out.push(kind_tag(ScalarKind::Int));
             out.push(1);
             out.extend_from_slice(&0u16.to_be_bytes());

@@ -113,28 +113,31 @@ store, so a durable export does not run from `marrow run` (it reports the typed
 (F02). The operations described below are the current durable *language* — they are
 checked and their identity is complete; see [Project status](../status.md).
 
-Within that checked language, the *flat scalar* keyed root is the form whose operations
-the compiler fully lowers: a keyed root — one or more key columns — of only plain scalar
-fields, whose entries are read and written through the operations below. Its
-scalar-field `branch` placements, with one or more key columns each, are executable in
-the same way, nested to any depth (see [Keyed branches](#keyed-branches)). A singleton
-root (no key columns), a root whose resource declares a static `group`, or a root whose
-resource declares a widened field (a nominal scalar, struct, enum, or `Option` value)
-declares and verifies its full identity, but its read and write operations are not yet
-lowered — an operation over one is the typed `check.unsupported` rejection rather than a
-silent drop, until the wider durable runtime lands. (Declaring such a store is no longer
-a `check.type` on the resource, as it was before durable field values widened; the store
-is identity-complete, only its operations are deferred.)
+Within that checked language, the *flat* keyed root is the form whose operations the
+compiler fully lowers: a keyed root — one or more key columns — whose fields are each a
+plain scalar or a widened value (a dense `struct`/record, a closed `enum`, or an
+`Option`/`Result`), whose entries are read and written through the operations below. A
+widened field value is framed inline in its single field-leaf cell and round-trips as a
+runtime value. Such a root's `branch` placements, with one or more key columns each, are
+executable in the same way, nested to any depth (see [Keyed branches](#keyed-branches)).
+A singleton root (no key columns), a root whose resource declares a static `group`, or a
+root whose resource declares a **nominal-typed** field declares and verifies its full
+identity, but its read and write operations are not yet lowered — an operation over one
+is the typed `check.unsupported` rejection rather than a silent drop, until the remaining
+durable runtime lands. (Declaring such a store is no longer a `check.type` on the
+resource; the store is identity-complete, only its operations are deferred. A collection
+in a field stays rejected outright — a collection belongs under a keyed `branch`, not
+inline.)
 
 The compiler emits an **operation site** for every node of the whole durable graph
 — a whole-payload site for each keyed placement (the store root and every nested
 `branch`) and a field-leaf site for each stored field (top-level, group-scoped, or
 branch-scoped) — and the verifier seals each one by resolving its concrete address
 against the graph it independently reconstructs. A site on the flat executable root, or
-on one of its scalar-field branches at any depth, seals as executable; every other site
-— over a group-scoped or widened field, or a non-flat root — seals with a complete
-identity but parks, so its concrete address is checked and recorded while its execution
-waits for the wider kernel. The site table holds one entry per graph node regardless of how many
+on one of its scalar-or-widened-field branches at any depth, seals as executable; every
+other site — over a group-scoped or nominal-typed field, or a non-flat root — seals with
+a complete identity but parks, so its concrete address is checked and recorded while its
+execution waits for the remaining kernel. The site table holds one entry per graph node regardless of how many
 operations reference it, and appending a sparse field adds one field-leaf site
 without disturbing any existing site.
 
@@ -280,7 +283,7 @@ address (`^books(id).title`), or to another place is rejected.
 
 A place binds an address the same way an inline `^root(key...)` operation does, so a
 place over a store shape whose operations are not yet lowered (a singleton,
-group-bearing, or widened-field root) reports the same not-yet-executable result as the
+group-bearing, or nominal-field root) reports the same not-yet-executable result as the
 inline form.
 
 ## Field Assignment

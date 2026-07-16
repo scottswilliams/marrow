@@ -13,8 +13,9 @@
 //! re-encodes.
 //!
 //! The executable durable subset the single-root kernel can serve at this stage is
-//! a flat keyed root: one or more key columns and no groups. A
-//! singleton root, or any root whose resource declares a group or a widened field, completes its identity and verifies but has no executable operation
+//! a flat keyed root: one or more key columns and no groups, whose fields are each a
+//! scalar or a widened value (`struct`/`enum`/`Option`, framed inline). A
+//! singleton root, or any root whose resource declares a group or a nominal-typed field, completes its identity and verifies but has no executable operation
 //! sites — an operation over one is a precise typed `check.unsupported` rejection at
 //! lowering ("not yet executable"). The wider shapes run at E01. This module
 //! validates the declaration, adds the root, its member tree, and — for the
@@ -198,7 +199,7 @@ impl DurableRegistry {
     }
 
     /// The name of a declared root the kernel cannot yet serve (a singleton root, or a
-    /// resource declaring a static `group` or a widened field). `Some` exactly when a root
+    /// resource declaring a static `group` or a nominal-typed field). `Some` exactly when a root
     /// is declared but not executable, so the lowerer can distinguish a not-yet-executable
     /// operation from an operation with no store at all.
     pub(crate) fn not_yet_executable_root(&self) -> Option<&str> {

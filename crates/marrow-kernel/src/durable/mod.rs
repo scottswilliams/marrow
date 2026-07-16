@@ -10,9 +10,10 @@
 //! attachment: a fresh in-memory store minted from a verified image's schema,
 //! sites, and deployment ceiling, driving read and single-write sessions bounded
 //! by `demand ∩ ceiling ∩ grant`. The executable physical layout is the
-//! name-keyed scalar-field root plus scalar-field keyed branches
-//! nested to any depth; groups, composite-keyed branches, widened field values,
-//! and composite root keys stay parked until their owners land them.
+//! name-keyed root — its fields each a scalar or a widened value (`struct`/`enum`/
+//! `Option`, framed inline) — plus keyed branches nested to any depth; groups,
+//! composite-keyed branches, nominal-typed fields, and composite root keys stay
+//! parked until their owners land them.
 
 mod attach;
 mod physical;

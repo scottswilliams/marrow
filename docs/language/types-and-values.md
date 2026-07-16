@@ -473,8 +473,12 @@ pub fn label(): string
 A field type is a scalar, a closed enum value type (a user `enum` or a built-in
 `Option`/`Result`), or an alias that expands to one. A user-enum field holds a
 local enum value, so a `match` may dispatch on a field read. A resource backing a
-`store` has only scalar fields, since durable storage records scalar leaves: a
-non-scalar field on a stored resource is a `check.type` at the `store`.
+`store` may hold a scalar field or a widened value field — a dense `struct`/record,
+a closed `enum`, or an `Option`/`Result` — each stored inline in its field-leaf
+cell and round-tripped as a runtime value. A nominal-typed stored field reports
+`check.unsupported` until its lane lands, and a collection is never stored inline in
+a field — a collection belongs under a keyed `branch`, so a collection field is
+rejected.
 
 ## Structs
 
