@@ -187,14 +187,18 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     let fields = scalar_fields(image, root.record())?;
 
     // Each executable branch derives its own record from the image, one level below the
-    // root; the sealed branch list is in declaration order, so a `BranchEntry(idx)` site
-    // indexes into `branches`.
+    // root; the sealed branch list is in declaration order, so a `BranchEntry([idx])`
+    // site indexes into `branches`. A flat-executable root's branches are all
+    // single-level (a nested sub-branch parks the whole root), so each has no sub-branch
+    // of its own here; the recursive schema slot is present for the parked nested shape a
+    // later admission lane lands.
     let mut branches = Vec::with_capacity(root.branches().len());
     for branch in root.branches() {
         branches.push(BranchSchema {
             name: branch.name().to_string(),
             key: scalar_kind(branch.key()),
             fields: scalar_fields(image, branch.record())?,
+            branches: Vec::new(),
         });
     }
 

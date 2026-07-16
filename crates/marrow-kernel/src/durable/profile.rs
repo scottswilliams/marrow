@@ -50,22 +50,38 @@ fn push_fields(out: &mut Vec<u8>, fields: &[FieldSchema]) {
     }
 }
 
+/// Append a node's keyed branches to the descriptor: a branch count then, for each
+/// branch in declaration order, its name, single key kind, own fields, and — recursively
+/// — its own nested branches. The recursion makes the descriptor cover a whole nested
+/// branch shape, so a change at any branch depth changes the descriptor and a store's
+/// recorded profile refuses a reopen under a different sub-branch shape.
+fn push_branches(out: &mut Vec<u8>, branches: &[BranchSchema]) {
+    out.extend_from_slice(&(branches.len() as u16).to_be_bytes());
+    for BranchSchema {
+        name,
+        key,
+        fields,
+        branches,
+    } in branches
+    {
+        push_name(out, name);
+        out.push(kind_tag(*key));
+        push_fields(out, fields);
+        push_branches(out, branches);
+    }
+}
+
 /// The canonical profile descriptor bytes for `schema`: the root's name, key, and
-/// fields, then its keyed branches (each a name, single key kind, and own fields) in
-/// declaration order. A branch schema change therefore changes the descriptor, so a
-/// store's recorded profile refuses a reopen under a different branch shape.
+/// fields, then its whole nested branch shape in declaration order. A branch schema
+/// change at any depth therefore changes the descriptor, so a store's recorded profile
+/// refuses a reopen under a different branch shape.
 pub(super) fn descriptor(schema: &StoreSchema) -> Vec<u8> {
     let mut out = vec![PROFILE_VERSION];
     out.extend_from_slice(&VALUE_CODEC_VERSION.to_be_bytes());
     push_name(&mut out, &schema.root_name);
     out.push(kind_tag(schema.key));
     push_fields(&mut out, &schema.fields);
-    out.extend_from_slice(&(schema.branches.len() as u16).to_be_bytes());
-    for BranchSchema { name, key, fields } in &schema.branches {
-        push_name(&mut out, name);
-        out.push(kind_tag(*key));
-        push_fields(&mut out, fields);
-    }
+    push_branches(&mut out, &schema.branches);
     out
 }
 
@@ -115,6 +131,7 @@ mod tests {
                 kind: ScalarKind::Str,
                 required: true,
             }],
+            branches: Vec::new(),
         });
         assert_ne!(descriptor(&base), descriptor(&branch_added));
 
@@ -122,5 +139,27 @@ mod tests {
         let mut branch_field_changed = branch_added.clone();
         branch_field_changed.branches[0].fields[0].required = false;
         assert_ne!(descriptor(&branch_added), descriptor(&branch_field_changed));
+
+        // Adding a nested sub-branch, and a change inside it, both differ: the
+        // descriptor covers the whole nested branch shape, not just the first level.
+        let mut sub_branch_added = branch_added.clone();
+        sub_branch_added.branches[0].branches.push(BranchSchema {
+            name: "tags".into(),
+            key: ScalarKind::Str,
+            fields: vec![FieldSchema {
+                name: "weight".into(),
+                kind: ScalarKind::Int,
+                required: false,
+            }],
+            branches: Vec::new(),
+        });
+        assert_ne!(descriptor(&branch_added), descriptor(&sub_branch_added));
+
+        let mut sub_branch_field_changed = sub_branch_added.clone();
+        sub_branch_field_changed.branches[0].branches[0].key = ScalarKind::Int;
+        assert_ne!(
+            descriptor(&sub_branch_added),
+            descriptor(&sub_branch_field_changed),
+        );
     }
 }

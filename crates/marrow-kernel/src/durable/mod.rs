@@ -53,16 +53,19 @@ pub struct FieldSchema {
     pub required: bool,
 }
 
-/// One keyed branch nested beneath a root entry: its name, its single key column's
-/// scalar kind, and its own record's fields. A branch entry is addressed by the tuple
-/// `(root key, branch key)` and carries its own marker and field leaves, so it is a
-/// distinct durable node reusing the root entry's marker/field topology one level
-/// down.
+/// One keyed branch nested beneath a parent entry: its name, its single key column's
+/// scalar kind, its own record's fields, and its own nested branches. A branch entry is
+/// addressed by extending the parent's key-path with the branch key and carries its own
+/// marker and field leaves, so it is a distinct durable node reusing the parent entry's
+/// marker/field topology one level down. The schema is recursive — a branch may itself
+/// declare keyed branches — so the store profile describes a whole nested branch shape
+/// and a sub-branch shape change is a profile mismatch at session open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchSchema {
     pub name: String,
     pub key: ScalarKind,
     pub fields: Vec<FieldSchema>,
+    pub branches: Vec<BranchSchema>,
 }
 
 /// A verified operation site the kernel maps to physical layout, indexed by the

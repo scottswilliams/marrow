@@ -1260,6 +1260,7 @@ mod tests {
                     kind: ScalarKind::Str,
                     required: false,
                 }],
+                branches: Vec::new(),
             }],
         };
         let sites = vec![SiteSpec {
@@ -1375,6 +1376,7 @@ mod tests {
                     kind: ScalarKind::Str,
                     required: true,
                 }],
+                branches: Vec::new(),
             }],
         };
         let sites = vec![
@@ -1741,6 +1743,7 @@ mod tests {
                 name: "notes".into(),
                 key: ScalarKind::Int,
                 fields: branch_fields,
+                branches: Vec::new(),
             }],
         };
         let sites = vec![
