@@ -1199,12 +1199,17 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
     let root = &image.roots()[root as usize];
     match target {
         SealedSiteTarget::BranchEntry(path) => {
-            // The verifier seals only single-hop branch paths (a nested branch parks),
-            // so the path names one direct branch of the root.
-            let [branch] = path.as_ref() else {
-                unreachable!("the verifier seals only single-hop branch paths")
-            };
-            root.branches()[*branch as usize].record()
+            // Walk the branch path level by level through the recursive sealed branch tree;
+            // the deepest branch's own record is the whole-entry record. The verifier
+            // resolved this path against the same tree, so every index is in range.
+            let mut branches = root.branches();
+            let mut record = root.record();
+            for &hop in path.as_ref() {
+                let branch = &branches[hop as usize];
+                record = branch.record();
+                branches = branch.branches();
+            }
+            record
         }
         // A field-leaf site (top-level or branch) never reaches a whole-entry read
         // (the verifier rejects `DurReadEntry` over a field site), so this arm is

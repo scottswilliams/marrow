@@ -2399,21 +2399,7 @@ impl<'a> FnLowerer<'a> {
     fn is_traversal_place(iterable: &Expression) -> bool {
         match iterable {
             Expression::SavedRoot { .. } => true,
-            Expression::Field { base, .. } => Self::is_entry_address(base),
-            _ => false,
-        }
-    }
-
-    /// Whether `expr` is a durable whole-entry address `^root(key)….branch(bkey)`
-    /// syntactically: a call whose callee bottoms out at the store root, chained through
-    /// branch field-calls. The resolver rechecks names; this only recognizes the shape.
-    fn is_entry_address(expr: &Expression) -> bool {
-        let Expression::Call { callee, .. } = expr else {
-            return false;
-        };
-        match &**callee {
-            Expression::SavedRoot { .. } => true,
-            Expression::Field { base, .. } => Self::is_entry_address(base),
+            Expression::Field { base, .. } => is_entry_address(base),
             _ => false,
         }
     }
@@ -5419,23 +5405,17 @@ impl<'a> FnLowerer<'a> {
 
     // --- durable places (design §D) ---
 
-    /// Detect the inline durable shape of a place expression (an `^root(key)` or
-    /// `^root(key).branch(bkey)` address, or an `^root(key).field` field), if any (no
-    /// diagnostics). Does not see source-local `place` bindings, which need instance
+    /// Detect the inline durable shape of a place expression: a whole-entry address
+    /// `^root(key)….b(bkey)` at any depth, or a field-exact address `<entry-address>.field`.
+    /// No diagnostics. Does not see source-local `place` bindings, which need instance
     /// state; use [`Self::durable_access`] for the full detection.
     fn durable_shape(expr: &Expression) -> Option<DurShape> {
-        match expr {
-            // `^root(key)` — a root whole-entry address.
-            Expression::Call { callee, .. } if is_saved_root(callee) => Some(DurShape::Entry),
-            // `^root(key).branch(bkey)` — a single-level branch whole-entry address: a
-            // call whose callee is a field selector on a root call.
-            Expression::Call { callee, .. } if is_root_field(callee) => Some(DurShape::Entry),
-            // `^root(key).field` — a root field address.
-            Expression::Field { base, .. } if is_root_call(base) => Some(DurShape::Field),
-            // `^root(key).branch(bkey).field` — a branch field-exact address: a field
-            // selection on a branch whole-entry call.
-            Expression::Field { base, .. } if is_branch_call(base) => Some(DurShape::Field),
-            _ => None,
+        if is_entry_address(expr) {
+            Some(DurShape::Entry)
+        } else if is_field_address(expr) {
+            Some(DurShape::Field)
+        } else {
+            None
         }
     }
 
@@ -7202,27 +7182,25 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
     )
 }
 
-/// Whether `expr` is a saved-data root spelling `^root`.
-fn is_saved_root(expr: &Expression) -> bool {
-    matches!(expr, Expression::SavedRoot { .. })
+/// Whether `expr` is a durable whole-entry address `^root(key)….b(bkey)` at any depth: a
+/// key application whose callee bottoms out at the store root, chained through branch
+/// selectors. The single syntactic recognizer of a durable entry address; the resolver
+/// rechecks the store and branch names.
+fn is_entry_address(expr: &Expression) -> bool {
+    let Expression::Call { callee, .. } = expr else {
+        return false;
+    };
+    match callee.as_ref() {
+        Expression::SavedRoot { .. } => true,
+        Expression::Field { base, .. } => is_entry_address(base),
+        _ => false,
+    }
 }
 
-/// Whether `expr` is a root key application `^root(key)` — the whole-entry address of a
-/// root and the base of a branch address.
-fn is_root_call(expr: &Expression) -> bool {
-    matches!(expr, Expression::Call { callee, .. } if is_saved_root(callee))
-}
-
-/// Whether `expr` is a field selection on a root call, `^root(key).name` — either a
-/// root field address or the branch selector at the head of a branch address.
-fn is_root_field(expr: &Expression) -> bool {
-    matches!(expr, Expression::Field { base, .. } if is_root_call(base))
-}
-
-/// Whether `expr` is a branch key application `^root(key).branch(bkey)` — a single-level
-/// branch whole-entry address and the base of a branch field address.
-fn is_branch_call(expr: &Expression) -> bool {
-    matches!(expr, Expression::Call { callee, .. } if is_root_field(callee))
+/// Whether `expr` is a durable field-exact address `<entry-address>.field` at any depth: a
+/// field selection on an entry address.
+fn is_field_address(expr: &Expression) -> bool {
+    matches!(expr, Expression::Field { base, .. } if is_entry_address(base))
 }
 
 /// A durable operation over a declared-but-not-executable root (a singleton or

@@ -3555,3 +3555,197 @@ fn out_of_domain_durable_value_tag_rejects() {
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
 }
+
+// --- Nested-branch admission hostiles (E03w slice B) ---
+//
+// A nested single-column scalar-field branch is executable: `^books(id).notes(nid).tags(tid)`
+// addresses a durable node two levels below the root. The verifier resolves a branch site's
+// path level by level through the reconstructed member tree; a path that routes a branch
+// under a field, or names a branch that does not exist at its level, resolves to no branch
+// and seals *parked*, so a durable opcode over it is refused rather than mis-addressed.
+
+/// Build a flat-executable `Book { title }` root at `^books(id:int)` whose `notes` branch
+/// (`noteId:string`, `text:string required`) itself holds a nested `tags` branch
+/// (`tagId:int`, `weight:int required`) — the executable nested-branch shape. The verifier
+/// seals the whole recursive branch tree, so a valid deep site seals executable.
+fn nested_branch_draft() -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let book = draft.intern_string("Book");
+    let title = draft.intern_string("title");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: book,
+        fields: vec![FieldDef {
+            name: title,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let notes = draft.intern_string("notes");
+    let notes_qualified = draft.intern_string("Book.notes");
+    let notes_text = draft.intern_string("text");
+    let notes_record = draft.add_record_type(RecordTypeDef {
+        name: notes_qualified,
+        fields: vec![FieldDef {
+            name: notes_text,
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        }],
+    });
+    let tags = draft.intern_string("tags");
+    let tags_qualified = draft.intern_string("Book.notes.tags");
+    let tags_weight = draft.intern_string("weight");
+    let tags_record = draft.add_record_type(RecordTypeDef {
+        name: tags_qualified,
+        fields: vec![FieldDef {
+            name: tags_weight,
+            ty: ImageType::scalar(Scalar::Int),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("books");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Text),
+                },
+                DurableMemberDef::Branch {
+                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                    name: notes,
+                    record: notes_record,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes([0x31; 16]),
+                    }],
+                    members: vec![
+                        DurableMemberDef::Field {
+                            id: LedgerIdBytes::from_bytes([0x32; 16]),
+                            required: true,
+                            value: DurableValueShape::Scalar(Scalar::Text),
+                        },
+                        DurableMemberDef::Branch {
+                            placement: LedgerIdBytes::from_bytes([0x40; 16]),
+                            name: tags,
+                            record: tags_record,
+                            keys: vec![KeyColumn {
+                                scalar: Scalar::Int,
+                                id: LedgerIdBytes::from_bytes([0x41; 16]),
+                            }],
+                            members: vec![DurableMemberDef::Field {
+                                id: LedgerIdBytes::from_bytes([0x42; 16]),
+                                required: true,
+                                value: DurableValueShape::Scalar(Scalar::Int),
+                            }],
+                        },
+                    ],
+                },
+            ],
+        },
+    });
+    draft
+}
+
+/// A step in the `books` graph.
+fn step(kind: SemanticStepKind, id: u8) -> SemanticStep {
+    SemanticStep::new(kind, LedgerIdBytes::from_bytes([id; 16]))
+}
+
+/// The whole-payload site path of the nested `tags` branch entry from a chain of steps
+/// below the root: `application -> root placement -> <chain>`.
+fn nested_path(chain: &[SemanticStep]) -> SemanticPath {
+    let mut steps = vec![
+        step(SemanticStepKind::Application, 0x0a),
+        step(SemanticStepKind::Placement, 0x0b),
+    ];
+    steps.extend_from_slice(chain);
+    SemanticPath::from_steps(steps)
+}
+
+/// Add a read-only export that runs `DurExists` over the whole-payload `site` at the given
+/// key arity (root-first `int, string, int` for the tag entry), and encode. The opcode is
+/// the observation that separates an executable deep site from a parked one.
+fn exists_over_tag_entry(mut draft: ImageDraft, site: u16) -> Vec<u8> {
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("has");
+    let code = vec![
+        Instr::LocalGet(0), // root key: int
+        Instr::LocalGet(1), // note key: string
+        Instr::LocalGet(2), // tag key: int
+        Instr::DurExists(site),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
+        ret: ImageType::scalar(Scalar::Bool),
+        local_count: 3,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "has"), func);
+    draft.encode().unwrap().bytes
+}
+
+#[test]
+fn a_valid_deep_nested_branch_entry_site_seals_executable_and_its_opcode_verifies() {
+    // The positive control: a whole-payload site over the concrete `notes -> tags` chain
+    // resolves to the nested branch, seals executable, and an `exists` opcode over its
+    // three-column key-path type-checks and verifies.
+    let mut draft = nested_branch_draft();
+    let site = draft
+        .add_site(SiteDef::whole_payload(nested_path(&[
+            step(SemanticStepKind::Placement, 0x30),
+            step(SemanticStepKind::Placement, 0x40),
+        ])))
+        .index();
+    assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "VERIFIED");
+}
+
+#[test]
+fn a_branch_path_routed_through_a_field_rejects_at_the_table_phase() {
+    // A forged path that routes the `tags` branch under the `text` *field* of `notes`
+    // (a field has no branch child) names no reconstructed durable node, so the site is
+    // refused when the verifier resolves it against its own node set at the table phase —
+    // before any function, and independently of whether an opcode references it.
+    let mut draft = nested_branch_draft();
+    let site = draft
+        .add_site(SiteDef::whole_payload(nested_path(&[
+            step(SemanticStepKind::Placement, 0x30),
+            step(SemanticStepKind::Field, 0x32),
+            step(SemanticStepKind::Placement, 0x40),
+        ])))
+        .index();
+    assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
+}
+
+#[test]
+fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
+    // A forged path whose second hop names a placement that is no branch of `notes` names
+    // no reconstructed durable node, so the site is refused at the table phase; an
+    // out-of-range branch hop can never resolve to — and mis-address — a durable operation.
+    let mut draft = nested_branch_draft();
+    let site = draft
+        .add_site(SiteDef::whole_payload(nested_path(&[
+            step(SemanticStepKind::Placement, 0x30),
+            step(SemanticStepKind::Placement, 0x99),
+        ])))
+        .index();
+    assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
+}
