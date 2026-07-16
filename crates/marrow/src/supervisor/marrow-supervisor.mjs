@@ -25,6 +25,8 @@
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
+import { dirname } from "node:path";
 import process from "node:process";
 
 // ---------------------------------------------------------------------------
@@ -214,7 +216,14 @@ class Parser {
   }
 
   skipWs() {
-    while (" \t\n\r".includes(this.text[this.pos] ?? "")) this.pos += 1;
+    for (;;) {
+      const ch = this.text[this.pos];
+      if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+        this.pos += 1;
+      } else {
+        return;
+      }
+    }
   }
 
   peek() {
@@ -665,10 +674,24 @@ export function launch(options) {
     let stdoutBuffer = Buffer.alloc(0);
     let descriptor = null;
 
+    // The runner cleans its private socket directory on its own orderly exit,
+    // but a fail-closed SIGKILL leaves it no chance — so the supervisor also
+    // removes the directory, completing the channel law's cleanup obligation.
+    const removeChannelDir = () => {
+      if (descriptor !== null && typeof descriptor.socket === "string") {
+        try {
+          rmSync(dirname(descriptor.socket), { recursive: true, force: true });
+        } catch {
+          // Best effort: the runner may already have removed it.
+        }
+      }
+    };
+
     const failLaunch = (detail) => {
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
+      removeChannelDir();
       reject(new LaunchError(detail));
     };
 
@@ -742,7 +765,9 @@ export function launch(options) {
         clearTimeout(deadline);
         socket.removeAllListeners("data");
         socket.removeAllListeners("error");
-        resolve(new Session(child, socket, frames, ready.interface, log));
+        resolve(
+          new Session(child, socket, frames, ready.interface, descriptor.socket, log),
+        );
       });
       socket.on("close", () => {
         if (!settled) failLaunch("socket closed during the handshake");
@@ -753,11 +778,12 @@ export function launch(options) {
 
 /** One authenticated attached session over the private socket. */
 export class Session {
-  constructor(child, socket, frames, interfaceId, log) {
+  constructor(child, socket, frames, interfaceId, socketPath, log) {
     this.child = child;
     this.socket = socket;
     this.frames = frames;
     this.interfaceId = interfaceId;
+    this.socketPath = socketPath;
     this.log = log;
     this.dead = false;
     /** The dispatched call awaiting its reply, or null. */
@@ -926,5 +952,12 @@ export class Session {
     process.removeListener("exit", this.exitHook);
     this.child.kill("SIGKILL");
     this.socket.destroy();
+    // The runner cannot remove its private directory after a SIGKILL, so the
+    // supervisor completes the channel law's cleanup obligation.
+    try {
+      rmSync(dirname(this.socketPath), { recursive: true, force: true });
+    } catch {
+      // Best effort: the runner may already have removed it on an orderly exit.
+    }
   }
 }

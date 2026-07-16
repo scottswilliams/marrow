@@ -47,7 +47,11 @@ pub(crate) fn generate_client(interface: &Interface, names: &[ExportName]) -> St
         .map(|descriptor| method(descriptor, names))
         .collect();
     out.push_str("export class Client {\n");
-    out.push_str("  private constructor(private readonly session: M.Session) {}\n\n");
+    // Erasable-syntax-only TypeScript: no parameter properties, so the client
+    // runs directly under Node's default type stripping.
+    out.push_str("  private readonly session: M.Session;\n\n");
+    out.push_str("  private constructor(session: M.Session) {\n");
+    out.push_str("    this.session = session;\n  }\n\n");
     out.push_str(
         "  /** Launch the runner and open one authenticated session; refuses a runner\n   * whose served interface is not the one this client was generated for. */\n",
     );

@@ -10,7 +10,11 @@ import * as M from "./marrow-supervisor.mjs";
 export const INTERFACE_ID = "a2d2fc12c9fbdab2731fc78df5fff555582b8cbb962d97f7ae03383f86f4c442";
 
 export class Client {
-  private constructor(private readonly session: M.Session) {}
+  private readonly session: M.Session;
+
+  private constructor(session: M.Session) {
+    this.session = session;
+  }
 
   /** Launch the runner and open one authenticated session; refuses a runner
    * whose served interface is not the one this client was generated for. */
