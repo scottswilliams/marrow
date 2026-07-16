@@ -118,7 +118,7 @@ mod tests {
     fn schema() -> StoreSchema {
         StoreSchema {
             root_name: "counters".into(),
-            key: ScalarKind::Int,
+            key: vec![ScalarKind::Int],
             fields: vec![
                 FieldSchema {
                     name: "value".into(),
@@ -150,7 +150,7 @@ mod tests {
         let schema = schema();
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = physical::marker_key(&schema.root_name, &key);
+        let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
         assert_eq!(
             planner.node_cells(&stem, &schema.fields),
             vec![
@@ -168,7 +168,7 @@ mod tests {
         let schema = schema();
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = physical::marker_key(&schema.root_name, &key);
+        let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
         // Required value present, sparse label absent.
         let entry = EntryValue {
             fields: vec![Some(RuntimeScalar::Int(5)), None],
@@ -197,7 +197,7 @@ mod tests {
         let schema = schema();
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = physical::marker_key(&schema.root_name, &key);
+        let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
         let ops = planner.node_erase(&stem, &schema.fields);
         assert!(ops.iter().all(|op| matches!(op, CellWrite::Remove(_))));
         assert_eq!(
@@ -218,7 +218,7 @@ mod tests {
         let planner = Planner::new();
         // Any marker stem stands in for a node here (a branch entry's stem is one such
         // stem, one level below the root); the fields differ from the root's schema.
-        let stem = physical::marker_key(&schema.root_name, &KeyScalar::Int(7));
+        let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(7)]);
         let fields = vec![FieldSchema {
             name: "text".into(),
             kind: ScalarKind::Str,

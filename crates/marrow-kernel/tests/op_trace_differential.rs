@@ -68,7 +68,7 @@ impl Drop for TempDir {
 fn schema() -> StoreSchema {
     StoreSchema {
         root_name: "counters".into(),
-        key: ScalarKind::Str,
+        key: vec![ScalarKind::Str],
         fields: vec![
             FieldSchema {
                 name: "value".into(),

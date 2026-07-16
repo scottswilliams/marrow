@@ -122,6 +122,20 @@ pub fn encode_key_value(key: &KeyScalar) -> Vec<u8> {
     bytes
 }
 
+/// Encode a composite key tuple as the ordered concatenation of its columns'
+/// encodings, in column order. Each column's encoding is prefix-free — a fixed-width
+/// kind, or a `0x00,0x00`-terminated escaped run — so the columns self-delimit and an
+/// embedded `0x00` in one column can never be read as part of the next. The
+/// concatenation is therefore prefix-free as a whole and sorts byte-wise into
+/// column-major tuple order, exactly as a single key encoding sorts into key order.
+pub fn encode_key_tuple(keys: &[KeyScalar]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for key in keys {
+        encode_key_into(key, &mut bytes);
+    }
+    bytes
+}
+
 /// Decodes the leading scalar key, returning it with the byte count it consumed.
 pub fn decode_key_value(bytes: &[u8]) -> Option<(KeyScalar, usize)> {
     match *bytes.first()? {
@@ -237,7 +251,7 @@ pub(crate) fn decode_escaped_bytes(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyScalar, decode_key_value, encode_key_value};
+    use super::{KeyScalar, decode_key_value, encode_key_tuple, encode_key_value};
 
     fn representative_keys() -> Vec<KeyScalar> {
         vec![
@@ -315,6 +329,68 @@ mod tests {
             by_bytes, by_type,
             "reverse encoded key bytes must sort like reverse KeyScalar order"
         );
+    }
+
+    /// Composite tuples whose adjacent columns are NUL-laden or escape-shaped, so a
+    /// naive concatenation could let one column's bytes bleed into the next. Because
+    /// each column self-delimits, the tuple encoding is prefix-free and sorts
+    /// column-major — a difference in an earlier column dominates any later column.
+    fn adversarial_tuples() -> Vec<Vec<KeyScalar>> {
+        vec![
+            vec![KeyScalar::Str("a".into()), KeyScalar::Str("b".into())],
+            // A trailing NUL in column 0 must not merge with column 1's frame.
+            vec![KeyScalar::Str("a\u{0}".into()), KeyScalar::Str("b".into())],
+            vec![KeyScalar::Str("a\u{0}".into()), KeyScalar::Str("".into())],
+            // "a\0" > "a" in column 0, so this outranks the plain "a" prefix rows
+            // regardless of column 1.
+            vec![KeyScalar::Str("a".into()), KeyScalar::Str("b\u{0}c".into())],
+            vec![
+                KeyScalar::Bytes(vec![0x00]),
+                KeyScalar::Bytes(vec![0x00, 0x00]),
+            ],
+            vec![KeyScalar::Bytes(vec![0x00, 0x00]), KeyScalar::Bytes(vec![])],
+            // Mixed fixed-width and variable columns spanning a boundary.
+            vec![KeyScalar::Int(-1), KeyScalar::Str("\u{0}".into())],
+            vec![KeyScalar::Int(-1), KeyScalar::Str("".into())],
+            vec![KeyScalar::Int(0), KeyScalar::Bytes(vec![0x00, 0x01])],
+        ]
+    }
+
+    #[test]
+    fn composite_tuple_encoding_sorts_column_major_across_nul_boundaries() {
+        // Byte order of the tuple encoding must equal column-major (lexicographic on
+        // columns) order, even where a column ends in a NUL that abuts the next column.
+        let tuples = adversarial_tuples();
+        for left in &tuples {
+            for right in &tuples {
+                assert_eq!(
+                    left.cmp(right),
+                    encode_key_tuple(left).cmp(&encode_key_tuple(right)),
+                    "tuple byte order must match column-major order for {left:?} vs {right:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_composite_tuple_encoding_is_a_prefix_of_a_distinct_one() {
+        // Prefix-freeness across column boundaries: no distinct tuple's bytes are a
+        // prefix of another's, so a marker built from one tuple can never be a prefix of
+        // a sibling's — the property the physical containment/separation laws rest on.
+        let tuples = adversarial_tuples();
+        for left in &tuples {
+            for right in &tuples {
+                if left == right {
+                    continue;
+                }
+                let lb = encode_key_tuple(left);
+                let rb = encode_key_tuple(right);
+                assert!(
+                    !rb.starts_with(&lb),
+                    "{left:?} encodes to a prefix of {right:?}",
+                );
+            }
+        }
     }
 
     #[test]

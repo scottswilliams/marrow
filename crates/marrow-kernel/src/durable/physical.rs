@@ -9,12 +9,17 @@
 //!
 //! ```text
 //! entry family prefix   0x01 0x20 esc(root_name)
-//! marker key            <family> enc(key) 0x00                        value = 0x01
-//! field leaf key        <marker> 0x10 esc(field)                      value = codec bytes
-//! branch child marker   <marker> 0x30 esc(branch) enc(childKey) 0x00  value = 0x01
-//! iteration cursor      <family> enc(key) 0xFF
+//! marker key            <family> enc(keytuple) 0x00                        value = 0x01
+//! field leaf key        <marker> 0x10 esc(field)                           value = codec bytes
+//! branch child marker   <marker> 0x30 esc(branch) enc(childTuple) 0x00     value = 0x01
+//! iteration cursor      <family> enc(keytuple) 0xFF
 //! meta cell key         0x10 esc(name)
 //! ```
+//!
+//! `enc(keytuple)` is the ordered concatenation of the node's key columns, each column
+//! encoded prefix-free (see [`encode_key_tuple`]); a single-column key is the one-column
+//! case. Because the concatenation is itself prefix-free and sorts column-major, every
+//! ordering property below holds column-wise exactly as for a single key.
 //!
 //! The layout is recursive: a branch child's marker (`<marker> 0x30 esc(branch)
 //! enc(childKey) 0x00`) is itself a marker stem, so the child's own field leaves,
@@ -23,8 +28,9 @@
 //! field leaves and its whole branch subtree — so the marker sorts first among the
 //! entry's cells.
 //!
-//! Because `enc(key)` is prefix-free (fixed width, or `0x00,0x00`-terminated with
-//! `0x00,0x01` escapes) and the structural tags ascend `0x00 < 0x10 < 0x30 < 0xFF`
+//! Because `enc(keytuple)` is prefix-free (each column fixed width, or `0x00,0x00`-
+//! terminated with `0x00,0x01` escapes, and the columns self-delimit) and the structural
+//! tags ascend `0x00 < 0x10 < 0x30 < 0xFF`
 //! (marker terminator, field, branch, cursor), every cell of entry `k` — including
 //! every descendant in every branch — sorts inside `(marker(k), cursor(k)]`, and no
 //! cell of another entry does. Two consequences the kernel relies on: one
@@ -35,7 +41,9 @@
 //! uses to surface a marker/field corruption ahead of a legitimate descendant-only
 //! node.
 
-use crate::codec::key::{KeyScalar, decode_key_value, encode_escaped_bytes, encode_key_value};
+use crate::codec::key::{
+    KeyScalar, decode_key_value, encode_escaped_bytes, encode_key_tuple, encode_key_value,
+};
 
 /// First byte of every entry cell (marker or field leaf).
 const ENTRY_FAMILY: u8 = 0x01;
@@ -67,11 +75,12 @@ pub(super) fn entry_family_prefix(root: &str) -> Vec<u8> {
     out
 }
 
-/// The marker key of entry `key` under `root`. A root entry's marker key is its
-/// marker *stem*: the byte prefix from which its field leaves, its branch
-/// descendants, and its cursor all derive (see [`stem_field_leaf`], [`stem_cursor`]).
-pub(super) fn marker_key(root: &str, key: &KeyScalar) -> Vec<u8> {
-    child_marker(&entry_family_prefix(root), key)
+/// The marker key of the entry keyed by the tuple `keys` under `root`. A root entry's
+/// marker key is its marker *stem*: the byte prefix from which its field leaves, its
+/// branch descendants, and its cursor all derive (see [`stem_field_leaf`],
+/// [`stem_cursor`]). `keys` is the root's whole key tuple, one column per key scalar.
+pub(super) fn marker_key(root: &str, keys: &[KeyScalar]) -> Vec<u8> {
+    child_marker(&entry_family_prefix(root), keys)
 }
 
 /// The field-leaf key of `field` of the node whose marker `stem` is given. The leaf
@@ -129,18 +138,22 @@ pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: &str) -> Vec<u8> 
 pub(super) fn branch_child_stem(
     parent_stem: &[u8],
     branch: &str,
-    child_key: &KeyScalar,
+    child_keys: &[KeyScalar],
 ) -> Vec<u8> {
-    child_marker(&branch_family_prefix(parent_stem, branch), child_key)
+    child_marker(&branch_family_prefix(parent_stem, branch), child_keys)
 }
 
-/// The marker key of `key` directly under a layer `prefix`: the prefix, the encoded
-/// key, and a marker terminator. The single owner of the layer-prefix-plus-key marker
-/// shape shared by a root entry (prefix `0x01 0x20 esc(root)`) and a branch child
-/// (prefix `parent 0x30 esc(branch)`).
-fn child_marker(prefix: &[u8], key: &KeyScalar) -> Vec<u8> {
+/// The marker key of the entry keyed by the tuple `keys` directly under a layer
+/// `prefix`: the prefix, the prefix-free encoding of the whole key tuple, and a marker
+/// terminator. The single owner of the layer-prefix-plus-key marker shape shared by a
+/// root entry (prefix `0x01 0x20 esc(root)`) and a branch child (prefix
+/// `parent 0x30 esc(branch)`). Because the tuple encoding is prefix-free (each column
+/// self-delimits), two distinct key tuples yield markers where neither is a prefix of
+/// the other, so the containment and separation laws hold column-wise as they do for a
+/// single key.
+fn child_marker(prefix: &[u8], keys: &[KeyScalar]) -> Vec<u8> {
     let mut out = prefix.to_vec();
-    out.extend_from_slice(&encode_key_value(key));
+    out.extend_from_slice(&encode_key_tuple(keys));
     out.push(MARKER_TERMINATOR);
     out
 }
@@ -297,9 +310,11 @@ impl Layer {
     }
 
     /// The cursor that resumes a forward scan strictly past child `key`'s whole
-    /// subtree: the child's marker with its terminator raised to the cursor sentinel.
+    /// subtree: the child's marker with its terminator raised to the cursor sentinel. A
+    /// traversable layer is single-column (composite-keyed layers are not traversed), so
+    /// the child is named by one key column.
     pub(super) fn child_cursor(&self, key: &KeyScalar) -> Vec<u8> {
-        stem_cursor(&child_marker(&self.prefix, key))
+        stem_cursor(&child_marker(&self.prefix, std::slice::from_ref(key)))
     }
 
     /// Classify a cell scanned under this layer's prefix
@@ -312,6 +327,18 @@ impl Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A single-column marker key: the layout tests below exercise the single-column
+    /// case, so `mk` wraps the one key column as a one-element tuple. Composite-tuple
+    /// containment and separation have their own test.
+    fn mk(root: &str, key: &KeyScalar) -> Vec<u8> {
+        marker_key(root, std::slice::from_ref(key))
+    }
+
+    /// A single-column branch-child stem, the tuple builder's one-column convenience.
+    fn bcs(parent_stem: &[u8], branch: &str, key: &KeyScalar) -> Vec<u8> {
+        branch_child_stem(parent_stem, branch, std::slice::from_ref(key))
+    }
 
     /// A root entry's subtree cursor, the root convenience over [`Layer::child_cursor`]
     /// the ordering tests assert against.
@@ -328,11 +355,11 @@ mod tests {
     // The ordering property iteration relies on: for keys k < k',
     // marker(k) < every cell of k < cursor(k) < marker(k').
     fn assert_between(root: &str, key: &KeyScalar, fields: &[&str]) {
-        let marker = marker_key(root, key);
+        let marker = mk(root, key);
         let cur = cursor(root, key);
         assert!(marker < cur, "marker precedes cursor for {key:?}");
         for field in fields {
-            let leaf = stem_field_leaf(&marker_key(root, key), field);
+            let leaf = stem_field_leaf(&mk(root, key), field);
             assert!(marker < leaf, "marker precedes leaf {field} for {key:?}");
             assert!(leaf < cur, "leaf {field} precedes cursor for {key:?}");
         }
@@ -362,7 +389,7 @@ mod tests {
         // Between consecutive keys, cursor(k) < marker(k').
         for pair in sorted.windows(2) {
             let cur = cursor(root, &pair[0]);
-            let next_marker = marker_key(root, &pair[1]);
+            let next_marker = mk(root, &pair[1]);
             assert!(
                 cur < next_marker,
                 "cursor({:?}) precedes marker({:?})",
@@ -377,11 +404,11 @@ mod tests {
         let root = "counters";
         let key = KeyScalar::Str("a".into());
         assert!(matches!(
-            classify_cell(root, &marker_key(root, &key)),
+            classify_cell(root, &mk(root, &key)),
             CellKind::Marker(k) if k == key
         ));
         assert!(matches!(
-            classify_cell(root, &stem_field_leaf(&marker_key(root, &key), "value")),
+            classify_cell(root, &stem_field_leaf(&mk(root, &key), "value")),
             CellKind::Orphan
         ));
         assert!(matches!(
@@ -393,7 +420,7 @@ mod tests {
     #[test]
     fn meta_family_is_disjoint_from_entries() {
         let root = "counters";
-        let entry = marker_key(root, &KeyScalar::Int(0));
+        let entry = mk(root, &KeyScalar::Int(0));
         let meta = meta_key("profile");
         assert_ne!(entry.first(), meta.first());
     }
@@ -424,12 +451,12 @@ mod tests {
     fn branch_descendants_nest_inside_the_parent_entry_range() {
         let root = "books";
         for parent in representative_keys() {
-            let parent_marker = marker_key(root, &parent);
+            let parent_marker = mk(root, &parent);
             let parent_cursor = cursor(root, &parent);
-            let child = branch_child_stem(&parent_marker, "notes", &KeyScalar::Int(7));
+            let child = bcs(&parent_marker, "notes", &KeyScalar::Int(7));
             let child_field = stem_field_leaf(&child, "text");
             let child_cursor = stem_cursor(&child);
-            let grandchild = branch_child_stem(&child, "tags", &KeyScalar::Str("x".into()));
+            let grandchild = bcs(&child, "tags", &KeyScalar::Str("x".into()));
             for cell in [&child, &child_field, &child_cursor, &grandchild] {
                 assert!(
                     parent_marker.as_slice() < cell.as_slice(),
@@ -449,9 +476,9 @@ mod tests {
     #[test]
     fn own_field_leaves_sort_before_branch_descendants() {
         let root = "books";
-        let parent = marker_key(root, &KeyScalar::Str("a".into()));
+        let parent = mk(root, &KeyScalar::Str("a".into()));
         let own_field = stem_field_leaf(&parent, "title");
-        let branch_child = branch_child_stem(&parent, "notes", &KeyScalar::Int(1));
+        let branch_child = bcs(&parent, "notes", &KeyScalar::Int(1));
         assert!(
             parent.as_slice() < own_field.as_slice(),
             "marker precedes own field"
@@ -468,14 +495,14 @@ mod tests {
     #[test]
     fn parent_cursor_skips_the_whole_subtree_and_precedes_the_next_sibling() {
         let root = "books";
-        let a = marker_key(root, &KeyScalar::Str("a".into()));
+        let a = mk(root, &KeyScalar::Str("a".into()));
         let a_cursor = cursor(root, &KeyScalar::Str("a".into()));
-        let b_marker = marker_key(root, &KeyScalar::Str("b".into()));
+        let b_marker = mk(root, &KeyScalar::Str("b".into()));
         let subtree = [
             stem_field_leaf(&a, "title"),
-            branch_child_stem(&a, "notes", &KeyScalar::Int(i64::MIN)),
-            branch_child_stem(&a, "notes", &KeyScalar::Int(i64::MAX)),
-            stem_field_leaf(&branch_child_stem(&a, "notes", &KeyScalar::Int(1)), "text"),
+            bcs(&a, "notes", &KeyScalar::Int(i64::MIN)),
+            bcs(&a, "notes", &KeyScalar::Int(i64::MAX)),
+            stem_field_leaf(&bcs(&a, "notes", &KeyScalar::Int(1)), "text"),
         ];
         for cell in &subtree {
             assert!(
@@ -496,14 +523,14 @@ mod tests {
     #[test]
     fn branch_children_are_separated_by_their_own_cursor() {
         let root = "books";
-        let parent = marker_key(root, &KeyScalar::Str("a".into()));
+        let parent = mk(root, &KeyScalar::Str("a".into()));
         let mut children = representative_keys();
         children.sort();
         for pair in children.windows(2) {
-            let lo = branch_child_stem(&parent, "notes", &pair[0]);
+            let lo = bcs(&parent, "notes", &pair[0]);
             let lo_field = stem_field_leaf(&lo, "text");
             let lo_cursor = stem_cursor(&lo);
-            let hi = branch_child_stem(&parent, "notes", &pair[1]);
+            let hi = bcs(&parent, "notes", &pair[1]);
             assert!(
                 lo.as_slice() < lo_field.as_slice(),
                 "child marker precedes its field"
@@ -530,9 +557,9 @@ mod tests {
     fn classify_recognizes_a_branch_descendant() {
         let root = "books";
         let key = KeyScalar::Str("a".into());
-        let parent = marker_key(root, &key);
-        let child = branch_child_stem(&parent, "notes", &KeyScalar::Int(1));
-        let grandchild = branch_child_stem(&child, "tags", &KeyScalar::Int(2));
+        let parent = mk(root, &key);
+        let child = bcs(&parent, "notes", &KeyScalar::Int(1));
+        let grandchild = bcs(&child, "tags", &KeyScalar::Int(2));
         assert!(matches!(
             classify_cell(root, &child),
             CellKind::Descendant(k) if k == key
@@ -559,7 +586,7 @@ mod tests {
     fn an_unknown_post_stem_tag_is_corruption_on_both_paths() {
         let root = "books";
         let key = KeyScalar::Str("a".into());
-        let stem = marker_key(root, &key);
+        let stem = mk(root, &key);
         // 0x40 is neither FIELD_TAG (0x10) nor BRANCH_TAG (0x30): a tag the layout
         // never emits, so it can only arise from corruption.
         let mut rogue = stem.clone();
@@ -567,5 +594,52 @@ mod tests {
         rogue.extend_from_slice(b"junk");
         assert!(matches!(below_marker(&stem, &rogue), BelowMarker::Corrupt));
         assert!(matches!(classify_cell(root, &rogue), CellKind::Orphan));
+    }
+
+    /// The containment and separation laws hold for a *composite* key whose columns are
+    /// NUL-laden and escape-shaped, so a naive per-byte reading could confuse a column
+    /// boundary. Two composite entries differing only in a later column have markers
+    /// where neither is a prefix of the other and each entry's whole subtree — its own
+    /// fields and a composite-keyed branch child — nests inside its own `(marker, cursor]`
+    /// range and outside its sibling's. This is the multi-column extension of the
+    /// single-key ordering laws the traversal-skip and precedence rules rest on.
+    #[test]
+    fn composite_key_markers_are_contained_and_separated_across_column_boundaries() {
+        let root = "cells";
+        // Column 0 shared, column 1 differs — including a trailing NUL that abuts the
+        // marker terminator. Column-major order is a < a\0 < b in column 1.
+        let a = &[KeyScalar::Int(1), KeyScalar::Str("a".into())][..];
+        let a_nul = &[KeyScalar::Int(1), KeyScalar::Str("a\u{0}".into())][..];
+        let b = &[KeyScalar::Int(1), KeyScalar::Str("b".into())][..];
+        let mut tuples = [a, a_nul, b];
+        tuples.sort();
+        for pair in tuples.windows(2) {
+            let lo = marker_key(root, pair[0]);
+            let lo_cursor = stem_cursor(&marker_key(root, pair[0]));
+            let hi = marker_key(root, pair[1]);
+            // Neither marker is a prefix of the other (prefix-free tuples).
+            assert!(
+                !hi.starts_with(&lo),
+                "a composite marker is a prefix of a sibling"
+            );
+            // lo's whole subtree — its own field and a composite-keyed branch child —
+            // nests below lo's cursor, which precedes the next sibling's marker.
+            let lo_field = stem_field_leaf(&marker_key(root, pair[0]), "value");
+            let lo_branch = branch_child_stem(
+                &marker_key(root, pair[0]),
+                "spans",
+                &[KeyScalar::Int(9), KeyScalar::Bytes(vec![0x00, 0x00])],
+            );
+            for cell in [&lo_field, &lo_branch] {
+                assert!(
+                    lo < *cell && cell.as_slice() < lo_cursor.as_slice(),
+                    "a composite entry's cell nests in its own (marker, cursor] range"
+                );
+            }
+            assert!(
+                lo_cursor.as_slice() < hi.as_slice(),
+                "a composite entry's cursor precedes the next sibling's marker"
+            );
+        }
     }
 }

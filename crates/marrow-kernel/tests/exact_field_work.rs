@@ -36,7 +36,7 @@ fn schema(extra: usize) -> StoreSchema {
     }
     StoreSchema {
         root_name: "counters".into(),
-        key: ScalarKind::Int,
+        key: vec![ScalarKind::Int],
         fields,
         branches: Vec::new(),
     }

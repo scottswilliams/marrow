@@ -199,7 +199,7 @@ impl ByteEngine for FaultEngine {
 fn schema() -> StoreSchema {
     StoreSchema {
         root_name: "counters".into(),
-        key: ScalarKind::Str,
+        key: vec![ScalarKind::Str],
         fields: vec![FieldSchema {
             name: "value".into(),
             kind: ScalarKind::Int,

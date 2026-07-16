@@ -224,7 +224,7 @@ mod tests {
     fn schema() -> StoreSchema {
         StoreSchema {
             root_name: "counters".into(),
-            key: ScalarKind::Int,
+            key: vec![ScalarKind::Int],
             fields: vec![FieldSchema {
                 name: "value".into(),
                 kind: ScalarKind::Int,

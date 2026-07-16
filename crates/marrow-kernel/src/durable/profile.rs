@@ -50,11 +50,22 @@ fn push_fields(out: &mut Vec<u8>, fields: &[FieldSchema]) {
     }
 }
 
+/// Append a node's ordered key columns to the descriptor: a column count then each
+/// column's kind tag, in order. A composite key changes the descriptor from a
+/// single-column key of the same leading kind, so a store recorded under one key arity
+/// refuses a reopen under another. Shared by the root and every branch key.
+fn push_key(out: &mut Vec<u8>, columns: &[ScalarKind]) {
+    out.extend_from_slice(&(columns.len() as u16).to_be_bytes());
+    for kind in columns {
+        out.push(kind_tag(*kind));
+    }
+}
+
 /// Append a node's keyed branches to the descriptor: a branch count then, for each
-/// branch in declaration order, its name, single key kind, own fields, and — recursively
-/// — its own nested branches. The recursion makes the descriptor cover a whole nested
-/// branch shape, so a change at any branch depth changes the descriptor and a store's
-/// recorded profile refuses a reopen under a different sub-branch shape.
+/// branch in declaration order, its name, ordered key columns, own fields, and —
+/// recursively — its own nested branches. The recursion makes the descriptor cover a
+/// whole nested branch shape, so a change at any branch depth changes the descriptor and
+/// a store's recorded profile refuses a reopen under a different sub-branch shape.
 fn push_branches(out: &mut Vec<u8>, branches: &[BranchSchema]) {
     out.extend_from_slice(&(branches.len() as u16).to_be_bytes());
     for BranchSchema {
@@ -65,7 +76,7 @@ fn push_branches(out: &mut Vec<u8>, branches: &[BranchSchema]) {
     } in branches
     {
         push_name(out, name);
-        out.push(kind_tag(*key));
+        push_key(out, key);
         push_fields(out, fields);
         push_branches(out, branches);
     }
@@ -79,7 +90,7 @@ pub(super) fn descriptor(schema: &StoreSchema) -> Vec<u8> {
     let mut out = vec![PROFILE_VERSION];
     out.extend_from_slice(&VALUE_CODEC_VERSION.to_be_bytes());
     push_name(&mut out, &schema.root_name);
-    out.push(kind_tag(schema.key));
+    push_key(&mut out, &schema.key);
     push_fields(&mut out, &schema.fields);
     push_branches(&mut out, &schema.branches);
     out
@@ -93,7 +104,7 @@ mod tests {
     fn descriptor_distinguishes_schemas() {
         let base = StoreSchema {
             root_name: "counters".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![
                 FieldSchema {
                     name: "value".into(),
@@ -113,7 +124,7 @@ mod tests {
 
         // A changed key type, field name, field type, or required flag all differ.
         let mut key_changed = base.clone();
-        key_changed.key = ScalarKind::Int;
+        key_changed.key = vec![ScalarKind::Int];
         assert_ne!(descriptor(&base), descriptor(&key_changed));
 
         let mut required_changed = base.clone();
@@ -125,7 +136,7 @@ mod tests {
         let mut branch_added = base.clone();
         branch_added.branches.push(BranchSchema {
             name: "notes".into(),
-            key: ScalarKind::Int,
+            key: vec![ScalarKind::Int],
             fields: vec![FieldSchema {
                 name: "text".into(),
                 kind: ScalarKind::Str,
@@ -145,7 +156,7 @@ mod tests {
         let mut sub_branch_added = branch_added.clone();
         sub_branch_added.branches[0].branches.push(BranchSchema {
             name: "tags".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![FieldSchema {
                 name: "weight".into(),
                 kind: ScalarKind::Int,
@@ -156,7 +167,7 @@ mod tests {
         assert_ne!(descriptor(&branch_added), descriptor(&sub_branch_added));
 
         let mut sub_branch_field_changed = sub_branch_added.clone();
-        sub_branch_field_changed.branches[0].branches[0].key = ScalarKind::Int;
+        sub_branch_field_changed.branches[0].branches[0].key = vec![ScalarKind::Int];
         assert_ne!(
             descriptor(&sub_branch_added),
             descriptor(&sub_branch_field_changed),

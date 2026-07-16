@@ -16,7 +16,7 @@ use super::{
     StoreSchema,
 };
 use crate::codec::key::KeyScalar;
-use crate::codec::value::{RuntimeScalar, decode_value, encode_value};
+use crate::codec::value::{RuntimeScalar, ScalarKind, decode_value, encode_value};
 
 /// The durable operations the VM drives. Object-safe so the VM holds a
 /// `&mut dyn Durable` without knowing the concrete engine or session kind. A
@@ -290,7 +290,7 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
             AuthTarget::field(&container_fields[*index as usize], container_fields)
         }
     };
-    AuthorizedSite::new(schema.root_name.clone(), schema.key, branch, target)
+    AuthorizedSite::new(schema.root_name.clone(), schema.key.clone(), branch, target)
 }
 
 /// Walk a branch path through the recursive branch schema, one hop per element: the hops
@@ -308,7 +308,7 @@ fn resolve_branch_path<'a>(
     let mut fields: &[FieldSchema] = &schema.fields;
     for &index in path {
         let branch = &branches[index as usize];
-        hops.push(BranchHop::new(branch.name.clone(), branch.key));
+        hops.push(BranchHop::new(branch.name.clone(), branch.key.clone()));
         fields = &branch.fields;
         branches = &branch.branches;
     }
@@ -324,20 +324,43 @@ fn resolve_branch_path<'a>(
 /// [`KernelFault::Corruption`] in release rather than dropping a hop and mis-addressing
 /// the write to a shallower node.
 fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<Vec<u8>, KernelFault> {
-    let Some((root_key, branch_keys)) = keys.split_first() else {
-        return Err(KernelFault::Corruption);
-    };
-    if branch_keys.len() != site.branch.len() || root_key.scalar_kind() != site.key {
+    let mut cols = keys;
+    let root_cols = take_columns(&mut cols, &site.key)?;
+    let mut stem = physical::marker_key(&site.root, root_cols);
+    for hop in &site.branch {
+        let hop_cols = take_columns(&mut cols, &hop.key)?;
+        stem = physical::branch_child_stem(&stem, &hop.name, hop_cols);
+    }
+    // Every operand column must be consumed by a node in the branch path; a leftover
+    // column is a key-path/schema arity disagreement (a forged image), faulted rather
+    // than silently ignored.
+    if cols.is_empty() {
+        Ok(stem)
+    } else {
+        Err(KernelFault::Corruption)
+    }
+}
+
+/// Take the next `kinds.len()` columns off the front of `cols`, checking each column's
+/// scalar kind matches the expected column kind, and advance `cols` past them. A short
+/// key-path or a per-column kind mismatch faults [`KernelFault::Corruption`] — the trust
+/// boundary the verifier's arity/kind proof stands on, defended in depth here so a forged
+/// image can never mis-split a composite key-path across nodes.
+fn take_columns<'a>(
+    cols: &mut &'a [KeyScalar],
+    kinds: &[ScalarKind],
+) -> Result<&'a [KeyScalar], KernelFault> {
+    if cols.len() < kinds.len() {
         return Err(KernelFault::Corruption);
     }
-    let mut stem = physical::marker_key(&site.root, root_key);
-    for (hop, key) in site.branch.iter().zip(branch_keys) {
-        if key.scalar_kind() != hop.key {
+    let (head, tail) = cols.split_at(kinds.len());
+    for (column, kind) in head.iter().zip(kinds) {
+        if column.scalar_kind() != *kind {
             return Err(KernelFault::Corruption);
         }
-        stem = physical::branch_child_stem(&stem, &hop.name, key);
     }
-    Ok(stem)
+    *cols = tail;
+    Ok(head)
 }
 
 /// A read session: reads observe one coherent view for the whole call. Non-`Clone`;
@@ -1019,26 +1042,30 @@ fn layer_of(
             if !ancestor_keys.is_empty() {
                 return Err(KernelFault::Corruption);
             }
+            // A traversable layer is single-column; a composite-keyed root layer is not
+            // traversed (the verifier parks it), so a multi-column root here is a forged
+            // image reaching an untraversable shape.
+            if site.key.len() != 1 {
+                return Err(KernelFault::Corruption);
+            }
             Ok(physical::Layer::root(&site.root))
         }
         Some((traversed, parent_hops)) => {
-            // A branch layer's ancestor key-path locates its parent entry: the root key
-            // then one key per parent hop above the traversed branch.
-            if ancestor_keys.len() != 1 + parent_hops.len() {
+            // The traversed branch layer must be single-column (composite-keyed layers are
+            // parked before traversal); its ancestor key-path locates its parent entry —
+            // the root's key columns then each parent hop's key columns.
+            if traversed.key.len() != 1 {
                 return Err(KernelFault::Corruption);
             }
-            let (root_key, parent_keys) = ancestor_keys
-                .split_first()
-                .expect("ancestor arity checked at least one above");
-            if root_key.scalar_kind() != site.key {
-                return Err(KernelFault::Corruption);
+            let mut cols = ancestor_keys;
+            let root_cols = take_columns(&mut cols, &site.key)?;
+            let mut stem = physical::marker_key(&site.root, root_cols);
+            for hop in parent_hops {
+                let hop_cols = take_columns(&mut cols, &hop.key)?;
+                stem = physical::branch_child_stem(&stem, &hop.name, hop_cols);
             }
-            let mut stem = physical::marker_key(&site.root, root_key);
-            for (hop, key) in parent_hops.iter().zip(parent_keys) {
-                if key.scalar_kind() != hop.key {
-                    return Err(KernelFault::Corruption);
-                }
-                stem = physical::branch_child_stem(&stem, &hop.name, key);
+            if !cols.is_empty() {
+                return Err(KernelFault::Corruption);
             }
             Ok(physical::Layer::branch(&stem, &traversed.name))
         }
@@ -1120,7 +1147,7 @@ mod tests {
     fn schema() -> StoreSchema {
         StoreSchema {
             root_name: "counters".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![
                 FieldSchema {
                     name: "value".into(),
@@ -1256,7 +1283,7 @@ mod tests {
             let mut txn = engine.begin().expect("begin");
             txn.put(
                 &physical::stem_field_leaf(
-                    &physical::marker_key("counters", &KeyScalar::Str("x".into())),
+                    &physical::marker_key("counters", &[KeyScalar::Str("x".into())]),
                     "value",
                 ),
                 b"5".to_vec(),
@@ -1284,7 +1311,7 @@ mod tests {
         // `node_stem`'s key-path arity that the verifier's proof stands on.
         let schema = StoreSchema {
             root_name: "counters".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![FieldSchema {
                 name: "value".into(),
                 kind: ScalarKind::Int,
@@ -1292,7 +1319,7 @@ mod tests {
             }],
             branches: vec![BranchSchema {
                 name: "notes".into(),
-                key: ScalarKind::Str,
+                key: vec![ScalarKind::Str],
                 fields: vec![FieldSchema {
                     name: "body".into(),
                     kind: ScalarKind::Str,
@@ -1348,7 +1375,7 @@ mod tests {
             let mut txn = engine.begin().expect("begin");
             txn.put(
                 &physical::stem_field_leaf(
-                    &physical::marker_key("counters", &KeyScalar::Str("x".into())),
+                    &physical::marker_key("counters", &[KeyScalar::Str("x".into())]),
                     "value",
                 ),
                 b"5".to_vec(),
@@ -1397,7 +1424,7 @@ mod tests {
     fn branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
         let schema = StoreSchema {
             root_name: "books".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![FieldSchema {
                 name: "title".into(),
                 kind: ScalarKind::Str,
@@ -1405,7 +1432,7 @@ mod tests {
             }],
             branches: vec![BranchSchema {
                 name: "notes".into(),
-                key: ScalarKind::Int,
+                key: vec![ScalarKind::Int],
                 fields: vec![FieldSchema {
                     name: "text".into(),
                     kind: ScalarKind::Str,
@@ -1555,7 +1582,7 @@ mod tests {
 
     /// The byte prefix (marker stem) of a `books` root entry.
     fn book_stem(key: &str) -> Vec<u8> {
-        physical::marker_key("books", &KeyScalar::Str(key.into()))
+        physical::marker_key("books", &[KeyScalar::Str(key.into())])
     }
 
     /// Seed `cells` (key, value pairs) into a fresh engine and wrap it in a branch-schema
@@ -1580,7 +1607,7 @@ mod tests {
     #[test]
     fn an_injected_descendant_only_node_reads_payload_absent_not_corruption() {
         let stem = book_stem("a");
-        let branch_stem = physical::branch_child_stem(&stem, "notes", &KeyScalar::Int(7));
+        let branch_stem = physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]);
         let mut store = injected_branch_store(&[
             (branch_stem.clone(), physical::MARKER_VALUE.to_vec()),
             (
@@ -1620,7 +1647,7 @@ mod tests {
     #[test]
     fn an_injected_root_own_leaf_without_a_marker_is_corruption_even_with_a_descendant() {
         let stem = book_stem("a");
-        let branch_stem = physical::branch_child_stem(&stem, "notes", &KeyScalar::Int(7));
+        let branch_stem = physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]);
         let mut store = injected_branch_store(&[
             // The root's own `title` leaf, with no root marker: an orphan.
             (
@@ -1652,7 +1679,7 @@ mod tests {
     #[test]
     fn an_injected_branch_own_leaf_without_a_branch_marker_is_corruption() {
         let stem = book_stem("a");
-        let branch_stem = physical::branch_child_stem(&stem, "notes", &KeyScalar::Int(7));
+        let branch_stem = physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]);
         let mut store = injected_branch_store(&[
             // The root has a real payload, so the root itself is well-formed.
             (stem.clone(), physical::MARKER_VALUE.to_vec()),
@@ -1701,7 +1728,7 @@ mod tests {
             let branch_stem = physical::branch_child_stem(
                 &book_stem(descendant_only),
                 "notes",
-                &KeyScalar::Int(7),
+                &[KeyScalar::Int(7)],
             );
             cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
             cells.push((
@@ -1768,7 +1795,7 @@ mod tests {
         }
         let schema = StoreSchema {
             root_name: "books".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![FieldSchema {
                 name: "title".into(),
                 kind: ScalarKind::Str,
@@ -1776,7 +1803,7 @@ mod tests {
             }],
             branches: vec![BranchSchema {
                 name: "notes".into(),
-                key: ScalarKind::Int,
+                key: vec![ScalarKind::Int],
                 fields: branch_fields,
                 branches: Vec::new(),
             }],
@@ -1814,9 +1841,9 @@ mod tests {
     /// The physical marker stem of note `note` under book `book`.
     fn note_stem(book: &str, note: i64) -> Vec<u8> {
         physical::branch_child_stem(
-            &physical::marker_key("books", &KeyScalar::Str(book.into())),
+            &physical::marker_key("books", &[KeyScalar::Str(book.into())]),
             "notes",
-            &KeyScalar::Int(note),
+            &[KeyScalar::Int(note)],
         )
     }
 
@@ -1903,7 +1930,10 @@ mod tests {
             "the reconcile created the branch node's marker",
         );
         assert!(
-            !cells.contains_key(&physical::marker_key("books", &KeyScalar::Str("a".into()))),
+            !cells.contains_key(&physical::marker_key(
+                "books",
+                &[KeyScalar::Str("a".into())]
+            )),
             "a field-exact branch set does not create the root marker",
         );
     }
@@ -2126,7 +2156,7 @@ mod tests {
             let branch_stem = physical::branch_child_stem(
                 &book_stem(descendant_only),
                 "notes",
-                &KeyScalar::Int(7),
+                &[KeyScalar::Int(7)],
             );
             cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
             cells.push((
@@ -2378,7 +2408,7 @@ mod tests {
     fn nested_schema() -> (StoreSchema, Vec<SiteSpec>) {
         let links = BranchSchema {
             name: "links".into(),
-            key: ScalarKind::Int,
+            key: vec![ScalarKind::Int],
             fields: vec![FieldSchema {
                 name: "url".into(),
                 kind: ScalarKind::Str,
@@ -2388,7 +2418,7 @@ mod tests {
         };
         let tags = BranchSchema {
             name: "tags".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![
                 FieldSchema {
                     name: "label".into(),
@@ -2405,7 +2435,7 @@ mod tests {
         };
         let notes = BranchSchema {
             name: "notes".into(),
-            key: ScalarKind::Int,
+            key: vec![ScalarKind::Int],
             fields: vec![
                 FieldSchema {
                     name: "text".into(),
@@ -2422,7 +2452,7 @@ mod tests {
         };
         let schema = StoreSchema {
             root_name: "books".into(),
-            key: ScalarKind::Str,
+            key: vec![ScalarKind::Str],
             fields: vec![FieldSchema {
                 name: "title".into(),
                 kind: ScalarKind::Str,
@@ -2471,15 +2501,15 @@ mod tests {
 
     /// The physical marker stem of book `book` (level 0).
     fn nested_book_stem(book: &str) -> Vec<u8> {
-        physical::marker_key("books", &ks(book))
+        physical::marker_key("books", &[ks(book)])
     }
     /// The physical marker stem of note `note` under `book` (level 1).
     fn nested_note_stem(book: &str, note: i64) -> Vec<u8> {
-        physical::branch_child_stem(&nested_book_stem(book), "notes", &ki(note))
+        physical::branch_child_stem(&nested_book_stem(book), "notes", &[ki(note)])
     }
     /// The physical marker stem of tag `tag` under `book`/`note` (level 2).
     fn nested_tag_stem(book: &str, note: i64, tag: &str) -> Vec<u8> {
-        physical::branch_child_stem(&nested_note_stem(book, note), "tags", &ks(tag))
+        physical::branch_child_stem(&nested_note_stem(book, note), "tags", &[ks(tag)])
     }
 
     fn nested_store() -> DurableStore<MemoryEngine> {
@@ -2960,6 +2990,74 @@ mod tests {
                 keys: vec![],
                 more: false,
             }),
+        );
+    }
+
+    /// A two-column composite-key root addresses each entry by the whole tuple in column
+    /// order. The columns are the SAME type (both int), so only column *order*
+    /// distinguishes `[1, 2]` from `[2, 1]`: `node_stem` must split the key-path into the
+    /// root's two columns and encode them in order, not merely check kinds. A wrong key
+    /// arity — too few or too many columns — faults corruption at the trust boundary.
+    #[test]
+    fn a_composite_key_root_addresses_entries_by_the_ordered_tuple() {
+        let schema = StoreSchema {
+            root_name: "cells".into(),
+            key: vec![ScalarKind::Int, ScalarKind::Int],
+            fields: vec![FieldSchema {
+                name: "v".into(),
+                kind: ScalarKind::Int,
+                required: true,
+            }],
+            branches: Vec::new(),
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::FieldLeaf(0),
+            },
+        ];
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let entry = txn.site(0);
+            txn.create_entry(
+                &entry,
+                &[ki(1), ki(2)],
+                EntryValue {
+                    fields: vec![Some(RuntimeScalar::Int(42))],
+                },
+            )
+            .expect("create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let entry = read.site(0);
+        let field = read.site(1);
+        // Present at the written tuple; absent at the transposed one — order is load-bearing
+        // even with same-typed columns.
+        assert_eq!(
+            read.presence(&entry, &[ki(1), ki(2)]),
+            Ok(Presence::Present)
+        );
+        assert_eq!(read.presence(&entry, &[ki(2), ki(1)]), Ok(Presence::Absent));
+        assert_eq!(
+            read.read_field(&field, &[ki(1), ki(2)]),
+            Ok(Some(RuntimeScalar::Int(42)))
+        );
+        // A short or long key-path is a forged arity: corruption, never a mis-split write.
+        assert_eq!(
+            read.presence(&entry, &[ki(1)]),
+            Err(KernelFault::Corruption)
+        );
+        assert_eq!(
+            read.presence(&entry, &[ki(1), ki(2), ki(3)]),
+            Err(KernelFault::Corruption)
         );
     }
 }

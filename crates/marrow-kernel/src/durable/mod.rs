@@ -40,7 +40,9 @@ use crate::codec::value::{RuntimeScalar, ScalarKind};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSchema {
     pub root_name: String,
-    pub key: ScalarKind,
+    /// The root's ordered key columns (one scalar kind per column), the whole composite
+    /// key. A single-column root is the one-element case.
+    pub key: Vec<ScalarKind>,
     pub fields: Vec<FieldSchema>,
     pub branches: Vec<BranchSchema>,
 }
@@ -63,7 +65,10 @@ pub struct FieldSchema {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchSchema {
     pub name: String,
-    pub key: ScalarKind,
+    /// The branch's ordered key columns (one scalar kind per column). A single-column
+    /// branch is the one-element case; a branch entry's key-path extends its parent's
+    /// with this whole tuple.
+    pub key: Vec<ScalarKind>,
     pub fields: Vec<FieldSchema>,
     pub branches: Vec<BranchSchema>,
 }
@@ -293,7 +298,9 @@ pub enum Reopen {
 #[derive(Debug, Clone)]
 pub struct AuthorizedSite {
     root: String,
-    key: ScalarKind,
+    /// The root's ordered key column kinds, checked against the leading columns of an
+    /// operation's key-path.
+    key: Vec<ScalarKind>,
     /// The branch path from the root down to the addressed node, one hop per nested
     /// keyed branch. Empty for a root-level node.
     branch: Vec<BranchHop>,
@@ -301,15 +308,15 @@ pub struct AuthorizedSite {
 }
 
 /// One hop of a site's branch path: the branch's name (which keys its physical child
-/// stem) and its single key column's scalar kind (checked against the operation key).
+/// stem) and its ordered key column kinds (checked against the operation key columns).
 #[derive(Debug, Clone)]
 struct BranchHop {
     name: String,
-    key: ScalarKind,
+    key: Vec<ScalarKind>,
 }
 
 impl BranchHop {
-    fn new(name: String, key: ScalarKind) -> Self {
+    fn new(name: String, key: Vec<ScalarKind>) -> Self {
         Self { name, key }
     }
 }
@@ -344,9 +351,9 @@ impl AuthTarget {
 }
 
 impl AuthorizedSite {
-    /// Assemble a resolved site from its root, root key kind, branch path, and target.
-    /// Kernel-internal; the store's site resolver is the sole constructor.
-    fn new(root: String, key: ScalarKind, branch: Vec<BranchHop>, target: AuthTarget) -> Self {
+    /// Assemble a resolved site from its root, root key column kinds, branch path, and
+    /// target. Kernel-internal; the store's site resolver is the sole constructor.
+    fn new(root: String, key: Vec<ScalarKind>, branch: Vec<BranchHop>, target: AuthTarget) -> Self {
         Self {
             root,
             key,
@@ -355,15 +362,10 @@ impl AuthorizedSite {
         }
     }
 
-    /// The key scalar kind this site's root is keyed by.
-    pub fn key_kind(&self) -> ScalarKind {
-        self.key
-    }
-
-    /// The length of the key-path this site addresses: one element for a root node,
-    /// plus one per nested branch hop (to any depth). The VM pops exactly this many key
-    /// operands and assembles them root-first before calling an op.
+    /// The number of key columns the whole key-path this site addresses carries: the
+    /// root's key columns plus every branch hop's key columns, to any depth. The VM pops
+    /// exactly this many key operands and assembles them root-first before calling an op.
     pub fn key_arity(&self) -> usize {
-        1 + self.branch.len()
+        self.key.len() + self.branch.iter().map(|hop| hop.key.len()).sum::<usize>()
     }
 }
