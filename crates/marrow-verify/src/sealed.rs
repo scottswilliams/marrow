@@ -206,8 +206,6 @@ pub enum SealedInstr {
     DurEraseField(u16),
     /// `K →`: erase the entry at site `_0` (no-op on absent).
     DurEraseEntry(u16),
-    /// `K? → K?`: the next key at entry site `_0` (vacant in = first key).
-    DurNextKey(u16),
     /// The bounded nested traversal `for … at most N … on more`. Freeze the first
     /// `limit` immediate keys of the layer the whole-entry site `_ .site` belongs to —
     /// the root's entry family (a root site) or a keyed branch family under a fixed

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
-use marrow_kernel::durable::{BoundedLimit, CommitResult, Durable, EntryValue, NextKey, Presence};
+use marrow_kernel::durable::{BoundedLimit, CommitResult, Durable, EntryValue, Presence};
 use marrow_verify::{
     SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
 };
@@ -910,21 +910,6 @@ fn execute<'s>(
                     Some((_, value)) => stack.push(value.clone()),
                     None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
                 }
-                pc += 1;
-            }
-            SealedInstr::DurNextKey(site) => {
-                let durable = session
-                    .as_deref_mut()
-                    .expect("verifier proved a durable opcode runs with a session");
-                let authorized = durable.site(*site);
-                let after = as_optional(pop(&mut stack)).map(value_to_key);
-                let next = durable
-                    .next_key(&authorized, after)
-                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
-                stack.push(Value::Optional(match next {
-                    NextKey::Next(key) => Some(Box::new(key_to_value(key))),
-                    NextKey::End => None,
-                }));
                 pc += 1;
             }
             SealedInstr::DurIterateBounded {

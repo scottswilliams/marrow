@@ -464,8 +464,7 @@ fn encode_code(
             | Instr::DurCreateEntry(s)
             | Instr::DurReplaceEntry(s)
             | Instr::DurEraseField(s)
-            | Instr::DurEraseEntry(s)
-            | Instr::DurNextKey(s) => push_u16(&mut out, *s),
+            | Instr::DurEraseEntry(s) => push_u16(&mut out, *s),
             Instr::Jump(target)
             | Instr::JumpIfFalse(target)
             | Instr::BranchPresent(target)

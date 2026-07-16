@@ -37,7 +37,7 @@ these reserved or contextual words:
 ```text
 module use pub const var fn return resource required store index unique
 enum category match is evolve rename default retire transform
-if else while for in reversed by
+if else while for in reversed by at most from on more
 break continue transaction try catch throw delete
 and or not true false absent
 int bool string bytes decimal date instant duration unknown Error ErrorCode Id

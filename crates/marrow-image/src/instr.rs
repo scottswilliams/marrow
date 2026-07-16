@@ -84,7 +84,6 @@ pub const OP_DUR_CREATE_ENTRY: u8 = 0x35;
 pub const OP_DUR_REPLACE_ENTRY: u8 = 0x36;
 pub const OP_DUR_ERASE_FIELD: u8 = 0x37;
 pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
-pub const OP_DUR_NEXT_KEY: u8 = 0x39;
 pub const OP_DUR_SET_SPARSE_PRESENT: u8 = 0x3A;
 pub const OP_DUR_ITERATE_BOUNDED: u8 = 0x3B;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
@@ -302,7 +301,6 @@ pub enum Instr {
     DurReplaceEntry(u16),
     DurEraseField(u16),
     DurEraseEntry(u16),
-    DurNextKey(u16),
     /// The bounded nested traversal `for … at most N … on more`. Freeze the first
     /// `limit` immediate keys of the layer the whole-entry `site` belongs to — the
     /// root's entry family (a root site) or a keyed branch family under a fixed parent
@@ -449,7 +447,6 @@ impl Instr {
             Instr::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
             Instr::DurEraseField(_) => OP_DUR_ERASE_FIELD,
             Instr::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
-            Instr::DurNextKey(_) => OP_DUR_NEXT_KEY,
             Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
             Instr::TxnBegin => OP_TXN_BEGIN,
             Instr::TxnCommit => OP_TXN_COMMIT,
@@ -487,7 +484,6 @@ impl Instr {
             | Instr::DurReplaceEntry(_)
             | Instr::DurEraseField(_)
             | Instr::DurEraseEntry(_)
-            | Instr::DurNextKey(_)
             | Instr::ListNew(_)
             | Instr::MapNew(_)
             | Instr::TextSplit(_)

@@ -1,80 +1,85 @@
 # Traversal And Indexes
 
-`for` traverses ranges and populated entries of local or durable collections.
-Collection traversal follows the defined [typed key order](types-and-values.md#key-types)
-and skips absent positions.
+`for` traverses an integer or temporal range, a local collection, or a durable
+root or branch family. Durable traversal is always bounded: it visits at most a
+declared number of immediate keys and states, at the traversal head, what to do
+when more remain.
 
-## Key-First Iteration
+## Bounded Durable Traversal
 
-The first loop variable is an address key. A second variable binds the value at
-that key.
+A durable `for` head names a store root or a single-level keyed branch, an
+`at most N` bound, an optional inclusive `from` key, and a mandatory `on more`
+block dedented like an `else`:
+
+```text
+for k in <place> at most N [from f]
+    statements
+on more
+    statements
+```
+
+`<place>` is a store root such as `^books` (the root entry family) or a
+single-level branch such as `^books(id).notes` (the branch family beneath one
+fixed root entry). The single loop variable `k` binds each immediate key in
+ascending [typed key order](types-and-values.md#key-types); the value at that key
+is read separately inside the body. `N` is a positive integer literal no larger
+than the traversal ceiling (65536). An inclusive `from f` starts the walk at or
+after the key `f`.
 
 ```mw
 module docs::traversal
 
 resource Book
     required title: string
-    tags(pos: int): string
+
+    notes(pos: int)
+        required text: string
 
 store ^books(id: int): Book
 
-pub fn printAll()
-    for id, book in ^books
-        print($"{id}: {book.title}")
+pub fn sumFirstIds(): int
+    var sum = 0
+    for id in ^books at most 100
+        sum += id
+    on more
+        sum = -1
+    return sum
 
-        for pos, tag in ^books(id).tags
-            print($"{pos}: {tag}")
+pub fn sumNoteKeys(id: int): int
+    var sum = 0
+    for pos in ^books(id).notes at most 100 from 1
+        sum += pos
+    on more
+        sum = -1
+    return sum
 ```
 
-With one variable, a store root yields `Id(^root)` values, a keyed child layer
-yields its next key, and a local list yields its elements in insertion order.
-With two variables, the second binding is the entry or leaf value.
+The traversal freezes the first `N` immediate keys — acquiring at most one key
+beyond them to decide the `on more` arm — and then runs the body once per frozen
+key in order. The `on more` block runs exactly when an `(N + 1)`th key existed
+beyond the frozen set **and** every frozen body completed normally. A `break`,
+`return`, or fault out of a body leaves the loop without running `on more`.
 
-Durable traversal is lazy. It visits stored entries without first creating a
-local collection. `reversed` walks the same keys from high to low:
+### Frozen-Set Isolation
 
-```text
-for id in reversed ^books
-    print(id)
-```
+The frozen key set is captured before any loop body runs, so writes a body
+performs to the traversed family — creating, erasing, or replacing entries,
+including through a called helper — cannot change which keys the loop visits or
+the `on more` decision. Traversal is freeze-then-run, not interleaved. Because a
+key is frozen rather than re-proven present, the loop variable names a key whose
+entry an earlier body iteration may already have erased: a read of that entry
+inside the body is an ordinary read that may be absent, not a guaranteed-present
+access.
 
-## Composite Layers
+### Bounded Work
 
-For an N-column durable keyed layer, a loop head has either one variable or N+1
-variables. One variable binds the outermost key. N+1 variables bind every key
-column followed by the leaf value.
-
-```text
-for row in ^grids(id).cells
-    for column, value in ^grids(id).cells(row)
-        print(value)
-
-for row, column, value in ^grids(id).cells
-    print(value)
-```
-
-Intermediate arities are rejected. A fully keyed leaf is a value place, not an
-iterable.
-
-A local keyed collection always accepts one or two loop variables, even when it
-has several key columns. One variable visits distinct first-column keys. Two
-variables visit every row but expose only its first key and leaf value, so a
-first key can repeat. `keys(local)` likewise materializes distinct first keys;
-`values(local)` materializes every row leaf in full tuple order. Later key
-columns are not exposed by current local iteration, and direct lookup requires
-all declared keys.
-
-## Positional Keyed Leaves
-
-A durable one-`int`-key leaf such as `tags(pos: int): string` uses positive,
-1-based positions. Entries may have holes. Reads at zero or a negative position
-are absent, and a dynamic write to a non-positive position fails at runtime.
-`append(place, value)` writes after the greatest present positive position and
-returns that position; it does not fill an earlier hole, and iteration visits
-present positions only.
-
-Local ordered values use the `List[T]` and `Map[K, V]` collections instead; see
-[Lists and maps](types-and-values.md#lists-and-maps).
+The walk costs work proportional to `N` regardless of how many descendants sit
+beneath skipped siblings: a child that carries branch descendants but no payload
+of its own is passed in one seek, and its own fan-out is never read. The frozen
+keys materialize as one ordinary `List[K]` value and are therefore subject to the
+same aggregate-byte ceiling every collection obeys; a traversal over wide keys can
+reach that ceiling — a `run.collection_limit` fault — at fewer than `N` keys.
+There is one collection ceiling, not a separate traversal-specific one.
 
 ## Ranges
 
@@ -97,31 +102,13 @@ positive duration. A zero step is rejected. A step pointing away from the end
 produces no iterations when its direction is not statically known; a
 literal-provable dead range is rejected.
 
-Ranges may also appear in the trailing key position of a durable keyed layer or
-index traversal, where they restrict the ordered keys visited.
+## Local Collections
 
-## Collection Built-Ins
-
-`count(collection)` reports present entries. `next(place)` and `prev(place)`
-return the neighboring present key, if any; the place supplies both its layer
-and current key. For an entry identity, `key(value)` returns its sole declared
-raw key.
-
-`keys(local)` and `values(local)` materialize local lists from a local list or
-map. They do not accept durable collections. They also
-cannot appear directly as a `for` head; bind their result first if a copied view
-is needed.
-
-## Mutation During Traversal
-
-A loop over a durable layer must not change the key set of that traversed layer
-while it is active. Deleting an entry, appending, replacing a keyed entry, or a
-write that changes membership in a traversed index is rejected. Writes beneath
-the current entry that do not change the traversed layer may be allowed.
-
-The restriction follows the layer being traversed, including changes made by a
-called helper. Copy identities or keys into a local collection first when an
-operation must restructure that same layer.
+A `for` head over a local `List` or `Map` walks it positionally. A list yields
+its elements in insertion order under one variable; a map yields its keys under
+one variable, or its keys and values under two, in
+[`CollectionKeyOrder`](types-and-values.md#lists-and-maps). A local collection
+takes no `at most` bound — its length is already finite and known.
 
 ## Index Declarations
 

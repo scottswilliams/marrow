@@ -171,9 +171,11 @@ pub enum EraseOutcome {
     Missing,
 }
 
-/// The result of a forward `next_key` step.
+/// The result of one forward marker-walk step over a durable layer. Kernel-internal:
+/// the bounded acquisition consumes it to build a [`BoundedKeys`]; no unbounded
+/// next-key op crosses the language boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NextKey {
+pub(crate) enum NextKey {
     Next(KeyScalar),
     End,
 }

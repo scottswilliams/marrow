@@ -61,14 +61,16 @@ limit and may run indefinitely when the program does not make progress.
 ## `for`
 
 `for` traverses an integer or temporal range, a local collection, or a durable
-collection:
+root or branch family:
 
 ```text
 for name [, name ...] in [reversed] iterable [by step]
     statements
 ```
 
-The binding arity and key-first behavior are defined in
+A durable traversal is always bounded and takes a different head — `for k in
+<place> at most N [from f]` with a mandatory `on more` block. The forms, binding
+arity, and frozen-set behavior are defined in
 [Traversal and indexes](traversal-and-indexes.md). Loop variables are immutable
 and scoped to the loop body.
 
@@ -84,20 +86,27 @@ module docs::nested_exit
 
 resource Book
     required title: string
-    tags(pos: int): string
+
+    notes(pos: int)
+        required text: string
 
 store ^books(id: int): Book
 
-fn findWanted(wanted: string): Id(^books)?
-    for id in ^books
-        for pos, tag in ^books(id).tags
-            if tag == wanted
-                return id
-    return absent
+fn hasNote(wanted: string): bool
+    for id in ^books at most 100
+        for pos in ^books(id).notes at most 100
+            if const note = ^books(id).notes(pos)
+                if note.text == wanted
+                    return true
+        on more
+            return false
+    on more
+        return false
+    return false
 
 pub fn show(wanted: string)
-    if const id = findWanted(wanted)
-        print(id)
+    if hasNote(wanted)
+        print("found")
 ```
 
 When these exits leave a transaction normally, the transaction commits before

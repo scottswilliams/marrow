@@ -273,7 +273,10 @@ while_stmt      = "while", expression, NEWLINE, block ;
 
 for_stmt        = "for", for_binding, "in", "reversed"?,
                   expression, ("by", expression)?,
-                  NEWLINE, block ;
+                  ("at", "most", expression, ("from", expression)?)?,
+                  NEWLINE, block, on_more_clause? ;
+
+on_more_clause  = "on", "more", NEWLINE, block ;
 
 for_binding     = identifier, {",", identifier} ;
 
@@ -283,7 +286,9 @@ match_arm       = identifier, {"::", identifier}, arm_bindings?, NEWLINE, block 
 arm_bindings    = "(", identifier, {",", identifier}, ","?, ")" ;
 ```
 
-`by` is contextual in a `for` head. `category` is contextual in an enum body.
+`by`, `at most`, `from`, and the trailing `on more` are contextual in a `for`
+head and its bounded durable-traversal clause. `category` is contextual in an
+enum body.
 
 ## Transactions And `try`
 

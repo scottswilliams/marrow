@@ -10,10 +10,26 @@
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    CommitResult, CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema,
-    InvocationGrant, NextKey, Presence, Reopen, ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
+    AuthorizedSite, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, Durable,
+    DurableStore, EntryValue, FieldSchema, InvocationGrant, Presence, Reopen, ReplaceOutcome,
+    SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
+
+/// Enumerate every immediate key of a root layer through one bounded acquisition whose
+/// limit exceeds the fixture size, so the whole logical state dumps in ascending order.
+/// Replaces the deleted unbounded next-key walk the differential dump once used.
+fn dump_keys(reader: &mut impl Durable, site: &AuthorizedSite) -> Vec<KeyScalar> {
+    reader
+        .iterate_bounded(
+            site,
+            &[],
+            None,
+            BoundedLimit::new(4096).expect("positive limit"),
+        )
+        .expect("bounded acquisition")
+        .keys
+}
 
 // --- test scaffolding ---
 
@@ -192,8 +208,7 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         ));
 
         let mut dump: Dump = Vec::new();
-        let mut cursor = None;
-        while let NextKey::Next(k) = reader.next_key(&e, cursor.clone()).unwrap() {
+        for k in dump_keys(&mut reader, &e) {
             let name = match &k {
                 KeyScalar::Str(name) => name.clone(),
                 other => panic!("unexpected key kind {other:?}"),
@@ -213,7 +228,6 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
                     other => panic!("unexpected label {other:?}"),
                 });
             dump.push((name, v, l));
-            cursor = Some(k);
         }
         dump
     };
@@ -305,8 +319,7 @@ fn set_sparse_present_agrees_across_engines() {
         let label = reader.site(LABEL);
         let presence = reader.presence(&e, &[key("p")]).unwrap();
         let mut dump: Dump = Vec::new();
-        let mut cursor = None;
-        while let NextKey::Next(k) = reader.next_key(&e, cursor.clone()).unwrap() {
+        for k in dump_keys(&mut reader, &e) {
             let name = match &k {
                 KeyScalar::Str(name) => name.clone(),
                 other => panic!("unexpected key kind {other:?}"),
@@ -326,7 +339,6 @@ fn set_sparse_present_agrees_across_engines() {
                     other => panic!("unexpected label {other:?}"),
                 });
             dump.push((name, v, l));
-            cursor = Some(k);
         }
         (presence, dump)
     }

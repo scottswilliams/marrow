@@ -115,22 +115,6 @@ reserved — they are common verbs — so a same-module function of one of those
 names is admitted, wins at every call site in that module, and totally shadows
 the built-in collection operation there.
 
-## Ordered Neighbors
-
-`next(place)` and `prev(place)` return an optional neighboring key or entry
-identity:
-
-```text
-next(^books)             ; first stored book identity
-prev(^books)             ; last stored book identity
-next(^books(id))         ; identity after id
-prev(^books(id).tags(4)) ; populated tag position before 4
-```
-
-Neighbors follow the same typed key order as traversal and skip holes. A bare
-layer selects an edge entry. Stepping beyond an edge returns `absent`. These
-calls are stateless and do not create a cursor.
-
 ## Positional Append
 
 `append(place, value): int` writes after the greatest populated positive integer
@@ -152,8 +136,8 @@ pub fn addTag(id: Id(^books), tag: string): int
     return append(^books(id).tags, tag)
 ```
 
-`append` is a write even though it returns a value. Transaction and traversal
-write restrictions apply.
+`append` is a write even though it returns a value, so it is legal only in a
+transaction region.
 
 ## Entry Identities
 

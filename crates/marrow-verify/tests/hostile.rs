@@ -695,6 +695,26 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
 }
 
 #[test]
+fn the_retired_next_key_opcode_byte_is_no_longer_decodable() {
+    // 0x39 was the unbounded `DurNextKey` opcode, deleted with the whole family when
+    // durable traversal became always-bounded. An image carrying that byte where an
+    // opcode is expected — re-digested so the envelope passes — is refused as an
+    // unknown opcode, so no forged image can resurrect the retired op.
+    let mut bytes = iterate_root_export(2, false).encode().unwrap().bytes;
+    // Locate the bounded-traversal opcode and overwrite its opcode byte with 0x39.
+    let opcode = [0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
+    let at = bytes
+        .windows(opcode.len())
+        .position(|w| w == opcode)
+        .expect("the bounded-traversal opcode is present");
+    bytes[at] = 0x39;
+    rehash(&mut bytes);
+    let rejection = verify(&bytes).expect_err("a retired opcode byte is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.detail(), "unknown or not-yet-supported opcode");
+}
+
+#[test]
 fn a_malformed_from_flag_byte_is_refused_at_decode() {
     // The `from` operand is a strict 0/1 flag. A hostile image that sets it to 0x02 —
     // re-digested so the envelope passes — is refused when the opcode is decoded, so no

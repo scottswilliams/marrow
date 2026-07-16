@@ -21,7 +21,7 @@ use marrow_image::{
     OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
     OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
     OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
-    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_ITERATE_BOUNDED, OP_DUR_NEXT_KEY,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_ITERATE_BOUNDED,
     OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED,
     OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
     OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
@@ -3395,7 +3395,6 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(&mut reader)?),
             OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
             OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(&mut reader)?),
-            OP_DUR_NEXT_KEY => SealedInstr::DurNextKey(operand_u16(&mut reader)?),
             OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
                 site: operand_u16(&mut reader)?,
                 limit: operand_u32(&mut reader)?,
@@ -4379,7 +4378,6 @@ fn apply(
         | SealedInstr::DurReplaceEntry(_)
         | SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
-        | SealedInstr::DurNextKey(_)
         | SealedInstr::DurIterateBounded { .. }
         | SealedInstr::TxnBegin
         | SealedInstr::TxnCommit
@@ -4477,7 +4475,6 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurReplaceEntry(site)
         | SealedInstr::DurEraseField(site)
         | SealedInstr::DurEraseEntry(site)
-        | SealedInstr::DurNextKey(site)
         | SealedInstr::DurIterateBounded { site, .. } => Some(*site),
         _ => None,
     }
@@ -4506,9 +4503,7 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         SealedInstr::DurEraseField(_) | SealedInstr::DurEraseEntry(_) => {
             Some(OperationClass::Erase)
         }
-        SealedInstr::DurNextKey(_) | SealedInstr::DurIterateBounded { .. } => {
-            Some(OperationClass::IndexRead)
-        }
+        SealedInstr::DurIterateBounded { .. } => Some(OperationClass::IndexRead),
         // Region markers open and close the transaction but stage no access.
         SealedInstr::TxnBegin | SealedInstr::TxnCommit => None,
         // The closed complement: every pure opcode stages no durable access.
@@ -4787,19 +4782,6 @@ fn apply_durable(
         SealedInstr::DurEraseEntry(_) => {
             require_entry(site_target)?;
             pop_key_path(stack, &key_path)?;
-        }
-        SealedInstr::DurNextKey(_) => {
-            // Ordered iteration visits a root's entries; iterating a branch's children
-            // under a fixed root key is bounded nested traversal (E04), not this lane.
-            if !matches!(site_target, SealedSiteTarget::WholePayload) {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "next-key requires a root entry site",
-                ));
-            }
-            let opt_key = key_ty.to_optional();
-            expect(pop(stack)?, opt_key)?;
-            stack.push(opt_key);
         }
         SealedInstr::DurIterateBounded {
             limit,

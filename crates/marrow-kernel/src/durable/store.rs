@@ -43,11 +43,6 @@ pub trait Durable {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault>;
-    fn next_key(
-        &mut self,
-        site: &AuthorizedSite,
-        after: Option<KeyScalar>,
-    ) -> Result<NextKey, KernelFault>;
     /// Freeze the first `limit` immediate keys of the layer the whole-entry `site`
     /// belongs to — the root's entry family (a `WholePayload` site) or a keyed branch
     /// family beneath a fixed parent (a branch site) — starting at an inclusive `from`
@@ -367,13 +362,6 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         // markerless own field leaf is a persisted orphan (corruption), not pending.
         op_read_entry(&self.view, site, keys, false)
     }
-    fn next_key(
-        &mut self,
-        site: &AuthorizedSite,
-        after: Option<KeyScalar>,
-    ) -> Result<NextKey, KernelFault> {
-        op_next_key(&self.view, site, after)
-    }
     fn iterate_bounded(
         &mut self,
         site: &AuthorizedSite,
@@ -602,13 +590,6 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         // A transaction may hold sparse fields staged for reconcile at commit, so a
         // markerless own field leaf is tolerated as payload-absent, not corruption.
         op_read_entry(self.txn(), site, keys, true)
-    }
-    fn next_key(
-        &mut self,
-        site: &AuthorizedSite,
-        after: Option<KeyScalar>,
-    ) -> Result<NextKey, KernelFault> {
-        op_next_key(self.txn(), site, after)
     }
     fn iterate_bounded(
         &mut self,
@@ -949,8 +930,8 @@ enum LayerSeek {
 /// at or after `seek`, or [`NextKey::End`]. A descendant-only child — branch children
 /// but no payload marker — is skipped with one prefix-successor seek past its subtree,
 /// which passes its whole subtree regardless of branch fan-out. The single owner of the
-/// forward marker walk: both the root `next_key` op and the bounded layer acquisition
-/// step through it, so the root and branch layers walk identically.
+/// forward marker walk: the bounded layer acquisition steps through it for both the
+/// root and branch layers, so they walk identically.
 fn layer_step<V: ReadView>(
     cells: &V,
     layer: &physical::Layer,
@@ -975,18 +956,6 @@ fn layer_step<V: ReadView>(
             CellKind::Foreign => return Ok(NextKey::End),
         }
     }
-}
-
-fn op_next_key<V: ReadView>(
-    cells: &V,
-    site: &AuthorizedSite,
-    after: Option<KeyScalar>,
-) -> Result<NextKey, KernelFault> {
-    let seek = match after {
-        None => LayerSeek::Start,
-        Some(key) => LayerSeek::After(key),
-    };
-    layer_step(cells, &physical::Layer::root(&site.root), seek)
 }
 
 /// The durable layer the whole-entry `site` traverses, resolving its parent entry from
@@ -1088,7 +1057,7 @@ mod tests {
     use super::super::physical;
     use super::super::{
         BoundedKeys, BoundedLimit, BranchSchema, CommitResult, CreateOutcome, DemandCoverage,
-        EntryValue, FieldSchema, InvocationGrant, KernelFault, NextKey, Presence, ReplaceOutcome,
+        EntryValue, FieldSchema, InvocationGrant, KernelFault, Presence, ReplaceOutcome,
         SessionError, SiteSpec, SiteTarget, StoreSchema,
     };
     use super::{Durable, DurableStore};
@@ -1198,14 +1167,12 @@ mod tests {
             .read_session(InvocationGrant::full_store(), read_demand())
             .expect("read session");
         let entry = read.site(0);
-        let mut keys = Vec::new();
-        let mut cursor = None;
-        while let NextKey::Next(key) = read.next_key(&entry, cursor.clone()).expect("next") {
-            keys.push(key.clone());
-            cursor = Some(key);
-        }
+        let frozen = read
+            .iterate_bounded(&entry, &[], None, bound(16))
+            .expect("iterate");
+        assert!(!frozen.more);
         assert_eq!(
-            keys,
+            frozen.keys,
             vec![
                 KeyScalar::Str("a".into()),
                 KeyScalar::Str("b".into()),
@@ -1235,7 +1202,10 @@ mod tests {
             .read_session(InvocationGrant::full_store(), read_demand())
             .expect("read session");
         let entry = read.site(0);
-        assert_eq!(read.next_key(&entry, None), Err(KernelFault::Corruption));
+        assert_eq!(
+            read.iterate_bounded(&entry, &[], None, bound(4)),
+            Err(KernelFault::Corruption)
+        );
     }
 
     #[test]
@@ -1595,15 +1565,16 @@ mod tests {
         );
     }
 
-    /// The descendant-skip law of forward iteration: `next_key` visits only
-    /// payload-bearing (marker-present) entries, seeking a descendant-only entry's
-    /// whole subtree in one cursor step. Present entries `k1` and `k4` bracket two
-    /// descendant-only entries `k2` and `k3` — each a markerless root carrying only a
-    /// keyed branch child — injected directly so the ops cannot construct the state.
-    /// Iteration from `k1` jumps to `k4`, skipping both; resuming from inside the
-    /// descendant-only run lands on `k4` too; and iteration terminates after `k4`.
+    /// The descendant-skip law of the bounded acquisition over a run of descendant-only
+    /// entries: it freezes only payload-bearing (marker-present) entries, seeking a
+    /// descendant-only entry's whole subtree in one cursor step. Present entries `k1`
+    /// and `k4` bracket two descendant-only entries `k2` and `k3` — each a markerless
+    /// root carrying only a keyed branch child — injected directly so the ops cannot
+    /// construct the state. The acquisition from the start freezes `[k1, k4]`, skipping
+    /// both; and an inclusive `from` inside the descendant-only run still resolves to
+    /// `k4`, so the skip does not depend on starting at a present entry.
     #[test]
-    fn next_key_skips_a_run_of_descendant_only_entries_between_present_siblings() {
+    fn a_bounded_acquisition_skips_a_run_of_descendant_only_entries_between_siblings() {
         let mut cells = Vec::new();
         // Present entries: a root marker plus its `title` leaf.
         for present in ["k1", "k4"] {
@@ -1632,33 +1603,29 @@ mod tests {
         let root = read.site(0);
         let k = |s: &str| KeyScalar::Str(s.into());
 
-        // From the start, the first present entry; then straight to `k4`, skipping the
-        // two descendant-only entries in one run; then End.
-        assert_eq!(read.next_key(&root, None), Ok(NextKey::Next(k("k1"))));
+        // From the start: the two present siblings, the two descendant-only entries
+        // skipped in one seek run.
         assert_eq!(
-            read.next_key(&root, Some(k("k1"))),
-            Ok(NextKey::Next(k("k4"))),
-            "next_key skips both descendant-only entries between the present siblings",
-        );
-        assert_eq!(
-            read.next_key(&root, Some(k("k4"))),
-            Ok(NextKey::End),
-            "iteration terminates after the last present entry",
+            read.iterate_bounded(&root, &[], None, bound(8))
+                .expect("iterate"),
+            BoundedKeys {
+                keys: vec![k("k1"), k("k4")],
+                more: false,
+            },
         );
 
-        // Resuming from inside the descendant-only run — after `k2`, the first of the
-        // two, or after `k3`, the second — resolves to `k4` just as resuming from the
-        // present sibling before them does: the skip does not depend on the cursor
-        // starting at a present entry.
-        assert_eq!(
-            read.next_key(&root, Some(k("k2"))),
-            Ok(NextKey::Next(k("k4"))),
-            "resuming inside the descendant-only run still yields the next present entry",
-        );
-        assert_eq!(
-            read.next_key(&root, Some(k("k3"))),
-            Ok(NextKey::Next(k("k4")))
-        );
+        // An inclusive `from` inside the descendant-only run — at `k2`, the first of
+        // the two, or `k3`, the second — resolves to `k4` just as a `from` at the
+        // present sibling before them does.
+        for start in ["k2", "k3"] {
+            assert_eq!(
+                read.iterate_bounded(&root, &[], Some(k(start)), bound(8))
+                    .expect("iterate")
+                    .keys,
+                vec![k("k4")],
+                "an inclusive from inside the descendant-only run still yields the next present key",
+            );
+        }
     }
 
     // --- E04 bounded acquisition law (the freeze-then-run kernel primitive). ---

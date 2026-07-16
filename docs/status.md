@@ -75,7 +75,16 @@ this way, together with its single-level single-column-keyed scalar-field `branc
 placements, whose whole entries create, read, replace, and erase through the
 two-column address `^root(key).branch(bkey)` (a branch entry is a distinct node one
 level down, so its create leaves the root descendant-only and a whole-entry root
-replace or erase preserves it). Wider durable shapes stay parked with their owning
+replace or erase preserves it). Bounded nested `for` traversal executes over a root
+entry family or a single-level branch family: `for k in <place> at most N [from f]`
+freezes the first `N` immediate keys after an optional inclusive `from`, runs the
+body once per frozen key in ascending order, and runs the mandatory `on more` block
+when a further key existed and the frozen bodies completed normally — the frozen
+keys are immune to writes the bodies perform. Durable traversal is always bounded:
+the earlier unbounded durable `for k in ^root`, its value-binding `for k, v` durable
+form, and `reversed` durable iteration were removed with the unbounded next-key
+cursor family (opcode, kernel op, and neighbor `next`/`prev` built-ins) and have no
+owner. Wider durable shapes stay parked with their owning
 lanes. Persistent
 execution is still in the trough: T01's in-process store open died at D00, so
 `marrow run` no longer opens a store and reports a durable export with the typed
