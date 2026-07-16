@@ -22,7 +22,7 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, KernelFault, StoreSchema};
+use super::{EntryValue, FieldSchema, KernelFault, StoreSchema};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_value;
 
@@ -46,50 +46,62 @@ impl<'a> Planner<'a> {
         Self { root, schema }
     }
 
-    /// The marker key of entry `key`: the entry's payload-presence record.
+    /// The marker key (marker stem) of root entry `key`: the entry's payload-presence
+    /// record and the base its own leaves, branches, and cursor derive from.
     pub(super) fn marker(&self, key: &KeyScalar) -> Vec<u8> {
         physical::marker_key(self.root, key)
     }
 
-    /// The leaf key of `field` of entry `key`.
-    pub(super) fn field_leaf(&self, key: &KeyScalar, field: &str) -> Vec<u8> {
-        physical::field_leaf_key(self.root, key, field)
+    /// The leaf key of `field` of the node whose marker `stem` is given. The
+    /// node-parametric field-leaf primitive: the root entry and every branch entry
+    /// derive their field leaves through this one owner, so the marker/field topology
+    /// has a single owner regardless of a node's depth.
+    pub(super) fn node_field_leaf(&self, stem: &[u8], field: &str) -> Vec<u8> {
+        physical::stem_field_leaf(stem, field)
     }
 
-    /// Every cell key of entry `key`: its marker followed by one leaf key per schema
-    /// field, in schema order. The [`Self::marker`]/[`Self::field_leaf`] primitive pair
-    /// is the single owner of an entry's cell topology; whole-entry read and commit
-    /// reconciliation enumerate through those primitives directly. This method is the
-    /// erase-path enumeration built on that same pair, and `erase_entry` is its only
-    /// caller, so no enumeration of an entry's footprint drifts from the primitives.
-    pub(super) fn entry_cells(&self, key: &KeyScalar) -> Vec<Vec<u8>> {
-        let mut cells = Vec::with_capacity(1 + self.schema.fields.len());
-        cells.push(self.marker(key));
-        for field in &self.schema.fields {
-            cells.push(self.field_leaf(key, &field.name));
+    /// The leaf key of `field` of root entry `key`, the root convenience over
+    /// [`Self::node_field_leaf`].
+    pub(super) fn field_leaf(&self, key: &KeyScalar, field: &str) -> Vec<u8> {
+        self.node_field_leaf(&self.marker(key), field)
+    }
+
+    /// Every cell key of the node with marker `stem` over `fields`: its marker
+    /// followed by one leaf per field, in order. The single owner of a node's own
+    /// footprint enumeration — it enumerates the marker and own field leaves only,
+    /// never a branch tag, so a node's keyed descendants are outside the footprint it
+    /// returns.
+    pub(super) fn node_cells(&self, stem: &[u8], fields: &[FieldSchema]) -> Vec<Vec<u8>> {
+        let mut cells = Vec::with_capacity(1 + fields.len());
+        cells.push(stem.to_vec());
+        for field in fields {
+            cells.push(self.node_field_leaf(stem, &field.name));
         }
         cells
     }
 
-    /// The writes that establish entry `key` from `entry`: its marker then one leaf
-    /// per present field, in schema order (descendant-only — nothing outside the
-    /// entry's own subtree). A value outside its codec range is a
+    /// The writes that establish the node with marker `stem` from `entry` over
+    /// `fields`: its marker then one leaf per present field, in order. Descendant-only
+    /// by construction — it writes the marker and the node's own leaves and nothing
+    /// beneath a branch tag, so giving a descendant-only node a payload never touches
+    /// its descendants. A value outside its codec range is a
     /// [`KernelFault::ValueRange`] and no partial plan is returned.
-    pub(super) fn write_entry(
+    pub(super) fn node_write(
         &self,
-        key: &KeyScalar,
+        stem: &[u8],
+        fields: &[FieldSchema],
         entry: &EntryValue,
     ) -> Result<Vec<CellWrite>, KernelFault> {
         let mut writes = Vec::with_capacity(1 + entry.fields.len());
         writes.push(CellWrite::Put(
-            self.marker(key),
+            stem.to_vec(),
             physical::MARKER_VALUE.to_vec(),
         ));
         for (index, slot) in entry.fields.iter().enumerate() {
             if let Some(value) = slot {
                 let bytes = encode_value(value).map_err(|_| KernelFault::ValueRange)?;
                 writes.push(CellWrite::Put(
-                    self.field_leaf(key, &self.schema.fields[index].name),
+                    self.node_field_leaf(stem, &fields[index].name),
                     bytes,
                 ));
             }
@@ -97,14 +109,31 @@ impl<'a> Planner<'a> {
         Ok(writes)
     }
 
-    /// The removals that erase entry `key`: its marker and every field-leaf cell.
-    /// The engine offers only point removal, so the entry's cells are enumerated from
-    /// the schema rather than deleting a key prefix.
-    pub(super) fn erase_entry(&self, key: &KeyScalar) -> Vec<CellWrite> {
-        self.entry_cells(key)
+    /// The removals that erase the payload of the node with marker `stem` over
+    /// `fields`: its marker and every own field-leaf cell. It enumerates only the
+    /// node's own cells — never a branch tag — so a payload erase preserves the node's
+    /// keyed descendants (the descendant-preserving erase law).
+    pub(super) fn node_erase(&self, stem: &[u8], fields: &[FieldSchema]) -> Vec<CellWrite> {
+        self.node_cells(stem, fields)
             .into_iter()
             .map(CellWrite::Remove)
             .collect()
+    }
+
+    /// The writes that establish root entry `key` from `entry`, the root convenience
+    /// over [`Self::node_write`].
+    pub(super) fn write_entry(
+        &self,
+        key: &KeyScalar,
+        entry: &EntryValue,
+    ) -> Result<Vec<CellWrite>, KernelFault> {
+        self.node_write(&self.marker(key), &self.schema.fields, entry)
+    }
+
+    /// The removals that erase root entry `key`, the root convenience over
+    /// [`Self::node_erase`].
+    pub(super) fn erase_entry(&self, key: &KeyScalar) -> Vec<CellWrite> {
+        self.node_erase(&self.marker(key), &self.schema.fields)
     }
 }
 
@@ -130,6 +159,7 @@ mod tests {
                     required: false,
                 },
             ],
+            branches: Vec::new(),
         }
     }
 
@@ -141,19 +171,20 @@ mod tests {
             .collect()
     }
 
-    /// The single footprint enumeration: an entry is its marker then one leaf per
-    /// schema field, in schema order.
+    /// The single footprint enumeration: a node is its marker then one leaf per
+    /// field, in order, through the node-parametric `node_cells`.
     #[test]
-    fn entry_cells_are_the_marker_then_one_leaf_per_field_in_order() {
+    fn node_cells_are_the_marker_then_one_leaf_per_field_in_order() {
         let schema = schema();
         let planner = Planner::new(&schema.root_name, &schema);
         let key = KeyScalar::Int(1);
+        let stem = planner.marker(&key);
         assert_eq!(
-            planner.entry_cells(&key),
+            planner.node_cells(&stem, &schema.fields),
             vec![
-                planner.marker(&key),
-                planner.field_leaf(&key, "value"),
-                planner.field_leaf(&key, "label"),
+                stem.clone(),
+                planner.node_field_leaf(&stem, "value"),
+                planner.node_field_leaf(&stem, "label"),
             ]
         );
     }
@@ -193,7 +224,50 @@ mod tests {
         let key = KeyScalar::Int(1);
         let ops = planner.erase_entry(&key);
         assert!(ops.iter().all(|op| matches!(op, CellWrite::Remove(_))));
-        assert_eq!(keys(&ops), keys_of(&planner.entry_cells(&key)));
+        assert_eq!(
+            keys(&ops),
+            keys_of(&planner.node_cells(&planner.marker(&key), &schema.fields)),
+        );
+    }
+
+    /// The node-parametric core operates on any `(stem, fields)` pair, not only the
+    /// root schema — the seam a branch node reuses one level down. Given a stem and a
+    /// field list distinct from the root's, `node_cells` enumerates the marker then
+    /// one leaf per field, `node_write` plans the marker plus present leaves, and
+    /// `node_erase` removes exactly the node's own cells, so a branch entry reuses the
+    /// single cell-topology owner rather than a second structural-maintenance path.
+    #[test]
+    fn the_node_core_operates_on_an_arbitrary_node_stem_and_fields() {
+        let schema = schema();
+        let planner = Planner::new(&schema.root_name, &schema);
+        // Any marker stem stands in for a node here (a branch entry's stem is one such
+        // stem, one level below the root); the fields differ from the root's schema.
+        let stem = planner.marker(&KeyScalar::Int(7));
+        let fields = vec![FieldSchema {
+            name: "text".into(),
+            kind: ScalarKind::Str,
+            required: true,
+        }];
+        assert_eq!(
+            planner.node_cells(&stem, &fields),
+            vec![stem.clone(), planner.node_field_leaf(&stem, "text")],
+        );
+        let entry = EntryValue {
+            fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+        };
+        let writes = planner
+            .node_write(&stem, &fields, &entry)
+            .expect("in range");
+        assert_eq!(
+            keys(&writes),
+            vec![
+                stem.as_slice(),
+                planner.node_field_leaf(&stem, "text").as_slice(),
+            ],
+        );
+        let erases = planner.node_erase(&stem, &fields);
+        assert!(erases.iter().all(|op| matches!(op, CellWrite::Remove(_))));
+        assert_eq!(keys(&erases), keys_of(&planner.node_cells(&stem, &fields)));
     }
 
     fn keys_of(cells: &[Vec<u8>]) -> Vec<&[u8]> {

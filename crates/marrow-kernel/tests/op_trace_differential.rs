@@ -61,6 +61,7 @@ fn schema() -> StoreSchema {
                 required: false,
             },
         ],
+        branches: Vec::new(),
     }
 }
 

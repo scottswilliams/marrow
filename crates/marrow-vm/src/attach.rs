@@ -201,6 +201,10 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         root_name: root.name().to_string(),
         key,
         fields,
+        // Branch derivation from the image member tree lands with the verifier
+        // un-parking branch sites; the flat executable root this derivation admits
+        // carries no branches.
+        branches: Vec::new(),
     };
 
     // The site table is index-aligned with the image's sites so `Durable::site`

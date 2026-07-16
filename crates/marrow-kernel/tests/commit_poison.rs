@@ -205,6 +205,7 @@ fn schema() -> StoreSchema {
             kind: ScalarKind::Int,
             required: true,
         }],
+        branches: Vec::new(),
     }
 }
 

@@ -230,6 +230,7 @@ mod tests {
                 kind: ScalarKind::Int,
                 required: true,
             }],
+            branches: Vec::new(),
         }
     }
 

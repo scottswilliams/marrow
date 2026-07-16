@@ -891,6 +891,7 @@ mod tests {
                     required: false,
                 },
             ],
+            branches: Vec::new(),
         }
     }
 

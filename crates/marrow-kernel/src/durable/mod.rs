@@ -31,20 +31,36 @@ use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, ScalarKind};
 
 /// The schema descriptor the store profile records and every session revalidates.
-/// One root at T01; its fields in declaration (image) order.
+/// One root; its top-level fields and its keyed branches in declaration (image)
+/// order. A branch is a keyed subtree nested beneath every root entry (E03 executes
+/// single-level, single-column-keyed branches; deeper nesting and composite branch
+/// keys are E04).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreSchema {
     pub root_name: String,
     pub key: ScalarKind,
     pub fields: Vec<FieldSchema>,
+    pub branches: Vec<BranchSchema>,
 }
 
-/// One field of the root's record: its name, scalar kind, and required flag.
+/// One field of a node's record: its name, scalar kind, and required flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSchema {
     pub name: String,
     pub kind: ScalarKind,
     pub required: bool,
+}
+
+/// One keyed branch nested beneath a root entry: its name, its single key column's
+/// scalar kind, and its own record's fields. A branch entry is addressed by the tuple
+/// `(root key, branch key)` and carries its own marker and field leaves, so it is a
+/// distinct durable node reusing the root entry's marker/field topology one level
+/// down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchSchema {
+    pub name: String,
+    pub key: ScalarKind,
+    pub fields: Vec<FieldSchema>,
 }
 
 /// A verified operation site the kernel maps to physical layout, indexed by the

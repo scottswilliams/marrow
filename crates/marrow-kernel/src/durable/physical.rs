@@ -300,9 +300,8 @@ mod tests {
 
     /// Build a branch child's marker stem the way the recursive layout prescribes:
     /// the parent's marker stem, the branch tag, the escaped branch name, the child
-    /// key, and a marker terminator. Slice 2 promotes this into a `pub(super)`
-    /// builder the planner consumes; here it pins the layout recipe the ordering
-    /// laws below rest on, so the two never drift.
+    /// key, and a marker terminator. Pins the layout recipe the ordering laws below
+    /// rest on; the branch-executable lane promotes it to a production builder.
     fn branch_child_marker(parent_stem: &[u8], branch: &str, child_key: &KeyScalar) -> Vec<u8> {
         let mut out = parent_stem.to_vec();
         out.push(BRANCH_TAG);
