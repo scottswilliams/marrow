@@ -1337,15 +1337,13 @@ fn resolve_site(
             // A keyed branch entry at any depth: every step below the root is a branch
             // placement. Walk the placement chain through the recursive member tree into a
             // per-level branch path; a step that names no branch at its level parks.
-            SemanticNodeKind::Branch => {
-                match walk_branch_path(&root.members, below_root) {
-                    Some((path, _)) => SealedSite::Flat {
-                        root: root_index,
-                        target: SealedSiteTarget::BranchEntry(path.into()),
-                    },
-                    None => parked(),
-                }
-            }
+            SemanticNodeKind::Branch => match walk_branch_path(&root.members, below_root) {
+                Some((path, _)) => SealedSite::Flat {
+                    root: root_index,
+                    target: SealedSiteTarget::BranchEntry(path.into()),
+                },
+                None => parked(),
+            },
             _ => unreachable!("a whole-payload target resolved to a root or branch node"),
         },
         SemanticTarget::FieldLeaf => {
@@ -1357,20 +1355,22 @@ fn resolve_site(
                 return Ok(parked());
             };
             match walk_branch_path(&root.members, branch_steps) {
-                Some((path, node_members)) => match top_level_field_index(node_members, field_step.id) {
-                    Some(field) if path.is_empty() => SealedSite::Flat {
-                        root: root_index,
-                        target: SealedSiteTarget::FieldLeaf(field),
-                    },
-                    Some(field) => SealedSite::Flat {
-                        root: root_index,
-                        target: SealedSiteTarget::BranchField {
-                            branch: path.into(),
-                            field,
+                Some((path, node_members)) => {
+                    match top_level_field_index(node_members, field_step.id) {
+                        Some(field) if path.is_empty() => SealedSite::Flat {
+                            root: root_index,
+                            target: SealedSiteTarget::FieldLeaf(field),
                         },
-                    },
-                    None => parked(),
-                },
+                        Some(field) => SealedSite::Flat {
+                            root: root_index,
+                            target: SealedSiteTarget::BranchField {
+                                branch: path.into(),
+                                field,
+                            },
+                        },
+                        None => parked(),
+                    }
+                }
                 None => parked(),
             }
         }

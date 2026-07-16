@@ -251,7 +251,10 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
 /// when any record field is non-scalar (the whole derivation parks), mirroring
 /// [`scalar_fields`]. The verifier proves an executable branch's fields are scalars and its
 /// sub-branches are simple, so this is defense in depth over that proof.
-fn branch_schema(image: &VerifiedImage, branch: &marrow_verify::SealedBranch) -> Option<BranchSchema> {
+fn branch_schema(
+    image: &VerifiedImage,
+    branch: &marrow_verify::SealedBranch,
+) -> Option<BranchSchema> {
     let mut branches = Vec::with_capacity(branch.branches().len());
     for sub in branch.branches() {
         branches.push(branch_schema(image, sub)?);

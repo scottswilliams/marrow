@@ -186,7 +186,9 @@ fn run_fault(
 fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
     match mint_ephemeral(image) {
         Ephemeral::Ready(attachment) => attachment,
-        Ephemeral::Parked => panic!("a nested single-column scalar-field branch must be executable"),
+        Ephemeral::Parked => {
+            panic!("a nested single-column scalar-field branch must be executable")
+        }
         Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
     }
 }
@@ -223,10 +225,22 @@ fn a_nested_branch_constructor_and_field_reads_round_trip() {
         &image,
         &mut attachment,
         "addFullTag",
-        vec![Value::Int(1), s("n"), Value::Int(7), Value::Int(42), Value::Bool(true)],
+        vec![
+            Value::Int(1),
+            s("n"),
+            Value::Int(7),
+            Value::Int(42),
+            Value::Bool(true),
+        ],
     );
-    assert_eq!(run(&image, &mut attachment, "tagWeight", key()), some_int(42));
-    assert_eq!(run(&image, &mut attachment, "tagHot", key()), some_bool(true));
+    assert_eq!(
+        run(&image, &mut attachment, "tagWeight", key()),
+        some_int(42)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "tagHot", key()),
+        some_bool(true)
+    );
     assert_eq!(
         run(&image, &mut attachment, "tagWeightMaterialized", key()),
         some_int(42),
@@ -255,10 +269,21 @@ fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
         vec![Value::Int(2), s("n"), Value::Int(5), Value::Int(9)],
     );
     let tag = || vec![Value::Int(2), s("n"), Value::Int(5)];
-    assert_eq!(run(&image, &mut attachment, "tagPresent", tag()), present(true));
-    assert_eq!(run(&image, &mut attachment, "tagWeight", tag()), some_int(9));
     assert_eq!(
-        run(&image, &mut attachment, "notePresent", vec![Value::Int(2), s("n")]),
+        run(&image, &mut attachment, "tagPresent", tag()),
+        present(true)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "tagWeight", tag()),
+        some_int(9)
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "notePresent",
+            vec![Value::Int(2), s("n")]
+        ),
         present(false),
         "the note ancestor has no marker: descendant-only",
     );
@@ -277,9 +302,17 @@ fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
         vec![Value::Int(3), s("m"), Value::Int(1), Value::Int(4)],
     );
     let tag2 = || vec![Value::Int(3), s("m"), Value::Int(1)];
-    assert_eq!(run(&image, &mut attachment, "tagWeight", tag2()), some_int(4));
     assert_eq!(
-        run(&image, &mut attachment, "notePresent", vec![Value::Int(3), s("m")]),
+        run(&image, &mut attachment, "tagWeight", tag2()),
+        some_int(4)
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "notePresent",
+            vec![Value::Int(3), s("m")]
+        ),
         present(false)
     );
     assert_eq!(
@@ -328,7 +361,10 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
     let mut attachment = attach(&image);
     let key = || vec![Value::Int(5), s("n"), Value::Int(3)];
 
-    assert_eq!(run(&image, &mut attachment, "tagPresent", key()), present(false));
+    assert_eq!(
+        run(&image, &mut attachment, "tagPresent", key()),
+        present(false)
+    );
     assert_eq!(run(&image, &mut attachment, "tagWeight", key()), absent());
     assert_eq!(run(&image, &mut attachment, "tagHot", key()), absent());
 
@@ -338,7 +374,10 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
         "addTag",
         vec![Value::Int(5), s("n"), Value::Int(3), Value::Int(8)],
     );
-    assert_eq!(run(&image, &mut attachment, "tagWeight", key()), some_int(8));
+    assert_eq!(
+        run(&image, &mut attachment, "tagWeight", key()),
+        some_int(8)
+    );
     assert_eq!(
         run(&image, &mut attachment, "tagHot", key()),
         absent(),
@@ -349,9 +388,18 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
         &image,
         &mut attachment,
         "addFullTag",
-        vec![Value::Int(5), s("n"), Value::Int(3), Value::Int(8), Value::Bool(true)],
+        vec![
+            Value::Int(5),
+            s("n"),
+            Value::Int(3),
+            Value::Int(8),
+            Value::Bool(true),
+        ],
     );
-    assert_eq!(run(&image, &mut attachment, "tagHot", key()), some_bool(true));
+    assert_eq!(
+        run(&image, &mut attachment, "tagHot", key()),
+        some_bool(true)
+    );
 
     // A whole replace that omits the sparse field drops it (exact replacement).
     run(
@@ -375,7 +423,12 @@ fn a_middle_branch_erase_preserves_nested_descendants() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
 
-    run(&image, &mut attachment, "addNote", vec![Value::Int(6), s("n"), s("body")]);
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![Value::Int(6), s("n"), s("body")],
+    );
     run(
         &image,
         &mut attachment,
@@ -383,14 +436,29 @@ fn a_middle_branch_erase_preserves_nested_descendants() {
         vec![Value::Int(6), s("n"), Value::Int(1), Value::Int(11)],
     );
     assert_eq!(
-        run(&image, &mut attachment, "notePresent", vec![Value::Int(6), s("n")]),
+        run(
+            &image,
+            &mut attachment,
+            "notePresent",
+            vec![Value::Int(6), s("n")]
+        ),
         present(true)
     );
 
     // Erase the note payload: payload-only, so the nested tag survives.
-    run(&image, &mut attachment, "eraseNote", vec![Value::Int(6), s("n")]);
+    run(
+        &image,
+        &mut attachment,
+        "eraseNote",
+        vec![Value::Int(6), s("n")],
+    );
     assert_eq!(
-        run(&image, &mut attachment, "notePresent", vec![Value::Int(6), s("n")]),
+        run(
+            &image,
+            &mut attachment,
+            "notePresent",
+            vec![Value::Int(6), s("n")]
+        ),
         present(false),
         "the note payload is gone",
     );
@@ -435,9 +503,20 @@ fn a_deep_field_exact_clear_preserves_the_required_field() {
         &image,
         &mut attachment,
         "addFullTag",
-        vec![Value::Int(7), s("n"), Value::Int(2), Value::Int(3), Value::Bool(true)],
+        vec![
+            Value::Int(7),
+            s("n"),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Bool(true),
+        ],
     );
-    run(&image, &mut attachment, "clearTagHot", vec![Value::Int(7), s("n"), Value::Int(2)]);
+    run(
+        &image,
+        &mut attachment,
+        "clearTagHot",
+        vec![Value::Int(7), s("n"), Value::Int(2)],
+    );
     assert_eq!(run(&image, &mut attachment, "tagHot", key()), absent());
     assert_eq!(
         run(&image, &mut attachment, "tagWeight", key()),
@@ -473,19 +552,34 @@ fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path(
 
     // Sum all tag keys under note "n": 1 + 2 + 3 = 6, no `on more`.
     assert_eq!(
-        run(&image, &mut attachment, "sumTags", vec![Value::Int(8), s("n")]),
+        run(
+            &image,
+            &mut attachment,
+            "sumTags",
+            vec![Value::Int(8), s("n")]
+        ),
         Some(Value::Int(6)),
         "the inner layer iterates its own note's tags in ascending order",
     );
     // Bounded at 2: freezes tags 1 and 2 (sum 3), a third existed → +1000.
     assert_eq!(
-        run(&image, &mut attachment, "sumTagsBounded", vec![Value::Int(8), s("n")]),
+        run(
+            &image,
+            &mut attachment,
+            "sumTagsBounded",
+            vec![Value::Int(8), s("n")]
+        ),
         Some(Value::Int(1003)),
         "the bound freezes the first two keys and the on-more bit fires",
     );
     // The sibling note "m" has exactly one tag (key 99); its layer is independent.
     assert_eq!(
-        run(&image, &mut attachment, "sumTags", vec![Value::Int(8), s("m")]),
+        run(
+            &image,
+            &mut attachment,
+            "sumTags",
+            vec![Value::Int(8), s("m")]
+        ),
         Some(Value::Int(99)),
         "the inner traversal is scoped to its ancestor path",
     );

@@ -2441,8 +2441,10 @@ impl<'a> FnLowerer<'a> {
                 ..
             } => {
                 let Some(root) = self.durable.root() else {
-                    let diagnostic =
-                        self.no_executable_root_diagnostic(iterable.span(), "iterating without a store");
+                    let diagnostic = self.no_executable_root_diagnostic(
+                        iterable.span(),
+                        "iterating without a store",
+                    );
                     self.fail(diagnostic);
                     return None;
                 };
@@ -3839,7 +3841,9 @@ impl<'a> FnLowerer<'a> {
                     if let Some(branch) = self.executable_branch_path(resource, &path) {
                         let display = branch_ctor_display(resource, &path);
                         return self
-                            .lower_branch_constructor(resource, &display, branch, head_span, args, span)
+                            .lower_branch_constructor(
+                                resource, &display, branch, head_span, args, span,
+                            )
                             .map(CallResult::Value);
                     }
                 }

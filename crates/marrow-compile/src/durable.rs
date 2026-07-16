@@ -1174,7 +1174,9 @@ fn emit_branch_sites(
                 record,
                 ..
             } => {
-                branches.push(emit_branch_sites(draft, &steps, *placement, *record, members));
+                branches.push(emit_branch_sites(
+                    draft, &steps, *placement, *record, members,
+                ));
             }
         }
     }
