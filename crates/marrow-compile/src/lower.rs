@@ -15,8 +15,9 @@ use marrow_image::{
     EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId,
 };
 use marrow_syntax::{
-    Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, FunctionDecl, LiteralKind,
-    MatchArm, SourceSpan, Statement, TypeExpr, UnaryOp, decode_string_literal,
+    Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
+    LiteralKind, MatchArm, SourceSpan, Statement, TraversalBound, TypeExpr, UnaryOp,
+    decode_string_literal,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -624,6 +625,18 @@ enum DurTarget {
         scalar: ScalarType,
         required: bool,
     },
+}
+
+/// A resolved durable traversal place: the traversed layer's whole-entry site, the
+/// immediate key type it enumerates, and the ancestor key-path locating its parent
+/// entry (empty for a root family, `[root_key]` for a single-level branch family). The
+/// bounded traversal opcode pushes the ancestor path root-first, then the optional
+/// inclusive `from` key, and freezes the traversed layer's immediate keys.
+struct TraversalTarget<'e> {
+    entry_site: u16,
+    key_ty: ScalarType,
+    ancestor_keys: Vec<DurKey<'e>>,
+    span: SourceSpan,
 }
 
 /// A resolved function signature, keyed by index (the image FUNCTIONS position,
@@ -1529,9 +1542,18 @@ impl<'a> FnLowerer<'a> {
                 order,
                 iterable,
                 step,
+                bound,
                 body,
                 span,
-            } => self.lower_for(binding, *order, iterable, step.as_ref(), body, *span),
+            } => self.lower_for(
+                binding,
+                *order,
+                iterable,
+                step.as_ref(),
+                bound.as_ref(),
+                body,
+                *span,
+            ),
             Statement::Checked {
                 bind,
                 op,
@@ -2217,18 +2239,44 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Lower `for k in ^root` (design §B): a forward key walk driven by `DurNextKey`
-    /// over a cursor local. Reversed order, a range step, a multi-name binding, and a
-    /// non-store iterable are not admitted at T01.
+    /// Lower a `for` loop. A durable root/branch traversal place (`^root` or
+    /// `^root(k).branch`) takes the bounded freeze-then-run path; a range or local
+    /// `List`/`Map` iterable takes the collection path. Reversed order and a range
+    /// step apply only to the latter.
+    #[allow(clippy::too_many_arguments)]
     fn lower_for(
         &mut self,
-        binding: &marrow_syntax::ForBinding,
+        binding: &ForBinding,
         order: marrow_syntax::LoopOrder,
         iterable: &Expression,
         step: Option<&Expression>,
+        bound: Option<&TraversalBound>,
         body: &Block,
         span: SourceSpan,
     ) -> Flow {
+        // A durable traversal place iterates the store; it is always bounded.
+        if Self::is_traversal_place(iterable) {
+            if order != marrow_syntax::LoopOrder::Forward {
+                self.fail(unsupported(self.file, span, "reversed durable traversal"));
+                return Flow::Fallthrough;
+            }
+            let Some(target) = self.resolve_traversal_place(iterable) else {
+                return Flow::Fallthrough;
+            };
+            return self.lower_bounded_traversal(binding, target, bound, body, span);
+        }
+        // A range or local collection takes no `at most N` / `on more` clause.
+        if bound.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`at most N` and `on more` apply only to a durable root or branch \
+                 traversal (`for k in ^root at most N`)"
+                    .to_string(),
+            ));
+            return Flow::Fallthrough;
+        }
         if order != marrow_syntax::LoopOrder::Forward {
             self.fail(unsupported(self.file, span, "reversed iteration"));
             return Flow::Fallthrough;
@@ -2237,61 +2285,219 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "a loop step"));
             return Flow::Fallthrough;
         }
-        // A local `List`/`Map` iterable takes the collection path; a `^root` takes the
-        // durable key walk below.
-        if !matches!(iterable, Expression::SavedRoot { .. }) {
-            return self.lower_for_collection(binding, iterable, body, span);
+        self.lower_for_collection(binding, iterable, body, span)
+    }
+
+    /// Whether `iterable` names a durable traversal place syntactically: a bare store
+    /// root `^root` (the root entry family) or `^root(key).branch` (a single-level
+    /// branch family under a fixed root key). The resolver rechecks the store and
+    /// branch names; this only routes the head to the durable path.
+    fn is_traversal_place(iterable: &Expression) -> bool {
+        match iterable {
+            Expression::SavedRoot { .. } => true,
+            Expression::Field { base, .. } => matches!(
+                &**base,
+                Expression::Call { callee, .. }
+                    if matches!(&**callee, Expression::SavedRoot { .. })
+            ),
+            _ => false,
         }
-        let Expression::SavedRoot {
-            name,
-            span: root_span,
-        } = iterable
-        else {
-            unreachable!("iterable is a saved root here");
+    }
+
+    /// Resolve a durable traversal place into the traversed layer's entry site, its
+    /// immediate key type, and the ancestor key-path locating its parent entry (empty
+    /// for a root family, `[root_key]` for a branch family). Reports a precise
+    /// diagnostic and returns `None` on a missing store, a wrong store name, or an
+    /// unknown branch.
+    fn resolve_traversal_place<'e>(
+        &mut self,
+        iterable: &'e Expression,
+    ) -> Option<TraversalTarget<'e>> {
+        match iterable {
+            Expression::SavedRoot { name, span } => {
+                let Some(root) = self.durable.root() else {
+                    let diagnostic =
+                        self.no_executable_root_diagnostic(*span, "iterating without a store");
+                    self.fail(diagnostic);
+                    return None;
+                };
+                let (entry_site, key_ty) = (root.entry_site, root.key);
+                self.check_root_name(root, name, *span)?;
+                Some(TraversalTarget {
+                    entry_site,
+                    key_ty,
+                    ancestor_keys: Vec::new(),
+                    span: *span,
+                })
+            }
+            Expression::Field {
+                base,
+                name: branch_name,
+                name_span: branch_span,
+                span,
+                ..
+            } => {
+                let Expression::Call { callee, args, .. } = &**base else {
+                    return None;
+                };
+                let Expression::SavedRoot {
+                    name,
+                    span: root_span,
+                } = &**callee
+                else {
+                    return None;
+                };
+                let Some(root) = self.durable.root() else {
+                    let diagnostic =
+                        self.no_executable_root_diagnostic(*root_span, "iterating without a store");
+                    self.fail(diagnostic);
+                    return None;
+                };
+                let root_key_ty = root.key;
+                self.check_root_name(root, name, *root_span)?;
+                let root_key = self.single_key_arg(args, *span)?;
+                // The branch's Copy coordinates, read out before the diagnostic borrow.
+                let branch = self
+                    .durable
+                    .root()
+                    .and_then(|root| root.branch(branch_name))
+                    .map(|branch| (branch.entry_site, branch.key));
+                let Some((entry_site, key_ty)) = branch else {
+                    let root_name = self
+                        .durable
+                        .root()
+                        .map(|root| root.name.clone())
+                        .unwrap_or_default();
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *branch_span,
+                        format!("`{root_name}` has no keyed branch `{branch_name}`"),
+                    ));
+                    return None;
+                };
+                Some(TraversalTarget {
+                    entry_site,
+                    key_ty,
+                    ancestor_keys: vec![DurKey {
+                        key: PlaceKey::Expr(root_key),
+                        key_ty: root_key_ty,
+                    }],
+                    span: *span,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Lower a bounded durable traversal `for k in <place> at most N [from f] on more`.
+    /// Freeze the first `N` immediate keys of the traversed layer (after an inclusive
+    /// `from`), run the body once per frozen key in order, then run the `on more` block
+    /// when an `(N+1)`th key existed and every frozen body completed normally.
+    fn lower_bounded_traversal(
+        &mut self,
+        binding: &ForBinding,
+        target: TraversalTarget,
+        bound: Option<&TraversalBound>,
+        body: &Block,
+        span: SourceSpan,
+    ) -> Flow {
+        let Some(bound) = bound else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a durable `for` traversal must be bounded: write `at most N` and an \
+                 `on more` block"
+                    .to_string(),
+            ));
+            return Flow::Fallthrough;
         };
         let [var] = binding.names.as_slice() else {
             self.fail(unsupported(
                 self.file,
                 span,
-                "iterating an entry value (`for k, v`)",
+                "binding an entry value in a bounded traversal (`for k, v`)",
             ));
             return Flow::Fallthrough;
         };
-        let Some(root) = self.durable.root() else {
-            let diagnostic =
-                self.no_executable_root_diagnostic(*root_span, "iterating without a store");
-            self.fail(diagnostic);
+        let Some(on_more) = &bound.on_more else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a bounded traversal requires a trailing `on more` block".to_string(),
+            ));
             return Flow::Fallthrough;
         };
-        if self.check_root_name(root, name, *root_span).is_none() {
+        let Some(limit) = self.traversal_limit(&bound.limit) else {
+            return Flow::Fallthrough;
+        };
+        let key_ty = target.key_ty;
+        // The frozen keys materialize as one `List[K]`; mint (deduplicated) that row.
+        let list_ty = self
+            .records
+            .instantiate_list(self.draft, GArg::Scalar(key_ty));
+
+        // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
+        // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
+        // before any body runs.
+        if self
+            .emit_key_path(&target.ancestor_keys, target.span)
+            .is_none()
+        {
             return Flow::Fallthrough;
         }
-        let (key_ty, entry_site) = (root.key, root.entry_site);
-        let var_name = var.name.clone();
-
-        // cursor := absent
-        let cursor_slot = self.alloc_slot();
+        let has_from = bound.from.is_some();
+        if let Some(from_expr) = &bound.from
+            && self.lower_as(from_expr, LTy::bare_scalar(key_ty)).is_none()
+        {
+            return Flow::Fallthrough;
+        }
         self.push(
-            Instr::VacantLoad(ImageType::opt_scalar(key_ty.image())),
+            Instr::DurIterateBounded {
+                site: target.entry_site,
+                limit,
+                from: has_from,
+                list_ty,
+            },
             span,
         );
-        self.push(Instr::LocalSet(cursor_slot), span);
+        // Bind the on-more bit and the frozen list into fresh slots.
+        let more_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(more_slot), span);
+        let coll_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(coll_slot), span);
+
+        // A positional walk over the frozen list binds `k` per position. `continue`
+        // advances to the loop top; `break`/`return` jumps past the `on more` block.
+        let index_slot = self.alloc_slot();
+        let neg_one = self.draft.intern_int(-1);
+        self.push(Instr::ConstLoad(neg_one.index()), span);
+        self.push(Instr::LocalSet(index_slot), span);
+        let one = self.draft.intern_int(1);
 
         let top = self.here();
-        self.push(Instr::LocalGet(cursor_slot), span);
-        self.push(Instr::DurNextKey(entry_site), span);
-        // Absent next key ends the loop.
-        let to_end = self.push_branch_present(span);
-        // Bind the key and advance the cursor to `Some(k)`.
-        let key_slot = self.alloc_slot();
-        self.push(Instr::LocalSet(key_slot), span);
-        self.push(Instr::LocalGet(key_slot), span);
-        self.push(Instr::SomeWrap, span);
-        self.push(Instr::LocalSet(cursor_slot), span);
+        self.push(Instr::LocalGet(index_slot), span);
+        self.push(Instr::ConstLoad(one.index()), span);
+        self.push(Instr::IntAdd, span);
+        self.push(Instr::LocalSet(index_slot), span);
+        self.push(Instr::LocalGet(index_slot), span);
+        self.push(Instr::LocalGet(coll_slot), span);
+        self.push(Instr::ListLen, span);
+        self.push(Instr::IntLt, span);
+        let exhausted = self.push_jif(span);
 
+        let key_slot = self.alloc_slot();
+        self.push(Instr::LocalGet(coll_slot), span);
+        self.push(Instr::LocalGet(index_slot), span);
+        self.push(Instr::ListGet, span);
+        self.push(Instr::LocalSet(key_slot), span);
         let mark = self.locals.len();
+        // Traversal establishes no presence fact for the body: `k` names a frozen key
+        // whose entry an earlier body iteration may already have erased.
         self.locals.push(Local {
-            name: var_name,
+            name: var.name.clone(),
             ty: LTy::bare_scalar(key_ty),
             mutable: false,
             slot: key_slot,
@@ -2306,10 +2512,61 @@ impl<'a> FnLowerer<'a> {
         }
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
+
+        // Normal exhaustion falls here: run `on more` iff a further key existed.
+        let after_loop = self.here();
+        self.patch(exhausted, after_loop);
+        self.push(Instr::LocalGet(more_slot), span);
+        let skip_on_more = self.push_jif(span);
+        self.lower_block(on_more);
         let end = self.here();
-        self.patch(to_end, end);
+        self.patch(skip_on_more, end);
+        // A body break jumps past the whole loop, skipping the `on more` decision.
         self.patch_all(ctx.break_jumps, end);
         Flow::Fallthrough
+    }
+
+    /// Evaluate an `at most N` bound: a positive compile-time integer literal within
+    /// `MAX_TRAVERSAL_BOUND`. A non-literal, non-positive, or oversized bound is a
+    /// precise diagnostic.
+    fn traversal_limit(&mut self, expr: &Expression) -> Option<u32> {
+        let Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            span,
+        } = expr
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                expr.span(),
+                "`at most` requires a positive integer literal".to_string(),
+            ));
+            return None;
+        };
+        let value = parse_int(text).filter(|value| *value > 0);
+        let Some(value) = value else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                *span,
+                "`at most N` requires a positive integer literal".to_string(),
+            ));
+            return None;
+        };
+        if value as u128 > u128::from(marrow_image::bounds::MAX_TRAVERSAL_BOUND) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                *span,
+                format!(
+                    "`at most N` may not exceed {}",
+                    marrow_image::bounds::MAX_TRAVERSAL_BOUND
+                ),
+            ));
+            return None;
+        }
+        Some(value as u32)
     }
 
     /// Lower `for x in list` / `for k in map` / `for k, v in map`: a forward

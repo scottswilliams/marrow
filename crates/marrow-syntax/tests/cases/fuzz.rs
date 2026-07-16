@@ -40,6 +40,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn each()\n    for id in keys(^books)\n        delete ^books(id)\n",
         "module app\n\nfn clear()\n    var b = Box(id: 1, note: \"x\")\n    b.note = \"y\"\n    unset b.note\n",
         "module app\n\nfn ranged()\n    for i in 10..=1 by -2\n        print($\"{i}\")\n",
+        "module app\n\nfn scan()\n    for k in ^books at most 5\n        print($\"{k}\")\n    on more\n        print(\"more\")\n",
+        "module app\n\nfn scanBranch(lo: int)\n    for p in ^books(lo).notes at most 3 from lo\n        print($\"{p}\")\n    on more\n        print(\"more\")\n",
         "module app\n\nfn loops()\n    while ready\n        break\n",
         "module app\n\nfn label(s: Status)\n    match s\n        active\n            print(\"a\")\n        archived\n            print(\"b\")\n",
         "module app\n\nfn area(s: Shape): int\n    match s\n        dot\n            return 0\n        circle(r)\n            return r\n        rect(w, h)\n            return w\n",

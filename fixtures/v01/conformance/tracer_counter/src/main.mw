@@ -29,6 +29,8 @@ pub fn remove(name: string)
 
 pub fn total(): int
     var sum = 0
-    for k in ^counters
+    for k in ^counters at most 1000
         sum = sum + (^counters(k).value ?? 0)
+    on more
+        return -1
     return sum

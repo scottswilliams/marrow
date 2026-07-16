@@ -797,6 +797,11 @@ pub enum Statement {
         /// written. Only a range iterable accepts a step; the checker rejects a step
         /// on any other iterable. `None` leaves the default step to the checker.
         step: Option<Expression>,
+        /// The bounded durable-traversal clause `at most N [from f]` with its
+        /// mandatory `on more` block, present only when the head carried `at most`.
+        /// The checker requires it for a durable root/branch place and rejects it on a
+        /// range or local-collection iterable.
+        bound: Option<TraversalBound>,
         body: Block,
         span: SourceSpan,
     },
@@ -901,6 +906,24 @@ pub struct ForName {
 pub enum LoopOrder {
     Forward,
     Reversed,
+}
+
+/// The bounded durable-traversal clause of a `for` head: `at most N [from f]`
+/// paired with its `on more` block. `at most N` caps how many immediate keys the
+/// traversal freezes; the optional inclusive `from f` starts the walk at or after a
+/// lower-bound key; the `on more` block runs when a further key existed beyond the
+/// frozen `N` and the frozen bodies all completed normally. The checker enforces that
+/// `N` is a positive compile-time literal within the traversal ceiling, that `on more`
+/// is present, and that the iterable is a durable root or single-level branch place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraversalBound {
+    /// The `at most N` limit expression.
+    pub limit: Expression,
+    /// The inclusive `from f` lower-bound key expression, if written.
+    pub from: Option<Expression>,
+    /// The `on more` block. `None` when `at most` appeared with no trailing `on more`
+    /// block — the checker reports the missing arm.
+    pub on_more: Option<Block>,
 }
 
 impl Statement {

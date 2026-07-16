@@ -53,6 +53,75 @@ fn a_range_for_without_by_has_no_step() {
 }
 
 #[test]
+fn parses_a_bounded_traversal_head_and_on_more_block() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run()\n\
+         \x20   for k in ^books at most 2\n\
+         \x20       print($\"{k}\")\n\
+         \x20   on more\n\
+         \x20       print(\"more\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::For {
+        iterable,
+        step,
+        bound,
+        ..
+    } = &run.body.statements[0]
+    else {
+        panic!("expected for, got {:?}", run.body.statements[0]);
+    };
+    assert_eq!(*step, None);
+    assert!(
+        matches!(iterable, Expression::SavedRoot { .. }),
+        "{iterable:?}"
+    );
+    let bound = bound
+        .as_ref()
+        .expect("a bounded traversal has a bound clause");
+    let Expression::Literal { text, .. } = &bound.limit else {
+        panic!("expected an integer limit literal, got {:?}", bound.limit);
+    };
+    assert_eq!(text, "2");
+    assert_eq!(bound.from, None);
+    assert!(
+        bound.on_more.is_some(),
+        "the `on more` block is captured as the bound's arm"
+    );
+}
+
+#[test]
+fn parses_a_branch_traversal_head_with_from() {
+    let parsed = parse_source(
+        "module app\n\
+         fn run(lo: int)\n\
+         \x20   for p in ^books(lo).notes at most 3 from lo\n\
+         \x20       print($\"{p}\")\n\
+         \x20   on more\n\
+         \x20       print(\"more\")\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let run = parsed.file.function("run").expect("run function");
+    let Statement::For {
+        iterable, bound, ..
+    } = &run.body.statements[0]
+    else {
+        panic!("expected for, got {:?}", run.body.statements[0]);
+    };
+    // The traversed place is a branch field access `^books(lo).notes` (no branch key).
+    assert!(matches!(iterable, Expression::Field { .. }), "{iterable:?}");
+    let bound = bound
+        .as_ref()
+        .expect("a bounded traversal has a bound clause");
+    let Some(Expression::Name { .. }) = &bound.from else {
+        panic!("expected a `from` name expression, got {:?}", bound.from);
+    };
+    assert!(bound.on_more.is_some());
+}
+
+#[test]
 fn parses_if_else_if_else_chain() {
     let parsed = parse_source(
         "module app\n\

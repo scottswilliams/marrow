@@ -11,7 +11,7 @@ use super::tokens::{
 };
 use crate::ast::{
     ArmBinding, Block, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf, Expression,
-    MatchArm, Statement, TypeExpr,
+    MatchArm, Statement, TraversalBound, TypeExpr,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -306,14 +306,32 @@ impl<'a> StmtParser<'a> {
         let body = self.block_body();
 
         match parsed {
-            Some((binding, order, iterable, step)) => Some(Statement::For {
-                binding,
-                order,
-                iterable,
-                step,
-                span: join_spans(keyword.span, body.span),
-                body,
-            }),
+            Some((binding, order, iterable, step, bound_head)) => {
+                let mut end = body.span;
+                let bound = bound_head.map(|(limit, from)| {
+                    // A bounded durable traversal takes a mandatory `on more` block
+                    // dedented like `else`; consume it when present (the checker reports
+                    // a missing arm), extending the statement span over it.
+                    let on_more = self.take_on_more_block();
+                    if let Some(block) = &on_more {
+                        end = block.span;
+                    }
+                    TraversalBound {
+                        limit,
+                        from,
+                        on_more,
+                    }
+                });
+                Some(Statement::For {
+                    binding,
+                    order,
+                    iterable,
+                    step,
+                    bound,
+                    span: join_spans(keyword.span, end),
+                    body,
+                })
+            }
             None => {
                 self.error_span_reason(
                     header_span,
@@ -323,6 +341,24 @@ impl<'a> StmtParser<'a> {
                 None
             }
         }
+    }
+
+    /// Consume a trailing `on more` block dedented like `else`, if present: the
+    /// contextual `on more` header line followed by its indented body. Returns `None`
+    /// when the next tokens are not that phrase, leaving the token stream untouched so
+    /// a following sibling statement parses normally.
+    fn take_on_more_block(&mut self) -> Option<Block> {
+        let is_on = self.tokens.get(self.pos).is_some_and(|token| {
+            token.kind == TokenKind::Identifier && token.text(self.source) == "on"
+        });
+        let is_more = self.tokens.get(self.pos + 1).is_some_and(|token| {
+            token.kind == TokenKind::Identifier && token.text(self.source) == "more"
+        });
+        if !(is_on && is_more) {
+            return None;
+        }
+        self.consume_header_line(); // `on more`
+        Some(self.block_body())
     }
 
     /// Parse a statement that begins with `try`. Prefix `try <expr>` is a value

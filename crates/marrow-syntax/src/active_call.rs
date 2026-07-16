@@ -578,9 +578,15 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
                 collect_block_type_refs(block, type_refs);
             }
         }
-        Statement::While { body, .. }
-        | Statement::For { body, .. }
-        | Statement::Transaction { body, .. } => collect_block_type_refs(body, type_refs),
+        Statement::While { body, .. } | Statement::Transaction { body, .. } => {
+            collect_block_type_refs(body, type_refs)
+        }
+        Statement::For { body, bound, .. } => {
+            collect_block_type_refs(body, type_refs);
+            if let Some(on_more) = bound.as_ref().and_then(|bound| bound.on_more.as_ref()) {
+                collect_block_type_refs(on_more, type_refs);
+            }
+        }
         Statement::Match { arms, .. } => {
             for arm in arms {
                 collect_block_type_refs(&arm.block, type_refs);

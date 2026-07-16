@@ -493,18 +493,28 @@ pub(super) fn parse_if_const_head(
     Some((name, ty, value))
 }
 
-/// Parse a `for` header `binding in [reversed] iterable [by step]` into the loop
-/// binding, traversal order, the iterable expression, and the optional range step.
-/// Returns `None` if the `in` keyword or binding is malformed, or if `reversed`
-/// stands in the head slot with no iterable after it. `reversed` is a reserved
-/// head-slot keyword: an identifier spelling `reversed` immediately after `in` is
-/// always the order keyword, never the iterable. `by` is a contextual keyword: it
-/// splits the header only as a bare top-level word, so a name `by` elsewhere is
-/// unaffected.
+/// Parse a `for` header `binding in [reversed] iterable [by step]` or the bounded
+/// durable-traversal head `binding in place at most N [from f]` into the loop binding,
+/// traversal order, the iterable expression, the optional range step, and the optional
+/// bound clause `(limit, from?)`. Returns `None` if the `in` keyword or binding is
+/// malformed, or if `reversed` stands in the head slot with no iterable after it.
+/// `reversed` is a reserved head-slot keyword: an identifier spelling `reversed`
+/// immediately after `in` is always the order keyword, never the iterable. `by`, `at
+/// most`, and `from` are contextual: each splits the header only as a bare top-level
+/// phrase, so a name spelling one of them elsewhere is unaffected. The `at most` bound
+/// and the range `by` step are mutually exclusive spellings; `from` is a bound clause
+/// keyword only after `at most N`.
+#[allow(clippy::type_complexity)]
 pub(super) fn parse_for_header(
     source: &str,
     header: &[Token],
-) -> Option<(ForBinding, LoopOrder, Expression, Option<Expression>)> {
+) -> Option<(
+    ForBinding,
+    LoopOrder,
+    Expression,
+    Option<Expression>,
+    Option<(Expression, Option<Expression>)>,
+)> {
     let in_index = find_top_level(header, TokenKind::Keyword(Keyword::In))?;
     let binding = parse_for_binding(source, &header[..in_index])?;
     let after_in = &header[in_index + 1..];
@@ -512,9 +522,24 @@ pub(super) fn parse_for_header(
         Some(token) if is_reversed_keyword(source, token) => (LoopOrder::Reversed, &after_in[1..]),
         _ => (LoopOrder::Forward, after_in),
     };
+    // A bounded durable traversal `<place> at most N [from f]` splits at the `at most`
+    // marker; a `from` after it separates the limit from the inclusive lower bound.
+    if let Some(at_index) = find_top_level_at_most(source, rest) {
+        let iterable = expr_of_in_header(source, &rest[..at_index])?;
+        let after_most = &rest[at_index + 2..];
+        let (limit_tokens, from) = match find_top_level_word(source, after_most, "from") {
+            Some(from_index) => {
+                let from = expr_of_in_header(source, &after_most[from_index + 1..])?;
+                (&after_most[..from_index], Some(from))
+            }
+            None => (after_most, None),
+        };
+        let limit = expr_of_in_header(source, limit_tokens)?;
+        return Some((binding, order, iterable, None, Some((limit, from))));
+    }
     // A bare `reversed` in the head slot has no iterable to walk; the empty rest
     // fails `expr_of_in_header` below, which the caller reports as a for-header error.
-    let (iterable_tokens, step) = match find_top_level_by(source, rest) {
+    let (iterable_tokens, step) = match find_top_level_word(source, rest, "by") {
         Some(by_index) => {
             let step = expr_of_in_header(source, &rest[by_index + 1..])?;
             (&rest[..by_index], Some(step))
@@ -522,7 +547,7 @@ pub(super) fn parse_for_header(
         None => (rest, None),
     };
     let iterable = expr_of_in_header(source, iterable_tokens)?;
-    Some((binding, order, iterable, step))
+    Some((binding, order, iterable, step, None))
 }
 
 /// Whether `token` is the head-slot `reversed` keyword: an ordinary identifier
@@ -532,17 +557,42 @@ fn is_reversed_keyword(source: &str, token: &Token) -> bool {
     token.kind == TokenKind::Identifier && token.text(source) == "reversed"
 }
 
-/// Index of a top-level contextual `by` in a range-for header. `by` is a plain
-/// identifier, not a reserved word, so it splits the header only when it stands at
-/// bracket depth 0 — never inside a call's arguments or a name `by` used as a value.
-fn find_top_level_by(source: &str, tokens: &[Token]) -> Option<usize> {
+/// Index of a top-level contextual `word` in a for header. The clause words (`by`,
+/// `from`) are plain identifiers, not reserved words, so each splits the header only
+/// when it stands at bracket depth 0 — never inside a call's arguments or a name used
+/// as a value.
+fn find_top_level_word(source: &str, tokens: &[Token], word: &str) -> Option<usize> {
     let mut depth = 0usize;
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {
             TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
             TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
-            TokenKind::Identifier if depth == 0 && token.text(source) == "by" => {
+            TokenKind::Identifier if depth == 0 && token.text(source) == word => {
                 return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Index of the top-level `at` that opens an `at most` bound marker: an `at`
+/// identifier at bracket depth 0 immediately followed by a `most` identifier. Both are
+/// contextual, so an `at` or `most` used elsewhere as a name (or an `at` not followed
+/// by `most`) is unaffected.
+fn find_top_level_at_most(source: &str, tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::Identifier if depth == 0 && token.text(source) == "at" => {
+                let most = tokens.get(index + 1).is_some_and(|next| {
+                    next.kind == TokenKind::Identifier && next.text(source) == "most"
+                });
+                if most {
+                    return Some(index);
+                }
             }
             _ => {}
         }

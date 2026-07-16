@@ -172,11 +172,17 @@ fn stmt_has_error(stmt: &Statement) -> bool {
         Statement::For {
             iterable,
             step,
+            bound,
             body,
             ..
         } => {
             expr_has_error(iterable)
                 || step.as_ref().is_some_and(expr_has_error)
+                || bound.as_ref().is_some_and(|bound| {
+                    expr_has_error(&bound.limit)
+                        || bound.from.as_ref().is_some_and(expr_has_error)
+                        || bound.on_more.as_ref().is_some_and(block_has_error)
+                })
                 || block_has_error(body)
         }
         Statement::Transaction { body, .. } => block_has_error(body),

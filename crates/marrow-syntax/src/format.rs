@@ -11,8 +11,8 @@ use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
     ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
     ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl,
-    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind, TypeExpr,
-    UnaryOp, encode_string_literal,
+    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind,
+    TraversalBound, TypeExpr, UnaryOp, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -1133,6 +1133,7 @@ fn format_statement_with_comments(
             order,
             iterable,
             step,
+            bound,
             body,
             span,
         } => {
@@ -1142,7 +1143,15 @@ fn format_statement_with_comments(
                 start_byte: span.start_byte,
                 level,
             };
-            return format_for(ctx, binding, *order, iterable, step.as_ref(), body);
+            return format_for(
+                ctx,
+                binding,
+                *order,
+                iterable,
+                step.as_ref(),
+                bound.as_ref(),
+                body,
+            );
         }
         Statement::Transaction { body, span } => {
             let ctx = StatementFormatContext {
@@ -1316,6 +1325,7 @@ fn format_for(
     order: LoopOrder,
     iterable: &Expression,
     step: Option<&Expression>,
+    bound: Option<&TraversalBound>,
     body: &Block,
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
@@ -1333,11 +1343,47 @@ fn format_for(
         Some(step) => format!(" by {}", format_expression_at(step, ctx.level)),
         None => String::new(),
     };
+    // A bounded durable traversal renders `at most N [from f]` in place of a range
+    // step (the two are mutually exclusive), and its `on more` block dedents like an
+    // `else`.
+    let bound_head = match bound {
+        Some(bound) => {
+            let from = match &bound.from {
+                Some(from) => format!(" from {}", format_expression_at(from, ctx.level)),
+                None => String::new(),
+            };
+            format!(
+                " at most {}{from}",
+                format_expression_at(&bound.limit, ctx.level)
+            )
+        }
+        None => String::new(),
+    };
     let header = format!(
-        "{pad}for {binding} in {order}{}{step}",
+        "{pad}for {binding} in {order}{}{step}{bound_head}",
         format_expression_at(iterable, ctx.level)
     );
-    format_header_block(ctx, header, body)
+    let Some(TraversalBound {
+        on_more: Some(on_more),
+        ..
+    }) = bound
+    else {
+        return format_header_block(ctx, header, body);
+    };
+    let mut out = header;
+    append_trailing_comment_between(&mut out, ctx.comments, ctx.start_byte, body.span.start_byte);
+    append_body_block(&mut out, &format_block(ctx.source, body, ctx.level + 1));
+    let mut on_header = format!("{pad}on more");
+    append_trailing_comment_between(
+        &mut on_header,
+        ctx.comments,
+        body.span.end_byte,
+        on_more.span.start_byte,
+    );
+    out.push('\n');
+    out.push_str(&on_header);
+    append_body_block(&mut out, &format_block(ctx.source, on_more, ctx.level + 1));
+    out
 }
 
 fn format_match(
