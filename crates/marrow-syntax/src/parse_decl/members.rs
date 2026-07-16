@@ -2,7 +2,7 @@
 //! framing and the per-member parsing for fields, groups, indexes, and enum
 //! members.
 
-use super::body::{BodyLine, DocComments, StrayBlock};
+use super::body::BodyLine;
 use super::head::{enum_member_name, parse_field_or_group_tokens, parse_index_tokens};
 use super::{DeclParser, MemberHead, ParseError};
 use crate::ast::{Comment, EnumMember, FieldDecl, GroupDecl, IndexDecl, ResourceMember};
@@ -34,12 +34,12 @@ impl<'a> DeclParser<'a> {
         let mut docs: Vec<Token> = Vec::new();
         self.advance(); // INDENT
 
-        let stray = StrayBlock::AtContent(ParseError::new(
+        let stray = ParseError::new(
             ParseDiagnosticReason::UnexpectedIndentation,
             "unexpected indentation in resource body; only groups introduce nested resource members",
-        ));
+        );
         while self.peek().is_some() {
-            match self.next_body_line(DocComments::AttachToItem(&mut docs), &mut comments, &stray) {
+            match self.next_body_line(&mut docs, &mut comments, &stray) {
                 BodyLine::End => break,
                 BodyLine::Trivia => continue,
                 BodyLine::Item => {
@@ -171,12 +171,12 @@ impl<'a> DeclParser<'a> {
 
         // A stray indent here opens before any member header to nest under; a
         // member's own nested block is consumed right after its header, below.
-        let stray = StrayBlock::AtContent(ParseError::new(
+        let stray = ParseError::new(
             ParseDiagnosticReason::EnumMemberMustBeBareName,
             "an enum member has no nested body",
-        ));
+        );
         while self.peek().is_some() {
-            match self.next_body_line(DocComments::AttachToItem(&mut docs), &mut comments, &stray) {
+            match self.next_body_line(&mut docs, &mut comments, &stray) {
                 BodyLine::End => break,
                 BodyLine::Trivia => continue,
                 BodyLine::Item => {

@@ -213,7 +213,7 @@ The function syntax does not divide calls into separate function and procedure
 categories. A function body may read or write durable places, throw, print, or
 call a host-provided standard-library function. The checker records those
 effects for contexts that restrict them, including transaction bodies,
-evolution transforms, presence narrowing, and address expressions.
+presence narrowing, and address expressions.
 
 An optional-producing user call is still a valid subject for `if const` or
 `??`. Effect restrictions are applied where the expression is used; optionality

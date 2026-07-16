@@ -36,7 +36,7 @@ these reserved or contextual words:
 
 ```text
 module use pub const var fn return resource required store index unique
-enum category match is evolve rename default retire transform
+enum category match is
 if else while for in reversed by at most from on more
 break continue transaction try catch throw delete
 and or not true false absent
@@ -84,12 +84,11 @@ resource Name
 store ^name: Resource
 store ^name(keys): Resource
 [pub] enum Name
-evolve ...
 ```
 
 See [Modules and functions](modules-and-functions.md),
-[Resources](resources.md), [Durable places](durable-places.md), and
-[Evolution](evolution.md) for their semantic rules.
+[Resources](resources.md), and [Durable places](durable-places.md) for their
+semantic rules.
 
 ## Bindings And Assignment
 

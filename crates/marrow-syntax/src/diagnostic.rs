@@ -107,13 +107,9 @@ pub enum ExpectedSyntax {
     ConstName,
     ConstType,
     Declaration,
-    DefaultValue,
     EnumBody,
     EnumHeader,
     EnumName,
-    EvolveBody,
-    EvolveStep,
-    EvolveTargetPath,
     Expression,
     FieldType,
     FunctionBody,
@@ -149,7 +145,6 @@ pub enum ExpectedSyntax {
     StoreResourceName,
     TestBody,
     TestName,
-    TransformBody,
     VariableName,
 }
 

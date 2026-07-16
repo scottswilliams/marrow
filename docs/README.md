@@ -25,7 +25,6 @@ It is organized for lookup rather than sequential reading:
 - [Traversal and indexes](language/traversal-and-indexes.md)
 - [Control flow](language/control-flow.md)
 - [Errors and transactions](language/errors-and-transactions.md)
-- [Evolution declarations](language/evolution.md)
 - [Builtins](language/builtins.md) and the
   [standard library](language/standard-library.md)
 - [Execution limits](language/execution-limits.md) and the

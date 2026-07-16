@@ -87,7 +87,6 @@ pub enum Declaration {
     Store(StoreDecl),
     Function(FunctionDecl),
     Enum(EnumDecl),
-    Evolve(EvolveDecl),
     Test(TestDecl),
 }
 
@@ -144,59 +143,6 @@ pub struct TestDecl {
     pub name_span: SourceSpan,
     pub body: Block,
     pub span: SourceSpan,
-}
-
-/// An `evolve` block: the source's explicit intent for durable entities. A bare
-/// source diff implies no intent, so identity-preserving and destructive changes
-/// are stated here rather than inferred from edits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvolveDecl {
-    pub steps: Vec<EvolveStep>,
-    pub comments: Vec<Comment>,
-    pub span: SourceSpan,
-}
-
-/// One evolution intent. Each step's target is a path expression naming a durable
-/// entity, written in the same source forms the language already uses for such
-/// references (`Book.title`, `^books`, `^books.byTitle`, `Status::archived`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EvolveStep {
-    /// `from` and `to` name the same durable entity, so stable identity and
-    /// stored data carry over the rename.
-    Rename {
-        from: Expression,
-        to: Expression,
-        span: SourceSpan,
-    },
-    /// `value` backfills existing records that lack `target`.
-    Default {
-        target: Expression,
-        value: Expression,
-        span: SourceSpan,
-    },
-    /// Destructive intent to remove the entity and its stored data.
-    Retire {
-        target: Expression,
-        span: SourceSpan,
-    },
-    /// `transform <target> NEWLINE INDENT statement+ DEDENT`: a checked transform
-    /// computing the new shape of `target` from the old.
-    Transform {
-        target: Expression,
-        body: Block,
-        span: SourceSpan,
-    },
-}
-
-impl EvolveStep {
-    pub fn span(&self) -> SourceSpan {
-        match self {
-            Self::Rename { span, .. }
-            | Self::Default { span, .. }
-            | Self::Retire { span, .. }
-            | Self::Transform { span, .. } => *span,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

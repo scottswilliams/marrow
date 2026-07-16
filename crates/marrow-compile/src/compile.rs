@@ -487,12 +487,6 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 | Declaration::Enum(_)
                 | Declaration::Store(_)
                 | Declaration::Test(_) => {}
-                other => diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckUnsupported.as_str(),
-                    &module.file,
-                    declaration_span(other),
-                    "this declaration is not yet supported on the beta line".to_string(),
-                )),
             }
         }
     }
@@ -710,21 +704,6 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
         }
     }
     false
-}
-
-fn declaration_span(declaration: &Declaration) -> SourceSpan {
-    match declaration {
-        Declaration::Alias(decl) => decl.span,
-        Declaration::Nominal(decl) => decl.span,
-        Declaration::Const(decl) => decl.span,
-        Declaration::Resource(decl) => decl.span,
-        Declaration::Struct(decl) => decl.span,
-        Declaration::Store(decl) => decl.span,
-        Declaration::Function(decl) => decl.span,
-        Declaration::Enum(decl) => decl.span,
-        Declaration::Evolve(decl) => decl.span,
-        Declaration::Test(decl) => decl.span,
-    }
 }
 
 /// Whether an export declaration path is valid to mint an [`ExportId`] over:

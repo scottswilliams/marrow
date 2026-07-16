@@ -58,7 +58,6 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nstruct Pair[A, B]\n    first: A\n    second: B\n\nfn firstOf[A, B](p: Pair[A, B]): A\n    return p.first\n",
         "module app\n\nenum Box[T]\n    empty\n    full(value: T)\n\npub enum Sorted[T supports order]\n    blank\n    span(lo: T, hi: T)\n",
         "module app\n\nstruct Wrapper[T]\n    value: T\n\nfn wrap[T](x: T): Wrapper[T]\n    return Wrapper(value: x)\n",
-        "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    default Book.author = \"unknown\"\n    retire ^books.byTitle\n    transform Book.shelf\n        return ^books(1).shelf\n",
         "module app\n\nfn compound()\n    var total: int = 0\n    total += 1\n    total *= 2\n",
         "module app\n\nfn strings()\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n",
         "module app\n\nfn guard(a: int, b: int): int\n    const q: int = checked a / b\n        on out_of_range\n            return 0\n        on zero_divisor\n            return 0\n    return q\n",

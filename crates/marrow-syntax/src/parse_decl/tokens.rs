@@ -170,15 +170,6 @@ fn find_at_top_level(
     }
     None
 }
-/// Index of the leading `-` of a top-level `->` arrow (the `-` `>` token pair the
-/// lexer emits). The arrow separates an evolve rename's two paths; restricting to
-/// depth 0 keeps an arrow inside a parenthesized key from splitting the rename.
-pub(super) fn find_arrow(tokens: &[Token]) -> Option<usize> {
-    find_at_top_level(tokens, |index, tokens| {
-        tokens[index].kind == TokenKind::Minus
-            && tokens.get(index + 1).map(|token| token.kind) == Some(TokenKind::Greater)
-    })
-}
 /// Index of the first occurrence of `kind` at parenthesis/bracket depth 0.
 pub(super) fn find_top_level(tokens: &[Token], kind: TokenKind) -> Option<usize> {
     find_at_top_level(tokens, |index, tokens| tokens[index].kind == kind)

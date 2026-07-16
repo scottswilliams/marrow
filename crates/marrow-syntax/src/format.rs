@@ -9,10 +9,10 @@
 
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression,
-    ForBinding, FunctionDecl, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl,
-    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind,
-    TraversalBound, TypeExpr, UnaryOp, encode_string_literal,
+    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding, FunctionDecl,
+    InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl, ParamDecl, ResourceDecl,
+    ResourceMember, Statement, StoreDecl, StructDecl, TokenKind, TraversalBound, TypeExpr, UnaryOp,
+    encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -163,7 +163,6 @@ fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingComme
             TrailingCommentLine::Line(format_function_header_last_line(decl))
         }
         Declaration::Enum(decl) => TrailingCommentLine::Line(decl.docs.len()),
-        Declaration::Evolve(_) => TrailingCommentLine::Line(0),
         Declaration::Test(decl) => TrailingCommentLine::Line(decl.docs.len()),
     }
 }
@@ -179,10 +178,6 @@ fn format_function_header_last_line(decl: &FunctionDecl) -> usize {
         0
     };
     decl.docs.len() + param_lines
-}
-
-fn line_count(text: &str) -> usize {
-    text.bytes().filter(|byte| *byte == b'\n').count() + 1
 }
 
 fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str {
@@ -212,7 +207,6 @@ fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
         Declaration::Store(decl) => decl.docs.len(),
         Declaration::Function(decl) => decl.docs.len(),
         Declaration::Enum(decl) => decl.docs.len(),
-        Declaration::Evolve(_) => 0,
         Declaration::Test(decl) => decl.docs.len(),
     };
     docs as u32
@@ -250,7 +244,6 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
         Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
-        Declaration::Evolve(decl) => decl.span,
         Declaration::Test(decl) => decl.span,
     }
 }
@@ -268,65 +261,7 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Store(decl) => format_store(source, decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(source, decl),
-        Declaration::Evolve(decl) => format_evolve(source, decl),
         Declaration::Test(decl) => format_test(source, decl),
-    }
-}
-
-fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
-    let mut out = String::from("evolve");
-    let body = format_body_lines(
-        source,
-        &decl.comments,
-        decl.steps.iter().map(|step| {
-            let text = format_evolve_step(source, step);
-            FormattedBodyLine {
-                span: step.span(),
-                trailing_comment_line: evolve_step_trailing_comment_line(step),
-                text,
-            }
-        }),
-    );
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(&body);
-    }
-    out
-}
-
-fn format_evolve_step(source: &str, step: &EvolveStep) -> String {
-    let step_pad = INDENT;
-    match step {
-        EvolveStep::Rename { from, to, .. } => format!(
-            "{step_pad}rename {} -> {}",
-            format_expression_at(from, 1),
-            format_expression_at(to, 1)
-        ),
-        EvolveStep::Default { target, value, .. } => format!(
-            "{step_pad}default {} = {}",
-            format_expression_at(target, 1),
-            format_expression_at(value, 1)
-        ),
-        EvolveStep::Retire { target, .. } => {
-            format!("{step_pad}retire {}", format_expression_at(target, 1))
-        }
-        EvolveStep::Transform { target, body, .. } => {
-            let mut out = format!("{step_pad}transform {}", format_expression_at(target, 1));
-            append_body_block(&mut out, &format_block(source, body, 2));
-            out
-        }
-    }
-}
-
-fn evolve_step_trailing_comment_line(step: &EvolveStep) -> TrailingCommentLine {
-    match step {
-        EvolveStep::Transform { target, .. } => {
-            let header = format!("{INDENT}transform {}", format_expression_at(target, 1));
-            TrailingCommentLine::Line(line_count(&header).saturating_sub(1))
-        }
-        EvolveStep::Rename { .. } | EvolveStep::Default { .. } | EvolveStep::Retire { .. } => {
-            TrailingCommentLine::Last
-        }
     }
 }
 

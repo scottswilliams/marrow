@@ -1,8 +1,8 @@
 use crate::{
-    Block, CheckedBind, ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep,
-    ExpectedSyntax, KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource,
-    ResourceMember, SourceSpan, Statement, Token, TokenKind, TypeExpr,
-    is_expression_callable_keyword, is_expression_path_segment_keyword, token::is_trivia,
+    Block, CheckedBind, ConstDecl, Declaration, DiagnosticReason, EnumMember, ExpectedSyntax,
+    KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember,
+    SourceSpan, Statement, Token, TokenKind, TypeExpr, is_expression_callable_keyword,
+    is_expression_path_segment_keyword, token::is_trivia,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -469,12 +469,6 @@ fn collect_declaration_suppression(
                 collect_enum_member_suppression(member, type_refs, declarations);
             }
         }
-        Declaration::Evolve(evolve) => {
-            declarations.push(evolve.span);
-            for step in &evolve.steps {
-                collect_evolve_step_suppression(step, type_refs, declarations);
-            }
-        }
         Declaration::Test(test) => {
             declarations.push(test.span);
             collect_block_type_refs(&test.body, type_refs);
@@ -513,25 +507,6 @@ fn collect_enum_member_suppression(
     }
     for member in &member.members {
         collect_enum_member_suppression(member, type_refs, declarations);
-    }
-}
-
-fn collect_evolve_step_suppression(
-    step: &EvolveStep,
-    type_refs: &mut ByteRanges,
-    declarations: &mut ByteRanges,
-) {
-    match step {
-        EvolveStep::Rename { from, to, .. } => {
-            declarations.push(from.span());
-            declarations.push(to.span());
-        }
-        EvolveStep::Default { target, .. }
-        | EvolveStep::Retire { target, .. }
-        | EvolveStep::Transform { target, .. } => declarations.push(target.span()),
-    }
-    if let EvolveStep::Transform { body, .. } = step {
-        collect_block_type_refs(body, type_refs);
     }
 }
 
@@ -645,8 +620,6 @@ fn diagnostic_suppresses_callable(diagnostic: &crate::Diagnostic) -> bool {
                     | ExpectedSyntax::EnumBody
                     | ExpectedSyntax::EnumHeader
                     | ExpectedSyntax::EnumName
-                    | ExpectedSyntax::EvolveStep
-                    | ExpectedSyntax::EvolveTargetPath
                     | ExpectedSyntax::FieldType
                     | ExpectedSyntax::FunctionBody
                     | ExpectedSyntax::FunctionHeader
@@ -670,8 +643,7 @@ fn diagnostic_suppresses_callable(diagnostic: &crate::Diagnostic) -> bool {
                     | ExpectedSyntax::ResourceMemberSyntax
                     | ExpectedSyntax::ResourceName
                     | ExpectedSyntax::StoreResourceName
-                    | ExpectedSyntax::StoreRoot
-                    | ExpectedSyntax::TransformBody,
+                    | ExpectedSyntax::StoreRoot,
             ))
     )
 }
@@ -886,7 +858,6 @@ fn declaration_header_span_contains(
         Declaration::Store(decl) => span_contains(decl.span, byte),
         Declaration::Function(decl) => span_contains(decl.span, byte),
         Declaration::Enum(decl) => span_contains(decl.span, byte),
-        Declaration::Evolve(decl) => span_contains(decl.span, byte),
         Declaration::Test(decl) => span_contains(decl.span, byte),
     }
 }
@@ -944,10 +915,6 @@ fn declaration_member_span_contains(parsed: &ParsedSource, byte: usize) -> bool 
                 .members
                 .iter()
                 .any(|member| enum_member_span_contains(member, byte)),
-            Declaration::Evolve(evolve) => evolve
-                .steps
-                .iter()
-                .any(|step| evolve_step_target_span_contains(step, byte)),
             _ => false,
         })
 }
@@ -969,17 +936,6 @@ fn enum_member_span_contains(member: &EnumMember, byte: usize) -> bool {
             .members
             .iter()
             .any(|member| enum_member_span_contains(member, byte))
-}
-
-fn evolve_step_target_span_contains(step: &EvolveStep, byte: usize) -> bool {
-    match step {
-        EvolveStep::Rename { from, to, .. } => {
-            span_contains(from.span(), byte) || span_contains(to.span(), byte)
-        }
-        EvolveStep::Default { target, .. }
-        | EvolveStep::Retire { target, .. }
-        | EvolveStep::Transform { target, .. } => span_contains(target.span(), byte),
-    }
 }
 
 fn declaration_syntax_diagnostic_contains(parsed: &ParsedSource, byte: usize) -> bool {

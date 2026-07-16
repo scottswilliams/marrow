@@ -5,15 +5,14 @@
 //!
 //! The module is split by concern: `decl` drives top-level dispatch and the
 //! declaration bodies, `cursor` is the shared `DeclParser` navigation and error
-//! surface, `members` and `evolve` carry the resource/enum and evolution bodies,
-//! `head` and `params` parse the token-level declaration heads, `stmt` is the
+//! surface, `members` carries the resource/enum bodies, `head` and `params`
+//! parse the token-level declaration heads, `stmt` is the
 //! statement parser, `statement_lines` parses single statement lines, and
 //! `tokens` holds the low-level token-slice helpers shared across all of them.
 
 mod body;
 mod cursor;
 mod decl;
-mod evolve;
 mod head;
 mod members;
 mod params;

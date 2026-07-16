@@ -62,8 +62,7 @@ top_level_decl  = {doc_comment},
                  | struct_decl
                  | store_decl
                  | enum_decl
-                 | function_decl
-                 | evolve_decl) ;
+                 | function_decl) ;
 
 alias_decl      = "alias", identifier, "=", type, NEWLINE ;
 
@@ -163,25 +162,6 @@ the same `key_params` shape as a keyed local declaration. An optional
 `type_params` list declares rank-1 generic type parameters, each usable as a type
 in the body and optionally carrying one closed `supports equality`/`supports
 order` constraint; see [functions](modules-and-functions.md#generic-functions).
-
-## Evolution
-
-```ebnf
-evolve_decl     = "evolve", NEWLINE,
-                  INDENT, evolve_step+, DEDENT ;
-
-evolve_step     = "rename", evolve_target, "->",
-                            evolve_target, NEWLINE
-                | "default", evolve_target, "=",
-                             expression, NEWLINE
-                | "retire", evolve_target, NEWLINE
-                | "transform", evolve_target, NEWLINE, block ;
-
-evolve_target   = saved_path | qualified_name | local_path ;
-```
-
-`rename`, `default`, `retire`, and `transform` are contextual within an
-`evolve` block.
 
 ## Types
 

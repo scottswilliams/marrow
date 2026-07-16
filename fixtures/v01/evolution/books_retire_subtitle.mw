@@ -1,8 +1,0 @@
-module books
-resource Book
-    required title: string
-store ^books(id: int): Book
-evolve
-    retire Book.subtitle
-pub fn add(title: string): Id(^books)
-    return nextId(^books)

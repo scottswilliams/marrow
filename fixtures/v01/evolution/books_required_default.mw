@@ -1,9 +1,0 @@
-module books
-resource Book
-    required title: string
-    required pages: int
-store ^books(id: int): Book
-evolve
-    default Book.pages = 0
-pub fn add(title: string): Id(^books)
-    return nextId(^books)

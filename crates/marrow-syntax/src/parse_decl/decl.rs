@@ -17,6 +17,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::literal::decode_string_literal;
+use crate::parse_expr::{ExprParser, ParseComplete};
 use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword, tokens_in_range};
 
 /// Recursive-descent parser for top-level declarations over the file-wide token
@@ -145,15 +146,6 @@ impl<'a> DeclParser<'a> {
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let store = self.parse_store(decl_docs);
                 file.declarations.push(Declaration::Store(store));
-                file.comments.extend(trailing_comment);
-            }
-            // `evolve` needs no trailing-space gate: its header is the bare
-            // keyword, with the steps in the indented block below.
-            Some(TokenKind::Keyword(Keyword::Evolve)) => {
-                self.flush_docs_as_comments(docs, &mut file.comments);
-                let trailing_comment = self.peek_header_trailing_comment();
-                let evolve = self.parse_evolve();
-                file.declarations.push(Declaration::Evolve(evolve));
                 file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Test)) if self.keyword_introduces_decl() => {
@@ -929,6 +921,30 @@ impl<'a> DeclParser<'a> {
     /// reported by the caller, so only a present-but-malformed value raises a
     /// diagnostic here (a type spelling such as `int` in value position lands
     /// here, where it is a syntax error rather than a silent acceptance).
+    /// Parse `tokens` as one complete expression. A failure the expression parser
+    /// reports at its own token yields `None` directly; a complete expression
+    /// followed by trailing tokens is reported once against `err` with
+    /// `reason`/`message`, the caller's own account of the failure.
+    pub(super) fn parse_expr_with_fallback(
+        &mut self,
+        tokens: &[Token],
+        err: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: &'static str,
+    ) -> Option<Expression> {
+        let gap = tokens
+            .first()
+            .map_or_else(SourceSpan::default, |token| token.span);
+        match ExprParser::new(self.source, tokens, gap).parse_complete(&mut self.diagnostics) {
+            ParseComplete::Complete(expr) => Some(expr),
+            ParseComplete::Reported => None,
+            ParseComplete::Incomplete(_) => {
+                self.error_span(err, reason, message);
+                None
+            }
+        }
+    }
+
     fn value_expression(&mut self, tokens: &[Token]) -> Option<Expression> {
         if tokens.is_empty() {
             return None;

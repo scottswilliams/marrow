@@ -1,7 +1,7 @@
 # Marrow Language Reference
 
 This directory describes the Marrow language implemented by the current parser,
-checker, and tree-walking runtime. A Marrow program combines ordinary local
+checker, compiler, and stack virtual machine. A Marrow program combines ordinary local
 values with typed durable places. The `^` prefix distinguishes a durable place
 from a local value; reading, assigning, deleting, and traversing either form use
 the same expression and statement vocabulary.
@@ -24,8 +24,7 @@ resource Task
 
 store ^tasks(id: int): Task
 
-pub fn add(title: string): Id(^tasks)
-    const id = nextId(^tasks)
+pub fn add(id: Id(^tasks), title: string): Id(^tasks)
     ^tasks(id).title = title
     return id
 
@@ -39,9 +38,9 @@ pub fn complete(id: Id(^tasks)): bool
 
 `Task.title` is required. Creating an entry by field assignment therefore
 requires `title` to be present at the end of the current write or outer
-transaction. `done` is sparse: it is absent until assigned. `nextId(^tasks)`
-returns the next integer identity suggested by current stored keys; it does not
-reserve that identity.
+transaction. `done` is sparse: it is absent until assigned. `add` takes the
+entry identity as an `Id(^tasks)` parameter: the caller supplies the identity
+rather than the store minting one.
 
 ## Reading The Reference
 
@@ -65,8 +64,6 @@ The pages are arranged from source text to durable behavior:
   catchable faults, commit, and rollback.
 - [Tests](tests.md) defines the `test` declaration and the owned `assert`
   statement that `marrow test` runs.
-- [Evolution](evolution.md) defines source declarations for compatible changes
-  to populated durable data.
 - [Built-ins](builtins.md) and the
   [standard library](standard-library.md) list callable operations.
 - [Execution limits](execution-limits.md) records fixed runtime and parser
@@ -101,8 +98,9 @@ The pages are arranged from source text to durable behavior:
 
 ## Observable Execution Model
 
-The checker resolves names and types before evaluation. The current runtime then
-interprets the checked program. Expressions evaluate from left to right, with
+The checker resolves names and types and the compiler lowers the program to a
+verified image; the current stack virtual machine then executes it. Expressions
+evaluate from left to right, with
 short-circuit behavior for `and`, `or`, and `??`. Durable reads inside a
 transaction observe staged changes from that transaction.
 

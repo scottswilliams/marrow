@@ -555,11 +555,41 @@ fn normalize(title: string): string
             Declaration::Store(decl) => decl.root.root.as_str(),
             Declaration::Function(decl) => decl.name.as_str(),
             Declaration::Enum(decl) => decl.name.as_str(),
-            Declaration::Evolve(_) => "evolve",
             Declaration::Test(decl) => decl.name.as_str(),
         })
         .collect::<Vec<_>>();
     assert_eq!(names, ["Title", "MaxLoans", "Book", "books", "normalize"]);
+}
+
+/// `evolve` was the prototype's in-source schema-change declaration. That
+/// surface is removed on the beta line: the word is an ordinary identifier and
+/// carries no dedicated grammar, so a top-level `evolve` block is rejected as an
+/// unknown declaration rather than parsed into a node. This is the EVX01
+/// enforcement artifact — it fails while any `EvolveDecl` grammar is
+/// representable, because that grammar parses the block cleanly.
+#[test]
+fn evolve_is_not_a_representable_declaration() {
+    let parsed = parse_source(
+        "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    retire ^books.byTitle\n",
+    );
+
+    assert!(
+        parsed.has_errors(),
+        "a top-level `evolve` block must be rejected, not parsed: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        common::has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration)),
+        ),
+        "`evolve` must fail as an unknown declaration: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed.file.declarations.is_empty(),
+        "the rejected `evolve` block must not yield any declaration node"
+    );
 }
 
 #[test]

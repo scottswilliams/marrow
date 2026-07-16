@@ -1,8 +1,0 @@
-module books
-resource Book
-    required pageLabel: string
-store ^books(id: int): Book
-evolve
-    retire Book.pages
-pub fn show()
-    print(^books(1).pageLabel ?? "missing")

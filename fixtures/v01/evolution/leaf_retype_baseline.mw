@@ -1,6 +1,0 @@
-module books
-resource Book
-    required pages: int
-store ^books(id: int): Book
-pub fn seed()
-    ^books(1).pages = 3

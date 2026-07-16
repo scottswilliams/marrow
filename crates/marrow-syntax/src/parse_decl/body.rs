@@ -1,10 +1,10 @@
 //! The shared declaration-body frame: the one `INDENT … DEDENT` trivia skeleton
-//! that the resource, store, enum, and evolve bodies drive their member
-//! loops from. Each body advances its opening `INDENT`, then repeatedly asks for
-//! the next line: the frame consumes blank lines, own-line comments, and stray
-//! nested blocks, and reports a member header for the caller to parse. The two
-//! axes on which the bodies genuinely differ — what an own-line doc comment does,
-//! and where a stray nested block is reported — are the frame's typed inputs.
+//! that the resource, store, and enum bodies drive their member loops from. Each
+//! body advances its opening `INDENT`, then repeatedly asks for the next line:
+//! the frame consumes blank lines, own-line comments, and stray nested blocks,
+//! and reports a member header for the caller to parse. The caller supplies the
+//! doc-comment accumulator every member attaches to and the diagnostic a stray
+//! nested block reports.
 
 use super::tokens::{comment_from_token, is_line_comment};
 use super::{DeclParser, ParseError};
@@ -23,39 +23,16 @@ pub(super) enum BodyLine {
     Item,
 }
 
-/// What a declaration body does with an own-line `;;` doc comment: resource and
-/// enum members carry docs, so it accumulates to attach to the next member;
-/// evolve steps carry none, so it is retained as trivia.
-pub(super) enum DocComments<'a> {
-    /// Accumulate into `docs` to attach to the next member; any doc comment left
-    /// unattached when the block closes is reported by `flush_docs_as_comments`.
-    AttachToItem(&'a mut Vec<Token>),
-    /// Retain as trivia. `keep_marker` renders `;;` as a doc comment; otherwise it
-    /// is folded into an ordinary line comment.
-    Retain { keep_marker: bool },
-}
-
-/// Where a stray nested block inside a body is reported. A body member has no
-/// nested block of its own here (a resource group or a `transform` opens its
-/// block right after its header, before the frame sees the next line).
-pub(super) enum StrayBlock {
-    /// Consume the stray `INDENT`, then report `error` at the first content line
-    /// when the block is non-empty (resource, store, enum bodies).
-    AtContent(ParseError),
-    /// Report `error` at the stray `INDENT` itself, unconditionally, then consume
-    /// the block (evolve steps, where the step keyword owns the diagnostic).
-    AtBlock(ParseError),
-}
-
 impl<'a> DeclParser<'a> {
     /// Classify and consume the next line of an indented declaration body. The
-    /// caller supplies its doc-comment and stray-block policies and its own-line
-    /// comment accumulator; an `Item` result leaves the member header in place.
+    /// caller supplies its own-line comment accumulator (`docs` collects `;;` doc
+    /// comments to attach to the next member) and the diagnostic to report for a
+    /// stray nested block; an `Item` result leaves the member header in place.
     pub(super) fn next_body_line(
         &mut self,
-        docs: DocComments<'_>,
+        docs: &mut Vec<Token>,
         comments: &mut Vec<Comment>,
-        stray: &StrayBlock,
+        stray: &ParseError,
     ) -> BodyLine {
         match self.peek() {
             None | Some(TokenKind::Dedent) => {
@@ -80,36 +57,23 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Consume one own-line comment token and route it per the doc-comment policy,
-    /// then its trailing `NEWLINE`. An ordinary `;` line comment is retained as
-    /// trivia regardless of policy.
-    fn take_body_comment(&mut self, docs: DocComments<'_>, comments: &mut Vec<Comment>) {
+    /// Consume one own-line comment token and its trailing `NEWLINE`. A `;;` doc
+    /// comment accumulates into `docs` to attach to the next member; an ordinary
+    /// `;` line comment is retained as own-line trivia.
+    fn take_body_comment(&mut self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
         if matches!(self.peek(), Some(TokenKind::DocComment)) {
-            match docs {
-                DocComments::AttachToItem(pending) => {
-                    self.push_pending_doc(pending, comments);
-                    self.consume_trailing_newline();
-                    return;
-                }
-                DocComments::Retain { keep_marker } => {
-                    let token = self.advance();
-                    let marker = if keep_marker {
-                        CommentMarker::Doc
-                    } else {
-                        CommentMarker::Line
-                    };
-                    comments.push(self.own_line_comment(token, marker));
-                }
-            }
+            self.push_pending_doc(docs, comments);
         } else {
             let token = self.advance();
-            comments.push(self.own_line_comment(token, CommentMarker::Line));
+            let comment = comment_from_token(
+                self.source,
+                token,
+                CommentPlacement::OwnLine,
+                CommentMarker::Line,
+            );
+            comments.push(comment);
         }
         self.consume_trailing_newline();
-    }
-
-    fn own_line_comment(&self, token: Token, marker: CommentMarker) -> Comment {
-        comment_from_token(self.source, token, CommentPlacement::OwnLine, marker)
     }
 
     fn consume_trailing_newline(&mut self) {
@@ -118,29 +82,21 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Consume a stray nested block opening at the current `INDENT` and report it
-    /// per the stray-block policy.
-    fn consume_stray_block(&mut self, stray: &StrayBlock) {
-        match stray {
-            StrayBlock::AtContent(error) => {
-                self.advance(); // INDENT
-                if self.peek().is_some_and(|kind| {
-                    !matches!(
-                        kind,
-                        TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
-                    )
-                }) {
-                    let span = self.content_span();
-                    self.error_span(span, error.reason.clone(), error.message.clone());
-                }
-                self.skip_to_block_end();
-            }
-            StrayBlock::AtBlock(error) => {
-                let span = self.content_span();
-                self.error_span(span, error.reason.clone(), error.message.clone());
-                self.advance(); // INDENT
-                self.skip_to_block_end();
-            }
+    /// Consume a stray nested block opening at the current `INDENT`, reporting
+    /// `error` at the first content line when the block is non-empty. A member
+    /// with a body of its own (a resource group) opens it right after its header,
+    /// before the frame sees the next line, so a block reaching here is stray.
+    fn consume_stray_block(&mut self, error: &ParseError) {
+        self.advance(); // INDENT
+        if self.peek().is_some_and(|kind| {
+            !matches!(
+                kind,
+                TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
+            )
+        }) {
+            let span = self.content_span();
+            self.error_span(span, error.reason.clone(), error.message.clone());
         }
+        self.skip_to_block_end();
     }
 }

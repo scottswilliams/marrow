@@ -14,8 +14,6 @@ mod parse_control_flow;
 mod parse_declarations;
 #[path = "cases/parse_enums.rs"]
 mod parse_enums;
-#[path = "cases/parse_evolve.rs"]
-mod parse_evolve;
 #[path = "cases/parse_expressions.rs"]
 mod parse_expressions;
 #[path = "cases/parse_interpolation_edges.rs"]

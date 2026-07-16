@@ -1,7 +1,7 @@
 use crate::common;
 use marrow_syntax::{
-    Block, Comment, CommentMarker, CommentPlacement, Declaration, EvolveDecl, Statement,
-    format_expression, format_preserves_comments, format_source, parse_source,
+    Block, Comment, CommentMarker, CommentPlacement, Declaration, Statement, format_expression,
+    format_preserves_comments, format_source, parse_source,
 };
 /// Format a single-declaration `module app` source through `format_source` and
 /// return just that declaration's canonical text. `format_source` wraps the file
@@ -46,25 +46,6 @@ fn reparsed_run_body(source: &str) -> Block {
         .expect("formatted source defines fn run")
         .body
         .clone()
-}
-
-fn reparsed_evolve_decl(source: &str) -> EvolveDecl {
-    let formatted = format_source(source);
-    let parsed = parse_source(&formatted);
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "formatted output must re-parse cleanly:\n{formatted}\n{:#?}",
-        parsed.diagnostics
-    );
-    parsed
-        .file
-        .declarations
-        .iter()
-        .find_map(|declaration| match declaration {
-            Declaration::Evolve(decl) => Some(decl.clone()),
-            _ => None,
-        })
-        .expect("formatted source defines evolve")
 }
 
 /// A retained comment reduced to the facts a round-trip must preserve: its
@@ -670,7 +651,6 @@ fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_
         "resource Item\n    name: text",
         "enum Color\n    red\n    green",
         "store ^items(id: text): Item\n    index by_name(name)",
-        "evolve\n    retire ^old",
         "pub fn one()\n    const a = 1",
     ];
     for predecessor in predecessors {
@@ -1102,8 +1082,6 @@ fn preserves_top_level_header_trailing_comments() {
          resource Book ; resource rationale\n\
          \x20   title: string\n\
          store ^books: Book ; store rationale\n\
-         evolve ; evolve rationale\n\
-         \x20   rename Book.title -> Book.name\n\
          enum Status ; enum rationale\n\
          \x20   active\n\
          fn run() ; function rationale\n\
@@ -1119,9 +1097,6 @@ fn preserves_top_level_header_trailing_comments() {
          \x20   title: string\n\
          \n\
          store ^books: Book ; store rationale\n\
-         \n\
-         evolve ; evolve rationale\n\
-         \x20   rename Book.title -> Book.name\n\
          \n\
          enum Status ; enum rationale\n\
          \x20   active\n\
@@ -1411,153 +1386,17 @@ fn preserves_trailing_comments_on_match_arm_headers() {
 }
 
 #[test]
-fn formats_evolve_block_consistently_with_resource_and_store() {
-    let source = "module app\n\
-         evolve\n\
-         \x20   rename Book.title    ->   Book.subtitle\n\
-         \x20   default Book.author = \"unknown\"\n\
-         \x20   retire ^books.byTitle\n\
-         \x20   transform Book.shelf\n\
-         \x20       return ^books(1).shelf\n";
-    let expected = "module app\n\
-         \n\
-         evolve\n\
-         \x20   rename Book.title -> Book.subtitle\n\
-         \x20   default Book.author = \"unknown\"\n\
-         \x20   retire ^books.byTitle\n\
-         \x20   transform Book.shelf\n\
-         \x20       return ^books(1).shelf\n";
-
-    assert_eq!(format_source(source), expected);
-}
-
-#[test]
-fn preserves_evolve_step_comments() {
-    let source = "module app\n\
-         evolve\n\
-         \x20   ; choose a durable rename\n\
-         \x20   rename Book.title -> Book.subtitle ; keep rename rationale\n\
-         \x20   transform Book.shelf ; transform rationale\n\
-         \x20       ; body rationale\n\
-         \x20       return ^books(1).shelf\n";
-    let expected = "module app\n\
-         \n\
-         evolve\n\
-         \x20   ; choose a durable rename\n\
-         \x20   rename Book.title -> Book.subtitle ; keep rename rationale\n\
-         \x20   transform Book.shelf ; transform rationale\n\
-         \x20       ; body rationale\n\
-         \x20       return ^books(1).shelf\n";
-
-    assert_eq!(format_source(source), expected);
-
-    let evolve = reparsed_evolve_decl(source);
-    assert_eq!(
-        comment_facts(&evolve.comments),
-        vec![
-            (
-                "choose a durable rename",
-                CommentPlacement::OwnLine,
-                CommentMarker::Line,
-            ),
-            (
-                "keep rename rationale",
-                CommentPlacement::Trailing,
-                CommentMarker::Line,
-            ),
-            (
-                "transform rationale",
-                CommentPlacement::Trailing,
-                CommentMarker::Line,
-            ),
-        ]
-    );
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
-}
-
-#[test]
-fn preserves_trailing_comments_on_multiline_evolve_defaults() {
-    let source = "module app\n\
-         evolve\n\
-         \x20   default Book.info = save(\n\
-         \x20       title: \"x\",\n\
-         \x20   ) ; default rationale\n";
-    let expected = "module app\n\
-         \n\
-         evolve\n\
-         \x20   default Book.info = save(\n\
-         \x20       title: \"x\",\n\
-         \x20   ) ; default rationale\n";
-
-    assert_eq!(format_source(source), expected);
-
-    let evolve = reparsed_evolve_decl(source);
-    assert_eq!(
-        comment_facts(&evolve.comments),
-        vec![(
-            "default rationale",
-            CommentPlacement::Trailing,
-            CommentMarker::Line,
-        )]
-    );
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
-}
-
-#[test]
-fn preserves_trailing_comments_on_multiline_evolve_transform_targets() {
-    let source = "module app\n\
-         evolve\n\
-         \x20   transform choose(\n\
-         \x20       value: 1,\n\
-         \x20   ) ; transform rationale\n\
-         \x20       return\n";
-    let expected = "module app\n\
-         \n\
-         evolve\n\
-         \x20   transform choose(\n\
-         \x20       value: 1,\n\
-         \x20   ) ; transform rationale\n\
-         \x20       return\n";
-
-    assert_eq!(format_source(source), expected);
-
-    let evolve = reparsed_evolve_decl(source);
-    assert_eq!(
-        comment_facts(&evolve.comments),
-        vec![(
-            "transform rationale",
-            CommentPlacement::Trailing,
-            CommentMarker::Line,
-        )]
-    );
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
-}
-
-#[test]
 fn comment_preservation_guard_rejects_unstable_rewrites() {
     let source = "module app\n\
-         evolve\n\
-         \x20   default Book.info = save(\n\
-         \x20       title: \"x\",\n\
-         \x20   ) ; default rationale\n";
+         \n\
+         const info = save(\n\
+         \x20   title: \"x\",\n\
+         ) ; const rationale\n";
     let unstable_rewrite = "module app\n\
          \n\
-         evolve\n\
-         \x20   default Book.info = save( ; default rationale\n\
+         const info = save( ; const rationale\n\
          \x20   title: \"x\",\n\
          )\n";
 
     assert!(!format_preserves_comments(source, unstable_rewrite));
-}
-
-#[test]
-fn evolve_block_format_is_idempotent() {
-    let source = "module app\n\
-         evolve\n\
-         \x20   rename ^books -> ^archive\n";
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
 }
