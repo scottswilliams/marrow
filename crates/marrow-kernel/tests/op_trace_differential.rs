@@ -129,42 +129,47 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         // create outcomes: fresh vs already-present.
         transcript.push(format!(
             "create a = {:?}",
-            txn.create_entry(&e, key("a"), entry(1, None)).unwrap()
+            txn.create_entry(&e, &[key("a")], entry(1, None)).unwrap()
         ));
         transcript.push(format!(
             "create a again = {:?}",
-            txn.create_entry(&e, key("a"), entry(9, None)).unwrap()
+            txn.create_entry(&e, &[key("a")], entry(9, None)).unwrap()
         ));
         // prefix-related and edge keys.
         for name in ["", "ab", "a\u{0}"] {
-            let outcome = txn.create_entry(&e, key(name), entry(2, None)).unwrap();
+            let outcome = txn.create_entry(&e, &[key(name)], entry(2, None)).unwrap();
             assert_eq!(outcome, CreateOutcome::Created);
         }
         // replace outcomes: present vs missing.
         transcript.push(format!(
             "replace a = {:?}",
-            txn.replace_entry(&e, key("a"), entry(5, Some("first")))
+            txn.replace_entry(&e, &[key("a")], entry(5, Some("first")))
                 .unwrap()
         ));
         transcript.push(format!(
             "replace ghost = {:?}",
-            txn.replace_entry(&e, key("ghost"), entry(0, None)).unwrap()
+            txn.replace_entry(&e, &[key("ghost")], entry(0, None))
+                .unwrap()
         ));
         // sparse set then clear.
-        txn.set_sparse(&label, key("ab"), Some(RuntimeScalar::Str("mark".into())))
-            .unwrap();
-        txn.set_sparse(&label, key("ab"), None).unwrap();
+        txn.set_sparse(
+            &label,
+            &[key("ab")],
+            Some(RuntimeScalar::Str("mark".into())),
+        )
+        .unwrap();
+        txn.set_sparse(&label, &[key("ab")], None).unwrap();
         // required field update.
-        txn.set_required(&value, key("ab"), RuntimeScalar::Int(20))
+        txn.set_required(&value, &[key("ab")], RuntimeScalar::Int(20))
             .unwrap();
         // erase outcomes.
         transcript.push(format!(
             "erase entry empty-key = {:?}",
-            txn.erase_entry(&e, key("")).unwrap()
+            txn.erase_entry(&e, &[key("")]).unwrap()
         ));
         transcript.push(format!(
             "erase entry ghost = {:?}",
-            txn.erase_entry(&e, key("ghost")).unwrap()
+            txn.erase_entry(&e, &[key("ghost")]).unwrap()
         ));
         transcript.push(format!("commit = {:?}", txn.commit()));
     }
@@ -179,11 +184,11 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         let label = reader.site(LABEL);
         transcript.push(format!(
             "presence a = {:?}",
-            reader.presence(&e, key("a")).unwrap()
+            reader.presence(&e, &[key("a")]).unwrap()
         ));
         transcript.push(format!(
             "presence empty = {:?}",
-            reader.presence(&e, key("")).unwrap()
+            reader.presence(&e, &[key("")]).unwrap()
         ));
 
         let mut dump: Dump = Vec::new();
@@ -194,14 +199,14 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
                 other => panic!("unexpected key kind {other:?}"),
             };
             let v = reader
-                .read_field(&value, k.clone())
+                .read_field(&value, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
                     RuntimeScalar::Int(v) => v,
                     other => panic!("unexpected value {other:?}"),
                 });
             let l = reader
-                .read_field(&label, k.clone())
+                .read_field(&label, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
                     RuntimeScalar::Str(s) => s,
@@ -276,15 +281,20 @@ fn set_sparse_present_agrees_across_engines() {
                 .expect("txn");
             let e = txn.site(ENTRY);
             let label = txn.site(LABEL);
-            txn.create_entry(&e, key("p"), entry(7, None)).unwrap();
+            txn.create_entry(&e, &[key("p")], entry(7, None)).unwrap();
             // The entry is present in the staged view, so the strict set assumes the
             // marker and writes the leaf.
-            txn.set_sparse_present(&label, key("p"), Some(RuntimeScalar::Str("strict".into())))
-                .unwrap();
+            txn.set_sparse_present(
+                &label,
+                &[key("p")],
+                Some(RuntimeScalar::Str("strict".into())),
+            )
+            .unwrap();
             // A strict clear of a present entry removes the leaf without touching the
             // marker.
-            txn.create_entry(&e, key("q"), entry(8, Some("x"))).unwrap();
-            txn.set_sparse_present(&label, key("q"), None).unwrap();
+            txn.create_entry(&e, &[key("q")], entry(8, Some("x")))
+                .unwrap();
+            txn.set_sparse_present(&label, &[key("q")], None).unwrap();
             assert_eq!(txn.commit(), CommitResult::Committed);
         }
         let mut reader = store
@@ -293,7 +303,7 @@ fn set_sparse_present_agrees_across_engines() {
         let e = reader.site(ENTRY);
         let value = reader.site(VALUE);
         let label = reader.site(LABEL);
-        let presence = reader.presence(&e, key("p")).unwrap();
+        let presence = reader.presence(&e, &[key("p")]).unwrap();
         let mut dump: Dump = Vec::new();
         let mut cursor = None;
         while let NextKey::Next(k) = reader.next_key(&e, cursor.clone()).unwrap() {
@@ -302,14 +312,14 @@ fn set_sparse_present_agrees_across_engines() {
                 other => panic!("unexpected key kind {other:?}"),
             };
             let v = reader
-                .read_field(&value, k.clone())
+                .read_field(&value, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
                     RuntimeScalar::Int(v) => v,
                     other => panic!("unexpected value {other:?}"),
                 });
             let l = reader
-                .read_field(&label, k.clone())
+                .read_field(&label, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
                     RuntimeScalar::Str(s) => s,
@@ -352,7 +362,11 @@ fn set_sparse_present_on_an_absent_marker_is_corruption() {
         .expect("txn");
     let label = txn.site(LABEL);
     assert_eq!(
-        txn.set_sparse_present(&label, key("missing"), Some(RuntimeScalar::Str("x".into()))),
+        txn.set_sparse_present(
+            &label,
+            &[key("missing")],
+            Some(RuntimeScalar::Str("x".into()))
+        ),
         Err(marrow_kernel::durable::KernelFault::Corruption)
     );
 }
@@ -365,14 +379,14 @@ fn rollback_discards_staged_writes_on_both_backends() {
                 .txn_session(InvocationGrant::full_store(), write())
                 .expect("txn");
             let e = txn.site(ENTRY);
-            txn.create_entry(&e, key("z"), entry(1, None)).unwrap();
+            txn.create_entry(&e, &[key("z")], entry(1, None)).unwrap();
             // Drop without commit: the transaction rolls back.
         }
         let mut reader = store
             .read_session(InvocationGrant::full_store(), read())
             .expect("read");
         let e = reader.site(ENTRY);
-        reader.presence(&e, key("z")).unwrap()
+        reader.presence(&e, &[key("z")]).unwrap()
     }
     assert_eq!(
         probe(DurableStore::from_engine(
@@ -398,7 +412,7 @@ fn required_missing_commit_agrees_on_both_backends() {
             .expect("txn");
         let label = txn.site(LABEL);
         // Stage only the sparse label on a fresh entry; the required value is unset.
-        txn.set_sparse(&label, key("x"), Some(RuntimeScalar::Str("hi".into())))
+        txn.set_sparse(&label, &[key("x")], Some(RuntimeScalar::Str("hi".into())))
             .unwrap();
         matches!(txn.commit(), CommitResult::RequiredMissing { .. })
     }
@@ -424,7 +438,7 @@ fn witness_classifies_a_reopen_as_complete_new() {
             .txn_session(InvocationGrant::full_store(), write())
             .expect("txn");
         let e = txn.site(ENTRY);
-        txn.create_entry(&e, key("k"), entry(1, None)).unwrap();
+        txn.create_entry(&e, &[key("k")], entry(1, None)).unwrap();
         let token = txn.token();
         assert_eq!(txn.commit(), CommitResult::Committed);
         token
@@ -445,10 +459,10 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
                 .txn_session(InvocationGrant::full_store(), write())
                 .expect("txn");
             let e = txn.site(ENTRY);
-            txn.create_entry(&e, key("k"), entry(1, Some("keep")))
+            txn.create_entry(&e, &[key("k")], entry(1, Some("keep")))
                 .unwrap();
             assert_eq!(
-                txn.replace_entry(&e, key("k"), entry(2, None)).unwrap(),
+                txn.replace_entry(&e, &[key("k")], entry(2, None)).unwrap(),
                 ReplaceOutcome::Replaced
             );
             assert_eq!(txn.commit(), CommitResult::Committed);
@@ -458,7 +472,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
             .expect("read");
         let label = reader.site(LABEL);
         reader
-            .read_field(&label, key("k"))
+            .read_field(&label, &[key("k")])
             .unwrap()
             .map(|s| match s {
                 RuntimeScalar::Str(s) => s,

@@ -186,7 +186,7 @@ fn a_value_range_rejection_stages_zero_engine_writes() {
     let writes_before = counters.writes();
     // A date beyond the year-9999 canonical bound cannot encode; the op must reject
     // it before any engine write.
-    let rejected = txn.set_required(&field, KeyScalar::Int(1), RuntimeScalar::Date(i32::MAX));
+    let rejected = txn.set_required(&field, &[KeyScalar::Int(1)], RuntimeScalar::Date(i32::MAX));
     assert_eq!(rejected, Err(KernelFault::ValueRange));
     assert_eq!(
         counters.writes(),
@@ -214,7 +214,7 @@ fn an_in_range_write_advances_the_write_counter() {
         .expect("txn session");
     let field = txn.site(1);
     let writes_before = counters.writes();
-    txn.set_required(&field, KeyScalar::Int(1), RuntimeScalar::Int(7))
+    txn.set_required(&field, &[KeyScalar::Int(1)], RuntimeScalar::Int(7))
         .expect("in-range set");
     assert!(
         counters.writes() > writes_before,

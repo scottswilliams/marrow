@@ -22,7 +22,7 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, FieldSchema, KernelFault, StoreSchema};
+use super::{EntryValue, FieldSchema, KernelFault};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_value;
 
@@ -34,16 +34,17 @@ pub(super) enum CellWrite {
     Remove(Vec<u8>),
 }
 
-/// The consequence planner over one root's flat entry family. Borrows the schema so
-/// leaf order and field names come from the one profile the store recorded.
+/// The consequence planner: the single owner of how a logical mutation over one
+/// root's entry family decomposes into ordered physical cell operations. It borrows
+/// the root name for the marker/cursor conveniences; the node-parametric core takes
+/// each node's fields explicitly, so a root and a branch node share one topology owner.
 pub(super) struct Planner<'a> {
     root: &'a str,
-    schema: &'a StoreSchema,
 }
 
 impl<'a> Planner<'a> {
-    pub(super) fn new(root: &'a str, schema: &'a StoreSchema) -> Self {
-        Self { root, schema }
+    pub(super) fn new(root: &'a str) -> Self {
+        Self { root }
     }
 
     /// The marker key (marker stem) of root entry `key`: the entry's payload-presence
@@ -119,29 +120,13 @@ impl<'a> Planner<'a> {
             .map(CellWrite::Remove)
             .collect()
     }
-
-    /// The writes that establish root entry `key` from `entry`, the root convenience
-    /// over [`Self::node_write`].
-    pub(super) fn write_entry(
-        &self,
-        key: &KeyScalar,
-        entry: &EntryValue,
-    ) -> Result<Vec<CellWrite>, KernelFault> {
-        self.node_write(&self.marker(key), &self.schema.fields, entry)
-    }
-
-    /// The removals that erase root entry `key`, the root convenience over
-    /// [`Self::node_erase`].
-    pub(super) fn erase_entry(&self, key: &KeyScalar) -> Vec<CellWrite> {
-        self.node_erase(&self.marker(key), &self.schema.fields)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codec::value::{RuntimeScalar, ScalarKind};
-    use crate::durable::FieldSchema;
+    use crate::durable::{FieldSchema, StoreSchema};
 
     fn schema() -> StoreSchema {
         StoreSchema {
@@ -176,7 +161,7 @@ mod tests {
     #[test]
     fn node_cells_are_the_marker_then_one_leaf_per_field_in_order() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name, &schema);
+        let planner = Planner::new(&schema.root_name);
         let key = KeyScalar::Int(1);
         let stem = planner.marker(&key);
         assert_eq!(
@@ -192,20 +177,23 @@ mod tests {
     /// A whole-entry write is descendant-only: the marker plus one leaf per *present*
     /// field, and nothing for an absent sparse field.
     #[test]
-    fn write_entry_plans_the_marker_and_only_present_leaves() {
+    fn node_write_plans_the_marker_and_only_present_leaves() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name, &schema);
+        let planner = Planner::new(&schema.root_name);
         let key = KeyScalar::Int(1);
+        let stem = planner.marker(&key);
         // Required value present, sparse label absent.
         let entry = EntryValue {
             fields: vec![Some(RuntimeScalar::Int(5)), None],
         };
-        let ops = planner.write_entry(&key, &entry).expect("in range");
+        let ops = planner
+            .node_write(&stem, &schema.fields, &entry)
+            .expect("in range");
         assert_eq!(
             keys(&ops),
             vec![
-                planner.marker(&key).as_slice(),
-                planner.field_leaf(&key, "value").as_slice(),
+                stem.as_slice(),
+                planner.node_field_leaf(&stem, "value").as_slice(),
             ],
             "a whole-entry write touches only the marker and present leaves"
         );
@@ -218,15 +206,16 @@ mod tests {
     /// Erase confines to the entry's own cells: a remove for the marker and every
     /// field leaf, present or not.
     #[test]
-    fn erase_entry_removes_the_marker_and_every_field_leaf() {
+    fn node_erase_removes_the_marker_and_every_field_leaf() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name, &schema);
+        let planner = Planner::new(&schema.root_name);
         let key = KeyScalar::Int(1);
-        let ops = planner.erase_entry(&key);
+        let stem = planner.marker(&key);
+        let ops = planner.node_erase(&stem, &schema.fields);
         assert!(ops.iter().all(|op| matches!(op, CellWrite::Remove(_))));
         assert_eq!(
             keys(&ops),
-            keys_of(&planner.node_cells(&planner.marker(&key), &schema.fields)),
+            keys_of(&planner.node_cells(&stem, &schema.fields)),
         );
     }
 
@@ -239,7 +228,7 @@ mod tests {
     #[test]
     fn the_node_core_operates_on_an_arbitrary_node_stem_and_fields() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name, &schema);
+        let planner = Planner::new(&schema.root_name);
         // Any marker stem stands in for a node here (a branch entry's stem is one such
         // stem, one level below the root); the fields differ from the root's schema.
         let stem = planner.marker(&KeyScalar::Int(7));

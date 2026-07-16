@@ -10,9 +10,9 @@ use super::physical::{self, CellKind};
 use super::plan::{CellWrite, Planner};
 use super::profile;
 use super::{
-    AuthTarget, AuthorizedSite, CommitResult, CreateOutcome, DemandCoverage, Denied, EntryValue,
-    EraseOutcome, InvocationGrant, KernelFault, NextKey, Presence, Reopen, ReplaceOutcome,
-    SessionError, SiteSpec, SiteTarget, StoreSchema,
+    AuthTarget, AuthorizedSite, BranchHop, CommitResult, CreateOutcome, DemandCoverage, Denied,
+    EntryValue, EraseOutcome, FieldSchema, InvocationGrant, KernelFault, NextKey, Presence, Reopen,
+    ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use crate::codec::key::{KeyScalar, decode_key_value, encode_key_value};
 use crate::codec::value::{RuntimeScalar, decode_value, encode_value};
@@ -25,16 +25,23 @@ use crate::codec::value::{RuntimeScalar, decode_value, encode_value};
 pub trait Durable {
     /// The authorized site at image site index `index`.
     fn site(&self, index: u16) -> AuthorizedSite;
-    fn presence(&mut self, site: &AuthorizedSite, key: KeyScalar) -> Result<Presence, KernelFault>;
+    /// Every node-addressing op takes the addressed node's key-path: `[root_key]` for
+    /// a root node and `[root_key, branch_key, …]` for a branch node, matching the
+    /// site's root and branch-hop arity. A root site's key-path is one element.
+    fn presence(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<Presence, KernelFault>;
     fn read_field(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<Option<RuntimeScalar>, KernelFault>;
     fn read_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault>;
     fn next_key(
         &mut self,
@@ -44,13 +51,13 @@ pub trait Durable {
     fn set_required(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         value: RuntimeScalar,
     ) -> Result<(), KernelFault>;
     fn set_sparse(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault>;
     /// Set (present) or clear (vacant) a sparse field of an entry the caller has
@@ -60,30 +67,30 @@ pub trait Durable {
     fn set_sparse_present(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault>;
     fn create_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault>;
     fn replace_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault>;
     fn erase_field(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault>;
     fn erase_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault>;
     /// Commit the transaction (a no-op returning [`CommitResult::Committed`] for a
     /// read-only session, which the verifier guarantees never opens one).
@@ -161,21 +168,7 @@ impl<E: ByteEngine> DurableStore<E> {
     fn authorized_sites(&self) -> Vec<AuthorizedSite> {
         self.sites
             .iter()
-            .map(|site| AuthorizedSite {
-                root: self.schema.root_name.clone(),
-                key: self.schema.key,
-                target: match site.target {
-                    SiteTarget::WholePayload => AuthTarget::Entry,
-                    SiteTarget::FieldLeaf(index) => {
-                        let field = &self.schema.fields[index as usize];
-                        AuthTarget::Field {
-                            name: field.name.clone(),
-                            kind: field.kind,
-                            required: field.required,
-                        }
-                    }
-                },
-            })
+            .map(|site| resolve_site(&self.schema, site.target))
             .collect()
     }
 
@@ -192,11 +185,7 @@ impl<E: ByteEngine> DurableStore<E> {
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let view = self.engine.read_view().map_err(SessionError::Engine)?;
-        Ok(ReadSession {
-            view,
-            schema: &self.schema,
-            auth,
-        })
+        Ok(ReadSession { view, auth })
     }
 
     /// Open a transaction session after resolving effective authority, revalidating
@@ -262,6 +251,65 @@ fn resolve_authority(
     }
 }
 
+/// Resolve a sealed [`SiteTarget`] against the store schema into the executable
+/// [`AuthorizedSite`] the kernel ops address, once at session setup: the addressed
+/// node's root, its branch path, its own record fields (for whole-entry ops), and —
+/// for a field target — the field's name, kind, and required flag. A branch target
+/// resolves the branch from the schema so the addressed node carries its own key kind
+/// and record.
+fn resolve_site(schema: &StoreSchema, target: SiteTarget) -> AuthorizedSite {
+    // The container node the site addresses: its branch path and own record fields.
+    // A root target's container is the root; a branch target's is the branch node.
+    let (branch, container_fields): (Vec<BranchHop>, &[FieldSchema]) = match target {
+        SiteTarget::WholePayload | SiteTarget::FieldLeaf(_) => (Vec::new(), &schema.fields),
+        SiteTarget::BranchEntry(branch) => {
+            let branch = &schema.branches[branch as usize];
+            (
+                vec![BranchHop::new(branch.name.clone(), branch.key)],
+                &branch.fields,
+            )
+        }
+    };
+    // A whole-entry site enumerates the container's footprint, so it carries the
+    // container's record; a field-target site touches one leaf and carries no fields.
+    let target = match target {
+        SiteTarget::WholePayload | SiteTarget::BranchEntry(_) => {
+            AuthTarget::Entry(container_fields.to_vec())
+        }
+        SiteTarget::FieldLeaf(index) => AuthTarget::field(&container_fields[index as usize]),
+    };
+    AuthorizedSite::new(schema.root_name.clone(), schema.key, branch, target)
+}
+
+/// The physical marker stem of the node `site` addresses at key-path `keys`: the root
+/// marker followed by one branch-child stem per branch hop. The single owner of
+/// key-path-to-node-stem resolution, so a root and a branch node derive their stem the
+/// same way. The key-path arity and each element's scalar kind are asserted against
+/// the site's declared root and hop kinds as defense in depth over the verifier's
+/// proof.
+fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Vec<u8> {
+    debug_assert_eq!(
+        keys.len(),
+        1 + site.branch.len(),
+        "the key-path arity matches the site's root plus branch hops",
+    );
+    debug_assert_eq!(
+        keys[0].scalar_kind(),
+        site.key,
+        "the root key kind matches the site",
+    );
+    let mut stem = physical::marker_key(&site.root, &keys[0]);
+    for (hop, key) in site.branch.iter().zip(&keys[1..]) {
+        debug_assert_eq!(
+            key.scalar_kind(),
+            hop.key,
+            "the branch key kind matches the hop",
+        );
+        stem = physical::branch_child_stem(&stem, &hop.name, key);
+    }
+    stem
+}
+
 /// A read session: reads observe one coherent view for the whole call. Non-`Clone`;
 /// the view is released when the session drops.
 pub struct ReadSession<'s, E: ByteEngine>
@@ -269,7 +317,6 @@ where
     E: 's,
 {
     view: E::View<'s>,
-    schema: &'s StoreSchema,
     auth: Vec<AuthorizedSite>,
 }
 
@@ -277,24 +324,28 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
         self.auth[index as usize].clone()
     }
-    fn presence(&mut self, site: &AuthorizedSite, key: KeyScalar) -> Result<Presence, KernelFault> {
-        op_presence(&self.view, site, &key)
+    fn presence(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<Presence, KernelFault> {
+        op_presence(&self.view, site, keys)
     }
     fn read_field(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<Option<RuntimeScalar>, KernelFault> {
-        op_read_field(&self.view, site, &key)
+        op_read_field(&self.view, site, keys)
     }
     fn read_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault> {
         // A coherent read session observes committed state with no staging, so a
         // markerless own field leaf is a persisted orphan (corruption), not pending.
-        op_read_entry(&self.view, self.schema, site, &key, false)
+        op_read_entry(&self.view, site, keys, false)
     }
     fn next_key(
         &mut self,
@@ -306,7 +357,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn set_required(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
         _value: RuntimeScalar,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
@@ -314,7 +365,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn set_sparse(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
         _value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
@@ -322,7 +373,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn set_sparse_present(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
         _value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
@@ -330,7 +381,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn create_entry(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
         _entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
@@ -338,7 +389,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn replace_entry(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
         _entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
@@ -346,14 +397,14 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn erase_field(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
     fn erase_entry(
         &mut self,
         _site: &AuthorizedSite,
-        _key: KeyScalar,
+        _keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
@@ -446,10 +497,14 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
 
     /// Validate every staged entry: a live entry missing a required field is a
     /// `RequiredMissing`; a live markerless entry with all required fields present
-    /// gets its marker (created at commit).
+    /// gets its marker (created at commit). The staged set holds root-level entry
+    /// keys, so this reconciles root nodes; a branch node reached only by whole-entry
+    /// create/replace/erase never stages a field and needs no reconcile. Reconciling a
+    /// staged branch field (the field-exact branch tail) extends this to the branch
+    /// node's marker and record.
     fn reconcile(&mut self) -> Result<(), CommitResult> {
         let root = self.schema.root_name.clone();
-        let planner = Planner::new(&root, self.schema);
+        let planner = Planner::new(&root);
         let staged: Vec<KeyScalar> = self
             .pending
             .iter()
@@ -496,24 +551,28 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
         self.auth[index as usize].clone()
     }
-    fn presence(&mut self, site: &AuthorizedSite, key: KeyScalar) -> Result<Presence, KernelFault> {
-        op_presence(self.txn(), site, &key)
+    fn presence(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<Presence, KernelFault> {
+        op_presence(self.txn(), site, keys)
     }
     fn read_field(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<Option<RuntimeScalar>, KernelFault> {
-        op_read_field(self.txn(), site, &key)
+        op_read_field(self.txn(), site, keys)
     }
     fn read_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault> {
         // A transaction may hold sparse fields staged for reconcile at commit, so a
         // markerless own field leaf is tolerated as payload-absent, not corruption.
-        op_read_entry(self.txn(), self.schema, site, &key, true)
+        op_read_entry(self.txn(), site, keys, true)
     }
     fn next_key(
         &mut self,
@@ -525,33 +584,31 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn set_required(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         value: RuntimeScalar,
     ) -> Result<(), KernelFault> {
-        let name = field_name(site, true);
-        let leaf = physical::field_leaf_key(&site.root, &key, name);
+        let leaf = physical::stem_field_leaf(&node_stem(site, keys), field_name(site, true));
         let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
         self.txn_mut()
             .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
-        self.pending.insert(encode_key_value(&key));
+        self.pending.insert(encode_key_value(&keys[0]));
         Ok(())
     }
     fn set_sparse(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault> {
-        let name = field_name(site, false);
-        let leaf = physical::field_leaf_key(&site.root, &key, name);
+        let leaf = physical::stem_field_leaf(&node_stem(site, keys), field_name(site, false));
         match value {
             Some(value) => {
                 let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
                 self.txn_mut()
                     .put(&leaf, bytes)
                     .map_err(KernelFault::Engine)?;
-                self.pending.insert(encode_key_value(&key));
+                self.pending.insert(encode_key_value(&keys[0]));
             }
             None => {
                 self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
@@ -562,38 +619,40 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn set_sparse_present(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault> {
         // The compiler's place-slot presence proof makes an absent marker
         // unreachable; assert it here as defense in depth over the trust boundary.
         // A present field leaf without a present entry marker is corruption, never
         // implicit creation (the marker law).
-        let marker = physical::marker_key(&site.root, &key);
+        let marker = node_stem(site, keys);
         if read_raw(self.txn(), &marker)?.is_none() {
             return Err(KernelFault::Corruption);
         }
-        self.set_sparse(site, key, value)
+        self.set_sparse(site, keys, value)
     }
     fn create_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
-        let planner = Planner::new(&site.root, self.schema);
-        let stem = planner.marker(&key);
+        let stem = node_stem(site, keys);
+        let fields = node_fields(site);
+        let planner = Planner::new(&site.root);
         // Marker-first precedence through the one bounded prefix probe: a create over
         // a present payload is a no-op, while a create over an absent or
-        // descendant-only slot writes the payload. `write_entry` stages only the
-        // marker and the entry's own present field leaves, so a descendant-only node
-        // gains a payload without its branch descendants being touched. A markerless
-        // own field leaf staged earlier in this transaction is reconcile-pending, not
-        // a create barrier, so it is written through like an absent slot.
+        // descendant-only slot writes the payload. `node_write` stages only the marker
+        // and the node's own present field leaves — never a branch tag — so a
+        // descendant-only node gains a payload without its branch descendants being
+        // touched. A markerless own field leaf staged earlier in this transaction is
+        // reconcile-pending, not a create barrier, so it is written through like an
+        // absent slot.
         match probe_slot(self.txn(), &stem)? {
             SlotClass::Present => Ok(CreateOutcome::AlreadyPresent),
             SlotClass::DescendantOnly | SlotClass::Absent | SlotClass::Orphan => {
-                let ops = planner.write_entry(&key, &entry)?;
+                let ops = planner.node_write(&stem, fields, &entry)?;
                 self.apply(ops)?;
                 Ok(CreateOutcome::Created)
             }
@@ -602,27 +661,33 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn replace_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
-        let planner = Planner::new(&site.root, self.schema);
-        if read_raw(self.txn(), &planner.marker(&key))?.is_none() {
+        let stem = node_stem(site, keys);
+        let fields = node_fields(site);
+        let planner = Planner::new(&site.root);
+        // A markerless node (absent or descendant-only) has no payload to replace, so
+        // it reports Missing without touching any descendants (the compiler lowers a
+        // whole assignment as exists?→replace:create, so this is the defense-in-depth
+        // arm the create path complements).
+        if read_raw(self.txn(), &stem)?.is_none() {
             return Ok(ReplaceOutcome::Missing);
         }
-        // Exact replacement through the one consequence planner: remove the entry's
-        // cells, then write the new payload, so unlisted sparse leaves do not survive.
-        let mut ops = planner.erase_entry(&key);
-        ops.extend(planner.write_entry(&key, &entry)?);
+        // Exact replacement through the one node-parametric planner: remove the node's
+        // own cells, then write the new payload, so unlisted sparse leaves do not
+        // survive and keyed branch descendants are left intact.
+        let mut ops = planner.node_erase(&stem, fields);
+        ops.extend(planner.node_write(&stem, fields, &entry)?);
         self.apply(ops)?;
         Ok(ReplaceOutcome::Replaced)
     }
     fn erase_field(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
-        let name = field_name(site, false);
-        let leaf = physical::field_leaf_key(&site.root, &key, name);
+        let leaf = physical::stem_field_leaf(&node_stem(site, keys), field_name(site, false));
         let existed = read_raw(self.txn(), &leaf)?.is_some();
         self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
         Ok(if existed {
@@ -634,13 +699,16 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn erase_entry(
         &mut self,
         site: &AuthorizedSite,
-        key: KeyScalar,
+        keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
-        let planner = Planner::new(&site.root, self.schema);
-        let existed = read_raw(self.txn(), &planner.marker(&key))?.is_some();
-        // Whole-entry removal through the consequence planner: marker plus every
-        // field leaf, by exact key.
-        let ops = planner.erase_entry(&key);
+        let stem = node_stem(site, keys);
+        let fields = node_fields(site);
+        let planner = Planner::new(&site.root);
+        let existed = read_raw(self.txn(), &stem)?.is_some();
+        // Whole-node removal through the node-parametric planner: marker plus every own
+        // field leaf, by exact key — a branch tag is never enumerated, so a node's
+        // keyed descendants survive an erase of its payload.
+        let ops = planner.node_erase(&stem, fields);
         self.apply(ops)?;
         Ok(if existed {
             EraseOutcome::Erased
@@ -687,7 +755,18 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
             );
             name
         }
-        AuthTarget::Entry => unreachable!("verifier proved a field-target site"),
+        AuthTarget::Entry(_) => unreachable!("verifier proved a field-target site"),
+    }
+}
+
+/// The addressed node's own record fields for a whole-entry op. The verifier proves a
+/// whole-entry opcode targets an entry site, so a field target here is unreachable.
+fn node_fields(site: &AuthorizedSite) -> &[FieldSchema] {
+    match &site.target {
+        AuthTarget::Entry(fields) => fields,
+        AuthTarget::Field { .. } => {
+            unreachable!("verifier proved a whole-entry op targets an entry site")
+        }
     }
 }
 
@@ -741,11 +820,12 @@ fn probe_slot<V: ReadView>(cells: &V, stem: &[u8]) -> Result<SlotClass, KernelFa
 fn op_presence<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
-    key: &KeyScalar,
+    keys: &[KeyScalar],
 ) -> Result<Presence, KernelFault> {
+    let stem = node_stem(site, keys);
     let physical_key = match &site.target {
-        AuthTarget::Entry => physical::marker_key(&site.root, key),
-        AuthTarget::Field { name, .. } => physical::field_leaf_key(&site.root, key, name),
+        AuthTarget::Entry(_) => stem,
+        AuthTarget::Field { name, .. } => physical::stem_field_leaf(&stem, name),
     };
     Ok(match read_raw(cells, &physical_key)? {
         Some(_) => Presence::Present,
@@ -756,12 +836,12 @@ fn op_presence<V: ReadView>(
 fn op_read_field<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
-    key: &KeyScalar,
+    keys: &[KeyScalar],
 ) -> Result<Option<RuntimeScalar>, KernelFault> {
     let AuthTarget::Field { name, kind, .. } = &site.target else {
         unreachable!("verifier proved a field read targets a field site")
     };
-    let leaf = physical::field_leaf_key(&site.root, key, name);
+    let leaf = physical::stem_field_leaf(&node_stem(site, keys), name);
     match read_raw(cells, &leaf)? {
         None => Ok(None),
         Some(bytes) => decode_value(&bytes, *kind)
@@ -772,13 +852,12 @@ fn op_read_field<V: ReadView>(
 
 fn op_read_entry<V: ReadView>(
     cells: &V,
-    schema: &StoreSchema,
     site: &AuthorizedSite,
-    key: &KeyScalar,
+    keys: &[KeyScalar],
     tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
-    let planner = Planner::new(&site.root, schema);
-    let stem = planner.marker(key);
+    let stem = node_stem(site, keys);
+    let fields = node_fields(site);
     // Marker-first precedence through the one bounded prefix probe. A node with no
     // payload marker reads as payload-absent whether it is empty or a descendant-only
     // node (branch children, no payload). A markerless slot carrying an own field
@@ -796,9 +875,9 @@ fn op_read_entry<V: ReadView>(
         }
         SlotClass::Present => {}
     }
-    let mut fields = Vec::with_capacity(schema.fields.len());
-    for field in &schema.fields {
-        let leaf = planner.field_leaf(key, &field.name);
+    let mut values = Vec::with_capacity(fields.len());
+    for field in fields {
+        let leaf = physical::stem_field_leaf(&stem, &field.name);
         match read_raw(cells, &leaf)? {
             None => {
                 // A present marker with a missing required field is a marker/field
@@ -806,16 +885,16 @@ fn op_read_entry<V: ReadView>(
                 if field.required {
                     return Err(KernelFault::Corruption);
                 }
-                fields.push(None);
+                values.push(None);
             }
             Some(bytes) => {
-                fields.push(Some(
+                values.push(Some(
                     decode_value(&bytes, field.kind).ok_or(KernelFault::Corruption)?,
                 ));
             }
         }
     }
-    Ok(Some(EntryValue { fields }))
+    Ok(Some(EntryValue { fields: values }))
 }
 
 fn op_next_key<V: ReadView>(
@@ -868,8 +947,9 @@ mod tests {
 
     use super::super::physical;
     use super::super::{
-        CommitResult, DemandCoverage, EntryValue, FieldSchema, InvocationGrant, KernelFault,
-        NextKey, SessionError, SiteSpec, SiteTarget, StoreSchema,
+        BranchSchema, CommitResult, CreateOutcome, DemandCoverage, EntryValue, FieldSchema,
+        InvocationGrant, KernelFault, NextKey, Presence, ReplaceOutcome, SessionError, SiteSpec,
+        SiteTarget, StoreSchema,
     };
     use super::{Durable, DurableStore};
     use crate::codec::key::KeyScalar;
@@ -969,7 +1049,7 @@ mod tests {
             let entry = txn.site(0);
             // Insert out of order; iteration must still be ascending.
             for name in ["b", "a", "c"] {
-                txn.create_entry(&entry, KeyScalar::Str(name.into()), value_entry(1))
+                txn.create_entry(&entry, &[KeyScalar::Str(name.into())], value_entry(1))
                     .expect("create");
             }
             assert_eq!(txn.commit(), CommitResult::Committed);
@@ -1001,7 +1081,10 @@ mod tests {
         {
             let mut txn = engine.begin().expect("begin");
             txn.put(
-                &physical::field_leaf_key("counters", &KeyScalar::Str("x".into()), "value"),
+                &physical::stem_field_leaf(
+                    &physical::marker_key("counters", &KeyScalar::Str("x".into())),
+                    "value",
+                ),
                 b"5".to_vec(),
             )
             .expect("seed orphan leaf");
@@ -1026,7 +1109,7 @@ mod tests {
         let label = txn.site(2);
         txn.set_sparse(
             &label,
-            KeyScalar::Str("x".into()),
+            &[KeyScalar::Str("x".into())],
             Some(RuntimeScalar::Str("hi".into())),
         )
         .expect("set sparse");
@@ -1042,7 +1125,10 @@ mod tests {
         {
             let mut txn = engine.begin().expect("begin");
             txn.put(
-                &physical::field_leaf_key("counters", &KeyScalar::Str("x".into()), "value"),
+                &physical::stem_field_leaf(
+                    &physical::marker_key("counters", &KeyScalar::Str("x".into())),
+                    "value",
+                ),
                 b"5".to_vec(),
             )
             .expect("seed orphan leaf");
@@ -1054,7 +1140,7 @@ mod tests {
             .expect("read session");
         let entry = read.site(0);
         assert_eq!(
-            read.read_entry(&entry, KeyScalar::Str("x".into())),
+            read.read_entry(&entry, &[KeyScalar::Str("x".into())]),
             Err(KernelFault::Corruption),
         );
     }
@@ -1072,14 +1158,164 @@ mod tests {
         let entry = txn.site(0);
         txn.set_sparse(
             &label,
-            KeyScalar::Str("x".into()),
+            &[KeyScalar::Str("x".into())],
             Some(RuntimeScalar::Str("hi".into())),
         )
         .expect("set sparse");
         assert_eq!(
-            txn.read_entry(&entry, KeyScalar::Str("x".into())),
+            txn.read_entry(&entry, &[KeyScalar::Str("x".into())]),
             Ok(None),
             "a staged sparse field reads as payload-absent, not corruption",
         );
+    }
+
+    /// A schema with one keyed branch: root `books` keyed by string with a required
+    /// `title`, plus a keyed branch `notes` keyed by int with a required `text`. The
+    /// site table addresses the root entry (0) and the branch entry (1).
+    fn branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
+        let schema = StoreSchema {
+            root_name: "books".into(),
+            key: ScalarKind::Str,
+            fields: vec![FieldSchema {
+                name: "title".into(),
+                kind: ScalarKind::Str,
+                required: true,
+            }],
+            branches: vec![BranchSchema {
+                name: "notes".into(),
+                key: ScalarKind::Int,
+                fields: vec![FieldSchema {
+                    name: "text".into(),
+                    kind: ScalarKind::Str,
+                    required: true,
+                }],
+            }],
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::BranchEntry(0),
+            },
+        ];
+        (schema, sites)
+    }
+
+    /// The whole-entry branch vertical end to end: creating a branch entry under an
+    /// absent root leaves the root descendant-only (no payload marker, children below
+    /// it), so a whole read of the root is payload-absent; a create over that
+    /// descendant-only slot gives the root a payload without disturbing the branch
+    /// descendant, and a replace over the branch keeps the branch's own record while a
+    /// replace over the descendant-only root reports Missing.
+    #[test]
+    fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() {
+        let (schema, sites) = branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let book = KeyScalar::Str("a".into());
+        let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
+
+        // Create a branch entry under the absent root `a`: this writes the branch
+        // child's marker and its `text` leaf, and never the root `a` marker.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let branch = txn.site(1);
+            let entry = EntryValue {
+                fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+            };
+            assert_eq!(
+                txn.create_entry(&branch, &note, entry)
+                    .expect("branch create"),
+                CreateOutcome::Created,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        // The root `a` is descendant-only: no payload marker, so a whole read is
+        // payload-absent and presence is absent, while a replace reports Missing
+        // without touching the descendant. The branch entry itself is present.
+        {
+            let mut read = store
+                .read_session(InvocationGrant::full_store(), read_demand())
+                .expect("read session");
+            let root = read.site(0);
+            assert_eq!(
+                read.read_entry(&root, std::slice::from_ref(&book)),
+                Ok(None),
+                "a descendant-only root reads payload-absent",
+            );
+            assert_eq!(
+                read.presence(&root, std::slice::from_ref(&book)),
+                Ok(Presence::Absent),
+                "a descendant-only root has no payload marker",
+            );
+            let branch = read.site(1);
+            assert_eq!(
+                read.presence(&branch, &note),
+                Ok(Presence::Present),
+                "the branch entry is present",
+            );
+        }
+
+        // A replace over the descendant-only root reports Missing (no payload to
+        // replace) and leaves the branch untouched.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let root = txn.site(0);
+            let entry = EntryValue {
+                fields: vec![Some(RuntimeScalar::Str("late".into()))],
+            };
+            assert_eq!(
+                txn.replace_entry(&root, std::slice::from_ref(&book), entry)
+                    .expect("root replace"),
+                ReplaceOutcome::Missing,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        // Create the root `a` payload over the descendant-only slot: this writes the
+        // root marker and `title` without touching the branch descendant.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let root = txn.site(0);
+            let entry = EntryValue {
+                fields: vec![Some(RuntimeScalar::Str("Book A".into()))],
+            };
+            assert_eq!(
+                txn.create_entry(&root, std::slice::from_ref(&book), entry)
+                    .expect("root create"),
+                CreateOutcome::Created,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        // The root now has a payload and the branch descendant survived the create.
+        {
+            let mut read = store
+                .read_session(InvocationGrant::full_store(), read_demand())
+                .expect("read session");
+            let root = read.site(0);
+            assert_eq!(
+                read.read_entry(&root, std::slice::from_ref(&book)),
+                Ok(Some(EntryValue {
+                    fields: vec![Some(RuntimeScalar::Str("Book A".into()))],
+                })),
+                "the root create gave the descendant-only node a payload",
+            );
+            let branch = read.site(1);
+            assert_eq!(
+                read.read_entry(&branch, &note),
+                Ok(Some(EntryValue {
+                    fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+                })),
+                "the branch descendant survived the root create",
+            );
+        }
     }
 }

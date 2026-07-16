@@ -77,21 +77,16 @@ pub(super) fn marker_key(root: &str, key: &KeyScalar) -> Vec<u8> {
     out
 }
 
-/// The field-leaf key of `field` of the entry whose marker `stem` is given. The leaf
+/// The field-leaf key of `field` of the node whose marker `stem` is given. The leaf
 /// extends the stem with the field tag and the escaped field name, so it nests
-/// inside the entry's `(marker, cursor]` range ahead of any branch descendant. This
-/// is the single owner of the marker-stem-to-field-leaf mapping; the flat
-/// [`field_leaf_key`] is the root-entry convenience over it.
+/// inside the node's `(marker, cursor]` range ahead of any branch descendant. The
+/// single owner of the marker-stem-to-field-leaf mapping: the root entry and every
+/// branch entry derive their field leaves through it from their own resolved stem.
 pub(super) fn stem_field_leaf(stem: &[u8], field: &str) -> Vec<u8> {
     let mut out = stem.to_vec();
     out.push(FIELD_TAG);
     encode_escaped_bytes(field.as_bytes(), &mut out);
     out
-}
-
-/// The field-leaf key of `field` of entry `key` under `root`.
-pub(super) fn field_leaf_key(root: &str, key: &KeyScalar, field: &str) -> Vec<u8> {
-    stem_field_leaf(&marker_key(root, key), field)
 }
 
 /// The iteration/subtree cursor of the entry whose marker `stem` is given: the stem
@@ -116,6 +111,27 @@ pub(super) fn stem_cursor(stem: &[u8]) -> Vec<u8> {
 /// under `root`.
 pub(super) fn cursor(root: &str, key: &KeyScalar) -> Vec<u8> {
     stem_cursor(&marker_key(root, key))
+}
+
+/// The marker stem of a branch child: the parent node's marker `stem`, the branch
+/// tag, the escaped branch name, the child key, and a marker terminator. The result
+/// is itself a marker stem — the branch child's own field leaves, nested branches,
+/// and cursor derive from it exactly as a root entry's do (the recursive layout of
+/// this module's header) — and it nests inside the parent's `(marker, cursor]` range
+/// ahead of the parent's cursor, so one seek past the parent cursor skips it. This is
+/// the single owner of the marker-stem-to-branch-child mapping; the whole-entry
+/// planner and every branch session op derive a branch node's stem through it.
+pub(super) fn branch_child_stem(
+    parent_stem: &[u8],
+    branch: &str,
+    child_key: &KeyScalar,
+) -> Vec<u8> {
+    let mut out = parent_stem.to_vec();
+    out.push(BRANCH_TAG);
+    encode_escaped_bytes(branch.as_bytes(), &mut out);
+    out.extend_from_slice(&encode_key_value(child_key));
+    out.push(MARKER_TERMINATOR);
+    out
 }
 
 /// A meta cell key in the `0x10` family.
@@ -232,7 +248,7 @@ mod tests {
         let cur = cursor(root, key);
         assert!(marker < cur, "marker precedes cursor for {key:?}");
         for field in fields {
-            let leaf = field_leaf_key(root, key, field);
+            let leaf = stem_field_leaf(&marker_key(root, key), field);
             assert!(marker < leaf, "marker precedes leaf {field} for {key:?}");
             assert!(leaf < cur, "leaf {field} precedes cursor for {key:?}");
         }
@@ -281,7 +297,7 @@ mod tests {
             CellKind::Marker(k) if k == key
         ));
         assert!(matches!(
-            classify_cell(root, &field_leaf_key(root, &key, "value")),
+            classify_cell(root, &stem_field_leaf(&marker_key(root, &key), "value")),
             CellKind::Orphan
         ));
         assert!(matches!(
@@ -296,19 +312,6 @@ mod tests {
         let entry = marker_key(root, &KeyScalar::Int(0));
         let meta = meta_key("profile");
         assert_ne!(entry.first(), meta.first());
-    }
-
-    /// Build a branch child's marker stem the way the recursive layout prescribes:
-    /// the parent's marker stem, the branch tag, the escaped branch name, the child
-    /// key, and a marker terminator. Pins the layout recipe the ordering laws below
-    /// rest on; the branch-executable lane promotes it to a production builder.
-    fn branch_child_marker(parent_stem: &[u8], branch: &str, child_key: &KeyScalar) -> Vec<u8> {
-        let mut out = parent_stem.to_vec();
-        out.push(BRANCH_TAG);
-        encode_escaped_bytes(branch.as_bytes(), &mut out);
-        out.extend_from_slice(&encode_key_value(child_key));
-        out.push(MARKER_TERMINATOR);
-        out
     }
 
     /// A spread of parent keys whose escaped encodings are prefix-related, so the
@@ -339,10 +342,10 @@ mod tests {
         for parent in representative_keys() {
             let parent_marker = marker_key(root, &parent);
             let parent_cursor = cursor(root, &parent);
-            let child = branch_child_marker(&parent_marker, "notes", &KeyScalar::Int(7));
+            let child = branch_child_stem(&parent_marker, "notes", &KeyScalar::Int(7));
             let child_field = stem_field_leaf(&child, "text");
             let child_cursor = stem_cursor(&child);
-            let grandchild = branch_child_marker(&child, "tags", &KeyScalar::Str("x".into()));
+            let grandchild = branch_child_stem(&child, "tags", &KeyScalar::Str("x".into()));
             for cell in [&child, &child_field, &child_cursor, &grandchild] {
                 assert!(
                     parent_marker.as_slice() < cell.as_slice(),
@@ -364,7 +367,7 @@ mod tests {
         let root = "books";
         let parent = marker_key(root, &KeyScalar::Str("a".into()));
         let own_field = stem_field_leaf(&parent, "title");
-        let branch_child = branch_child_marker(&parent, "notes", &KeyScalar::Int(1));
+        let branch_child = branch_child_stem(&parent, "notes", &KeyScalar::Int(1));
         assert!(
             parent.as_slice() < own_field.as_slice(),
             "marker precedes own field"
@@ -386,12 +389,9 @@ mod tests {
         let b_marker = marker_key(root, &KeyScalar::Str("b".into()));
         let subtree = [
             stem_field_leaf(&a, "title"),
-            branch_child_marker(&a, "notes", &KeyScalar::Int(i64::MIN)),
-            branch_child_marker(&a, "notes", &KeyScalar::Int(i64::MAX)),
-            stem_field_leaf(
-                &branch_child_marker(&a, "notes", &KeyScalar::Int(1)),
-                "text",
-            ),
+            branch_child_stem(&a, "notes", &KeyScalar::Int(i64::MIN)),
+            branch_child_stem(&a, "notes", &KeyScalar::Int(i64::MAX)),
+            stem_field_leaf(&branch_child_stem(&a, "notes", &KeyScalar::Int(1)), "text"),
         ];
         for cell in &subtree {
             assert!(
@@ -416,10 +416,10 @@ mod tests {
         let mut children = representative_keys();
         children.sort();
         for pair in children.windows(2) {
-            let lo = branch_child_marker(&parent, "notes", &pair[0]);
+            let lo = branch_child_stem(&parent, "notes", &pair[0]);
             let lo_field = stem_field_leaf(&lo, "text");
             let lo_cursor = stem_cursor(&lo);
-            let hi = branch_child_marker(&parent, "notes", &pair[1]);
+            let hi = branch_child_stem(&parent, "notes", &pair[1]);
             assert!(
                 lo.as_slice() < lo_field.as_slice(),
                 "child marker precedes its field"
@@ -447,8 +447,8 @@ mod tests {
         let root = "books";
         let key = KeyScalar::Str("a".into());
         let parent = marker_key(root, &key);
-        let child = branch_child_marker(&parent, "notes", &KeyScalar::Int(1));
-        let grandchild = branch_child_marker(&child, "tags", &KeyScalar::Int(2));
+        let child = branch_child_stem(&parent, "notes", &KeyScalar::Int(1));
+        let grandchild = branch_child_stem(&child, "tags", &KeyScalar::Int(2));
         assert!(matches!(
             classify_cell(root, &child),
             CellKind::Descendant(k) if k == key

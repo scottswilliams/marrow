@@ -72,15 +72,20 @@ pub struct SiteSpec {
     pub target: SiteTarget,
 }
 
-/// The closed operation-target set the kernel serves over the flat root: the whole
-/// keyed payload, or one field leaf identified by its field index into
-/// [`StoreSchema::fields`]. The kernel owns the mapping from this sealed semantic
-/// target to the name-keyed physical layout (see `physical`); it is the physical
-/// projection of the verifier's closed `SemanticTarget`.
+/// The closed operation-target set the kernel serves: the root's whole keyed payload,
+/// one of the root's field leaves (by field index into [`StoreSchema::fields`]), or a
+/// keyed branch entry's whole payload. The kernel owns the mapping from this sealed
+/// semantic target to the name-keyed physical layout (see `physical`); it is the
+/// physical projection of the verifier's closed `SemanticTarget`. E03 executes
+/// single-level branches; a branch field-leaf target arrives with the field-exact
+/// branch tail (it needs branch commit reconcile).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteTarget {
     WholePayload,
     FieldLeaf(u16),
+    /// The whole payload of a keyed branch entry: the branch's index into
+    /// [`StoreSchema::branches`].
+    BranchEntry(u16),
 }
 
 /// The read/write coverage of a durable demand: whether it observes or mutates the
@@ -221,17 +226,44 @@ pub enum Reopen {
 
 /// An opaque authorized site: a kernel-minted token carrying a site's full shape,
 /// resolved once from the sealed site table at session setup. Every kernel op takes
-/// one of these, never a caller-asserted address or expected type.
+/// one of these plus a key-path, never a caller-asserted address or expected type.
+///
+/// A site addresses one durable node: the root entry (`branch` empty) or a keyed
+/// branch entry nested beneath it (one hop per nested branch; E03 executes
+/// single-level branches, so at most one). The node's marker stem is the root marker
+/// followed by one `branch_child_stem` per hop, over the operation's key-path
+/// (`[root_key]` for a root node, `[root_key, branch_key, …]` for a branch node); the
+/// key-path's scalar kinds must match `key` and each hop's `key`, which the kernel
+/// asserts as defense in depth over the verifier's proof.
 #[derive(Debug, Clone)]
 pub struct AuthorizedSite {
     root: String,
     key: ScalarKind,
+    /// The branch path from the root down to the addressed node, one hop per nested
+    /// keyed branch. Empty for a root-level node.
+    branch: Vec<BranchHop>,
     target: AuthTarget,
+}
+
+/// One hop of a site's branch path: the branch's name (which keys its physical child
+/// stem) and its single key column's scalar kind (checked against the operation key).
+#[derive(Debug, Clone)]
+struct BranchHop {
+    name: String,
+    key: ScalarKind,
+}
+
+impl BranchHop {
+    fn new(name: String, key: ScalarKind) -> Self {
+        Self { name, key }
+    }
 }
 
 #[derive(Debug, Clone)]
 enum AuthTarget {
-    Entry,
+    /// A whole-entry target: the addressed node's own record fields, resolved once at
+    /// session setup so the whole-entry ops enumerate its footprint without the schema.
+    Entry(Vec<FieldSchema>),
     Field {
         name: String,
         kind: ScalarKind,
@@ -239,7 +271,29 @@ enum AuthTarget {
     },
 }
 
+impl AuthTarget {
+    /// A field target from a resolved field schema.
+    fn field(field: &FieldSchema) -> Self {
+        Self::Field {
+            name: field.name.clone(),
+            kind: field.kind,
+            required: field.required,
+        }
+    }
+}
+
 impl AuthorizedSite {
+    /// Assemble a resolved site from its root, root key kind, branch path, and target.
+    /// Kernel-internal; the store's site resolver is the sole constructor.
+    fn new(root: String, key: ScalarKind, branch: Vec<BranchHop>, target: AuthTarget) -> Self {
+        Self {
+            root,
+            key,
+            branch,
+            target,
+        }
+    }
+
     /// The key scalar kind this site's root is keyed by.
     pub fn key_kind(&self) -> ScalarKind {
         self.key

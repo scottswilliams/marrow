@@ -682,7 +682,7 @@ fn execute<'s>(
                 let authorized = durable.site(*site);
                 let key = pop_key(&mut stack);
                 let present = durable
-                    .presence(&authorized, key)
+                    .presence(&authorized, std::slice::from_ref(&key))
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 stack.push(Value::Bool(present == Presence::Present));
                 pc += 1;
@@ -694,7 +694,7 @@ fn execute<'s>(
                 let authorized = durable.site(*site);
                 let key = pop_key(&mut stack);
                 let value = durable
-                    .read_field(&authorized, key)
+                    .read_field(&authorized, std::slice::from_ref(&key))
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 stack.push(Value::Optional(value.map(|s| Box::new(scalar_to_value(s)))));
                 pc += 1;
@@ -706,7 +706,7 @@ fn execute<'s>(
                 let authorized = durable.site(*site);
                 let key = pop_key(&mut stack);
                 let entry = durable
-                    .read_entry(&authorized, key)
+                    .read_entry(&authorized, std::slice::from_ref(&key))
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 let ty = entry_record_type(image, *site);
                 stack.push(Value::Optional(
@@ -722,7 +722,7 @@ fn execute<'s>(
                 let value = value_to_scalar(pop(&mut stack));
                 let key = pop_key(&mut stack);
                 durable
-                    .set_required(&authorized, key, value)
+                    .set_required(&authorized, std::slice::from_ref(&key), value)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -734,7 +734,7 @@ fn execute<'s>(
                 let value = as_optional(pop(&mut stack)).map(value_to_scalar);
                 let key = pop_key(&mut stack);
                 durable
-                    .set_sparse(&authorized, key, value)
+                    .set_sparse(&authorized, std::slice::from_ref(&key), value)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -752,7 +752,7 @@ fn execute<'s>(
                         .expect("verifier proved definite init of the place key slot"),
                 );
                 durable
-                    .set_sparse_present(&authorized, key, value)
+                    .set_sparse_present(&authorized, std::slice::from_ref(&key), value)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -764,7 +764,7 @@ fn execute<'s>(
                 let entry = record_to_entry(pop(&mut stack));
                 let key = pop_key(&mut stack);
                 durable
-                    .create_entry(&authorized, key, entry)
+                    .create_entry(&authorized, std::slice::from_ref(&key), entry)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -776,7 +776,7 @@ fn execute<'s>(
                 let entry = record_to_entry(pop(&mut stack));
                 let key = pop_key(&mut stack);
                 durable
-                    .replace_entry(&authorized, key, entry)
+                    .replace_entry(&authorized, std::slice::from_ref(&key), entry)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -787,7 +787,7 @@ fn execute<'s>(
                 let authorized = durable.site(*site);
                 let key = pop_key(&mut stack);
                 durable
-                    .erase_field(&authorized, key)
+                    .erase_field(&authorized, std::slice::from_ref(&key))
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -798,7 +798,7 @@ fn execute<'s>(
                 let authorized = durable.site(*site);
                 let key = pop_key(&mut stack);
                 durable
-                    .erase_entry(&authorized, key)
+                    .erase_entry(&authorized, std::slice::from_ref(&key))
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }

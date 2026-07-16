@@ -321,7 +321,7 @@ mod tests {
             .expect("read session");
         let site = read.site(0);
         assert_eq!(
-            read.presence(&site, KeyScalar::Int(1)),
+            read.presence(&site, &[KeyScalar::Int(1)]),
             Ok(Presence::Absent),
             "a freshly minted attachment starts empty",
         );

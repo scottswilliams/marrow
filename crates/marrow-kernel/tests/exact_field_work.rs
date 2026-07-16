@@ -76,7 +76,7 @@ fn writes_for_single_field_set(extra: usize) -> usize {
         .expect("txn session");
     let field = txn.site(1);
     let before = counters.writes();
-    txn.set_required(&field, KeyScalar::Int(1), RuntimeScalar::Int(7))
+    txn.set_required(&field, &[KeyScalar::Int(1)], RuntimeScalar::Int(7))
         .expect("set required");
     counters.writes() - before
 }
@@ -100,7 +100,7 @@ fn writes_for_narrow_create(extra: usize) -> usize {
     fields.extend(std::iter::repeat_n(None, extra));
     let before = counters.writes();
     assert_eq!(
-        txn.create_entry(&entry, KeyScalar::Int(1), EntryValue { fields })
+        txn.create_entry(&entry, &[KeyScalar::Int(1)], EntryValue { fields })
             .expect("create"),
         CreateOutcome::Created
     );

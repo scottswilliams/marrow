@@ -245,7 +245,7 @@ fn commit_one(
         .txn_session(InvocationGrant::full_store(), write())
         .expect("txn session");
     let site = txn.site(0);
-    txn.create_entry(&site, KeyScalar::Str(key.into()), entry(v))
+    txn.create_entry(&site, &[KeyScalar::Str(key.into())], entry(v))
         .expect("create");
     let token = txn.token();
     let result = txn.commit();
@@ -335,12 +335,12 @@ fn a_clean_abort_faults_without_poisoning() {
         .expect("read session");
     let site = read.site(1);
     assert_eq!(
-        read.read_field(&site, KeyScalar::Str("a".into())),
+        read.read_field(&site, &[KeyScalar::Str("a".into())]),
         Ok(None),
         "the aborted write is not present"
     );
     assert_eq!(
-        read.read_field(&site, KeyScalar::Str("b".into())),
+        read.read_field(&site, &[KeyScalar::Str("b".into())]),
         Ok(Some(RuntimeScalar::Int(2))),
         "the post-abort commit is present"
     );
@@ -353,7 +353,7 @@ fn read_value(store: &mut DurableStore<FaultEngine>, key: &str) -> Option<Runtim
         .read_session(InvocationGrant::full_store(), write())
         .expect("read session");
     let site = read.site(1);
-    read.read_field(&site, KeyScalar::Str(key.into()))
+    read.read_field(&site, &[KeyScalar::Str(key.into())])
         .expect("field read")
 }
 
@@ -422,7 +422,7 @@ fn a_reconcile_marker_put_failure_poisons_and_leaves_prior_state() {
             .txn_session(InvocationGrant::full_store(), write())
             .expect("txn session");
         let value = txn.site(1);
-        txn.set_required(&value, KeyScalar::Str("b".into()), RuntimeScalar::Int(2))
+        txn.set_required(&value, &[KeyScalar::Str("b".into())], RuntimeScalar::Int(2))
             .expect("stage required field");
         txn.commit()
     };
@@ -469,7 +469,7 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
                 .expect("txn session");
             let site = txn.site(0);
             let err = txn
-                .create_entry(&site, KeyScalar::Str("b".into()), entry(2))
+                .create_entry(&site, &[KeyScalar::Str("b".into())], entry(2))
                 .expect_err("the apply put fault surfaces");
             assert!(
                 matches!(err, KernelFault::Engine(_)),
@@ -511,7 +511,7 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
                 .expect("txn session");
             let site = txn.site(0);
             let err = txn
-                .erase_entry(&site, KeyScalar::Str("a".into()))
+                .erase_entry(&site, &[KeyScalar::Str("a".into())])
                 .expect_err("the apply remove fault surfaces");
             assert!(
                 matches!(err, KernelFault::Engine(_)),
