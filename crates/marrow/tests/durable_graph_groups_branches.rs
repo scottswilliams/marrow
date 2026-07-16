@@ -8,9 +8,13 @@
 //! `group`/`root` placement anchor, one `key` per branch column, and one `field`
 //! per stored field with a group- or branch-qualified path — a slot in the image
 //! DURABLE member tree, and a contribution to the durable-contract identity the
-//! verifier independently re-encodes. A resource declaring a group or branch is not
-//! yet executable (it runs at E01); an operation over one is a precise typed
-//! `check.unsupported` rejection rather than a silent drop.
+//! verifier independently re-encodes. A keyed `branch` of scalar fields is executable
+//! (see `durable_branches`/`durable_nested_branches`); a resource declaring a static
+//! `group` is not yet executable, so every durable operation over a group-bearing root is
+//! a precise typed `check.unsupported` rejection rather than a silent drop. A group's
+//! fields are part of the containing entry's materialized resource value, a model the flat
+//! durable record does not yet carry, so groups park until that materialized-value model
+//! lands.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_verify::DurableContractId;
@@ -109,6 +113,30 @@ fn unrelated_source_edits_do_not_drift_the_contract_id() {
         contract_of(&reordered, LIBRARY_IDS),
         "declaration order does not drift the durable identity"
     );
+}
+
+#[test]
+fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
+    // A resource declaring a static `group` is off the flat-executable path: the group's
+    // scalar fields are part of the containing entry's materialized resource value and its
+    // required-completeness, a model the flat durable record does not yet carry, so every
+    // durable operation over the group-bearing root is a precise typed `check.unsupported`
+    // rejection rather than a silent drop or a guessed partial-group semantics. (A keyed
+    // `branch` on the same resource is executable; the group is what parks the root.)
+    let source = format!(
+        "{LIBRARY_SOURCE}\npub fn firstTitle(id: int): string?\n    return ^books(id).title\n"
+    );
+    let diagnostics = compile(&source, LIBRARY_IDS).expect_err("a group-bearing root parks");
+    assert!(
+        codes(&diagnostics).contains(&"check.unsupported"),
+        "{diagnostics:?}"
+    );
+    // The rejection carries a located span (1-based line/column into the source).
+    let hit = diagnostics
+        .iter()
+        .find(|d| d.code == "check.unsupported")
+        .expect("a check.unsupported diagnostic");
+    assert!(hit.line >= 1 && hit.column >= 1, "{hit:?}");
 }
 
 #[test]
