@@ -1,4 +1,4 @@
-//! E02: the lexical transaction region and exact mutations, executed end to end.
+//! The lexical transaction region and exact mutations, executed end to end.
 //!
 //! A mutating export owns exactly one `transaction` region; its staged writes are
 //! published as a unit only when the region commits. These tests drive the whole

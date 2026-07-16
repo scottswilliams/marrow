@@ -1003,10 +1003,10 @@ fn branch_field_path() -> SemanticPath {
 
 #[test]
 fn a_deep_nested_branch_field_site_seals() {
-    // D02 S3: a whole-graph site over the deepest concrete address — a keyed branch's
-    // field — now resolves against the reconstructed node set and seals (parked),
-    // rather than being refused as not-yet-emitted. No opcode references it, so the
-    // image verifies: its identity is complete, execution deferred to E01.
+    // A whole-graph site over the deepest concrete address — a keyed branch's
+    // field — resolves against the reconstructed node set and seals (parked),
+    // rather than being refused as not-yet-emitted. No opcode references it, so
+    // the image verifies: its identity is complete, execution deferred.
     let mut draft = group_branch_draft(false);
     draft.add_site(SiteDef::field_leaf(branch_field_path()));
     assert!(
@@ -1059,8 +1059,8 @@ fn an_opcode_over_a_parked_branch_field_site_rejects() {
 
 /// Build a flat-executable `Book { title:string required }` root at `^books(id:int)`
 /// whose only extra is one single-level single-column-keyed scalar-field branch,
-/// `notes(noteId:string)` holding `text:string required` — the branch shape E03
-/// executes. No group, so the root is flat-executable and its branch whole-payload
+/// `notes(noteId:string)` holding `text:string required` — the executable branch
+/// shape. No group, so the root is flat-executable and its branch whole-payload
 /// site seals executable. Returns the draft and the branch's materialized record type
 /// index (the whole branch-entry read's result type).
 fn flat_branch_draft() -> (ImageDraft, u16) {
@@ -2025,8 +2025,8 @@ fn test_entry_with_a_non_unit_return_rejects() {
 
 #[test]
 fn test_entry_may_carry_durable_demand() {
-    // A test entry whose body probes durable data verifies (D04): its demand is
-    // recorded in the parallel test-entry demand table so an E01 ephemeral
+    // A test entry whose body probes durable data verifies: its demand is
+    // recorded in the parallel test-entry demand table so an ephemeral
     // attachment can bound its authority. It is still never an export.
     let mut draft = ImageDraft::new();
     let (entry_site, _value, _label) = durable_schema(&mut draft);

@@ -6,13 +6,13 @@
 //! operation algebra outcomes, the authority triple, the store profile, the
 //! name-keyed physical layout, and the commit witness.
 //!
-//! E01 landed the real flat read/write kernel and the ephemeral-memory attachment:
-//! a fresh in-memory store minted from a verified image's schema, sites, and
-//! deployment ceiling, driving read and single-write sessions bounded by
-//! `demand ∩ ceiling ∩ grant`. The parked boundary is the physical layout: the
-//! flat name-keyed root with one keyed record of scalar fields. Sparse structural
-//! values over nested branches and groups (E03) and composite keys with bounded
-//! traversal (E04) widen that layout in their own lanes; E01 never widens it.
+//! The kernel provides the flat read/write kernel and the ephemeral-memory
+//! attachment: a fresh in-memory store minted from a verified image's schema,
+//! sites, and deployment ceiling, driving read and single-write sessions bounded
+//! by `demand ∩ ceiling ∩ grant`. The executable physical layout is the
+//! name-keyed scalar-field root plus single-level, single-column-keyed
+//! scalar-field branches; groups, nested or composite-keyed branches, widened
+//! field values, and composite root keys stay parked until their owners land them.
 
 mod attach;
 mod physical;

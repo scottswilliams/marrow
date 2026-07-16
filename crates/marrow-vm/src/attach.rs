@@ -168,11 +168,10 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // v0 carries at most one durable root; a durable test with demand has exactly
     // one. A flat executable root is single-column keyed with no member tree.
     //
-    // E01 ships the flat single-column scalar root. Widening this park boundary is
-    // owned downstream: sparse structural maintenance over nested branches, groups,
-    // and widened field values is E03, and composite keys with bounded nested
-    // traversal are E04. A shape this derivation parks below stays parked until the
-    // owning lane lands it; E01 never widens the physical layout.
+    // The executable layout is the single-column scalar root plus single-level,
+    // single-column-keyed scalar-field branches. Groups, nested or composite-keyed
+    // branches, widened field values, and composite root keys park; a parked shape
+    // stays parked until its owner lands it.
     let root = image.roots().first()?;
     // A root with a group, a nested/composite branch, or a widened field is not yet
     // executable (`has_extras`); a single-level single-column-keyed scalar-field
