@@ -125,11 +125,33 @@ pub(super) fn meta_key(name: &str) -> Vec<u8> {
     out
 }
 
+/// The structural role of the byte immediately after a node's marker terminator: one
+/// of the node's own field leaves, one of its branch descendants, or an unrecognized
+/// tag. This is the single owner of post-marker tag meaning, consulted by both the
+/// iteration classifier ([`classify_cell`]) and the bounded prefix probe
+/// ([`below_marker`]) so the two never disagree on an unknown tag. An unrecognized
+/// tag is a cell shape the layout never writes, so both read it as corruption
+/// (fail-closed) rather than one skipping it and the other treating it as absent.
+enum StemTag {
+    Field,
+    Branch,
+    Unknown,
+}
+
+fn stem_tag(byte: u8) -> StemTag {
+    match byte {
+        FIELD_TAG => StemTag::Field,
+        BRANCH_TAG => StemTag::Branch,
+        _ => StemTag::Unknown,
+    }
+}
+
 /// Classify a cell key found at or after an iteration cursor, relative to `root`'s
 /// entry family. A well-formed marker yields its key; a branch descendant reached
 /// where a marker would begin identifies a descendant-only entry (a node with
-/// children but no payload); a field leaf reached there is an orphan (a marker/field
-/// mismatch — corruption); a cell outside the family ends iteration.
+/// children but no payload); a field leaf or an unrecognized tag reached there is an
+/// orphan (a marker/field or unknown-shape mismatch — corruption); a cell outside the
+/// family ends iteration.
 pub(super) enum CellKind {
     /// An entry marker: the decoded root-level key.
     Marker(KeyScalar),
@@ -160,33 +182,41 @@ pub(super) fn classify_cell(root: &str, cell_key: &[u8]) -> CellKind {
     match &rest[used..] {
         // marker stem terminator and nothing more: a marker.
         [MARKER_TERMINATOR] => CellKind::Marker(key),
-        // terminator then a branch tag: a branch descendant of a markerless entry.
-        [MARKER_TERMINATOR, BRANCH_TAG, ..] => CellKind::Descendant(key),
-        // terminator then a field tag, or any other shape: a field leaf where a
-        // marker belongs — corruption.
+        [MARKER_TERMINATOR, tag, ..] => match stem_tag(*tag) {
+            // a branch tag: a branch descendant of a markerless entry.
+            StemTag::Branch => CellKind::Descendant(key),
+            // a field tag or an unrecognized tag where a marker belongs — corruption.
+            StemTag::Field | StemTag::Unknown => CellKind::Orphan,
+        },
+        // no marker terminator after the key (a malformed cell): corruption.
         _ => CellKind::Orphan,
     }
 }
 
 /// What a cell sorting strictly after a node's marker `stem`, under the stem's own
 /// prefix, is: one of the node's own field leaves (`stem 0x10 …`), a cell of one of
-/// its branch descendants (`stem 0x30 …`), or foreign (not under the stem — which
-/// the bounded probe's prefix bound already excludes). The probe reads the first
-/// such cell to tell a descendant-only node (a branch descendant with no marker)
-/// from an orphan (an own field leaf with no marker).
+/// its branch descendants (`stem 0x30 …`), an unrecognized structural tag (a shape
+/// the layout never writes — corruption), or foreign (not under the stem — which the
+/// bounded probe's prefix bound already excludes). The probe reads the first such
+/// cell to tell a descendant-only node (a branch descendant with no marker) from an
+/// orphan (an own field leaf with no marker) and to fail closed on an unknown tag.
 pub(super) enum BelowMarker {
     OwnField,
     BranchDescendant,
+    Corrupt,
     Foreign,
 }
 
-/// Classify a cell sitting strictly after the marker `stem`, relative to that stem.
-/// The structural tag immediately after the stem distinguishes an own field leaf
-/// from a branch descendant.
+/// Classify a cell sitting strictly after the marker `stem`, relative to that stem,
+/// through the shared [`stem_tag`] owner so it agrees with [`classify_cell`] on an
+/// unrecognized tag (both read it as corruption).
 pub(super) fn below_marker(stem: &[u8], cell_key: &[u8]) -> BelowMarker {
     match cell_key.strip_prefix(stem) {
-        Some([FIELD_TAG, ..]) => BelowMarker::OwnField,
-        Some([BRANCH_TAG, ..]) => BelowMarker::BranchDescendant,
+        Some([tag, ..]) => match stem_tag(*tag) {
+            StemTag::Field => BelowMarker::OwnField,
+            StemTag::Branch => BelowMarker::BranchDescendant,
+            StemTag::Unknown => BelowMarker::Corrupt,
+        },
         _ => BelowMarker::Foreign,
     }
 }
@@ -436,5 +466,23 @@ mod tests {
             classify_cell(root, &stem_field_leaf(&parent, "title")),
             CellKind::Orphan
         ));
+    }
+
+    /// An unrecognized structural tag after a marker stem is a cell shape the layout
+    /// never writes; the iteration classifier and the bounded prefix probe agree it
+    /// is corruption through the shared [`stem_tag`] owner, so a future third tag
+    /// cannot slip through one path as absent while the other calls it corruption.
+    #[test]
+    fn an_unknown_post_stem_tag_is_corruption_on_both_paths() {
+        let root = "books";
+        let key = KeyScalar::Str("a".into());
+        let stem = marker_key(root, &key);
+        // 0x40 is neither FIELD_TAG (0x10) nor BRANCH_TAG (0x30): a tag the layout
+        // never emits, so it can only arise from corruption.
+        let mut rogue = stem.clone();
+        rogue.push(0x40);
+        rogue.extend_from_slice(b"junk");
+        assert!(matches!(below_marker(&stem, &rogue), BelowMarker::Corrupt));
+        assert!(matches!(classify_cell(root, &rogue), CellKind::Orphan));
     }
 }

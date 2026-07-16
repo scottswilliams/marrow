@@ -730,6 +730,9 @@ fn probe_slot<V: ReadView>(cells: &V, stem: &[u8]) -> Result<SlotClass, KernelFa
         Some((cell_key, _)) => match physical::below_marker(stem, cell_key) {
             physical::BelowMarker::OwnField => SlotClass::Orphan,
             physical::BelowMarker::BranchDescendant => SlotClass::DescendantOnly,
+            // An unrecognized structural tag is a shape the layout never writes: fail
+            // closed with corruption in every session, never tolerated as staging.
+            physical::BelowMarker::Corrupt => return Err(KernelFault::Corruption),
             physical::BelowMarker::Foreign => SlotClass::Absent,
         },
     })
