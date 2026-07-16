@@ -299,30 +299,26 @@ fn resolve_site(schema: &StoreSchema, target: SiteTarget) -> AuthorizedSite {
 /// The physical marker stem of the node `site` addresses at key-path `keys`: the root
 /// marker followed by one branch-child stem per branch hop. The single owner of
 /// key-path-to-node-stem resolution, so a root and a branch node derive their stem the
-/// same way. The key-path arity and each element's scalar kind are asserted against
-/// the site's declared root and hop kinds as defense in depth over the verifier's
-/// proof.
-fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Vec<u8> {
-    debug_assert_eq!(
-        keys.len(),
-        1 + site.branch.len(),
-        "the key-path arity matches the site's root plus branch hops",
-    );
-    debug_assert_eq!(
-        keys[0].scalar_kind(),
-        site.key,
-        "the root key kind matches the site",
-    );
-    let mut stem = physical::marker_key(&site.root, &keys[0]);
-    for (hop, key) in site.branch.iter().zip(&keys[1..]) {
-        debug_assert_eq!(
-            key.scalar_kind(),
-            hop.key,
-            "the branch key kind matches the hop",
-        );
+/// same way. The verifier proves the key-path arity and each element's scalar kind
+/// against the site's declared root and hop kinds, but this is the trust boundary the
+/// independently verified image crosses into the kernel, so a mismatch faults
+/// [`KernelFault::Corruption`] in release rather than dropping a hop and mis-addressing
+/// the write to a shallower node.
+fn node_stem(site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<Vec<u8>, KernelFault> {
+    let Some((root_key, branch_keys)) = keys.split_first() else {
+        return Err(KernelFault::Corruption);
+    };
+    if branch_keys.len() != site.branch.len() || root_key.scalar_kind() != site.key {
+        return Err(KernelFault::Corruption);
+    }
+    let mut stem = physical::marker_key(&site.root, root_key);
+    for (hop, key) in site.branch.iter().zip(branch_keys) {
+        if key.scalar_kind() != hop.key {
+            return Err(KernelFault::Corruption);
+        }
         stem = physical::branch_child_stem(&stem, &hop.name, key);
     }
-    stem
+    Ok(stem)
 }
 
 /// A read session: reads observe one coherent view for the whole call. Non-`Clone`;
@@ -574,11 +570,11 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     /// validates the addressed node rather than the root — the field-exact branch tail's
     /// soundness rests here. A whole-entry op carries no field target and stages nothing
     /// (it writes its marker directly).
-    fn stage_node(&mut self, site: &AuthorizedSite, keys: &[KeyScalar]) {
+    fn stage_node(&mut self, site: &AuthorizedSite, keys: &[KeyScalar]) -> Result<(), KernelFault> {
         let AuthTarget::Field { record, .. } = &site.target else {
-            return;
+            return Ok(());
         };
-        let stem = node_stem(site, keys);
+        let stem = node_stem(site, keys)?;
         let key = keys
             .last()
             .cloned()
@@ -587,6 +583,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             fields: record.clone(),
             key,
         });
+        Ok(())
     }
 }
 
@@ -632,12 +629,12 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         value: RuntimeScalar,
     ) -> Result<(), KernelFault> {
-        let leaf = physical::stem_field_leaf(&node_stem(site, keys), field_name(site, true));
+        let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, true));
         let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
         self.txn_mut()
             .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
-        self.stage_node(site, keys);
+        self.stage_node(site, keys)?;
         Ok(())
     }
     fn set_sparse(
@@ -646,14 +643,14 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         value: Option<RuntimeScalar>,
     ) -> Result<(), KernelFault> {
-        let leaf = physical::stem_field_leaf(&node_stem(site, keys), field_name(site, false));
+        let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, false));
         match value {
             Some(value) => {
                 let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
                 self.txn_mut()
                     .put(&leaf, bytes)
                     .map_err(KernelFault::Engine)?;
-                self.stage_node(site, keys);
+                self.stage_node(site, keys)?;
             }
             None => {
                 self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
@@ -671,7 +668,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         // unreachable; assert it here as defense in depth over the trust boundary.
         // A present field leaf without a present entry marker is corruption, never
         // implicit creation (the marker law).
-        let marker = node_stem(site, keys);
+        let marker = node_stem(site, keys)?;
         if read_raw(self.txn(), &marker)?.is_none() {
             return Err(KernelFault::Corruption);
         }
@@ -683,7 +680,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
-        let stem = node_stem(site, keys);
+        let stem = node_stem(site, keys)?;
         let fields = node_fields(site);
         let planner = Planner::new();
         // Marker-first precedence through the one bounded prefix probe: a create over
@@ -709,7 +706,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
-        let stem = node_stem(site, keys);
+        let stem = node_stem(site, keys)?;
         let fields = node_fields(site);
         let planner = Planner::new();
         // A markerless node (absent or descendant-only) has no payload to replace, so
@@ -732,7 +729,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
-        let leaf = physical::stem_field_leaf(&node_stem(site, keys), field_name(site, false));
+        let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, false));
         let existed = read_raw(self.txn(), &leaf)?.is_some();
         self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
         Ok(if existed {
@@ -746,7 +743,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
-        let stem = node_stem(site, keys);
+        let stem = node_stem(site, keys)?;
         let fields = node_fields(site);
         let planner = Planner::new();
         let existed = read_raw(self.txn(), &stem)?.is_some();
@@ -867,7 +864,7 @@ fn op_presence<V: ReadView>(
     site: &AuthorizedSite,
     keys: &[KeyScalar],
 ) -> Result<Presence, KernelFault> {
-    let stem = node_stem(site, keys);
+    let stem = node_stem(site, keys)?;
     let physical_key = match &site.target {
         AuthTarget::Entry(_) => stem,
         AuthTarget::Field { name, .. } => physical::stem_field_leaf(&stem, name),
@@ -886,7 +883,7 @@ fn op_read_field<V: ReadView>(
     let AuthTarget::Field { name, kind, .. } = &site.target else {
         unreachable!("verifier proved a field read targets a field site")
     };
-    let leaf = physical::stem_field_leaf(&node_stem(site, keys), name);
+    let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, name);
     match read_raw(cells, &leaf)? {
         None => Ok(None),
         Some(bytes) => decode_value(&bytes, *kind)
@@ -901,7 +898,7 @@ fn op_read_entry<V: ReadView>(
     keys: &[KeyScalar],
     tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
-    let stem = node_stem(site, keys);
+    let stem = node_stem(site, keys)?;
     let fields = node_fields(site);
     // Marker-first precedence through the one bounded prefix probe. A node with no
     // payload marker reads as payload-absent whether it is empty or a descendant-only
@@ -1236,6 +1233,53 @@ mod tests {
         let entry = read.site(0);
         assert_eq!(
             read.iterate_bounded(&entry, &[], None, bound(4)),
+            Err(KernelFault::Corruption)
+        );
+    }
+
+    #[test]
+    fn a_branch_field_write_with_a_root_only_key_path_faults() {
+        // A branch-field site addresses the two-element key-path [root_key, branch_key].
+        // A forged image that drives the strict present set over it with a single-element
+        // key path must fault at the trust boundary rather than drop the branch hop and
+        // mis-address the write to the root node. This is the release backstop over
+        // `node_stem`'s key-path arity that the verifier's proof stands on.
+        let schema = StoreSchema {
+            root_name: "counters".into(),
+            key: ScalarKind::Str,
+            fields: vec![FieldSchema {
+                name: "value".into(),
+                kind: ScalarKind::Int,
+                required: true,
+            }],
+            branches: vec![BranchSchema {
+                name: "notes".into(),
+                key: ScalarKind::Str,
+                fields: vec![FieldSchema {
+                    name: "body".into(),
+                    kind: ScalarKind::Str,
+                    required: false,
+                }],
+            }],
+        };
+        let sites = vec![SiteSpec {
+            target: SiteTarget::BranchField {
+                branch: 0,
+                field: 0,
+            },
+        }];
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write_demand())
+            .expect("txn session");
+        let branch_field = txn.site(0);
+        // One key where the branch-field node needs two ([root_key, branch_key]).
+        assert_eq!(
+            txn.set_sparse_present(
+                &branch_field,
+                &[KeyScalar::Str("root".into())],
+                Some(RuntimeScalar::Str("note".into())),
+            ),
             Err(KernelFault::Corruption)
         );
     }

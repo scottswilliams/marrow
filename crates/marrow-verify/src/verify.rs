@@ -4778,6 +4778,20 @@ fn apply_durable(
             pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurSetSparsePresent { key_slot, .. } => {
+            // The strict present form reads its single entry key from a place slot and
+            // the opcode carries one `key_slot`, so it structurally addresses the
+            // one-element root key-path — a root field site. A branch-field site needs
+            // the two-element key-path `[root_key, branch_key]`; accepting one here would
+            // let a forged image drive the strict write with only the root key, which the
+            // kernel would mis-address to the root node. `field_of` is deliberately wider
+            // (the stack-based sparse set, read, and erase arms use it for a branch field
+            // with an enforced key-path), so the strict form narrows it back here.
+            if !matches!(site_target, SealedSiteTarget::FieldLeaf(_)) {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "set-sparse-present requires a root field site",
+                ));
+            }
             let field = field_of(ctx, site_target, root)?;
             if field.required {
                 return Err(reject(

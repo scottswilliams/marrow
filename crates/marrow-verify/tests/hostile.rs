@@ -2208,6 +2208,137 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
+/// The tracer schema plus a string-keyed `notes(noteId:string)` branch of one *sparse*
+/// `body:text` field, and a site on that branch field. The branch key is `string` (the
+/// root key type) so a strict set naming the root key slot type-checks, and the field is
+/// sparse so it clears the required-field gate — isolating the site-target check as the
+/// sole remaining gate. Returns (draft, root whole-payload site, branch-field site).
+fn branch_field_schema() -> (ImageDraft, u16, u16) {
+    let mut draft = ImageDraft::new();
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let label = draft.intern_string("label");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: label,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
+    });
+    let notes = draft.intern_string("notes");
+    let notes_qualified = draft.intern_string("Counter.notes");
+    let notes_body = draft.intern_string("body");
+    let notes_record = draft.add_record_type(RecordTypeDef {
+        name: notes_qualified,
+        fields: vec![FieldDef {
+            name: notes_body,
+            ty: ImageType::scalar(Scalar::Text),
+            required: false,
+        }],
+    });
+    let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let mut members = counters_members();
+    members.push(DurableMemberDef::Branch {
+        placement: LedgerIdBytes::from_bytes([0x30; 16]),
+        name: notes,
+        record: notes_record,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x31; 16]),
+        }],
+        members: vec![DurableMemberDef::Field {
+            id: LedgerIdBytes::from_bytes([0x32; 16]),
+            required: false,
+            value: DurableValueShape::Scalar(Scalar::Text),
+        }],
+    });
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members,
+        },
+    });
+    let root_entry = draft.add_site(SiteDef::whole_payload(root_path()));
+    let branch_field = draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(PLACEMENT_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x30; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Field,
+            LedgerIdBytes::from_bytes([0x32; 16]),
+        ),
+    ])));
+    (draft, root_entry.index(), branch_field.index())
+}
+
+/// The strict present-entry sparse set (`DurSetSparsePresent`) is structurally single-key:
+/// the VM reads one entry key from the named place slot. A branch-field site needs the
+/// two-element key-path `[root_key, branch_key]`, so a forged image that proves the root
+/// entry present with an `exists` guard and then drives the strict set over a branch-field
+/// site — supplying only the root key — must be refused at the function phase. Accepting it
+/// would let the kernel drop the branch hop and mis-address the write to the root node.
+#[test]
+fn a_strict_sparse_set_over_a_branch_field_rejects() {
+    let (mut draft, root_entry, branch_field) = branch_field_schema();
+    let text = draft.intern_text("x");
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("e");
+    // Slot 0 is the root key (string param). The guard `LocalGet(0); DurExists(root
+    // whole payload); JumpIfFalse` proves slot 0's root entry present on its taken edge;
+    // the strict set then names the branch-field site with that same single slot.
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::DurExists(root_entry),
+        Instr::JumpIfFalse(7),
+        Instr::ConstLoad(text.index()),
+        Instr::SomeWrap,
+        Instr::DurSetSparsePresent {
+            site: branch_field,
+            key_slot: 0,
+        },
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Text)],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
 #[test]
 fn flow_transaction_owner_may_not_be_called_rejects() {
     // A helper owns a transaction (contains TxnBegin); an export that calls it is a
