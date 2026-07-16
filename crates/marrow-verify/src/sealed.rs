@@ -257,19 +257,18 @@ pub enum SealedInstr {
 /// derivation from the resolved graph node, never a value trusted from the image.
 ///
 /// A branch target names its node by a *branch path*: the per-level branch indices from
-/// the root down to the addressed branch node. The representation admits nested branches
-/// (a longer path), but the verifier currently seals only single-hop branch paths — a
-/// nested branch parks (its whole root is not flat-executable), so every sealed branch
-/// path here has exactly one element. When nested-branch admission lands (post
-/// checkpoint 1), [`SealedRoot::branches`] becomes recursive and the seal fills deeper
-/// paths; until then a consumer resolves the single hop against the flat branch list.
+/// the root down to the addressed branch node, each an index into that level's
+/// declaration-ordered branch list ([`SealedRoot::branches`], then each
+/// [`SealedBranch::branches`]). A single-element path names a direct branch of the root;
+/// a longer path names a branch nested one level deeper per element. A branch node's
+/// key-path is the root key followed by one key per path element.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedSiteTarget {
     WholePayload,
     FieldLeaf(u16),
     /// The whole payload of a keyed branch entry, named by its branch path (per-level
-    /// branch indices into the declaration-ordered branch list at each level; single-hop
-    /// at this stage). Its operations address the `(1 + path.len())`-element key-path
+    /// branch indices into the declaration-ordered branch list at each level). Its
+    /// operations address the `(1 + path.len())`-element key-path
     /// `[root_key, branch_key, …]`.
     BranchEntry(Box<[u16]>),
     /// One field leaf of a keyed branch entry: the branch node's branch path and the
@@ -326,22 +325,26 @@ pub struct SealedRoot {
     /// scalar fields does *not* count — it is executable (E03), so a root of scalar
     /// fields and such branches is flat-executable.
     pub(crate) has_extras: bool,
-    /// The root's single-level single-column-keyed scalar-field branches, in
-    /// declaration order. Populated only for a flat-executable root (where every
-    /// branch is such a branch); empty otherwise, so a [`SealedSiteTarget::BranchEntry`]
-    /// index into it is meaningful exactly when a branch site sealed executable.
+    /// The root's single-column-keyed scalar-field branches, in declaration order, each
+    /// carrying its own nested branches recursively. Populated only for a flat-executable
+    /// root; empty otherwise, so a [`SealedSiteTarget::BranchEntry`] branch path into this
+    /// tree is meaningful exactly when a branch site sealed executable.
     pub(crate) branches: Vec<SealedBranch>,
 }
 
-/// A verified single-level keyed branch of a flat-executable root: its physical name,
-/// its single key column's scalar, and its materialized record type index. The branch
-/// entry is a distinct durable node one level below the root, reusing the root's
-/// marker/field topology; its whole-payload operations address `[root_key, branch_key]`.
+/// A verified single-column-keyed keyed branch of a flat-executable root: its physical
+/// name, its single key column's scalar, its materialized record type index, and its own
+/// nested branches in declaration order. The branch entry is a distinct durable node one
+/// level below its parent, reusing the parent's marker/field topology; its whole-payload
+/// operations address the parent's key-path extended with the branch key. The list is
+/// recursive — a branch may declare keyed branches of its own — so a
+/// [`SealedSiteTarget::BranchEntry`] branch path indexes this tree level by level.
 #[derive(Debug, Clone)]
 pub struct SealedBranch {
     pub(crate) name: Rc<str>,
     pub(crate) key: Scalar,
     pub(crate) record: u16,
+    pub(crate) branches: Vec<SealedBranch>,
 }
 
 impl SealedBranch {
@@ -356,6 +359,10 @@ impl SealedBranch {
     /// The branch entry's materialized record type index.
     pub fn record(&self) -> u16 {
         self.record
+    }
+    /// The branch's own nested branches, in declaration order.
+    pub fn branches(&self) -> &[SealedBranch] {
+        &self.branches
     }
 }
 

@@ -164,24 +164,24 @@ impl DecodedMember {
         )
     }
 
-    /// Whether this member is a single-level single-column-keyed scalar-field branch —
-    /// the branch shape E03 executes. Its key is one column and every direct member is
-    /// a plain scalar field (no nested group or branch, no widened field). A composite
-    /// branch key or a deeper member tree is E04's, not this.
+    /// Whether this member is a single-column-keyed scalar-field branch, recursively —
+    /// the branch shape the kernel executes at any depth. Its key is one column and every
+    /// direct member itself keeps flat: a plain scalar field, or a nested branch that is
+    /// itself a simple branch. A composite branch key, a group, or a widened field breaks
+    /// it. The recursion admits an arbitrarily deep chain of single-column scalar-field
+    /// branches, which the recursive physical layout and profile serve.
     fn is_simple_branch(&self) -> bool {
         matches!(
             self,
             DecodedMember::Branch { keys, members, .. }
                 if keys.len() == 1
-                    && members.iter().all(|inner| {
-                        matches!(inner, DecodedMember::Field { .. }) && !inner.is_nonscalar_field()
-                    })
+                    && members.iter().all(DecodedMember::keeps_root_flat)
         )
     }
 
     /// Whether this member keeps its containing root flat-executable: a plain scalar
-    /// field or a simple branch. A group, a composite/nested branch, or a widened
-    /// field does not.
+    /// field or a simple (recursively single-column scalar-field) branch. A group, a
+    /// composite branch, or a widened field does not.
     fn keeps_root_flat(&self) -> bool {
         match self {
             DecodedMember::Field { .. } => !self.is_nonscalar_field(),
@@ -1318,11 +1318,15 @@ fn resolve_site(
     if !is_flat_executable_root(root) {
         return Ok(parked());
     }
+    // The root is flat-executable, so every intermediate placement step below the root is
+    // a keyed-branch placement (no groups on the flat path). `steps[2..]` are the branch
+    // placements from the root down; a field target's last step is the field id.
+    let below_root = &steps[marrow_image::bounds::MIN_SITE_PATH_STEPS..];
     let sealed = match target {
         SemanticTarget::WholePayload => match node.kind {
             // The root's own whole entry: exactly the two root steps.
             SemanticNodeKind::Root => {
-                if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS {
+                if !below_root.is_empty() {
                     return Ok(parked());
                 }
                 SealedSite::Flat {
@@ -1330,58 +1334,46 @@ fn resolve_site(
                     target: SealedSiteTarget::WholePayload,
                 }
             }
-            // A direct single-level branch entry: the two root steps plus the branch
-            // placement step. A deeper (nested) branch — more steps — parks (E04). The
-            // root is flat-executable here, so every branch is a simple branch, and the
-            // branch's position among the root's branch members indexes the sealed
-            // branch list.
+            // A keyed branch entry at any depth: every step below the root is a branch
+            // placement. Walk the placement chain through the recursive member tree into a
+            // per-level branch path; a step that names no branch at its level parks.
             SemanticNodeKind::Branch => {
-                if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 {
-                    return Ok(parked());
-                }
-                match branch_index(&root.members, steps[2].id) {
-                    // A single-hop branch path: a direct branch of the root. A nested
-                    // branch parked above (its root is not flat-executable).
-                    Some(index) => SealedSite::Flat {
+                match walk_branch_path(&root.members, below_root) {
+                    Some((path, _)) => SealedSite::Flat {
                         root: root_index,
-                        target: SealedSiteTarget::BranchEntry(Box::from([index])),
+                        target: SealedSiteTarget::BranchEntry(path.into()),
                     },
                     None => parked(),
                 }
             }
             _ => unreachable!("a whole-payload target resolved to a root or branch node"),
         },
-        SemanticTarget::FieldLeaf => match steps.len() {
-            // A top-level root field: application, root placement, field.
-            n if n == marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 => {
-                match top_level_field_index(&root.members, steps[2].id) {
-                    Some(field_index) => SealedSite::Flat {
+        SemanticTarget::FieldLeaf => {
+            // The last step is the field id; the steps before it are the branch placements
+            // from the root down to the field's containing node (empty for a top-level
+            // field). Walk the branch chain, then resolve the field within the reached
+            // node's own members.
+            let Some((&field_step, branch_steps)) = below_root.split_last() else {
+                return Ok(parked());
+            };
+            match walk_branch_path(&root.members, branch_steps) {
+                Some((path, node_members)) => match top_level_field_index(node_members, field_step.id) {
+                    Some(field) if path.is_empty() => SealedSite::Flat {
                         root: root_index,
-                        target: SealedSiteTarget::FieldLeaf(field_index),
+                        target: SealedSiteTarget::FieldLeaf(field),
                     },
-                    None => parked(),
-                }
-            }
-            // A single-level branch field: application, root placement, branch
-            // placement, field. The root is flat-executable here, so its direct branches
-            // are single-level scalar-field branches; resolve the branch's position and
-            // the field's position within that branch's record. A deeper (nested) branch
-            // field — more steps — parks (E04).
-            n if n == marrow_image::bounds::MIN_SITE_PATH_STEPS + 2 => {
-                match branch_field_index(&root.members, steps[2].id, steps[3].id) {
-                    // A single-hop branch path: a field of a direct branch of the root.
-                    Some((branch, field)) => SealedSite::Flat {
+                    Some(field) => SealedSite::Flat {
                         root: root_index,
                         target: SealedSiteTarget::BranchField {
-                            branch: Box::from([branch]),
+                            branch: path.into(),
                             field,
                         },
                     },
                     None => parked(),
-                }
+                },
+                None => parked(),
             }
-            _ => parked(),
-        },
+        }
         // Index scan/lookup targets returned parked above, before the flat/field logic.
         SemanticTarget::IndexScan | SemanticTarget::IndexLookup => {
             unreachable!("index read targets are sealed and returned before this point")
@@ -1397,6 +1389,32 @@ fn resolve_site(
 /// graph, so the flat/parked classification never trusts a compiler summary.
 fn is_flat_executable_root(root: &DecodedRoot) -> bool {
     root.keys.len() == 1 && root.members.iter().all(DecodedMember::keeps_root_flat)
+}
+
+/// Seal a member tree's keyed branches into the recursive [`SealedBranch`] tree, in
+/// declaration order, so a [`SealedSiteTarget::BranchEntry`] branch path indexes it level
+/// by level. Called only for a flat-executable root, so every branch is a single-column
+/// scalar-field branch (its `keys[0]` is its one key scalar) and its own members recurse
+/// through the same rule.
+fn seal_branches(members: &[DecodedMember], strings: &[Rc<str>]) -> Vec<SealedBranch> {
+    members
+        .iter()
+        .filter_map(|member| match member {
+            DecodedMember::Branch {
+                name,
+                record,
+                keys,
+                members,
+                ..
+            } => Some(SealedBranch {
+                name: strings[*name as usize].clone(),
+                key: keys[0].0,
+                record: *record,
+                branches: seal_branches(members, strings),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The index of the top-level field with ledger id `field_id` among a root's member
@@ -1415,27 +1433,30 @@ fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> 
         .map(|index| index as u16)
 }
 
-/// The branch index and field index of a single-level branch field: the branch with
-/// placement id `branch_placement` among a root's declaration-ordered branch members,
-/// paired with the field's position among that branch's stored field members (which is
-/// the field's index into the branch's materialized record — both count the branch's
-/// direct field members in declaration order). `None` when either does not resolve, so
-/// a branch-field site whose branch or field does not exist parks rather than sealing
-/// against a wrong node.
-fn branch_field_index(
-    members: &[DecodedMember],
-    branch_placement: LedgerIdBytes,
-    field_id: LedgerIdBytes,
-) -> Option<(u16, u16)> {
-    let branch = branch_index(members, branch_placement)?;
-    let branch_members = members.iter().find_map(|member| match member {
-        DecodedMember::Branch {
-            placement, members, ..
-        } if *placement == branch_placement => Some(members),
-        _ => None,
-    })?;
-    let field = top_level_field_index(branch_members, field_id)?;
-    Some((branch, field))
+/// Walk a chain of branch placement steps through a member tree, accumulating the
+/// per-level branch index at each hop and descending into that branch's own members. The
+/// returned path indexes the recursive sealed branch tree level by level, and the returned
+/// member slice is the deepest reached node's own members (the whole tree when the chain is
+/// empty), against which a field leaf resolves. `None` when a step names no branch at its
+/// level — a group-scoped or otherwise non-branch step parks rather than mis-resolving.
+/// Only branch steps appear here on the flat-executable path (no groups), so a resolved
+/// walk is a pure branch chain.
+fn walk_branch_path<'a>(
+    mut members: &'a [DecodedMember],
+    steps: &[SemanticStep],
+) -> Option<(Vec<u16>, &'a [DecodedMember])> {
+    let mut path = Vec::with_capacity(steps.len());
+    for step in steps {
+        let index = branch_index(members, step.id)?;
+        path.push(index);
+        members = members.iter().find_map(|member| match member {
+            DecodedMember::Branch {
+                placement, members, ..
+            } if *placement == step.id => Some(members.as_slice()),
+            _ => None,
+        })?;
+    }
+    Some((path, members))
 }
 
 /// The index of the keyed `branch` with placement id `placement` among a root's
@@ -2481,25 +2502,13 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .iter()
         .map(|root| {
             let flat = is_flat_executable_root(root);
-            // A flat-executable root's branches are all single-level single-column
-            // scalar-field branches; seal them in declaration order so a BranchEntry
-            // site indexes into this list. A non-flat root parks every branch site, so
-            // it needs no sealed branch list (and a composite-key branch has no single
-            // key scalar to seal here).
+            // A flat-executable root's branches are all single-column scalar-field
+            // branches, each carrying its own nested branches; seal the whole tree in
+            // declaration order so a BranchEntry branch path indexes it level by level. A
+            // non-flat root parks every branch site, so it needs no sealed branch list (and
+            // a composite-key branch has no single key scalar to seal here).
             let branches = if flat {
-                root.members
-                    .iter()
-                    .filter_map(|member| match member {
-                        DecodedMember::Branch {
-                            name, record, keys, ..
-                        } => Some(SealedBranch {
-                            name: decoded.strings[*name as usize].clone(),
-                            key: keys[0].0,
-                            record: *record,
-                        }),
-                        _ => None,
-                    })
-                    .collect()
+                seal_branches(&root.members, &decoded.strings)
             } else {
                 Vec::new()
             };
@@ -4721,26 +4730,26 @@ fn apply_durable(
         ));
     };
     let key_ty = VType::bare_scalar(*key);
-    // A branch entry site addresses the two-element key-path `[root_key, branch_key]`,
-    // pushed root-first so the branch key is on top; every other site addresses the
-    // single root key. `key_path` lists the key types in stack-pop order (branch key
-    // first), and `entry_record` is the record a whole-entry op reads or writes — the
-    // branch's own record for a branch site, the root's otherwise.
+    // A branch site addresses the `(1 + path.len())`-element key-path
+    // `[root_key, branch_key, …]`, pushed root-first so the deepest branch key is on top;
+    // every other site addresses the single root key. `key_path` lists the key types in
+    // stack-pop order (deepest branch key first, root key last), and `entry_record` is the
+    // record a whole-entry op reads or writes — the addressed branch's own record for a
+    // branch site, the root's otherwise.
     let (key_path, entry_record): (Vec<VType>, u16) = match site_target {
-        // A branch entry and a branch field both address the two-element key-path
-        // `[root_key, branch_key]`, pushed root-first so the branch key is on top. The
-        // record is the branch's own; a branch field op reads no whole-entry record, so
+        // A branch entry and a branch field both address the branch node's key-path; the
+        // record is the branch's own. A branch field op reads no whole-entry record, so
         // `entry_record` is unused there but kept the branch's for consistency.
         SealedSiteTarget::BranchEntry(path)
         | SealedSiteTarget::BranchField { branch: path, .. } => {
-            let branch = root
-                .branches
-                .get(single_branch_hop(path) as usize)
-                .ok_or(reject(
-                    VerifyPhase::Function,
-                    "durable branch index out of range",
-                ))?;
-            (vec![VType::bare_scalar(branch.key), key_ty], branch.record)
+            let branch = resolve_sealed_branch(root, path)?;
+            // Key types in stack-pop order: the branch chain's keys deepest-first, then the
+            // root key. `branch_key_path` yields the chain root-first, so reverse it onto
+            // the root key.
+            let mut key_path = branch_key_path(root, path)?;
+            key_path.reverse();
+            key_path.push(key_ty);
+            (key_path, branch.record)
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
             (vec![key_ty], root.record)
@@ -4932,14 +4941,7 @@ fn field_of<'a>(
     let (record, field) = match target {
         SealedSiteTarget::FieldLeaf(field) => (root.record, *field),
         SealedSiteTarget::BranchField { branch, field } => {
-            let branch = root
-                .branches
-                .get(single_branch_hop(branch) as usize)
-                .ok_or(reject(
-                    VerifyPhase::Function,
-                    "durable branch index out of range",
-                ))?;
-            (branch.record, *field)
+            (resolve_sealed_branch(root, branch)?.record, *field)
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => {
             return Err(reject(
@@ -4975,18 +4977,45 @@ fn require_entry(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
     }
 }
 
-/// The single branch index of a sealed single-hop branch path. The verifier seals only
-/// single-hop branch paths — a nested branch parks (its root is not flat-executable), so
-/// every sealed `SealedSite::Flat` branch path has exactly one element — so this resolves
-/// the hop against the flat sealed branch list. A verifier-established invariant over the
-/// verifier's own resolved sites, not image-derived data; a multi-hop flat site cannot be
-/// sealed. Nested admission (post checkpoint 1) makes the branch list recursive and walks
-/// the whole path here instead.
-fn single_branch_hop(path: &[u16]) -> u16 {
-    match path {
-        [hop] => *hop,
-        _ => unreachable!("the verifier seals only single-hop branch paths"),
+/// Walk a branch path through the recursive sealed branch tree, returning the deepest
+/// addressed branch. Refuses a path element out of range at any level, so a forged image
+/// naming a branch index past the sealed tree is rejected here — the trust backstop over
+/// the verifier's own site resolution. An empty path is not a branch site.
+fn resolve_sealed_branch<'a>(
+    root: &'a SealedRoot,
+    path: &[u16],
+) -> Result<&'a SealedBranch, VerifyRejection> {
+    let mut branches: &'a [SealedBranch] = &root.branches;
+    let mut deepest: Option<&'a SealedBranch> = None;
+    for &index in path {
+        let branch = branches.get(index as usize).ok_or(reject(
+            VerifyPhase::Function,
+            "durable branch index out of range",
+        ))?;
+        deepest = Some(branch);
+        branches = &branch.branches;
     }
+    deepest.ok_or(reject(
+        VerifyPhase::Function,
+        "a branch site requires a non-empty branch path",
+    ))
+}
+
+/// The branch chain's key types root-first (`[b1_key, b2_key, …]`) along a branch path,
+/// each a bare scalar. Refuses a path element out of range at any level, the same
+/// forged-image backstop as [`resolve_sealed_branch`].
+fn branch_key_path(root: &SealedRoot, path: &[u16]) -> Result<Vec<VType>, VerifyRejection> {
+    let mut branches = &root.branches;
+    let mut keys = Vec::with_capacity(path.len());
+    for &index in path {
+        let branch = branches.get(index as usize).ok_or(reject(
+            VerifyPhase::Function,
+            "durable branch index out of range",
+        ))?;
+        keys.push(VType::bare_scalar(branch.key));
+        branches = &branch.branches;
+    }
+    Ok(keys)
 }
 
 /// Require `value` to be exactly `want`.

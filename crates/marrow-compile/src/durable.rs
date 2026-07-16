@@ -91,22 +91,29 @@ pub(crate) struct DurableBranchField {
     pub(crate) site: u16,
 }
 
-/// One executable keyed `branch` of a flat-executable root: a single-level
-/// single-column-keyed scalar-field subtree one level below the root. Its
-/// whole-entry operations address the two-element key-path `[root_key, branch_key]`
-/// through `entry_site`, and its constructor `Resource.branch(field: value, …)`
-/// builds `record` from `fields` in declaration order.
+/// One executable keyed `branch` of a flat-executable root: a single-column-keyed
+/// scalar-field subtree one or more levels below the root, carrying its own nested
+/// branches recursively. Its whole-entry operations address the key-path
+/// `[root_key, branch_key, …]` through `entry_site`, and its constructor
+/// `Resource.branch.…(field: value, …)` builds `record` from `fields` in declaration
+/// order.
 pub(crate) struct DurableBranch {
     pub(crate) name: String,
     pub(crate) key: ScalarType,
     pub(crate) record: marrow_image::TypeId,
     pub(crate) entry_site: u16,
     pub(crate) fields: Vec<DurableBranchField>,
+    pub(crate) branches: Vec<DurableBranch>,
 }
 
 impl DurableBranch {
     pub(crate) fn field(&self, name: &str) -> Option<&DurableBranchField> {
         self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// The nested branch declared with the simple name `name`, if any.
+    pub(crate) fn branch(&self, name: &str) -> Option<&DurableBranch> {
+        self.branches.iter().find(|branch| branch.name == name)
     }
 
     /// The declaration-order index and descriptor of the branch field `name` — the
@@ -1049,6 +1056,9 @@ struct BranchSites {
     entry: u16,
     fields: Vec<u16>,
     record: marrow_image::TypeId,
+    /// The captured sites of this branch's own nested branches, in declaration order, so a
+    /// nested-branch lowerer resolves a deeper `^root(k).b(bk).s(sk)` path level by level.
+    branches: Vec<BranchSites>,
 }
 
 /// A child semantic path: `parent` extended by one kind-tagged ledger-id step.
@@ -1084,12 +1094,10 @@ fn emit_placement_site(draft: &mut ImageDraft, steps: &[SemanticStep]) -> u16 {
 }
 
 /// Emit the operation sites of the root's whole member tree under `root_steps`,
-/// capturing the root's direct field-leaf sites and each top-level branch's entry and
-/// direct field-leaf sites for the flat executable lowerer. Nested content (groups and
-/// deeper branches) emits its sites through [`emit_subtree_sites`] without capture — a
-/// non-flat root parks those, and an executable branch has only direct scalar fields,
-/// so a top-level branch's captured `fields` is complete there. The emission order is
-/// pre-order, a placement site before its members, mirroring
+/// capturing the root's direct field-leaf sites and each top-level branch's captured
+/// sites (recursively) for the flat executable lowerer. A static `group` emits its sites
+/// through [`emit_subtree_sites`] without capture — a group parks the whole root. The
+/// emission order is pre-order, a placement site before its members, mirroring
 /// [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every site resolves
 /// against the verifier's independently reconstructed node set.
 fn emit_root_member_sites(
@@ -1114,43 +1122,59 @@ fn emit_root_member_sites(
                 record,
                 ..
             } => {
-                let steps = child_steps(root_steps, SemanticStepKind::Placement, *placement);
-                let entry = emit_placement_site(draft, &steps);
-                let mut fields = Vec::new();
-                for inner in members {
-                    match inner {
-                        // A branch's own direct scalar fields, in declaration order,
-                        // back its field-exact sites; the verifier counts them the same
-                        // way, so this is the leaf it seals as `BranchField(index)`.
-                        DurableMemberDef::Field { id, .. } => {
-                            fields.push(emit_field_site(draft, &steps, *id));
-                        }
-                        // A nested group or branch inside a branch parks; emit its sites
-                        // without capture (only a flat root's direct branch of scalar
-                        // fields is executable, where these never occur).
-                        DurableMemberDef::Group { id, members } => {
-                            let steps = child_steps(&steps, SemanticStepKind::Group, *id);
-                            emit_subtree_sites(draft, &steps, members);
-                        }
-                        DurableMemberDef::Branch {
-                            placement, members, ..
-                        } => {
-                            let steps =
-                                child_steps(&steps, SemanticStepKind::Placement, *placement);
-                            emit_placement_site(draft, &steps);
-                            emit_subtree_sites(draft, &steps, members);
-                        }
-                    }
-                }
-                top_branches.push(BranchSites {
-                    entry,
-                    fields,
-                    record: *record,
-                });
+                top_branches.push(emit_branch_sites(
+                    draft, root_steps, *placement, *record, members,
+                ));
             }
         }
     }
     (top_field_sites, top_branches)
+}
+
+/// Emit one keyed branch's sites under `parent_steps` and capture them recursively: its
+/// whole-payload entry site, its direct field-leaf sites in declaration order, and each
+/// nested branch's captured sites. A static `group` inside a branch parks the whole root
+/// (`member_keeps_root_flat` refuses it), so on the executable path only fields and nested
+/// branches occur; a group is still emitted without capture for identity completeness. The
+/// direct field order is the branch's materialized-record order — the leaf the verifier
+/// seals as `BranchField(field)` — and the nested-branch order indexes the sealed branch
+/// tree, so the compiler's and verifier's independent resolutions agree.
+fn emit_branch_sites(
+    draft: &mut ImageDraft,
+    parent_steps: &[SemanticStep],
+    placement: LedgerIdBytes,
+    record: marrow_image::TypeId,
+    members: &[DurableMemberDef],
+) -> BranchSites {
+    let steps = child_steps(parent_steps, SemanticStepKind::Placement, placement);
+    let entry = emit_placement_site(draft, &steps);
+    let mut fields = Vec::new();
+    let mut branches = Vec::new();
+    for inner in members {
+        match inner {
+            DurableMemberDef::Field { id, .. } => {
+                fields.push(emit_field_site(draft, &steps, *id));
+            }
+            DurableMemberDef::Group { id, members } => {
+                let steps = child_steps(&steps, SemanticStepKind::Group, *id);
+                emit_subtree_sites(draft, &steps, members);
+            }
+            DurableMemberDef::Branch {
+                placement,
+                members,
+                record,
+                ..
+            } => {
+                branches.push(emit_branch_sites(draft, &steps, *placement, *record, members));
+            }
+        }
+    }
+    BranchSites {
+        entry,
+        fields,
+        record,
+        branches,
+    }
 }
 
 /// Emit the field-leaf and whole-payload sites of every node in a member subtree under
@@ -1192,41 +1216,43 @@ fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
         DurableMemberDef::Field { value, .. } => matches!(value, DurableValueShape::Scalar(_)),
         DurableMemberDef::Group { .. } => false,
         DurableMemberDef::Branch { keys, members, .. } => {
-            keys.len() == 1
-                && members.iter().all(|inner| {
-                    matches!(
-                        inner,
-                        DurableMemberDef::Field {
-                            value: DurableValueShape::Scalar(_),
-                            ..
-                        }
-                    )
-                })
+            keys.len() == 1 && members.iter().all(member_keeps_root_flat)
         }
     }
 }
 
-/// The executable branch descriptors of a flat-executable root, in declaration order.
-/// Each branch's materialized record type and its whole-payload and per-field sites come
-/// from `top_branches`, and its simple name, key, and field plan from the source resource
-/// declaration — all in the same declaration order, so `top_branches[i]` is the i-th
-/// branch member, which the verifier seals as `BranchEntry(i)` / `BranchField(i, _)`.
+/// The executable branch descriptors of a flat-executable root, in declaration order,
+/// recursively. Each branch's materialized record type and its whole-payload, per-field,
+/// and nested-branch sites come from `top_branches`, and its simple name, key, field plan,
+/// and nested branches from the source resource declaration — all in the same declaration
+/// order, so a branch path indexes both the sealed branch tree and this one identically.
 /// Called only when the caller has proven the root flat-executable, so every branch is a
-/// single-level single-column-keyed scalar-field branch and `fields[j]` is the site of
-/// its j-th scalar field.
+/// single-column-keyed scalar-field branch (its nested members are scalar fields and simple
+/// branches).
 fn build_executable_branches(
     records: &TypeRegistry,
     resource: &ResourceDecl,
     top_branches: &[BranchSites],
 ) -> Vec<DurableBranch> {
-    resource
-        .members
+    build_branches(records, &resource.members, top_branches)
+}
+
+/// Build the [`DurableBranch`] descriptors for the keyed branches among `members`, zipped
+/// positionally against their captured `sites`, recursing into each branch's own members
+/// and captured nested-branch sites. The source keyed groups and the captured `BranchSites`
+/// are both in declaration order, so the zip pairs each branch with its own sites.
+fn build_branches(
+    records: &TypeRegistry,
+    members: &[ResourceMember],
+    sites: &[BranchSites],
+) -> Vec<DurableBranch> {
+    members
         .iter()
         .filter_map(|member| match member {
             ResourceMember::Group(group) if !group.keys.is_empty() => Some(group),
             _ => None,
         })
-        .zip(top_branches)
+        .zip(sites)
         .map(|(group, sites)| {
             let key = scalar_of(&records.expand(&group.keys[0].ty))
                 .expect("an executable branch has a single orderable-key-scalar column");
@@ -1249,12 +1275,14 @@ fn build_executable_branches(
                     }
                 })
                 .collect();
+            let branches = build_branches(records, &group.members, &sites.branches);
             DurableBranch {
                 name: group.name.clone(),
                 key,
                 record: sites.record,
                 entry_site: sites.entry,
                 fields,
+                branches,
             }
         })
         .collect()
