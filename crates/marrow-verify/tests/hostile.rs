@@ -1146,8 +1146,8 @@ fn branch_entry_path() -> SemanticPath {
 
 #[test]
 fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
-    // E03 S4: a single-level branch whole-payload site on a flat-executable root now
-    // seals executable, and a read over it type-checks the two-element key-path
+    // A single-level branch whole-payload site on a flat-executable root now seals
+    // executable, and a read over it type-checks the two-element key-path
     // `[root_key, branch_key]` (int then string) and yields the branch's own record.
     let (mut draft, branch_record) = flat_branch_draft();
     let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));

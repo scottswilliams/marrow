@@ -1454,4 +1454,70 @@ mod tests {
             "a branch own leaf without its branch marker is corruption",
         );
     }
+
+    /// The descendant-skip law of forward iteration: `next_key` visits only
+    /// payload-bearing (marker-present) entries, seeking a descendant-only entry's
+    /// whole subtree in one cursor step. Present entries `k1` and `k4` bracket two
+    /// descendant-only entries `k2` and `k3` — each a markerless root carrying only a
+    /// keyed branch child — injected directly so the ops cannot construct the state.
+    /// Iteration from `k1` jumps to `k4`, skipping both; resuming from inside the
+    /// descendant-only run lands on `k4` too; and iteration terminates after `k4`.
+    #[test]
+    fn next_key_skips_a_run_of_descendant_only_entries_between_present_siblings() {
+        let mut cells = Vec::new();
+        // Present entries: a root marker plus its `title` leaf.
+        for present in ["k1", "k4"] {
+            let stem = book_stem(present);
+            cells.push((stem.clone(), physical::MARKER_VALUE.to_vec()));
+            cells.push((physical::stem_field_leaf(&stem, "title"), b"T".to_vec()));
+        }
+        // Descendant-only entries: a branch child (marker plus `text` leaf) with no
+        // root marker, so the root has children but no visitable payload.
+        for descendant_only in ["k2", "k3"] {
+            let branch_stem = physical::branch_child_stem(
+                &book_stem(descendant_only),
+                "notes",
+                &KeyScalar::Int(7),
+            );
+            cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
+            cells.push((
+                physical::stem_field_leaf(&branch_stem, "text"),
+                b"hi".to_vec(),
+            ));
+        }
+        let mut store = injected_branch_store(&cells);
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        let k = |s: &str| KeyScalar::Str(s.into());
+
+        // From the start, the first present entry; then straight to `k4`, skipping the
+        // two descendant-only entries in one run; then End.
+        assert_eq!(read.next_key(&root, None), Ok(NextKey::Next(k("k1"))));
+        assert_eq!(
+            read.next_key(&root, Some(k("k1"))),
+            Ok(NextKey::Next(k("k4"))),
+            "next_key skips both descendant-only entries between the present siblings",
+        );
+        assert_eq!(
+            read.next_key(&root, Some(k("k4"))),
+            Ok(NextKey::End),
+            "iteration terminates after the last present entry",
+        );
+
+        // Resuming from inside the descendant-only run — after `k2`, the first of the
+        // two, or after `k3`, the second — resolves to `k4` just as resuming from the
+        // present sibling before them does: the skip does not depend on the cursor
+        // starting at a present entry.
+        assert_eq!(
+            read.next_key(&root, Some(k("k2"))),
+            Ok(NextKey::Next(k("k4"))),
+            "resuming inside the descendant-only run still yields the next present entry",
+        );
+        assert_eq!(
+            read.next_key(&root, Some(k("k3"))),
+            Ok(NextKey::Next(k("k4")))
+        );
+    }
 }

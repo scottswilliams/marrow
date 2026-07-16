@@ -1,4 +1,4 @@
-//! E03 S5: keyed `branch` whole-entry operations, executed end to end.
+//! Keyed `branch` whole-entry operations, executed end to end.
 //!
 //! A single-level single-column-keyed scalar-field `branch` is a distinct durable
 //! node one level below the root, addressed by the two-element key-path
@@ -81,7 +81,72 @@ const SOURCE: &str = "resource Book\n\
      \x20       return n.text\n\
      \x20   return absent\n";
 
+// application, product, the top-level `title` field, the root and its key, then two
+// branches of different shape: `notes` (a `root` placement) keyed by string with one
+// string field, and `tags` keyed by int with an int field and a sparse bool field.
+const IDS_TWO: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root Book.notes 30303030303030303030303030303030\n\
+     id key Book.notes.noteId 31313131313131313131313131313131\n\
+     id field Book.notes.text 32323232323232323232323232323232\n\
+     id root Book.tags 40404040404040404040404040404040\n\
+     id key Book.tags.tagId 41414141414141414141414141414141\n\
+     id field Book.tags.weight 42424242424242424242424242424242\n\
+     id field Book.tags.hot 43434343434343434343434343434343\n\
+     high-water 0\n\
+     end\n";
+
+/// A flat-executable root with two single-column-keyed scalar-field branches of
+/// deliberately different shape: `notes(noteId: string)` holds one string field, while
+/// `tags(tagId: int)` holds an int field and a sparse bool field. The differing key
+/// types and field shapes make a crossed branch alignment observable — a note read
+/// through the tags plan (or a tag through the notes plan) cannot reproduce the written
+/// fields.
+const SOURCE_TWO: &str = "resource Book\n\
+     \x20   required title: string\n\
+     \n\
+     \x20   notes(noteId: string)\n\
+     \x20       required text: string\n\
+     \n\
+     \x20   tags(tagId: int)\n\
+     \x20       required weight: int\n\
+     \x20       hot: bool\n\
+     \n\
+     store ^books(id: int): Book\n\
+     \n\
+     pub fn addNote(id: int, nid: string, body: string)\n\
+     \x20   transaction\n\
+     \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
+     \n\
+     pub fn addTag(id: int, tid: int, w: int, flag: bool)\n\
+     \x20   transaction\n\
+     \x20       ^books(id).tags(tid) = Book.tags(weight: w, hot: flag)\n\
+     \n\
+     pub fn noteText(id: int, nid: string): string?\n\
+     \x20   if const n = ^books(id).notes(nid)\n\
+     \x20       return n.text\n\
+     \x20   return absent\n\
+     \n\
+     pub fn tagWeight(id: int, tid: int): int?\n\
+     \x20   if const t = ^books(id).tags(tid)\n\
+     \x20       return t.weight\n\
+     \x20   return absent\n\
+     \n\
+     pub fn tagHot(id: int, tid: int): bool?\n\
+     \x20   if const t = ^books(id).tags(tid)\n\
+     \x20       return t.hot\n\
+     \x20   return absent\n";
+
 fn compile_verify(source: &str) -> VerifiedImage {
+    compile_verify_ids(source, IDS)
+}
+
+fn compile_verify_ids(source: &str, ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -90,7 +155,7 @@ fn compile_verify(source: &str) -> VerifiedImage {
     let project = marrow_project::capture(
         &manifest,
         files,
-        Some(IDS.as_bytes()),
+        Some(ids.as_bytes()),
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
@@ -140,6 +205,10 @@ fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment 
 
 fn some_text(s: &str) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Text(s.into())))))
+}
+
+fn some_int(v: i64) -> Option<Value> {
+    Some(Value::Optional(Some(Box::new(Value::Int(v)))))
 }
 
 fn absent() -> Option<Value> {
@@ -499,5 +568,97 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
         run(&image, &mut attachment, "notePinned", key()),
         absent(),
         "a whole replace omitting the sparse field drops it"
+    );
+}
+
+/// Two keyed branches of different shape on one flat-executable root, driven end to
+/// end. The lowerer aligns each branch's materialized record type and whole-payload
+/// site to its source-ordered name, key, and field plan positionally; a crossed
+/// alignment would pair one branch's fields with the other branch's record or site.
+/// The branches differ in key type and field shape — a one-string-field `notes` keyed
+/// by string, a two-field `tags` keyed by int — so creating an entry in each and
+/// reading both back materialized pins the alignment: each branch's own fields land on
+/// that branch, and a swap could not reproduce them.
+#[test]
+fn two_branches_of_different_shape_keep_their_own_fields() {
+    let image = compile_verify_ids(SOURCE_TWO, IDS_TWO);
+    let mut attachment = attach(&image);
+
+    // A note (one string field) and a tag (an int field and a bool field) under the
+    // same book: two branches, one root, one persistent attachment.
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(1),
+            Value::Text("n".into()),
+            Value::Text("hello".into()),
+        ],
+    );
+    run(
+        &image,
+        &mut attachment,
+        "addTag",
+        vec![
+            Value::Int(1),
+            Value::Int(9),
+            Value::Int(42),
+            Value::Bool(true),
+        ],
+    );
+
+    // Each branch materializes its own fields: the string note text, and the int/bool
+    // tag fields. A crossed record/site alignment could not read these back.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "noteText",
+            vec![Value::Int(1), Value::Text("n".into())]
+        ),
+        some_text("hello")
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tagWeight",
+            vec![Value::Int(1), Value::Int(9)]
+        ),
+        some_int(42)
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tagHot",
+            vec![Value::Int(1), Value::Int(9)]
+        ),
+        some_bool(true)
+    );
+
+    // The two branch families are independent: reading each branch at a key that was
+    // written only to the other is absent, so a create did not spill across the
+    // positional alignment onto the sibling branch.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tagWeight",
+            vec![Value::Int(1), Value::Int(100)]
+        ),
+        absent(),
+        "the note write did not appear in the tags branch"
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "noteText",
+            vec![Value::Int(1), Value::Text("missing".into())]
+        ),
+        absent(),
+        "the tag write did not appear in the notes branch"
     );
 }
