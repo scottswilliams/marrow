@@ -23,7 +23,7 @@
 
 use super::physical;
 use super::{EntryValue, FieldSchema, KernelFault};
-use crate::codec::value::encode_value;
+use crate::codec::value::encode_domain;
 
 /// One physical cell operation a mutation implies, in apply order.
 pub(super) enum CellWrite {
@@ -86,7 +86,7 @@ impl Planner {
         ));
         for (index, slot) in entry.fields.iter().enumerate() {
             if let Some(value) = slot {
-                let bytes = encode_value(value).map_err(|_| KernelFault::ValueRange)?;
+                let bytes = encode_domain(value).map_err(|_| KernelFault::ValueRange)?;
                 writes.push(CellWrite::Put(
                     self.node_field_leaf(stem, &fields[index].name),
                     bytes,
@@ -114,22 +114,15 @@ mod tests {
     use crate::codec::key::KeyScalar;
     use crate::codec::value::{RuntimeScalar, ScalarKind};
     use crate::durable::{FieldSchema, StoreSchema};
+    use crate::equality::ValueDomain;
 
     fn schema() -> StoreSchema {
         StoreSchema {
             root_name: "counters".into(),
             key: vec![ScalarKind::Int],
             fields: vec![
-                FieldSchema {
-                    name: "value".into(),
-                    kind: ScalarKind::Int,
-                    required: true,
-                },
-                FieldSchema {
-                    name: "label".into(),
-                    kind: ScalarKind::Str,
-                    required: false,
-                },
+                FieldSchema::scalar("value", ScalarKind::Int, true),
+                FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
         }
@@ -171,7 +164,7 @@ mod tests {
         let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
         // Required value present, sparse label absent.
         let entry = EntryValue {
-            fields: vec![Some(RuntimeScalar::Int(5)), None],
+            fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(5))), None],
         };
         let ops = planner
             .node_write(&stem, &schema.fields, &entry)
@@ -219,17 +212,13 @@ mod tests {
         // Any marker stem stands in for a node here (a branch entry's stem is one such
         // stem, one level below the root); the fields differ from the root's schema.
         let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(7)]);
-        let fields = vec![FieldSchema {
-            name: "text".into(),
-            kind: ScalarKind::Str,
-            required: true,
-        }];
+        let fields = vec![FieldSchema::scalar("text", ScalarKind::Str, true)];
         assert_eq!(
             planner.node_cells(&stem, &fields),
             vec![stem.clone(), planner.node_field_leaf(&stem, "text")],
         );
         let entry = EntryValue {
-            fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+            fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
         };
         let writes = planner
             .node_write(&stem, &fields, &entry)

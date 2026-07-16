@@ -7,7 +7,7 @@
 //! reinterpreted under a different schema. D00 bumps the profile version, so a T01
 //! store is refused by a later toolchain rather than silently read.
 
-use crate::codec::value::{ScalarKind, VALUE_CODEC_VERSION};
+use crate::codec::value::{ScalarKind, VALUE_CODEC_VERSION, ValueShape};
 
 use super::{BranchSchema, FieldSchema, StoreSchema};
 
@@ -40,13 +40,28 @@ fn push_fields(out: &mut Vec<u8>, fields: &[FieldSchema]) {
     out.extend_from_slice(&(fields.len() as u16).to_be_bytes());
     for FieldSchema {
         name,
-        kind,
+        shape,
         required,
     } in fields
     {
         push_name(out, name);
-        out.push(kind_tag(*kind));
+        push_shape(out, shape);
         out.push(u8::from(*required));
+    }
+}
+
+/// Append a field's value shape to the descriptor. A scalar field emits its single
+/// kind tag, byte-identical to the pre-widening descriptor. A composite field shape is
+/// parked before an image reaches the store today; the recursive value-shape descriptor
+/// (and its deliberate `PROFILE_VERSION` bump) lands with the widened-value admission.
+fn push_shape(out: &mut Vec<u8>, shape: &ValueShape) {
+    match shape {
+        ValueShape::Scalar(kind) => out.push(kind_tag(*kind)),
+        ValueShape::Product { .. } | ValueShape::Sum { .. } => {
+            unreachable!(
+                "a composite field shape reaches the profile only after the widened descriptor"
+            )
+        }
     }
 }
 
@@ -106,16 +121,8 @@ mod tests {
             root_name: "counters".into(),
             key: vec![ScalarKind::Str],
             fields: vec![
-                FieldSchema {
-                    name: "value".into(),
-                    kind: ScalarKind::Int,
-                    required: true,
-                },
-                FieldSchema {
-                    name: "label".into(),
-                    kind: ScalarKind::Str,
-                    required: false,
-                },
+                FieldSchema::scalar("value", ScalarKind::Int, true),
+                FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
         };
@@ -137,11 +144,7 @@ mod tests {
         branch_added.branches.push(BranchSchema {
             name: "notes".into(),
             key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema {
-                name: "text".into(),
-                kind: ScalarKind::Str,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
             branches: Vec::new(),
         });
         assert_ne!(descriptor(&base), descriptor(&branch_added));
@@ -157,11 +160,7 @@ mod tests {
         sub_branch_added.branches[0].branches.push(BranchSchema {
             name: "tags".into(),
             key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema {
-                name: "weight".into(),
-                kind: ScalarKind::Int,
-                required: false,
-            }],
+            fields: vec![FieldSchema::scalar("weight", ScalarKind::Int, false)],
             branches: Vec::new(),
         });
         assert_ne!(descriptor(&branch_added), descriptor(&sub_branch_added));

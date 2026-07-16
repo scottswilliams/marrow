@@ -225,11 +225,7 @@ mod tests {
         StoreSchema {
             root_name: "counters".into(),
             key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema {
-                name: "value".into(),
-                kind: ScalarKind::Int,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
             branches: Vec::new(),
         }
     }

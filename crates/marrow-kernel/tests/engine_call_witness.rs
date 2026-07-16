@@ -41,16 +41,13 @@ use marrow_kernel::durable::{
     DemandCoverage, Durable, DurableStore, FieldSchema, InvocationGrant, KernelFault, SessionError,
     SiteSpec, SiteTarget, StoreSchema,
 };
+use marrow_kernel::equality::ValueDomain;
 
 fn schema() -> StoreSchema {
     StoreSchema {
         root_name: "counters".into(),
         key: vec![ScalarKind::Int],
-        fields: vec![FieldSchema {
-            name: "value".into(),
-            kind: ScalarKind::Int,
-            required: true,
-        }],
+        fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
         branches: Vec::new(),
     }
 }
@@ -186,7 +183,11 @@ fn a_value_range_rejection_stages_zero_engine_writes() {
     let writes_before = counters.writes();
     // A date beyond the year-9999 canonical bound cannot encode; the op must reject
     // it before any engine write.
-    let rejected = txn.set_required(&field, &[KeyScalar::Int(1)], RuntimeScalar::Date(i32::MAX));
+    let rejected = txn.set_required(
+        &field,
+        &[KeyScalar::Int(1)],
+        ValueDomain::Scalar(RuntimeScalar::Date(i32::MAX)),
+    );
     assert_eq!(rejected, Err(KernelFault::ValueRange));
     assert_eq!(
         counters.writes(),
@@ -214,8 +215,12 @@ fn an_in_range_write_advances_the_write_counter() {
         .expect("txn session");
     let field = txn.site(1);
     let writes_before = counters.writes();
-    txn.set_required(&field, &[KeyScalar::Int(1)], RuntimeScalar::Int(7))
-        .expect("in-range set");
+    txn.set_required(
+        &field,
+        &[KeyScalar::Int(1)],
+        ValueDomain::Scalar(RuntimeScalar::Int(7)),
+    )
+    .expect("in-range set");
     assert!(
         counters.writes() > writes_before,
         "an in-range write must advance the write counter",

@@ -30,7 +30,8 @@ use std::num::NonZeroU32;
 use marrow_store::StoreError;
 
 use crate::codec::key::KeyScalar;
-use crate::codec::value::{RuntimeScalar, ScalarKind};
+use crate::codec::value::{ScalarKind, ValueShape};
+use crate::equality::ValueDomain;
 
 /// The schema descriptor the store profile records and every session revalidates.
 /// One root; its top-level fields and its keyed branches in declaration (image)
@@ -46,12 +47,28 @@ pub struct StoreSchema {
     pub branches: Vec<BranchSchema>,
 }
 
-/// One field of a node's record: its name, scalar kind, and required flag.
+/// One field of a node's record: its name, value shape, and required flag. A field's
+/// shape is the closed storable durable value set — a scalar, a dense product
+/// (`struct`/record), or a closed sum (`enum`/`Option`/`Result`). The value codec
+/// (`codec::value`) frames a composite within the one field-leaf cell; a scalar field
+/// stays byte-identical to the pre-widening form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSchema {
     pub name: String,
-    pub kind: ScalarKind,
+    pub shape: ValueShape,
     pub required: bool,
+}
+
+impl FieldSchema {
+    /// A scalar-shaped field. Bounds the churn of the value-shape widening: a call site
+    /// that knows a field is scalar names its kind rather than wrapping a [`ValueShape`].
+    pub fn scalar(name: impl Into<String>, kind: ScalarKind, required: bool) -> Self {
+        Self {
+            name: name.into(),
+            shape: ValueShape::Scalar(kind),
+            required,
+        }
+    }
 }
 
 /// One keyed branch nested beneath a parent entry: its name, its single key column's
@@ -161,7 +178,7 @@ pub enum SessionError {
 /// field in schema order, present or vacant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryValue {
-    pub fields: Vec<Option<RuntimeScalar>>,
+    pub fields: Vec<Option<ValueDomain>>,
 }
 
 /// The presence of the cell a site addresses.
@@ -327,7 +344,7 @@ enum AuthTarget {
     Entry(Vec<FieldSchema>),
     Field {
         name: String,
-        kind: ScalarKind,
+        shape: ValueShape,
         required: bool,
         /// The addressed field's containing node record — the root's fields for a
         /// top-level field, a branch's fields for a branch field. A staged sparse or
@@ -342,7 +359,7 @@ impl AuthTarget {
     fn field(field: &FieldSchema, record: &[FieldSchema]) -> Self {
         Self::Field {
             name: field.name.clone(),
-            kind: field.kind,
+            shape: field.shape.clone(),
             required: field.required,
             record: record.to_vec(),
         }

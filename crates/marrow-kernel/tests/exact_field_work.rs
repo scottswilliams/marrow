@@ -17,22 +17,19 @@ use marrow_kernel::durable::{
     CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema, InvocationGrant,
     SiteSpec, SiteTarget, StoreSchema,
 };
+use marrow_kernel::equality::ValueDomain;
 
 /// A schema whose first field is a required `Int` and whose remaining `extra`
 /// fields are optional — so the *declared* width grows while the field a caller
 /// mutates stays the same.
 fn schema(extra: usize) -> StoreSchema {
-    let mut fields = vec![FieldSchema {
-        name: "value".into(),
-        kind: ScalarKind::Int,
-        required: true,
-    }];
+    let mut fields = vec![FieldSchema::scalar("value", ScalarKind::Int, true)];
     for i in 0..extra {
-        fields.push(FieldSchema {
-            name: format!("opt{i}"),
-            kind: ScalarKind::Int,
-            required: false,
-        });
+        fields.push(FieldSchema::scalar(
+            format!("opt{i}"),
+            ScalarKind::Int,
+            false,
+        ));
     }
     StoreSchema {
         root_name: "counters".into(),
@@ -76,8 +73,12 @@ fn writes_for_single_field_set(extra: usize) -> usize {
         .expect("txn session");
     let field = txn.site(1);
     let before = counters.writes();
-    txn.set_required(&field, &[KeyScalar::Int(1)], RuntimeScalar::Int(7))
-        .expect("set required");
+    txn.set_required(
+        &field,
+        &[KeyScalar::Int(1)],
+        ValueDomain::Scalar(RuntimeScalar::Int(7)),
+    )
+    .expect("set required");
     counters.writes() - before
 }
 
@@ -96,7 +97,7 @@ fn writes_for_narrow_create(extra: usize) -> usize {
         .expect("txn session");
     let entry = txn.site(0);
     // Only field 0 is present; every declared optional field is vacant.
-    let mut fields = vec![Some(RuntimeScalar::Int(7))];
+    let mut fields = vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(7)))];
     fields.extend(std::iter::repeat_n(None, extra));
     let before = counters.writes();
     assert_eq!(

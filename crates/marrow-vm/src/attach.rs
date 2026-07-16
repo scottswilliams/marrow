@@ -284,11 +284,11 @@ fn scalar_fields(image: &VerifiedImage, record: u16) -> Option<Vec<FieldSchema>>
         let ImageType::Scalar { scalar, .. } = field.ty else {
             return None;
         };
-        fields.push(FieldSchema {
-            name: field.name.to_string(),
-            kind: scalar_kind(scalar),
-            required: field.required,
-        });
+        fields.push(FieldSchema::scalar(
+            field.name.to_string(),
+            scalar_kind(scalar),
+            field.required,
+        ));
     }
     Some(fields)
 }

@@ -17,6 +17,7 @@ use marrow_image::{
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{CommitResult, DemandCoverage, Durable, EntryValue, InvocationGrant};
+use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
 
@@ -574,7 +575,7 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
                 &entry,
                 &[KeyScalar::Str(key)],
                 EntryValue {
-                    fields: vec![Some(RuntimeScalar::Int(0))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(0)))],
                 },
             )
             .expect("create");

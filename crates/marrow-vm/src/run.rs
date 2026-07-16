@@ -12,6 +12,7 @@ use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{BoundedLimit, CommitResult, Durable, EntryValue, Presence};
+use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
     SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
 };
@@ -698,7 +699,7 @@ fn execute<'s>(
                 let value = durable
                     .read_field(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
-                stack.push(Value::Optional(value.map(|s| Box::new(scalar_to_value(s)))));
+                stack.push(Value::Optional(value.map(|s| Box::new(domain_to_value(s)))));
                 pc += 1;
             }
             SealedInstr::DurReadEntry(site) => {
@@ -721,7 +722,7 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let value = value_to_scalar(pop(&mut stack));
+                let value = value_to_domain(pop(&mut stack));
                 let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
                     .set_required(&authorized, &keys, value)
@@ -733,7 +734,7 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let value = as_optional(pop(&mut stack)).map(value_to_scalar);
+                let value = as_optional(pop(&mut stack)).map(value_to_domain);
                 let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
                     .set_sparse(&authorized, &keys, value)
@@ -745,7 +746,7 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let value = as_optional(pop(&mut stack)).map(value_to_scalar);
+                let value = as_optional(pop(&mut stack)).map(value_to_domain);
                 // The strict form reads its entry key from the place's pre-evaluated
                 // slot; the verifier proved the slot definitely initialized here.
                 let key = value_to_key(
@@ -1164,6 +1165,30 @@ fn scalar_to_value(scalar: RuntimeScalar) -> Value {
     }
 }
 
+/// Convert a runtime value crossing into the durable kernel to its storable value
+/// domain. A durable field value is a scalar today; the widened-value lowering (records
+/// to products, enums/optionals to sums) extends this boundary when those field shapes
+/// stop parking.
+fn value_to_domain(value: Value) -> ValueDomain {
+    ValueDomain::Scalar(value_to_scalar(value))
+}
+
+/// Convert a storable value domain read from the durable kernel back to a runtime value.
+/// The inverse of [`value_to_domain`]; a durable field value is a scalar until the
+/// widened-value lowering lands.
+fn domain_to_value(domain: ValueDomain) -> Value {
+    match domain {
+        ValueDomain::Scalar(scalar) => scalar_to_value(scalar),
+        ValueDomain::Unit
+        | ValueDomain::Product { .. }
+        | ValueDomain::Sum { .. }
+        | ValueDomain::List { .. }
+        | ValueDomain::Map { .. } => {
+            unreachable!("a durable field value is scalar until widened-value lowering lands")
+        }
+    }
+}
+
 /// Convert a record value into a whole-entry value: one slot per field in order.
 fn record_to_entry(value: Value) -> EntryValue {
     let (_, slots) = as_record(value);
@@ -1171,7 +1196,7 @@ fn record_to_entry(value: Value) -> EntryValue {
         fields: slots
             .into_vec()
             .into_iter()
-            .map(|slot| slot.map(value_to_scalar))
+            .map(|slot| slot.map(value_to_domain))
             .collect(),
     }
 }
@@ -1181,7 +1206,7 @@ fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
     let slots: Vec<Option<Value>> = entry
         .fields
         .into_iter()
-        .map(|slot| slot.map(scalar_to_value))
+        .map(|slot| slot.map(domain_to_value))
         .collect();
     Value::Record(ty, slots.into_boxed_slice())
 }

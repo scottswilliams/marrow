@@ -16,7 +16,8 @@ use super::{
     StoreSchema,
 };
 use crate::codec::key::KeyScalar;
-use crate::codec::value::{RuntimeScalar, ScalarKind, decode_value, encode_value};
+use crate::codec::value::{ScalarKind, decode_domain, encode_domain};
+use crate::equality::ValueDomain;
 
 /// The durable operations the VM drives. Object-safe so the VM holds a
 /// `&mut dyn Durable` without knowing the concrete engine or session kind. A
@@ -38,7 +39,7 @@ pub trait Durable {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-    ) -> Result<Option<RuntimeScalar>, KernelFault>;
+    ) -> Result<Option<ValueDomain>, KernelFault>;
     fn read_entry(
         &mut self,
         site: &AuthorizedSite,
@@ -68,13 +69,13 @@ pub trait Durable {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        value: RuntimeScalar,
+        value: ValueDomain,
     ) -> Result<(), KernelFault>;
     fn set_sparse(
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        value: Option<RuntimeScalar>,
+        value: Option<ValueDomain>,
     ) -> Result<(), KernelFault>;
     /// Set (present) or clear (vacant) a sparse field of an entry the caller has
     /// statically proven present. Asserts the entry marker is present — a violation
@@ -84,7 +85,7 @@ pub trait Durable {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        value: Option<RuntimeScalar>,
+        value: Option<ValueDomain>,
     ) -> Result<(), KernelFault>;
     fn create_entry(
         &mut self,
@@ -388,7 +389,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-    ) -> Result<Option<RuntimeScalar>, KernelFault> {
+    ) -> Result<Option<ValueDomain>, KernelFault> {
         op_read_field(&self.view, site, keys)
     }
     fn read_entry(
@@ -413,7 +414,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         &mut self,
         _site: &AuthorizedSite,
         _keys: &[KeyScalar],
-        _value: RuntimeScalar,
+        _value: ValueDomain,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
@@ -421,7 +422,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         &mut self,
         _site: &AuthorizedSite,
         _keys: &[KeyScalar],
-        _value: Option<RuntimeScalar>,
+        _value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
@@ -429,7 +430,7 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         &mut self,
         _site: &AuthorizedSite,
         _keys: &[KeyScalar],
-        _value: Option<RuntimeScalar>,
+        _value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
         unreachable!("verifier proved a read-only session performs no mutation")
     }
@@ -644,7 +645,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-    ) -> Result<Option<RuntimeScalar>, KernelFault> {
+    ) -> Result<Option<ValueDomain>, KernelFault> {
         op_read_field(self.txn(), site, keys)
     }
     fn read_entry(
@@ -669,10 +670,10 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        value: RuntimeScalar,
+        value: ValueDomain,
     ) -> Result<(), KernelFault> {
         let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, true));
-        let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
+        let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
         self.txn_mut()
             .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
@@ -683,12 +684,12 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        value: Option<RuntimeScalar>,
+        value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
         let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, false));
         match value {
             Some(value) => {
-                let bytes = encode_value(&value).map_err(|_| KernelFault::ValueRange)?;
+                let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
                 self.txn_mut()
                     .put(&leaf, bytes)
                     .map_err(KernelFault::Engine)?;
@@ -704,7 +705,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         &mut self,
         site: &AuthorizedSite,
         keys: &[KeyScalar],
-        value: Option<RuntimeScalar>,
+        value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
         // The compiler's place-slot presence proof makes an absent marker
         // unreachable; assert it here as defense in depth over the trust boundary.
@@ -921,14 +922,14 @@ fn op_read_field<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
     keys: &[KeyScalar],
-) -> Result<Option<RuntimeScalar>, KernelFault> {
-    let AuthTarget::Field { name, kind, .. } = &site.target else {
+) -> Result<Option<ValueDomain>, KernelFault> {
+    let AuthTarget::Field { name, shape, .. } = &site.target else {
         unreachable!("verifier proved a field read targets a field site")
     };
     let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, name);
     match read_raw(cells, &leaf)? {
         None => Ok(None),
-        Some(bytes) => decode_value(&bytes, *kind)
+        Some(bytes) => decode_domain(&bytes, shape)
             .map(Some)
             .ok_or(KernelFault::Corruption),
     }
@@ -973,7 +974,7 @@ fn op_read_entry<V: ReadView>(
             }
             Some(bytes) => {
                 values.push(Some(
-                    decode_value(&bytes, field.kind).ok_or(KernelFault::Corruption)?,
+                    decode_domain(&bytes, &field.shape).ok_or(KernelFault::Corruption)?,
                 ));
             }
         }
@@ -1143,22 +1144,15 @@ mod tests {
     use super::{Durable, DurableStore};
     use crate::codec::key::KeyScalar;
     use crate::codec::value::{RuntimeScalar, ScalarKind};
+    use crate::equality::ValueDomain;
 
     fn schema() -> StoreSchema {
         StoreSchema {
             root_name: "counters".into(),
             key: vec![ScalarKind::Str],
             fields: vec![
-                FieldSchema {
-                    name: "value".into(),
-                    kind: ScalarKind::Int,
-                    required: true,
-                },
-                FieldSchema {
-                    name: "label".into(),
-                    kind: ScalarKind::Str,
-                    required: false,
-                },
+                FieldSchema::scalar("value", ScalarKind::Int, true),
+                FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
         }
@@ -1194,7 +1188,7 @@ mod tests {
 
     fn value_entry(v: i64) -> EntryValue {
         EntryValue {
-            fields: vec![Some(RuntimeScalar::Int(v)), None],
+            fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(v))), None],
         }
     }
 
@@ -1312,19 +1306,11 @@ mod tests {
         let schema = StoreSchema {
             root_name: "counters".into(),
             key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema {
-                name: "value".into(),
-                kind: ScalarKind::Int,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
             branches: vec![BranchSchema {
                 name: "notes".into(),
                 key: vec![ScalarKind::Str],
-                fields: vec![FieldSchema {
-                    name: "body".into(),
-                    kind: ScalarKind::Str,
-                    required: false,
-                }],
+                fields: vec![FieldSchema::scalar("body", ScalarKind::Str, false)],
                 branches: Vec::new(),
             }],
         };
@@ -1341,7 +1327,7 @@ mod tests {
             txn.set_sparse_present(
                 &branch_field,
                 &[KeyScalar::Str("root".into())],
-                Some(RuntimeScalar::Str("note".into())),
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("note".into()))),
             ),
             Err(KernelFault::Corruption)
         );
@@ -1359,7 +1345,7 @@ mod tests {
         txn.set_sparse(
             &label,
             &[KeyScalar::Str("x".into())],
-            Some(RuntimeScalar::Str("hi".into())),
+            Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into()))),
         )
         .expect("set sparse");
         assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
@@ -1408,7 +1394,7 @@ mod tests {
         txn.set_sparse(
             &label,
             &[KeyScalar::Str("x".into())],
-            Some(RuntimeScalar::Str("hi".into())),
+            Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into()))),
         )
         .expect("set sparse");
         assert_eq!(
@@ -1425,19 +1411,11 @@ mod tests {
         let schema = StoreSchema {
             root_name: "books".into(),
             key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema {
-                name: "title".into(),
-                kind: ScalarKind::Str,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
             branches: vec![BranchSchema {
                 name: "notes".into(),
                 key: vec![ScalarKind::Int],
-                fields: vec![FieldSchema {
-                    name: "text".into(),
-                    kind: ScalarKind::Str,
-                    required: true,
-                }],
+                fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
                 branches: Vec::new(),
             }],
         };
@@ -1473,7 +1451,7 @@ mod tests {
                 .expect("txn session");
             let branch = txn.site(1);
             let entry = EntryValue {
-                fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
             };
             assert_eq!(
                 txn.create_entry(&branch, &note, entry)
@@ -1517,7 +1495,7 @@ mod tests {
                 .expect("txn session");
             let root = txn.site(0);
             let entry = EntryValue {
-                fields: vec![Some(RuntimeScalar::Str("late".into()))],
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("late".into())))],
             };
             assert_eq!(
                 txn.replace_entry(&root, std::slice::from_ref(&book), entry)
@@ -1535,7 +1513,9 @@ mod tests {
                 .expect("txn session");
             let root = txn.site(0);
             let entry = EntryValue {
-                fields: vec![Some(RuntimeScalar::Str("Book A".into()))],
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str(
+                    "Book A".into(),
+                )))],
             };
             assert_eq!(
                 txn.create_entry(&root, std::slice::from_ref(&book), entry)
@@ -1554,7 +1534,9 @@ mod tests {
             assert_eq!(
                 read.read_entry(&root, std::slice::from_ref(&book)),
                 Ok(Some(EntryValue {
-                    fields: vec![Some(RuntimeScalar::Str("Book A".into()))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str(
+                        "Book A".into()
+                    )))],
                 })),
                 "the root create gave the descendant-only node a payload",
             );
@@ -1562,7 +1544,7 @@ mod tests {
             assert_eq!(
                 read.read_entry(&branch, &note),
                 Ok(Some(EntryValue {
-                    fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
                 })),
                 "the branch descendant survived the root create",
             );
@@ -1634,7 +1616,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&branch, &note),
             Ok(Some(EntryValue {
-                fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
             })),
         );
     }
@@ -1781,26 +1763,14 @@ mod tests {
     /// middle sparse branch field `f2` (2, branch field index 3), and the required branch
     /// field `text` (3, branch field index 0).
     fn wide_branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
-        let mut branch_fields = vec![FieldSchema {
-            name: "text".into(),
-            kind: ScalarKind::Str,
-            required: true,
-        }];
+        let mut branch_fields = vec![FieldSchema::scalar("text", ScalarKind::Str, true)];
         for i in 0..6 {
-            branch_fields.push(FieldSchema {
-                name: format!("f{i}"),
-                kind: ScalarKind::Int,
-                required: false,
-            });
+            branch_fields.push(FieldSchema::scalar(format!("f{i}"), ScalarKind::Int, false));
         }
         let schema = StoreSchema {
             root_name: "books".into(),
             key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema {
-                name: "title".into(),
-                kind: ScalarKind::Str,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
             branches: vec![BranchSchema {
                 name: "notes".into(),
                 key: vec![ScalarKind::Int],
@@ -1864,7 +1834,7 @@ mod tests {
                 .txn_session(InvocationGrant::full_store(), write_demand())
                 .expect("txn session");
             let branch = txn.site(1);
-            let mut fields = vec![Some(RuntimeScalar::Str("hi".into()))];
+            let mut fields = vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))];
             fields.extend(std::iter::repeat_n(None, 6));
             txn.create_entry(&branch, &note, EntryValue { fields })
                 .expect("branch create");
@@ -1878,8 +1848,12 @@ mod tests {
                 .txn_session(InvocationGrant::full_store(), write_demand())
                 .expect("txn session");
             let f2 = txn.site(2);
-            txn.set_sparse(&f2, &note, Some(RuntimeScalar::Int(42)))
-                .expect("field-exact set");
+            txn.set_sparse(
+                &f2,
+                &note,
+                Some(ValueDomain::Scalar(RuntimeScalar::Int(42))),
+            )
+            .expect("field-exact set");
             assert_eq!(txn.commit(), CommitResult::Committed);
         }
         let after = all_cells(&store);
@@ -1919,8 +1893,12 @@ mod tests {
                 .txn_session(InvocationGrant::full_store(), write_demand())
                 .expect("txn session");
             let text = txn.site(3);
-            txn.set_required(&text, &note, RuntimeScalar::Str("made".into()))
-                .expect("required branch set");
+            txn.set_required(
+                &text,
+                &note,
+                ValueDomain::Scalar(RuntimeScalar::Str("made".into())),
+            )
+            .expect("required branch set");
             assert_eq!(txn.commit(), CommitResult::Committed);
         }
 
@@ -1953,7 +1931,7 @@ mod tests {
             .txn_session(InvocationGrant::full_store(), write_demand())
             .expect("txn session");
         let f2 = txn.site(2);
-        txn.set_sparse(&f2, &note, Some(RuntimeScalar::Int(9)))
+        txn.set_sparse(&f2, &note, Some(ValueDomain::Scalar(RuntimeScalar::Int(9))))
             .expect("field-exact sparse set");
         // The branch node's required `text` is missing, so commit rolls back.
         assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
@@ -2206,7 +2184,7 @@ mod tests {
             let branch = txn.site(1);
             for book in ["a", "b"] {
                 let title = EntryValue {
-                    fields: vec![Some(RuntimeScalar::Str("T".into()))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("T".into())))],
                 };
                 txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
                     .expect("root create");
@@ -2214,7 +2192,7 @@ mod tests {
             // A large branch fan-out under book "a" the root walk must skip wholesale.
             for note in 0..200i64 {
                 let text = EntryValue {
-                    fields: vec![Some(RuntimeScalar::Str("n".into()))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
                 };
                 txn.create_entry(
                     &branch,
@@ -2266,7 +2244,7 @@ mod tests {
             let branch = txn.site(1);
             for book in ["a", "b"] {
                 let title = EntryValue {
-                    fields: vec![Some(RuntimeScalar::Str("T".into()))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("T".into())))],
                 };
                 txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
                     .expect("root create");
@@ -2274,7 +2252,7 @@ mod tests {
             // Notes 10,20,30 under "a"; a decoy note 5 under sibling root "b".
             for note in [10i64, 20, 30] {
                 let text = EntryValue {
-                    fields: vec![Some(RuntimeScalar::Str("n".into()))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
                 };
                 txn.create_entry(
                     &branch,
@@ -2284,7 +2262,7 @@ mod tests {
                 .expect("note create");
             }
             let decoy = EntryValue {
-                fields: vec![Some(RuntimeScalar::Str("x".into()))],
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into())))],
             };
             txn.create_entry(
                 &branch,
@@ -2409,27 +2387,15 @@ mod tests {
         let links = BranchSchema {
             name: "links".into(),
             key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema {
-                name: "url".into(),
-                kind: ScalarKind::Str,
-                required: false,
-            }],
+            fields: vec![FieldSchema::scalar("url", ScalarKind::Str, false)],
             branches: Vec::new(),
         };
         let tags = BranchSchema {
             name: "tags".into(),
             key: vec![ScalarKind::Str],
             fields: vec![
-                FieldSchema {
-                    name: "label".into(),
-                    kind: ScalarKind::Str,
-                    required: true,
-                },
-                FieldSchema {
-                    name: "weight".into(),
-                    kind: ScalarKind::Int,
-                    required: false,
-                },
+                FieldSchema::scalar("label", ScalarKind::Str, true),
+                FieldSchema::scalar("weight", ScalarKind::Int, false),
             ],
             branches: vec![links],
         };
@@ -2437,27 +2403,15 @@ mod tests {
             name: "notes".into(),
             key: vec![ScalarKind::Int],
             fields: vec![
-                FieldSchema {
-                    name: "text".into(),
-                    kind: ScalarKind::Str,
-                    required: true,
-                },
-                FieldSchema {
-                    name: "color".into(),
-                    kind: ScalarKind::Str,
-                    required: false,
-                },
+                FieldSchema::scalar("text", ScalarKind::Str, true),
+                FieldSchema::scalar("color", ScalarKind::Str, false),
             ],
             branches: vec![tags],
         };
         let schema = StoreSchema {
             root_name: "books".into(),
             key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema {
-                name: "title".into(),
-                kind: ScalarKind::Str,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
             branches: vec![notes],
         };
         let sites = vec![
@@ -2492,11 +2446,11 @@ mod tests {
     fn ki(n: i64) -> KeyScalar {
         KeyScalar::Int(n)
     }
-    fn vs(s: &str) -> Option<RuntimeScalar> {
-        Some(RuntimeScalar::Str(s.into()))
+    fn vs(s: &str) -> Option<ValueDomain> {
+        Some(ValueDomain::Scalar(RuntimeScalar::Str(s.into())))
     }
-    fn vi(n: i64) -> Option<RuntimeScalar> {
-        Some(RuntimeScalar::Int(n))
+    fn vi(n: i64) -> Option<ValueDomain> {
+        Some(ValueDomain::Scalar(RuntimeScalar::Int(n)))
     }
 
     /// The physical marker stem of book `book` (level 0).
@@ -2551,7 +2505,7 @@ mod tests {
         store: &mut DurableStore<MemoryEngine>,
         site: u16,
         keys: &[KeyScalar],
-        fields: Vec<Option<RuntimeScalar>>,
+        fields: Vec<Option<ValueDomain>>,
     ) {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2889,8 +2843,12 @@ mod tests {
                 .txn_session(InvocationGrant::full_store(), write_demand())
                 .expect("txn session");
             let label = txn.site(5);
-            txn.set_required(&label, &tag, RuntimeScalar::Str("home".into()))
-                .expect("required set");
+            txn.set_required(
+                &label,
+                &tag,
+                ValueDomain::Scalar(RuntimeScalar::Str("home".into())),
+            )
+            .expect("required set");
             assert_eq!(txn.commit(), CommitResult::Committed);
         }
         let cells = all_cells(&store);
@@ -3003,11 +2961,7 @@ mod tests {
         let schema = StoreSchema {
             root_name: "cells".into(),
             key: vec![ScalarKind::Int, ScalarKind::Int],
-            fields: vec![FieldSchema {
-                name: "v".into(),
-                kind: ScalarKind::Int,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
             branches: Vec::new(),
         };
         let sites = vec![
@@ -3028,7 +2982,7 @@ mod tests {
                 &entry,
                 &[ki(1), ki(2)],
                 EntryValue {
-                    fields: vec![Some(RuntimeScalar::Int(42))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(42)))],
                 },
             )
             .expect("create");
@@ -3048,7 +3002,7 @@ mod tests {
         assert_eq!(read.presence(&entry, &[ki(2), ki(1)]), Ok(Presence::Absent));
         assert_eq!(
             read.read_field(&field, &[ki(1), ki(2)]),
-            Ok(Some(RuntimeScalar::Int(42)))
+            Ok(Some(ValueDomain::Scalar(RuntimeScalar::Int(42))))
         );
         // A short or long key-path is a forged arity: corruption, never a mis-split write.
         assert_eq!(
@@ -3070,11 +3024,7 @@ mod tests {
         let schema = StoreSchema {
             root_name: "cells".into(),
             key: vec![ScalarKind::Int, ScalarKind::Int],
-            fields: vec![FieldSchema {
-                name: "v".into(),
-                kind: ScalarKind::Int,
-                required: true,
-            }],
+            fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
             branches: Vec::new(),
         };
         let sites = vec![SiteSpec {
@@ -3102,19 +3052,11 @@ mod tests {
         let schema = StoreSchema {
             root_name: "grid".into(),
             key: vec![ScalarKind::Int, ScalarKind::Int],
-            fields: vec![FieldSchema {
-                name: "label".into(),
-                kind: ScalarKind::Str,
-                required: false,
-            }],
+            fields: vec![FieldSchema::scalar("label", ScalarKind::Str, false)],
             branches: vec![BranchSchema {
                 name: "cell".into(),
                 key: vec![ScalarKind::Int],
-                fields: vec![FieldSchema {
-                    name: "cval".into(),
-                    kind: ScalarKind::Int,
-                    required: true,
-                }],
+                fields: vec![FieldSchema::scalar("cval", ScalarKind::Int, true)],
                 branches: Vec::new(),
             }],
         };
@@ -3138,7 +3080,7 @@ mod tests {
                     &cell,
                     &[ki(1), ki(2), ki(c)],
                     EntryValue {
-                        fields: vec![Some(RuntimeScalar::Int(0))],
+                        fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(0)))],
                     },
                 )
                 .expect("create cell");
@@ -3148,7 +3090,7 @@ mod tests {
                 &cell,
                 &[ki(9), ki(9), ki(100)],
                 EntryValue {
-                    fields: vec![Some(RuntimeScalar::Int(0))],
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(0)))],
                 },
             )
             .expect("create sibling cell");

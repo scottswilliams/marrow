@@ -25,6 +25,7 @@ use marrow_kernel::durable::{
     CommitResult, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema, InvocationGrant,
     KernelFault, Reopen, SiteSpec, SiteTarget, StoreSchema,
 };
+use marrow_kernel::equality::ValueDomain;
 
 /// What the double's next `commit` does: the reported durability verdict is chosen
 /// independently of whether the staged bytes actually land, so an indeterminate verdict
@@ -200,11 +201,7 @@ fn schema() -> StoreSchema {
     StoreSchema {
         root_name: "counters".into(),
         key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema {
-            name: "value".into(),
-            kind: ScalarKind::Int,
-            required: true,
-        }],
+        fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
         branches: Vec::new(),
     }
 }
@@ -229,7 +226,7 @@ fn write() -> DemandCoverage {
 
 fn entry(v: i64) -> EntryValue {
     EntryValue {
-        fields: vec![Some(RuntimeScalar::Int(v))],
+        fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(v)))],
     }
 }
 
@@ -341,14 +338,14 @@ fn a_clean_abort_faults_without_poisoning() {
     );
     assert_eq!(
         read.read_field(&site, &[KeyScalar::Str("b".into())]),
-        Ok(Some(RuntimeScalar::Int(2))),
+        Ok(Some(ValueDomain::Scalar(RuntimeScalar::Int(2)))),
         "the post-abort commit is present"
     );
 }
 
 /// Read the `value` field of entry `key` on a settled store, scoping the read session so
 /// its borrow ends before the caller drives the store again.
-fn read_value(store: &mut DurableStore<FaultEngine>, key: &str) -> Option<RuntimeScalar> {
+fn read_value(store: &mut DurableStore<FaultEngine>, key: &str) -> Option<ValueDomain> {
     let mut read = store
         .read_session(InvocationGrant::full_store(), write())
         .expect("read session");
@@ -391,7 +388,10 @@ fn a_witness_put_failure_poisons_and_leaves_prior_state() {
     );
 
     // The prior commit survives; neither the faulted nor the refused write landed.
-    assert_eq!(read_value(&mut store, "a"), Some(RuntimeScalar::Int(1)));
+    assert_eq!(
+        read_value(&mut store, "a"),
+        Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))
+    );
     assert_eq!(read_value(&mut store, "b"), None);
     assert_eq!(read_value(&mut store, "c"), None);
 }
@@ -422,8 +422,12 @@ fn a_reconcile_marker_put_failure_poisons_and_leaves_prior_state() {
             .txn_session(InvocationGrant::full_store(), write())
             .expect("txn session");
         let value = txn.site(1);
-        txn.set_required(&value, &[KeyScalar::Str("b".into())], RuntimeScalar::Int(2))
-            .expect("stage required field");
+        txn.set_required(
+            &value,
+            &[KeyScalar::Str("b".into())],
+            ValueDomain::Scalar(RuntimeScalar::Int(2)),
+        )
+        .expect("stage required field");
         txn.commit()
     };
     assert_eq!(faulted, CommitResult::CommitFault);
@@ -437,7 +441,10 @@ fn a_reconcile_marker_put_failure_poisons_and_leaves_prior_state() {
         "a reconcile marker-put failure poisons the store"
     );
 
-    assert_eq!(read_value(&mut store, "a"), Some(RuntimeScalar::Int(1)));
+    assert_eq!(
+        read_value(&mut store, "a"),
+        Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))
+    );
     assert_eq!(read_value(&mut store, "b"), None);
     assert_eq!(read_value(&mut store, "c"), None);
 }
@@ -486,9 +493,15 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
             CommitResult::Committed,
             "an aborted apply leaves the store usable"
         );
-        assert_eq!(read_value(&mut store, "a"), Some(RuntimeScalar::Int(1)));
+        assert_eq!(
+            read_value(&mut store, "a"),
+            Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))
+        );
         assert_eq!(read_value(&mut store, "b"), None);
-        assert_eq!(read_value(&mut store, "c"), Some(RuntimeScalar::Int(3)));
+        assert_eq!(
+            read_value(&mut store, "c"),
+            Some(ValueDomain::Scalar(RuntimeScalar::Int(3)))
+        );
     }
 
     // Remove arm: erase removes marker (write 1) then value leaf (write 2); fail the leaf
@@ -521,7 +534,7 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
         }
         assert_eq!(
             read_value(&mut store, "a"),
-            Some(RuntimeScalar::Int(1)),
+            Some(ValueDomain::Scalar(RuntimeScalar::Int(1))),
             "the aborted erase left the prior entry intact"
         );
     }

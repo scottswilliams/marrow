@@ -14,6 +14,7 @@ use marrow_kernel::durable::{
     DurableStore, EntryValue, FieldSchema, InvocationGrant, Presence, Reopen, ReplaceOutcome,
     SiteSpec, SiteTarget, StoreSchema,
 };
+use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
 
 /// Enumerate every immediate key of a root layer through one bounded acquisition whose
@@ -70,16 +71,8 @@ fn schema() -> StoreSchema {
         root_name: "counters".into(),
         key: vec![ScalarKind::Str],
         fields: vec![
-            FieldSchema {
-                name: "value".into(),
-                kind: ScalarKind::Int,
-                required: true,
-            },
-            FieldSchema {
-                name: "label".into(),
-                kind: ScalarKind::Str,
-                required: false,
-            },
+            FieldSchema::scalar("value", ScalarKind::Int, true),
+            FieldSchema::scalar("label", ScalarKind::Str, false),
         ],
         branches: Vec::new(),
     }
@@ -110,8 +103,8 @@ fn key(name: &str) -> KeyScalar {
 fn entry(value: i64, label: Option<&str>) -> EntryValue {
     EntryValue {
         fields: vec![
-            Some(RuntimeScalar::Int(value)),
-            label.map(|text| RuntimeScalar::Str(text.into())),
+            Some(ValueDomain::Scalar(RuntimeScalar::Int(value))),
+            label.map(|text| ValueDomain::Scalar(RuntimeScalar::Str(text.into()))),
         ],
     }
 }
@@ -175,13 +168,17 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
         txn.set_sparse(
             &label,
             &[key("ab")],
-            Some(RuntimeScalar::Str("mark".into())),
+            Some(ValueDomain::Scalar(RuntimeScalar::Str("mark".into()))),
         )
         .unwrap();
         txn.set_sparse(&label, &[key("ab")], None).unwrap();
         // required field update.
-        txn.set_required(&value, &[key("ab")], RuntimeScalar::Int(20))
-            .unwrap();
+        txn.set_required(
+            &value,
+            &[key("ab")],
+            ValueDomain::Scalar(RuntimeScalar::Int(20)),
+        )
+        .unwrap();
         // erase outcomes.
         transcript.push(format!(
             "erase entry empty-key = {:?}",
@@ -221,14 +218,14 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
                 .read_field(&value, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
-                    RuntimeScalar::Int(v) => v,
+                    ValueDomain::Scalar(RuntimeScalar::Int(v)) => v,
                     other => panic!("unexpected value {other:?}"),
                 });
             let l = reader
                 .read_field(&label, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
-                    RuntimeScalar::Str(s) => s,
+                    ValueDomain::Scalar(RuntimeScalar::Str(s)) => s,
                     other => panic!("unexpected label {other:?}"),
                 });
             dump.push((name, v, l));
@@ -305,7 +302,7 @@ fn set_sparse_present_agrees_across_engines() {
             txn.set_sparse_present(
                 &label,
                 &[key("p")],
-                Some(RuntimeScalar::Str("strict".into())),
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("strict".into()))),
             )
             .unwrap();
             // A strict clear of a present entry removes the leaf without touching the
@@ -332,14 +329,14 @@ fn set_sparse_present_agrees_across_engines() {
                 .read_field(&value, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
-                    RuntimeScalar::Int(v) => v,
+                    ValueDomain::Scalar(RuntimeScalar::Int(v)) => v,
                     other => panic!("unexpected value {other:?}"),
                 });
             let l = reader
                 .read_field(&label, std::slice::from_ref(&k))
                 .unwrap()
                 .map(|s| match s {
-                    RuntimeScalar::Str(s) => s,
+                    ValueDomain::Scalar(RuntimeScalar::Str(s)) => s,
                     other => panic!("unexpected label {other:?}"),
                 });
             dump.push((name, v, l));
@@ -381,7 +378,7 @@ fn set_sparse_present_on_an_absent_marker_is_corruption() {
         txn.set_sparse_present(
             &label,
             &[key("missing")],
-            Some(RuntimeScalar::Str("x".into()))
+            Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into())))
         ),
         Err(marrow_kernel::durable::KernelFault::Corruption)
     );
@@ -428,8 +425,12 @@ fn required_missing_commit_agrees_on_both_backends() {
             .expect("txn");
         let label = txn.site(LABEL);
         // Stage only the sparse label on a fresh entry; the required value is unset.
-        txn.set_sparse(&label, &[key("x")], Some(RuntimeScalar::Str("hi".into())))
-            .unwrap();
+        txn.set_sparse(
+            &label,
+            &[key("x")],
+            Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into()))),
+        )
+        .unwrap();
         matches!(txn.commit(), CommitResult::RequiredMissing { .. })
     }
     assert!(probe(DurableStore::from_engine(
@@ -491,7 +492,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
             .read_field(&label, &[key("k")])
             .unwrap()
             .map(|s| match s {
-                RuntimeScalar::Str(s) => s,
+                ValueDomain::Scalar(RuntimeScalar::Str(s)) => s,
                 other => panic!("unexpected {other:?}"),
             })
     }
