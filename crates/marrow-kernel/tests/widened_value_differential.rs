@@ -1,16 +1,21 @@
 //! Independent-decoder differential for the widened durable field-value codec (E03w slice E,
-//! step 5). The module under `support/` is an independent strict decoder written from the
-//! design brief alone — it never reads the production encoder. This test vendors that module
-//! with only rustfmt whitespace normalization applied (the workspace fmt gate is mandatory);
-//! its decode logic and decisions are byte-for-byte the author's, unaltered and verified by
-//! its own embedded KATs. The harness wires only glue: it encodes a corpus of storable values
-//! with the production `encode_domain`, decodes the bytes with the independent module, and
-//! asserts value agreement. A disagreement is a finding to report, never a fix-in-place; the
-//! vendored decode logic is not edited here.
+//! finalized in slice F). The module under `support/` is an independent strict decoder written
+//! from the design brief alone — it never reads the production encoder. This test vendors that
+//! module with only rustfmt whitespace normalization applied (the workspace fmt gate is
+//! mandatory); its decode logic and decisions are byte-for-byte the author's, unaltered and
+//! verified by its own embedded KATs. The harness wires only glue: it encodes a corpus of
+//! storable values with the production `encode_domain`, decodes the bytes with the independent
+//! module, and asserts value agreement. A disagreement is a finding to report, never a
+//! fix-in-place; the vendored decode logic is not edited here.
 //!
 //! Including the module here also compiles and runs its own embedded KATs (its
-//! `#[cfg(test)] mod tests`), so the brief's KAT byte strings are checked from the
-//! independent side in this binary.
+//! `#[cfg(test)] mod tests`), so the brief's KAT byte strings — including the §A7 18-byte
+//! descriptor KAT — are checked from the independent side in this binary.
+//!
+//! Slice-F reconciliation: the decoder is now the A12-final version (i128-scale durations,
+//! depth = 32 composites leaves-free, big-endian descriptor tags, identity-bearing
+//! type-index). The two prior pinned encoder/decoder divergences (duration `u64` seconds,
+//! depth off-by-one) are resolved and are now agreement coverage below.
 
 // The vendored oracle keeps the author's own form (dead_code is allowed inside the file).
 // Its idioms are suppressed at this boundary rather than rewritten, so the independent
@@ -21,25 +26,27 @@ mod independent_decoder;
 
 use independent_decoder as ind;
 use marrow_kernel::codec::value::{
-    RuntimeScalar, ScalarKind, ValueShape, encode_domain, encode_value,
+    RuntimeScalar, ScalarKind, ValueShape, decode_domain, encode_domain, encode_value,
 };
 use marrow_kernel::equality::ValueDomain;
 
 /// Convert the production value shape into the independent decoder's schema shape. The
-/// independent `Shape` carries no type index (a differential compares values, not the
-/// image's `ty` handles), so the indices are dropped and only the structural shape crosses.
+/// independent `Shape` now carries the same nominal `type-index` (§A7 A12) as the production
+/// shape, so the identity handle crosses and is compared on both sides.
 fn to_ind_shape(shape: &ValueShape) -> ind::Shape {
     match shape {
         ValueShape::Scalar(kind) => ind::Shape::Scalar(to_ind_kind(*kind)),
-        ValueShape::Product { fields, .. } => {
-            ind::Shape::Product(fields.iter().map(to_ind_shape).collect())
-        }
-        ValueShape::Sum { variants, .. } => ind::Shape::Sum(
-            variants
+        ValueShape::Product { ty, fields } => ind::Shape::Product {
+            ty: *ty,
+            leaves: fields.iter().map(to_ind_shape).collect(),
+        },
+        ValueShape::Sum { ty, variants } => ind::Shape::Sum {
+            ty: *ty,
+            variants: variants
                 .iter()
                 .map(|payload| payload.iter().map(to_ind_shape).collect())
                 .collect(),
-        ),
+        },
     }
 }
 
@@ -56,14 +63,22 @@ fn to_ind_kind(kind: ScalarKind) -> ind::ScalarKind {
 }
 
 /// Whether the production value agrees, structurally and value-wise, with what the
-/// independent decoder produced. The independent tree carries no `ty` handles (compared
-/// structurally), and keeps temporal scalars as their raw canonical bytes (compared against
-/// the production scalar codec's bytes), so agreement is value agreement, not handle equality.
+/// independent decoder produced. Composite nodes now carry the nominal `type-index` on both
+/// sides, so the identity handle is compared too (a differential on the identity-bearing
+/// field). Temporal scalars are kept by the decoder as their structured canonical fields and
+/// reconstructed here, compared against the production scalar codec's canonical bytes.
 fn agrees(domain: &ValueDomain, decoded: &ind::DecodedValue) -> bool {
     match (domain, decoded) {
         (ValueDomain::Scalar(scalar), _) => scalar_agrees(scalar, decoded),
-        (ValueDomain::Product { fields, .. }, ind::DecodedValue::Product(items)) => {
-            fields.len() == items.len()
+        (
+            ValueDomain::Product { ty, fields },
+            ind::DecodedValue::Product {
+                ty: dty,
+                fields: items,
+            },
+        ) => {
+            ty == dty
+                && fields.len() == items.len()
                 && fields.iter().zip(items).all(|(slot, item)| {
                     // A durable struct is dense: every leaf is present.
                     slot.as_ref().is_some_and(|value| agrees(value, item))
@@ -71,14 +86,18 @@ fn agrees(domain: &ValueDomain, decoded: &ind::DecodedValue) -> bool {
         }
         (
             ValueDomain::Sum {
-                variant, payload, ..
+                ty,
+                variant,
+                payload,
             },
             ind::DecodedValue::Sum {
+                ty: dty,
                 variant: dv,
                 payload: dp,
             },
         ) => {
-            u32::from(*variant) == *dv
+            ty == dty
+                && u32::from(*variant) == *dv
                 && payload.len() == dp.len()
                 && payload.iter().zip(dp).all(|(a, b)| agrees(a, b))
         }
@@ -119,7 +138,8 @@ fn frac(nanos: u32) -> String {
 }
 
 /// Reconstruct the canonical scalar text an independent decoder's STRUCTURED temporal value
-/// implies, so it can be compared byte-for-byte to the production canonical encoding.
+/// implies, so it can be compared byte-for-byte to the production canonical encoding. The
+/// duration whole-seconds field is `u128` (A12), printed directly.
 fn reconstruct_temporal(decoded: &ind::DecodedValue) -> String {
     match decoded {
         ind::DecodedValue::Date { year, month, day } => format!("{year:04}-{month:02}-{day:02}"),
@@ -179,10 +199,15 @@ fn some(inner: ValueDomain) -> ValueDomain {
 fn sc(kind: ScalarKind) -> ValueShape {
     ValueShape::Scalar(kind)
 }
+fn dur(nanos: i128) -> ValueDomain {
+    ValueDomain::Scalar(RuntimeScalar::Duration(nanos))
+}
 
 /// A representative corpus of storable values paired with their shapes: every scalar kind
 /// (incl. temporals and NUL-laden strings/bytes), products, user-enum-style sums, `Option`
-/// none/some, nested `Option`, and a nested mix.
+/// none/some, nested `Option`, and a nested mix. The i128-magnitude duration endpoints
+/// (`i128::MAX`/`i128::MIN`) are agreement cases now that the reconciled decoder accumulates
+/// whole-seconds into `u128` (A12) — the former pinned `u64` divergence is resolved.
 fn corpus() -> Vec<(ValueDomain, ValueShape)> {
     vec![
         (si(0), sc(ScalarKind::Int)),
@@ -221,27 +246,20 @@ fn corpus() -> Vec<(ValueDomain, ValueShape)> {
             sc(ScalarKind::Instant),
         ),
         // Durations: negative whole-second, negative sub-second (-PT0.5S), positive
-        // fractional (PT1.5S), and a large but decoder-valid magnitude (whole seconds
-        // below u64::MAX, nanos within i128) to pin that large legitimate values round-trip.
+        // fractional (PT1.5S), a large mid-range magnitude, and the i128 endpoints — the
+        // whole i128-nanosecond range is canonically encodable (A12), and the reconciled
+        // decoder round-trips every one of these.
+        (dur(-9), sc(ScalarKind::Duration)),
+        (dur(-500_000_000), sc(ScalarKind::Duration)),
+        (dur(1_500_000_000), sc(ScalarKind::Duration)),
+        // 9e18 whole seconds (> u64::MAX ≈ 1.8e19 nanos here in value; still within i128).
         (
-            ValueDomain::Scalar(RuntimeScalar::Duration(-9)),
+            dur(9_000_000_000_000_000_000_000_000_000),
             sc(ScalarKind::Duration),
         ),
-        (
-            ValueDomain::Scalar(RuntimeScalar::Duration(-500_000_000)),
-            sc(ScalarKind::Duration),
-        ),
-        (
-            ValueDomain::Scalar(RuntimeScalar::Duration(1_500_000_000)),
-            sc(ScalarKind::Duration),
-        ),
-        (
-            // 9e18 whole seconds (< u64::MAX ≈ 1.8e19), well within i128 nanoseconds.
-            ValueDomain::Scalar(RuntimeScalar::Duration(
-                9_000_000_000_000_000_000_000_000_000,
-            )),
-            sc(ScalarKind::Duration),
-        ),
+        // The i128 endpoints: whole-seconds magnitude ~1.7e29 (needs u128 in the decoder).
+        (dur(i128::MAX), sc(ScalarKind::Duration)),
+        (dur(i128::MIN), sc(ScalarKind::Duration)),
         // A product of mixed leaves.
         (
             ValueDomain::Product {
@@ -312,10 +330,13 @@ fn production_encode_agrees_with_the_independent_decoder() {
 /// not normalized — the reject-not-normalize law, checked from the independent side.
 #[test]
 fn the_independent_decoder_rejects_a_non_canonical_forgery() {
-    let shape = ind::Shape::Product(vec![
-        ind::Shape::Scalar(ind::ScalarKind::Int),
-        ind::Shape::Scalar(ind::ScalarKind::Int),
-    ]);
+    let shape = ind::Shape::Product {
+        ty: 0,
+        leaves: vec![
+            ind::Shape::Scalar(ind::ScalarKind::Int),
+            ind::Shape::Scalar(ind::ScalarKind::Int),
+        ],
+    };
     // A non-minimal LEB128 length prefix (0x80 0x00) on the first leaf.
     assert!(ind::decode(&[0x80, 0x00, 0x01, b'6'], &shape).is_err());
 }
@@ -334,43 +355,40 @@ fn production_refuses_an_out_of_range_instant() {
     );
 }
 
-/// PINNED DIVERGENCE (brief §2 A12 finding, for slice F). Production `duration` is backed by
-/// `i128` nanoseconds, so its canonical whole-seconds field ranges to ~1.7e29 (30 digits);
-/// the independent decoder parses whole-seconds into `u64` and rejects anything past
-/// `u64::MAX ≈ 1.8e19`. This is a decoder-oracle limitation from the brief's prior silence on
-/// magnitude, not a production defect: production encodes and round-trips `i128::MAX`, and the
-/// decoder rejects those bytes. The test pins both sides so the divergence is conspicuous and
-/// regression-caught; when the decoder widens its seconds accumulator to `u128`/`i128` this
-/// flips to agreement and moves into the corpus above.
+/// RESOLVED DIVERGENCE (brief §2 A12 duration finding). Production `duration` is backed by
+/// `i128` nanoseconds, so its canonical whole-seconds field ranges to ~1.7e29 (30 digits).
+/// The reconciled independent decoder accumulates whole-seconds into `u128` and now agrees:
+/// it decodes `i128::MAX`/`i128::MIN` durations to the same value production round-trips.
+/// This is the former slice-E pinned `u64` divergence, now agreement (also covered by the
+/// corpus endpoints; kept as an explicit named witness of the resolution).
 #[test]
-fn extreme_duration_is_producible_but_beyond_the_decoder_u64() {
-    let extreme = ValueDomain::Scalar(RuntimeScalar::Duration(i128::MAX));
-    let bytes = encode_domain(&extreme).expect("production encodes an i128::MAX duration");
-    // Production itself round-trips it (the value is legitimate).
-    assert_eq!(
-        marrow_kernel::codec::value::decode_domain(
-            &bytes,
-            &ValueShape::Scalar(ScalarKind::Duration)
-        ),
-        Some(extreme),
-    );
-    // The u64-seconds independent decoder rejects the ~30-digit whole-seconds field.
-    assert!(
-        ind::decode(&bytes, &ind::Shape::Scalar(ind::ScalarKind::Duration)).is_err(),
-        "the decoder's u64 seconds accumulator must reject (not silently truncate) the extreme",
-    );
+fn extreme_duration_round_trips_through_the_independent_decoder() {
+    for value in [dur(i128::MAX), dur(i128::MIN)] {
+        let bytes = encode_domain(&value).expect("production encodes an i128-endpoint duration");
+        // Production itself round-trips it.
+        assert_eq!(
+            decode_domain(&bytes, &ValueShape::Scalar(ScalarKind::Duration)),
+            Some(value.clone()),
+        );
+        // The reconciled u128-seconds independent decoder now agrees (no longer rejects).
+        let decoded = ind::decode(&bytes, &ind::Shape::Scalar(ind::ScalarKind::Duration))
+            .expect("the reconciled decoder accepts the i128-scale duration");
+        assert!(
+            agrees(&value, &decoded),
+            "independent decode disagrees for {value:?}: got {decoded:?} from bytes {bytes:?}",
+        );
+    }
 }
 
-/// PINNED DIVERGENCE (brief §A7 A12 depth-convention finding, for slice F). Production counts
+/// RESOLVED DIVERGENCE (brief §A7 A12 depth-convention finding). Production counts
 /// `MAX_DURABLE_VALUE_DEPTH = 32` over *composite* levels only — a scalar leaf is free, so a
-/// chain of exactly 32 nested products over one scalar is admitted. The independent decoder
-/// counts every shape node (the scalar leaf included), so it admits only 31 composites and
-/// rejects the 32-deep value. Ambiguity #3 from the decoder report; the brief now fixes the
-/// convention. Pinned so the off-by-one is conspicuous until the decoder drops the scalar-leaf
-/// level in slice F.
+/// chain of exactly 32 nested products over one scalar is admitted, and the 33rd composite is
+/// refused before descent. The reconciled independent decoder now uses the same convention:
+/// it accepts 32 composites and rejects 33. Both the accept (agreement) and the reject
+/// (both tiers refuse) are pinned.
 #[test]
-fn depth_32_is_producible_but_the_decoder_stops_at_31() {
-    // 32 nested products over one int scalar.
+fn depth_32_accepted_and_33_rejected_by_both_tiers() {
+    // 32 nested products over one int scalar: production round-trips, independent agrees.
     let mut value = si(5);
     let mut shape = sc(ScalarKind::Int);
     let mut ind_shape = ind::Shape::Scalar(ind::ScalarKind::Int);
@@ -383,16 +401,88 @@ fn depth_32_is_producible_but_the_decoder_stops_at_31() {
             ty: 0,
             fields: vec![shape],
         };
-        ind_shape = ind::Shape::Product(vec![ind_shape]);
+        ind_shape = ind::Shape::Product {
+            ty: 0,
+            leaves: vec![ind_shape],
+        };
     }
     let bytes = encode_domain(&value).expect("production encodes a depth-32 composite");
     assert_eq!(
-        marrow_kernel::codec::value::decode_domain(&bytes, &shape),
-        Some(value),
+        decode_domain(&bytes, &shape),
+        Some(value.clone()),
         "production admits and round-trips 32 composite levels",
     );
+    let decoded = ind::decode(&bytes, &ind_shape)
+        .expect("the reconciled decoder admits 32 composite levels (scalar leaf free)");
     assert!(
-        ind::decode(&bytes, &ind_shape).is_err(),
-        "the decoder counts the scalar leaf as a level and rejects the 32nd composite",
+        agrees(&value, &decoded),
+        "independent decode disagrees at depth 32: got {decoded:?}",
+    );
+
+    // 33 nested products: production decode refuses (depth cap) and the independent decoder
+    // refuses the shape before any value bytes are read.
+    let value33 = ValueDomain::Product {
+        ty: 0,
+        fields: vec![Some(value)],
+    };
+    let shape33 = ValueShape::Product {
+        ty: 0,
+        fields: vec![shape],
+    };
+    let ind_shape33 = ind::Shape::Product {
+        ty: 0,
+        leaves: vec![ind_shape],
+    };
+    let bytes33 = encode_domain(&value33).expect("production encodes the depth-33 bytes");
+    assert_eq!(
+        decode_domain(&bytes33, &shape33),
+        None,
+        "production refuses to decode a 33-deep composite",
+    );
+    assert!(
+        ind::decode(&bytes33, &ind_shape33).is_err(),
+        "the independent decoder refuses the 33-deep shape before descent",
+    );
+}
+
+/// Descriptor cross-check (brief §A7 18-byte KAT). The reconciled independent decoder's
+/// `parse_descriptor` matches §A7; parsing the frozen 18-byte descriptor for
+/// `{ int, Option[string] }` yields a `Shape` (carrying the nominal type indices 3 and 4)
+/// that decodes the production-encoded value bytes of the matching value in agreement. This
+/// ties production value bytes to an independently descriptor-derived shape, closing the
+/// descriptor↔value seam from the independent side. (The independent module's own
+/// `descriptor_bytes_kat` and production's `a7_descriptor_bytes_kat` independently pin the
+/// same 18 bytes.)
+#[test]
+fn descriptor_derived_shape_decodes_production_value_bytes() {
+    // Brief §A7 A12 printed KAT: Product{ ty:3, [ Scalar(int), Sum{ ty:4, [ [], [str] ] } ] }.
+    let descriptor = [
+        0x01, 0x00, 0x03, 0x00, 0x02, // product ty=3 leaf-count=2
+        0x00, 0x02, //                   leaf0: scalar int
+        0x02, 0x00, 0x04, 0x00, 0x02, // leaf1: sum ty=4 variant-count=2
+        0x00, 0x00, //                     variant0: payload-count 0
+        0x00, 0x01, 0x00, 0x03, //         variant1: payload-count 1, scalar string
+    ];
+    let shape = ind::parse_descriptor(&descriptor).expect("the §A7 descriptor parses");
+
+    // The matching value: { int = 1, Option[string] = some("z") }, with the same type
+    // indices the descriptor carries so the identity-bearing comparison holds.
+    let value = ValueDomain::Product {
+        ty: 3,
+        fields: vec![
+            Some(si(1)),
+            Some(ValueDomain::Sum {
+                ty: 4,
+                variant: 1,
+                payload: vec![ss("z")],
+            }),
+        ],
+    };
+    let bytes = encode_domain(&value).expect("production encodes the record value");
+    let decoded =
+        ind::decode(&bytes, &shape).expect("the descriptor-derived shape decodes the value bytes");
+    assert!(
+        agrees(&value, &decoded),
+        "descriptor-derived decode disagrees: got {decoded:?} from bytes {bytes:?}",
     );
 }

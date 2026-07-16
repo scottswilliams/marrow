@@ -65,21 +65,29 @@ pub enum ScalarKind {
 
 /// A recursive value shape. Product carries its ordered leaf shapes; Sum
 /// carries, per variant index, that variant's ordered payload leaf shapes.
+/// Both composites carry `ty`, the schema's nominal-type identity handle
+/// (`type-index`, brief §A7 A12): it does NOT drive byte parsing — the structure
+/// alone determines how value bytes are read — but it is identity-bearing
+/// (`value_equality` compares it), so it is retained and copied into the decoded
+/// value for a descriptor/identity cross-check.
 ///
-/// `Option[T]` is represented as `Sum(vec![vec![], vec![T]])` (variant 0 =
-/// `none` with empty payload, variant 1 = `some` with a single leaf). `Result`
-/// is the analogous `Sum(vec![vec![ok_t], vec![err_t]])`. There is no separate
-/// Option arm (brief §2 A2).
+/// `Option[T]` is `Sum { ty, variants: [ [], [T] ] }` (variant 0 = `none` empty
+/// payload, variant 1 = `some` single leaf). `Result` is the analogous
+/// `Sum { ty, variants: [ [ok_t], [err_t] ] }`. There is no separate Option arm
+/// (brief §2 A2).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     Scalar(ScalarKind),
-    Product(Vec<Shape>),
-    Sum(Vec<Vec<Shape>>),
+    Product { ty: u16, leaves: Vec<Shape> },
+    Sum { ty: u16, variants: Vec<Vec<Shape>> },
 }
 
-/// Convenience constructor for `Option[inner]`.
-pub fn option_shape(inner: Shape) -> Shape {
-    Shape::Sum(vec![vec![], vec![inner]])
+/// Convenience constructor for `Option[inner]` with nominal type index `ty`.
+pub fn option_shape(ty: u16, inner: Shape) -> Shape {
+    Shape::Sum {
+        ty,
+        variants: vec![vec![], vec![inner]],
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -110,14 +118,23 @@ pub enum DecodedValue {
         sec: u8,
         nanos: u32,
     },
-    // [-]PT<seconds>[.fraction]S ; negative sign only for a non-zero magnitude.
+    // [-]PT<seconds>[.fraction]S ; the value is i128 nanoseconds, so the
+    // whole-seconds magnitude spans up to ~1.7e29 and needs u128 (brief §2 A12).
+    // `negative` marks the sign; it is only set for a non-zero magnitude.
     Duration {
         negative: bool,
-        seconds: u64,
+        seconds: u128,
         nanos: u32,
     },
-    Product(Vec<DecodedValue>),
+    // `ty` is the nominal-type identity carried from the schema (§A7 A12),
+    // retained so structurally identical composites of different types compare
+    // unequal.
+    Product {
+        ty: u16,
+        fields: Vec<DecodedValue>,
+    },
     Sum {
+        ty: u16,
         variant: u32,
         payload: Vec<DecodedValue>,
     },
@@ -232,9 +249,9 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn read_u16_le(&mut self) -> Result<u16, DecodeError> {
+    fn read_u16_be(&mut self) -> Result<u16, DecodeError> {
         let b = self.take(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
+        Ok(u16::from_be_bytes([b[0], b[1]]))
     }
 }
 
@@ -243,24 +260,26 @@ impl<'a> Cursor<'a> {
 // ---------------------------------------------------------------------------
 
 /// Reject a schema shape that itself violates a structural Law-9 bound before
-/// any bytes are consumed. Depth counts the outer value as level 1 and each
-/// descent into a product leaf or sum payload as one more level.
+/// any bytes are consumed.
 ///
-/// AMBIGUITY: the brief fixes `MAX_DURABLE_VALUE_DEPTH = 32` for "value-shape
-/// nesting depth" but does not state whether a terminal scalar counts as a
-/// level. Literal reading taken: every shape node (including the scalar leaf)
-/// occupies a level, so a chain of 31 composites over one scalar is the
-/// deepest admitted shape. See REPORT.md.
+/// Depth convention (brief §A7 A12): the outermost composite value is level 1;
+/// each nested composite adds one level; a scalar leaf does not count as a level
+/// (it is read in place) and a top-level scalar value is uncounted. The cap
+/// `MAX_DURABLE_VALUE_DEPTH = 32` therefore admits 32 nested composite levels —
+/// the deepest admitted shape is 32 composites over one scalar leaf; the 33rd
+/// composite is refused. The `depth` argument is the level of the composite
+/// currently being checked; scalars carry no level.
 pub fn validate_shape(shape: &Shape) -> Result<(), DecodeError> {
     fn go(shape: &Shape, depth: usize) -> Result<(), DecodeError> {
-        if depth > MAX_DURABLE_VALUE_DEPTH {
-            return Err(DecodeError::ShapeInvalid(
-                "depth exceeds MAX_DURABLE_VALUE_DEPTH",
-            ));
-        }
         match shape {
+            // Scalars are free: a top-level or leaf scalar occupies no level.
             Shape::Scalar(_) => Ok(()),
-            Shape::Product(leaves) => {
+            Shape::Product { leaves, .. } => {
+                if depth > MAX_DURABLE_VALUE_DEPTH {
+                    return Err(DecodeError::ShapeInvalid(
+                        "depth exceeds MAX_DURABLE_VALUE_DEPTH",
+                    ));
+                }
                 if leaves.len() > MAX_FIELDS {
                     return Err(DecodeError::ShapeInvalid("leaf count exceeds MAX_FIELDS"));
                 }
@@ -269,7 +288,12 @@ pub fn validate_shape(shape: &Shape) -> Result<(), DecodeError> {
                 }
                 Ok(())
             }
-            Shape::Sum(variants) => {
+            Shape::Sum { variants, .. } => {
+                if depth > MAX_DURABLE_VALUE_DEPTH {
+                    return Err(DecodeError::ShapeInvalid(
+                        "depth exceeds MAX_DURABLE_VALUE_DEPTH",
+                    ));
+                }
                 if variants.len() > MAX_VARIANTS {
                     return Err(DecodeError::ShapeInvalid(
                         "variant count exceeds MAX_VARIANTS",
@@ -305,26 +329,10 @@ pub fn decode(bytes: &[u8], shape: &Shape) -> Result<DecodedValue, DecodeError> 
         return Err(DecodeError::ValueBytesOverCap { len: bytes.len() });
     }
     let mut cur = Cursor::new(bytes);
-    let value = decode_outer(&mut cur, shape, 1)?;
-    // Law 5: the decoder must consume the whole cell.
-    if cur.pos != bytes.len() {
-        return Err(DecodeError::TrailingBytes);
-    }
-    Ok(value)
-}
-
-/// Outer cell: a scalar consumes the WHOLE remaining cell with no length prefix
-/// (brief §2 outer-scalar rule); any composite decodes structurally, identical
-/// to a nested composite.
-fn decode_outer(
-    cur: &mut Cursor,
-    shape: &Shape,
-    depth: usize,
-) -> Result<DecodedValue, DecodeError> {
-    if depth > MAX_DURABLE_VALUE_DEPTH {
-        return Err(DecodeError::DepthExceeded);
-    }
-    match shape {
+    // Outer cell: a scalar consumes the WHOLE remaining cell with no length
+    // prefix (brief §2 outer-scalar rule) and is uncounted for depth; a
+    // composite is the outermost value at level 1.
+    let value = match shape {
         Shape::Scalar(kind) => {
             let raw = cur.take_rest();
             if raw.len() as u64 > MAX_TEXT_BYTES {
@@ -332,20 +340,24 @@ fn decode_outer(
                     len: raw.len() as u64,
                 });
             }
-            interpret_scalar(*kind, raw)
+            interpret_scalar(*kind, raw)?
         }
-        _ => decode_node(cur, shape, depth),
+        _ => decode_node(&mut cur, shape, 1)?,
+    };
+    // Law 5: the decoder must consume the whole cell.
+    if cur.pos != bytes.len() {
+        return Err(DecodeError::TrailingBytes);
     }
+    Ok(value)
 }
 
-/// A node reached inside a composite (or the outer composite itself). A scalar
-/// here is length-prefixed; a product/sum self-delimits by schema walk.
+/// A node reached inside a composite (or the outermost composite). A scalar here
+/// is length-prefixed and free of depth; a product/sum self-delimits by schema
+/// walk and occupies level `depth`.
 fn decode_node(cur: &mut Cursor, shape: &Shape, depth: usize) -> Result<DecodedValue, DecodeError> {
-    if depth > MAX_DURABLE_VALUE_DEPTH {
-        return Err(DecodeError::DepthExceeded);
-    }
     match shape {
         Shape::Scalar(kind) => {
+            // Scalar leaves do not count toward depth (brief §A7 A12).
             let len = cur.read_varint()?;
             // Law-9: bound the length BEFORE allocating / slicing.
             if len > MAX_TEXT_BYTES {
@@ -354,14 +366,20 @@ fn decode_node(cur: &mut Cursor, shape: &Shape, depth: usize) -> Result<DecodedV
             let raw = cur.take(len as usize)?;
             interpret_scalar(*kind, raw)
         }
-        Shape::Product(leaves) => {
-            let mut out = Vec::with_capacity(leaves.len());
-            for leaf in leaves {
-                out.push(decode_node(cur, leaf, depth + 1)?);
+        Shape::Product { ty, leaves } => {
+            if depth > MAX_DURABLE_VALUE_DEPTH {
+                return Err(DecodeError::DepthExceeded);
             }
-            Ok(DecodedValue::Product(out))
+            let mut fields = Vec::with_capacity(leaves.len());
+            for leaf in leaves {
+                fields.push(decode_node(cur, leaf, depth + 1)?);
+            }
+            Ok(DecodedValue::Product { ty: *ty, fields })
         }
-        Shape::Sum(variants) => {
+        Shape::Sum { ty, variants } => {
+            if depth > MAX_DURABLE_VALUE_DEPTH {
+                return Err(DecodeError::DepthExceeded);
+            }
             let idx = cur.read_varint()?;
             if idx as usize >= variants.len() {
                 return Err(DecodeError::VariantOutOfRange {
@@ -375,6 +393,7 @@ fn decode_node(cur: &mut Cursor, shape: &Shape, depth: usize) -> Result<DecodedV
                 payload.push(decode_node(cur, leaf, depth + 1)?);
             }
             Ok(DecodedValue::Sum {
+                ty: *ty,
                 variant: idx as u32,
                 payload,
             })
@@ -602,17 +621,38 @@ fn parse_canonical_duration(raw: &[u8]) -> Result<DecodedValue, DecodeError> {
     if sec_digits.len() > 1 && sec_digits[0] == b'0' {
         return Err(DecodeError::NonCanonicalTemporal("duration leading zero"));
     }
-    let mut seconds: u64 = 0;
+    // The value is i128 nanoseconds; the whole-seconds magnitude spans up to
+    // ~1.7e29 (floor(i128::MAX / 1e9)), so accumulate into u128, not u64
+    // (brief §2 A12). checked_* mirrors production's `parse_duration`.
+    let mut seconds: u128 = 0;
     for &b in sec_digits {
         seconds = seconds
             .checked_mul(10)
-            .and_then(|v| v.checked_add((b - b'0') as u64))
+            .and_then(|v| v.checked_add((b - b'0') as u128))
             .ok_or(DecodeError::NonCanonicalTemporal("duration overflow"))?;
     }
     let nanos = parse_fraction_section(frac_section)?;
     // No canonical negative zero.
     if negative && seconds == 0 && nanos == 0 {
         return Err(DecodeError::NonCanonicalTemporal("duration negative zero"));
+    }
+    // The value is i128 nanoseconds; a text whose magnitude exceeds the i128
+    // range is the canonical form of no value (production converts u128->i128
+    // with a checked cast, special-casing i128::MIN = 2^127). Reject it.
+    const NANOS_PER_SEC: u128 = 1_000_000_000;
+    let magnitude = seconds
+        .checked_mul(NANOS_PER_SEC)
+        .and_then(|v| v.checked_add(nanos as u128))
+        .ok_or(DecodeError::NonCanonicalTemporal("duration overflow"))?;
+    let limit = if negative {
+        1u128 << 127 // |i128::MIN|
+    } else {
+        i128::MAX as u128
+    };
+    if magnitude > limit {
+        return Err(DecodeError::NonCanonicalTemporal(
+            "duration magnitude range",
+        ));
     }
     Ok(DecodedValue::Duration {
         negative,
@@ -622,41 +662,44 @@ fn parse_canonical_duration(raw: &[u8]) -> Result<DecodedValue, DecodeError> {
 }
 
 // ---------------------------------------------------------------------------
-// Profile descriptor parsing (brief §A7).
+// Profile descriptor parsing (brief §A7, exact facts from A12).
 //   shape := 0x00 <scalar-kind-tag>
 //          | 0x01 <type-index u16> <leaf-count u16> shape*
 //          | 0x02 <type-index u16> <variant-count u16> ( <payload-count u16> shape* )*
 //
-// AMBIGUITY: (a) the brief does not give the numeric `scalar-kind-tag` byte
-// values ("the existing kind_tag byte set"); the mapping below is this
-// module's own and is used only to round-trip descriptors it also writes.
-// (b) the u16 endianness is unstated; little-endian taken.
-// (c) `type-index` is a nominal-type identity irrelevant to structural decode;
-// it is read and discarded.
+// Facts (A12, verified first-hand against profile.rs):
+//   * scalar-kind tag bytes (disjoint from the shape discriminants 0x00/0x01/0x02):
+//     bool=0x01, int=0x02, string=0x03, bytes=0x04, date=0x05, duration=0x06,
+//     instant=0x07.
+//   * every u16 (type-index, leaf-count, variant-count, payload-count) is
+//     big-endian.
+//   * type-index is the node's nominal-type identity handle: it does not drive
+//     parsing but IS identity-bearing (value_equality compares it), so it is
+//     retained into Shape::Product/Sum { ty } rather than discarded.
 // ---------------------------------------------------------------------------
 
 fn scalar_kind_from_tag(tag: u8) -> Result<ScalarKind, DecodeError> {
     Ok(match tag {
-        0 => ScalarKind::Int,
-        1 => ScalarKind::Bool,
-        2 => ScalarKind::Text,
-        3 => ScalarKind::Bytes,
-        4 => ScalarKind::Date,
-        5 => ScalarKind::Instant,
-        6 => ScalarKind::Duration,
+        0x01 => ScalarKind::Bool,
+        0x02 => ScalarKind::Int,
+        0x03 => ScalarKind::Text, // "string"
+        0x04 => ScalarKind::Bytes,
+        0x05 => ScalarKind::Date,
+        0x06 => ScalarKind::Duration,
+        0x07 => ScalarKind::Instant,
         _ => return Err(DecodeError::BadDescriptor("unknown scalar-kind-tag")),
     })
 }
 
 fn scalar_kind_to_tag(kind: ScalarKind) -> u8 {
     match kind {
-        ScalarKind::Int => 0,
-        ScalarKind::Bool => 1,
-        ScalarKind::Text => 2,
-        ScalarKind::Bytes => 3,
-        ScalarKind::Date => 4,
-        ScalarKind::Instant => 5,
-        ScalarKind::Duration => 6,
+        ScalarKind::Bool => 0x01,
+        ScalarKind::Int => 0x02,
+        ScalarKind::Text => 0x03,
+        ScalarKind::Bytes => 0x04,
+        ScalarKind::Date => 0x05,
+        ScalarKind::Duration => 0x06,
+        ScalarKind::Instant => 0x07,
     }
 }
 
@@ -678,27 +721,27 @@ fn parse_descriptor_node(cur: &mut Cursor) -> Result<Shape, DecodeError> {
             Ok(Shape::Scalar(scalar_kind_from_tag(tag)?))
         }
         0x01 => {
-            let _type_index = cur.read_u16_le()?;
-            let leaf_count = cur.read_u16_le()? as usize;
+            let ty = cur.read_u16_be()?;
+            let leaf_count = cur.read_u16_be()? as usize;
             let mut leaves = Vec::with_capacity(leaf_count);
             for _ in 0..leaf_count {
                 leaves.push(parse_descriptor_node(cur)?);
             }
-            Ok(Shape::Product(leaves))
+            Ok(Shape::Product { ty, leaves })
         }
         0x02 => {
-            let _type_index = cur.read_u16_le()?;
-            let variant_count = cur.read_u16_le()? as usize;
+            let ty = cur.read_u16_be()?;
+            let variant_count = cur.read_u16_be()? as usize;
             let mut variants = Vec::with_capacity(variant_count);
             for _ in 0..variant_count {
-                let payload_count = cur.read_u16_le()? as usize;
+                let payload_count = cur.read_u16_be()? as usize;
                 let mut payload = Vec::with_capacity(payload_count);
                 for _ in 0..payload_count {
                     payload.push(parse_descriptor_node(cur)?);
                 }
                 variants.push(payload);
             }
-            Ok(Shape::Sum(variants))
+            Ok(Shape::Sum { ty, variants })
         }
         _ => Err(DecodeError::BadDescriptor("unknown shape discriminant")),
     }
@@ -719,6 +762,24 @@ mod tests {
     fn text() -> Shape {
         Shape::Scalar(ScalarKind::Text)
     }
+    // ty is copied from the schema and does not affect value bytes; tests that
+    // do not exercise identity use ty 0.
+    fn prod(leaves: Vec<Shape>) -> Shape {
+        Shape::Product { ty: 0, leaves }
+    }
+    fn opt(inner: Shape) -> Shape {
+        option_shape(0, inner)
+    }
+    fn pval(fields: Vec<DecodedValue>) -> DecodedValue {
+        DecodedValue::Product { ty: 0, fields }
+    }
+    fn sval(variant: u32, payload: Vec<DecodedValue>) -> DecodedValue {
+        DecodedValue::Sum {
+            ty: 0,
+            variant,
+            payload,
+        }
+    }
 
     // ---- KATs from the brief / task ----
 
@@ -737,11 +798,11 @@ mod tests {
     fn kat_product_int5_str_ab() {
         // product{int 5, str "ab"} = [0x01,0x35, 0x02,0x61,0x62]
         // nested scalar leaves each carry a minimal-LEB128 length prefix.
-        let shape = Shape::Product(vec![int(), text()]);
+        let shape = prod(vec![int(), text()]);
         let bytes = [0x01, 0x35, 0x02, 0x61, 0x62];
         assert_eq!(
             decode(&bytes, &shape),
-            Ok(DecodedValue::Product(vec![
+            Ok(pval(vec![
                 DecodedValue::Int(5),
                 DecodedValue::Text("ab".to_string()),
             ]))
@@ -751,30 +812,16 @@ mod tests {
     #[test]
     fn kat_option_none() {
         // none = [0x00]  (sum variant index 0, empty payload)
-        let shape = option_shape(int());
-        assert_eq!(
-            decode(&[0x00], &shape),
-            Ok(DecodedValue::Sum {
-                variant: 0,
-                payload: vec![]
-            })
-        );
+        assert_eq!(decode(&[0x00], &opt(int())), Ok(sval(0, vec![])));
     }
 
     #[test]
     fn kat_option_some_none() {
         // some(none) = [0x01,0x00]  (nested Option; composite payload leaf is
         // NOT length-prefixed, self-delimits by schema walk)
-        let shape = option_shape(option_shape(int()));
         assert_eq!(
-            decode(&[0x01, 0x00], &shape),
-            Ok(DecodedValue::Sum {
-                variant: 1,
-                payload: vec![DecodedValue::Sum {
-                    variant: 0,
-                    payload: vec![]
-                }],
-            })
+            decode(&[0x01, 0x00], &opt(opt(int()))),
+            Ok(sval(1, vec![sval(0, vec![])]))
         );
     }
 
@@ -783,37 +830,53 @@ mod tests {
         // some(some(7)) = [0x01,0x01, 0x01,0x37]
         // outer some=0x01, inner some=0x01, then int 7 as a length-prefixed
         // scalar leaf: len 1 (0x01) then '7' (0x37).
-        let shape = option_shape(option_shape(int()));
         assert_eq!(
-            decode(&[0x01, 0x01, 0x01, 0x37], &shape),
-            Ok(DecodedValue::Sum {
-                variant: 1,
-                payload: vec![DecodedValue::Sum {
-                    variant: 1,
-                    payload: vec![DecodedValue::Int(7)],
-                }],
-            })
+            decode(&[0x01, 0x01, 0x01, 0x37], &opt(opt(int()))),
+            Ok(sval(1, vec![sval(1, vec![DecodedValue::Int(7)])]))
         );
     }
 
     #[test]
     fn empty_struct_payload() {
         // struct with no leaves: empty cell, dense, consumes nothing.
-        assert_eq!(
-            decode(&[], &Shape::Product(vec![])),
-            Ok(DecodedValue::Product(vec![]))
-        );
+        assert_eq!(decode(&[], &prod(vec![])), Ok(pval(vec![])));
     }
 
     #[test]
     fn nested_bytes_leaf() {
         // Bytes leaf preserves raw bytes verbatim (length-prefixed).
-        let shape = Shape::Product(vec![Shape::Scalar(ScalarKind::Bytes)]);
+        let shape = prod(vec![Shape::Scalar(ScalarKind::Bytes)]);
         assert_eq!(
             decode(&[0x02, 0xFF, 0x00], &shape),
-            Ok(DecodedValue::Product(vec![DecodedValue::Bytes(vec![
-                0xFF, 0x00
-            ])]))
+            Ok(pval(vec![DecodedValue::Bytes(vec![0xFF, 0x00])]))
+        );
+    }
+
+    #[test]
+    fn type_index_is_identity_bearing() {
+        // ty is carried from the schema into the decoded value ...
+        let shape = Shape::Product {
+            ty: 42,
+            leaves: vec![int()],
+        };
+        assert_eq!(
+            decode(&[0x01, 0x35], &shape),
+            Ok(DecodedValue::Product {
+                ty: 42,
+                fields: vec![DecodedValue::Int(5)]
+            })
+        );
+        // ... and structurally identical composites of different type identity
+        // are unequal values (matches equality::value_equality).
+        assert_ne!(
+            DecodedValue::Product {
+                ty: 1,
+                fields: vec![]
+            },
+            DecodedValue::Product {
+                ty: 2,
+                fields: vec![]
+            }
         );
     }
 
@@ -822,9 +885,8 @@ mod tests {
     #[test]
     fn reject_non_minimal_varint_in_sum_index() {
         // variant index 1 encoded non-minimally as [0x81,0x00].
-        let shape = option_shape(int());
         assert_eq!(
-            decode(&[0x81, 0x00], &shape),
+            decode(&[0x81, 0x00], &opt(int())),
             Err(DecodeError::NonMinimalVarint)
         );
     }
@@ -832,9 +894,8 @@ mod tests {
     #[test]
     fn reject_non_minimal_varint_in_leaf_length() {
         // scalar leaf length 1 encoded non-minimally as [0x81,0x00].
-        let shape = Shape::Product(vec![int()]);
         assert_eq!(
-            decode(&[0x81, 0x00, 0x35], &shape),
+            decode(&[0x81, 0x00, 0x35], &prod(vec![int()])),
             Err(DecodeError::NonMinimalVarint)
         );
     }
@@ -842,9 +903,8 @@ mod tests {
     #[test]
     fn reject_truncation_mid_leaf() {
         // leaf claims length 5 but only 2 bytes follow.
-        let shape = Shape::Product(vec![text()]);
         assert_eq!(
-            decode(&[0x05, 0x61, 0x62], &shape),
+            decode(&[0x05, 0x61, 0x62], &prod(vec![text()])),
             Err(DecodeError::Truncated)
         );
     }
@@ -852,16 +912,17 @@ mod tests {
     #[test]
     fn reject_varint_truncated() {
         // continuation bit set at end of buffer.
-        let shape = option_shape(int());
-        assert_eq!(decode(&[0x81], &shape), Err(DecodeError::VarintTruncated));
+        assert_eq!(
+            decode(&[0x81], &opt(int())),
+            Err(DecodeError::VarintTruncated)
+        );
     }
 
     #[test]
     fn reject_trailing_bytes() {
         // some(some(7)) plus one stray byte.
-        let shape = option_shape(option_shape(int()));
         assert_eq!(
-            decode(&[0x01, 0x01, 0x01, 0x37, 0xFF], &shape),
+            decode(&[0x01, 0x01, 0x01, 0x37, 0xFF], &opt(opt(int()))),
             Err(DecodeError::TrailingBytes)
         );
     }
@@ -869,9 +930,8 @@ mod tests {
     #[test]
     fn reject_variant_out_of_range() {
         // Option has 2 variants; index 2 is out of range.
-        let shape = option_shape(int());
         assert_eq!(
-            decode(&[0x02], &shape),
+            decode(&[0x02], &opt(int())),
             Err(DecodeError::VariantOutOfRange {
                 index: 2,
                 variant_count: 2
@@ -883,10 +943,9 @@ mod tests {
     fn reject_over_cap_leaf_length_before_alloc() {
         // leaf length prefix = 65537 (> MAX_TEXT_BYTES) => refused before any
         // allocation; no payload bytes even present.
-        let shape = Shape::Product(vec![text()]);
         // 65537 = [0x81,0x80,0x04] minimal LEB128.
         assert_eq!(
-            decode(&[0x81, 0x80, 0x04], &shape),
+            decode(&[0x81, 0x80, 0x04], &prod(vec![text()])),
             Err(DecodeError::LeafLengthOverCap { len: 65537 })
         );
     }
@@ -916,20 +975,49 @@ mod tests {
     }
 
     #[test]
-    fn reject_invalid_utf8_text_leaf() {
-        let shape = Shape::Product(vec![text()]);
-        assert_eq!(decode(&[0x01, 0xFF], &shape), Err(DecodeError::InvalidUtf8));
+    fn accept_int_i64_bounds() {
+        // int is backed by i64 (§2 A12): both extremes decode.
+        assert_eq!(
+            decode(b"9223372036854775807", &int()),
+            Ok(DecodedValue::Int(i64::MAX))
+        );
+        assert_eq!(
+            decode(b"-9223372036854775808", &int()),
+            Ok(DecodedValue::Int(i64::MIN))
+        );
+        // one past i64::MAX overflows -> rejected.
+        assert_eq!(
+            decode(b"9223372036854775808", &int()),
+            Err(DecodeError::NonCanonicalInt)
+        );
     }
 
     #[test]
-    fn reject_over_depth_shape() {
-        // Wrap a scalar in 40 products => shape depth 41 > 32.
+    fn reject_invalid_utf8_text_leaf() {
+        assert_eq!(
+            decode(&[0x01, 0xFF], &prod(vec![text()])),
+            Err(DecodeError::InvalidUtf8)
+        );
+    }
+
+    #[test]
+    fn depth_32_accepted_33_rejected() {
+        // A12 convention: scalar leaves are free; the deepest admitted shape is
+        // 32 nested composites over one scalar leaf.
+        // innermost scalar int 5 = length-prefixed [0x01,0x35]; wrappers add nothing.
         let mut shape = int();
-        for _ in 0..40 {
-            shape = Shape::Product(vec![shape]);
+        for _ in 0..32 {
+            shape = prod(vec![shape]);
+        }
+        assert!(decode(&[0x01, 0x35], &shape).is_ok());
+
+        // 33 nested composites: the 33rd is refused before descent.
+        let mut shape33 = int();
+        for _ in 0..33 {
+            shape33 = prod(vec![shape33]);
         }
         assert_eq!(
-            decode(&[], &shape),
+            decode(&[0x01, 0x35], &shape33),
             Err(DecodeError::ShapeInvalid(
                 "depth exceeds MAX_DURABLE_VALUE_DEPTH"
             ))
@@ -952,7 +1040,7 @@ mod tests {
         // A sum with 257 variants violates MAX_VARIANTS.
         let variants: Vec<Vec<Shape>> = (0..257).map(|_| vec![]).collect();
         assert_eq!(
-            validate_shape(&Shape::Sum(variants)),
+            validate_shape(&Shape::Sum { ty: 0, variants }),
             Err(DecodeError::ShapeInvalid(
                 "variant count exceeds MAX_VARIANTS"
             ))
@@ -963,16 +1051,16 @@ mod tests {
 
     #[test]
     fn bool_ascii_zero_one_canonical() {
-        let shape = Shape::Product(vec![Shape::Scalar(ScalarKind::Bool)]);
+        let shape = prod(vec![Shape::Scalar(ScalarKind::Bool)]);
         // len 1, byte '1' (0x31) = true
         assert_eq!(
             decode(&[0x01, 0x31], &shape),
-            Ok(DecodedValue::Product(vec![DecodedValue::Bool(true)]))
+            Ok(pval(vec![DecodedValue::Bool(true)]))
         );
         // len 1, byte '0' (0x30) = false
         assert_eq!(
             decode(&[0x01, 0x30], &shape),
-            Ok(DecodedValue::Product(vec![DecodedValue::Bool(false)]))
+            Ok(pval(vec![DecodedValue::Bool(false)]))
         );
         // 0x00/0x01 (the pre-A10 guess) is now non-canonical.
         assert_eq!(
@@ -986,7 +1074,7 @@ mod tests {
         );
     }
 
-    // ---- Temporal canonical forms (§2 law 3 A10) ----
+    // ---- Temporal canonical forms (§2 law 3 A10/A11/A12) ----
 
     fn date() -> Shape {
         Shape::Scalar(ScalarKind::Date)
@@ -1232,7 +1320,48 @@ mod tests {
         );
     }
 
-    // ---- Descriptor round trip (§A7; own tag/endian mapping) ----
+    #[test]
+    fn duration_i128_magnitude_bounds() {
+        // Positive i128::MAX nanoseconds: floor(i128::MAX/1e9) whole seconds and
+        // fraction .884105727 (brief §2 A12). Whole-seconds needs u128.
+        assert_eq!(
+            decode(b"PT170141183460469231731687303715.884105727S", &duration()),
+            Ok(DecodedValue::Duration {
+                negative: false,
+                seconds: 170_141_183_460_469_231_731_687_303_715u128,
+                nanos: 884_105_727,
+            })
+        );
+        // Negative i128::MIN magnitude (= 2^127): fraction .884105728.
+        assert_eq!(
+            decode(b"-PT170141183460469231731687303715.884105728S", &duration()),
+            Ok(DecodedValue::Duration {
+                negative: true,
+                seconds: 170_141_183_460_469_231_731_687_303_715u128,
+                nanos: 884_105_728,
+            })
+        );
+        // One nanosecond beyond i128::MAX (positive) is the canonical form of no
+        // value -> rejected.
+        assert_eq!(
+            decode(b"PT170141183460469231731687303715.884105728S", &duration()),
+            Err(DecodeError::NonCanonicalTemporal(
+                "duration magnitude range"
+            ))
+        );
+        // A u64-narrow decoder would diverge here: 2e19 whole seconds is well
+        // within i128 and must decode (this is the slice-F u64 finding).
+        assert_eq!(
+            decode(b"PT20000000000000000000S", &duration()),
+            Ok(DecodedValue::Duration {
+                negative: false,
+                seconds: 20_000_000_000_000_000_000u128, // > u64::MAX
+                nanos: 0,
+            })
+        );
+    }
+
+    // ---- Descriptor parsing (§A7, exact A12 facts) ----
 
     fn write_descriptor(shape: &Shape, out: &mut Vec<u8>) {
         match shape {
@@ -1240,20 +1369,20 @@ mod tests {
                 out.push(0x00);
                 out.push(scalar_kind_to_tag(*k));
             }
-            Shape::Product(leaves) => {
+            Shape::Product { ty, leaves } => {
                 out.push(0x01);
-                out.extend_from_slice(&0u16.to_le_bytes()); // type-index (unused)
-                out.extend_from_slice(&(leaves.len() as u16).to_le_bytes());
+                out.extend_from_slice(&ty.to_be_bytes());
+                out.extend_from_slice(&(leaves.len() as u16).to_be_bytes());
                 for l in leaves {
                     write_descriptor(l, out);
                 }
             }
-            Shape::Sum(variants) => {
+            Shape::Sum { ty, variants } => {
                 out.push(0x02);
-                out.extend_from_slice(&0u16.to_le_bytes()); // type-index (unused)
-                out.extend_from_slice(&(variants.len() as u16).to_le_bytes());
+                out.extend_from_slice(&ty.to_be_bytes());
+                out.extend_from_slice(&(variants.len() as u16).to_be_bytes());
                 for v in variants {
-                    out.extend_from_slice(&(v.len() as u16).to_le_bytes());
+                    out.extend_from_slice(&(v.len() as u16).to_be_bytes());
                     for l in v {
                         write_descriptor(l, out);
                     }
@@ -1263,8 +1392,73 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_round_trip() {
-        let shape = option_shape(Shape::Product(vec![int(), text()]));
+    fn descriptor_bytes_kat() {
+        // Brief §A7 A12 printed KAT: record { int, Option[string] }
+        //   Product{ ty:3, [ Scalar(int), Sum{ ty:4, [ [], [Scalar(string)] ] } ] }
+        // = the 18 bytes below (BE u16s; int tag 0x02, string tag 0x03).
+        let bytes = [
+            0x01, 0x00, 0x03, 0x00, 0x02, // product ty=3 leaf-count=2
+            0x00, 0x02, //                   leaf0: scalar int
+            0x02, 0x00, 0x04, 0x00, 0x02, // leaf1: sum ty=4 variant-count=2
+            0x00, 0x00, //                     variant0: payload-count 0
+            0x00, 0x01, 0x00, 0x03, //         variant1: payload-count 1, scalar string
+        ];
+        assert_eq!(bytes.len(), 18);
+        let expected = Shape::Product {
+            ty: 3,
+            leaves: vec![
+                Shape::Scalar(ScalarKind::Int),
+                Shape::Sum {
+                    ty: 4,
+                    variants: vec![vec![], vec![Shape::Scalar(ScalarKind::Text)]],
+                },
+            ],
+        };
+        assert_eq!(parse_descriptor(&bytes), Ok(expected));
+    }
+
+    #[test]
+    fn descriptor_empty_product_kat() {
+        // Brief §A7 A12: Product{ ty:7, [] } -> 01 00 07 00 00 (5 bytes).
+        assert_eq!(
+            parse_descriptor(&[0x01, 0x00, 0x07, 0x00, 0x00]),
+            Ok(Shape::Product {
+                ty: 7,
+                leaves: vec![]
+            })
+        );
+    }
+
+    #[test]
+    fn descriptor_scalar_tag_bytes() {
+        // A12 profile-descriptor scalar-kind tag bytes.
+        for (tag, kind) in [
+            (0x01u8, ScalarKind::Bool),
+            (0x02, ScalarKind::Int),
+            (0x03, ScalarKind::Text),
+            (0x04, ScalarKind::Bytes),
+            (0x05, ScalarKind::Date),
+            (0x06, ScalarKind::Duration),
+            (0x07, ScalarKind::Instant),
+        ] {
+            assert_eq!(parse_descriptor(&[0x00, tag]), Ok(Shape::Scalar(kind)));
+        }
+        // 0x00 is not a scalar-kind tag.
+        assert_eq!(
+            parse_descriptor(&[0x00, 0x00]),
+            Err(DecodeError::BadDescriptor("unknown scalar-kind-tag"))
+        );
+    }
+
+    #[test]
+    fn descriptor_round_trip_preserves_type_index() {
+        let shape = option_shape(
+            9,
+            Shape::Product {
+                ty: 5,
+                leaves: vec![int(), text()],
+            },
+        );
         let mut bytes = Vec::new();
         write_descriptor(&shape, &mut bytes);
         assert_eq!(parse_descriptor(&bytes), Ok(shape));
