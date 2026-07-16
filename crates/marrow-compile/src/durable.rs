@@ -17,7 +17,7 @@
 //! scalar or a widened value (`struct`/`enum`/`Option`, framed inline). A
 //! singleton root, or any root whose resource declares a group or a nominal-typed field, completes its identity and verifies but has no executable operation
 //! sites — an operation over one is a precise typed `check.unsupported` rejection at
-//! lowering ("not yet executable"). The wider shapes run at E01. This module
+//! lowering ("not yet executable"). Those shapes run when their lanes land. This module
 //! validates the declaration, adds the root, its member tree, and — for the
 //! executable subset — its operation sites to the draft, and exposes the resolved
 //! sites the function lowerer emits against.
@@ -133,10 +133,10 @@ impl DurableBranch {
 }
 
 /// The project's single executable durable root, its operation sites, and its
-/// executable branches. A flat keyed root of plain scalar fields whose
-/// only nested placements are scalar-field keyed branches
+/// executable branches. A keyed root (any key arity) whose fields are scalars or
+/// widened values and whose only nested placements are field-only keyed branches
 /// reaches this form; its key columns back the kernel-serviceable read/write
-/// path and each branch adds one key column below it.
+/// path and each branch adds its own key tuple below it.
 pub(crate) struct DurableRoot {
     pub(crate) name: String,
     /// The resource (product) name backing this store — the head of a branch's
@@ -424,13 +424,14 @@ impl DurableRegistry {
         // Executable durable operations exist for the flat keyed root whose fields are
         // each a scalar or a widened composite (a dense struct, or a closed
         // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
-        // codec), together with its field-only keyed branches — the shape the kernel
-        // serves. A singleton, composite-key, group-bearing, or nested/composite-branch
-        // root still parks, as does a nominal field (severed until its lane lands): it
-        // carries its identity and full site set, but the lowerer reports any operation
-        // over it as not yet executable. `has_extras` (any group or branch) no longer parks
-        // on its own; a simple branch and a widened field are executable, mirroring the
-        // verifier's independent `keeps_root_flat`.
+        // codec), together with its field-only keyed branches nested to any depth — the shape
+        // the kernel serves. A singleton (keyless) root or any group-bearing root still parks,
+        // as does a nominal field (severed until its lane lands): it carries its identity and
+        // full site set, but the lowerer reports any operation over it as not yet executable.
+        // Composite root keys and keyed branches (including composite-keyed) are executable for
+        // whole/field sites; `has_extras` (a group, or a branch enclosing a group) no longer
+        // parks on a simple branch or a widened field, mirroring the verifier's independent
+        // `keeps_root_flat`.
         let all_fields_executable = record
             .fields
             .iter()
@@ -493,9 +494,9 @@ impl DurableRegistry {
     }
 
     /// A registry recording that a root of the named placement is declared, in the
-    /// image with a complete identity, but not executable — the kernel cannot yet
-    /// serve its shape (a singleton or composite key, or a group- or branch-bearing
-    /// resource). Used only after the root has entered the draft.
+    /// image with a complete identity, but not executable — the kernel does not serve
+    /// its shape (a singleton/keyless root, a group-bearing resource, or a nominal-typed
+    /// field). Used only after the root has entered the draft.
     fn declared(root: &str) -> Self {
         Self {
             executable: None,

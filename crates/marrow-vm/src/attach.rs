@@ -9,10 +9,10 @@
 //! export invocations, so a mutating export's committed `transaction` region is
 //! observable by a later read invocation and a rolled-back one is not (E02).
 //!
-//! The flat keyed root of scalar fields (one or more key columns), with keyed
-//! scalar-field branches nested to any depth, is executable here; a wider durable shape —
-//! a composite key or a group — is [`DurableRun::Parked`], reported
-//! honestly rather than run against a partial store.
+//! The flat keyed root (one or more key columns) whose fields are scalars or widened
+//! values, with field-only keyed branches nested to any depth, is executable here; a
+//! parked durable shape — a singleton root, a group, or a nominal-typed field — is
+//! [`DurableRun::Parked`], reported honestly rather than run against a partial store.
 
 use marrow_kernel::codec::value::{ScalarKind, ValueShape};
 use marrow_kernel::durable::{
@@ -34,7 +34,7 @@ pub enum DurableRun {
     /// The test ran; the inner result is its VM value or source-mapped fault.
     Ran(Result<Option<Value>, RuntimeFault>),
     /// The image's durable shape is not yet executable by the ephemeral read kernel
-    /// (a composite key or a group). Wider shapes stay parked;
+    /// (a singleton root, a group, or a nominal-typed field). Composite keys and
     /// field-only keyed branches nested to any depth are executable.
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
@@ -103,7 +103,7 @@ pub enum Ephemeral {
     /// keeps it and drives several export invocations against the same store.
     Ready(EphemeralAttachment),
     /// The image's durable shape is not yet executable by the flat kernel (a
-    /// composite key or a group).
+    /// singleton root, a group, or a nominal-typed field).
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
     Failed(&'static str),
@@ -168,14 +168,15 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // v0 carries at most one durable root; a durable test with demand has exactly
     // one. A flat executable root is keyed (one or more columns) with no member tree.
     //
-    // The executable layout is the keyed root (its fields scalar or widened composite)
-    // plus field-only keyed branches nested to any depth. Groups, composite-keyed
-    // branches, and composite root keys park; a parked shape stays parked until its owner
-    // lands it.
+    // The executable layout is the keyed root (any key arity, its fields scalar or widened
+    // composite) plus field-only keyed branches nested to any depth, including composite-keyed
+    // branches. A group at any level parks the root; a singleton (keyless) root parks; bounded
+    // traversal over a composite-keyed layer parks separately. A parked shape stays parked
+    // until its owner lands it.
     let root = image.roots().first()?;
-    // A root with a group or composite/nested branch is not yet executable (`has_extras`);
-    // field-only branches nested to any depth, with composite keys, are executable and do
-    // not set that flag. A singleton root has no key columns and parks.
+    // A root with a group at any level (or a branch enclosing one) is not yet executable
+    // (`has_extras`); field-only branches nested to any depth, with composite keys, are
+    // executable and do not set that flag. A singleton root has no key columns and parks.
     if root.has_extras() || root.keys().is_empty() {
         return None;
     }

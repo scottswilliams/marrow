@@ -67,8 +67,8 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
     shapes
 }
 
-// A flat single-column keyed root of plain scalar fields: the one kernel-executable
-// shape. Its whole-payload and field-leaf sites seal as `Flat`.
+// A flat single-column keyed root of scalar fields: a kernel-executable shape. Its
+// whole-payload and field-leaf sites seal as `Flat`.
 const FLAT_SOURCE: &str = "resource Book\n\
      \x20   required title: string\n\
      \x20   subtitle: string\n\
