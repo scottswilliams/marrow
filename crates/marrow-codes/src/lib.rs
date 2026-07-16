@@ -225,6 +225,7 @@ codes! {
     RunnerUnknownExport => r#"runner.unknown_export"#, Runner, Error, NotApplicable, Active, r#"A local-wire request named an export identity the served program image does not carry. The runner dispatches only on a verified export id present in the image it was launched with; an unknown id is rejected without running anything."#;
     RunnerArgMismatch => r#"runner.arg_mismatch"#, Runner, Error, NotApplicable, Active, r#"A local-wire request's arguments do not match the target export's verified signature: the argument count differs, or an argument value does not decode into the declared parameter type. The runner rejects the request before running rather than coercing a mismatched value."#;
     RunnerDurableUnsupported => r#"runner.durable_unsupported"#, Runner, Error, NotApplicable, Active, r#"A local-wire request named an export whose verified demand reads or writes durable data. The stock runner executes only storeless exports on this beta line; durable execution returns with the ephemeral-memory attachment and later the persistent companion path. A storeless export is unaffected."#;
+    RunnerReplyEncode => r#"runner.reply_encode"#, Runner, Error, NotApplicable, Internal, r#"A defense-in-depth guard: a served export's return value failed to encode for the wire. Interface build excludes an export whose return shape is not transferable, so ordinary served programs never reach this; the runner fails the request closed rather than emitting a partial reply."#;
 }
 
 impl Code {

@@ -47,7 +47,7 @@ impl Service {
                 Some(data) => ServerMessage::Value { data },
                 // Unreachable for a served export: its return shape is transferable,
                 // so its value encodes. Fail closed rather than emit a partial reply.
-                None => reject(Code::RunnerArgMismatch),
+                None => reject(Code::RunnerReplyEncode),
             },
             Err(fault) => ServerMessage::Fault {
                 code: fault.code().to_string(),
