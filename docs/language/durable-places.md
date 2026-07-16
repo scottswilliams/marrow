@@ -101,26 +101,26 @@ checked and their identity is complete; see [Project status](../status.md).
 Within that checked language, the *flat scalar* single-column keyed root is the
 form whose operations the compiler fully lowers: a root with one key column and only
 plain scalar fields, whose entries are read and written through the operations below.
-Its single-level single-column-keyed scalar-field `branch` placements are executable
-in the same way, one level down (see [Keyed branches](#keyed-branches)). A singleton
-root, a composite-key root, a root whose resource declares a static `group`, a branch
-nested inside another branch, a branch with more than one key column, or a root whose
-resource declares a widened field (a nominal scalar, struct, enum, or `Option` value)
-declares and verifies its full identity, but its read and write operations are not yet
-lowered — an operation over one is the typed `check.unsupported` rejection rather than
-a silent drop, until the wider durable runtime lands. (Declaring such a store is no
-longer a `check.type` on the resource, as it was before durable field values widened;
-the store is identity-complete, only its operations are deferred.)
+Its single-column-keyed scalar-field `branch` placements are executable in the same
+way, nested to any depth (see [Keyed branches](#keyed-branches)). A singleton root, a
+composite-key root, a root whose resource declares a static `group`, a branch with more
+than one key column, or a root whose resource declares a widened field (a nominal
+scalar, struct, enum, or `Option` value) declares and verifies its full identity, but
+its read and write operations are not yet lowered — an operation over one is the typed
+`check.unsupported` rejection rather than a silent drop, until the wider durable runtime
+lands. (Declaring such a store is no longer a `check.type` on the resource, as it was
+before durable field values widened; the store is identity-complete, only its
+operations are deferred.)
 
 The compiler emits an **operation site** for every node of the whole durable graph
 — a whole-payload site for each keyed placement (the store root and every nested
 `branch`) and a field-leaf site for each stored field (top-level, group-scoped, or
 branch-scoped) — and the verifier seals each one by resolving its concrete address
-against the graph it independently reconstructs. A site on the flat executable root
-seals as executable; every other site — over a nested placement, a group-scoped or
-widened field, or a non-flat root — seals with a complete identity but parks, so its
-concrete address is checked and recorded while its execution waits for the wider
-kernel. The site table holds one entry per graph node regardless of how many
+against the graph it independently reconstructs. A site on the flat executable root, or
+on one of its single-column scalar-field branches at any depth, seals as executable;
+every other site — over a group-scoped or widened field, a composite-key branch, or a
+non-flat root — seals with a complete identity but parks, so its concrete address is
+checked and recorded while its execution waits for the wider kernel. The site table holds one entry per graph node regardless of how many
 operations reference it, and appending a sparse field adds one field-leaf site
 without disturbing any existing site.
 
@@ -365,9 +365,11 @@ descendants are preserved.
 
 A resource may declare a keyed `branch`: a nested keyed subtree with its own key
 column and stored fields (see [Resources](resources.md#groups-and-branches)). A
-single-level `branch` keyed by one column and holding only scalar fields is
-executable. Its entries are addressed one level below the root by the two-column
-path `^root(key).branch(bkey)`, and the same whole-entry operations apply:
+`branch` keyed by one column and holding only scalar fields is executable, and its own
+members may include further such branches, so a chain of single-column scalar-field
+branches is executable to any depth. Each level's entries are addressed by extending the
+parent's key-path with the branch key — `^root(key).branch(bkey)`,
+`^root(key).branch(bkey).sub(skey)` — and the same operations apply at every level:
 
 ```mw
 module docs::durable_branch
@@ -379,14 +381,25 @@ resource Book
         required text: string
         pinned: bool
 
+        tags(tagId: int)
+            required weight: int
+
 store ^books(id: int): Book
 
 pub fn addNote(id: int, noteId: string, text: string)
     transaction
         ^books(id).notes(noteId) = Book.notes(text: text)
 
-pub fn notePresent(id: int, noteId: string): bool
-    return exists(^books(id).notes(noteId))
+pub fn addTag(id: int, noteId: string, tagId: int, weight: int)
+    transaction
+        ^books(id).notes(noteId).tags(tagId) = Book.notes.tags(weight: weight)
+
+pub fn setPinned(id: int, noteId: string, pinned: bool)
+    transaction
+        ^books(id).notes(noteId).pinned = pinned
+
+pub fn tagWeight(id: int, noteId: string, tagId: int): int?
+    return ^books(id).notes(noteId).tags(tagId).weight
 
 pub fn noteText(id: int, noteId: string): string?
     if const note = ^books(id).notes(noteId)
@@ -399,23 +412,27 @@ pub fn removeNote(id: int, noteId: string)
 ```
 
 A whole branch entry is created or replaced with the qualified constructor
-`Resource.branch(field: value, …)` — here `Book.notes(text: text)` — symmetric with
-the root constructor `Book(…)`, one level down. The head of the path is the resource
-type name: a value binding may not shadow it in that position. As for the root, a
-branch create supplies every required field, and `exists`, whole-entry read, whole
-replacement, and `delete` all address the branch entry through its two-column key.
+`Resource.branch.…(field: value, …)` — here `Book.notes(text: text)` and
+`Book.notes.tags(weight: weight)` — symmetric with the root constructor `Book(…)`, one
+level down per branch. The head of the path is the resource type name: a value binding
+may not shadow it in that position. As for the root, a branch create supplies every
+required field, and `exists`, whole-entry read, whole replacement, and `delete` all
+address the branch entry through its full key-path.
 
-Reading a whole branch entry with `if const note = ^root(key).branch(bkey)`
-materializes the branch's record, whose fields — such as `note.text` — read locally
-through the binding. A field operation *directly* on a branch entry
-(`^root(key).branch(bkey).text`) is not yet lowered.
+A field operation may address a branch field directly — `^root(key).branch(bkey).text`
+or the deeper `^root(key).notes(nid).tags(tid).weight` — to read, set, or `delete` one
+leaf without materializing the whole entry. Reading a whole branch entry with
+`if const note = ^root(key).branch(bkey)` instead materializes the branch's record,
+whose fields — such as `note.text` — read locally through the binding.
 
-A branch entry is a distinct durable node from its root. Creating a branch entry
-under an absent root leaves the root *descendant-only*: it has keyed descendants but
-no payload of its own, so it reads payload-absent and `exists(^root(key))` is `false`
-until the root is given a payload with `create`. Giving the root a payload does not
-disturb its branches, and a whole-entry root `delete` or replacement preserves them
-(it is payload-only).
+A branch entry is a distinct durable node from its ancestors. Creating a branch entry
+under absent ancestors leaves each ancestor *descendant-only*: it has keyed descendants
+but no payload of its own, so it reads payload-absent and `exists` is `false` until it
+is given a payload with `create`. This holds uniformly at depth — a deep write under
+absent ancestors is admitted, and the ancestors gain no marker. Giving a node a payload
+does not disturb its branches, and a whole-entry `delete` or replacement is payload-only:
+it removes the addressed node's own payload while preserving its keyed `branch`
+descendants at every level.
 
 ## Deletion
 

@@ -86,16 +86,15 @@ per stored field — anchored at a group- or branch-qualified path
 branches contribute to the [durable-contract
 identity](durable-places.md#durable-identity) exactly as roots do.
 
-A single-level `branch` keyed by one column and holding only scalar fields is part
-of the executable durable graph: its whole entries are created, read, replaced, and
-erased through the two-column address `^root(key).branch(bkey)` (see [Durable
-places](durable-places.md#keyed-branches)). Other durable shapes are not yet
-executable: a resource declaring a static `group`, a branch nested inside another
-branch, a branch with more than one key column, or a widened (struct or enum) field
-declares and verifies its complete durable identity, but an operation over it is the
-typed `check.unsupported` rejection rather than a silent drop, until the wider durable
-runtime lands. A keyed scalar leaf such as `tags(pos: int): string` is likewise not
-yet part of the executable durable graph.
+A `branch` keyed by one column and holding only scalar fields is part of the executable
+durable graph, and such branches may nest to any depth: their whole entries are created,
+read, replaced, and erased through the key-path address `^root(key).branch(bkey)…` (see
+[Durable places](durable-places.md#keyed-branches)). Other durable shapes are not yet
+executable: a resource declaring a static `group`, a branch with more than one key
+column, or a widened (struct or enum) field declares and verifies its complete durable
+identity, but an operation over it is the typed `check.unsupported` rejection rather than
+a silent drop, until the wider durable runtime lands. A keyed scalar leaf such as
+`tags(pos: int): string` is likewise not yet part of the executable durable graph.
 
 ## Local Resource Values
 
