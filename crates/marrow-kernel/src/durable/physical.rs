@@ -107,10 +107,18 @@ pub(super) fn stem_cursor(stem: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The iteration cursor that resumes a forward scan after every cell of entry `key`
-/// under `root`.
-pub(super) fn cursor(root: &str, key: &KeyScalar) -> Vec<u8> {
-    stem_cursor(&marker_key(root, key))
+/// The byte prefix shared by every cell of the branch family `branch` beneath the
+/// node whose marker `parent_stem` is given: the parent stem, the branch tag, and the
+/// escaped branch name. Because `esc(branch)` is self-terminating, this prefix
+/// uniquely delimits one branch family — a cell of a differently-named branch never
+/// shares it — so it is the traversable [`Layer`] prefix of that branch. The single
+/// owner of the branch-family prefix bytes; both [`branch_child_stem`] and
+/// [`Layer::branch`] derive from it.
+pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: &str) -> Vec<u8> {
+    let mut out = parent_stem.to_vec();
+    out.push(BRANCH_TAG);
+    encode_escaped_bytes(branch.as_bytes(), &mut out);
+    out
 }
 
 /// The marker stem of a branch child: the parent node's marker `stem`, the branch
@@ -126,10 +134,16 @@ pub(super) fn branch_child_stem(
     branch: &str,
     child_key: &KeyScalar,
 ) -> Vec<u8> {
-    let mut out = parent_stem.to_vec();
-    out.push(BRANCH_TAG);
-    encode_escaped_bytes(branch.as_bytes(), &mut out);
-    out.extend_from_slice(&encode_key_value(child_key));
+    child_marker(&branch_family_prefix(parent_stem, branch), child_key)
+}
+
+/// The marker key of `key` directly under a layer `prefix`: the prefix, the encoded
+/// key, and a marker terminator. The single owner of the layer-prefix-plus-key marker
+/// shape shared by a root entry (prefix `0x01 0x20 esc(root)`) and a branch child
+/// (prefix `parent 0x30 esc(branch)`).
+fn child_marker(prefix: &[u8], key: &KeyScalar) -> Vec<u8> {
+    let mut out = prefix.to_vec();
+    out.extend_from_slice(&encode_key_value(key));
     out.push(MARKER_TERMINATOR);
     out
 }
@@ -144,7 +158,7 @@ pub(super) fn meta_key(name: &str) -> Vec<u8> {
 /// The structural role of the byte immediately after a node's marker terminator: one
 /// of the node's own field leaves, one of its branch descendants, or an unrecognized
 /// tag. This is the single owner of post-marker tag meaning, consulted by both the
-/// iteration classifier ([`classify_cell`]) and the bounded prefix probe
+/// iteration classifier ([`classify_under_prefix`]) and the bounded prefix probe
 /// ([`below_marker`]) so the two never disagree on an unknown tag. An unrecognized
 /// tag is a cell shape the layout never writes, so both read it as corruption
 /// (fail-closed) rather than one skipping it and the other treating it as absent.
@@ -162,34 +176,35 @@ fn stem_tag(byte: u8) -> StemTag {
     }
 }
 
-/// Classify a cell key found at or after an iteration cursor, relative to `root`'s
-/// entry family. A well-formed marker yields its key; a branch descendant reached
-/// where a marker would begin identifies a descendant-only entry (a node with
-/// children but no payload); a field leaf or an unrecognized tag reached there is an
-/// orphan (a marker/field or unknown-shape mismatch — corruption); a cell outside the
-/// family ends iteration.
+/// Classify a cell key found at or after an iteration cursor, relative to a traversed
+/// layer's prefix. A well-formed marker yields its key; a branch descendant reached
+/// where a marker would begin identifies a descendant-only child (a node with children
+/// but no payload); a field leaf or an unrecognized tag reached there is an orphan (a
+/// marker/field or unknown-shape mismatch — corruption); a cell outside the layer ends
+/// iteration.
 pub(super) enum CellKind {
-    /// An entry marker: the decoded root-level key.
+    /// An entry marker: the decoded immediate child key.
     Marker(KeyScalar),
-    /// A branch descendant of the root-level entry `key` whose own payload marker is
-    /// absent — a descendant-only node. Iteration seeks past the entry's cursor to
-    /// skip its whole subtree: the node holds children but no visitable payload.
+    /// A branch descendant of the immediate child `key` whose own payload marker is
+    /// absent — a descendant-only node. Iteration seeks past the child's cursor to skip
+    /// its whole subtree: the node holds children but no visitable payload.
     Descendant(KeyScalar),
     /// A field leaf sitting where a marker must be — a marker/field mismatch
     /// (corruption).
     Orphan,
-    /// A cell outside this root's entry family: iteration is done.
+    /// A cell outside the traversed layer's prefix: iteration is done.
     Foreign,
 }
 
-/// Decode a scanned cell key relative to `root`'s entry family: an entry marker, a
-/// branch descendant of a markerless (descendant-only) entry, an orphan field leaf,
-/// or foreign. The structural tag immediately after the entry key distinguishes
-/// them — a lone marker terminator is the marker, a terminator then the branch tag a
-/// descendant, and a terminator then the field tag (or any other shape) an orphan.
-pub(super) fn classify_cell(root: &str, cell_key: &[u8]) -> CellKind {
-    let prefix = entry_family_prefix(root);
-    let Some(rest) = cell_key.strip_prefix(prefix.as_slice()) else {
+/// Classify a scanned cell relative to a layer `prefix` — the root entry family or a
+/// branch family. The structural tag immediately after the layer's child key
+/// distinguishes them: a lone marker terminator is the marker, a terminator then the
+/// branch tag a markerless (descendant-only) child, a terminator then the field tag
+/// (or any other shape) an orphan, and a cell not under the prefix foreign. The single
+/// owner of layer-relative cell meaning, reached through [`Layer::classify`] for both
+/// the root and branch layers.
+fn classify_under_prefix(prefix: &[u8], cell_key: &[u8]) -> CellKind {
+    let Some(rest) = cell_key.strip_prefix(prefix) else {
         return CellKind::Foreign;
     };
     let Some((key, used)) = decode_key_value(rest) else {
@@ -224,7 +239,7 @@ pub(super) enum BelowMarker {
 }
 
 /// Classify a cell sitting strictly after the marker `stem`, relative to that stem,
-/// through the shared [`stem_tag`] owner so it agrees with [`classify_cell`] on an
+/// through the shared [`stem_tag`] owner so it agrees with [`classify_under_prefix`] on an
 /// unrecognized tag (both read it as corruption).
 pub(super) fn below_marker(stem: &[u8], cell_key: &[u8]) -> BelowMarker {
     match cell_key.strip_prefix(stem) {
@@ -237,9 +252,81 @@ pub(super) fn below_marker(stem: &[u8], cell_key: &[u8]) -> BelowMarker {
     }
 }
 
+/// A traversable layer of immediate keyed children sharing one byte prefix: the root's
+/// own entry family (`0x01 0x20 esc(root)`) or one keyed branch family beneath a fixed
+/// parent entry (`parent 0x30 esc(branch)`). A child's marker is
+/// `prefix ++ enc(key) ++ MARKER_TERMINATOR`; raising that terminator to the cursor
+/// sentinel yields the child's subtree cursor, so one prefix-successor seek past a
+/// child skips its whole subtree regardless of branch fan-out (the traversal-skip
+/// law). The root and branch layers therefore share one forward-traversal owner —
+/// bounded acquisition drives both through this type.
+pub(super) struct Layer {
+    prefix: Vec<u8>,
+}
+
+impl Layer {
+    /// The root's own entry family.
+    pub(super) fn root(root: &str) -> Self {
+        Self {
+            prefix: entry_family_prefix(root),
+        }
+    }
+
+    /// The branch family `branch` beneath the entry whose marker `parent_stem` is
+    /// given. Because `esc(branch)` self-terminates, this prefix delimits exactly one
+    /// branch family: a differently-named sibling branch is foreign to it.
+    pub(super) fn branch(parent_stem: &[u8], branch: &str) -> Self {
+        Self {
+            prefix: branch_family_prefix(parent_stem, branch),
+        }
+    }
+
+    /// The byte prefix shared by every cell of this layer. A `scan_after` bounded by it
+    /// stays inside the layer; a cell not under it is foreign (iteration is done).
+    pub(super) fn prefix(&self) -> &[u8] {
+        &self.prefix
+    }
+
+    /// The inclusive-`from` seek start: `prefix ++ enc(from)`. It sorts strictly below
+    /// `from`'s own marker (which appends the terminator) and strictly above every
+    /// earlier child's cursor (the prefix-free key encoding orders them), so a forward
+    /// scan strictly after it yields `from`'s marker when `from` is present, else the
+    /// first present child above `from`. This expresses an inclusive lower bound over
+    /// an engine scan that excludes its cursor.
+    pub(super) fn seek_from(&self, from: &KeyScalar) -> Vec<u8> {
+        let mut out = self.prefix.clone();
+        out.extend_from_slice(&encode_key_value(from));
+        out
+    }
+
+    /// The cursor that resumes a forward scan strictly past child `key`'s whole
+    /// subtree: the child's marker with its terminator raised to the cursor sentinel.
+    pub(super) fn child_cursor(&self, key: &KeyScalar) -> Vec<u8> {
+        stem_cursor(&child_marker(&self.prefix, key))
+    }
+
+    /// Classify a cell scanned under this layer's prefix
+    /// (see [`classify_under_prefix`]).
+    pub(super) fn classify(&self, cell_key: &[u8]) -> CellKind {
+        classify_under_prefix(&self.prefix, cell_key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A root entry's subtree cursor, the root convenience over [`Layer::child_cursor`]
+    /// the ordering tests assert against.
+    fn cursor(root: &str, key: &KeyScalar) -> Vec<u8> {
+        Layer::root(root).child_cursor(key)
+    }
+
+    /// Classify a cell against a root's entry family, the root convenience over
+    /// [`Layer::classify`] the classification tests assert against.
+    fn classify_cell(root: &str, cell_key: &[u8]) -> CellKind {
+        Layer::root(root).classify(cell_key)
+    }
 
     // The ordering property iteration relies on: for keys k < k',
     // marker(k) < every cell of k < cursor(k) < marker(k').

@@ -25,6 +25,8 @@ pub use attach::{
 };
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
+use std::num::NonZeroU32;
+
 use marrow_store::StoreError;
 
 use crate::codec::key::KeyScalar;
@@ -174,6 +176,40 @@ pub enum EraseOutcome {
 pub enum NextKey {
     Next(KeyScalar),
     End,
+}
+
+/// A positive traversal bound `N` from an `at most N` clause: the count of immediate
+/// keys a bounded acquisition freezes before probing one beyond to decide the
+/// `on more` arm. `NonZeroU32` makes the invariant's positivity unrepresentable when
+/// violated; the verifier additionally caps the compile-time constant, and the kernel
+/// bounds its frozen-key allocation by it (campaign law 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundedLimit(NonZeroU32);
+
+impl BoundedLimit {
+    /// A bound from a positive count, or `None` for zero (which the verifier rejects
+    /// before an image ever reaches the kernel).
+    pub fn new(count: u32) -> Option<Self> {
+        NonZeroU32::new(count).map(Self)
+    }
+
+    /// The bound as a `usize` frozen-key capacity.
+    pub fn get(self) -> usize {
+        self.0.get() as usize
+    }
+}
+
+/// The outcome of a bounded acquisition over one durable layer: the frozen immediate
+/// keys in ascending key order (at most the [`BoundedLimit`]), and whether a further
+/// key existed beyond them (the `on more` bit). No cursor, page, continuation, or
+/// lease escapes — the frozen keys are the whole result, and because they are acquired
+/// before any loop body runs they are immune to writes those bodies perform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundedKeys {
+    /// The frozen keys, ascending, `len() <= limit`.
+    pub keys: Vec<KeyScalar>,
+    /// Whether a `(limit + 1)`th present key existed beyond the frozen set.
+    pub more: bool,
 }
 
 /// The result of committing a transaction.

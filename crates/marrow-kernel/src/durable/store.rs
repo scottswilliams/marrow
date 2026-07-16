@@ -10,9 +10,9 @@ use super::physical::{self, CellKind};
 use super::plan::{CellWrite, Planner};
 use super::profile;
 use super::{
-    AuthTarget, AuthorizedSite, BranchHop, CommitResult, CreateOutcome, DemandCoverage, Denied,
-    EntryValue, EraseOutcome, FieldSchema, InvocationGrant, KernelFault, NextKey, Presence, Reopen,
-    ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
+    AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, BranchHop, CommitResult, CreateOutcome,
+    DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, InvocationGrant, KernelFault,
+    NextKey, Presence, Reopen, ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use crate::codec::key::{KeyScalar, decode_key_value, encode_key_value};
 use crate::codec::value::{RuntimeScalar, decode_value, encode_value};
@@ -48,6 +48,24 @@ pub trait Durable {
         site: &AuthorizedSite,
         after: Option<KeyScalar>,
     ) -> Result<NextKey, KernelFault>;
+    /// Freeze the first `limit` immediate keys of the layer the whole-entry `site`
+    /// belongs to — the root's entry family (a `WholePayload` site) or a keyed branch
+    /// family beneath a fixed parent (a branch site) — starting at an inclusive `from`
+    /// key when given, and report whether a further key existed. `ancestor_keys` is the
+    /// key-path to the traversed layer's parent: empty for the root layer, `[root_key]`
+    /// for a single-level branch layer — one fewer than the site's whole-entry key
+    /// arity, since the traversed key is what iteration enumerates rather than an
+    /// operand. At most `limit + 1` distinct present keys are acquired and the frozen
+    /// set is bounded by `limit`, so the walk is `O(limit + 1)` seeks regardless of
+    /// descendant fan-out. A descendant-only child (branch children, no payload) is
+    /// skipped by one prefix-successor seek past its subtree.
+    fn iterate_bounded(
+        &mut self,
+        site: &AuthorizedSite,
+        ancestor_keys: &[KeyScalar],
+        from: Option<KeyScalar>,
+        limit: BoundedLimit,
+    ) -> Result<BoundedKeys, KernelFault>;
     fn set_required(
         &mut self,
         site: &AuthorizedSite,
@@ -354,6 +372,15 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     ) -> Result<NextKey, KernelFault> {
         op_next_key(&self.view, site, after)
     }
+    fn iterate_bounded(
+        &mut self,
+        site: &AuthorizedSite,
+        ancestor_keys: &[KeyScalar],
+        from: Option<KeyScalar>,
+        limit: BoundedLimit,
+    ) -> Result<BoundedKeys, KernelFault> {
+        op_iterate_bounded(&self.view, site, ancestor_keys, from, limit)
+    }
     fn set_required(
         &mut self,
         _site: &AuthorizedSite,
@@ -580,6 +607,15 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         after: Option<KeyScalar>,
     ) -> Result<NextKey, KernelFault> {
         op_next_key(self.txn(), site, after)
+    }
+    fn iterate_bounded(
+        &mut self,
+        site: &AuthorizedSite,
+        ancestor_keys: &[KeyScalar],
+        from: Option<KeyScalar>,
+        limit: BoundedLimit,
+    ) -> Result<BoundedKeys, KernelFault> {
+        op_iterate_bounded(self.txn(), site, ancestor_keys, from, limit)
     }
     fn set_required(
         &mut self,
@@ -897,32 +933,133 @@ fn op_read_entry<V: ReadView>(
     Ok(Some(EntryValue { fields: values }))
 }
 
+/// Where a forward layer walk begins.
+enum LayerSeek {
+    /// At the layer's first child.
+    Start,
+    /// Strictly after `key`'s whole subtree (an exclusive resume).
+    After(KeyScalar),
+    /// At the first child whose key is `>= from` (an inclusive lower bound).
+    From(KeyScalar),
+}
+
+/// One forward step over a durable `layer`: the first present (payload-bearing) child
+/// at or after `seek`, or [`NextKey::End`]. A descendant-only child — branch children
+/// but no payload marker — is skipped with one prefix-successor seek past its subtree,
+/// which passes its whole subtree regardless of branch fan-out. The single owner of the
+/// forward marker walk: both the root `next_key` op and the bounded layer acquisition
+/// step through it, so the root and branch layers walk identically.
+fn layer_step<V: ReadView>(
+    cells: &V,
+    layer: &physical::Layer,
+    seek: LayerSeek,
+) -> Result<NextKey, KernelFault> {
+    let mut cursor = match seek {
+        LayerSeek::Start => layer.prefix().to_vec(),
+        LayerSeek::After(key) => layer.child_cursor(&key),
+        LayerSeek::From(from) => layer.seek_from(&from),
+    };
+    loop {
+        let page = cells
+            .scan_after(layer.prefix(), &cursor)
+            .map_err(KernelFault::Engine)?;
+        let Some((cell_key, _)) = page.into_iter().next() else {
+            return Ok(NextKey::End);
+        };
+        match layer.classify(&cell_key) {
+            CellKind::Marker(key) => return Ok(NextKey::Next(key)),
+            CellKind::Descendant(key) => cursor = layer.child_cursor(&key),
+            CellKind::Orphan => return Err(KernelFault::Corruption),
+            CellKind::Foreign => return Ok(NextKey::End),
+        }
+    }
+}
+
 fn op_next_key<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
     after: Option<KeyScalar>,
 ) -> Result<NextKey, KernelFault> {
-    let prefix = physical::entry_family_prefix(&site.root);
-    let mut cursor = match &after {
-        None => prefix.clone(),
-        Some(key) => physical::cursor(&site.root, key),
+    let seek = match after {
+        None => LayerSeek::Start,
+        Some(key) => LayerSeek::After(key),
     };
-    // Iteration visits only present (payload-bearing) entries. A descendant-only
-    // entry — branch children but no payload marker — is skipped with one
-    // prefix-successor seek past its cursor, which passes its whole subtree
-    // regardless of branch fan-out; the loop then resumes at the next entry.
+    layer_step(cells, &physical::Layer::root(&site.root), seek)
+}
+
+/// The durable layer the whole-entry `site` traverses, resolving its parent entry from
+/// `ancestor_keys`: a root (`WholePayload`) site traverses the root's entry family with
+/// no ancestor key; a branch site traverses its branch family beneath the root entry
+/// the ancestor key-path names. The single owner of the site-to-traversed-layer
+/// mapping. The ancestor arity and each key's scalar kind are asserted against the
+/// site's declared root and hop kinds as defense in depth over the verifier's proof.
+fn layer_of(site: &AuthorizedSite, ancestor_keys: &[KeyScalar]) -> physical::Layer {
+    match site.branch.split_last() {
+        None => {
+            debug_assert!(
+                ancestor_keys.is_empty(),
+                "the root layer has no ancestor key"
+            );
+            physical::Layer::root(&site.root)
+        }
+        Some((traversed, parent_hops)) => {
+            debug_assert_eq!(
+                ancestor_keys.len(),
+                1 + parent_hops.len(),
+                "a branch layer's ancestor key-path locates its parent entry",
+            );
+            debug_assert_eq!(
+                ancestor_keys[0].scalar_kind(),
+                site.key,
+                "the root key kind matches the site",
+            );
+            let mut stem = physical::marker_key(&site.root, &ancestor_keys[0]);
+            for (hop, key) in parent_hops.iter().zip(&ancestor_keys[1..]) {
+                debug_assert_eq!(
+                    key.scalar_kind(),
+                    hop.key,
+                    "the branch key kind matches the hop"
+                );
+                stem = physical::branch_child_stem(&stem, &hop.name, key);
+            }
+            physical::Layer::branch(&stem, &traversed.name)
+        }
+    }
+}
+
+/// Freeze the first `limit` immediate keys of the layer `site` traverses and report
+/// whether a further key existed. Acquires at most `limit + 1` distinct present keys —
+/// the frozen set plus one existence probe — through the bounded [`layer_step`] walk,
+/// so it costs `O(limit + 1)` seeks whatever the descendant fan-out. The frozen keys
+/// are captured before any caller runs a loop body, so writes a body performs cannot
+/// change the set.
+fn op_iterate_bounded<V: ReadView>(
+    cells: &V,
+    site: &AuthorizedSite,
+    ancestor_keys: &[KeyScalar],
+    from: Option<KeyScalar>,
+    limit: BoundedLimit,
+) -> Result<BoundedKeys, KernelFault> {
+    let layer = layer_of(site, ancestor_keys);
+    let mut keys: Vec<KeyScalar> = Vec::with_capacity(limit.get());
+    // The first step honors an inclusive `from`; each later step resumes strictly after
+    // the last frozen key.
+    let mut seek = match from {
+        Some(from) => LayerSeek::From(from),
+        None => LayerSeek::Start,
+    };
     loop {
-        let page = cells
-            .scan_after(&prefix, &cursor)
-            .map_err(KernelFault::Engine)?;
-        let Some((cell_key, _)) = page.into_iter().next() else {
-            return Ok(NextKey::End);
-        };
-        match physical::classify_cell(&site.root, &cell_key) {
-            CellKind::Marker(key) => return Ok(NextKey::Next(key)),
-            CellKind::Descendant(key) => cursor = physical::cursor(&site.root, &key),
-            CellKind::Orphan => return Err(KernelFault::Corruption),
-            CellKind::Foreign => return Ok(NextKey::End),
+        match layer_step(cells, &layer, seek)? {
+            NextKey::End => return Ok(BoundedKeys { keys, more: false }),
+            NextKey::Next(key) => {
+                if keys.len() == limit.get() {
+                    // A present key exists beyond the frozen `limit`: the `on more` bit.
+                    // Its existence is recorded but the key itself is not frozen or run.
+                    return Ok(BoundedKeys { keys, more: true });
+                }
+                seek = LayerSeek::After(key.clone());
+                keys.push(key);
+            }
         }
     }
 }
@@ -947,9 +1084,9 @@ mod tests {
 
     use super::super::physical;
     use super::super::{
-        BranchSchema, CommitResult, CreateOutcome, DemandCoverage, EntryValue, FieldSchema,
-        InvocationGrant, KernelFault, NextKey, Presence, ReplaceOutcome, SessionError, SiteSpec,
-        SiteTarget, StoreSchema,
+        BoundedKeys, BoundedLimit, BranchSchema, CommitResult, CreateOutcome, DemandCoverage,
+        EntryValue, FieldSchema, InvocationGrant, KernelFault, NextKey, Presence, ReplaceOutcome,
+        SessionError, SiteSpec, SiteTarget, StoreSchema,
     };
     use super::{Durable, DurableStore};
     use crate::codec::key::KeyScalar;
@@ -1518,6 +1655,389 @@ mod tests {
         assert_eq!(
             read.next_key(&root, Some(k("k3"))),
             Ok(NextKey::Next(k("k4")))
+        );
+    }
+
+    // --- E04 bounded acquisition law (the freeze-then-run kernel primitive). ---
+    //
+    // `iterate_bounded` freezes the first N immediate keys of a durable layer and
+    // reports whether an (N+1)th existed. It is the bounded, cursor-free acquisition
+    // the `for … at most N … on more` form runs over: the keys are captured up front
+    // (so loop-body writes cannot change the frozen set), a descendant-only child is
+    // skipped by one prefix-successor seek, and an inclusive `from` bounds the start.
+
+    fn bound(n: u32) -> BoundedLimit {
+        BoundedLimit::new(n).expect("a positive traversal bound")
+    }
+
+    /// Create `names` as present root entries (a required `value`, no `label`) in one
+    /// committed transaction over the flat `counters` schema.
+    fn seed_root(store: &mut DurableStore<MemoryEngine>, names: &[&str]) {
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write_demand())
+            .expect("txn session");
+        let entry = txn.site(0);
+        for name in names {
+            txn.create_entry(&entry, &[KeyScalar::Str((*name).into())], value_entry(1))
+                .expect("create");
+        }
+        assert_eq!(txn.commit(), CommitResult::Committed);
+    }
+
+    /// Freeze up to `n` root keys of the `counters` store, starting inclusively at
+    /// `from` when given.
+    fn freeze_root(
+        store: &mut DurableStore<MemoryEngine>,
+        from: Option<&str>,
+        n: u32,
+    ) -> BoundedKeys {
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        read.iterate_bounded(&root, &[], from.map(|s| KeyScalar::Str(s.into())), bound(n))
+            .expect("iterate")
+    }
+
+    fn strs(names: &[&str]) -> Vec<KeyScalar> {
+        names.iter().map(|s| KeyScalar::Str((*s).into())).collect()
+    }
+
+    /// The freeze law: the frozen set is the first N present keys in ascending order,
+    /// and `more` is set exactly when an (N+1)th key exists — regardless of insertion
+    /// order.
+    #[test]
+    fn bounded_acquisition_freezes_the_first_n_and_flags_a_further_key() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        seed_root(&mut store, &["c", "a", "e", "b", "d"]); // inserted out of order
+
+        // N below the population: the first N, ascending, with `more` set.
+        assert_eq!(
+            freeze_root(&mut store, None, 3),
+            BoundedKeys {
+                keys: strs(&["a", "b", "c"]),
+                more: true,
+            },
+        );
+        // N equal to the population: every key, `more` clear (no (N+1)th exists).
+        assert_eq!(
+            freeze_root(&mut store, None, 5),
+            BoundedKeys {
+                keys: strs(&["a", "b", "c", "d", "e"]),
+                more: false,
+            },
+        );
+        // N above the population: every key, `more` clear.
+        assert_eq!(
+            freeze_root(&mut store, None, 9),
+            BoundedKeys {
+                keys: strs(&["a", "b", "c", "d", "e"]),
+                more: false,
+            },
+        );
+    }
+
+    /// The 0/1/N/N+1 boundary of the population against a fixed bound N=2.
+    #[test]
+    fn bounded_acquisition_covers_the_population_boundary() {
+        // 0 present: empty frozen set, no more.
+        let mut empty = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        assert_eq!(
+            freeze_root(&mut empty, None, 2),
+            BoundedKeys {
+                keys: vec![],
+                more: false,
+            },
+        );
+
+        // 1 present (< N): the one key, no more.
+        let mut one = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        seed_root(&mut one, &["a"]);
+        assert_eq!(
+            freeze_root(&mut one, None, 2),
+            BoundedKeys {
+                keys: strs(&["a"]),
+                more: false,
+            },
+        );
+
+        // Exactly N present: both keys, no more (the (N+1)th does not exist).
+        let mut exact = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        seed_root(&mut exact, &["a", "b"]);
+        assert_eq!(
+            freeze_root(&mut exact, None, 2),
+            BoundedKeys {
+                keys: strs(&["a", "b"]),
+                more: false,
+            },
+        );
+
+        // N+1 present: the first N frozen, `more` set (the third is probed, not frozen).
+        let mut over = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        seed_root(&mut over, &["a", "b", "c"]);
+        assert_eq!(
+            freeze_root(&mut over, None, 2),
+            BoundedKeys {
+                keys: strs(&["a", "b"]),
+                more: true,
+            },
+        );
+    }
+
+    /// The inclusive `from` lower bound: the walk begins at `from` when present, else at
+    /// the first present key above it, and is otherwise frozen and flagged as usual.
+    #[test]
+    fn bounded_acquisition_from_is_an_inclusive_lower_bound() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        seed_root(&mut store, &["a", "c", "e"]);
+
+        // `from` a present key: inclusive — the frozen set starts at it.
+        assert_eq!(
+            freeze_root(&mut store, Some("c"), 5),
+            BoundedKeys {
+                keys: strs(&["c", "e"]),
+                more: false,
+            },
+        );
+        // `from` between two keys: starts at the first present key above it.
+        assert_eq!(
+            freeze_root(&mut store, Some("b"), 5),
+            BoundedKeys {
+                keys: strs(&["c", "e"]),
+                more: false,
+            },
+        );
+        // `from` at the least key: inclusive, the whole layer.
+        assert_eq!(
+            freeze_root(&mut store, Some("a"), 5),
+            BoundedKeys {
+                keys: strs(&["a", "c", "e"]),
+                more: false,
+            },
+        );
+        // `from` above every key: empty.
+        assert_eq!(
+            freeze_root(&mut store, Some("z"), 5),
+            BoundedKeys {
+                keys: vec![],
+                more: false,
+            },
+        );
+        // `from` combines with the bound: the (N+1)th key above `from` sets `more`.
+        assert_eq!(
+            freeze_root(&mut store, Some("c"), 1),
+            BoundedKeys {
+                keys: strs(&["c"]),
+                more: true,
+            },
+        );
+    }
+
+    /// Descendant-only entries — markerless roots carrying only a keyed branch child —
+    /// are skipped by the bounded walk with one prefix-successor seek per run, so the
+    /// frozen set holds only payload-bearing roots, and the (N+1) probe skips a
+    /// descendant-only run to reach a real key.
+    #[test]
+    fn bounded_acquisition_skips_descendant_only_entries() {
+        let mut cells = Vec::new();
+        for present in ["k1", "k4"] {
+            let stem = book_stem(present);
+            cells.push((stem.clone(), physical::MARKER_VALUE.to_vec()));
+            cells.push((physical::stem_field_leaf(&stem, "title"), b"T".to_vec()));
+        }
+        for descendant_only in ["k2", "k3"] {
+            let branch_stem = physical::branch_child_stem(
+                &book_stem(descendant_only),
+                "notes",
+                &KeyScalar::Int(7),
+            );
+            cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
+            cells.push((
+                physical::stem_field_leaf(&branch_stem, "text"),
+                b"hi".to_vec(),
+            ));
+        }
+        let mut store = injected_branch_store(&cells);
+        let k = |s: &str| KeyScalar::Str(s.into());
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+
+        // A generous bound freezes only the two present roots, skipping the two
+        // descendant-only entries between them.
+        assert_eq!(
+            read.iterate_bounded(&root, &[], None, bound(10)),
+            Ok(BoundedKeys {
+                keys: vec![k("k1"), k("k4")],
+                more: false,
+            }),
+        );
+        // With N=1 the (N+1) probe skips the descendant-only run k2,k3 to reach k4, so
+        // `more` is set although the two intervening entries carry no payload.
+        assert_eq!(
+            read.iterate_bounded(&root, &[], None, bound(1)),
+            Ok(BoundedKeys {
+                keys: vec![k("k1")],
+                more: true,
+            }),
+        );
+    }
+
+    /// Bounded work over fan-out: a present root with a large branch subtree is passed
+    /// by one prefix-successor seek to reach the next root, so root-layer freezing never
+    /// reads the subtree — the frozen set is the roots, not their descendants.
+    #[test]
+    fn bounded_acquisition_skips_a_large_descendant_fan_out_in_one_seek() {
+        let (schema, sites) = branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let root = txn.site(0);
+            let branch = txn.site(1);
+            for book in ["a", "b"] {
+                let title = EntryValue {
+                    fields: vec![Some(RuntimeScalar::Str("T".into()))],
+                };
+                txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
+                    .expect("root create");
+            }
+            // A large branch fan-out under book "a" the root walk must skip wholesale.
+            for note in 0..200i64 {
+                let text = EntryValue {
+                    fields: vec![Some(RuntimeScalar::Str("n".into()))],
+                };
+                txn.create_entry(
+                    &branch,
+                    &[KeyScalar::Str("a".into()), KeyScalar::Int(note)],
+                    text,
+                )
+                .expect("note create");
+            }
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        let k = |s: &str| KeyScalar::Str(s.into());
+
+        // The root layer freezes only the two book roots; book "a"'s 200-note subtree
+        // is skipped in one seek to reach "b".
+        assert_eq!(
+            read.iterate_bounded(&root, &[], None, bound(5)),
+            Ok(BoundedKeys {
+                keys: vec![k("a"), k("b")],
+                more: false,
+            }),
+        );
+        // With N=1, "b" is the (N+1) probe reached past "a"'s whole fan-out.
+        assert_eq!(
+            read.iterate_bounded(&root, &[], None, bound(1)),
+            Ok(BoundedKeys {
+                keys: vec![k("a")],
+                more: true,
+            }),
+        );
+    }
+
+    /// Branch-layer traversal: freezing the immediate keys of a keyed branch beneath a
+    /// fixed root entry. The frozen set is that branch's own keys, scoped to the given
+    /// root key (a sibling root's branch of the same name is not visited), with the same
+    /// freeze / `more` / inclusive-`from` law as the root layer, one level down.
+    #[test]
+    fn bounded_acquisition_traverses_a_branch_layer_under_a_fixed_root_key() {
+        let (schema, sites) = branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let root = txn.site(0);
+            let branch = txn.site(1);
+            for book in ["a", "b"] {
+                let title = EntryValue {
+                    fields: vec![Some(RuntimeScalar::Str("T".into()))],
+                };
+                txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
+                    .expect("root create");
+            }
+            // Notes 10,20,30 under "a"; a decoy note 5 under sibling root "b".
+            for note in [10i64, 20, 30] {
+                let text = EntryValue {
+                    fields: vec![Some(RuntimeScalar::Str("n".into()))],
+                };
+                txn.create_entry(
+                    &branch,
+                    &[KeyScalar::Str("a".into()), KeyScalar::Int(note)],
+                    text,
+                )
+                .expect("note create");
+            }
+            let decoy = EntryValue {
+                fields: vec![Some(RuntimeScalar::Str("x".into()))],
+            };
+            txn.create_entry(
+                &branch,
+                &[KeyScalar::Str("b".into()), KeyScalar::Int(5)],
+                decoy,
+            )
+            .expect("decoy create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let branch = read.site(1);
+        let a = [KeyScalar::Str("a".into())];
+        let int = KeyScalar::Int;
+
+        // Freeze the notes under "a": bounded and scoped, with `more` when an (N+1)th
+        // note exists.
+        assert_eq!(
+            read.iterate_bounded(&branch, &a, None, bound(2)),
+            Ok(BoundedKeys {
+                keys: vec![int(10), int(20)],
+                more: true,
+            }),
+        );
+        assert_eq!(
+            read.iterate_bounded(&branch, &a, None, bound(5)),
+            Ok(BoundedKeys {
+                keys: vec![int(10), int(20), int(30)],
+                more: false,
+            }),
+            "the branch layer is scoped to root a — b's note key 5 is not visited",
+        );
+        // Inclusive `from` within the branch layer.
+        assert_eq!(
+            read.iterate_bounded(&branch, &a, Some(int(20)), bound(5)),
+            Ok(BoundedKeys {
+                keys: vec![int(20), int(30)],
+                more: false,
+            }),
+        );
+
+        // A different fixed root key sees its own branch layer; an absent root key none.
+        let mut read2 = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let branch2 = read2.site(1);
+        assert_eq!(
+            read2.iterate_bounded(&branch2, &[KeyScalar::Str("b".into())], None, bound(5)),
+            Ok(BoundedKeys {
+                keys: vec![int(5)],
+                more: false,
+            }),
+        );
+        assert_eq!(
+            read2.iterate_bounded(&branch2, &[KeyScalar::Str("c".into())], None, bound(5)),
+            Ok(BoundedKeys {
+                keys: vec![],
+                more: false,
+            }),
         );
     }
 }
