@@ -11,6 +11,7 @@ mod active_call;
 mod ast;
 mod diagnostic;
 mod format;
+mod layout_legacy;
 mod lexer;
 mod literal;
 mod parse_decl;
