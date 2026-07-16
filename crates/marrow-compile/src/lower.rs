@@ -2469,60 +2469,41 @@ impl<'a> FnLowerer<'a> {
         let coll_slot = self.alloc_slot();
         self.push(Instr::LocalSet(coll_slot), span);
 
-        // A positional walk over the frozen list binds `k` per position. `continue`
-        // advances to the loop top; `break`/`return` jumps past the `on more` block.
-        let index_slot = self.alloc_slot();
-        let neg_one = self.draft.intern_int(-1);
-        self.push(Instr::ConstLoad(neg_one.index()), span);
-        self.push(Instr::LocalSet(index_slot), span);
-        let one = self.draft.intern_int(1);
+        // A positional walk over the frozen `List[K]` binds `k` per position.
+        // `continue` advances to the loop top; a body `break`/`return` skips past
+        // the `on more` block.
+        let break_jumps = self.lower_positional_walk(
+            coll_slot,
+            Instr::ListLen,
+            body,
+            span,
+            |lower, index_slot| {
+                let key_slot = lower.alloc_slot();
+                lower.push(Instr::LocalGet(coll_slot), span);
+                lower.push(Instr::LocalGet(index_slot), span);
+                lower.push(Instr::ListGet, span);
+                lower.push(Instr::LocalSet(key_slot), span);
+                // Traversal establishes no presence fact for the body: `k` names a
+                // frozen key whose entry an earlier body iteration may already have
+                // erased.
+                lower.locals.push(Local {
+                    name: var.name.clone(),
+                    ty: LTy::bare_scalar(key_ty),
+                    mutable: false,
+                    slot: key_slot,
+                });
+            },
+        );
 
-        let top = self.here();
-        self.push(Instr::LocalGet(index_slot), span);
-        self.push(Instr::ConstLoad(one.index()), span);
-        self.push(Instr::IntAdd, span);
-        self.push(Instr::LocalSet(index_slot), span);
-        self.push(Instr::LocalGet(index_slot), span);
-        self.push(Instr::LocalGet(coll_slot), span);
-        self.push(Instr::ListLen, span);
-        self.push(Instr::IntLt, span);
-        let exhausted = self.push_jif(span);
-
-        let key_slot = self.alloc_slot();
-        self.push(Instr::LocalGet(coll_slot), span);
-        self.push(Instr::LocalGet(index_slot), span);
-        self.push(Instr::ListGet, span);
-        self.push(Instr::LocalSet(key_slot), span);
-        let mark = self.locals.len();
-        // Traversal establishes no presence fact for the body: `k` names a frozen key
-        // whose entry an earlier body iteration may already have erased.
-        self.locals.push(Local {
-            name: var.name.clone(),
-            ty: LTy::bare_scalar(key_ty),
-            mutable: false,
-            slot: key_slot,
-        });
-        self.loops.push(LoopCtx {
-            continue_target: top,
-            break_jumps: Vec::new(),
-        });
-        let body_flow = self.lower_block(body);
-        if body_flow == Flow::Fallthrough {
-            self.push(Instr::Jump(top as u32), body.span);
-        }
-        let ctx = self.loops.pop().expect("loop was pushed");
-        self.locals.truncate(mark);
-
-        // Normal exhaustion falls here: run `on more` iff a further key existed.
-        let after_loop = self.here();
-        self.patch(exhausted, after_loop);
+        // Normal exhaustion falls through to here: run `on more` iff a further key
+        // existed.
         self.push(Instr::LocalGet(more_slot), span);
         let skip_on_more = self.push_jif(span);
         self.lower_block(on_more);
         let end = self.here();
         self.patch(skip_on_more, end);
         // A body break jumps past the whole loop, skipping the `on more` decision.
-        self.patch_all(ctx.break_jumps, end);
+        self.patch_all(break_jumps, end);
         Flow::Fallthrough
     }
 
@@ -2640,6 +2621,63 @@ impl<'a> FnLowerer<'a> {
         // The collection value is on the stack; keep it in a local to index it.
         let coll_slot = self.alloc_slot();
         self.push(Instr::LocalSet(coll_slot), span);
+        let len_instr = match self.records.collection_spec(idx) {
+            CollSpec::List { .. } => Instr::ListLen,
+            CollSpec::Map { .. } => Instr::MapLen,
+        };
+
+        let break_jumps =
+            self.lower_positional_walk(coll_slot, len_instr, body, span, |lower, index_slot| {
+                // Bind the loop variable(s) from the current position.
+                let bind_var = |lower: &mut Self, name: &str, ty: LTy, at: Instr| {
+                    let slot = lower.alloc_slot();
+                    lower.push(Instr::LocalGet(coll_slot), span);
+                    lower.push(Instr::LocalGet(index_slot), span);
+                    lower.push(at, span);
+                    lower.push(Instr::LocalSet(slot), span);
+                    lower.locals.push(Local {
+                        name: name.to_string(),
+                        ty,
+                        mutable: false,
+                        slot,
+                    });
+                };
+                match bind {
+                    Bind::List { elem } => {
+                        bind_var(lower, &binding.names[0].name, elem, Instr::ListGet);
+                    }
+                    Bind::MapKey { key } => {
+                        bind_var(lower, &binding.names[0].name, key, Instr::MapKeyAt);
+                    }
+                    Bind::MapKeyValue { key, value } => {
+                        bind_var(lower, &binding.names[0].name, key, Instr::MapKeyAt);
+                        bind_var(lower, &binding.names[1].name, value, Instr::MapValueAt);
+                    }
+                }
+            });
+        self.patch_all(break_jumps, self.here());
+        Flow::Fallthrough
+    }
+
+    /// Lower a forward positional walk over a finite collection already resident in
+    /// `coll_slot`. A `-1` cursor is incremented at the loop top, then an
+    /// `index < len` guard (`len_instr` is the collection kind's length opcode)
+    /// exits the loop; on each live position `bind` binds the loop variable(s) from
+    /// the current index and pushes their [`Local`]s, then the body runs once.
+    ///
+    /// `continue` targets the increment at the loop top; the exhaustion exit is
+    /// patched to fall through immediately after the loop, and the returned break
+    /// jumps are left unpatched so the caller can route them past whatever trailing
+    /// code it emits (a bounded traversal skips them past its `on more` block; a
+    /// plain collection walk patches them to the same fall-through point).
+    fn lower_positional_walk(
+        &mut self,
+        coll_slot: u16,
+        len_instr: Instr,
+        body: &Block,
+        span: SourceSpan,
+        bind: impl FnOnce(&mut Self, u16),
+    ) -> Vec<usize> {
         // The cursor starts at -1 so the increment at the loop top reaches 0 first,
         // which lets `continue` jump to that increment and always make progress.
         let index_slot = self.alloc_slot();
@@ -2647,10 +2685,6 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::ConstLoad(neg_one.index()), span);
         self.push(Instr::LocalSet(index_slot), span);
         let one = self.draft.intern_int(1);
-        let len_instr = match self.records.collection_spec(idx) {
-            CollSpec::List { .. } => Instr::ListLen,
-            CollSpec::Map { .. } => Instr::MapLen,
-        };
 
         let top = self.here();
         // index += 1
@@ -2665,34 +2699,8 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::IntLt, span);
         let exit = self.push_jif(span);
 
-        // Bind the loop variable(s) from the current position.
         let mark = self.locals.len();
-        let bind_var = |lower: &mut Self, name: &str, ty: LTy, at: Instr| {
-            let slot = lower.alloc_slot();
-            lower.push(Instr::LocalGet(coll_slot), span);
-            lower.push(Instr::LocalGet(index_slot), span);
-            lower.push(at, span);
-            lower.push(Instr::LocalSet(slot), span);
-            lower.locals.push(Local {
-                name: name.to_string(),
-                ty,
-                mutable: false,
-                slot,
-            });
-        };
-        match bind {
-            Bind::List { elem } => {
-                bind_var(self, &binding.names[0].name, elem, Instr::ListGet);
-            }
-            Bind::MapKey { key } => {
-                bind_var(self, &binding.names[0].name, key, Instr::MapKeyAt);
-            }
-            Bind::MapKeyValue { key, value } => {
-                bind_var(self, &binding.names[0].name, key, Instr::MapKeyAt);
-                bind_var(self, &binding.names[1].name, value, Instr::MapValueAt);
-            }
-        }
-
+        bind(self, index_slot);
         self.loops.push(LoopCtx {
             continue_target: top,
             break_jumps: Vec::new(),
@@ -2703,10 +2711,10 @@ impl<'a> FnLowerer<'a> {
         }
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
-        let end = self.here();
-        self.patch(exit, end);
-        self.patch_all(ctx.break_jumps, end);
-        Flow::Fallthrough
+
+        let after_loop = self.here();
+        self.patch(exit, after_loop);
+        ctx.break_jumps
     }
 
     fn lower_while(&mut self, condition: &Expression, body: &Block) -> Flow {

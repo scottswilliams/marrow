@@ -139,6 +139,56 @@ const SOURCE: &str = "resource Book\n\
      \x20           ^books(k + 100) = Book(title: \"x\")\n\
      \x20       on more\n\
      \x20           total = total + 1000\n\
+     \x20   return total\n\
+     \n\
+     pub fn nestedInnerBreak(): int\n\
+     \x20   var total = 0\n\
+     \x20   for id in ^books at most 100\n\
+     \x20       for pos in ^books(id).notes at most 2\n\
+     \x20           total += pos\n\
+     \x20           break\n\
+     \x20       on more\n\
+     \x20           total = total + 100\n\
+     \x20   on more\n\
+     \x20       total = total + 100000\n\
+     \x20   return total\n\
+     \n\
+     pub fn nestedInnerBreakOuterMore(): int\n\
+     \x20   var total = 0\n\
+     \x20   for id in ^books at most 2\n\
+     \x20       for pos in ^books(id).notes at most 2\n\
+     \x20           total += pos\n\
+     \x20           break\n\
+     \x20       on more\n\
+     \x20           total = total + 100\n\
+     \x20   on more\n\
+     \x20       total = total + 100000\n\
+     \x20   return total\n\
+     \n\
+     pub fn nestedInnerReturn(): int\n\
+     \x20   var total = 0\n\
+     \x20   for id in ^books at most 2\n\
+     \x20       for pos in ^books(id).notes at most 2\n\
+     \x20           if pos == 4\n\
+     \x20               return total\n\
+     \x20           total += pos\n\
+     \x20       on more\n\
+     \x20           total = total + 100\n\
+     \x20   on more\n\
+     \x20       total = total + 100000\n\
+     \x20   return total\n\
+     \n\
+     pub fn nestedInnerFault(): int\n\
+     \x20   var total = 0\n\
+     \x20   for id in ^books at most 2\n\
+     \x20       for pos in ^books(id).notes at most 2\n\
+     \x20           if pos == 4\n\
+     \x20               unreachable(\"boom\")\n\
+     \x20           total += pos\n\
+     \x20       on more\n\
+     \x20           total = total + 100\n\
+     \x20   on more\n\
+     \x20       total = total + 100000\n\
      \x20   return total\n";
 
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -467,5 +517,66 @@ fn a_descendant_only_child_is_skipped_without_visiting_its_subtree() {
     assert_eq!(
         run(&image, &mut attachment, "sumAll", vec![]),
         Some(Value::Int(4)),
+    );
+}
+
+/// Seed books {1,2,3}, each carrying three notes so an inner `at most 2` always leaves
+/// a further key: book 1 {1,2,3}, book 2 {4,5,6}, book 3 {7,8,9}.
+fn seed_books_with_notes(
+    image: &VerifiedImage,
+    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+) {
+    seed_books(image, attachment);
+    for (id, positions) in [(1i64, [1i64, 2, 3]), (2, [4, 5, 6]), (3, [7, 8, 9])] {
+        for pos in positions {
+            run(
+                image,
+                attachment,
+                "putNote",
+                vec![Value::Int(id), Value::Int(pos), Value::Text("n".into())],
+            );
+        }
+    }
+}
+
+#[test]
+fn an_inner_abnormal_exit_decides_the_inner_on_more_while_the_outer_is_independent() {
+    // Every export here is read-only, so all four observe the same seeded state: books
+    // {1,2,3}, each with notes {1,2,3} / {4,5,6} / {7,8,9}.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books_with_notes(&image, &mut attachment);
+
+    // An inner `break` exits only the inner loop: the outer `at most 100` still visits all
+    // three books, adding each book's first note (1 + 4 + 7 = 12). The break skips every
+    // inner `on more`, and the outer layer has no further book so the outer `on more` does
+    // not run. If the break escaped to the outer loop the total would be just 1.
+    assert_eq!(
+        run(&image, &mut attachment, "nestedInnerBreak", vec![]),
+        Some(Value::Int(12)),
+    );
+
+    // The inner `break` leaves the outer `on more` decision untouched: the outer
+    // `at most 2` froze [1,2] with a third book beyond, so the outer `on more` fires
+    // (+100000) independently of the inner break. Both frozen books are still visited
+    // (1 + 4 = 5), confirming the break did not escape the inner loop: total 100005.
+    assert_eq!(
+        run(&image, &mut attachment, "nestedInnerBreakOuterMore", vec![]),
+        Some(Value::Int(100005)),
+    );
+
+    // An inner `return` leaves the whole function. Book 1's inner completes normally so
+    // its inner `on more` runs (1 + 2 + 100 = 103); book 2 then returns at its first frozen
+    // note (pos 4) with that accumulated total. The outer `on more` never runs.
+    assert_eq!(
+        run(&image, &mut attachment, "nestedInnerReturn", vec![]),
+        Some(Value::Int(103)),
+    );
+
+    // An inner fault aborts the whole traversal: book 1 completes (reaching 103), then
+    // book 2's first frozen note faults before any `on more`, inner or outer, is reached.
+    assert_eq!(
+        run_fault(&image, &mut attachment, "nestedInnerFault", vec![]),
+        "run.unreachable",
     );
 }

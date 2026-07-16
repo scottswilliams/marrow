@@ -1013,7 +1013,13 @@ fn op_iterate_bounded<V: ReadView>(
     limit: BoundedLimit,
 ) -> Result<BoundedKeys, KernelFault> {
     let layer = layer_of(site, ancestor_keys);
-    let mut keys: Vec<KeyScalar> = Vec::with_capacity(limit.get());
+    // Reserve a bounded spine rather than the full `limit`: a sparse layer freezes far
+    // fewer keys than a large `at most N` permits, so the eager reservation is capped
+    // and the Vec grows on demand within `limit`. Peak freeze memory is the frozen key
+    // count times the maximum key size; the exact aggregate ceiling is enforced by the
+    // VM's one collection owner (`MAX_AGGREGATE_BYTES`) once the keys materialize as a
+    // `List[K]`.
+    let mut keys: Vec<KeyScalar> = Vec::with_capacity(limit.get().min(1024));
     // The first step honors an inclusive `from`; each later step resumes strictly after
     // the last frozen key.
     let mut seek = match from {

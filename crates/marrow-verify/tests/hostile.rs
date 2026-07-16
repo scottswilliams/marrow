@@ -695,6 +695,149 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
 }
 
 #[test]
+fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
+    // Bounded traversal iterates the layer a site's placement belongs to. A field-leaf
+    // site names a single scalar leaf, not a traversable entry family, so an image aiming
+    // the opcode at a field site is refused before any frozen-key allocation.
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("iter");
+    let code = vec![
+        Instr::DurIterateBounded {
+            site: value_site,
+            limit: 2,
+            from: false,
+            list_ty,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "iter"), func);
+    let rejection = verify(&draft.encode().unwrap().bytes)
+        .expect_err("a traversal over a field-leaf site is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.detail(), "operation requires an entry site");
+}
+
+#[test]
+fn a_bounded_traversal_after_commit_rejects() {
+    // The commit consumes the session's engine transaction, so no durable operation may
+    // follow it. A bounded traversal is a durable read; the flow lattice refuses it after
+    // commit exactly as it refuses a post-commit field read, so the runtime never reaches
+    // a consumed transaction.
+    let mut draft = ImageDraft::new();
+    let (entry, value_site, _label) = durable_schema(&mut draft);
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("put");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::DurIterateBounded {
+            site: entry,
+            limit: 2,
+            from: false,
+            list_ty,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    let rejection =
+        verify(&draft.encode().unwrap().bytes).expect_err("a post-commit traversal is refused");
+    assert_eq!(rejection.code(), "image.flow");
+    assert_eq!(
+        rejection.detail(),
+        "a durable operation follows the transaction's commit"
+    );
+}
+
+#[test]
+fn a_traversal_list_type_naming_a_map_or_a_dangling_index_rejects() {
+    // `list_ty` must name exactly `List[K]` for the traversed key. A COLLTYPES index that
+    // names a `Map` shape, and one that dangles past the collection table, are each a
+    // forged frozen-list type the verifier refuses before the runtime materializes it.
+    let build = |list_ty: u16| -> Vec<u8> {
+        let mut draft = ImageDraft::new();
+        let (entry, _value, _label) = durable_schema(&mut draft);
+        // One well-formed `Map` row at index 0: a valid collection, but the wrong kind for
+        // a frozen key list. Index 1 dangles one past the single-row table.
+        draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Text),
+        });
+        let src = draft.intern_string("src/main.mw");
+        let name = draft.intern_string("iter");
+        let code = vec![
+            Instr::DurIterateBounded {
+                site: entry,
+                limit: 2,
+                from: false,
+                list_ty,
+            },
+            Instr::Pop,
+            Instr::Pop,
+            Instr::Return,
+        ];
+        let func = draft.add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_export(ExportId::of_local("", "iter"), func);
+        draft.encode().unwrap().bytes
+    };
+    for list_ty in [0u16, 1] {
+        let rejection = verify(&build(list_ty)).expect_err("a non-List[K] frozen type is refused");
+        assert_eq!(rejection.code(), "image.function");
+        assert_eq!(
+            rejection.detail(),
+            "bounded traversal list type does not name a list of the traversed key"
+        );
+    }
+}
+
+#[test]
 fn the_retired_next_key_opcode_byte_is_no_longer_decodable() {
     // 0x39 was the unbounded `DurNextKey` opcode, deleted with the whole family when
     // durable traversal became always-bounded. An image carrying that byte where an

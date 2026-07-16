@@ -70,9 +70,11 @@ pub fn remove(id: Id(^books))
     delete ^books(id)
 
 pub fn printShelf(shelf: string)
-    for id in ^books.byShelf(shelf)
+    for id in ^books.byShelf(shelf) at most 100
         if const title = ^books(id).title
             print($"{id}: {title}")
+    on more
+        print("more shelved books remain")
 
 pub fn main()
     const now: instant = instant("2026-07-15T12:00:00Z")

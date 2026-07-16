@@ -1211,3 +1211,21 @@ fn pop_key_path(stack: &mut Vec<Value>, arity: usize) -> Vec<KeyScalar> {
     keys.reverse();
     keys
 }
+
+#[cfg(test)]
+mod bound_ties {
+    use super::MAX_COLLECTION_LEN;
+
+    /// The traversal ceiling and the collection ceiling are one bound: a bounded
+    /// traversal freezes at most `at most N` keys into a single `List[K]`, and the
+    /// verifier caps `N` at `MAX_TRAVERSAL_BOUND`. If that ceiling exceeded this
+    /// collection limit, a verified image could name a bound the frozen list can never
+    /// hold; if it were smaller, the runtime would fault a bound the verifier accepted.
+    #[test]
+    fn the_traversal_bound_equals_the_collection_limit() {
+        assert_eq!(
+            MAX_COLLECTION_LEN,
+            marrow_image::bounds::MAX_TRAVERSAL_BOUND as usize
+        );
+    }
+}

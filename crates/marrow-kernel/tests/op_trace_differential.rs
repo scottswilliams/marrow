@@ -20,15 +20,19 @@ use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
 /// limit exceeds the fixture size, so the whole logical state dumps in ascending order.
 /// Replaces the deleted unbounded next-key walk the differential dump once used.
 fn dump_keys(reader: &mut impl Durable, site: &AuthorizedSite) -> Vec<KeyScalar> {
-    reader
+    let dump = reader
         .iterate_bounded(
             site,
             &[],
             None,
             BoundedLimit::new(4096).expect("positive limit"),
         )
-        .expect("bounded acquisition")
-        .keys
+        .expect("bounded acquisition");
+    assert!(
+        !dump.more,
+        "a fixture larger than the 4096-key dump bound would silently truncate the differential"
+    );
+    dump.keys
 }
 
 // --- test scaffolding ---

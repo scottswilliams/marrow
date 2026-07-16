@@ -175,7 +175,7 @@ pub enum EraseOutcome {
 /// the bounded acquisition consumes it to build a [`BoundedKeys`]; no unbounded
 /// next-key op crosses the language boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NextKey {
+enum NextKey {
     Next(KeyScalar),
     End,
 }

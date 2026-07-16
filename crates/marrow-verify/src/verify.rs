@@ -4484,7 +4484,7 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
 /// closed projection of the durable operation algebra onto authority atoms:
 /// `create`, `replace`, and required/sparse field sets are all writes; the two
 /// erases are erases; presence is a probe; field/entry reads are reads; and the
-/// next-key step is ordered traversal. Transaction markers and every pure opcode
+/// bounded traversal is ordered traversal. Transaction markers and every pure opcode
 /// make no atom.
 ///
 /// The match is exhaustive with no `_` fallthrough, so a new durable opcode added
@@ -4610,7 +4610,7 @@ fn is_mutation(instr: &SealedInstr) -> bool {
 }
 
 /// Whether `instr` reads durable data — a presence probe, a field/entry read, or an
-/// ordered next-key step. The classified durable ops that are not mutations.
+/// ordered bounded traversal. The classified durable ops that are not mutations.
 fn is_durable_read(instr: &SealedInstr) -> bool {
     durable_op_class(instr).is_some_and(|class| !class.mutates())
 }
