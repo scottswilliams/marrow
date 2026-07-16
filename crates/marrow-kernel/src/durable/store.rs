@@ -1318,4 +1318,140 @@ mod tests {
             );
         }
     }
+
+    // --- Corrupt / valid / orphan corpus (store-level byte injection). ---
+    //
+    // These seed cells directly through the engine seam — not through the session
+    // ops — to place the store in states the ops alone cannot construct, then read
+    // through a coherent session. They pin the corrupt/valid boundary the bounded
+    // prefix probe draws once a branch subtree can nest below a node: a marker-absent
+    // node with a legitimate keyed descendant is *valid* (descendant-only,
+    // payload-absent), while a marker-absent node with one of its *own* field leaves
+    // is *corrupt* — and the own-leaf corruption is surfaced ahead of the legitimate
+    // descendant (the `0x10 < 0x30` precedence).
+
+    /// The byte prefix (marker stem) of a `books` root entry.
+    fn book_stem(key: &str) -> Vec<u8> {
+        physical::marker_key("books", &KeyScalar::Str(key.into()))
+    }
+
+    /// Seed `cells` (key, value pairs) into a fresh engine and wrap it in a branch-schema
+    /// store, so a read session observes exactly the injected bytes.
+    fn injected_branch_store(cells: &[(Vec<u8>, Vec<u8>)]) -> DurableStore<MemoryEngine> {
+        let mut engine = MemoryEngine::new();
+        {
+            let mut txn = engine.begin().expect("begin");
+            for (key, value) in cells {
+                txn.put(key, value.clone()).expect("seed cell");
+            }
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let (schema, sites) = branch_schema();
+        DurableStore::from_engine(engine, schema, sites)
+    }
+
+    /// VALID: a branch child (marker plus its own `text` leaf) under an absent root is a
+    /// legitimate descendant-only node. A whole read of the root is payload-absent, not
+    /// corruption, and the branch entry reads back — the byte-injected counterpart of the
+    /// ops-built descendant-only case.
+    #[test]
+    fn an_injected_descendant_only_node_reads_payload_absent_not_corruption() {
+        let stem = book_stem("a");
+        let branch_stem = physical::branch_child_stem(&stem, "notes", &KeyScalar::Int(7));
+        let mut store = injected_branch_store(&[
+            (branch_stem.clone(), physical::MARKER_VALUE.to_vec()),
+            (
+                physical::stem_field_leaf(&branch_stem, "text"),
+                b"hi".to_vec(),
+            ),
+        ]);
+        let book = KeyScalar::Str("a".into());
+        let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        assert_eq!(
+            read.read_entry(&root, std::slice::from_ref(&book)),
+            Ok(None),
+            "a marker-absent node with only a keyed descendant is a valid descendant-only node",
+        );
+        assert_eq!(
+            read.presence(&root, std::slice::from_ref(&book)),
+            Ok(Presence::Absent),
+        );
+        let branch = read.site(1);
+        assert_eq!(
+            read.read_entry(&branch, &note),
+            Ok(Some(EntryValue {
+                fields: vec![Some(RuntimeScalar::Str("hi".into()))],
+            })),
+        );
+    }
+
+    /// CORRUPT (own-leaf precedence over a descendant): a root that has one of its own
+    /// field leaves (`title`) but no marker is corrupt even when a legitimate branch
+    /// descendant also exists below it. The bounded prefix probe meets the orphan own
+    /// leaf (`0x10`) before the branch descendant (`0x30`), so it surfaces corruption
+    /// rather than reading the node as a valid descendant-only slot.
+    #[test]
+    fn an_injected_root_own_leaf_without_a_marker_is_corruption_even_with_a_descendant() {
+        let stem = book_stem("a");
+        let branch_stem = physical::branch_child_stem(&stem, "notes", &KeyScalar::Int(7));
+        let mut store = injected_branch_store(&[
+            // The root's own `title` leaf, with no root marker: an orphan.
+            (
+                physical::stem_field_leaf(&stem, "title"),
+                b"Book A".to_vec(),
+            ),
+            // A legitimate branch descendant below the same (markerless) root.
+            (branch_stem.clone(), physical::MARKER_VALUE.to_vec()),
+            (
+                physical::stem_field_leaf(&branch_stem, "text"),
+                b"hi".to_vec(),
+            ),
+        ]);
+        let book = KeyScalar::Str("a".into());
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        assert_eq!(
+            read.read_entry(&root, std::slice::from_ref(&book)),
+            Err(KernelFault::Corruption),
+            "an orphan own leaf is surfaced ahead of a legitimate descendant",
+        );
+    }
+
+    /// ORPHAN (branch level): a branch child that has its own `text` leaf but no branch
+    /// marker is corrupt, exactly as a root orphan is — the marker/field law holds one
+    /// level down.
+    #[test]
+    fn an_injected_branch_own_leaf_without_a_branch_marker_is_corruption() {
+        let stem = book_stem("a");
+        let branch_stem = physical::branch_child_stem(&stem, "notes", &KeyScalar::Int(7));
+        let mut store = injected_branch_store(&[
+            // The root has a real payload, so the root itself is well-formed.
+            (stem.clone(), physical::MARKER_VALUE.to_vec()),
+            (
+                physical::stem_field_leaf(&stem, "title"),
+                b"Book A".to_vec(),
+            ),
+            // The branch child's own leaf with no branch marker: an orphan.
+            (
+                physical::stem_field_leaf(&branch_stem, "text"),
+                b"hi".to_vec(),
+            ),
+        ]);
+        let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let branch = read.site(1);
+        assert_eq!(
+            read.read_entry(&branch, &note),
+            Err(KernelFault::Corruption),
+            "a branch own leaf without its branch marker is corruption",
+        );
+    }
 }

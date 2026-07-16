@@ -86,13 +86,16 @@ per stored field — anchored at a group- or branch-qualified path
 branches contribute to the [durable-contract
 identity](durable-places.md#durable-identity) exactly as roots do.
 
-A resource that declares a group or a branch declares and verifies its complete
-durable identity, but its durable operations are not yet executable in this
-preview: only the flat single-column keyed root runs, so an operation over a
-group- or branch-bearing store is the typed `check.unsupported` rejection rather
-than a silent drop, until the wider durable runtime lands. A keyed scalar leaf
-such as `tags(pos: int): string` is likewise not yet part of the executable
-durable graph.
+A single-level `branch` keyed by one column and holding only scalar fields is part
+of the executable durable graph: its whole entries are created, read, replaced, and
+erased through the two-column address `^root(key).branch(bkey)` (see [Durable
+places](durable-places.md#keyed-branches)). Other durable shapes are not yet
+executable: a resource declaring a static `group`, a branch nested inside another
+branch, a branch with more than one key column, or a widened (struct or enum) field
+declares and verifies its complete durable identity, but an operation over it is the
+typed `check.unsupported` rejection rather than a silent drop, until the wider durable
+runtime lands. A keyed scalar leaf such as `tags(pos: int): string` is likewise not
+yet part of the executable durable graph.
 
 ## Local Resource Values
 
@@ -127,9 +130,10 @@ materialize its fields and unkeyed groups as `Book`; it cannot package
 `^books(id).tags` or `^books(id).notes` into that value. Traverse keyed children
 at their paths.
 
-Whole assignment still replaces the complete durable entry, including keyed
-children. Consequently, assigning a materialized resource back to the same
-entry deletes keyed children that are not represented in the value. See
+Whole assignment replaces the entry's own payload — its marker and stored fields —
+and leaves its keyed children in place. Assigning a materialized resource back to the
+same entry therefore rewrites the fields exactly (dropping any omitted sparse field)
+without disturbing the entry's keyed `branch` descendants. See
 [Durable places](durable-places.md#whole-resource-assignment).
 
 ## Resource Names

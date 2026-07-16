@@ -71,7 +71,12 @@ attachment, minted from the verified test image with a ceiling equal to the
 test-image demand union, so the read kernel drives the store under `marrow test`
 without any raw seeder. The flat single-column scalar root — entry and field
 presence, field reads and coalesce, required and sparse field writes — executes
-this way; wider durable shapes stay parked with their owning lanes. Persistent
+this way, together with its single-level single-column-keyed scalar-field `branch`
+placements, whose whole entries create, read, replace, and erase through the
+two-column address `^root(key).branch(bkey)` (a branch entry is a distinct node one
+level down, so its create leaves the root descendant-only and a whole-entry root
+replace or erase preserves it). Wider durable shapes stay parked with their owning
+lanes. Persistent
 execution is still in the trough: T01's in-process store open died at D00, so
 `marrow run` no longer opens a store and reports a durable export with the typed
 `cli.durable_unsupported` outcome until the persistent terminal path lands over a
@@ -88,9 +93,10 @@ durable-contract identity computed over those ledger ids and the graph shape
 ledger-model property; a rename becomes an anchor move under the future apply
 action, while the additive-only `run` mint does not) — which the verifier
 independently recomputes from the image and rejects on mismatch. The
-compiler fully lowers operations over the single-column keyed root; singleton,
-composite-key, group/branch, and widened-field roots declare and verify their
-identity but their operations are not yet lowered. The admitted subset is narrow
+compiler fully lowers operations over the single-column keyed root and its
+single-level single-column-keyed scalar-field branches; singleton, composite-key,
+group-bearing, nested/composite-branch, and widened-field roots declare and verify
+their identity but their operations are not yet lowered. The admitted subset is narrow
 and grows lane by lane; a well-formed construct outside it is a typed
 `check.unsupported` diagnostic.
 

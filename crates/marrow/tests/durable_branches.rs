@@ -46,6 +46,15 @@ const SOURCE: &str = "resource Book\n\
      \x20   transaction\n\
      \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
      \n\
+     pub fn addFullNote(id: int, nid: string, body: string, flag: bool)\n\
+     \x20   transaction\n\
+     \x20       ^books(id).notes(nid) = Book.notes(text: body, pinned: flag)\n\
+     \n\
+     pub fn notePinned(id: int, nid: string): bool?\n\
+     \x20   if const n = ^books(id).notes(nid)\n\
+     \x20       return n.pinned\n\
+     \x20   return absent\n\
+     \n\
      pub fn setRoot(id: int, t: string)\n\
      \x20   transaction\n\
      \x20       ^books(id) = Book(title: t)\n\
@@ -393,5 +402,102 @@ fn a_branch_replace_is_exact() {
         ),
         some_text("second"),
         "the branch replace overwrote the earlier text"
+    );
+}
+
+fn some_bool(b: bool) -> Option<Value> {
+    Some(Value::Optional(Some(Box::new(Value::Bool(b)))))
+}
+
+/// The four-state marker/target laws over a branch entry with a required `text` field
+/// and a sparse `pinned` field, read through the materialized record:
+///
+/// - marker absent: `exists` false, required and sparse reads absent;
+/// - marker present, sparse target absent: required reads present, sparse reads absent;
+/// - marker present, sparse target present: both read present;
+/// - a whole replace that omits the sparse field drops it (exact replacement).
+///
+/// A branch whole-entry create supplies every required field (the constructor enforces
+/// it), so a required field is never missing while the marker is present — there is no
+/// partial-marker state to read.
+#[test]
+fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    let key = || vec![Value::Int(5), Value::Text("a".into())];
+
+    // Marker absent: exists false, both field reads absent.
+    assert_eq!(
+        run(&image, &mut attachment, "notePresent", key()),
+        present(false)
+    );
+    assert_eq!(run(&image, &mut attachment, "noteText", key()), absent());
+    assert_eq!(run(&image, &mut attachment, "notePinned", key()), absent());
+
+    // Marker present, sparse absent: required present, sparse absent.
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(5),
+            Value::Text("a".into()),
+            Value::Text("hi".into()),
+        ],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePresent", key()),
+        present(true)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteText", key()),
+        some_text("hi")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePinned", key()),
+        absent(),
+        "an omitted sparse field reads absent while the required field is present"
+    );
+
+    // Marker present, sparse present: both read present.
+    run(
+        &image,
+        &mut attachment,
+        "addFullNote",
+        vec![
+            Value::Int(5),
+            Value::Text("a".into()),
+            Value::Text("ho".into()),
+            Value::Bool(true),
+        ],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteText", key()),
+        some_text("ho")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePinned", key()),
+        some_bool(true)
+    );
+
+    // A whole replace that omits the sparse field drops it (exact replacement).
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(5),
+            Value::Text("a".into()),
+            Value::Text("hi again".into()),
+        ],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteText", key()),
+        some_text("hi again")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePinned", key()),
+        absent(),
+        "a whole replace omitting the sparse field drops it"
     );
 }
