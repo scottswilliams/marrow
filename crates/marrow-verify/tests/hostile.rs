@@ -9,10 +9,10 @@
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
 
 use marrow_image::{
-    DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
-    DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef, image_id,
+    CollectionTypeDef, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
+    DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity,
+    Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::verify;
 
@@ -492,11 +492,18 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
 }
 
 /// Encode a read-only export whose body runs a bounded-traversal opcode over the root
-/// entry site with the given `limit`/`from`. When `from`, a string key param is pushed
-/// first as the inclusive lower bound so the head type-checks up to the opcode.
+/// entry site with the given `limit`/`from`, then balances the frozen `List[string]`
+/// and on-more `Bool` off the stack (the export returns Unit). When `from`, a string
+/// key param is pushed first as the inclusive lower bound so the head type-checks up to
+/// the opcode.
 fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let (entry, _value, _label) = durable_schema(&mut draft);
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .index();
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("iter");
     let (params, mut code): (Vec<ImageType>, Vec<Instr>) = if from {
@@ -512,7 +519,12 @@ fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
         site: entry,
         limit,
         from,
+        list_ty,
     });
+    // Discard the on-more Bool then the frozen List so the Unit return sees an empty
+    // stack; the opcode's stack effect is what these hostiles exercise.
+    code.push(Instr::Pop);
+    code.push(Instr::Pop);
     code.push(Instr::Return);
     let func = draft.add_function(FunctionDef {
         name,
@@ -528,27 +540,63 @@ fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
 }
 
 #[test]
-fn bounded_traversal_is_refused_as_not_yet_executable() {
-    // The bounded-traversal opcode decodes and its site and bound are validated at the
-    // trust boundary, but until the runtime freeze-then-run driver lands the verifier
-    // refuses any image carrying one — so the VM never executes an unimplemented
-    // opcode. Both the no-`from` and inclusive-`from` forms decode and are refused.
+fn a_bounded_traversal_over_a_root_verifies_and_type_checks() {
+    // The freeze-then-run opcode types and executes: over the root entry family it pops
+    // the inclusive `from` key when present, pushes the frozen `List[string]` and the
+    // on-more `Bool`, and the image seals. Both the no-`from` and inclusive-`from` forms
+    // verify.
     for from in [false, true] {
-        let rejection = verify(&iterate_root_export(2, from).encode().unwrap().bytes)
-            .expect_err("bounded traversal is not yet executable");
-        assert_eq!(rejection.code(), "image.function");
         assert_eq!(
-            rejection.detail(),
-            "bounded traversal is not yet executable"
+            code_of(&iterate_root_export(2, from).encode().unwrap().bytes),
+            "VERIFIED",
         );
     }
 }
 
 #[test]
+fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
+    // A branch site traverses the branch family beneath a fixed root entry: the ancestor
+    // root key (int) is popped, the frozen `List[string]` of branch keys and the on-more
+    // `Bool` are pushed, and the image seals.
+    let (mut draft, _branch_record) = flat_branch_draft();
+    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("notes");
+    let code = vec![
+        Instr::LocalGet(0), // the root key: the ancestor locating the branch parent
+        Instr::DurIterateBounded {
+            site: site.index(),
+            limit: 3,
+            from: false,
+            list_ty,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Int)],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "notes"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+#[test]
 fn a_zero_or_oversized_traversal_bound_is_refused() {
-    // The `at most N` bound is validated before the not-yet-executable gate: zero and a
-    // bound above `MAX_TRAVERSAL_BOUND` are refused as out of range, so a hostile image
-    // cannot smuggle an unbounded or overlarge frozen-key allocation.
+    // The `at most N` bound is a positive compile-time constant: zero and a bound above
+    // `MAX_TRAVERSAL_BOUND` are refused as out of range, so a hostile image cannot
+    // smuggle an unbounded or overlarge frozen-key allocation.
     for limit in [0, marrow_image::bounds::MAX_TRAVERSAL_BOUND + 1] {
         let rejection = verify(&iterate_root_export(limit, false).encode().unwrap().bytes)
             .expect_err("an out-of-range traversal bound is refused");
@@ -561,14 +609,101 @@ fn a_zero_or_oversized_traversal_bound_is_refused() {
 }
 
 #[test]
+fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
+    // The frozen-list COLLTYPES index must name exactly `List[K]` for the traversed key
+    // `K` (here the root key is `string`). An image naming a `List[int]` is a forged
+    // frozen-list type the verifier refuses before the runtime materializes it.
+    let mut draft = ImageDraft::new();
+    let (entry, _value, _label) = durable_schema(&mut draft);
+    let wrong_list = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("iter");
+    let code = vec![
+        Instr::DurIterateBounded {
+            site: entry,
+            limit: 2,
+            from: false,
+            list_ty: wrong_list,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "iter"), func);
+    let rejection = verify(&draft.encode().unwrap().bytes)
+        .expect_err("a mismatched frozen-list type is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(
+        rejection.detail(),
+        "bounded traversal list type does not name a list of the traversed key"
+    );
+}
+
+#[test]
+fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
+    // A branch traversal pops the ancestor root key locating the parent entry. Pushing
+    // no ancestor key leaves that pop against an empty stack — a key-arity forgery the
+    // verifier refuses.
+    let (mut draft, _branch_record) = flat_branch_draft();
+    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let list_ty = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        })
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("notes");
+    let code = vec![
+        // No ancestor root key pushed before the opcode.
+        Instr::DurIterateBounded {
+            site: site.index(),
+            limit: 2,
+            from: false,
+            list_ty,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Int)],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "notes"), func);
+    let rejection =
+        verify(&draft.encode().unwrap().bytes).expect_err("a missing ancestor key is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.detail(), "operand stack underflow");
+}
+
+#[test]
 fn a_malformed_from_flag_byte_is_refused_at_decode() {
     // The `from` operand is a strict 0/1 flag. A hostile image that sets it to 0x02 —
     // re-digested so the envelope passes — is refused when the opcode is decoded, so no
     // third from-state can be smuggled past the bounded-traversal decoder.
     let mut bytes = iterate_root_export(2, false).encode().unwrap().bytes;
-    // The encoded opcode is `0x3B <site:2=0> <limit:4=2> <from:1=0>`; locate it and
-    // flip the trailing from flag to an out-of-range 0x02.
-    let opcode = [0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00];
+    // The encoded opcode is the ten bytes `0x3B <site:2=0> <limit:4=2> <from:1=0>
+    // <list_ty:2=0>`; locate the full encoding and flip the trailing from flag to an
+    // out-of-range 0x02 (this also pins the opcode's exact width).
+    let opcode = [0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00];
     let at = bytes
         .windows(opcode.len())
         .position(|w| w == opcode)

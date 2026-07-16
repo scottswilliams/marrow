@@ -216,11 +216,14 @@ pub enum SealedInstr {
     /// ancestor key-path (a root site pops none; a single-level branch site pops
     /// `[root_key]`), then the inclusive `from` key of the traversed key type `K` when
     /// `from` is set, and push `List[K]` then `Bool`. `limit` is the positive
-    /// compile-time `N`, bounded by `MAX_TRAVERSAL_BOUND`.
+    /// compile-time `N`, bounded by `MAX_TRAVERSAL_BOUND`; `list_ty` is the COLLTYPES
+    /// index the verifier proved names exactly `List[K]`, the frozen keys' materialized
+    /// list value (obeying the one collection aggregate-byte ceiling).
     DurIterateBounded {
         site: u16,
         limit: u32,
         from: bool,
+        list_ty: u16,
     },
     /// Open the export's single transaction region.
     TxnBegin,

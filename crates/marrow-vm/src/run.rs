@@ -11,7 +11,7 @@ use std::rc::Rc;
 use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
-use marrow_kernel::durable::{CommitResult, Durable, EntryValue, NextKey, Presence};
+use marrow_kernel::durable::{BoundedLimit, CommitResult, Durable, EntryValue, NextKey, Presence};
 use marrow_verify::{
     SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
 };
@@ -474,7 +474,7 @@ fn execute<'s>(
                         .map(|piece| Value::Text(Rc::from(piece)))
                         .collect()
                 };
-                let items = bounded_text_list(pieces)
+                let items = bounded_list(pieces)
                     .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
                 stack.push(Value::list(*idx, Rc::new(items)));
                 pc += 1;
@@ -489,7 +489,7 @@ fn execute<'s>(
                     .lines()
                     .map(|line| Value::Text(Rc::from(line)))
                     .collect();
-                let items = bounded_text_list(pieces)
+                let items = bounded_list(pieces)
                     .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
                 stack.push(Value::list(*idx, Rc::new(items)));
                 pc += 1;
@@ -927,15 +927,36 @@ fn execute<'s>(
                 }));
                 pc += 1;
             }
-            SealedInstr::DurIterateBounded { .. } => {
-                // The verifier refuses a bounded-traversal opcode as not-yet-executable
-                // (E04, next slice), so no sealed image reaches the VM carrying one. The
-                // freeze-then-run driver over the kernel's `iterate_bounded` — building
-                // the frozen `List[K]` and the on-more `Bool` — lands here when the
-                // verifier begins admitting it.
-                unreachable!(
-                    "the verifier refuses a bounded-traversal opcode as not-yet-executable"
-                )
+            SealedInstr::DurIterateBounded {
+                site,
+                limit,
+                from,
+                list_ty,
+            } => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                // The stack holds the ancestor key-path (root-first) with the inclusive
+                // `from` key on top when present. Pop `from` first, then the ancestor
+                // key-path — one fewer than the whole-entry key arity, since the
+                // traversed key is what iteration enumerates rather than an operand.
+                let from = from.then(|| pop_key(&mut stack));
+                let ancestor_keys = pop_key_path(&mut stack, authorized.key_arity() - 1);
+                let bound =
+                    BoundedLimit::new(*limit).expect("verifier proved a positive traversal bound");
+                let bounded = durable
+                    .iterate_bounded(&authorized, &ancestor_keys, from, bound)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                // The frozen keys materialize into one ordinary bounded `List[K]`,
+                // obeying the single collection aggregate ceiling (a wide-key traversal
+                // faults `run.collection_limit` here, not through a second bound).
+                let items: Vec<Value> = bounded.keys.into_iter().map(key_to_value).collect();
+                let items = bounded_list(items)
+                    .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
+                stack.push(Value::list(*list_ty, Rc::new(items)));
+                stack.push(Value::Bool(bounded.more));
+                pc += 1;
             }
         }
     }
@@ -1062,12 +1083,14 @@ fn as_map(value: Value) -> (u16, Rc<Vec<(KeyScalar, Value)>>) {
     }
 }
 
-/// Admit a text-floor split/lines result only within the same law-9 collection
-/// bounds `append` enforces: at most `MAX_COLLECTION_LEN` elements and
-/// `MAX_AGGREGATE_BYTES` of aggregate value size. Returns `None` on a bound excess so
-/// the caller faults `run.collection_limit` rather than materializing an unbounded
-/// list.
-fn bounded_text_list(items: Vec<Value>) -> Option<Vec<Value>> {
+/// Admit a batch-built list value only within the same law-9 collection bounds
+/// `append` enforces incrementally: at most `MAX_COLLECTION_LEN` elements and
+/// `MAX_AGGREGATE_BYTES` of aggregate value size. The one aggregate-bound owner for a
+/// list materialized all at once — the text-floor `split`/`lines` results and the
+/// frozen `List[K]` of a bounded durable traversal alike — so no list value bypasses
+/// the single collection ceiling. Returns `None` on a bound excess so the caller
+/// faults `run.collection_limit` rather than materializing an unbounded list.
+fn bounded_list(items: Vec<Value>) -> Option<Vec<Value>> {
     if items.len() > MAX_COLLECTION_LEN || list_bytes(&items) > MAX_AGGREGATE_BYTES {
         return None;
     }

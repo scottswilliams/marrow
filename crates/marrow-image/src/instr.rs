@@ -312,14 +312,17 @@ pub enum Instr {
     /// Stack effect `[ancestor-keys, from?] → List[K], Bool`: pop the layer's ancestor
     /// key-path (a root site pops none; a single-level branch site pops `[root_key]`),
     /// then the inclusive `from` key of the traversed key type `K` when `from` is set,
-    /// and push `List[K]` then `Bool`. `limit` is the positive compile-time `N`. The
-    /// keys are frozen before any loop body runs, so a body's writes cannot change the
-    /// set; no cursor, page, or continuation is threaded — the frozen list is the whole
-    /// result.
+    /// and push `List[K]` then `Bool`. `limit` is the positive compile-time `N`, and
+    /// `list_ty` is the COLLTYPES index of the frozen `List[K]` the frozen keys
+    /// materialize into (the same list value every list operation produces, so it obeys
+    /// the one collection aggregate-byte ceiling). The keys are frozen before any loop
+    /// body runs, so a body's writes cannot change the set; no cursor, page, or
+    /// continuation is threaded — the frozen list is the whole result.
     DurIterateBounded {
         site: u16,
         limit: u32,
         from: bool,
+        list_ty: u16,
     },
     TxnBegin,
     TxnCommit,
@@ -508,9 +511,10 @@ impl Instr {
             Instr::EnumConstruct { .. }
             | Instr::EnumPayloadGet { .. }
             | Instr::DurSetSparsePresent { .. } => 4,
-            // A big-endian `u16` site, a big-endian `u32` bound, and a one-byte
-            // `from`-present flag.
-            Instr::DurIterateBounded { .. } => 7,
+            // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
+            // `from`-present flag, and a big-endian `u16` frozen-`List[K]` COLLTYPES
+            // index.
+            Instr::DurIterateBounded { .. } => 9,
             _ => 0,
         }
     }

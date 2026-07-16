@@ -3400,6 +3400,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
                 site: operand_u16(&mut reader)?,
                 limit: operand_u32(&mut reader)?,
                 from: operand_bool(&mut reader)?,
+                list_ty: operand_u16(&mut reader)?,
             },
             OP_TXN_BEGIN => SealedInstr::TxnBegin,
             OP_TXN_COMMIT => SealedInstr::TxnCommit,
@@ -4800,7 +4801,12 @@ fn apply_durable(
             expect(pop(stack)?, opt_key)?;
             stack.push(opt_key);
         }
-        SealedInstr::DurIterateBounded { limit, .. } => {
+        SealedInstr::DurIterateBounded {
+            limit,
+            from,
+            list_ty,
+            ..
+        } => {
             // Bounded traversal iterates the layer the site's placement belongs to: a
             // root site (WholePayload) the root's entry family, a branch site
             // (BranchEntry) that branch's children under a fixed root key. A field site
@@ -4814,16 +4820,43 @@ fn apply_durable(
                     "bounded traversal bound is out of range",
                 ));
             }
-            // The stack effect — pop the inclusive `from` key when present, then push
-            // the frozen `List` of the traversed key type and the on-more `Bool` — and
-            // the freeze-then-run runtime with its flow-lattice and loop wiring land in
-            // the next slice. Until then a bounded-traversal opcode is refused as
-            // not-yet-executable, so no image carrying one reaches the VM (its VM arm is
-            // correspondingly unreachable).
-            return Err(reject(
-                VerifyPhase::Function,
-                "bounded traversal is not yet executable",
-            ));
+            // The traversed key is what iteration enumerates — the first element of the
+            // site's whole-entry key-path; the remainder is the ancestor key-path
+            // locating the traversed layer's parent entry (empty for a root site,
+            // `[root_key]` for a single-level branch site).
+            let (traversed_key, ancestor_path) = key_path
+                .split_first()
+                .expect("an entry site has a non-empty key-path");
+            let VType::Scalar {
+                scalar: key_scalar,
+                optional: false,
+            } = *traversed_key
+            else {
+                unreachable!("a durable key-path element is a bare scalar");
+            };
+            // The inclusive `from` key sits on top of the ancestor key-path and types
+            // as the traversed key `K`.
+            if *from {
+                expect(pop(stack)?, *traversed_key)?;
+            }
+            for ty in ancestor_path {
+                expect(pop(stack)?, *ty)?;
+            }
+            // `list_ty` must name exactly `List[K]`: the frozen keys materialize into
+            // this one list value, so a hostile image naming a wider or wrong-element
+            // list is refused before the runtime builds it.
+            match ctx.collections.get(*list_ty as usize) {
+                Some(SealedCollectionType::List { elem })
+                    if *elem == ImageType::scalar(key_scalar) => {}
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "bounded traversal list type does not name a list of the traversed key",
+                    ));
+                }
+            }
+            stack.push(VType::bare_collection(*list_ty));
+            stack.push(VType::bare_scalar(Scalar::Bool));
         }
         _ => unreachable!("durable_site returned a site for this opcode"),
     }

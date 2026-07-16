@@ -498,10 +498,16 @@ fn encode_code(
                 push_u16(&mut out, *site);
                 push_u16(&mut out, *key_slot);
             }
-            Instr::DurIterateBounded { site, limit, from } => {
+            Instr::DurIterateBounded {
+                site,
+                limit,
+                from,
+                list_ty,
+            } => {
                 push_u16(&mut out, *site);
                 push_u32(&mut out, *limit);
                 out.push(u8::from(*from));
+                push_u16(&mut out, *list_ty);
             }
             _ => {}
         }
