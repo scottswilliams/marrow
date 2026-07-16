@@ -297,6 +297,12 @@ test "an isolated node is declared by a bare line and reported"
     const r = report(input)
     assert r == "Graph Report\n" + "nodes=3 edges=1 root=- malformed=0\n" + "-- degrees --\n" + "  a out=1 in=0 role=source\n" + "  b out=0 in=1 role=sink\n" + "  solo out=0 in=0 role=isolated\n" + "-- reachable --\n" + "  (no root)\n" + "-- order --\n" + "  a\n  solo\n  b\n" + "-- cycle --\n  none"
 
+test "non-ascii node names flow through parsing, sorting, and rendering"
+    const input = "α -> β\n-> α"
+    const r = report(input)
+    const want = "Graph Report\n" + "nodes=2 edges=1 root=α malformed=0\n" + "-- degrees --\n" + "  α out=1 in=0 role=source\n" + "  β out=0 in=1 role=sink\n" + "-- reachable --\n" + "  from α: α, β (2/2)\n" + "-- order --\n" + "  α\n  β\n" + "-- cycle --\n  none"
+    assert r == want
+
 test "a malformed multi-arrow line is counted"
     const input = "a -> b -> c\na -> b"
     const r = report(input)
