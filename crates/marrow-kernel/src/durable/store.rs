@@ -751,20 +751,27 @@ fn op_next_key<V: ReadView>(
     after: Option<KeyScalar>,
 ) -> Result<NextKey, KernelFault> {
     let prefix = physical::entry_family_prefix(&site.root);
-    let cursor = match &after {
+    let mut cursor = match &after {
         None => prefix.clone(),
         Some(key) => physical::cursor(&site.root, key),
     };
-    let page = cells
-        .scan_after(&prefix, &cursor)
-        .map_err(KernelFault::Engine)?;
-    let Some((cell_key, _)) = page.into_iter().next() else {
-        return Ok(NextKey::End);
-    };
-    match physical::classify_cell(&site.root, &cell_key) {
-        CellKind::Marker(key) => Ok(NextKey::Next(key)),
-        CellKind::Orphan => Err(KernelFault::Corruption),
-        CellKind::Foreign => Ok(NextKey::End),
+    // Iteration visits only present (payload-bearing) entries. A descendant-only
+    // entry — branch children but no payload marker — is skipped with one
+    // prefix-successor seek past its cursor, which passes its whole subtree
+    // regardless of branch fan-out; the loop then resumes at the next entry.
+    loop {
+        let page = cells
+            .scan_after(&prefix, &cursor)
+            .map_err(KernelFault::Engine)?;
+        let Some((cell_key, _)) = page.into_iter().next() else {
+            return Ok(NextKey::End);
+        };
+        match physical::classify_cell(&site.root, &cell_key) {
+            CellKind::Marker(key) => return Ok(NextKey::Next(key)),
+            CellKind::Descendant(key) => cursor = physical::cursor(&site.root, &key),
+            CellKind::Orphan => return Err(KernelFault::Corruption),
+            CellKind::Foreign => return Ok(NextKey::End),
+        }
     }
 }
 
