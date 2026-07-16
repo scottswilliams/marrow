@@ -99,7 +99,22 @@ const FIXTURE: &str = "struct Point\n\
     \x20           return Shape::circle(radius: r + 1)\n\
     \n\
     pub fn ping()\n\
-    \x20   return\n";
+    \x20   return\n\
+    \n\
+    pub fn echoText(s: string): string\n\
+    \x20   return s\n\
+    \n\
+    pub fn echoBytes(b: bytes): bytes\n\
+    \x20   return b\n\
+    \n\
+    pub fn echoDate(d: date): date\n\
+    \x20   return d\n\
+    \n\
+    pub fn echoInstant(i: instant): instant\n\
+    \x20   return i\n\
+    \n\
+    pub fn echoDuration(u: duration): duration\n\
+    \x20   return u\n";
 
 /// Build the project, generate the client, compile the image to a file, and
 /// return the project directory.
@@ -334,4 +349,58 @@ finish();
     );
     write(&project.join("driver_badlaunch.mts"), &driver);
     assert_driver_passed(&node(&project, "driver_badlaunch.mts"));
+}
+
+/// Divergence-prone transfer shapes round-trip through the full stack: text with
+/// a quote, a backslash, a C0 control, and an astral char; bytes with a high and
+/// a zero byte, plus the empty slice; and each temporal scalar in its canonical
+/// text spelling. These cross both the generated encoder and the runner and back.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn hard_transfer_shapes_round_trip_through_the_generated_client() {
+    let temp = TempDir::new("hard");
+    let project = prepare(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+const client = await Client.launch({ runner: RUNNER, image: IMAGE });
+
+// Text carrying a quote, a backslash, a C0 control, and an astral char.
+const hardText = "a\"b\\c\u0001\u{1F600}z";
+const gotText = await client.echoText(hardText);
+ok("echoText", gotText === hardText, JSON.stringify(gotText));
+
+// Bytes with a zero byte and a high byte, then the empty slice.
+const blob = new Uint8Array([0x00, 0xff, 0x10]);
+const gotBlob = await client.echoBytes(blob);
+ok(
+  "echoBytes",
+  gotBlob instanceof Uint8Array &&
+    gotBlob.length === 3 &&
+    gotBlob[0] === 0 &&
+    gotBlob[1] === 255 &&
+    gotBlob[2] === 16,
+  String(gotBlob),
+);
+const emptyBlob = await client.echoBytes(new Uint8Array([]));
+ok("echoBytes-empty", emptyBlob instanceof Uint8Array && emptyBlob.length === 0);
+
+// Each temporal scalar round-trips in its canonical text spelling (the fraction
+// is trimmed of trailing zeros, so these forms are already canonical).
+const date = "2026-07-15";
+ok("echoDate", (await client.echoDate(date)) === date, String(date));
+
+const instant = "2026-07-15T17:00:00.123456789Z";
+ok("echoInstant", (await client.echoInstant(instant)) === instant, String(instant));
+
+const duration = "-PT1.5S";
+ok("echoDuration", (await client.echoDuration(duration)) === duration, String(duration));
+
+await client.close();
+ok("close", true);
+finish();
+"#
+    );
+    write(&project.join("driver_hard.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_hard.mts"));
 }

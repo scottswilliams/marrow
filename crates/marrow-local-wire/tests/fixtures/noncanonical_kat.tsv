@@ -1,0 +1,8 @@
+# Non-canonical / malformed known-answer vectors: key<TAB>family<TAB>input.
+# The single source is crates/marrow-local-wire/tests/canonical_kat.rs.
+neg-zero	noncanonical	-0
+int-overflow-max	malformed	9223372036854775808
+int-overflow-min	malformed	-9223372036854775809
+unsorted-keys	noncanonical	{"b":1,"a":2}
+uppercase-hex-escape	noncanonical	"\u00FF"
+escaped-slash	noncanonical	"\/"
