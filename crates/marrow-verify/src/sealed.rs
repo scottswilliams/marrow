@@ -208,6 +208,19 @@ pub enum SealedInstr {
     DurEraseEntry(u16),
     /// `K? → K?`: the next key at entry site `_0` (vacant in = first key).
     DurNextKey(u16),
+    /// `[K] → List[K], Bool` (when `from`) or `→ List[K], Bool`: the bounded nested
+    /// traversal `for … at most N … on more`. Freeze the first `limit` immediate keys
+    /// of the layer the whole-entry site `_ .site` belongs to — the root's entry family
+    /// (a root site) or a keyed branch family under a fixed parent (a branch site) —
+    /// starting inclusively at a `from` key popped from the stack when `from` is set,
+    /// then push the frozen key list (bounded by `limit`) and whether a further key
+    /// existed. `limit` is the positive compile-time `N`, bounded by
+    /// `MAX_TRAVERSAL_BOUND`.
+    DurIterateBounded {
+        site: u16,
+        limit: u32,
+        from: bool,
+    },
     /// Open the export's single transaction region.
     TxnBegin,
     /// Close the export's single transaction region.

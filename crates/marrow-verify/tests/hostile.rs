@@ -491,6 +491,75 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
     assert_ne!(value_export.demand_id(), label_export.demand_id());
 }
 
+/// Encode a read-only export whose body runs a bounded-traversal opcode over the root
+/// entry site with the given `limit`/`from`. When `from`, a string key param is pushed
+/// first as the inclusive lower bound so the head type-checks up to the opcode.
+fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let (entry, _value, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("iter");
+    let (params, mut code): (Vec<ImageType>, Vec<Instr>) = if from {
+        (
+            vec![ImageType::scalar(Scalar::Text)],
+            vec![Instr::LocalGet(0)],
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let local_count = params.len() as u16;
+    code.push(Instr::DurIterateBounded {
+        site: entry,
+        limit,
+        from,
+    });
+    code.push(Instr::Return);
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params,
+        ret: ImageType::Unit,
+        local_count,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "iter"), func);
+    draft
+}
+
+#[test]
+fn bounded_traversal_is_refused_as_not_yet_executable() {
+    // The bounded-traversal opcode decodes and its site and bound are validated at the
+    // trust boundary, but until the runtime freeze-then-run driver lands the verifier
+    // refuses any image carrying one — so the VM never executes an unimplemented
+    // opcode. Both the no-`from` and inclusive-`from` forms decode and are refused.
+    for from in [false, true] {
+        let rejection = verify(&iterate_root_export(2, from).encode().unwrap().bytes)
+            .expect_err("bounded traversal is not yet executable");
+        assert_eq!(rejection.code(), "image.function");
+        assert_eq!(
+            rejection.detail(),
+            "bounded traversal is not yet executable"
+        );
+    }
+}
+
+#[test]
+fn a_zero_or_oversized_traversal_bound_is_refused() {
+    // The `at most N` bound is validated before the not-yet-executable gate: zero and a
+    // bound above `MAX_TRAVERSAL_BOUND` are refused as out of range, so a hostile image
+    // cannot smuggle an unbounded or overlarge frozen-key allocation.
+    for limit in [0, marrow_image::bounds::MAX_TRAVERSAL_BOUND + 1] {
+        let rejection = verify(&iterate_root_export(limit, false).encode().unwrap().bytes)
+            .expect_err("an out-of-range traversal bound is refused");
+        assert_eq!(rejection.code(), "image.function");
+        assert_eq!(
+            rejection.detail(),
+            "bounded traversal bound is out of range"
+        );
+    }
+}
+
 #[test]
 fn durable_put_export_verifies() {
     // The well-formed baseline the flow hostiles derive from.

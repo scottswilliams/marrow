@@ -21,24 +21,24 @@ use marrow_image::{
     OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
     OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
     OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
-    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_NEXT_KEY, OP_DUR_READ_ENTRY,
-    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
-    OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
-    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
-    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT,
-    OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE,
-    OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD,
-    OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
-    OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED,
-    OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET,
-    OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
-    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN,
-    OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY,
-    OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
-    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
-    TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT,
-    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_ITERATE_BOUNDED, OP_DUR_NEXT_KEY,
+    OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED,
+    OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT,
+    OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET,
+    OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION,
+    OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION,
+    OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
+    OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
+    OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
+    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAP_GET,
+    OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD,
+    OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE,
+    OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
+    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OPTIONAL_FLAG, OperationClass, Scalar, SemanticNode, SemanticNodeKind, SemanticPath,
+    SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE,
+    TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -3396,6 +3396,11 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
             OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(&mut reader)?),
             OP_DUR_NEXT_KEY => SealedInstr::DurNextKey(operand_u16(&mut reader)?),
+            OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
+                site: operand_u16(&mut reader)?,
+                limit: operand_u32(&mut reader)?,
+                from: operand_bool(&mut reader)?,
+            },
             OP_TXN_BEGIN => SealedInstr::TxnBegin,
             OP_TXN_COMMIT => SealedInstr::TxnCommit,
             OP_LIST_NEW => SealedInstr::ListNew(operand_u16(&mut reader)?),
@@ -3436,6 +3441,16 @@ fn operand_i64(reader: &mut Reader) -> Result<i64, VerifyRejection> {
     reader
         .i64()
         .ok_or(reject(VerifyPhase::Function, "short i64 operand"))
+}
+
+/// A one-byte flag operand strictly `0x00` or `0x01`; any other byte is a malformed
+/// image (a hostile image cannot smuggle a third state through a bool operand).
+fn operand_bool(reader: &mut Reader) -> Result<bool, VerifyRejection> {
+    match reader.u8() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(reject(VerifyPhase::Function, "malformed bool operand")),
+    }
 }
 
 /// Decode a `VacantLoad` operand: a full optional type-ref — an optional scalar
@@ -4364,6 +4379,7 @@ fn apply(
         | SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurNextKey(_)
+        | SealedInstr::DurIterateBounded { .. }
         | SealedInstr::TxnBegin
         | SealedInstr::TxnCommit
         | SealedInstr::ListNew(_)
@@ -4460,7 +4476,8 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurReplaceEntry(site)
         | SealedInstr::DurEraseField(site)
         | SealedInstr::DurEraseEntry(site)
-        | SealedInstr::DurNextKey(site) => Some(*site),
+        | SealedInstr::DurNextKey(site)
+        | SealedInstr::DurIterateBounded { site, .. } => Some(*site),
         _ => None,
     }
 }
@@ -4488,7 +4505,9 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         SealedInstr::DurEraseField(_) | SealedInstr::DurEraseEntry(_) => {
             Some(OperationClass::Erase)
         }
-        SealedInstr::DurNextKey(_) => Some(OperationClass::IndexRead),
+        SealedInstr::DurNextKey(_) | SealedInstr::DurIterateBounded { .. } => {
+            Some(OperationClass::IndexRead)
+        }
         // Region markers open and close the transaction but stage no access.
         SealedInstr::TxnBegin | SealedInstr::TxnCommit => None,
         // The closed complement: every pure opcode stages no durable access.
@@ -4780,6 +4799,31 @@ fn apply_durable(
             let opt_key = key_ty.to_optional();
             expect(pop(stack)?, opt_key)?;
             stack.push(opt_key);
+        }
+        SealedInstr::DurIterateBounded { limit, .. } => {
+            // Bounded traversal iterates the layer the site's placement belongs to: a
+            // root site (WholePayload) the root's entry family, a branch site
+            // (BranchEntry) that branch's children under a fixed root key. A field site
+            // names no traversable layer.
+            require_entry(site_target)?;
+            // The `at most N` bound is a positive compile-time constant no larger than
+            // the frozen-list ceiling.
+            if *limit == 0 || *limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "bounded traversal bound is out of range",
+                ));
+            }
+            // The stack effect — pop the inclusive `from` key when present, then push
+            // the frozen `List` of the traversed key type and the on-more `Bool` — and
+            // the freeze-then-run runtime with its flow-lattice and loop wiring land in
+            // the next slice. Until then a bounded-traversal opcode is refused as
+            // not-yet-executable, so no image carrying one reaches the VM (its VM arm is
+            // correspondingly unreachable).
+            return Err(reject(
+                VerifyPhase::Function,
+                "bounded traversal is not yet executable",
+            ));
         }
         _ => unreachable!("durable_site returned a site for this opcode"),
     }

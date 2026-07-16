@@ -927,6 +927,16 @@ fn execute<'s>(
                 }));
                 pc += 1;
             }
+            SealedInstr::DurIterateBounded { .. } => {
+                // The verifier refuses a bounded-traversal opcode as not-yet-executable
+                // (E04, next slice), so no sealed image reaches the VM carrying one. The
+                // freeze-then-run driver over the kernel's `iterate_bounded` — building
+                // the frozen `List[K]` and the on-more `Bool` — lands here when the
+                // verifier begins admitting it.
+                unreachable!(
+                    "the verifier refuses a bounded-traversal opcode as not-yet-executable"
+                )
+            }
         }
     }
 }
