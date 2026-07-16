@@ -90,10 +90,13 @@ A `branch` keyed by one or more columns and holding only scalar fields is part o
 executable durable graph, and such branches may nest to any depth: their whole entries
 are created, read, replaced, and erased through the key-path address
 `^root(key…).branch(bkey…)…` (see [Durable places](durable-places.md#keyed-branches)).
+A top-level field may also hold a widened value — a dense `struct`/record, a closed
+`enum`, or an `Option`/`Result` — stored inline in its field cell and read whole or by
+field; `branch` fields stay scalar-only.
 Other durable shapes are not yet executable: a resource declaring a static `group`, or a
-widened (struct or enum) field, declares and verifies its complete durable identity, but
-an operation over it is the typed `check.unsupported` rejection rather than a silent
-drop, until the wider durable runtime lands. A keyed scalar leaf such as
+nominal-typed field, declares and verifies its complete durable identity, but an
+operation over it is the typed `check.unsupported` rejection rather than a silent drop,
+until its lane lands. A keyed scalar leaf such as
 `tags(pos: int): string` is likewise not yet part of the executable durable graph.
 
 ## Local Resource Values

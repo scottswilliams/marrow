@@ -133,11 +133,11 @@ The compiler emits an **operation site** for every node of the whole durable gra
 — a whole-payload site for each keyed placement (the store root and every nested
 `branch`) and a field-leaf site for each stored field (top-level, group-scoped, or
 branch-scoped) — and the verifier seals each one by resolving its concrete address
-against the graph it independently reconstructs. A site on the flat executable root, or
-on one of its scalar-or-widened-field branches at any depth, seals as executable; every
-other site — over a group-scoped or nominal-typed field, or a non-flat root — seals with
-a complete identity but parks, so its concrete address is checked and recorded while its
-execution waits for the remaining kernel. The site table holds one entry per graph node regardless of how many
+against the graph it independently reconstructs. A site on the flat executable root
+(its fields scalar or widened), or on one of its scalar-field branches at any depth,
+seals as executable; every other site — over a group-scoped or nominal-typed field, or a
+non-flat root — seals with a complete identity but parks, so its concrete address is
+checked and recorded while its execution waits for the remaining kernel. The site table holds one entry per graph node regardless of how many
 operations reference it, and appending a sparse field adds one field-leaf site
 without disturbing any existing site.
 
