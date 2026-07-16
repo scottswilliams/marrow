@@ -4,11 +4,11 @@
 //! headers) it delegates to.
 
 use super::head::parse_key_params_tokens;
-use super::params::match_paren;
+use super::params::match_bracket;
 use super::tokens::{
     expr_of, expr_of_after, expr_of_before, expr_of_in_header, find_top_level,
     find_top_level_compound_assign, find_top_level_equal, line_span_or, parse_type,
-    push_parse_error,
+    push_parse_error, split_type_and_value,
 };
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
@@ -137,10 +137,10 @@ fn parse_const_or_var(
     let name = name_token.text(source).to_string();
     let mut index = 2;
 
-    // A keyed `var` declares a local keyed tree: `var counts(name: string): int`.
+    // A keyed `var` declares a local keyed tree: `var counts[name: string]: int`.
     // `const` has no key parameters.
     let mut keys = Vec::new();
-    if line.get(index).map(|token| token.kind) == Some(TokenKind::LeftParen) {
+    if line.get(index).map(|token| token.kind) == Some(TokenKind::LeftBracket) {
         if !is_var {
             return expected_statement(line, diagnostics);
         }
@@ -156,40 +156,60 @@ fn parse_const_or_var(
         }
     }
 
-    let mut ty = None;
-    if line.get(index).map(|token| token.kind) == Some(TokenKind::Colon) {
-        index += 1;
-        let type_start = index;
-        let type_end = find_top_level_equal(&line[type_start..])
-            .map(|equal| type_start + equal)
-            .unwrap_or(line.len());
-        if type_end == type_start {
+    // The `: TYPE = VALUE` tail splits at the assignment `=`, or a `>=` that glues a
+    // generic close to the assignment (`const m: Map<K, V>= Map()`). Without an
+    // annotation the value follows a plain `=`, and a bare keyed/typed `var` may omit
+    // the value entirely.
+    let (ty, value) = if matches!(
+        line.get(index).map(|token| token.kind),
+        Some(TokenKind::Colon)
+    ) {
+        let after_colon = &line[index + 1..];
+        if after_colon.is_empty() {
             return expected_statement(line, diagnostics);
         }
-        let expected = if is_var {
-            ExpectedSyntax::ParameterType
+        let split = split_type_and_value(after_colon);
+        if split.type_tokens.is_empty() {
+            return expected_statement(line, diagnostics);
+        }
+        let (expected, message) = if is_var {
+            (
+                ExpectedSyntax::ParameterType,
+                "expected variable type annotation",
+            )
         } else {
-            ExpectedSyntax::ConstType
+            (ExpectedSyntax::ConstType, "expected const type annotation")
         };
-        let message = if is_var {
-            "expected variable type annotation"
-        } else {
-            "expected const type annotation"
-        };
-        match parse_type(source, &line[type_start..type_end], expected, message) {
-            Ok(parsed) => ty = Some(parsed),
+        let ty = match parse_type(source, &split.type_tokens, expected, message) {
+            Ok(parsed) => Some(parsed),
             Err(error) => {
                 push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
                 return None;
             }
+        };
+        let value = match split.value_tokens {
+            Some(value_tokens) => {
+                let anchor = split.equal_span.unwrap_or(keyword.span);
+                Some(parse_rhs_value(source, value_tokens, anchor, diagnostics)?)
+            }
+            None => None,
+        };
+        (ty, value)
+    } else {
+        match line.get(index).map(|token| token.kind) {
+            Some(TokenKind::Equal) => {
+                let equal = line[index];
+                let value = parse_rhs_value(source, &line[index + 1..], equal.span, diagnostics)?;
+                (None, Some(value))
+            }
+            // `var name[keys]` without an initializer is allowed; `const` is not.
+            None => (None, None),
+            _ => return expected_statement(line, diagnostics),
         }
-        index = type_end;
-    }
+    };
 
-    match line.get(index).map(|token| token.kind) {
-        Some(TokenKind::Equal) => {
-            let equal = line[index];
-            let value = parse_rhs_value(source, &line[index + 1..], equal.span, diagnostics)?;
+    match value {
+        Some(value) => {
             let span = join_spans(keyword.span, value.span());
             Some(if is_var {
                 Statement::Var {
@@ -208,7 +228,6 @@ fn parse_const_or_var(
                 }
             })
         }
-        // `var name[(keys)][: type]` without an initializer is allowed; `const` is not.
         None if is_var => Some(Statement::Var {
             name,
             keys,
@@ -216,19 +235,19 @@ fn parse_const_or_var(
             value: None,
             span: join_spans(keyword.span, line[line.len() - 1].span),
         }),
-        _ => expected_statement(line, diagnostics),
+        None => expected_statement(line, diagnostics),
     }
 }
 
-/// Parse `(name: type, ...)` key parameters of a keyed `var`, starting at the
-/// `(` token at `open_index`. Returns the parsed keys and the line index just
-/// past the closing `)`.
+/// Parse `[name: type, ...]` key parameters of a keyed `var`, starting at the
+/// `[` token at `open_index`. Returns the parsed keys and the line index just
+/// past the closing `]`.
 fn parse_var_keys(
     source: &str,
     line: &[Token],
     open_index: usize,
 ) -> ParseResult<(Vec<KeyParam>, usize)> {
-    let close = match_paren(&line[open_index..])
+    let close = match_bracket(&line[open_index..])
         .map(|close| open_index + close)
         .ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
@@ -459,30 +478,36 @@ pub(super) fn parse_if_const_head(
     }
     let name = name_token.text(source).to_string();
 
-    let mut index = 2;
-    let mut ty = None;
+    let index = 2;
     if line.get(index).map(|token| token.kind) == Some(TokenKind::Colon) {
-        index += 1;
-        let type_start = index;
-        let type_end = find_top_level_equal(&line[type_start..])
-            .map(|equal| type_start + equal)
-            .unwrap_or(line.len());
-        if type_end == type_start {
+        let after_colon = &line[index + 1..];
+        if after_colon.is_empty() {
             return expected_expression_line(line, diagnostics);
         }
-        match parse_type(
+        let split = split_type_and_value(after_colon);
+        if split.type_tokens.is_empty() {
+            return expected_expression_line(line, diagnostics);
+        }
+        let ty = match parse_type(
             source,
-            &line[type_start..type_end],
+            &split.type_tokens,
             ExpectedSyntax::ConstType,
             "expected const type annotation",
         ) {
-            Ok(parsed) => ty = Some(parsed),
+            Ok(parsed) => Some(parsed),
             Err(error) => {
                 push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
                 return None;
             }
-        }
-        index = type_end;
+        };
+        // An `if const` binding always reads a value; a value-less annotation is a
+        // condition, not a binding.
+        let Some(value_tokens) = split.value_tokens else {
+            return expected_expression_line(line, diagnostics);
+        };
+        let anchor = split.equal_span.unwrap_or(name_token.span);
+        let value = expr_of_after(source, value_tokens, anchor, diagnostics)?;
+        return Some((name, ty, value));
     }
 
     if line.get(index).map(|token| token.kind) != Some(TokenKind::Equal) {
@@ -490,7 +515,7 @@ pub(super) fn parse_if_const_head(
     }
     let equal = line[index];
     let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
-    Some((name, ty, value))
+    Some((name, None, value))
 }
 
 /// Parse a `for` header `binding in [reversed] iterable [by step]` or the bounded

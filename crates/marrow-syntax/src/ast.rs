@@ -175,11 +175,24 @@ pub enum Expression {
     /// The empty-optional primary value `absent`: assignable to any `T?` place and
     /// inert until resolved.
     Absent { span: SourceSpan },
-    /// A parenthesized application: the checker resolves call, key lookup,
-    /// conversion, or constructor from the callee.
+    /// A parenthesized application: invocation or construction. The checker
+    /// resolves a function call, conversion, or constructor from the callee. Keyed
+    /// address is no longer part of this node — it is [`Expression::Keyed`].
     Call {
         callee: Box<Expression>,
         args: Vec<Argument>,
+        multiline: bool,
+        span: SourceSpan,
+    },
+    /// A keyed address `base[key, ...]`: a durable entry address (`^books[id]`,
+    /// `^patients[pid].visits[vid]`), a keyed field or scalar leaf, or a local
+    /// keyed-collection read (`cells[r, c]`). The bracket group is an ordered key
+    /// tuple selecting an entry; keys are positional (the parser rejects a named
+    /// key), so this carries plain expressions rather than [`Argument`]s. The
+    /// checker resolves `base` and matches the key columns against its key tuple.
+    Keyed {
+        base: Box<Expression>,
+        keys: Vec<Expression>,
         multiline: bool,
         span: SourceSpan,
     },
@@ -225,7 +238,7 @@ pub enum Expression {
         parts: Vec<InterpolationPart>,
         span: SourceSpan,
     },
-    /// Prefix `try <inner>`: propagate a `Result[T, E]`'s `err` out of the
+    /// Prefix `try <inner>`: propagate a `Result<T, E>`'s `err` out of the
     /// enclosing `Result`-returning function (same `E`), yielding the `ok` value.
     /// The parser produces this only as the top-level right-hand side of a
     /// statement; it is not a general sub-expression.
@@ -249,6 +262,7 @@ impl Expression {
             | Self::SavedRoot { span, .. }
             | Self::Absent { span }
             | Self::Call { span, .. }
+            | Self::Keyed { span, .. }
             | Self::Field { span, .. }
             | Self::OptionalField { span, .. }
             | Self::Unary { span, .. }
@@ -941,7 +955,7 @@ pub struct ParamDecl {
     pub docs: Vec<String>,
     pub name: String,
     /// Key parameters when the parameter is a local keyed collection
-    /// (`scores(player: string): int`), spelled like the local declaration head.
+    /// (`scores[player: string]: int`), spelled like the local declaration head.
     /// Empty for an ordinary scalar, resource, collection, or identity parameter,
     /// where `ty` alone is the parameter type.
     pub keys: Vec<KeyParam>,
@@ -955,7 +969,7 @@ pub struct KeyParam {
 }
 
 /// A type annotation, parsed once into its structure. The parser classifies the
-/// generic-application `Head[..]`, `Id(^root)`, and trailing-`?` forms here, so downstream
+/// generic-application `Head<..>`, `Id(^root)`, and trailing-`?` forms here, so downstream
 /// consumers match on this node instead of re-reading the source spelling. The
 /// grammar of type spellings has exactly one owner: the type parser that builds
 /// this node.
@@ -974,9 +988,9 @@ pub enum TypeExpr {
         inner: Box<TypeExpr>,
         span: SourceSpan,
     },
-    /// A generic type application `Head[Arg, ...]`. The head is any identifier: the
+    /// A generic type application `Head<Arg, ...>`. The head is any identifier: the
     /// toolchain generics
-    /// `Option[T]`/`Result[T, E]`/`List[T]`/`Map[K, V]` or a user-declared generic
+    /// `Option<T>`/`Result<T, E>`/`List<T>`/`Map<K, V>` or a user-declared generic
     /// `struct`/`enum` template. `head` is the applied name and `args` its type
     /// arguments in source order; the semantic owner resolves the head.
     Apply {
@@ -1027,14 +1041,14 @@ impl fmt::Display for TypeExpr {
             // spacing parses to the same node, so this is idempotent and the digest
             // it feeds is stable across reformatting.
             TypeExpr::Apply { head, args, .. } => {
-                write!(f, "{head}[")?;
+                write!(f, "{head}<")?;
                 for (index, arg) in args.iter().enumerate() {
                     if index > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{arg}")?;
                 }
-                f.write_str("]")
+                f.write_str(">")
             }
         }
     }

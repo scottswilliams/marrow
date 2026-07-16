@@ -61,7 +61,7 @@ enum LTy {
         ty: EnumId,
         optional: bool,
     },
-    /// A finite collection value (`List[T]` / `Map[K, V]`), image-`Collection`- and
+    /// A finite collection value (`List<T>` / `Map<K, V>`), image-`Collection`- and
     /// runtime-`Value::List`/`Value::Map`-shaped. `idx` names its image COLLTYPES
     /// entry; the source element/key/value types live in the registry's collection
     /// table.
@@ -5259,7 +5259,7 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Lower prefix `try <expr>`: propagate a `Result[T, E]`'s `err` out of the
+    /// Lower prefix `try <expr>`: propagate a `Result<T, E>`'s `err` out of the
     /// enclosing `Result[U, E]`-returning function (same `E`, no conversion),
     /// yielding the `ok` value `T`. Dispatches on the tag: on `err` it rebuilds the
     /// error in the return `Result` and returns; on `ok` it extracts the value.
@@ -5745,8 +5745,8 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         match expr {
-            // A whole-entry address `^root(key).b1(k1)….bn(kn)` at any depth.
-            Expression::Call { span, .. } => {
+            // A whole-entry address `^root[key].b1[k1]….bn[kn]` at any depth.
+            Expression::Keyed { span, .. } => {
                 let (keys, node) = self.resolve_entry_address(root, expr)?;
                 Some(DurablePlace {
                     keys,
@@ -5790,7 +5790,7 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Resolve a durable whole-entry address expression `^root(key).b1(k1)….bn(kn)` into
+    /// Resolve a durable whole-entry address expression `^root[key].b1[k1]….bn[kn]` into
     /// its key-path (root-first, one column per hop) and the addressed node, walking the
     /// nested branch chain level by level. Returns `None` on a shape that is not an entry
     /// address, and reports a diagnostic then `None` on a bad root or branch name. The
@@ -5801,33 +5801,33 @@ impl<'a> FnLowerer<'a> {
         root: &'a crate::durable::DurableRoot,
         expr: &'e Expression,
     ) -> Option<(Vec<DurKey<'e>>, DurNode<'a>)> {
-        let Expression::Call {
-            callee, args, span, ..
+        let Expression::Keyed {
+            base, keys, span, ..
         } = expr
         else {
             return None;
         };
-        match &**callee {
-            // The base case `^root(k1, …)`: the root whole-entry address, one key operand
+        match &**base {
+            // The base case `^root[k1, …]`: the root whole-entry address, one key operand
             // per root key column in declaration order.
             Expression::SavedRoot {
                 name,
                 span: root_span,
             } => {
                 self.check_root_name(root, name, *root_span)?;
-                let mut keys = Vec::new();
-                self.push_key_columns(&mut keys, args, &root.key, *span)?;
-                Some((keys, DurNode::Root(root)))
+                let mut columns = Vec::new();
+                self.push_key_columns(&mut columns, keys, &root.key, *span)?;
+                Some((columns, DurNode::Root(root)))
             }
-            // The recursive case `<entry-address>.branch(bk1, …)`: extend the parent
+            // The recursive case `<entry-address>.branch[bk1, …]`: extend the parent
             // entry's key-path with this branch's own key columns in declaration order.
             Expression::Field {
-                base,
+                base: parent_base,
                 name: branch_name,
                 name_span: branch_span,
                 ..
             } => {
-                let (mut keys, parent) = self.resolve_entry_address(root, base)?;
+                let (mut columns, parent) = self.resolve_entry_address(root, parent_base)?;
                 let Some(branch) = parent.branch(branch_name) else {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -5837,39 +5837,40 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return None;
                 };
-                self.push_key_columns(&mut keys, args, &branch.key, *span)?;
-                Some((keys, DurNode::Branch(branch)))
+                self.push_key_columns(&mut columns, keys, &branch.key, *span)?;
+                Some((columns, DurNode::Branch(branch)))
             }
             _ => None,
         }
     }
 
     /// Match the positional key operands of one node against its ordered key columns,
-    /// pushing one [`DurKey`] per column onto `keys` in declaration order (so the whole
+    /// pushing one [`DurKey`] per column onto `columns` in declaration order (so the whole
     /// key-path is assembled root-first, column order, the order the kernel expects).
-    /// Reports a diagnostic and returns `None` on a wrong operand count or a named operand.
+    /// Reports a diagnostic and returns `None` on a wrong operand count. The keyed-access
+    /// grammar already forbids a named key, so only arity is checked here.
     fn push_key_columns<'e>(
         &mut self,
-        keys: &mut Vec<DurKey<'e>>,
-        args: &'e [Argument],
-        columns: &[ScalarType],
+        columns: &mut Vec<DurKey<'e>>,
+        keys: &'e [Expression],
+        key_columns: &[ScalarType],
         span: SourceSpan,
     ) -> Option<()> {
-        if args.len() != columns.len() || args.iter().any(|arg| arg.name.is_some()) {
+        if keys.len() != key_columns.len() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
                 span,
                 format!(
                     "a store access takes {} positional key column(s), one per key column",
-                    columns.len()
+                    key_columns.len()
                 ),
             ));
             return None;
         }
-        for (arg, &key_ty) in args.iter().zip(columns) {
-            keys.push(DurKey {
-                key: PlaceKey::Expr(&arg.value),
+        for (key, &key_ty) in keys.iter().zip(key_columns) {
+            columns.push(DurKey {
+                key: PlaceKey::Expr(key),
                 key_ty,
             });
         }
@@ -6148,7 +6149,7 @@ impl<'a> FnLowerer<'a> {
         Some(LTy::bare_scalar(ScalarType::Int))
     }
 
-    /// Lower `append(list, value): List[T]`: append `value` after the last element,
+    /// Lower `append(list, value): List<T>`: append `value` after the last element,
     /// yielding the grown list (collections are values). A non-list first argument,
     /// or a `value` not of the element type, is a typed diagnostic.
     fn lower_append(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
@@ -6177,7 +6178,7 @@ impl<'a> FnLowerer<'a> {
         })
     }
 
-    /// Lower `insert(map, key, value): Map[K, V]`: insert or replace `value` at
+    /// Lower `insert(map, key, value): Map<K, V>`: insert or replace `value` at
     /// `key`, yielding the updated map. A non-map first argument, or a key/value not
     /// of the map's types, is a typed diagnostic.
     fn lower_insert(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
@@ -7220,15 +7221,15 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
     )
 }
 
-/// Whether `expr` is a durable whole-entry address `^root(key)….b(bkey)` at any depth: a
-/// key application whose callee bottoms out at the store root, chained through branch
+/// Whether `expr` is a durable whole-entry address `^root[key]….b[bkey]` at any depth: a
+/// keyed access whose base bottoms out at the store root, chained through branch
 /// selectors. The single syntactic recognizer of a durable entry address; the resolver
 /// rechecks the store and branch names.
 fn is_entry_address(expr: &Expression) -> bool {
-    let Expression::Call { callee, .. } = expr else {
+    let Expression::Keyed { base, .. } = expr else {
         return false;
     };
-    match callee.as_ref() {
+    match base.as_ref() {
         Expression::SavedRoot { .. } => true,
         Expression::Field { base, .. } => is_entry_address(base),
         _ => false,

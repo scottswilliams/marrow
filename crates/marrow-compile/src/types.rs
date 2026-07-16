@@ -47,7 +47,7 @@ pub(crate) enum GArg {
     Nominal(NominalId),
     Struct(TypeId),
     Enum(EnumId),
-    /// A finite collection value (`List[T]` / `Map[K, V]`) by its image COLLTYPES
+    /// A finite collection value (`List<T>` / `Map<K, V>`) by its image COLLTYPES
     /// index. The element/key/value source types live in the registry's collection
     /// table (`CollSpec`), so a nested collection or a nominal element keeps its
     /// source identity even though the image erases a nominal element to `int`.
@@ -814,7 +814,7 @@ impl TypeRegistry {
             .map(|inst| inst.body.clone())
     }
 
-    /// The `Option[T]` argument an enum instantiation carries, if it is the reserved
+    /// The `Option<T>` argument an enum instantiation carries, if it is the reserved
     /// `Option` template's.
     pub(crate) fn as_option(&self, id: EnumId) -> Option<GArg> {
         let generics = self.generics.borrow();
@@ -826,7 +826,7 @@ impl TypeRegistry {
             .then(|| inst.args[0])
     }
 
-    /// The `Result[T, E]` arguments an enum instantiation carries, if it is the
+    /// The `Result<T, E>` arguments an enum instantiation carries, if it is the
     /// reserved `Result` template's.
     pub(crate) fn as_result(&self, id: EnumId) -> Option<(GArg, GArg)> {
         let generics = self.generics.borrow();
@@ -990,7 +990,7 @@ impl TypeRegistry {
         self.collections.borrow()[idx as usize]
     }
 
-    /// The source spelling of a collection instantiation (`List[T]` / `Map[K, V]`),
+    /// The source spelling of a collection instantiation (`List<T>` / `Map<K, V>`),
     /// used in diagnostics and cycle labels.
     pub(crate) fn collection_spelling(&self, idx: u16) -> String {
         match self.collection_spec(idx) {

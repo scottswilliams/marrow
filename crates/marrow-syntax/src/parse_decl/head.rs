@@ -2,7 +2,7 @@
 //! headers, the index declaration, the parenthesized key-parameter list, and the
 //! resource field-or-group member head.
 
-use super::params::{match_bracket, match_paren, parse_type_params_tokens};
+use super::params::{match_angle, match_bracket, match_paren, parse_type_params_tokens};
 use super::tokens::{line_span_or, parse_type, split_top_level_commas, strip_comment_tokens};
 use super::{MemberHead, ParseError, ParseResult};
 use crate::ast::{EnumPayloadField, IndexDecl, KeyParam, SavedRoot, TypeParamDecl};
@@ -50,15 +50,15 @@ pub(super) fn parse_enum_head(
     if !rest.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::EnumHeader),
-            "an enum header is `enum Name` or `enum Name[T, ...]`",
+            "an enum header is `enum Name` or `enum Name<T, ...>`",
         ));
     }
     Ok((public, name, name_span, type_params))
 }
 
 /// Parse a struct header's tokens after the `struct` keyword: `Name` or
-/// `Name[T, ...]`. The generic type-parameter list uses the same bracket
-/// convention as a type application (`List[T]`); a leading `[` after the name
+/// `Name<T, ...>`. The generic type-parameter list uses the same angle
+/// convention as a type application (`List<T>`); a leading `<` after the name
 /// introduces the parameters. A struct field's `name: Type` body is parsed
 /// separately from the indented block, reusing the resource-member machinery.
 pub(super) fn parse_struct_head(
@@ -80,14 +80,14 @@ pub(super) fn parse_struct_head(
     if !rest.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceHeader),
-            "a struct header is `struct Name` or `struct Name[T, ...]`",
+            "a struct header is `struct Name` or `struct Name<T, ...>`",
         ));
     }
     Ok((name, name_span, type_params))
 }
 
 /// Parse an optional generic type-parameter list at the start of `tokens`: a
-/// leading `[T, ...]` yields the parameters and the tokens after the `]`; anything
+/// leading `<T, ...>` yields the parameters and the tokens after the `>`; anything
 /// else yields an empty list and the unconsumed tokens.
 fn parse_optional_type_params<'t>(
     source: &str,
@@ -95,13 +95,13 @@ fn parse_optional_type_params<'t>(
 ) -> ParseResult<(Vec<TypeParamDecl>, &'t [Token])> {
     if !matches!(
         tokens.first().map(|token| token.kind),
-        Some(TokenKind::LeftBracket)
+        Some(TokenKind::Less)
     ) {
         return Ok((Vec::new(), tokens));
     }
-    let close = match_bracket(tokens).ok_or(ParseError::new(
+    let close = match_angle(tokens).ok_or(ParseError::new(
         ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceHeader),
-        "expected `]` to close the type-parameter list",
+        "expected `>` to close the type-parameter list",
     ))?;
     let params = parse_type_params_tokens(source, &tokens[1..close])?;
     Ok((params, &tokens[close + 1..]))
@@ -355,7 +355,7 @@ pub(super) fn parse_resource_head(
 }
 
 /// Parse a store header's tokens after the `store` keyword:
-/// `^root [(key: type, ...)]: Resource`.
+/// `^root [[key: type, ...]]: Resource`.
 pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(SavedRoot, String)> {
     if !matches!(
         tokens.first().map(|token| token.kind),
@@ -385,8 +385,8 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
         .scan(0usize, |depth, token| {
             let top_level_colon = *depth == 0 && token.kind == TokenKind::Colon;
             match token.kind {
-                TokenKind::LeftParen => *depth += 1,
-                TokenKind::RightParen => *depth = depth.saturating_sub(1),
+                TokenKind::LeftBracket => *depth += 1,
+                TokenKind::RightBracket => *depth = depth.saturating_sub(1),
                 _ => {}
             }
             Some(top_level_colon)
@@ -399,7 +399,7 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
     let keys = if colon == 0 {
         Vec::new()
     } else {
-        parse_paren_key_params(source, &rest[..colon])?
+        parse_bracket_key_params(source, &rest[..colon])?
     };
     let resource_tokens = &rest[colon + 1..];
     let resource = match resource_tokens {
@@ -421,19 +421,19 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
     ))
 }
 
-/// Parse a parenthesized `(name: type, ...)` key parameter list spanning the
-/// whole token slice. Requires the parentheses to be the only content.
-fn parse_paren_key_params(source: &str, tokens: &[Token]) -> ParseResult<Vec<KeyParam>> {
+/// Parse a bracketed `[name: type, ...]` key parameter list spanning the
+/// whole token slice. Requires the brackets to be the only content.
+fn parse_bracket_key_params(source: &str, tokens: &[Token]) -> ParseResult<Vec<KeyParam>> {
     if !matches!(
         tokens.first().map(|token| token.kind),
-        Some(TokenKind::LeftParen)
+        Some(TokenKind::LeftBracket)
     ) {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
             "expected key parameter list",
         ));
     }
-    let close = match_paren(tokens).ok_or(ParseError::new(
+    let close = match_bracket(tokens).ok_or(ParseError::new(
         ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
         "expected key parameter list",
     ))?;
@@ -483,7 +483,7 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
     Ok(params)
 }
 
-/// Parse an `index name(field, ...) [unique]` declaration from the tokens after
+/// Parse an `index name[field, ...] [unique]` declaration from the tokens after
 /// the `index` keyword. The span is filled in by the caller.
 pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<IndexDecl> {
     let (name, name_span) = match tokens.first() {
@@ -500,14 +500,14 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
     let rest = &tokens[1..];
     if !matches!(
         rest.first().map(|token| token.kind),
-        Some(TokenKind::LeftParen)
+        Some(TokenKind::LeftBracket)
     ) {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexArgumentList),
             "expected index argument list",
         ));
     }
-    let close = match_paren(rest).ok_or(ParseError::new(
+    let close = match_bracket(rest).ok_or(ParseError::new(
         ParseDiagnosticReason::Expected(ExpectedSyntax::IndexArgumentList),
         "expected index argument list",
     ))?;
@@ -574,7 +574,7 @@ fn field_path_text(source: &str, tokens: &[Token]) -> Option<String> {
     Some(source[start..end].to_string())
 }
 
-/// Parse a `required? name (keys)? (: type)?` resource member head into a field
+/// Parse a `required? name [keys]? (: type)?` resource member head into a field
 /// or group.
 pub(super) fn parse_field_or_group_tokens(
     source: &str,
@@ -594,15 +594,15 @@ pub(super) fn parse_field_or_group_tokens(
         }
         // A line that begins with a keyed-layer clause spelling such as `unique`
         // — a keyword that does not go on to name a field (`:`) or keyed field
-        // (`(`) — is a malformed member, not a missing name. Report the
+        // (`[`) — is a malformed member, not a missing name. Report the
         // member-shape rule naming what is allowed here, the same diagnostic a
-        // non-keyword junk word reaches. A keyword followed by `:`/`(` is instead
+        // non-keyword junk word reaches. A keyword followed by `:`/`[` is instead
         // a reserved word used as a member name, which keeps the member-name rule.
         Some(token)
             if matches!(token.kind, TokenKind::Keyword(_))
                 && !matches!(
                     rest.get(1).map(|next| next.kind),
-                    Some(TokenKind::Colon | TokenKind::LeftParen)
+                    Some(TokenKind::Colon | TokenKind::LeftBracket)
                 ) =>
         {
             return Err(ParseError::new(
@@ -620,11 +620,11 @@ pub(super) fn parse_field_or_group_tokens(
     let mut rest = &rest[1..];
     let keys = if matches!(
         rest.first().map(|token| token.kind),
-        Some(TokenKind::LeftParen)
+        Some(TokenKind::LeftBracket)
     ) {
-        let close = match_paren(rest).ok_or(ParseError::new(
+        let close = match_bracket(rest).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
-            "expected closing `)` in keyed resource member",
+            "expected closing `]` in keyed resource member",
         ))?;
         let inner = &rest[1..close];
         let keys = parse_key_params_tokens(source, inner)?;

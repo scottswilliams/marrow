@@ -59,28 +59,29 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
         }
     };
     let rest = &rest[1..];
-    if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Less)) {
-        return Err(ParseError::new(
-            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::UserDefinedGenerics),
-            "generic type parameters are written `fn name[T](...)`, not with `<...>`",
-        ));
-    }
-    // Optional generic type-parameter list, `[T, U supports order]`, before the
-    // value-parameter list. The same bracket convention spells a type application
-    // (`List[T]`), so a leading `[` after the name introduces the type parameters.
-    let (type_params, rest) = if matches!(
+    if matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::LeftBracket)
     ) {
-        let close = match_bracket(rest).ok_or(ParseError::new(
-            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
-            "expected `]` to close the type-parameter list",
-        ))?;
-        let params = parse_type_params_tokens(source, &rest[1..close])?;
-        (params, &rest[close + 1..])
-    } else {
-        (Vec::new(), rest)
-    };
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::UserDefinedGenerics),
+            "generic type parameters are written `fn name<T>(...)`, not with `[...]`",
+        ));
+    }
+    // Optional generic type-parameter list, `<T, U supports order>`, before the
+    // value-parameter list. The same angle convention spells a type application
+    // (`List<T>`), so a leading `<` after the name introduces the type parameters.
+    let (type_params, rest) =
+        if matches!(rest.first().map(|token| token.kind), Some(TokenKind::Less)) {
+            let close = match_angle(rest).ok_or(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
+                "expected `>` to close the type-parameter list",
+            ))?;
+            let params = parse_type_params_tokens(source, &rest[1..close])?;
+            (params, &rest[close + 1..])
+        } else {
+            (Vec::new(), rest)
+        };
     if !matches!(
         rest.first().map(|token| token.kind),
         Some(TokenKind::LeftParen)
@@ -142,7 +143,7 @@ pub(super) fn parse_type_params_tokens(
     if inner.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionParameterList),
-            "a type-parameter list names at least one type, `[T]`",
+            "a type-parameter list names at least one type, `<T>`",
         ));
     }
     let mut params = Vec::new();
@@ -242,6 +243,26 @@ pub(super) fn match_bracket(tokens: &[Token]) -> Option<usize> {
     None
 }
 
+/// Index of the `>` matching the leading `<` of `tokens`, if balanced. Tracks `<`/`>`
+/// depth so a nested generic type argument closes correctly; within a declaration
+/// header a nested close is always a bare `>` (no `>>` token exists).
+pub(super) fn match_angle(tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::Less => depth += 1,
+            TokenKind::Greater => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Parse a `name: type` parameter list. Parameters are separated by
 /// commas, and in a multi-line list a line break separates one from the next just
 /// as a comma does, so the list reads cleanly written with commas, without them,
@@ -278,7 +299,7 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
             }
         };
         // A keyed-collection parameter spells its key columns like the local
-        // declaration head — `scores(player: string): int` — reusing the same
+        // declaration head — `scores[player: string]: int` — reusing the same
         // key-parameter parse as a keyed `var`, field, or store root.
         let (keys, after_keys) = parse_param_keys(source, rest)?;
         if rest.get(after_keys).map(|token| token.kind) != Some(TokenKind::Colon)
@@ -331,15 +352,15 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
     Ok(params)
 }
 
-/// Parse an optional `(key: type, ...)` key-parameter list that follows a
+/// Parse an optional `[key: type, ...]` key-parameter list that follows a
 /// parameter name, marking it a local keyed collection. Returns the parsed keys
-/// (empty when no `(` follows the name) and the index in `rest` of the first
+/// (empty when no `[` follows the name) and the index in `rest` of the first
 /// token past the key list, where the `: value-type` annotation begins.
 fn parse_param_keys(source: &str, rest: &[Token]) -> ParseResult<(Vec<KeyParam>, usize)> {
-    if rest.get(1).map(|token| token.kind) != Some(TokenKind::LeftParen) {
+    if rest.get(1).map(|token| token.kind) != Some(TokenKind::LeftBracket) {
         return Ok((Vec::new(), 1));
     }
-    let close = match_paren(&rest[1..])
+    let close = match_bracket(&rest[1..])
         .map(|close| close + 1)
         .ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),

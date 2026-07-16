@@ -72,6 +72,10 @@ pub enum ParseDiagnosticReason {
     /// A `checked` form's arm header is not `on out_of_range`/`on zero_divisor`.
     CheckedArm,
     MatchArmMemberPath,
+    /// A named argument inside a keyed-access bracket group (`^books[id: 3]`). Key
+    /// arguments are an ordered positional tuple; a keyed access takes no named
+    /// argument.
+    NamedKeyArgument,
     NestingLimit,
     /// A second operator on a non-associative level (`==`/`!=`/`</`is`/`??`),
     /// which the grammar does not chain.
@@ -101,6 +105,7 @@ impl ParseDiagnosticReason {
 pub enum ExpectedSyntax {
     AliasName,
     AliasType,
+    CloseBracket,
     CloseParen,
     Comma,
     CheckedBody,
@@ -164,10 +169,10 @@ pub enum UnsupportedSyntax {
     QuotedFieldSegments,
     UserDefinedGenerics,
     /// A `throw` statement: the throw/catch channel was removed. A recoverable
-    /// failure is a `Result[T, E]` value returned with `err(...)`.
+    /// failure is a `Result<T, E>` value returned with `err(...)`.
     ThrowStatement,
     /// A block-form `try`/`catch`: removed in favour of prefix `try <expr>`
-    /// propagation over a `Result[T, E]`.
+    /// propagation over a `Result<T, E>`.
     TryCatchBlock,
     /// A stray `catch` clause with no `try`: the throw/catch channel was removed.
     CatchClause,

@@ -96,6 +96,9 @@ fn expr_has_error(expr: &Expression) -> bool {
         Expression::Call { callee, args, .. } => {
             expr_has_error(callee) || args.iter().any(|arg| expr_has_error(&arg.value))
         }
+        Expression::Keyed { base, keys, .. } => {
+            expr_has_error(base) || keys.iter().any(expr_has_error)
+        }
         Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
             expr_has_error(base)
         }

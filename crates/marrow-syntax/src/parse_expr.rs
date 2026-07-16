@@ -559,12 +559,18 @@ impl<'a> ExprParser<'a> {
         }
         let mut levels = 0;
         loop {
-            // A `.f`, `?.f`, or `(…)` postfix each wraps the current expression in
-            // one more node, so a long `a.f.f…` or `a()()…` chain deepens the AST by
-            // its length and counts toward the nesting limit.
+            // A `.f`, `?.f`, `(…)`, or `[…]` postfix each wraps the current
+            // expression in one more node, so a long `a.f.f…`, `a()()…`, or
+            // `a[i][j]…` chain deepens the AST by its length and counts toward the
+            // nesting limit.
             if matches!(
                 self.peek(),
-                Some(TokenKind::LeftParen | TokenKind::Dot | TokenKind::QuestionDot)
+                Some(
+                    TokenKind::LeftParen
+                        | TokenKind::LeftBracket
+                        | TokenKind::Dot
+                        | TokenKind::QuestionDot
+                )
             ) {
                 if !self.enter_chain_level() {
                     self.leave_chain(levels);
@@ -573,6 +579,47 @@ impl<'a> ExprParser<'a> {
                 levels += 1;
             }
             match self.peek() {
+                Some(TokenKind::LeftBracket) => {
+                    let open = self.advance();
+                    let parsed_keys = match self.key_arguments() {
+                        Ok(keys) => keys,
+                        Err(error) => {
+                            self.leave_chain(levels);
+                            return error;
+                        }
+                    };
+                    let Some(TokenKind::RightBracket) = self.peek() else {
+                        // The key list is unterminated: a token follows the last key
+                        // where a `,` or `]` was expected. Name the missing delimiter
+                        // at the gap and recover the keyed node with the keys parsed so
+                        // far, so downstream analysis still sees the access.
+                        let (expected, message) = if self.peek().is_some_and(starts_expression) {
+                            (ExpectedSyntax::Comma, "expected `,`")
+                        } else {
+                            (ExpectedSyntax::CloseBracket, "expected `]`")
+                        };
+                        self.expected_delimiter_at_gap(expected, message);
+                        let end = self.tokens[self.pos - 1].span;
+                        let span = join_spans(expr.span(), end);
+                        let multiline = end.line > open.span.line;
+                        self.leave_chain(levels);
+                        return Expression::Keyed {
+                            base: Box::new(expr),
+                            keys: parsed_keys.keys,
+                            multiline,
+                            span,
+                        };
+                    };
+                    let close = self.advance();
+                    let span = join_spans(expr.span(), close.span);
+                    let multiline = close.span.line > open.span.line;
+                    expr = Expression::Keyed {
+                        base: Box::new(expr),
+                        keys: parsed_keys.keys,
+                        multiline,
+                        span,
+                    };
+                }
                 Some(TokenKind::LeftParen) => {
                     let open = self.advance();
                     let parsed_args = match self.arguments() {
@@ -753,6 +800,49 @@ impl<'a> ExprParser<'a> {
         })
     }
 
+    /// Parse a keyed-access key list up to the closing `]`: an ordered tuple of
+    /// positional key expressions. A `name:` key is a parse-level rejection — a
+    /// keyed access selects an entry by an ordered key tuple, never by named
+    /// argument — and an empty group `base[]` names no key column, also rejected.
+    fn key_arguments(&mut self) -> Result<ParsedKeys, Expression> {
+        if matches!(self.peek(), Some(TokenKind::RightBracket)) {
+            return Err(self.error_expr(
+                self.gap_span(),
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "expected a key expression; a keyed access selects at least one key column"
+                    .to_string(),
+                None,
+            ));
+        }
+        let mut keys = Vec::new();
+        loop {
+            if matches!(self.peek(), Some(TokenKind::Identifier))
+                && matches!(self.peek_at(1), Some(TokenKind::Colon))
+            {
+                let name = self.tokens[self.pos];
+                return Err(self.error_expr(
+                    name.span,
+                    ParseDiagnosticReason::NamedKeyArgument,
+                    "a keyed access takes positional key values, not named arguments".to_string(),
+                    Some("write the key value without a name".to_string()),
+                ));
+            }
+            let value = self.expression();
+            if value.is_error() {
+                return Err(value);
+            }
+            keys.push(value);
+            if !matches!(self.peek(), Some(TokenKind::Comma)) {
+                break;
+            }
+            self.advance();
+            if matches!(self.peek(), Some(TokenKind::RightBracket)) {
+                break;
+            }
+        }
+        Ok(ParsedKeys { keys })
+    }
+
     fn argument(&mut self) -> Result<Argument, Expression> {
         self.recover_removed_argument_mode();
         let name = if matches!(self.peek(), Some(TokenKind::Identifier))
@@ -895,7 +985,7 @@ impl<'a> ExprParser<'a> {
                 ParseDiagnosticReason::Unsupported(UnsupportedSyntax::BracketCollectionLiterals),
                 "bracket collection literals are not part of expression grammar".to_string(),
                 Some(
-                    "build a list with `var xs: List[T] = List()` and \
+                    "build a list with `var xs: List<T> = List()` and \
                     `xs = append(xs, value)`, or call a function that returns a list"
                         .to_string(),
                 ),
@@ -1065,6 +1155,10 @@ impl<'a> ExprParser<'a> {
 struct ParsedArguments {
     args: Vec<Argument>,
     trailing_comma: bool,
+}
+
+struct ParsedKeys {
+    keys: Vec<Expression>,
 }
 
 fn starts_expression(kind: TokenKind) -> bool {

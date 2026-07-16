@@ -225,13 +225,13 @@ impl<'a> StmtParser<'a> {
             TokenKind::Identifier if self.tokens[self.pos].text(self.source) == "catch" => {
                 return self.recover_removed_clause(
                     UnsupportedSyntax::CatchClause,
-                    "`catch` was removed; match a `Result[T, E]` on its `ok`/`err` members instead",
+                    "`catch` was removed; match a `Result<T, E>` on its `ok`/`err` members instead",
                 );
             }
             TokenKind::Identifier if self.tokens[self.pos].text(self.source) == "finally" => {
                 return self.recover_removed_clause(
                     UnsupportedSyntax::Finally,
-                    "`finally` blocks were removed; return a `Result[T, E]` and clean up on its `err` member",
+                    "`finally` blocks were removed; return a `Result<T, E>` and clean up on its `err` member",
                 );
             }
             _ => {}
@@ -402,7 +402,7 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Parse a statement that begins with `try`. Prefix `try <expr>` is a value
-    /// form: it propagates a `Result[T, E]`'s `err` out of the enclosing
+    /// form: it propagates a `Result<T, E>`'s `err` out of the enclosing
     /// `Result`-returning function, yielding the `ok` value. The removed block form
     /// (`try` opening an indented body, with `catch`/`finally`) is reported as
     /// unsupported and its blocks are skipped so the parse stays total.
@@ -416,7 +416,7 @@ impl<'a> StmtParser<'a> {
             self.error_span_reason(
                 start,
                 ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TryCatchBlock),
-                "block-form `try`/`catch` was removed; return a `Result[T, E]` and propagate it with prefix `try <expr>`",
+                "block-form `try`/`catch` was removed; return a `Result<T, E>` and propagate it with prefix `try <expr>`",
             );
             return None;
         }
@@ -424,7 +424,7 @@ impl<'a> StmtParser<'a> {
             self.error_span_reason(
                 start,
                 ParseDiagnosticReason::Unsupported(UnsupportedSyntax::TryCatchBlock),
-                "prefix `try` needs a `Result[T, E]` expression, as `try <expr>`",
+                "prefix `try` needs a `Result<T, E>` expression, as `try <expr>`",
             );
             return None;
         }
@@ -469,7 +469,7 @@ impl<'a> StmtParser<'a> {
         self.error_span_reason(
             span,
             ParseDiagnosticReason::Unsupported(UnsupportedSyntax::ThrowStatement),
-            "`throw` was removed; return a `Result[T, E]` with `err(...)` and propagate it with `try`",
+            "`throw` was removed; return a `Result<T, E>` with `err(...)` and propagate it with `try`",
         );
         None
     }

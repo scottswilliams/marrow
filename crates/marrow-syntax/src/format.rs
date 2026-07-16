@@ -643,7 +643,7 @@ fn format_index_decl(index: &crate::IndexDecl, level: usize) -> String {
     let mut out = format_docs(&index.docs, level);
     let unique = if index.unique { " unique" } else { "" };
     out.push_str(&format!(
-        "{pad}index {}({}){unique}",
+        "{pad}index {}[{}]{unique}",
         index.name,
         index.args.join(", ")
     ));
@@ -665,7 +665,7 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
 }
 
 /// Render a generic type-parameter list. An empty list renders nothing (an
-/// ordinary monomorphic function); a non-empty one renders `[T, U supports order]`
+/// ordinary monomorphic function); a non-empty one renders `<T, U supports order>`
 /// with each constraint spelled canonically.
 fn format_type_params(params: &[crate::TypeParamDecl]) -> String {
     if params.is_empty() {
@@ -680,7 +680,7 @@ fn format_type_params(params: &[crate::TypeParamDecl]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!("[{items}]")
+    format!("<{items}>")
 }
 
 fn format_test(source: &str, decl: &crate::TestDecl) -> String {
@@ -1464,7 +1464,7 @@ fn format_key_params(keys: &[KeyParam]) -> String {
         .map(|key| format!("{}: {}", key.name, key.ty))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("({keys})")
+    format!("[{keys}]")
 }
 
 /// Format a single expression as canonical Marrow source.
@@ -1534,6 +1534,17 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
             } else {
                 format!("{callee}({})", rendered.join(", "))
             }
+        }
+        // A keyed address `base[key, ...]`: the base is a postfix atom and the keys
+        // are positional expressions needing no parentheses inside the brackets.
+        // Rendered inline; the full multiline key layout is the flip-3 formatter's.
+        Expression::Keyed { base, keys, .. } => {
+            let base = format_child_at(base, PREC_ATOM, level, layout);
+            let rendered: Vec<String> = keys
+                .iter()
+                .map(|key| format_expression_layout(key, level, layout))
+                .collect();
+            format!("{base}[{}]", rendered.join(", "))
         }
         Expression::Field {
             base, name, quoted, ..

@@ -116,15 +116,19 @@ pub(super) fn strip_comment_tokens(tokens: &[Token]) -> Cow<'_, [Token]> {
     }
 }
 /// Split tokens on top-level commas (depth 0), dropping a trailing empty group
-/// from a trailing comma.
+/// from a trailing comma. Runs over declaration and type slices only, where `<`/`>`
+/// delimit a generic argument list (`Map<K, V>`) rather than comparing values, so a
+/// comma inside a nested generic does not split its enclosing list.
 pub(super) fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
     for (index, token) in tokens.iter().enumerate() {
         match token.kind {
-            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
-            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Less => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::Greater => {
+                depth = depth.saturating_sub(1)
+            }
             TokenKind::Comma if depth == 0 => {
                 parts.push(&tokens[start..index]);
                 start = index + 1;
@@ -142,6 +146,69 @@ pub(super) fn split_top_level_commas(tokens: &[Token]) -> Vec<&[Token]> {
 /// restriction still keeps named-argument colons and nested forms from splitting.
 pub(super) fn find_top_level_equal(tokens: &[Token]) -> Option<usize> {
     find_top_level(tokens, TokenKind::Equal)
+}
+
+/// The split of a binding's `: TYPE [= VALUE]` tail into its type-annotation and
+/// optional value token slices.
+pub(super) struct BindingSplit<'t> {
+    /// The type-annotation tokens. Owned only in the unspaced `>=` case, where a
+    /// synthetic closing `>` is appended to terminate the generic the glued `>=`
+    /// left open; borrowed otherwise.
+    pub type_tokens: Cow<'t, [Token]>,
+    /// The value tokens after the boundary, or `None` for a value-less binding
+    /// (`var x: T`).
+    pub value_tokens: Option<&'t [Token]>,
+    /// The span of the boundary `=`/`>=` to anchor a value diagnostic at, or `None`
+    /// for a value-less binding.
+    pub equal_span: Option<SourceSpan>,
+}
+
+/// Split the tokens after a binding's `:` into the type annotation and the optional
+/// value. The boundary is the first top-level (paren/bracket depth 0) `=`, or a
+/// `>=` that glues a generic close to the assignment (`const m: Map<string, int>= m`)
+/// — the one token-split the angle grammar needs. A `>=` boundary contributes a
+/// synthetic closing `>` to the type and consumes the assignment. Depth counts
+/// `(`/`[` only: a generic's own `<`/`>` never wrap the top-level assignment, and a
+/// glued `>=` must be seen at depth 0 to be split.
+pub(super) fn split_type_and_value(after_colon: &[Token]) -> BindingSplit<'_> {
+    let mut depth = 0usize;
+    for (index, token) in after_colon.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::Equal if depth == 0 => {
+                return BindingSplit {
+                    type_tokens: Cow::Borrowed(&after_colon[..index]),
+                    value_tokens: Some(&after_colon[index + 1..]),
+                    equal_span: Some(token.span),
+                };
+            }
+            TokenKind::GreaterEqual if depth == 0 => {
+                let close = Token {
+                    kind: TokenKind::Greater,
+                    span: SourceSpan {
+                        start_byte: token.span.start_byte,
+                        end_byte: token.span.start_byte + 1,
+                        line: token.span.line,
+                        column: token.span.column,
+                    },
+                };
+                let mut type_tokens = after_colon[..index].to_vec();
+                type_tokens.push(close);
+                return BindingSplit {
+                    type_tokens: Cow::Owned(type_tokens),
+                    value_tokens: Some(&after_colon[index + 1..]),
+                    equal_span: Some(token.span),
+                };
+            }
+            _ => {}
+        }
+    }
+    BindingSplit {
+        type_tokens: Cow::Borrowed(after_colon),
+        value_tokens: None,
+        equal_span: None,
+    }
 }
 /// Index of the first token satisfying `predicate` at parenthesis/bracket depth 0.
 /// The traversal tracks delimiter depth; the predicate receives each candidate
@@ -282,7 +349,7 @@ pub(super) fn expr_of_in_header(source: &str, tokens: &[Token]) -> Option<Expres
 /// Parse a type annotation from its token slice into the structural [`TypeExpr`],
 /// the one owner of type-spelling grammar. The slice must be exactly one type
 /// production; a malformed or over-long spelling reports the same diagnostic the
-/// caller's `expected`/`message` name. Generic applications `Head[..]`, `Id(^root)`,
+/// caller's `expected`/`message` name. Generic applications `Head<..>`, `Id(^root)`,
 /// and the `?` suffix are classified here so no downstream crate re-reads the spelling.
 pub(super) fn parse_type(
     source: &str,
@@ -309,8 +376,8 @@ pub(super) fn parse_type(
         ));
     }
     // A type annotation is a single type production: one head word, optionally
-    // extended by `::` name segments and attached `[...]`/`(...)` groups, then an
-    // optional trailing `?`. Any depth-0 token past that end (a `in`, `@`,
+    // extended by `::` name segments and an attached `<...>` generic or `Id(...)`
+    // group, then an optional trailing `?`. Any depth-0 token past that end (an `in`, `@`,
     // `where`, or a second bare word) is not part of the type; reject it where it
     // begins rather than gluing it into the spelling. A doubled `??` or `?.` in
     // type position is the double-optional spelling, which optionality forbids.
@@ -355,21 +422,19 @@ fn type_context_noun(expected: ExpectedSyntax) -> &'static str {
 }
 
 /// The number of leading tokens that make up one complete type production: the
-/// head token, then each following `::` name segment and each attached
-/// `[...]`/`(...)` group at depth 0, then one optional trailing `?` suffix.
-/// Bracket contents are spanned whole, so whitespace and nested types inside them
-/// do not end the type.
+/// head token, then each following `::` name segment, an attached generic group
+/// `<...>` at depth 0, or the `Id(...)` identity `(...)` group, then one optional
+/// trailing `?` suffix. Group contents are spanned whole, so whitespace and nested
+/// types inside them do not end the type.
 fn type_token_len(tokens: &[Token]) -> usize {
     let mut index = if tokens.is_empty() { 0 } else { 1 };
     while index < tokens.len() {
         match tokens[index].kind {
             TokenKind::DoubleColon => index += 2,
-            TokenKind::LeftBracket | TokenKind::LeftParen => {
-                match balanced_group_end(tokens, index) {
-                    Some(close) => index = close + 1,
-                    None => return tokens.len(),
-                }
-            }
+            TokenKind::Less | TokenKind::LeftParen => match balanced_group_end(tokens, index) {
+                Some(close) => index = close + 1,
+                None => return tokens.len(),
+            },
             _ => break,
         }
     }
@@ -379,35 +444,40 @@ fn type_token_len(tokens: &[Token]) -> usize {
     index.min(tokens.len())
 }
 
-/// The span of the bracket that first opens a type nested deeper than
+/// The span of the delimiter that first opens a type nested deeper than
 /// [`NESTING_DEPTH_LIMIT`], or `None` when the type stays within the limit.
-/// Counts `[`/`(` of either kind, mirroring the limit the lexer and expression
-/// parser enforce, so a deep type fails closed before any recursive walk runs.
+/// Counts generic `<` and identity `(` opens, mirroring the limit the lexer and
+/// expression parser enforce, so a deep type fails closed before any recursive
+/// walk runs.
 fn type_nesting_overflow(tokens: &[Token]) -> Option<SourceSpan> {
     let mut depth = 0usize;
     for token in tokens {
         match token.kind {
-            TokenKind::LeftParen | TokenKind::LeftBracket => {
+            TokenKind::Less | TokenKind::LeftParen => {
                 depth += 1;
                 if depth > NESTING_DEPTH_LIMIT {
                     return Some(token.span);
                 }
             }
-            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            TokenKind::Greater | TokenKind::RightParen => depth = depth.saturating_sub(1),
             _ => {}
         }
     }
     None
 }
 
-/// Index of the bracket that closes the `[`/`(` at `open`, matching nested
-/// brackets of either kind. `None` when the group never closes.
+/// Index of the delimiter that closes the group opened at `open`, matching nested
+/// generic `<...>` and identity `(...)` groups. Within a delimited type slice a
+/// nested generic close is always a bare `>` (no `>>` token exists and any
+/// `>=`-glued binding boundary is split off by the statement parser before the
+/// slice is formed), so tracking `<`/`>` and `(`/`)` depth is exact. `None` when
+/// the group never closes.
 fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
     let mut depth = 0usize;
     for (offset, token) in tokens[open..].iter().enumerate() {
         match token.kind {
-            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
-            TokenKind::RightParen | TokenKind::RightBracket => {
+            TokenKind::Less | TokenKind::LeftParen => depth += 1,
+            TokenKind::Greater | TokenKind::RightParen => {
                 depth -= 1;
                 if depth == 0 {
                     return Some(open + offset);
@@ -420,7 +490,7 @@ fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
 }
 /// Classify one validated type production into its structure, mirroring the
 /// language's spelling grammar: a trailing `?` is the optional suffix,
-/// a generic application `Head[..]` recurses on its arguments, `Id(^root)` is a
+/// a generic application `Head<..>` recurses on its arguments, `Id(^root)` is a
 /// saved-store identity, and everything else is a name resolved downstream. As the sole owner of type
 /// grammar, it rejects a structurally malformed identity or a `?` with no base
 /// here rather than deferring a misleading semantic error downstream.
@@ -459,7 +529,7 @@ fn build_type_expr(
     })
 }
 
-/// A generic type application `Head[Arg, ...]`: any identifier head whose `[...]`
+/// A generic type application `Head<Arg, ...>`: any identifier head whose `<...>`
 /// group spans the whole tail, with comma-separated type arguments. The head is
 /// either a reserved toolchain generic (`Option`/`Result`/`List`/`Map`) or a
 /// user-declared generic `struct`/`enum`; the semantic owner resolves it. The
@@ -476,8 +546,8 @@ fn build_apply(
         return Ok(None);
     };
     if tokens.first().map(|token| token.kind) != Some(TokenKind::Identifier)
-        || tokens.get(open).map(|token| token.kind) != Some(TokenKind::LeftBracket)
-        || tokens[last].kind != TokenKind::RightBracket
+        || tokens.get(open).map(|token| token.kind) != Some(TokenKind::Less)
+        || tokens[last].kind != TokenKind::Greater
         || balanced_group_end(tokens, open) != Some(last)
     {
         return Ok(None);

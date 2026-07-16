@@ -39,7 +39,7 @@ fn compound_statements_take_braced_blocks() {
     clean(
         "module app\nfn run(n: int) {\n    if n < 0 {\n        return\n    }\n    \
          while n < 10 {\n        n = n\n    }\n    for i in 1..10 {\n        log(i)\n    }\n    \
-         transaction {\n        ^c(1).v = n\n    }\n}\n",
+         transaction {\n        ^c[1].v = n\n    }\n}\n",
     );
 }
 
@@ -47,8 +47,8 @@ fn compound_statements_take_braced_blocks() {
 fn a_resource_store_and_group_use_braces() {
     let parsed = parse_source(
         "module app\nresource Book {\n    required title: string\n    \
-         notes(noteId: string) {\n        text: string\n    }\n}\n\
-         store ^books(id: int): Book {\n    index byTitle(title)\n}\n",
+         notes[noteId: string] {\n        text: string\n    }\n}\n\
+         store ^books[id: int]: Book {\n    index byTitle[title]\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let book = parsed.file.resource("Book").expect("Book");
@@ -266,7 +266,7 @@ fn a_bare_block_in_statement_position_is_rejected() {
 #[test]
 fn an_if_const_chain_parses_to_the_chain_node() {
     let parsed = parse_source(
-        "module app\nfn run(): int {\n    if const a = ^c(1).v and const b = ^c(2).v and a < b {\n        return 1\n    }\n    return 0\n}\n",
+        "module app\nfn run(): int {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return 1\n    }\n    return 0\n}\n",
     );
     let Statement::IfConstChain {
         bindings,
@@ -286,7 +286,7 @@ fn an_if_const_chain_parses_to_the_chain_node() {
 #[test]
 fn a_let_else_parses_to_the_let_else_node() {
     let parsed = parse_source(
-        "module app\nfn run(): int {\n    const x = ^c(1).v else return -1\n    return x\n}\n",
+        "module app\nfn run(): int {\n    const x = ^c[1].v else return -1\n    return x\n}\n",
     );
     let Statement::LetElse {
         is_var, else_block, ..
