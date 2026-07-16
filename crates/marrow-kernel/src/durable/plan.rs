@@ -57,9 +57,11 @@ impl<'a> Planner<'a> {
     }
 
     /// Every cell key of entry `key`: its marker followed by one leaf key per schema
-    /// field, in schema order. The single enumeration of an entry's footprint,
-    /// consumed by whole-entry read, whole-entry removal, and commit reconciliation,
-    /// so those three never drift about which cells constitute an entry.
+    /// field, in schema order. The [`Self::marker`]/[`Self::field_leaf`] primitive pair
+    /// is the single owner of an entry's cell topology; whole-entry read and commit
+    /// reconciliation enumerate through those primitives directly. This method is the
+    /// erase-path enumeration built on that same pair, and `erase_entry` is its only
+    /// caller, so no enumeration of an entry's footprint drifts from the primitives.
     pub(super) fn entry_cells(&self, key: &KeyScalar) -> Vec<Vec<u8>> {
         let mut cells = Vec::with_capacity(1 + self.schema.fields.len());
         cells.push(self.marker(key));

@@ -2789,8 +2789,7 @@ impl Effects {
                     // inside its region and returns values it captured there; a read
                     // after commit is refused here so the runtime never reaches a
                     // consumed transaction.
-                    let durable_here = is_mutation(instr)
-                        || is_durable_read(instr)
+                    let durable_here = durable_op_class(instr).is_some()
                         || matches!(instr, SealedInstr::Call(target) if !self.atoms_closure[*target as usize].is_empty());
                     if durable_here && state == State::AfterCommit {
                         return Err(reject(
