@@ -585,8 +585,8 @@ struct DurablePlace<'e> {
 
 impl DurablePlace<'_> {
     /// The single root key slot when this place's whole key-path is one pre-evaluated
-    /// `Bound` column — the shape a strict present-entry field set and a place-entry
-    /// presence guard require. `None` for an inline key or a nested (branch) path.
+    /// `Bound` column. `None` for an inline key or a nested (branch) path. Used only by
+    /// the whole-entry root upsert, which establishes root presence for that one slot.
     fn root_bound_slot(&self) -> Option<u16> {
         match self.keys.as_slice() {
             [
@@ -597,6 +597,20 @@ impl DurablePlace<'_> {
             ] => Some(*slot),
             _ => None,
         }
+    }
+
+    /// This place's whole key-path as pre-evaluated slots (root-first) when *every*
+    /// column is a `Bound` slot — the shape a strict present-entry field set and a
+    /// place-entry presence guard require, for a root or a branch place. `None` if any
+    /// column is an inline key expression (the strict form needs pre-evaluated slots).
+    fn bound_key_path(&self) -> Option<Vec<u16>> {
+        self.keys
+            .iter()
+            .map(|column| match column.key {
+                PlaceKey::Bound(slot) => Some(slot),
+                PlaceKey::Expr(_) => None,
+            })
+            .collect()
     }
 }
 
@@ -618,14 +632,11 @@ impl PlaceLocal {
         self.key_slots.len() > 1
     }
 
-    /// The single root key slot when this is a root place (one key column) — the slot a
-    /// strict present-entry field set reads and a presence guard proves. `None` for a
-    /// branch place, whose field operations do not lower.
-    fn root_slot(&self) -> Option<u16> {
-        match self.key_slots.as_slice() {
-            [(slot, _)] => Some(*slot),
-            _ => None,
-        }
+    /// This place's whole key-path as pre-evaluated slots (root-first) — the key-path a
+    /// strict present-entry field set reads and a presence guard proves, for a root or a
+    /// branch place uniformly.
+    fn key_path_slots(&self) -> Vec<u16> {
+        self.key_slots.iter().map(|(slot, _)| *slot).collect()
     }
 
     /// This place's key-path as resolved [`DurKey`] columns reading the pre-evaluated
@@ -1065,12 +1076,14 @@ pub(crate) struct FnLowerer<'a> {
     locals: Vec<Local>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal>,
-    /// The key slots of `place` bindings a presence fact currently dominates: the
+    /// The key-paths of `place` bindings a presence fact currently dominates: the
     /// containing entry is known present here, so a sparse-field set through the
-    /// place lowers to the strict present-entry form. Scoped like `locals` (a fact
-    /// established in a guarded block or after an upsert does not outlive its block);
-    /// the verifier rechecks each strict set independently.
-    present_places: Vec<u16>,
+    /// place lowers to the strict present-entry form. Each fact is the place's whole
+    /// key-path as pre-evaluated slots (root-first), so a root and a branch place are
+    /// tracked uniformly. Scoped like `locals` (a fact established in a guarded block or
+    /// after an upsert does not outlive its block); the verifier rechecks each strict
+    /// set independently.
+    present_places: Vec<Vec<u16>>,
     loops: Vec<LoopCtx>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
@@ -1506,9 +1519,10 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// The diagnostic for a durable operation reaching no executable root: a
-    /// not-yet-executable rejection when a singleton or composite-key root is
-    /// declared (its identity is complete but the kernel cannot serve its key
-    /// arity), or the caller's no-store rejection when no root is declared at all.
+    /// not-yet-executable rejection when a parked root is declared (a singleton
+    /// root, or a root whose resource declares a group or a nominal-typed field —
+    /// its identity is complete but the kernel does not serve its shape), or the
+    /// caller's no-store rejection when no root is declared at all.
     fn no_executable_root_diagnostic(
         &self,
         span: SourceSpan,
@@ -2039,14 +2053,14 @@ impl<'a> FnLowerer<'a> {
         for (cond, block) in branches {
             // `exists(p)` over a named place proves the entry present in the guarded
             // block: a sparse-field set through `p` there lowers to the strict form.
-            let guard_slot = self.exists_guard_slot(cond);
+            let guard_path = self.exists_guard_path(cond);
             if self.lower_condition(cond).is_none() {
                 return Flow::Fallthrough;
             }
             let jif = self.push_jif(cond.span());
             let present_mark = self.present_places.len();
-            if let Some(slot) = guard_slot {
-                self.mark_present(slot);
+            if let Some(path) = guard_path {
+                self.mark_present(path);
             }
             let flow = self.lower_block(block);
             self.present_places.truncate(present_mark);
@@ -2090,14 +2104,14 @@ impl<'a> FnLowerer<'a> {
         // value, so the entry guard is its whole-entry read form.
         // A named-place entry read proves the entry present on the guarded edge: a
         // sparse-field set through the same place in the then-block lowers strict.
-        let mut guard_slot: Option<u16> = None;
+        let mut guard_path: Option<Vec<u16>> = None;
         let optional = if matches!(self.durable_access(value), Some(DurShape::Entry)) {
             let Some(place) = self.resolve_durable(value) else {
                 return Flow::Fallthrough;
             };
-            // Only a root place read proves a strict-set-consumable presence fact; a
-            // branch place read has no field-exact consumer.
-            guard_slot = place.root_bound_slot();
+            // A fully-bound place read (root or branch) proves a strict-set-consumable
+            // presence fact over its whole key-path.
+            guard_path = place.bound_key_path();
             match self.lower_durable_read(place) {
                 Some(ty) => ty,
                 None => return Flow::Fallthrough,
@@ -2147,8 +2161,8 @@ impl<'a> FnLowerer<'a> {
             slot,
         });
         let present_mark = self.present_places.len();
-        if let Some(guard) = guard_slot {
-            self.mark_present(guard);
+        if let Some(path) = guard_path {
+            self.mark_present(path);
         }
         let then_flow = self.lower_block(then_block);
         self.present_places.truncate(present_mark);
@@ -5458,28 +5472,31 @@ impl<'a> FnLowerer<'a> {
         self.places.iter().rev().find(|place| place.name == name)
     }
 
-    /// Record that the entry of the `place` whose key is `key_slot` is known present
-    /// from here (a dominating guard or a completed upsert). Idempotent.
-    fn mark_present(&mut self, key_slot: u16) {
-        if !self.present_places.contains(&key_slot) {
-            self.present_places.push(key_slot);
+    /// Record that the entry of the `place` addressed by `key_path` (its whole key-path
+    /// as pre-evaluated slots, root-first) is known present from here (a dominating guard
+    /// or a completed upsert). Idempotent.
+    fn mark_present(&mut self, key_path: Vec<u16>) {
+        if !self.present_places.contains(&key_path) {
+            self.present_places.push(key_path);
         }
     }
 
-    /// Whether a presence fact currently dominates the `place` whose key is `key_slot`.
-    fn is_present_slot(&self, key_slot: u16) -> bool {
-        self.present_places.contains(&key_slot)
+    /// Whether a presence fact currently dominates the entry addressed by `key_path`.
+    fn is_present_path(&self, key_path: &[u16]) -> bool {
+        self.present_places.iter().any(|path| path == key_path)
     }
 
-    /// Drop any presence fact on `key_slot` (its entry may no longer be present, e.g.
-    /// after `delete p`).
-    fn clear_present(&mut self, key_slot: u16) {
-        self.present_places.retain(|slot| *slot != key_slot);
+    /// Drop the presence fact on the entry addressed by `key_path` (its entry may no
+    /// longer be present, e.g. after `delete p`).
+    fn clear_present_path(&mut self, key_path: &[u16]) {
+        self.present_places.retain(|path| path != key_path);
     }
 
-    /// If `cond` is `exists(p)` over an in-scope named `place`, that place's key slot.
-    /// The guarded (then) block may set the place's sparse fields in the strict form.
-    fn exists_guard_slot(&self, cond: &Expression) -> Option<u16> {
+    /// If `cond` is `exists(p)` over an in-scope named `place`, that place's whole
+    /// key-path slots (root-first). The guarded (then) block may set the place's sparse
+    /// fields in the strict form. Both root and branch places carry a strict-set
+    /// presence consumer — the key-path form addresses either uniformly.
+    fn exists_guard_path(&self, cond: &Expression) -> Option<Vec<u16>> {
         let Expression::Call { callee, args, .. } = cond else {
             return None;
         };
@@ -5501,9 +5518,7 @@ impl<'a> FnLowerer<'a> {
         let [name] = segments.as_slice() else {
             return None;
         };
-        // Only a root place carries a strict-set presence consumer; a branch place's
-        // field operations do not lower, so it establishes no guarded field slot.
-        self.lookup_place(name).and_then(PlaceLocal::root_slot)
+        self.lookup_place(name).map(PlaceLocal::key_path_slots)
     }
 
     /// Whether `name` names an in-scope `place`.
@@ -6510,34 +6525,29 @@ impl<'a> FnLowerer<'a> {
                 {
                     // A root upsert leaves the root entry present on every path from
                     // here, so subsequent sparse sets through the root place lower to the
-                    // strict form. A branch upsert has no such consumer (branch
-                    // field-exact operations do not lower), so it marks nothing.
-                    self.mark_present(slot);
+                    // strict form. A branch upsert (multi-column key-path) has no bound
+                    // single root slot here and marks nothing — a guarded branch set uses
+                    // the `exists`/`if const` presence path instead.
+                    self.mark_present(vec![slot]);
                 }
             }
             DurTarget::Field { site, ty, required } => {
-                // A sparse set through a root `place` a presence fact dominates lowers to
-                // the strict present-entry form: it reads the entry key from the place's
-                // pre-evaluated slot and asserts the entry is present, so it pushes no key
-                // operand. Every other field set keeps the bare form (unchanged:
-                // create-or-reconcile at commit for a sparse set). Field targets are root
-                // fields only — branch field-exact operations do not resolve here.
+                // A sparse set through a `place` a presence fact dominates lowers to the
+                // strict present-entry form: it reads the containing entry's whole
+                // key-path from the place's pre-evaluated slots and asserts the entry is
+                // present, so it pushes no key operand. A root or a branch field is
+                // handled uniformly by the key-path. Every other field set keeps the bare
+                // form (create-or-reconcile at commit for a sparse set).
                 let bare = garg_to_lty(ty);
                 if !required
-                    && let Some(slot) = place.root_bound_slot()
-                    && self.is_present_slot(slot)
+                    && let Some(key_slots) = place.bound_key_path()
+                    && self.is_present_path(&key_slots)
                 {
                     let expected = bare.to_optional();
                     if self.lower_as(value, expected).is_none() {
                         return;
                     }
-                    self.push(
-                        Instr::DurSetSparsePresent {
-                            site,
-                            key_slot: slot,
-                        },
-                        place.span,
-                    );
+                    self.push(Instr::DurSetSparsePresent { site, key_slots }, place.span);
                     return;
                 }
                 if self.emit_key_path(&place.keys, place.span).is_none() {
@@ -6634,17 +6644,17 @@ impl<'a> FnLowerer<'a> {
         let Some(place) = self.resolve_durable(path) else {
             return;
         };
-        let root_slot = place.root_bound_slot();
+        let key_path = place.bound_key_path();
         if self.emit_key_path(&place.keys, place.span).is_none() {
             return;
         }
         match place.target {
             DurTarget::Entry { entry_site, .. } => {
                 self.push(Instr::DurEraseEntry(entry_site), place.span);
-                // The entry's payload is gone; a later sparse set through a root place
+                // The entry's payload is gone; a later sparse set through the same place
                 // must not assume presence.
-                if let Some(slot) = root_slot {
-                    self.clear_present(slot);
+                if let Some(path) = &key_path {
+                    self.clear_present_path(path);
                 }
             }
             DurTarget::Field { site, required, .. } => {

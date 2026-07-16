@@ -2122,7 +2122,7 @@ fn a_guarded_strict_sparse_set_verifies() {
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: 2,
-                key_slot: 0,
+                key_slots: vec![0],
             },
             Instr::TxnCommit,
             Instr::Return,
@@ -2146,7 +2146,7 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: 2,
-                key_slot: 0,
+                key_slots: vec![0],
             },
             Instr::TxnCommit,
             Instr::Return,
@@ -2175,7 +2175,7 @@ fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
             // Slot 0 is proven present by the guard; naming slot 1 is unproven.
             Instr::DurSetSparsePresent {
                 site: 2,
-                key_slot: 1,
+                key_slots: vec![1],
             },
             Instr::TxnCommit,
             Instr::Return,
@@ -2220,7 +2220,7 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
                 site: 2,
-                key_slot: 0,
+                key_slots: vec![0],
             },
             Instr::TxnCommit,
             Instr::Return,
@@ -2354,7 +2354,7 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
         // Claims slot 1's *root* entry is present, relying on the branch create above.
         Instr::DurSetSparsePresent {
             site: label_site,
-            key_slot: 1,
+            key_slots: vec![1],
         },
         Instr::TxnCommit,
         Instr::Return,
@@ -2464,21 +2464,23 @@ fn branch_field_schema() -> (ImageDraft, u16, u16) {
     (draft, root_entry.index(), branch_field.index())
 }
 
-/// The strict present-entry sparse set (`DurSetSparsePresent`) is structurally single-key:
-/// the VM reads one entry key from the named place slot. A branch-field site needs the
-/// two-element key-path `[root_key, branch_key]`, so a forged image that proves the root
-/// entry present with an `exists` guard and then drives the strict set over a branch-field
-/// site — supplying only the root key — must be refused at the function phase. Accepting it
-/// would let the kernel drop the branch hop and mis-address the write to the root node.
+/// A branch-field site's key-path is the two-element `[root_key, branch_key]`. The strict
+/// present-entry sparse set carries one slot per key column, so a forged image that proves
+/// the root entry present with an `exists` guard and then drives the strict set over a
+/// branch-field site supplying only the *root* key (one slot) is a key-path arity mismatch
+/// and must be refused at the function phase. Accepting it would let the kernel drop the
+/// branch hop and mis-address the write. (The slice-A write-safety concern; the correct
+/// two-slot branch strict set is admitted and exercised through the production path.)
 #[test]
-fn a_strict_sparse_set_over_a_branch_field_rejects() {
+fn a_strict_sparse_set_over_a_branch_field_with_a_single_root_key_rejects() {
     let (mut draft, root_entry, branch_field) = branch_field_schema();
     let text = draft.intern_text("x");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("e");
     // Slot 0 is the root key (string param). The guard `LocalGet(0); DurExists(root
     // whole payload); JumpIfFalse` proves slot 0's root entry present on its taken edge;
-    // the strict set then names the branch-field site with that same single slot.
+    // the strict set then names the branch-field site with only that one slot — a
+    // one-element key-path over a two-element branch-field site.
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
@@ -2488,7 +2490,7 @@ fn a_strict_sparse_set_over_a_branch_field_rejects() {
         Instr::SomeWrap,
         Instr::DurSetSparsePresent {
             site: branch_field,
-            key_slot: 0,
+            key_slots: vec![0],
         },
         Instr::TxnCommit,
         Instr::Return,
@@ -2504,6 +2506,46 @@ fn a_strict_sparse_set_over_a_branch_field_rejects() {
     });
     draft.add_export(ExportId::of_local("", "e"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+/// A two-slot branch-field strict set with the correct `[root, branch]` key-path arity and
+/// key types, but with no `exists`/`if const` guard dominating it, passes the arity and
+/// type checks yet is refused at the flow phase: the key-path presence lattice holds no
+/// fact for the branch entry `[0, 1]`. This isolates the presence requirement of the
+/// generalized (branch) strict form from its arity/type gate.
+#[test]
+fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
+    let (mut draft, _root_entry, branch_field) = branch_field_schema();
+    let text = draft.intern_text("x");
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("e");
+    let code = vec![
+        Instr::TxnBegin,
+        Instr::ConstLoad(text.index()),
+        Instr::SomeWrap,
+        // Slots 0,1 are the [root, branch] key params — arity- and type-correct for the
+        // branch-field site — but no guard proves the branch entry present.
+        Instr::DurSetSparsePresent {
+            site: branch_field,
+            key_slots: vec![0, 1],
+        },
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Text),
+        ],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
 #[test]
@@ -3536,8 +3578,9 @@ fn access_members() -> Vec<DurableEnumMemberShape> {
 /// stored at `^widgets(id:int)`, where `Access` is a two-variant payloadless enum.
 /// The `kind` field's durable value shape is a closed enum carrying a sum id and one
 /// member id per variant, so the member tree matches the materialized record's
-/// widened value shape. The root is not executable (it has a widened field), so it
-/// carries no operation sites — a storeless export completes the image.
+/// widened value shape. These fixtures exercise the widened durable member shape at
+/// seal, so the root carries no operation sites and a pure function completes the
+/// storeless image; the widened field's executability is covered elsewhere.
 fn widened_draft(kind_value: DurableValueShape) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let src = draft.intern_string("src/main.mw");

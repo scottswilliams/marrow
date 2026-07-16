@@ -493,9 +493,12 @@ fn encode_code(
                 push_u16(&mut out, *variant);
                 push_u16(&mut out, *field);
             }
-            Instr::DurSetSparsePresent { site, key_slot } => {
+            Instr::DurSetSparsePresent { site, key_slots } => {
                 push_u16(&mut out, *site);
-                push_u16(&mut out, *key_slot);
+                push_u16(&mut out, key_slots.len() as u16);
+                for slot in key_slots {
+                    push_u16(&mut out, *slot);
+                }
             }
             Instr::DurIterateBounded {
                 site,

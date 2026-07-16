@@ -1204,13 +1204,13 @@ fn decode_site(
 
 /// Resolve a decoded site path plus target kind to a [`SealedSite`]. A path that
 /// names no reconstructed node, or a target whose kind disagrees with the resolved
-/// node's kind, is refused. A site over the flat keyed root of plain
-/// scalar fields seals as [`SealedSite::Flat`] with its re-derived root index and (for
-/// a field leaf) top-level field index; every other resolved site — a singleton or
-/// composite-key root, a nested `branch` placement, a group-scoped field, or a
-/// widened-field leaf — seals as [`SealedSite::Parked`], carrying the resolved path
-/// and target for the widened kernel (E01). Both forms re-derive everything from the
-/// reconstructed graph, never trusting the image.
+/// node's kind, is refused. A whole-payload, keyed-branch-entry, or field-leaf site on
+/// a flat-executable keyed root seals as [`SealedSite::Flat`] with its re-derived root
+/// index and (for a field leaf) resolved field index — widened field values, composite
+/// keys, and keyed branches nested to any depth all execute. Every other resolved site
+/// — a singleton (keyless) root, a group-bearing root, or a managed-index read — seals
+/// as [`SealedSite::Parked`], carrying the resolved path and target. Both forms
+/// re-derive everything from the reconstructed graph, never trusting the image.
 fn resolve_site(
     steps: &[SemanticStep],
     target: SemanticTarget,
@@ -1283,11 +1283,12 @@ fn resolve_site(
         });
     }
     // Every node carries its enclosing root's placement as its second step, so the
-    // root index is that placement's position. Only the flat keyed root
-    // of plain scalar fields is kernel-executable; a site over it is a whole-payload
-    // site on the root itself or a field-leaf site on a direct top-level field. Any
-    // other resolved site — a nested placement, a group-scoped or widened field, or a
-    // site on a non-flat root — seals as parked (identity complete, execution deferred).
+    // root index is that placement's position. A flat-executable keyed root — keyed, with
+    // every member a field or a simple keyed branch (no group at any level) — is
+    // kernel-executable: a whole-payload or keyed-branch-entry site, or a field-leaf site
+    // (scalar or widened value), at any branch depth. A site on a non-flat root — a
+    // singleton, or a group at any level — seals as parked (identity complete, execution
+    // deferred).
     let placement = steps[1].id;
     let root_index = roots
         .iter()
@@ -3092,20 +3093,27 @@ fn check_presence_flow(function: &SealedFunction, ctx: &Ctx) -> Result<(), Verif
     {
         return Ok(());
     }
-    let mut entry: Vec<Option<BTreeSet<u16>>> = vec![None; code.len()];
+    let mut entry: Vec<Option<BTreeSet<PresenceFact>>> = vec![None; code.len()];
     entry[0] = Some(BTreeSet::new());
     let mut worklist = vec![0usize];
     while let Some(index) = worklist.pop() {
         let present = entry[index]
             .clone()
             .expect("worklist only enqueues reached instructions");
-        if let SealedInstr::DurSetSparsePresent { key_slot, .. } = &code[index]
-            && !present.contains(key_slot)
-        {
-            return Err(reject(
+        if let SealedInstr::DurSetSparsePresent { site, key_slots } = &code[index] {
+            // The strict set is proven only if a dominating fact names the exact
+            // containing entry — its branch path and its whole key-path — not merely a
+            // matching slot tuple (sibling branches of equal arity share slot tuples).
+            let branch = field_site_branch_path(ctx, *site).ok_or(reject(
                 VerifyPhase::Flow,
-                "a present-entry sparse set is not dominated by a presence fact on its key slot",
-            ));
+                "a present-entry sparse set does not resolve to a field site",
+            ))?;
+            if !present.contains(&(branch, key_slots.clone())) {
+                return Err(reject(
+                    VerifyPhase::Flow,
+                    "a present-entry sparse set is not dominated by a presence fact on its containing entry",
+                ));
+            }
         }
         for (successor, set) in presence_edges(code, ctx, index, &present) {
             if successor >= code.len() {
@@ -3117,7 +3125,8 @@ fn check_presence_flow(function: &SealedFunction, ctx: &Ctx) -> Result<(), Verif
                     worklist.push(successor);
                 }
                 Some(existing) => {
-                    let merged: BTreeSet<u16> = existing.intersection(&set).copied().collect();
+                    let merged: BTreeSet<PresenceFact> =
+                        existing.intersection(&set).cloned().collect();
                     if merged.len() != existing.len() {
                         *existing = merged;
                         worklist.push(successor);
@@ -3129,6 +3138,12 @@ fn check_presence_flow(function: &SealedFunction, ctx: &Ctx) -> Result<(), Verif
     Ok(())
 }
 
+/// A proven-present containing entry in the presence-flow lattice: the entry's branch
+/// path (empty for the root) paired with its whole key-path as pre-evaluated local
+/// slots (root-first). Keying on the branch path — not the slot tuple alone —
+/// distinguishes sibling branches of equal key arity that share slot values.
+type PresenceFact = (Vec<u16>, Vec<u16>);
+
 /// The presence-set carried on each successor edge of the instruction at `index`.
 /// Most instructions pass the set through unchanged; guards split the set (adding the
 /// proven slot only on the present edge); create adds and erase/rebind remove.
@@ -3136,15 +3151,15 @@ fn presence_edges(
     code: &[SealedInstr],
     ctx: &Ctx,
     index: usize,
-    present: &BTreeSet<u16>,
-) -> Vec<(usize, BTreeSet<u16>)> {
+    present: &BTreeSet<PresenceFact>,
+) -> Vec<(usize, BTreeSet<PresenceFact>)> {
     match &code[index] {
-        SealedInstr::JumpIfFalse(target) => match exists_guard_slot(code, ctx, index) {
+        SealedInstr::JumpIfFalse(target) => match exists_guard_fact(code, ctx, index) {
             // The present (true) edge falls through into the guarded block; the false
             // edge (target) is the absent branch.
-            Some(slot) => {
+            Some(fact) => {
                 let mut present_edge = present.clone();
-                present_edge.insert(slot);
+                present_edge.insert(fact);
                 vec![(*target, present.clone()), (index + 1, present_edge)]
             }
             None => flow_successors(code, index)
@@ -3152,10 +3167,10 @@ fn presence_edges(
                 .map(|s| (s, present.clone()))
                 .collect(),
         },
-        SealedInstr::BranchPresent(target) => match read_entry_guard_slot(code, ctx, index) {
-            Some(slot) => {
+        SealedInstr::BranchPresent(target) => match read_entry_guard_fact(code, ctx, index) {
+            Some(fact) => {
                 let mut present_edge = present.clone();
-                present_edge.insert(slot);
+                present_edge.insert(fact);
                 vec![(*target, present.clone()), (index + 1, present_edge)]
             }
             None => flow_successors(code, index)
@@ -3165,31 +3180,34 @@ fn presence_edges(
         },
         SealedInstr::DurCreateEntry(site) => {
             let mut next = present.clone();
-            // Only a root whole-entry create establishes root-entry presence for its key
-            // slot. A branch create (a `BranchEntry` site) leaves the root
-            // descendant-only — its root marker is still absent — so it establishes no
-            // presence fact the strict root-field set could rely on.
+            // Only a single-column root whole-entry create establishes root-entry
+            // presence for its key slot (`entry_write_key_slot` reads one adjacent key).
+            // A branch create (a `BranchEntry` site) leaves the root descendant-only, and
+            // a composite-root create's misread single slot never matches a set's full
+            // key-path — so neither falsely establishes a fact a strict set relies on.
             if is_entry_site(ctx, *site)
                 && let Some(slot) = entry_write_key_slot(code, index)
             {
-                next.insert(slot);
+                next.insert((Vec::new(), vec![slot]));
             }
             vec![(index + 1, next)]
         }
         SealedInstr::DurEraseEntry(site) => {
             let mut next = present.clone();
-            // Symmetrically, only a root whole-entry erase kills a root-entry presence
-            // fact; a branch erase touches no root marker.
-            if is_entry_site(ctx, *site)
-                && let Some(slot) = adjacent_key_slot(code, index)
+            // An entry erase whose whole key-path is pre-evaluated slots kills that exact
+            // entry's presence fact (its branch path and key-path): a root erase kills the
+            // root fact, a branch erase kills only its own branch entry.
+            if let Some((branch, arity)) = entry_site(ctx, *site)
+                && let Some(keys) = read_key_path_before(code, index, arity)
             {
-                next.remove(&slot);
+                next.remove(&(branch, keys));
             }
             vec![(index + 1, next)]
         }
         SealedInstr::LocalSet(slot) => {
             let mut next = present.clone();
-            next.remove(slot);
+            // A rebind of any key-path slot invalidates every fact that reads it.
+            next.retain(|(_, keys)| !keys.contains(slot));
             vec![(index + 1, next)]
         }
         _ => flow_successors(code, index)
@@ -3211,58 +3229,100 @@ fn is_entry_site(ctx: &Ctx, site: u16) -> bool {
     )
 }
 
-/// The key slot of an `exists`-guard at a `JumpIfFalse`: `LocalGet(S); DurExists(entry
-/// site); JumpIfFalse`. `None` when the shape does not match (a non-entry site, a
-/// non-local key, or an unrelated condition establishes no fact).
-fn exists_guard_slot(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<u16> {
-    if index < 2 {
+/// The containing entry a flat entry (whole-payload or branch-entry) `site` names: its
+/// branch path (empty for the root) and its whole key-path column arity. `None` for a
+/// non-entry site (a field leaf or index), which names no entry to prove present.
+fn entry_site(ctx: &Ctx, site: u16) -> Option<(Vec<u16>, usize)> {
+    let SealedSite::Flat { root, target } = ctx.sites.get(site as usize)? else {
+        return None;
+    };
+    let root = ctx.roots.get(*root as usize)?;
+    match target {
+        SealedSiteTarget::WholePayload => Some((Vec::new(), root.keys.len())),
+        SealedSiteTarget::BranchEntry(path) => {
+            let extra = branch_key_columns(root, path).ok()?;
+            Some((path.to_vec(), root.keys.len() + extra.len()))
+        }
+        SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. } => None,
+    }
+}
+
+/// The branch path of a flat field-leaf `site`: empty for a root field, the branch
+/// placement path for a branch field. `None` for a non-field site.
+fn field_site_branch_path(ctx: &Ctx, site: u16) -> Option<Vec<u16>> {
+    let SealedSite::Flat { target, .. } = ctx.sites.get(site as usize)? else {
+        return None;
+    };
+    match target {
+        SealedSiteTarget::FieldLeaf(_) => Some(Vec::new()),
+        SealedSiteTarget::BranchField { branch, .. } => Some(branch.to_vec()),
+        _ => None,
+    }
+}
+
+/// The `arity` key-path slots pushed immediately before position `at` (root-first): each
+/// must be a `LocalGet`, or the guard establishes no fact. `at` is the position of the
+/// consuming `DurExists`/`DurReadEntry`.
+fn read_key_path_before(code: &[SealedInstr], at: usize, arity: usize) -> Option<Vec<u16>> {
+    if arity == 0 || at < arity {
+        return None;
+    }
+    let mut keys = Vec::with_capacity(arity);
+    for offset in 0..arity {
+        let SealedInstr::LocalGet(slot) = &code[at - arity + offset] else {
+            return None;
+        };
+        keys.push(*slot);
+    }
+    Some(keys)
+}
+
+/// The presence fact an `exists`-guard proves at a `JumpIfFalse`: `LocalGet(S0); …;
+/// LocalGet(Sn); DurExists(entry site); JumpIfFalse`. The fact is the entry site's
+/// branch path paired with the whole key-path it reads. `None` when the shape does not
+/// match (a non-entry site, a non-local key, or an unrelated condition).
+fn exists_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<PresenceFact> {
+    if index < 1 {
         return None;
     }
     let SealedInstr::DurExists(site) = &code[index - 1] else {
         return None;
     };
-    if !is_entry_site(ctx, *site) {
-        return None;
-    }
-    let SealedInstr::LocalGet(slot) = &code[index - 2] else {
-        return None;
-    };
-    Some(*slot)
+    let (branch, arity) = entry_site(ctx, *site)?;
+    let keys = read_key_path_before(code, index - 1, arity)?;
+    Some((branch, keys))
 }
 
-/// The key slot of an `if const x = p` guard at a `BranchPresent`: `LocalGet(S);
-/// DurReadEntry(entry site); BranchPresent`.
-fn read_entry_guard_slot(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<u16> {
-    if index < 2 {
+/// The presence fact an `if const x = p` guard proves at a `BranchPresent`:
+/// `LocalGet(S0); …; LocalGet(Sn); DurReadEntry(entry site); BranchPresent`.
+fn read_entry_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<PresenceFact> {
+    if index < 1 {
         return None;
     }
     let SealedInstr::DurReadEntry(site) = &code[index - 1] else {
         return None;
     };
-    if !is_entry_site(ctx, *site) {
-        return None;
-    }
-    let SealedInstr::LocalGet(slot) = &code[index - 2] else {
-        return None;
-    };
-    Some(*slot)
+    let (branch, arity) = entry_site(ctx, *site)?;
+    let keys = read_key_path_before(code, index - 1, arity)?;
+    Some((branch, keys))
 }
 
-/// The key slot of a whole-entry create at `index`: `LocalGet(S); LocalGet(record);
-/// DurCreateEntry`. The key is the operand below the record, so the create's key
-/// comes from the `LocalGet` two back when the record is a single local push.
+/// The key slot of a single-column whole-entry create at `index`: `LocalGet(S);
+/// LocalGet(record); DurCreateEntry`. The key is the operand below the record, so the
+/// create's key comes from the `LocalGet` two back when the record is a single local
+/// push.
 ///
-/// Soundness of shape-adjacent slot identification (this fn and `adjacent_key_slot`):
-/// the caller applies these only to a root `WholePayload` create/erase (it gates each on
-/// `is_entry_site`), so a branch create/erase — whose key-path leaves a *branch* key
-/// adjacent to the op — never reaches here and never establishes root-entry presence.
-/// The durable graph admits a single root (`MAX_ROOTS == 1`, `marrow_image::bounds`), so
-/// for the gated root write every entry key names the same containing entry and a key
-/// slot alone fully discriminates which entry the write establishes or kills — the
-/// adjacent `LocalGet` is that key. When `MAX_ROOTS` widens this no longer holds: two
-/// writes through the same slot value could touch different roots' entries, and the
-/// presence lattice must key on (root, slot) rather than slot alone. Revisit both helpers
-/// for per-root slot discrimination before admitting more than one root.
+/// Soundness of shape-adjacent slot identification: the caller applies this only to a
+/// root `WholePayload` create (it gates on `is_entry_site`), so a branch create — whose
+/// key-path leaves a *branch* key adjacent to the op — never reaches here and never
+/// establishes root-entry presence, and a composite-root create's misread single slot
+/// forms a 1-tuple fact no full-key-path strict set ever matches. The durable graph
+/// admits a single root (`MAX_ROOTS == 1`, `marrow_image::bounds`), so for the gated
+/// single-column root create the key slot fully discriminates the entry it establishes.
+/// When `MAX_ROOTS` widens this no longer holds: two writes through the same slot value
+/// could touch different roots' entries, and the presence lattice must key on
+/// (root, slot). Revisit this helper for per-root slot discrimination before admitting
+/// more than one root.
 fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
     if index < 2 {
         return None;
@@ -3271,18 +3331,6 @@ fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
         return None;
     };
     let SealedInstr::LocalGet(slot) = &code[index - 2] else {
-        return None;
-    };
-    Some(*slot)
-}
-
-/// The key slot of a single-operand durable op at `index` whose key is the adjacent
-/// `LocalGet(S)` (used for entry erase).
-fn adjacent_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
-    if index < 1 {
-        return None;
-    }
-    let SealedInstr::LocalGet(slot) = &code[index - 1] else {
         return None;
     };
     Some(*slot)
@@ -3447,10 +3495,29 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_DUR_READ_ENTRY => SealedInstr::DurReadEntry(operand_u16(&mut reader)?),
             OP_DUR_SET_REQUIRED => SealedInstr::DurSetRequired(operand_u16(&mut reader)?),
             OP_DUR_SET_SPARSE => SealedInstr::DurSetSparse(operand_u16(&mut reader)?),
-            OP_DUR_SET_SPARSE_PRESENT => SealedInstr::DurSetSparsePresent {
-                site: operand_u16(&mut reader)?,
-                key_slot: operand_u16(&mut reader)?,
-            },
+            OP_DUR_SET_SPARSE_PRESENT => {
+                let site = operand_u16(&mut reader)?;
+                let len = operand_u16(&mut reader)? as usize;
+                // Bound the key-path length before allocation: the deepest executable
+                // key-path is one column set per node from the root down, capped by the
+                // per-node column and site-path caps. The exact arity is rechecked
+                // against the site's reconstructed key-path in phase 3.
+                if len == 0
+                    || len
+                        > marrow_image::bounds::MAX_KEY_COLUMNS
+                            * marrow_image::bounds::MAX_SITE_PATH_STEPS
+                {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "set-sparse-present key-path length out of range",
+                    ));
+                }
+                let mut key_slots = Vec::with_capacity(len);
+                for _ in 0..len {
+                    key_slots.push(operand_u16(&mut reader)?);
+                }
+                SealedInstr::DurSetSparsePresent { site, key_slots }
+            }
             OP_DUR_CREATE_ENTRY => SealedInstr::DurCreateEntry(operand_u16(&mut reader)?),
             OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(&mut reader)?),
             OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
@@ -4806,32 +4873,34 @@ fn apply_durable(
             expect(pop(stack)?, value)?;
             pop_key_path(stack, &key_path)?;
         }
-        SealedInstr::DurSetSparsePresent { key_slot, .. } => {
-            // The strict present form reads its single entry key from a place slot and
-            // the opcode carries one `key_slot`, so it structurally addresses the
-            // one-element root key-path — a root field site. A branch-field site needs
-            // the two-element key-path `[root_key, branch_key]`; accepting one here would
-            // let a forged image drive the strict write with only the root key, which the
-            // kernel would mis-address to the root node. `field_of` is deliberately wider
-            // (the stack-based sparse set, read, and erase arms use it for a branch field
-            // with an enforced key-path), so the strict form narrows it back here.
-            if !matches!(site_target, SealedSiteTarget::FieldLeaf(_)) {
+        SealedInstr::DurSetSparsePresent { key_slots, .. } => {
+            // The strict present form reads its containing entry's whole key-path from
+            // place slots rather than the stack. It addresses a stored field leaf — a
+            // root field (`FieldLeaf`) or a branch field (`BranchField`); a whole-payload,
+            // branch-entry, or index site is not a field set and is refused. The field's
+            // containing entry is the root (root field) or the branch (branch field), and
+            // either way the site's full key-path is `columns` (root-first).
+            if !matches!(
+                site_target,
+                SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. }
+            ) {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "set-sparse-present requires a root field site",
+                    "set-sparse-present requires a field-leaf site",
                 ));
             }
-            // The strict form carries exactly one `key_slot`, so it addresses a
-            // single-column root key-path; a composite-key root's guarded set lowers as the
-            // unguarded form instead. A forged strict form over a composite root is refused
-            // here so the kernel is never handed a single column where several are needed.
-            let [root_key] = root.keys.as_slice() else {
+            // The opcode's key-path must address the field's containing entry exactly:
+            // one slot per key column of every node from the root down (the root-first
+            // `columns` sequence). A forged image with too few or too many slots — e.g. a
+            // single root key over a branch-field site, the slice-A write-safety concern —
+            // is refused here so the kernel is never handed a mis-arity key-path.
+            let columns_root_first: Vec<VType> = key_path.iter().rev().cloned().collect();
+            if key_slots.len() != columns_root_first.len() {
                 return Err(reject(
                     VerifyPhase::Function,
-                    "set-sparse-present requires a single-column keyed root",
+                    "set-sparse-present key-path arity does not match its field site",
                 ));
-            };
-            let key_ty = VType::bare_scalar(*root_key);
+            }
             let field = field_of(ctx, site_target, root)?;
             if field.required {
                 return Err(reject(
@@ -4839,24 +4908,26 @@ fn apply_durable(
                     "set-sparse-present targets a required field",
                 ));
             }
-            // The strict form reads its entry key from the place's pre-evaluated
-            // local slot rather than the stack, so only the value is popped. The
-            // slot must be definitely initialized with the root's key type.
+            // The strict form reads its key-path from the place's pre-evaluated local
+            // slots rather than the stack, so only the value is popped. Each slot must be
+            // definitely initialized with its column's key type, root-first.
             let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, value)?;
-            match frame.locals.get(*key_slot as usize) {
-                Some(Some(slot_ty)) if *slot_ty == key_ty => {}
-                Some(Some(_)) => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "set-sparse-present key slot has the wrong type",
-                    ));
-                }
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "set-sparse-present key slot is uninitialized or out of range",
-                    ));
+            for (slot, column_ty) in key_slots.iter().zip(&columns_root_first) {
+                match frame.locals.get(*slot as usize) {
+                    Some(Some(slot_ty)) if slot_ty == column_ty => {}
+                    Some(Some(_)) => {
+                        return Err(reject(
+                            VerifyPhase::Function,
+                            "set-sparse-present key slot has the wrong type",
+                        ));
+                    }
+                    _ => {
+                        return Err(reject(
+                            VerifyPhase::Function,
+                            "set-sparse-present key slot is uninitialized or out of range",
+                        ));
+                    }
                 }
             }
         }

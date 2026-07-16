@@ -189,14 +189,15 @@ pub enum SealedInstr {
     /// `K, T? →`: set (present) or clear (vacant) the sparse field site `_0`.
     DurSetSparse(u16),
     /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
-    /// entry key from local slot `key_slot` and asserting the containing entry is
-    /// present. The strict form: emitted only for a sparse set through a `place` a
-    /// presence fact dominates, so the verifier's place-slot presence lattice proves
-    /// `key_slot`'s entry is present on every path here, and the kernel faults
-    /// `run.corruption` if the marker is absent (defense in depth).
+    /// containing entry's key-path from local slots `key_slots` (root-first) and
+    /// asserting that entry is present. The strict form: emitted only for a sparse set
+    /// through a `place` a presence fact dominates, so the verifier's place-slot
+    /// presence lattice proves the `key_slots` tuple's entry is present on every path
+    /// here, and the kernel faults `run.corruption` if the marker is absent (defense in
+    /// depth).
     DurSetSparsePresent {
         site: u16,
-        key_slot: u16,
+        key_slots: Vec<u16>,
     },
     /// `K, Rec →`: create the entry at site `_0` (algebra `create`).
     DurCreateEntry(u16),
@@ -285,14 +286,17 @@ pub enum SealedSiteTarget {
 /// image's site path against its own derived node set and re-deriving the executable
 /// coordinates — it trusts no compiler-side site summary.
 ///
-/// A site is [`SealedSite::Flat`] exactly when the single-root kernel can execute
-/// over it: a whole-payload or top-level-field site on the flat keyed
-/// root of plain scalar fields. Every other resolved site — a singleton or
-/// composite-key root, a nested `branch` placement, a group-scoped field, or a
-/// widened-field leaf — is [`SealedSite::Parked`]: its identity is complete and its
-/// path and target agree with the reconstructed graph, but physical execution is
-/// parked until the path kernel widens (E01). A durable opcode may reference only a
-/// `Flat` site; a reference to a `Parked` site is refused in phase 3.
+/// A site is [`SealedSite::Flat`] exactly when the kernel can execute over it: a
+/// whole-payload, keyed-branch-entry, or field-leaf site on a flat-executable keyed
+/// root — a root with one or more key columns whose members are all fields or simple
+/// keyed branches (no group at any level). Widened (record/enum) field values,
+/// composite key tuples, and keyed branches nested to any depth all execute. Every
+/// other resolved site — a singleton (keyless) root, a group-bearing root (a group at
+/// any level, or a branch enclosing one), or a managed-index read — is
+/// [`SealedSite::Parked`]: its identity is complete and its path and target agree with
+/// the reconstructed graph, but physical execution stays parked (index traversal lands
+/// at E05; groups at their lane). A durable opcode may reference only a `Flat` site; a
+/// reference to a `Parked` site is refused in phase 3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedSite {
     /// Executable on the flat keyed root: the root index it resolved to

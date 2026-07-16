@@ -12,7 +12,7 @@
 //! attach -> VM — against one persistent ephemeral attachment, so a committed branch
 //! or root write is observable by a later read invocation.
 
-use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_verify::{SealedExport, SealedInstr, VerifiedImage};
 use marrow_vm::{DurableRun, Ephemeral, RuntimeFault, Value, mint_ephemeral, run_export};
 
 // application, product, the top-level `title` field, the root placement and its key,
@@ -169,6 +169,50 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
         .iter()
         .find(|export| image.function(export.function()).name() == name)
         .expect("export present")
+}
+
+fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr] {
+    image
+        .functions()
+        .iter()
+        .find(|function| function.name() == name)
+        .expect("function present")
+        .instrs()
+}
+
+/// A sparse-field set through a two-key branch `place` dominated by an `exists(p)`
+/// guard lowers to the strict present-entry form (`DurSetSparsePresent`) carrying the
+/// place's whole `[root, branch]` key-path, not the bare create-or-reconcile
+/// `DurSetSparse`. This is the key-path generalization of the strict guarded set
+/// (adjudication 4): a guarded branch-place set no longer falls back to the unguarded
+/// form.
+#[test]
+fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
+    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let instrs = function_instrs(&image, "setPinnedViaPlace");
+    let strict: Vec<&[u16]> = instrs
+        .iter()
+        .filter_map(|instr| match instr {
+            SealedInstr::DurSetSparsePresent { key_slots, .. } => Some(key_slots.as_slice()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        strict.len(),
+        1,
+        "the guarded branch-place set lowers strict"
+    );
+    assert_eq!(
+        strict[0].len(),
+        2,
+        "the strict branch set carries the whole `[root, branch]` key-path",
+    );
+    assert!(
+        !instrs
+            .iter()
+            .any(|instr| matches!(instr, SealedInstr::DurSetSparse(_))),
+        "no bare create-or-reconcile set remains",
+    );
 }
 
 fn run(

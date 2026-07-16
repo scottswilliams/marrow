@@ -287,15 +287,18 @@ pub enum Instr {
     DurSetRequired(u16),
     DurSetSparse(u16),
     /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
-    /// entry key from local slot `key_slot` and asserting the containing entry is
-    /// present. The strict form of a sparse-field set: emitted only for a set through
-    /// a `place` binding a presence fact dominates, so the key is the place's one
-    /// pre-evaluated slot rather than a stack operand. The compiler proves the entry
-    /// present; the runtime faults `run.corruption` if the marker is absent (defense
-    /// in depth over the trust boundary).
+    /// containing entry's key-path from local slots `key_slots` (root-first, one slot
+    /// per key column of every node from the root down to the field's containing entry)
+    /// and asserting that entry is present. The strict form of a sparse-field set:
+    /// emitted only for a set through a `place` binding a presence fact dominates, so
+    /// the key-path is the place's pre-evaluated slots rather than a stack operand. The
+    /// key-path generalizes the root-only single slot to a branch or composite-keyed
+    /// containing entry. The compiler proves the entry present; the runtime faults
+    /// `run.corruption` if the marker is absent (defense in depth over the trust
+    /// boundary).
     DurSetSparsePresent {
         site: u16,
-        key_slot: u16,
+        key_slots: Vec<u16>,
     },
     DurCreateEntry(u16),
     DurReplaceEntry(u16),
@@ -504,9 +507,10 @@ impl Instr {
             // Two big-endian `i64` interval bounds.
             Instr::RangeGuard { .. } => 16,
             // Two big-endian `u16` operands.
-            Instr::EnumConstruct { .. }
-            | Instr::EnumPayloadGet { .. }
-            | Instr::DurSetSparsePresent { .. } => 4,
+            Instr::EnumConstruct { .. } | Instr::EnumPayloadGet { .. } => 4,
+            // A big-endian `u16` site, a big-endian `u16` key-path length, then one
+            // big-endian `u16` per key-path slot.
+            Instr::DurSetSparsePresent { key_slots, .. } => 4 + 2 * key_slots.len(),
             // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
             // `from`-present flag, and a big-endian `u16` frozen-`List[K]` COLLTYPES
             // index.
