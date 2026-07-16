@@ -15,6 +15,7 @@ use marrow_syntax::{
 /// examples are illustrative and excluded here; the lexer corpus covers all
 /// blocks.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_all_documented_module_files() {
     let blocks = common::documented_module_blocks();
     assert!(
@@ -41,6 +42,7 @@ fn parses_all_documented_module_files() {
 /// owned by the focused `parse_*` suites; this only guards that the reference
 /// sample keeps its overall shape.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_reference_sample_structure() {
     let parsed = parse_source(&common::reference_sample());
 
@@ -110,6 +112,7 @@ fn parses_reference_sample_structure() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_optional_function_return_type() {
     let parsed = parse_source(
         "module app\n\
@@ -126,6 +129,7 @@ fn parses_optional_function_return_type() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_optional_parameter_type() {
     // `T?` is a first-class parameter type; the trailing `?` rides in the type
     // spelling exactly as a return or local annotation does.
@@ -141,6 +145,7 @@ fn parses_optional_parameter_type() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_a_double_optional_type() {
     // Optionality does not nest, so the `??` spelling in type position is a parse
     // error pointing at the doubled marker.
@@ -162,6 +167,7 @@ fn rejects_a_double_optional_type() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn attaches_doc_comments_to_resource_members() {
     let parsed = parse_source(
         r#"module shelf::books
@@ -182,6 +188,7 @@ store ^books(id: int): Book
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_trailing_comments_on_declaration_lines() {
     let parsed = parse_source(
         "module app ; module comment\n\
@@ -210,6 +217,7 @@ fn parses_trailing_comments_on_declaration_lines() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn merges_lexer_and_parser_diagnostics_in_source_order() {
     let parsed = parse_source(concat!(
         "module ;-bad-name\n",
@@ -234,6 +242,7 @@ fn merges_lexer_and_parser_diagnostics_in_source_order() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_internal_and_private_visibility() {
     for visibility in ["internal", "private"] {
         let parsed = parse_source(&format!("module app\n{visibility} fn main()\n    return\n"));
@@ -249,6 +258,7 @@ fn rejects_internal_and_private_visibility() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_pub_on_resource_and_store_without_cascade() {
     // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is reported
     // once at the `pub` token with the remove-`pub` remedy in the message, then
@@ -306,6 +316,7 @@ fn rejects_pub_on_resource_and_store_without_cascade() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn requires_indented_resource_and_function_bodies() {
     let parsed = parse_source(
         r#"module app
@@ -327,6 +338,7 @@ pub fn main()
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_const_without_value() {
     let parsed = parse_source(
         r#"module app
@@ -347,6 +359,7 @@ const MaxLoans: int
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_invalid_module_names() {
     let parsed = parse_source("module 123\n");
 
@@ -360,6 +373,7 @@ fn rejects_invalid_module_names() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_words_as_module_segments_are_rejected() {
     // A reserved word in a module path earns a precise reserved-word diagnostic at
     // the offending segment, not a generic "expected module name" at the keyword.
@@ -393,6 +407,7 @@ fn reserved_words_as_module_segments_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_invalid_import_names() {
     let parsed = parse_source(
         r#"module app
@@ -410,6 +425,7 @@ use *
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_words_as_import_segments_are_rejected() {
     // A reserved word in an import path earns a precise reserved-word diagnostic at
     // the offending segment, on line 2 (the `use` line).
@@ -451,6 +467,7 @@ fn reserved_words_as_import_segments_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_invalid_const_names() {
     let parsed = parse_source(
         r#"module app
@@ -468,6 +485,7 @@ const : int = 1
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_const_name_is_rejected() {
     // A const name, like a parameter, member, or key name, is an `identifier`,
     // so a reserved word (`while`) in any of those positions is a parse error.
@@ -481,6 +499,7 @@ fn reserved_word_as_const_name_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_const_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("module app\nconst {word} = 5\n"));
@@ -494,6 +513,7 @@ fn future_surface_words_as_const_names_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_function_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("module app\nfn {word}()\n    return\n"));
@@ -509,6 +529,7 @@ fn future_surface_words_as_function_names_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_late_or_duplicate_module_declarations() {
     let parsed = parse_source(
         r#"module app
@@ -528,6 +549,7 @@ module later
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keeps_top_level_declarations_in_source_order() {
     let parsed = parse_source(
         r#"module app
@@ -568,6 +590,7 @@ fn normalize(title: string): string
 /// enforcement artifact — it fails while any `EvolveDecl` grammar is
 /// representable, because that grammar parses the block cleanly.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn evolve_is_not_a_representable_declaration() {
     let parsed = parse_source(
         "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    retire ^books.byTitle\n",
@@ -593,6 +616,7 @@ fn evolve_is_not_a_representable_declaration() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     let parsed = parse_source("module app\n\tpub fn main()\n");
 

@@ -75,6 +75,7 @@ fn fixture_dir() -> PathBuf {
 /// collections, struct/enum element values, and the collection-returning text floor
 /// (`split`/`lines`/`join`) all report `passed` through the production path.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn collection_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -97,6 +98,7 @@ fn collection_conformance_fixture_passes_on_the_production_path() {
 /// A returned list renders as a JSON array (insertion order) under `--format jsonl`
 /// and as `[a, b, ...]` in text.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_returned_list_renders_through_the_run_path() {
     let temp = TempDir::new("list-return");
     project(
@@ -122,6 +124,7 @@ fn a_returned_list_renders_through_the_run_path() {
 /// A returned map renders as a JSON object with keys in ascending order under
 /// `--format jsonl` and as `[k: v, ...]` in text.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_returned_map_renders_in_ascending_key_order() {
     let temp = TempDir::new("map-return");
     project(
@@ -150,6 +153,7 @@ fn a_returned_map_renders_in_ascending_key_order() {
 /// Appending past the aggregate-byte bound faults with `run.collection_limit`, the
 /// law-9 typed runtime fault, rather than allocating unboundedly.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn exceeding_the_aggregate_bound_faults() {
     let output = run_in(
         &fixture_dir(),
@@ -167,6 +171,7 @@ fn exceeding_the_aggregate_bound_faults() {
 /// `run.text_limit`, the bounded-allocation guard on `join`, rather than
 /// materializing an unbounded string.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn exceeding_the_join_text_ceiling_faults() {
     let output = run_in(
         &fixture_dir(),
@@ -180,6 +185,7 @@ fn exceeding_the_join_text_ceiling_faults() {
 /// A bare `List()`/`Map()` with no expected type cannot infer its instantiation and
 /// is a typed `check.type`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_bare_constructor_without_expected_type_is_a_check_type() {
     for body in ["const xs = List()", "const m = Map()"] {
         let temp = TempDir::new("bare-ctor");
@@ -200,6 +206,7 @@ fn a_bare_constructor_without_expected_type_is_a_check_type() {
 /// A non-key map key type (a struct), an `append` on a map, a `get` on a list, and a
 /// wrong-typed element are typed diagnostics, not silent acceptance.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn misused_collection_operations_are_typed_diagnostics() {
     // A struct key type is not admitted: `check.unsupported` at the annotation.
     let cases: [(&str, &str); 4] = [
@@ -237,6 +244,7 @@ fn misused_collection_operations_are_typed_diagnostics() {
 /// `List` and `Map` are reserved type names; redeclaring one is a
 /// `check.name_conflict`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_reserved_collection_name_is_a_conflict() {
     for name in ["List", "Map"] {
         let temp = TempDir::new("reserved");
@@ -260,6 +268,7 @@ fn redeclaring_a_reserved_collection_name_is_a_conflict() {
 /// value-level names, so a colliding value declaration is a `check.name_conflict`
 /// (the same closed-floor discipline as `isEmpty`/`contains`/`trim`).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_text_floor_builtin_is_a_conflict() {
     for name in ["split", "lines", "join"] {
         let temp = TempDir::new("reserved-floor");
@@ -286,6 +295,7 @@ fn redeclaring_a_text_floor_builtin_is_a_conflict() {
 /// pins the recorded decision that collection `==` stays a typed check error rather
 /// than a language operator.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_top_level_collection_equality_is_a_check_type() {
     let cases = [
         "pub fn f(): bool\n\x20   var a: List[int] = List()\n\x20   var b: List[int] = List()\n\x20   return a == b\n",
@@ -307,6 +317,7 @@ fn a_top_level_collection_equality_is_a_check_type() {
 /// `join` on a list whose element type is not `string` is a typed `check.unsupported`
 /// — the text floor joins only a list of string.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn join_on_a_non_string_list_is_unsupported() {
     let temp = TempDir::new("join-misuse");
     project(

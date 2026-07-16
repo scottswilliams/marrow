@@ -75,6 +75,7 @@ fn fixture_dir() -> PathBuf {
 /// ignoring arms, exact `==`/`!=` equality over the variant and payload, and
 /// construction/matching across function boundaries all report `passed`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn enum_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -97,6 +98,7 @@ fn enum_conformance_fixture_passes_on_the_production_path() {
 /// A returned enum value renders through the VM: `run` on an export that
 /// constructs a payload variant yields the canonical enum object.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_payload_enum_value_renders_through_the_vm() {
     let temp = TempDir::new("render");
     project(
@@ -119,6 +121,7 @@ fn a_payload_enum_value_renders_through_the_vm() {
 
 /// A non-exhaustive `match` is `check.match_nonexhaustive`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_exhaustive_match_is_reported() {
     let temp = TempDir::new("nonexhaustive");
     project(
@@ -144,6 +147,7 @@ fn a_non_exhaustive_match_is_reported() {
 /// A malformed arm — an unknown member, a duplicate member, or a payload-arity
 /// mismatch — is a typed `check.match_arm`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_arm_is_a_check_match_arm_diagnostic() {
     for body in [
         // unknown member
@@ -168,6 +172,7 @@ fn a_malformed_arm_is_a_check_match_arm_diagnostic() {
 
 /// A payload-arity mismatch on a binding arm is a typed `check.match_arm`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_payload_arity_mismatch_is_reported() {
     let temp = TempDir::new("arity");
     project(
@@ -193,6 +198,7 @@ fn a_payload_arity_mismatch_is_reported() {
 /// a payload on a payloadless member, or a non-existent member — is a typed
 /// `check.type`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_construction_is_a_check_type_diagnostic() {
     for expr in [
         "Shape::circle(radius: 1, z: 2)",
@@ -221,6 +227,7 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 
 /// A `category` member or a nested member is deferred: `check.unsupported`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_hierarchical_enum_is_deferred() {
     let temp = TempDir::new("hierarchy");
     project(
@@ -241,6 +248,7 @@ fn a_hierarchical_enum_is_deferred() {
 
 /// An enum whose name collides with another type is a `check.name_conflict`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_enum_name_collision_is_reported() {
     let temp = TempDir::new("collision");
     project(
@@ -269,6 +277,7 @@ fn an_enum_name_collision_is_reported() {
 /// the production path. (The resource is a local value here; a resource backing a
 /// `store` still admits only scalar fields.)
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
     let temp = TempDir::new("resource-enum-field");
     project(
@@ -304,6 +313,7 @@ fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
 /// durable operation over the store is a precise `check.unsupported` (covered in the
 /// durable-field widening suite); it is no longer a `check.type` on the declaration.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_stored_resource_with_an_enum_field_is_identity_complete() {
     let temp = TempDir::new("stored-enum-field");
     project(

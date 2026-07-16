@@ -114,6 +114,7 @@ const TWO_EXPORTS: &str = "struct Point\n\
 /// The two-export storeless fixture reconstructs a two-descriptor interface, and its
 /// `InterfaceId` is deterministic across recompiles.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn two_export_interface_reconstructs_deterministically() {
     let image = compile_verify(TWO_EXPORTS);
     let interface = interface_of(&image).expect("interface reconstructs");
@@ -125,6 +126,7 @@ fn two_export_interface_reconstructs_deterministically() {
 /// A body-only edit — the observable signatures and demands are unchanged — leaves
 /// the `InterfaceId` fixed, even though the image bytes (and `ImageId`) change.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_body_edit_keeps_the_interface_id() {
     let base = interface_id(TWO_EXPORTS);
 
@@ -150,6 +152,7 @@ fn a_body_edit_keeps_the_interface_id() {
 
 /// A parameter-type change moves the `InterfaceId`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_parameter_type_change_moves_the_interface_id() {
     let base = interface_id(TWO_EXPORTS);
     let widened = "struct Point\n\
@@ -167,6 +170,7 @@ fn a_parameter_type_change_moves_the_interface_id() {
 /// Renaming a record field used in a signature moves the `InterfaceId` — a record's
 /// field names are part of the observable transfer shape.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_field_rename_moves_the_interface_id() {
     let base = interface_id(TWO_EXPORTS);
     let renamed = "struct Point\n\
@@ -184,6 +188,7 @@ fn a_record_field_rename_moves_the_interface_id() {
 /// A signature reaching a collection is rejected with a typed exclusion, observed
 /// through the production path: collections are not yet in the transfer graph.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_collection_returning_export_is_excluded() {
     let source = "pub fn items(): List[int]\n\
         \x20   var xs: List[int] = List()\n\

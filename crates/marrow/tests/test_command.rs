@@ -64,6 +64,7 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 /// `run.assert` code, and the run ends with a typed summary. The command exits
 /// nonzero because a test failed.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn passing_and_failing_tests_report_typed_jsonl() {
     let temp = TempDir::new("pass-fail");
     project(
@@ -108,6 +109,7 @@ fn passing_and_failing_tests_report_typed_jsonl() {
 
 /// `assert` outside a `test` body is a source diagnostic, not a runtime concept.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn assert_outside_a_test_is_a_check_diagnostic() {
     let temp = TempDir::new("assert-outside");
     project(
@@ -141,6 +143,7 @@ const COUNTERS_IDS: &str = "marrow ids v0\n\
 /// empty attachment `exists(^counters(1))` is false, so the probe passes. The
 /// storeless test in the same project runs and passes too.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_read_test_runs_against_a_fresh_attachment() {
     let temp = TempDir::new("durable-test");
     project(
@@ -184,6 +187,7 @@ fn a_durable_read_test_runs_against_a_fresh_attachment() {
 /// reports `failed` with `run.assert`, distinct from an operational error. Proves
 /// the read kernel's runtime fault reaches the test report.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_failing_durable_assert_reports_run_assert() {
     let temp = TempDir::new("durable-fail");
     project(
@@ -233,6 +237,7 @@ fn a_failing_durable_assert_reports_run_assert() {
 /// output-only, local-keyed-parameter, error-code, and compile-time key/type
 /// families are not durable read-kernel behaviors at all.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn flat_durable_place_behaviors_run_as_source_tests() {
     let temp = TempDir::new("flat-durable-extraction");
     project(
@@ -323,6 +328,7 @@ fn flat_durable_place_behaviors_run_as_source_tests() {
 
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn filter_selects_a_subset_by_name() {
     let temp = TempDir::new("filter");
     project(

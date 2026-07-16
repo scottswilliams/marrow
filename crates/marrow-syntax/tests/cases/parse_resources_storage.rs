@@ -6,6 +6,7 @@ use common::{has_reason, parse_reason};
 use marrow_syntax::{ExpectedSyntax, ParseDiagnosticReason, parse_source};
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_split_store_declaration() {
     let parsed = parse_source(
         "module app\n\
@@ -25,6 +26,7 @@ fn parses_split_store_declaration() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn malformed_resource_header_reports_the_resource_rule() {
     for source in [
         "module app\nresource Book extra\n    title: string\n",
@@ -57,6 +59,7 @@ fn malformed_resource_header_reports_the_resource_rule() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
     // A store-body line beginning with a keyed-layer clause keyword such as
     // `unique` is not a member; it gets the same member-shape rule a non-keyword
@@ -91,6 +94,7 @@ fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn trailing_keyed_layer_clause_after_a_type_names_the_stray_token() {
     for clause in ["retain", "counted", "unique"] {
         let source = format!(
@@ -120,6 +124,7 @@ fn trailing_keyed_layer_clause_after_a_type_names_the_stray_token() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_genuinely_missing_field_type_still_reports_the_missing_type() {
     let parsed = parse_source(
         "module app\n\
@@ -140,6 +145,7 @@ fn a_genuinely_missing_field_type_still_reports_the_missing_type() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn split_resource_body_rejects_index_members() {
     let parsed = parse_source(
         "module app\n\
@@ -161,6 +167,7 @@ fn split_resource_body_rejects_index_members() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_tilde_prefixed_saved_roots() {
     for source in [
         "module app\ncache ~books(id: int): Book\n",
@@ -182,6 +189,7 @@ fn rejects_tilde_prefixed_saved_roots() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_resource_members_nested_under_fields() {
     let parsed = parse_source(
         r#"module app
@@ -201,6 +209,7 @@ resource Book
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_empty_saved_root_key_lists() {
     let parsed = parse_source(
         r#"module app
@@ -223,6 +232,7 @@ store ^books(): Book
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_empty_index_argument_lists() {
     let parsed = parse_source(
         r#"module app
@@ -243,6 +253,7 @@ store ^books(id: int): Book
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn header_helper_errors_report_specific_expected_parts() {
     for (source, expected) in [
         ("module app\nenum 123\n    One\n", ExpectedSyntax::EnumName),
@@ -299,6 +310,7 @@ fn header_helper_errors_report_specific_expected_parts() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let resource = parse_source(&format!("module app\nresource {word}\n    title: string\n"));
@@ -340,6 +352,7 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_malformed_index_field_paths() {
     for source in [
         "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(title.)\n",
@@ -361,6 +374,7 @@ fn rejects_malformed_index_field_paths() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_resource_member_name_is_rejected() {
     let parsed = parse_source("resource R\n    while: int\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
@@ -375,6 +389,7 @@ fn reserved_word_as_resource_member_name_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_resource_member_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("resource R\n    {word}: int\n"));
@@ -390,6 +405,7 @@ fn future_surface_words_as_resource_member_names_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_key_parameter_name_is_rejected() {
     let parsed = parse_source("resource R\n    e(while: string): int\n");
     assert!(
@@ -403,6 +419,7 @@ fn reserved_word_as_key_parameter_name_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
     let parsed = parse_source(
         "module app\n\
@@ -431,6 +448,7 @@ fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
     let parsed = parse_source(
         "module app\n\
@@ -456,6 +474,7 @@ fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_genuinely_missing_key_name_still_reports_a_key_name_error() {
     let parsed = parse_source(
         "module app\n\

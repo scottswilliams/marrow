@@ -31,19 +31,10 @@ pub(super) fn first_line_end(source: &str, start: usize) -> usize {
         .unwrap_or(tail.len());
     start + break_at
 }
-/// Strip the `;;` doc-comment marker and surrounding whitespace, matching
+/// Strip the `///` doc-comment marker and surrounding whitespace, matching
 /// `Line::doc_comment`.
 pub(super) fn doc_comment_text(text: &str) -> String {
-    text.strip_prefix(";;").unwrap_or(text).trim().to_string()
-}
-/// The end byte of the physical line that ends just before `pos`, excluding that
-/// line's trailing `\r`/`\n`. Used to bound a function body at the end of its
-/// last line, the line just above the line that closed the block.
-pub(super) fn line_text_end_before(source: &str, pos: usize) -> usize {
-    let before = &source[..pos.min(source.len())];
-    let before = before.strip_suffix('\n').unwrap_or(before);
-    let before = before.strip_suffix('\r').unwrap_or(before);
-    before.len()
+    text.strip_prefix("///").unwrap_or(text).trim().to_string()
 }
 fn qualified_name_text(source: &str, tokens: &[Token]) -> Option<String> {
     let first = tokens.first()?;
@@ -598,16 +589,17 @@ pub(super) fn line_span_or(tokens: &[Token], empty: SourceSpan) -> SourceSpan {
         _ => empty,
     }
 }
-/// Index of the layout token (`NEWLINE`/`INDENT`/`DEDENT`/`EOF`) that ends the
-/// line starting at `pos`, or `tokens.len()` if none follows. A header line
-/// continues across newlines suppressed inside open delimiters, so this stops at
-/// the first structural token rather than any newline.
+/// Index of the token that ends the line or header starting at `pos`
+/// (`NEWLINE`/`{`/`}`/`EOF`), or `tokens.len()` if none follows. A header line
+/// continues across newlines suppressed inside open delimiters and after a
+/// trailing continuation token, so this stops at the first block delimiter or
+/// unsuppressed newline rather than any newline.
 pub(super) fn line_end(tokens: &[Token], pos: usize) -> usize {
     let mut index = pos;
     while index < tokens.len()
         && !matches!(
             tokens[index].kind,
-            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
+            TokenKind::Newline | TokenKind::LeftBrace | TokenKind::RightBrace | TokenKind::Eof
         )
     {
         index += 1;
@@ -618,7 +610,7 @@ pub(super) fn is_line_comment(kind: TokenKind) -> bool {
     matches!(kind, TokenKind::Comment | TokenKind::DocComment)
 }
 /// Build a `Comment` from a line comment token, stripping the leading marker and
-/// surrounding whitespace so the formatter renders a canonical `; text` line.
+/// surrounding whitespace so the formatter renders a canonical `// text` line.
 pub(super) fn comment_from_token(
     source: &str,
     token: Token,
@@ -627,7 +619,7 @@ pub(super) fn comment_from_token(
 ) -> Comment {
     let text = token
         .text(source)
-        .trim_start_matches(';')
+        .trim_start_matches('/')
         .trim()
         .to_string();
     Comment {

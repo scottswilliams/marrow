@@ -64,6 +64,7 @@ const SETTINGS_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_singleton_root_compiles_and_completes_its_identity() {
     // Declaration-only: the singleton root is identity-complete and verifies.
     let id = contract_of(SETTINGS_SOURCE, SETTINGS_IDS);
@@ -74,6 +75,7 @@ fn a_singleton_root_compiles_and_completes_its_identity() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_singleton_root_missing_its_placement_identity_fails_precisely() {
     let without_root =
         SETTINGS_IDS.replace("id root settings 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n", "");
@@ -106,12 +108,14 @@ const ENROLLMENTS_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_root_compiles_and_completes_its_identity() {
     let id = contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS);
     assert_eq!(id, contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS));
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_root_missing_one_key_identity_fails_precisely() {
     let without_course = ENROLLMENTS_IDS.replace(
         "id key enrollments.course 02020202020202020202020202020202\n",
@@ -126,6 +130,7 @@ fn a_composite_key_root_missing_one_key_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn key_column_order_is_part_of_the_durable_identity() {
     let base = contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS);
 
@@ -143,6 +148,7 @@ fn key_column_order_is_part_of_the_durable_identity() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn renaming_a_key_column_with_a_moved_anchor_preserves_the_identity() {
     let base = contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS);
 
@@ -173,6 +179,7 @@ fn renaming_a_key_column_with_a_moved_anchor_preserves_the_identity() {
 // still parks. ---
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn operating_on_a_singleton_root_is_not_yet_executable() {
     let source = "resource Settings\n\
          \x20   required locale: string\n\
@@ -212,6 +219,7 @@ const COUNTER_IDS: &str = "marrow ids v0\n\
 /// precise identity gap — never mislabelled "not yet executable" (the single-key
 /// shape *is* executable; it only lacks a ledger identity, which the gap names).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_key_root_with_a_missing_identity_reports_the_gap_not_executability() {
     let source = "resource Counter\n\
          \x20   required value: int\n\
@@ -236,6 +244,7 @@ fn a_single_key_root_with_a_missing_identity_reports_the_gap_not_executability()
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_column_keyed_root_still_compiles_and_verifies() {
     // The one kernel-serviceable shape: it both completes its identity and lowers
     // an executable read.

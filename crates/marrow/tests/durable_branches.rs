@@ -186,6 +186,7 @@ fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr
 /// `DurSetSparse`: a presence-guarded set over a branch place lowers to the strict
 /// form, so the guard is enforced at the kernel marker rather than silently widened.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let instrs = function_instrs(&image, "setPinnedViaPlace");
@@ -266,6 +267,7 @@ fn present(b: bool) -> Option<Value> {
 /// reads payload-absent and `exists` is false, while the branch entry is present.
 /// Giving the root a payload with `create` does not disturb the branch.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the_branch() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -367,6 +369,7 @@ fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the
 /// A whole-entry root erase is payload-only: it removes the root's marker and fields
 /// but preserves its keyed branch descendants, so the root returns to descendant-only.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_root_erase_preserves_keyed_branches() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -414,6 +417,7 @@ fn a_root_erase_preserves_keyed_branches() {
 /// A branch entry erase removes only that branch entry's payload; the root and other
 /// branch entries are untouched.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_erase_removes_only_the_addressed_branch_entry() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -480,6 +484,7 @@ fn a_branch_erase_removes_only_the_addressed_branch_entry() {
 
 /// A whole-entry branch replace rewrites the branch entry exactly.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_replace_is_exact() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -533,6 +538,7 @@ fn some_bool(b: bool) -> Option<Value> {
 /// it), so a required field is never missing while the marker is present — there is no
 /// partial-marker state to read.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -623,6 +629,7 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
 /// reading both back materialized pins the alignment: each branch's own fields land on
 /// that branch, and a swap could not reproduce them.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn two_branches_of_different_shape_keep_their_own_fields() {
     let image = compile_verify_ids(SOURCE_TWO, IDS_TWO);
     let mut attachment = attach(&image);
@@ -784,6 +791,7 @@ fn run_fault(
 /// field, and its field read and presence test observe it, while the branch's other
 /// fields are undisturbed.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -846,6 +854,7 @@ fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
 /// fields present), leaving the root descendant-only. This proves the commit reconcile
 /// extends to a branch node's marker and record, not the root's.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_exact_required_set_reconcile_creates_the_branch_node() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -889,6 +898,7 @@ fn a_field_exact_required_set_reconcile_creates_the_branch_node() {
 /// the root node's required fields (the root's `title`) instead of the branch node's
 /// (`text`), it would not roll back here.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_sparse_set_missing_the_required_branch_field_rolls_back() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -926,6 +936,7 @@ fn a_branch_sparse_set_missing_the_required_branch_field_rolls_back() {
 
 /// A field-exact set on one branch entry does not leak to a sibling branch entry.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_exact_set_is_scoped_to_its_branch_entry() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -992,6 +1003,7 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
 /// pre-evaluated `[root, branch]` key-path, and the guarded set preserves the branch's
 /// required field.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);

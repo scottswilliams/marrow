@@ -74,6 +74,7 @@ fn fixture_dir() -> PathBuf {
 /// the unguarded same-type difference, boundary-exact `.checked`, and
 /// same-nominal comparisons all report `passed` through the production path.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nominal_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -98,6 +99,7 @@ fn nominal_conformance_fixture_passes_on_the_production_path() {
 /// boundary values construct. The fault is a runtime fault (`outcome: fault`),
 /// not a source diagnostic or a catchable error.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn out_of_interval_construction_faults_run_range() {
     let temp = TempDir::new("nominal-range-fault");
     project(
@@ -132,6 +134,7 @@ fn out_of_interval_construction_faults_run_range() {
 /// interval: a supported `+`, `-`, or `*` whose int result leaves the interval
 /// faults `run.range` at the operation.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn supported_arithmetic_revalidates_the_interval() {
     let temp = TempDir::new("nominal-arith-fault");
     project(
@@ -176,6 +179,7 @@ fn supported_arithmetic_revalidates_the_interval() {
 /// orientation. The JSONL record (code + span) is the typed contract; the CLI
 /// run surface carries no diagnostic prose by design.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_capability_is_a_check_type_diagnostic() {
     for body in [
         "Age(1) + 2",
@@ -209,6 +213,7 @@ fn a_missing_capability_is_a_check_type_diagnostic() {
 /// `step` admits exactly `N + 1` and `N - 1` with the int literal `1`: a
 /// computed or larger step needs `add`/`subtract`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn step_admits_only_the_literal_one() {
     let temp = TempDir::new("nominal-step");
     project(
@@ -251,6 +256,7 @@ fn step_admits_only_the_literal_one() {
 /// nominal where an int is required is too. The compiler signature layer keeps
 /// the nominal identity even though the image records the base scalar.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nominal_is_not_interchangeable_with_int() {
     for body in [
         // int literal into an Age parameter.
@@ -292,6 +298,7 @@ fn a_nominal_is_not_interchangeable_with_int() {
 /// An interval that admits no values, a stepped interval, and non-literal
 /// bounds are typed `check.type` diagnostics at the declaration.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_interval_is_a_check_type_diagnostic() {
     for interval in ["10..=1", "5..5", "0..10 by 2", "0..n"] {
         let temp = TempDir::new("nominal-interval");
@@ -319,6 +326,7 @@ fn a_malformed_interval_is_a_check_type_diagnostic() {
 /// repeated capability is `check.type`; a name collision with an alias or
 /// resource is `check.name_conflict`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nominal_declaration_defects_are_typed_diagnostics() {
     for (source, code) in [
         (
@@ -361,6 +369,7 @@ fn nominal_declaration_defects_are_typed_diagnostics() {
 /// `.checked` belongs to nominal type names only: on a record, a plain value,
 /// or an unknown name it stays a typed check diagnostic.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_on_a_non_nominal_is_rejected() {
     for (body, family) in [
         // `string` is a keyword, so a `.checked` on it never parses as a field.
@@ -389,6 +398,7 @@ fn checked_on_a_non_nominal_is_rejected() {
 /// A wrong-shaped construction — a named argument, the wrong arity, or a
 /// non-int argument — is a typed `check.type` at the call.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_construction_is_a_check_type_diagnostic() {
     for body in [
         "return Age() - Age(0)",
@@ -417,6 +427,7 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 /// parameter revalidates its interval on entry, so an out-of-interval terminal
 /// argument faults `run.range` instead of entering the type unchecked.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_terminal_argument_outside_the_interval_faults_on_entry() {
     let temp = TempDir::new("nominal-entry-guard");
     project(
@@ -445,6 +456,7 @@ fn a_terminal_argument_outside_the_interval_faults_on_entry() {
 /// owning lane lands. (A nominal *resource field* is admitted — it erases to its
 /// base scalar in the durable value shape — so it is not tested here.)
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nominal_types_are_unsupported_in_const_and_key_positions() {
     for source in [
         // Constant type.

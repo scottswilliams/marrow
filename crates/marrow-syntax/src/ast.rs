@@ -726,6 +726,29 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
+    /// B5 (parse-only): `if const a = e1 and const b = e2 and cond { … }` — one or
+    /// more chained existence bindings and an optional trailing condition. Parsed so
+    /// the grammar is complete; `marrow-compile` rejects it as `check.unsupported`
+    /// until the form is adopted, so it never reaches the runtime.
+    IfConstChain {
+        bindings: Vec<IfConstBinding>,
+        condition: Option<Expression>,
+        then_block: Block,
+        else_ifs: Vec<ElseIf>,
+        else_block: Option<Block>,
+        span: SourceSpan,
+    },
+    /// B6 (parse-only): let-else — `const x = e else <diverging>` or
+    /// `var x = e else { … }`. Parsed so the grammar is complete; `marrow-compile`
+    /// rejects it as `check.unsupported` until the form is adopted.
+    LetElse {
+        is_var: bool,
+        name: String,
+        ty: Option<TypeExpr>,
+        value: Expression,
+        else_block: Block,
+        span: SourceSpan,
+    },
     While {
         condition: Expression,
         body: Block,
@@ -811,6 +834,16 @@ pub struct MatchArm {
     pub span: SourceSpan,
 }
 
+/// One existence binding in a chained `if const` head (B5). Parse-only; the
+/// checker resolves the binding's type from the saved read once the form is
+/// adopted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IfConstBinding {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+    pub value: Expression,
+}
+
 /// One positional payload binding in a `match` arm header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArmBinding {
@@ -889,6 +922,8 @@ impl Statement {
             | Self::Expr { span, .. }
             | Self::If { span, .. }
             | Self::IfConst { span, .. }
+            | Self::IfConstChain { span, .. }
+            | Self::LetElse { span, .. }
             | Self::While { span, .. }
             | Self::For { span, .. }
             | Self::Transaction { span, .. }

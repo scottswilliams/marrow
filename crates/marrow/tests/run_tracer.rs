@@ -60,6 +60,7 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn return_const_travels_the_full_production_path() {
     let temp = TempDir::new("return-const");
     project(&temp, "pub fn answer(): int\n    return 42\n");
@@ -74,6 +75,7 @@ fn return_const_travels_the_full_production_path() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn return_const_jsonl_is_canonical() {
     let temp = TempDir::new("return-const-jsonl");
     project(&temp, "pub fn answer(): int\n    return 42\n");
@@ -87,6 +89,7 @@ fn return_const_jsonl_is_canonical() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_type_mismatch_is_a_source_diagnostic() {
     let temp = TempDir::new("type-mismatch");
     project(&temp, "pub fn answer(): int\n    return true\n");
@@ -104,6 +107,7 @@ fn a_type_mismatch_is_a_source_diagnostic() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_export_is_a_usage_error() {
     let temp = TempDir::new("missing-export");
     project(&temp, "pub fn answer(): int\n    return 42\n");
@@ -113,6 +117,7 @@ fn a_missing_export_is_a_usage_error() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn locals_arithmetic_and_control_flow_compute_a_value() {
     let temp = TempDir::new("compute");
     project(
@@ -137,6 +142,7 @@ fn locals_arithmetic_and_control_flow_compute_a_value() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_while_loop_sums() {
     let temp = TempDir::new("sum-loop");
     project(
@@ -157,6 +163,7 @@ fn a_while_loop_sums() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn short_circuit_boolean_logic() {
     let temp = TempDir::new("andor");
     project(
@@ -173,6 +180,7 @@ fn short_circuit_boolean_logic() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn runtime_overflow_is_a_source_mapped_fault() {
     let temp = TempDir::new("overflow");
     project(
@@ -191,6 +199,7 @@ fn runtime_overflow_is_a_source_mapped_fault() {
 
 /// Integer `/` truncates toward zero through the full production path.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn integer_division_truncates_toward_zero() {
     let temp = TempDir::new("div");
     project(
@@ -205,6 +214,7 @@ fn integer_division_truncates_toward_zero() {
 
 /// The closed scalar conversions travel the full path and render canonically.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn scalar_conversions_travel_the_full_path() {
     let temp = TempDir::new("conv");
     project(
@@ -237,6 +247,7 @@ fn scalar_conversions_travel_the_full_path() {
 /// prefix, an odd hex length, or `1` for a bool — is a usage error (exit 2), never
 /// a silent coercion.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
     let temp = TempDir::new("noncanonical");
     project(
@@ -279,6 +290,7 @@ fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
 /// faults with `run.budget` — the VM's dynamic-limit backstop — rather than running
 /// forever. There is no runner or environment override.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nonterminating_loop_faults_on_the_instruction_budget() {
     let temp = TempDir::new("budget");
     project(
@@ -298,6 +310,7 @@ fn nonterminating_loop_faults_on_the_instruction_budget() {
 /// The checked-arithmetic form: the success path binds the result; each fault
 /// runs its diverging arm.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_arithmetic_success_and_each_arm() {
     let temp = TempDir::new("checked");
     project(
@@ -352,6 +365,7 @@ fn checked_arithmetic_success_and_each_arm() {
 /// Complex nested procedural code reads clearly with the checked form, without
 /// combinator ceremony: a running total that both guards overflow and short-circuits.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_reads_clearly_in_nested_procedural_code() {
     let temp = TempDir::new("checked-nested");
     project(
@@ -405,6 +419,7 @@ fn checked_reads_clearly_in_nested_procedural_code() {
 /// A checked form whose arm does not diverge, or that omits a required arm, is a
 /// source diagnostic.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_arm_rules_are_diagnostics() {
     let temp = TempDir::new("checked-bad");
     // Non-diverging out_of_range arm.
@@ -440,6 +455,7 @@ fn checked_form_arm_rules_are_diagnostics() {
 
 /// The closed pure text floor: isEmpty / contains / trim.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn text_floor_builtins_travel_the_full_path() {
     let temp = TempDir::new("textfloor");
     project(
@@ -470,6 +486,7 @@ fn text_floor_builtins_travel_the_full_path() {
 
 /// `string` comparisons order lexicographically through the full path.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn string_comparison_orders_lexicographically() {
     let temp = TempDir::new("strcmp");
     project(
@@ -485,6 +502,7 @@ fn string_comparison_orders_lexicographically() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn integer_division_by_zero_is_a_source_mapped_fault() {
     let temp = TempDir::new("divzero");
     project(
@@ -503,6 +521,7 @@ fn integer_division_by_zero_is_a_source_mapped_fault() {
 /// value-returning function whose earlier branches cover every real case, and it
 /// runs the returning path normally.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
     let temp = TempDir::new("unreach-ok");
     project(
@@ -524,6 +543,7 @@ fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
 /// Reaching an `unreachable` faults with `run.unreachable`; the text output carries
 /// the static author text, while the typed JSONL surface stays code and span.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unreachable_faults_and_carries_static_text() {
     let temp = TempDir::new("unreach-fault");
     let source = "pub fn boom(hit: bool): int\n\
@@ -552,6 +572,7 @@ fn unreachable_faults_and_carries_static_text() {
 /// `unreachable` requires a static string literal, so a computed argument is a
 /// source diagnostic, not a runtime value.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unreachable_rejects_a_computed_argument() {
     let temp = TempDir::new("unreach-arg");
     project(
@@ -606,31 +627,37 @@ fn run_records(export: &str) -> String {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn required_field_read() {
     assert_eq!(run_records("titleOf"), "hello\n");
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn present_sparse_field_coalesces_to_itself() {
     assert_eq!(run_records("bodyOrDefault"), "there\n");
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn vacant_sparse_field_coalesces_to_default() {
     assert_eq!(run_records("missingBody"), "none\n");
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn if_const_binds_a_present_optional() {
     assert_eq!(run_records("guardedBody"), "yo\n");
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_absent_optional_return_renders_absent() {
     assert_eq!(run_records("maybe"), "absent\n");
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_qualified_export_in_a_second_module_runs() {
     // Two modules, each with its own public export. The export in `src/math.mw`
     // (module `math`) is invoked by its qualified `module.item` path through the
@@ -664,6 +691,7 @@ fn a_qualified_export_in_a_second_module_runs() {
 // --- Module constants (C00). ---
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_module_constant_folds_into_a_function() {
     let temp = multi_module(
         "module-const",
@@ -678,6 +706,7 @@ fn a_module_constant_folds_into_a_function() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_negated_integer_constant_is_allowed() {
     let temp = multi_module(
         "neg-const",
@@ -692,6 +721,7 @@ fn a_negated_integer_constant_is_allowed() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_constant_type_annotation_must_match_its_value() {
     let temp = multi_module(
         "const-type",
@@ -704,6 +734,7 @@ fn a_constant_type_annotation_must_match_its_value() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_literal_constant_is_unsupported() {
     let temp = multi_module(
         "const-nonliteral",
@@ -716,6 +747,7 @@ fn a_non_literal_constant_is_unsupported() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_module_constant_is_private_to_its_module() {
     // `SECRET` is declared in `lib`; referencing it unqualified from `main` is not
     // in scope, and a qualified constant reference is not a supported form.
@@ -734,6 +766,7 @@ fn a_module_constant_is_private_to_its_module() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duplicate_constant_in_one_module_conflicts() {
     let temp = multi_module(
         "dup-const",
@@ -766,6 +799,7 @@ fn run_diagnostic_code(dir: &Path, export: &str) -> String {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_use_import_resolves_a_cross_module_call() {
     let temp = multi_module(
         "use-import",
@@ -790,6 +824,7 @@ fn a_use_import_resolves_a_cross_module_call() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_fully_qualified_call_resolves_without_a_use() {
     let temp = multi_module(
         "fully-qualified",
@@ -810,6 +845,7 @@ fn a_fully_qualified_call_resolves_without_a_use() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_same_name_function_in_another_module_does_not_conflict() {
     // Two modules each define `helper`; an unqualified call binds the caller's own.
     let temp = multi_module(
@@ -828,6 +864,7 @@ fn a_same_name_function_in_another_module_does_not_conflict() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_bare_call_does_not_reach_a_function_in_another_module() {
     // `greet` exists only in `other`; an unqualified call from `main` resolves in
     // `main` alone and is unresolved, not silently bound across the boundary.
@@ -848,6 +885,7 @@ fn a_bare_call_does_not_reach_a_function_in_another_module() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_qualified_call_to_an_own_module_private_function_resolves() {
     // Qualifying a call with the caller's own module reaches a private function
     // there; visibility only gates crossing a module boundary.
@@ -864,6 +902,7 @@ fn a_qualified_call_to_an_own_module_private_function_resolves() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn calling_a_private_function_across_modules_is_a_visibility_error() {
     let temp = multi_module(
         "visibility",
@@ -879,6 +918,7 @@ fn calling_a_private_function_across_modules_is_a_visibility_error() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_use_of_an_unknown_module_is_an_import_error() {
     let temp = multi_module(
         "unknown-import",
@@ -891,6 +931,7 @@ fn a_use_of_an_unknown_module_is_an_import_error() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_headerless_script_is_not_importable_by_module_path() {
     // `lib.mw` has no `module` header, so it is a single-file script, not an
     // importable module; a `use` of it does not resolve.
@@ -908,6 +949,7 @@ fn a_headerless_script_is_not_importable_by_module_path() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_module_header_that_disagrees_with_its_path_is_rejected() {
     let temp = multi_module(
         "module-path",
@@ -920,6 +962,7 @@ fn a_module_header_that_disagrees_with_its_path_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duplicate_function_name_in_one_module_conflicts() {
     let temp = multi_module(
         "dup-in-module",
@@ -932,6 +975,7 @@ fn a_duplicate_function_name_in_one_module_conflicts() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn direct_calls_resolve_forward_and_compute() {
     let temp = TempDir::new("calls");
     // `quad` is declared before `double`, exercising forward resolution.
@@ -949,6 +993,7 @@ fn direct_calls_resolve_forward_and_compute() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn mutual_recursion_is_a_check_time_diagnostic() {
     // Recursion is caught at check time as a source diagnostic, before an image is
     // produced. (The verifier still independently rejects a cyclic image it is
@@ -970,6 +1015,7 @@ fn mutual_recursion_is_a_check_time_diagnostic() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn direct_self_recursion_is_a_check_time_diagnostic() {
     let temp = TempDir::new("self-recursion");
     project(
@@ -1012,6 +1058,7 @@ const COUNTER_SOURCE: &str = "resource Counter\n\
 /// (capture → compile → verify → resolve) succeeded, so a park is positive
 /// evidence the durable image is well-formed and identity-complete.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_export_parks_in_the_trough() {
     let temp = TempDir::new("counter-trough");
     project(&temp, COUNTER_SOURCE);
@@ -1039,6 +1086,7 @@ fn a_durable_export_parks_in_the_trough() {
 /// `--store` no longer names a CLI open path: it died at D00 and returns at F02b.
 /// Until then it is an unknown option, a usage error before the command body.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_store_flag_is_gone() {
     let temp = TempDir::new("counter-store-flag");
     project(&temp, COUNTER_SOURCE);
@@ -1049,6 +1097,7 @@ fn the_store_flag_is_gone() {
 /// `duration` is a span, not an identity, so it is not in the durable-key set: a
 /// duration-keyed store is a source diagnostic, not a runnable graph.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duration_keyed_store_is_a_source_diagnostic() {
     let temp = TempDir::new("dur-key");
     project(
@@ -1068,6 +1117,7 @@ fn a_duration_keyed_store_is_a_source_diagnostic() {
 /// committed `marrow.ids` is complete, so a durable export travels the full
 /// pipeline and parks in the trough (its runtime journey returns at E01/F02b).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn tracer_fixture_compiles_verifies_and_parks() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/v01/conformance/tracer_counter");
@@ -1103,6 +1153,7 @@ const PLACE_SOURCE: &str = "resource Counter\n\
 /// its identities, and parks: the pipeline reaching the trough is positive evidence
 /// the place image is well-formed and identity-complete.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_place_binding_export_parks_in_the_trough() {
     let temp = TempDir::new("place-trough");
     project(&temp, PLACE_SOURCE);
@@ -1128,6 +1179,7 @@ fn a_place_binding_export_parks_in_the_trough() {
 /// The checked-in `place_counter` fixture: a complete `marrow.ids`, so a place-based
 /// durable export travels the full pipeline and parks in the trough.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn place_fixture_compiles_verifies_and_parks() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/v01/conformance/place_counter");

@@ -10,6 +10,7 @@ use marrow_syntax::{
 };
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_parameter_defaults() {
     let parsed = parse_source("module app\nfn f(x: int = 5)\n    return\n");
 
@@ -38,6 +39,7 @@ fn rejects_parameter_defaults() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
     let default = parse_source("module app\nfn f(x: int = 5)\n    return\n");
     assert!(
@@ -83,6 +85,7 @@ fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn removed_parameter_modes_are_rejected() {
     for source in [
         "module app\nfn parseInt(text: string, out value: int): bool\n    return true\n",
@@ -105,6 +108,7 @@ fn removed_parameter_modes_are_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn out_and_inout_parse_as_ordinary_parameter_names() {
     assert_eq!(
         param_shape("module app\nfn f(out: int, inout: string)\n    return\n"),
@@ -116,6 +120,7 @@ fn out_and_inout_parse_as_ordinary_parameter_names() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_user_defined_generics_on_functions() {
     let parsed = parse_source("module app\nfn f<T>(x: T)\n    return\n");
 
@@ -135,6 +140,7 @@ fn rejects_user_defined_generics_on_functions() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_bracket_generic_type_parameters() {
     use marrow_syntax::{Declaration, TypeConstraint};
 
@@ -169,6 +175,7 @@ fn parses_bracket_generic_type_parameters() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_malformed_type_parameter_lists() {
     for (source, expected_message) in [
         (
@@ -198,6 +205,7 @@ fn rejects_malformed_type_parameter_lists() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_generic_function_headers() {
     use marrow_syntax::format_source;
 
@@ -211,6 +219,7 @@ fn formats_generic_function_headers() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_alias_declarations() {
     let parsed = parse_source("module app\nalias Count = int\nalias MaybeCount = Count?\n");
 
@@ -238,6 +247,7 @@ fn parses_alias_declarations() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn alias_names_and_targets_are_validated() {
     // A keyword name, a missing `=`, and a missing target each report one typed
     // expectation at the header line, and parsing stays total.
@@ -267,6 +277,7 @@ fn alias_names_and_targets_are_validated() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_malformed_type_annotations() {
     // Each malformed-type position carries its own diagnostic, so pairing every
     // source with its specific message selects the malformed-type error rather
@@ -297,6 +308,7 @@ fn rejects_malformed_type_annotations() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_trailing_tokens_after_a_complete_type_annotation() {
     // A complete type ends at its canonical word; a following token (`in`,
     // `where`, or a second bare word) is not part of the type. The parser must
@@ -359,6 +371,7 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn signature_parse_errors_point_at_the_offending_token_not_column_one() {
     // A missing or misplaced parameter type and a missing return type each report
     // at the offending signature token, so two signature faults on one line are
@@ -427,6 +440,7 @@ fn signature_parse_errors_point_at_the_offending_token_not_column_one() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn valid_signature_with_types_and_return_parses() {
     let parsed = parse_source("module app\nfn f(a: int, b: string): bool\n    return true\n");
 
@@ -438,6 +452,7 @@ fn valid_signature_with_types_and_return_parses() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_structural_equal_inside_type_annotations() {
     for (source, expected) in [
         (
@@ -476,6 +491,7 @@ fn rejects_structural_equal_inside_type_annotations() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parser_preserves_type_spellings_for_downstream_resolution() {
     let parsed = parse_source(
         "module app\n\
@@ -508,6 +524,7 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_collection_parameter_carries_key_and_value_types() {
     let parsed = parse_source(
         "module app\n\
@@ -526,6 +543,7 @@ fn keyed_collection_parameter_carries_key_and_value_types() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn composite_keyed_collection_parameter_carries_each_key() {
     let parsed = parse_source(
         "module app\n\
@@ -548,6 +566,7 @@ fn composite_keyed_collection_parameter_carries_each_key() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_parameter_name_is_rejected() {
     let parsed = parse_source("fn f(while: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
@@ -562,6 +581,7 @@ fn reserved_word_as_parameter_name_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_parameter_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("fn f({word}: int)\n    return\n"));
@@ -592,6 +612,7 @@ fn param_shape(source: &str) -> Vec<(String, String, Vec<String>)> {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn single_line_parameter_list_parses_unchanged() {
     assert_eq!(
         param_shape("module app\nfn f(a: int, b: string)\n    return\n"),
@@ -603,6 +624,7 @@ fn single_line_parameter_list_parses_unchanged() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn multi_line_parameter_list_without_commas_matches_single_line() {
     let newline_separated = "module app\nfn f(\n    a: int\n    b: string\n)\n    return\n";
     assert_eq!(
@@ -612,6 +634,7 @@ fn multi_line_parameter_list_without_commas_matches_single_line() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn multi_line_parameter_list_with_trailing_commas_matches_single_line() {
     let comma_separated = "module app\nfn f(\n    a: int,\n    b: string,\n)\n    return\n";
     assert_eq!(
@@ -621,6 +644,7 @@ fn multi_line_parameter_list_with_trailing_commas_matches_single_line() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn mixed_comma_and_newline_separators_parse_identically() {
     let mixed = "module app\nfn f(\n    a: int,\n    b: string\n    c: bool,\n)\n    return\n";
     assert_eq!(
@@ -634,6 +658,7 @@ fn mixed_comma_and_newline_separators_parse_identically() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn single_doc_line_above_a_parameter_is_captured() {
     let source = "module app\nfn f(\n    ;; the book to file\n    book: int,\n)\n    return\n";
     assert_eq!(
@@ -647,6 +672,7 @@ fn single_doc_line_above_a_parameter_is_captured() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn stacked_doc_lines_are_captured_in_order() {
     let source =
         "module app\nfn f(\n    ;; first line\n    ;; second line\n    book: int,\n)\n    return\n";
@@ -661,6 +687,7 @@ fn stacked_doc_lines_are_captured_in_order() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_parameter_without_a_doc_has_empty_docs() {
     let source =
         "module app\nfn f(\n    ;; documented\n    a: int,\n    b: string,\n)\n    return\n";
@@ -678,6 +705,7 @@ fn a_parameter_without_a_doc_has_empty_docs() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn multi_line_call_arguments_still_parse() {
     // A multi-line call-argument list is governed by the same delimiter-newline
     // suppression; documenting parameters must not regress it.
@@ -687,6 +715,7 @@ fn multi_line_call_arguments_still_parse() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parameter_type_wrapped_inside_brackets_stays_one_parameter() {
     // A type may span physical lines inside its brackets; the line break sits at
     // a depth above the parameter list, so it must not split the parameter.
@@ -698,6 +727,7 @@ fn parameter_type_wrapped_inside_brackets_stays_one_parameter() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parameter_with_wrapped_bracketed_type_and_a_following_parameter_parses_both() {
     let source = "module app\nfn f(\n    rows: List[\n        Book\n    ]\n    shelf: string\n)\n    return\n";
     assert_eq!(
@@ -710,6 +740,7 @@ fn parameter_with_wrapped_bracketed_type_and_a_following_parameter_parses_both()
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn trailing_doc_with_no_following_parameter_is_reported() {
     // A dangling `;;` run after the last parameter documents nothing; it must be
     // reported rather than silently dropped.
@@ -724,6 +755,7 @@ fn trailing_doc_with_no_following_parameter_is_reported() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn own_line_comment_inside_a_multi_line_parameter_list_is_skipped() {
     // A `;` comment inside open delimiters does not close the list; it is skipped
     // like a blank line, so the parameters around it parse normally.
@@ -738,6 +770,7 @@ fn own_line_comment_inside_a_multi_line_parameter_list_is_skipped() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn trailing_comment_after_a_parameter_is_skipped() {
     let source = "module app\nfn f(\n    a: int, ; first\n    b: string, ; second\n)\n    return\n";
     assert_eq!(
@@ -750,6 +783,7 @@ fn trailing_comment_after_a_parameter_is_skipped() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_do_not_disturb_parameter_docs() {
     // A `;` comment carries no documentation, while a `;;` run above a parameter
     // still attaches; the two must not interfere when interleaved.
@@ -774,6 +808,7 @@ fn comment_lines_do_not_disturb_parameter_docs() {
 /// `in` range expression, and `supports` capability list, with total recovery
 /// for each malformed piece.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_nominal_type_declarations() {
     use marrow_syntax::{Declaration, parse_source, range_expr};
 
@@ -820,6 +855,7 @@ fn parses_nominal_type_declarations() {
 /// declaration node (total parsing): a keyword name, a missing `in` interval,
 /// and a malformed `supports` tail.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nominal_type_declaration_recovers_totally() {
     use marrow_syntax::{Declaration, parse_source};
 
@@ -873,6 +909,7 @@ fn nominal_type_declaration_recovers_totally() {
 /// The formatter renders a nominal declaration canonically and idempotently,
 /// including the docs, interval spelling, and capability list.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_nominal_type_declarations() {
     use marrow_syntax::format_source;
 

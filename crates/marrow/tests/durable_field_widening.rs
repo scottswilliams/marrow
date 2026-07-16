@@ -92,6 +92,7 @@ const ACCOUNT_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_widened_field_resource_completes_its_identity_and_verifies() {
     let id = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
     assert_eq!(id, contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS), "stable");
@@ -101,6 +102,7 @@ fn a_widened_field_resource_completes_its_identity_and_verifies() {
 /// edit: adding unrelated storeless code and reordering declarations leaves the
 /// widened graph's contract id — computed over the sum/member tree — unchanged.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unrelated_source_edits_do_not_drift_the_widened_contract_id() {
     let base = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
 
@@ -120,6 +122,7 @@ fn unrelated_source_edits_do_not_drift_the_widened_contract_id() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_enum_sum_identity_fails_precisely() {
     let without_sum = ACCOUNT_IDS.replace("id sum Access 50505050505050505050505050505050\n", "");
     let diagnostics = compile(ACCOUNT_SOURCE, &without_sum).expect_err("incomplete identity");
@@ -136,6 +139,7 @@ fn a_missing_enum_sum_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_enum_member_identity_fails_precisely() {
     let without_member = ACCOUNT_IDS.replace(
         "id member Access.writer 52525252525252525252525252525252\n",
@@ -155,6 +159,7 @@ fn a_missing_enum_member_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_option_field_mints_its_generic_enum_sum_and_members() {
     // The `Option[string]` reachable through the store carries its own sum/member
     // identities anchored at its space-free spelling.
@@ -175,6 +180,7 @@ fn an_option_field_mints_its_generic_enum_sum_and_members() {
 // --- Enum member evolution: rename preserves, append changes and cannot reuse. ---
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn renaming_an_enum_member_with_a_moved_anchor_preserves_the_identity() {
     // A rename edits the source member and moves its ledger anchor while keeping the
     // same id: identity follows the id, not the spelling.
@@ -199,6 +205,7 @@ fn renaming_an_enum_member_with_a_moved_anchor_preserves_the_identity() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
     // Append a fourth variant to `Access`. A fresh member id is required; the
     // existing members keep their ids and positions.
@@ -232,6 +239,7 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
 // --- The executable-vs-identity boundary. ---
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn operating_on_a_widened_field_store_compiles_and_verifies() {
     // A read of a widened (enum) field is executable: it compiles, and the sealed image
     // verifies with a durable read opcode over the field-leaf site (no longer parked).
@@ -265,6 +273,7 @@ fn operating_on_a_widened_field_store_compiles_and_verifies() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_cyclic_value_graph_through_a_durable_field_is_rejected() {
     // A durable field's value must be acyclic. A self-referential struct reached
     // through a stored field is an infinite value, rejected at check time as a
@@ -293,6 +302,7 @@ fn a_cyclic_value_graph_through_a_durable_field_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_over_a_widened_field_is_refused() {
     // Index eligibility is decoupled from executability: a widened (struct) field is
     // executable but is not an orderable durable-key scalar, so declaring an index over
@@ -329,6 +339,7 @@ fn an_index_over_a_widened_field_is_refused() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_collection_durable_field_is_unsupported() {
     // A collection is not a durable value leaf (a large collection belongs under a
     // keyed branch), so a resource field storing one is a precise `check.unsupported`

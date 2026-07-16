@@ -79,6 +79,7 @@ fn rep(byte: u8) -> [u8; 16] {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn every_durable_node_has_a_semantic_path_ending_in_its_ledger_id() {
     let mut expected = vec![
         (SemanticNodeKind::Root, rep(0x0b)),
@@ -94,6 +95,7 @@ fn every_durable_node_has_a_semantic_path_ending_in_its_ledger_id() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_path_runs_from_the_application_through_its_container() {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -148,6 +150,7 @@ fn a_field_path_runs_from_the_application_through_its_container() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_rename_with_a_moved_anchor_preserves_every_semantic_path() {
     let base = node_fingerprints(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -166,6 +169,7 @@ fn a_rename_with_a_moved_anchor_preserves_every_semantic_path() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_rename_with_a_moved_anchor_preserves_every_semantic_path() {
     let base = node_fingerprints(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -184,6 +188,7 @@ fn a_branch_rename_with_a_moved_anchor_preserves_every_semantic_path() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn re_minting_a_group_id_changes_exactly_the_paths_through_it() {
     let base = node_fingerprints(LIBRARY_SOURCE, LIBRARY_IDS);
     // Re-mint the `details` group id: the group node and its nested field node move

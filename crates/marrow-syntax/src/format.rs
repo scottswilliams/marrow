@@ -1132,6 +1132,13 @@ fn format_statement_with_comments(
                 *span,
             );
         }
+        // The B5/B6 parse-only forms are rejected as `check.unsupported` before any
+        // emission (the CLI gates on `!has_errors`), so canonical rendering is the
+        // adopting lane's work. Echo the source span verbatim here so a best-effort
+        // `format_source` loses nothing.
+        Statement::IfConstChain { span, .. } | Statement::LetElse { span, .. } => {
+            format!("{pad}{}", &source[span.start_byte..span.end_byte])
+        }
         // The formatter is invoked on parsed source and the CLI gates emission on
         // `!has_errors`, so this renders only in a best-effort `format_source` over
         // input that failed to parse. Echo the unstructured span verbatim rather

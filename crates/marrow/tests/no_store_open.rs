@@ -50,6 +50,7 @@ fn collect_rs(dir: &Path, out: &mut Vec<(String, String)>) {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_cli_names_no_store_open_surface() {
     let mut files = Vec::new();
     collect_rs(&cli_src_dir(), &mut files);

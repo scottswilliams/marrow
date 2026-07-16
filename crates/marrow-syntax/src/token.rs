@@ -39,6 +39,9 @@ pub enum TokenKind {
     Keyword(Keyword),
     Comment,
     DocComment,
+    /// Layout block tokens. No longer emitted by the brace lexer; retained because
+    /// the frozen pre-migration snapshot (`layout_legacy`) still emits them and the
+    /// converter flip consumes that snapshot.
     Indent,
     Dedent,
     Newline,
@@ -47,6 +50,13 @@ pub enum TokenKind {
     RightParen,
     LeftBracket,
     RightBracket,
+    /// Block delimiters. A bare `{`/`}` in source is always a block delimiter;
+    /// interpolation holes and `{{`/`}}` escapes are handled inside `$"..."` before
+    /// these are produced.
+    LeftBrace,
+    RightBrace,
+    /// The `=>` of a match arm.
+    FatArrow,
     Colon,
     DoubleColon,
     Comma,

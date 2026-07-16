@@ -1,27 +1,20 @@
 //! The lexer: turns Marrow source text into a flat token stream with
-//! file-absolute spans, emitting `INDENT`/`DEDENT`/`NEWLINE` layout tokens and
-//! recording lexical diagnostics as it goes.
+//! file-absolute spans. Blocks are delimited by `{`/`}`; a physical line ends in a
+//! `NEWLINE` unless it is continued inside open `(`/`[` or after a trailing
+//! header-continuation token (`and`/`or`/`,`/`=`). It records lexical diagnostics
+//! as it goes.
 
 use crate::token::{
     duration_unit_seconds, is_identifier_continue_char, is_identifier_start_char, keyword,
 };
 use crate::{
-    Diagnostic, DiagnosticReason, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
+    Diagnostic, DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
     NESTING_LIMIT, ObsoleteOperator, PARSE_SYNTAX, ParseDiagnosticReason, Severity, SourceSpan,
     Token, TokenKind,
 };
 
 pub fn lex_source(source: &str) -> LexedSource {
     Lexer::new(source).lex()
-}
-
-/// Whether a line opened a block within the layout nesting limit or past it. An
-/// over-deep line opens no block and has its content dropped, so the token stream
-/// the parser sees is bounded by the limit.
-#[derive(PartialEq, Eq)]
-enum Indent {
-    Within,
-    OverDeep,
 }
 
 /// Why scanning an interpolation hole or nested interpolation literal for its
@@ -51,10 +44,16 @@ struct Lexer<'a> {
     lines: Vec<Line<'a>>,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
-    indents: Vec<usize>,
+    /// Open `(`/`[` depth. A `NEWLINE` is suppressed while this is non-zero, so a
+    /// call or bracket group spans several physical lines as one logical line.
     open_delimiters: usize,
-    /// Set once the layout nesting limit is first crossed, so a run of over-deep
-    /// lines reports [`NESTING_LIMIT`] a single time rather than per line.
+    /// Open `{` block depth, the brace analogue of the removed indent stack. A `{`
+    /// that would open a block deeper than [`NESTING_DEPTH_LIMIT`] reports
+    /// [`NESTING_LIMIT`]; braces do not suppress `NEWLINE` (statements end at the
+    /// line break inside a block).
+    brace_depth: usize,
+    /// Set once the brace nesting limit is first crossed, so a run of over-deep
+    /// braces reports [`NESTING_LIMIT`] a single time rather than per brace.
     reported_nesting_limit: bool,
 }
 
@@ -65,8 +64,8 @@ impl<'a> Lexer<'a> {
             lines: split_lines(source),
             tokens: Vec::new(),
             diagnostics: Vec::new(),
-            indents: Vec::new(),
             open_delimiters: 0,
+            brace_depth: 0,
             reported_nesting_limit: false,
         }
     }
@@ -84,41 +83,20 @@ impl<'a> Lexer<'a> {
 
             let is_doc_comment = line.doc_comment().is_some();
             if line.is_comment() || is_doc_comment {
-                let starts_in_delimiters = self.open_delimiters > 0;
-                let next_indent = self.next_significant_indent(index);
-                if !starts_in_delimiters
-                    && self.apply_comment_indent(line, is_doc_comment, next_indent)
-                        == Indent::OverDeep
-                {
-                    continue;
-                }
-
                 let kind = if is_doc_comment {
                     TokenKind::DocComment
                 } else {
                     TokenKind::Comment
                 };
                 self.push(kind, line.span_at_content());
-                if !starts_in_delimiters {
-                    self.push_newline(line);
-                }
+                self.push_line_break(line);
                 continue;
             }
 
-            let starts_in_delimiters = self.open_delimiters > 0;
-            if !starts_in_delimiters && self.apply_indent(line) == Indent::OverDeep {
-                // The line nests past the layout limit. Its content is dropped so
-                // the token stream — and the AST and every later walk over it —
-                // stays bounded by the limit no matter how deep the source goes.
-                continue;
-            }
             self.lex_line(line);
-            if self.open_delimiters == 0 {
-                self.push_newline(line);
-            }
+            self.push_line_break(line);
         }
 
-        self.close_indents();
         self.push(TokenKind::Eof, self.eof_span());
         LexedSource {
             tokens: self.tokens,
@@ -126,65 +104,46 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Open or close indented blocks to match `line`, returning whether the line
-    /// nests past the layout limit. A line deeper than the limit opens no further
-    /// block: it reports [`NESTING_LIMIT`] once at the limit and is reported
-    /// [`Indent::OverDeep`] so the caller drops its content, keeping the token
-    /// stream bounded by the limit regardless of source depth. The indent stack
-    /// stays at the limit's width while the over-deep region lasts, so a return to
-    /// or below that width resumes normal layout.
-    fn apply_indent(&mut self, line: Line<'a>) -> Indent {
-        let current = self.current_indent();
-        if line.indent > current {
-            // The outermost declaration body is one indent above the file's
-            // top level and is not itself a nesting level, so the stack may hold
-            // that body plus [`NESTING_DEPTH_LIMIT`] nested blocks before a deeper
-            // block fails closed.
-            if self.indents.len() > NESTING_DEPTH_LIMIT {
-                self.report_nesting_limit(line);
-                return Indent::OverDeep;
-            }
-            self.indents.push(line.indent);
-            self.push(
-                TokenKind::Indent,
-                SourceSpan {
-                    start_byte: line.start_byte,
-                    end_byte: line.start_byte + line.indent,
-                    line: line.number,
-                    column: 1,
-                },
-            );
-            return Indent::Within;
+    /// Emit the `NEWLINE` that ends a physical line, unless the line is continued.
+    /// A line continues while inside open `(`/`[`, or when its last significant
+    /// token is a header-continuation token (`and`/`or`/`,`/`=`); in either case a
+    /// following physical line is part of the same logical line.
+    fn push_line_break(&mut self, line: Line<'a>) {
+        if self.open_delimiters == 0 && !self.continues_after_last_token() {
+            self.push_newline(line);
         }
-
-        if line.indent == current {
-            return Indent::Within;
-        }
-
-        while line.indent < self.current_indent() {
-            self.indents.pop();
-            self.push(TokenKind::Dedent, self.empty_span(line, line.indent));
-        }
-        if self.indents.len() <= NESTING_DEPTH_LIMIT {
-            // Left the over-deep region, so a later independent deep nest reports
-            // its own overflow rather than being silenced by the earlier one.
-            self.reported_nesting_limit = false;
-        }
-
-        if line.indent != self.current_indent() {
-            self.error_at(
-                self.empty_span(line, line.indent),
-                LexerDiagnosticReason::IndentationMismatch,
-                "indentation does not match an open block",
-            );
-        }
-        Indent::Within
     }
 
-    /// Report the layout nesting overflow once, at the first line that would open
-    /// a block past the limit. Suppressed while the over-deep region lasts so a
-    /// run of deeper lines yields a single diagnostic, not one per line.
-    fn report_nesting_limit(&mut self, line: Line<'a>) {
+    /// Whether the last significant token so far ends the line on a
+    /// header-continuation token, so the `NEWLINE` is suppressed. Comments and
+    /// prior newlines are not significant.
+    fn continues_after_last_token(&self) -> bool {
+        self.tokens
+            .iter()
+            .rev()
+            .find(|token| {
+                !matches!(
+                    token.kind,
+                    TokenKind::Comment | TokenKind::DocComment | TokenKind::Newline
+                )
+            })
+            .is_some_and(|token| {
+                matches!(
+                    token.kind,
+                    TokenKind::Keyword(Keyword::And)
+                        | TokenKind::Keyword(Keyword::Or)
+                        | TokenKind::Comma
+                        | TokenKind::Equal
+                )
+            })
+    }
+
+    /// Report brace nesting past [`NESTING_DEPTH_LIMIT`] once, at the offending
+    /// `{`. Suppressed while the over-deep region lasts so a run of deeper braces
+    /// yields a single diagnostic. The braces are still tiled as tokens (lossless
+    /// tiling); the recursive-descent parser bounds its own descent so a deep
+    /// brace nest fails closed rather than overflowing the native stack.
+    fn report_brace_nesting_limit(&mut self, span: SourceSpan) {
         if self.reported_nesting_limit {
             return;
         }
@@ -195,74 +154,8 @@ impl<'a> Lexer<'a> {
             severity: Severity::Error,
             message: format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             help: None,
-            span: SourceSpan {
-                start_byte: line.start_byte + line.indent,
-                end_byte: line.end_byte,
-                line: line.number,
-                column: (line.indent + 1) as u32,
-            },
+            span,
         });
-    }
-
-    /// Decide how a comment-only line interacts with the indent stack. A comment
-    /// run is classified by the next NON-COMMENT significant line, so it docks
-    /// where the construct it introduces docks, regardless of the comments' own
-    /// indentation. A line comment outdented below the current block is otherwise
-    /// transparent — kept inside the open block as trailing trivia rather than
-    /// closing it.
-    ///
-    /// When the construct the run introduces is at the file's top level the run
-    /// belongs at the top level: a top-level comment is not the body of any
-    /// declaration. So an indented comment whose run resolves to the top level
-    /// stays transparent rather than opening a spurious block above it, and a
-    /// column-zero run that follows an open block closes that block down to the
-    /// top level. Likewise an over-indented comment whose run resolves back to the
-    /// current block is trivia inside that block and opens no spurious INDENT.
-    fn apply_comment_indent(
-        &mut self,
-        line: Line<'a>,
-        is_doc_comment: bool,
-        next_indent: Option<usize>,
-    ) -> Indent {
-        let current = self.current_indent();
-        let run_at_top_level = matches!(next_indent, Some(0) | None);
-        if current == 0 {
-            // No open block to dock into: a top-level run is transparent and a
-            // run that opens an indented body below drives the normal logic.
-            return if run_at_top_level {
-                Indent::Within
-            } else {
-                self.apply_indent(line)
-            };
-        }
-        // A comment run docks where the construct it introduces docks, so an
-        // over-indented comment whose run resolves back to (or below) the current
-        // block is layout trivia: it stays inside the block and opens no INDENT.
-        if line.indent > current && next_indent.is_none_or(|indent| indent <= current) {
-            return Indent::Within;
-        }
-        let introduces_top_level_decl = line.indent == 0 && next_indent == Some(0);
-        if is_doc_comment || line.indent >= current || introduces_top_level_decl {
-            self.apply_indent(line)
-        } else {
-            Indent::Within
-        }
-    }
-
-    /// The indentation of the next non-blank, non-comment line after `index`, or
-    /// `None` when only blank or comment lines remain. A run of column-zero
-    /// comments is classified by the declaration that follows the whole run, so
-    /// comment lines are skipped: a column-zero comment followed by another
-    /// column-zero comment looks past both to whatever the run introduces.
-    fn next_significant_indent(&self, index: usize) -> Option<usize> {
-        self.lines[index + 1..]
-            .iter()
-            .find(|line| !line.is_blank() && !line.is_comment() && line.doc_comment().is_none())
-            .map(|line| line.indent)
-    }
-
-    fn current_indent(&self) -> usize {
-        self.indents.last().copied().unwrap_or(0)
     }
 
     fn lex_line(&mut self, line: Line<'a>) {
@@ -292,8 +185,8 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
-            if ch == ';' {
-                let kind = if tail.starts_with(";;") {
+            if tail.starts_with("//") {
+                let kind = if tail.starts_with("///") {
                     TokenKind::DocComment
                 } else {
                     TokenKind::Comment
@@ -393,7 +286,7 @@ impl<'a> Lexer<'a> {
                 1,
                 ObsoleteOperator::Hash,
                 "`#` is not used in Marrow source",
-                "Marrow uses `;` for comments.",
+                "Marrow uses `//` for comments.",
             )
         } else {
             return None;
@@ -728,6 +621,20 @@ impl<'a> Lexer<'a> {
             TokenKind::RightParen | TokenKind::RightBracket => {
                 self.open_delimiters = self.open_delimiters.saturating_sub(1);
             }
+            TokenKind::LeftBrace => {
+                self.brace_depth += 1;
+                if self.brace_depth > NESTING_DEPTH_LIMIT {
+                    self.report_brace_nesting_limit(span);
+                }
+            }
+            TokenKind::RightBrace => {
+                self.brace_depth = self.brace_depth.saturating_sub(1);
+                if self.brace_depth <= NESTING_DEPTH_LIMIT {
+                    // Left the over-deep region, so a later independent deep nest
+                    // reports its own overflow rather than being silenced.
+                    self.reported_nesting_limit = false;
+                }
+            }
             _ => {}
         }
         self.push(kind, span);
@@ -828,6 +735,7 @@ impl<'a> Lexer<'a> {
             ("::", TokenKind::DoubleColon),
             ("..=", TokenKind::DotDotEqual),
             ("..", TokenKind::DotDot),
+            ("=>", TokenKind::FatArrow),
             ("==", TokenKind::EqualEqual),
             ("!=", TokenKind::BangEqual),
             ("?.", TokenKind::QuestionDot),
@@ -851,6 +759,8 @@ impl<'a> Lexer<'a> {
             ')' => TokenKind::RightParen,
             '[' => TokenKind::LeftBracket,
             ']' => TokenKind::RightBracket,
+            '{' => TokenKind::LeftBrace,
+            '}' => TokenKind::RightBrace,
             ':' => TokenKind::Colon,
             ',' => TokenKind::Comma,
             '.' => TokenKind::Dot,
@@ -897,13 +807,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn close_indents(&mut self) {
-        while !self.indents.is_empty() {
-            self.indents.pop();
-            self.push(TokenKind::Dedent, self.eof_span());
-        }
-    }
-
     fn reject_line_tabs(&mut self, line: Line<'a>) {
         if let Some(tab) = line.text.find('\t') {
             self.error_at(
@@ -930,14 +833,6 @@ impl<'a> Lexer<'a> {
             line: line.number,
             column: (start_byte - line.start_byte + 1) as u32,
         }
-    }
-
-    fn empty_span(&self, line: Line<'a>, column_offset: usize) -> SourceSpan {
-        self.span(
-            line,
-            line.start_byte + column_offset,
-            line.start_byte + column_offset,
-        )
     }
 
     fn eof_span(&self) -> SourceSpan {
@@ -1003,11 +898,11 @@ impl<'a> Line<'a> {
     }
 
     fn is_comment(&self) -> bool {
-        self.content.starts_with(';') && !self.content.starts_with(";;")
+        self.content.starts_with("//") && !self.content.starts_with("///")
     }
 
     fn doc_comment(&self) -> Option<&'a str> {
-        self.content.strip_prefix(";;").map(str::trim)
+        self.content.strip_prefix("///").map(str::trim)
     }
 
     fn span_at_content(&self) -> SourceSpan {

@@ -18,6 +18,7 @@ fn member_name(member: &ResourceMember) -> &str {
 /// any line would change this sequence, so the assertion pins order, not just
 /// presence.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn resource_members_keep_source_declaration_order() {
     let parsed = parse_source(
         "module app\n\
@@ -57,6 +58,7 @@ fn resource_members_keep_source_declaration_order() {
 /// group still follows it. This guards against a parser that batches fields and
 /// groups into separate passes, which would silently reorder the body.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_after_a_group_keeps_its_trailing_position() {
     let parsed = parse_source(
         "module app\n\

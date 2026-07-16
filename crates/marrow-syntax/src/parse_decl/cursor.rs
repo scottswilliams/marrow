@@ -1,5 +1,5 @@
 //! The shared `DeclParser` navigation and error surface: header-line and span
-//! bounds, indented-block consumption, the declaration-keyword lookahead, and the
+//! bounds, `{ … }` block consumption, the declaration-keyword lookahead, and the
 //! diagnostic emitters the declaration bodies build on.
 
 use super::DeclParser;
@@ -13,10 +13,13 @@ use crate::token::{Keyword, Token, TokenKind};
 
 impl<'a> DeclParser<'a> {
     /// Collect the tokens of the current header line (up to the next
-    /// `NEWLINE`/`INDENT`/`DEDENT`/`EOF`) and advance past the closing `NEWLINE`.
-    /// A header line continues across newlines suppressed inside open delimiters,
-    /// so a multi-line const value stays one header line. A trailing comment is
-    /// excluded from the returned slice so the caller sees only header content.
+    /// `NEWLINE`/`{`/`}`/`EOF`) and advance past a closing `NEWLINE`. A body-bearing
+    /// header ends at its opening `{`, which is left in place for the caller to
+    /// open the block; a bodyless declaration ends at its `NEWLINE`, which is
+    /// consumed. A header line continues across newlines suppressed inside open
+    /// delimiters, so a multi-line const value stays one header line. A trailing
+    /// comment is excluded from the returned slice so the caller sees only header
+    /// content.
     pub(super) fn take_header_line(&mut self) -> &'a [Token] {
         let (line, _) = self.take_header_line_with_trailing_comment();
         line
@@ -102,33 +105,34 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Consume a balanced `INDENT … DEDENT` run starting at the current `INDENT`,
-    /// returning the exclusive index just past the matching `DEDENT`.
+    /// Consume a balanced `{ … }` run starting at the current `{`, returning the
+    /// exclusive index just past the matching `}`.
     pub(super) fn consume_block(&mut self) -> usize {
         self.consume_balanced_block(0)
     }
 
-    /// Consume the rest of an indented block whose opening `INDENT` was already
-    /// advanced, stopping after its matching `DEDENT`.
+    /// Consume the rest of a `{ … }` block whose opening `{` was already advanced,
+    /// stopping after its matching `}`.
     pub(super) fn skip_to_block_end(&mut self) {
         self.consume_balanced_block(1);
     }
 
-    /// Consume tokens until the `INDENT`/`DEDENT` depth returns to zero, seeded at
-    /// `open_depth` (zero when the opening `INDENT` is still ahead, one when it was
-    /// already advanced). Returns the exclusive index just past the matching
-    /// `DEDENT`, tolerating end-of-file before the block closes.
+    /// Consume tokens until the `{`/`}` depth returns to zero, seeded at
+    /// `open_depth` (zero when the opening `{` is still ahead, one when it was
+    /// already advanced). Returns the exclusive index just past the matching `}`,
+    /// tolerating end-of-file before the block closes. `}` is the hard recovery
+    /// sync anchor.
     fn consume_balanced_block(&mut self, open_depth: usize) -> usize {
         let mut depth = open_depth;
         while let Some(kind) = self.peek() {
             match kind {
-                TokenKind::Indent => {
+                TokenKind::LeftBrace => {
                     depth += 1;
                     self.advance();
                 }
-                TokenKind::Dedent => {
+                TokenKind::RightBrace => {
                     self.advance();
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
                         break;
                     }
@@ -142,31 +146,34 @@ impl<'a> DeclParser<'a> {
         self.pos
     }
 
-    /// Report one "expected a top-level declaration" per content line of a stray
-    /// indented region at the top level, each at its content position. Blank and
-    /// comment-only lines produce no tokens and so raise nothing.
+    /// Report a stray `{ … }` block at the top level, where a declaration was
+    /// expected, and consume it so the following declarations still parse.
     pub(super) fn report_stray_indented_lines(&mut self) {
-        let start = self.pos;
-        let end = self.consume_block();
-        let mut index = start;
-        let mut at_line_start = true;
-        while index < end {
-            let token = self.tokens[index];
-            match token.kind {
-                TokenKind::Indent | TokenKind::Dedent | TokenKind::Newline => at_line_start = true,
-                TokenKind::Comment | TokenKind::DocComment => at_line_start = false,
-                _ => {
-                    if at_line_start {
-                        self.error_span(
-                            self.content_span_of(token),
-                            ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
-                            "expected a top-level declaration",
-                        );
-                    }
-                    at_line_start = false;
-                }
-            }
-            index += 1;
+        let span = self.content_span_of(self.tokens[self.pos]);
+        self.error_span(
+            span,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
+            "expected a top-level declaration",
+        );
+        self.advance(); // `{`
+        self.skip_to_block_end();
+    }
+
+    /// Whether the cursor is at a block-opening `{`.
+    pub(super) fn at_block_open(&self) -> bool {
+        matches!(self.peek(), Some(TokenKind::LeftBrace))
+    }
+
+    /// Advance past a block-opening `{` and the `NEWLINE`s that follow the header
+    /// line, leaving the cursor at the first body line.
+    pub(super) fn open_brace_block(&mut self) {
+        self.advance(); // `{`
+        self.skip_newlines();
+    }
+
+    pub(super) fn skip_newlines(&mut self) {
+        while matches!(self.peek(), Some(TokenKind::Newline)) {
+            self.advance();
         }
     }
 

@@ -1,17 +1,18 @@
 //! The statement parser: a recursive-descent parser for a function body over
 //! the file-wide token stream. It frames compound statements (`if`, `while`,
-//! `for`, `try`, `match`) and their nested blocks, keeping layout tokens so a
-//! statement may span several physical lines inside open delimiters.
+//! `for`, `try`, `match`) and their `{ … }` blocks; statements end at a `NEWLINE`
+//! or `}`, and a trailing clause (`else`, `on more`, a checked arm, a match arm)
+//! takes either a braced block or a single inline statement.
 
 use super::head::arm_pattern;
 use super::statement_lines::{parse_for_header, parse_if_const_head, parse_simple_statement};
 use super::tokens::{
-    comment_from_token, expr_of_after, find_top_level_equal, first_line_end, is_line_comment,
-    line_end, line_span_or, parse_type, push_parse_error,
+    comment_from_token, expr_of, expr_of_after, find_top_level_equal, first_line_end,
+    is_line_comment, line_end, line_span_or, parse_type, push_parse_error,
 };
 use crate::ast::{
     ArmBinding, Block, CheckedBind, Comment, CommentMarker, CommentPlacement, ElseIf, Expression,
-    MatchArm, Statement, TraversalBound, TypeExpr,
+    IfConstBinding, MatchArm, Statement, TraversalBound, TypeExpr,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -26,6 +27,12 @@ enum IfHead {
         name: String,
         ty: Option<TypeExpr>,
         value: Expression,
+    },
+    /// B5: `if const a = e1 and const b = e2 and cond` — a chain of existence
+    /// bindings joined by `and`, with an optional trailing bare condition.
+    Chain {
+        bindings: Vec<IfConstBinding>,
+        condition: Option<Expression>,
     },
 }
 
@@ -46,10 +53,9 @@ fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
     matches!(keyword, Keyword::Else)
 }
 
-/// Parses the statements of a function body over the file-wide token stream.
-/// It keeps layout tokens (`NEWLINE`, `INDENT`, `DEDENT`) so statements that
-/// span several physical lines inside open delimiters are one statement, and
-/// delegates expression parsing to `ExprParser`.
+/// Parses the statements of a function body over a token slice (the tokens
+/// strictly inside the enclosing `{ … }`). It frames nested `{ … }` blocks itself
+/// and delegates expression parsing to `ExprParser`.
 pub(super) struct StmtParser<'a> {
     source: &'a str,
     tokens: &'a [Token],
@@ -62,6 +68,11 @@ pub(super) struct StmtParser<'a> {
     /// malformed statement becomes a deterministic diagnostic instead of being
     /// silently accepted.
     diagnostics: Vec<Diagnostic>,
+    /// Nested `{ … }` block depth. The lexer reports the nesting-limit diagnostic;
+    /// this second layer stops the recursive descent at [`NESTING_DEPTH_LIMIT`] so a
+    /// pathologically deep brace nest skips its body rather than overflowing the
+    /// native stack, keeping the AST (and every later walk over it) bounded.
+    depth: usize,
 }
 
 impl<'a> StmtParser<'a> {
@@ -72,13 +83,11 @@ impl<'a> StmtParser<'a> {
             pos: 0,
             comments: Vec::new(),
             diagnostics: Vec::new(),
+            depth: 0,
         }
     }
 
     pub(super) fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>, Vec<Diagnostic>) {
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
-            self.advance();
-        }
         let statements = self.statements();
         (
             statements,
@@ -143,13 +152,12 @@ impl<'a> StmtParser<'a> {
         let mut statements = Vec::new();
         while let Some(kind) = self.peek() {
             match kind {
-                TokenKind::Eof => break,
-                TokenKind::Dedent => break,
+                TokenKind::Eof | TokenKind::RightBrace => break,
                 TokenKind::Newline => {
                     self.advance();
                 }
                 kind if is_line_comment(kind) => self.take_own_line_comment(),
-                TokenKind::Indent => {
+                TokenKind::LeftBrace => {
                     self.report_unexpected_indented_block();
                     self.skip_unexpected_indented_block();
                 }
@@ -157,6 +165,23 @@ impl<'a> StmtParser<'a> {
             }
         }
         statements
+    }
+
+    fn skip_newlines(&mut self) {
+        while matches!(self.peek(), Some(TokenKind::Newline)) {
+            self.advance();
+        }
+    }
+
+    /// Whether the next significant token after any `NEWLINE`s is the contextual
+    /// identifier `word` (an `on`, `more`, `out_of_range`, ...).
+    fn at_word_past_newlines(&self, word: &str) -> bool {
+        self.tokens[self.pos..]
+            .iter()
+            .find(|token| token.kind != TokenKind::Newline)
+            .is_some_and(|token| {
+                token.kind == TokenKind::Identifier && token.text(self.source) == word
+            })
     }
 
     pub(super) fn peek(&self) -> Option<TokenKind> {
@@ -220,6 +245,12 @@ impl<'a> StmtParser<'a> {
             return Some(self.checked_stmt());
         }
 
+        // B6 let-else: a `const`/`var` binding whose line carries a top-level
+        // `else` diverging tail. Parse-only; the checker rejects it until adopted.
+        if self.at_let_else() {
+            return Some(self.let_else_stmt());
+        }
+
         let start = self.tokens[self.pos].span;
         let line = self.take_line();
         let error_span = line_span_or(line, start);
@@ -231,22 +262,27 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Take the current statement or header line: the content tokens up to the
-    /// layout token that ends the line, with any trailing comment recorded as
-    /// block trivia, advancing past the closing `NEWLINE`. The returned slice
+    /// token that ends the line, with any trailing comment recorded as block
+    /// trivia. A terminating `NEWLINE` is consumed; a block-opening/closing `{`/`}`
+    /// is left in place for the caller to frame the body. The returned slice
     /// outlives the advance (it borrows the whole-file token stream), so a caller
-    /// parses it after the cursor has moved to the next line.
+    /// parses it after the cursor has moved past the line content.
     fn take_line(&mut self) -> &'a [Token] {
-        let newline = self.find_line_end();
-        let content_end = self.split_trailing_comment(newline);
+        let end = self.find_line_end();
+        let content_end = self.split_trailing_comment(end);
         let line = &self.tokens[self.pos..content_end];
-        self.pos = (newline + 1).min(self.tokens.len());
+        self.pos = if self.tokens.get(end).map(|token| token.kind) == Some(TokenKind::Newline) {
+            end + 1
+        } else {
+            end
+        };
         line
     }
 
     /// If the token just before `line_end` is a trailing comment, record it as
     /// a `Trailing` comment for the current block and return the index that
     /// excludes it; otherwise return `line_end` unchanged. `line_end` is the
-    /// index of the `NEWLINE`/`INDENT`/`DEDENT` that ends the current line.
+    /// index of the `NEWLINE`/`{`/`}`/`EOF` that ends the current line.
     fn split_trailing_comment(&mut self, line_end: usize) -> usize {
         if line_end > self.pos && is_line_comment(self.tokens[line_end - 1].kind) {
             self.record_line_comment(self.tokens[line_end - 1], CommentPlacement::Trailing);
@@ -343,11 +379,13 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Consume a trailing `on more` block dedented like `else`, if present: the
-    /// contextual `on more` header line followed by its indented body. Returns `None`
-    /// when the next tokens are not that phrase, leaving the token stream untouched so
-    /// a following sibling statement parses normally.
+    /// Consume a trailing `on more` clause, if present: the contextual `on more`
+    /// keywords cuddling the loop body's `}` (or on the next line) followed by a
+    /// braced or inline diverging body. Returns `None` when the next tokens are not
+    /// that phrase, restoring the cursor so a following sibling statement parses.
     fn take_on_more_block(&mut self) -> Option<Block> {
+        let save = self.pos;
+        self.skip_newlines();
         let is_on = self.tokens.get(self.pos).is_some_and(|token| {
             token.kind == TokenKind::Identifier && token.text(self.source) == "on"
         });
@@ -355,10 +393,12 @@ impl<'a> StmtParser<'a> {
             token.kind == TokenKind::Identifier && token.text(self.source) == "more"
         });
         if !(is_on && is_more) {
+            self.pos = save;
             return None;
         }
-        self.consume_header_line(); // `on more`
-        Some(self.block_body())
+        self.advance(); // `on`
+        self.advance(); // `more`
+        Some(self.parse_clause_body())
     }
 
     /// Parse a statement that begins with `try`. Prefix `try <expr>` is a value
@@ -369,8 +409,8 @@ impl<'a> StmtParser<'a> {
     fn try_statement(&mut self) -> Option<Statement> {
         let start = self.advance().span; // `try`
         let header = self.take_line();
-        // The block form opens an indented body after the header line.
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
+        // The removed block form opens a `{ … }` body after the header.
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.skip_block();
             self.consume_removed_try_clauses();
             self.error_span_reason(
@@ -414,7 +454,7 @@ impl<'a> StmtParser<'a> {
                 return;
             }
             self.consume_header_line();
-            if matches!(self.peek(), Some(TokenKind::Indent)) {
+            if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
                 self.skip_block();
             }
         }
@@ -443,7 +483,7 @@ impl<'a> StmtParser<'a> {
     ) -> Option<Statement> {
         let start = self.tokens[self.pos].span;
         self.consume_header_line();
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.skip_block();
         }
         self.error_span_reason(start, ParseDiagnosticReason::Unsupported(reason), message);
@@ -458,7 +498,16 @@ impl<'a> StmtParser<'a> {
         let mut else_ifs = Vec::new();
         let mut else_block = None;
 
-        while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Else))) {
+        // A trailing `else`/`else if` cuddles the then-block's `}` (`} else {`) or
+        // sits on the next line; look past the separating newlines and restore the
+        // cursor when no `else` follows so the newline still ends the statement.
+        loop {
+            let save = self.pos;
+            self.skip_newlines();
+            if !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Else))) {
+                self.pos = save;
+                break;
+            }
             self.advance(); // `else`
             if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::If))) {
                 let if_keyword = self.advance(); // `if`
@@ -467,8 +516,7 @@ impl<'a> StmtParser<'a> {
                 end = block.span;
                 else_ifs.push(ElseIf { condition, block });
             } else {
-                self.consume_header_line();
-                let block = self.block_body();
+                let block = self.parse_clause_body();
                 end = block.span;
                 else_block = Some(block);
                 break;
@@ -487,6 +535,17 @@ impl<'a> StmtParser<'a> {
                 name,
                 ty,
                 value,
+                then_block,
+                else_ifs,
+                else_block,
+                span: join_spans(start, end),
+            },
+            IfHead::Chain {
+                bindings,
+                condition,
+            } => Statement::IfConstChain {
+                bindings,
+                condition,
                 then_block,
                 else_ifs,
                 else_block,
@@ -515,36 +574,33 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse `match <scrutinee>` followed by an indented block of arms. Each arm is
-    /// a member path on its own line (`bengal`, `tiger::bengal`, or a category
-    /// `tiger`), then an indented arm block — the scrutinee supplies the enum, so an
-    /// arm names a member relative to it, not `Enum::member`. A local enum's `match`
-    /// has no wildcard arm; exhaustiveness and member validity are checker rules, so
-    /// the parser only structures the arms.
+    /// Parse `match <scrutinee> { <arms> }`. Each arm is `pattern => stmt|{ block }`,
+    /// where the pattern is a member path relative to the scrutinee enum (`bengal`,
+    /// `tiger::bengal`, or a category `tiger`) with optional payload bindings. A
+    /// local enum's `match` has no wildcard arm; exhaustiveness and member validity
+    /// are checker rules, so the parser only structures the arms.
     fn match_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `match`
         let scrutinee = self.header_expression(start);
         let mut end = start;
         let mut arms = Vec::new();
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
-            self.advance(); // INDENT
-            while let Some(kind) = self.peek() {
-                match kind {
-                    TokenKind::Dedent => {
-                        // Close the body at the last arm's content, not at the
-                        // `DEDENT` — whose span sits on the following (often
-                        // outdented) line, which would extend the match span over a
-                        // sibling comment or statement and mis-claim it on format.
-                        self.advance();
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
+            self.advance(); // `{`
+            loop {
+                match self.peek() {
+                    None | Some(TokenKind::RightBrace) => {
+                        if matches!(self.peek(), Some(TokenKind::RightBrace)) {
+                            end = self.advance().span;
+                        }
                         break;
                     }
-                    TokenKind::Newline => {
+                    Some(TokenKind::Newline) => {
                         self.advance();
                     }
-                    kind if is_line_comment(kind) => self.take_own_line_comment(),
-                    // A stray nested block under an arm header is skipped rather
-                    // than mis-parsed; the arm header itself opens its own block.
-                    TokenKind::Indent => {
+                    Some(kind) if is_line_comment(kind) => self.take_own_line_comment(),
+                    // A stray nested block where an arm header was expected is skipped
+                    // rather than mis-parsed.
+                    Some(TokenKind::LeftBrace) => {
                         self.skip_block();
                     }
                     _ => {
@@ -559,7 +615,7 @@ impl<'a> StmtParser<'a> {
             self.error_span_reason(
                 start,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::MatchBody),
-                "expected an indented match body",
+                "expected a `{ … }` match body",
             );
         }
         Statement::Match {
@@ -569,24 +625,39 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse one `match` arm: a member-path header line (`bengal`, `tiger::bengal`,
-    /// or a category `tiger`) relative to the scrutinee enum, then its indented
-    /// block. An arm header that is not a `::`-separated run of identifiers is a
-    /// parse error.
+    /// Parse one `match` arm: `pattern => stmt|{ block }`. The pattern is a member
+    /// path relative to the scrutinee enum; a header that is not a `::`-separated
+    /// run of identifiers, or one with no `=>`, is a parse error.
     fn match_arm(&mut self) -> Option<MatchArm> {
         let start = self.tokens[self.pos].span;
-        let header = self.take_line();
-        let span = line_span_or(header, start);
-        let Some(pattern) = arm_pattern(self.source, header) else {
+        let line_end = self.find_line_end();
+        let arrow =
+            (self.pos..line_end).find(|&index| self.tokens[index].kind == TokenKind::FatArrow);
+        let Some(arrow) = arrow else {
+            let header = &self.tokens[self.pos..line_end];
+            let span = line_span_or(header, start);
+            self.error_span_reason(
+                span,
+                ParseDiagnosticReason::MatchArmMemberPath,
+                "a match arm is `pattern => statement`, the pattern a member path relative to the enum",
+            );
+            self.pos = line_end;
+            self.skip_block_if_braced();
+            return None;
+        };
+        let pattern_tokens = &self.tokens[self.pos..arrow];
+        let span = line_span_or(pattern_tokens, start);
+        self.pos = arrow + 1; // past `=>`
+        let Some(pattern) = arm_pattern(self.source, pattern_tokens) else {
             self.error_span_reason(
                 span,
                 ParseDiagnosticReason::MatchArmMemberPath,
                 "a match arm is a member path relative to the enum, with optional payload bindings",
             );
-            self.skip_block_if_indented();
+            let _ = self.parse_clause_body();
             return None;
         };
-        let block = self.block_body();
+        let block = self.parse_clause_body();
         Some(MatchArm {
             path: pattern.path,
             path_spans: pattern.path_spans,
@@ -600,11 +671,15 @@ impl<'a> StmtParser<'a> {
         })
     }
 
-    /// Skip an indented block if one immediately follows, used to recover after a
-    /// malformed arm header so its body does not leak into the surrounding arms.
-    fn skip_block_if_indented(&mut self) {
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
+    /// Skip a `{ … }` block if one immediately follows (across any newlines), used
+    /// to recover after a malformed arm header so its body does not leak.
+    fn skip_block_if_braced(&mut self) {
+        let save = self.pos;
+        self.skip_newlines();
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             self.skip_block();
+        } else {
+            self.pos = save;
         }
     }
 
@@ -631,8 +706,65 @@ impl<'a> StmtParser<'a> {
         }
     }
 
+    /// Whether the current line is a B6 let-else: a `const`/`var` binding whose
+    /// header line carries a top-level `else` diverging tail. Inspects the line
+    /// without consuming it.
+    fn at_let_else(&self) -> bool {
+        let line = &self.tokens[self.pos..self.find_line_end()];
+        let is_binding = matches!(
+            line.first().map(|token| token.kind),
+            Some(TokenKind::Keyword(Keyword::Const | Keyword::Var))
+        );
+        is_binding && find_top_level_else(line).is_some()
+    }
+
+    /// Parse a B6 let-else: `const`/`var name [: ty] = value else <diverging>`. The
+    /// binding before `else` is parsed by the simple-statement parser; the tail is a
+    /// braced or inline diverging body. Parse-only; the checker rejects it.
+    fn let_else_stmt(&mut self) -> Statement {
+        let start = self.tokens[self.pos].span;
+        let line_end = self.find_line_end();
+        let else_offset = find_top_level_else(&self.tokens[self.pos..line_end])
+            .expect("let-else detected before dispatch");
+        let binding_end = self.pos + else_offset;
+        let binding = parse_simple_statement(
+            self.source,
+            &self.tokens[self.pos..binding_end],
+            &mut self.diagnostics,
+        );
+        self.pos = binding_end + 1; // past the `else`
+        let else_block = self.parse_clause_body();
+        let (is_var, name, ty, value) = match binding {
+            Some(Statement::Const {
+                name, ty, value, ..
+            }) => (false, name, ty, value),
+            Some(Statement::Var {
+                name, ty, value, ..
+            }) => (
+                true,
+                name,
+                ty,
+                value.unwrap_or(Expression::Error { span: start }),
+            ),
+            _ => (
+                false,
+                String::new(),
+                None,
+                Expression::Error { span: start },
+            ),
+        };
+        Statement::LetElse {
+            is_var,
+            name,
+            ty,
+            value,
+            span: join_spans(start, else_block.span),
+            else_block,
+        }
+    }
+
     /// Parse a checked-arithmetic form: the binding prefix and single operation on
-    /// the header line, then the indented `on out_of_range`/`on zero_divisor` arms.
+    /// the header line, then the trailing `on out_of_range`/`on zero_divisor` arms.
     /// The parser captures the operation and each arm block; the checker owns which
     /// arms an operation requires and that each arm diverges.
     fn checked_stmt(&mut self) -> Statement {
@@ -660,9 +792,10 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Consume the indented block of `on <faultkind>` arms of a checked form. Returns
-    /// the two optional arm blocks (by kind, regardless of source order) and the span
-    /// of the last arm consumed. A missing indented block is a `CheckedBody` error.
+    /// Consume the trailing `on <faultkind>` arms of a checked form. Each arm
+    /// cuddles the previous arm's `}` or sits on its own line. Returns the two
+    /// optional arm blocks (by kind, regardless of source order) and the span of
+    /// the last arm consumed. No arm at all is a `CheckedBody` error.
     fn checked_arms(
         &mut self,
         header_start: SourceSpan,
@@ -670,62 +803,52 @@ impl<'a> StmtParser<'a> {
         let mut out_of_range = None;
         let mut zero_divisor = None;
         let mut end = header_start;
-        if !matches!(self.peek(), Some(TokenKind::Indent)) {
+        let mut saw_arm = false;
+        loop {
+            let save = self.pos;
+            self.skip_newlines();
+            if !self.at_word_past_newlines("on") {
+                self.pos = save;
+                break;
+            }
+            saw_arm = true;
+            if let Some((fault, block)) = self.checked_arm() {
+                end = block.span;
+                let slot = match fault {
+                    CheckedFault::OutOfRange => &mut out_of_range,
+                    CheckedFault::ZeroDivisor => &mut zero_divisor,
+                };
+                if slot.is_some() {
+                    self.error_span_reason(
+                        block.span,
+                        ParseDiagnosticReason::CheckedArm,
+                        "this checked arm is already given",
+                    );
+                } else {
+                    *slot = Some(block);
+                }
+            }
+        }
+        if !saw_arm {
             self.error_span_reason(
                 header_start,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::CheckedBody),
-                "expected indented `on out_of_range` / `on zero_divisor` arms",
+                "expected `on out_of_range` / `on zero_divisor` arms",
             );
-            return (out_of_range, zero_divisor, end);
-        }
-        self.advance(); // INDENT
-        while let Some(kind) = self.peek() {
-            match kind {
-                TokenKind::Dedent => {
-                    self.advance();
-                    break;
-                }
-                TokenKind::Newline => {
-                    self.advance();
-                }
-                kind if is_line_comment(kind) => self.take_own_line_comment(),
-                // A stray nested block under an arm header opens its own block; skip
-                // an unexpected extra indent rather than mis-parsing it.
-                TokenKind::Indent => {
-                    self.skip_block();
-                }
-                _ => {
-                    if let Some((fault, block)) = self.checked_arm() {
-                        end = block.span;
-                        let slot = match fault {
-                            CheckedFault::OutOfRange => &mut out_of_range,
-                            CheckedFault::ZeroDivisor => &mut zero_divisor,
-                        };
-                        if slot.is_some() {
-                            self.error_span_reason(
-                                block.span,
-                                ParseDiagnosticReason::CheckedArm,
-                                "this checked arm is already given",
-                            );
-                        } else {
-                            *slot = Some(block);
-                        }
-                    }
-                }
-            }
         }
         (out_of_range, zero_divisor, end)
     }
 
-    /// Parse one checked arm: an `on out_of_range` / `on zero_divisor` header line,
-    /// then its indented block. A header that is not one of those two forms is a
-    /// `CheckedArm` parse error, and its block is skipped so it does not leak.
+    /// Parse one checked arm: an `on out_of_range` / `on zero_divisor` header, then
+    /// its braced or inline diverging body. A header that is not one of those two
+    /// forms is a `CheckedArm` parse error, and its body is skipped so it does not
+    /// leak. The cursor is at the `on` identifier.
     fn checked_arm(&mut self) -> Option<(CheckedFault, Block)> {
         let start = self.tokens[self.pos].span;
-        let header = self.take_line();
-        let span = line_span_or(header, start);
-        let fault = match header {
-            [on, kind]
+        let on = self.tokens.get(self.pos);
+        let kind = self.tokens.get(self.pos + 1);
+        let fault = match (on, kind) {
+            (Some(on), Some(kind))
                 if on.kind == TokenKind::Identifier
                     && on.text(self.source) == "on"
                     && kind.kind == TokenKind::Identifier =>
@@ -739,15 +862,20 @@ impl<'a> StmtParser<'a> {
             _ => None,
         };
         let Some(fault) = fault else {
+            let line_end = self.find_line_end();
+            let span = line_span_or(&self.tokens[self.pos..line_end], start);
             self.error_span_reason(
                 span,
                 ParseDiagnosticReason::CheckedArm,
                 "a checked arm is `on out_of_range` or `on zero_divisor`",
             );
-            self.skip_block_if_indented();
+            self.pos = line_end;
+            self.skip_block_if_braced();
             return None;
         };
-        let block = self.block_body();
+        self.advance(); // `on`
+        self.advance(); // fault kind
+        let block = self.parse_clause_body();
         Some((fault, block))
     }
 
@@ -769,13 +897,17 @@ impl<'a> StmtParser<'a> {
     fn if_head(&mut self, keyword: SourceSpan) -> IfHead {
         let line = self.take_line();
         let error_span = line_span_or(line, keyword);
-        // A `const` head is an existence binding; any other head is a condition
-        // expression. Both report their own failure and fall back to
-        // `Expression::Error`, so the head is always present.
-        let head = if matches!(
+        let starts_const = matches!(
             line.first().map(|token| token.kind),
             Some(TokenKind::Keyword(Keyword::Const))
-        ) {
+        );
+        // A `const` head is an existence binding; a `const … and …` head (B5) is a
+        // chain of bindings and an optional trailing condition; any other head is a
+        // condition expression. Each reports its own failure and falls back to
+        // `Expression::Error`, so the head is always present.
+        let head = if starts_const && top_level_and_starts(line).len() > 1 {
+            Some(self.parse_if_const_chain(line))
+        } else if starts_const {
             parse_if_const_head(self.source, line, &mut self.diagnostics)
                 .map(|(name, ty, value)| IfHead::ConstBinding { name, ty, value })
         } else {
@@ -784,9 +916,44 @@ impl<'a> StmtParser<'a> {
         head.unwrap_or(IfHead::Expr(Expression::Error { span: error_span }))
     }
 
-    /// Consume the rest of a header line up to and including its `NEWLINE`.
-    /// Used for headers with no expression (`transaction`, `else`), so any
-    /// stray tokens before the newline do not leak into the block body.
+    /// Parse a B5 `if const` chain head: parts split on top-level `and`, where each
+    /// leading `const …` part is an existence binding and the remainder (from the
+    /// first non-`const` part) is the trailing condition. Parse-only; the checker
+    /// rejects the chain until it is adopted.
+    fn parse_if_const_chain(&mut self, line: &[Token]) -> IfHead {
+        let starts = top_level_and_starts(line);
+        let mut bindings = Vec::new();
+        let mut condition_from = None;
+        for (index, &start) in starts.iter().enumerate() {
+            // The part runs to just before the `and` that opens the next part (that
+            // `and` sits one token before the next part's start), or to end of line.
+            let part_end = starts.get(index + 1).map_or(line.len(), |next| next - 1);
+            let part = &line[start..part_end];
+            if part.first().map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::Const)) {
+                if let Some((name, ty, value)) =
+                    parse_if_const_head(self.source, part, &mut self.diagnostics)
+                {
+                    bindings.push(IfConstBinding { name, ty, value });
+                }
+            } else {
+                // The first non-`const` part begins the trailing condition; keep the
+                // slice from here to the end so a multi-part `cond1 and cond2` rejoins.
+                condition_from = Some(start);
+                break;
+            }
+        }
+        let condition = condition_from
+            .and_then(|from| expr_of(self.source, &line[from..], &mut self.diagnostics));
+        IfHead::Chain {
+            bindings,
+            condition,
+        }
+    }
+
+    /// Consume the rest of a header line up to and including its `NEWLINE`, or up
+    /// to (but not including) a block-opening `{`. Used for headers with no
+    /// expression (`transaction`), so any stray tokens before the body do not leak
+    /// into the block.
     fn consume_header_line(&mut self) {
         while let Some(kind) = self.peek() {
             match kind {
@@ -794,7 +961,7 @@ impl<'a> StmtParser<'a> {
                     self.advance();
                     break;
                 }
-                TokenKind::Indent | TokenKind::Dedent => break,
+                TokenKind::LeftBrace | TokenKind::RightBrace => break,
                 kind if is_line_comment(kind) => {
                     let token = self.advance();
                     self.record_line_comment(token, CommentPlacement::Trailing);
@@ -806,11 +973,12 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse an indented block that follows a compound-statement header. If no
-    /// `INDENT` is present (a malformed empty body), returns an empty block.
+    /// Parse the mandatory `{ … }` block that follows a compound-statement header.
+    /// If no `{` is present (a malformed empty body), returns an empty block; the
+    /// missing brace is a formatter/checker concern.
     fn block_body(&mut self) -> Block {
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
-            self.parse_nested_block()
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
+            self.parse_braced_block()
         } else {
             // An empty body occupies no source. Anchor a zero-width span at the
             // point a body would start rather than adopting a whole token's span,
@@ -848,24 +1016,81 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse `INDENT statement* DEDENT`, tolerating a missing trailing `DEDENT`
-    /// at the end of the body token slice. A fresh comment accumulator is swapped
-    /// in for the duration so this nested block's comments do not leak into the
-    /// parent block.
-    fn parse_nested_block(&mut self) -> Block {
-        let start = self.advance().span; // `INDENT`
+    /// Parse `{ statement* }`, tolerating a missing trailing `}` at the end of the
+    /// body token slice. A fresh comment accumulator is swapped in for the duration
+    /// so this nested block's comments do not leak into the parent block.
+    fn parse_braced_block(&mut self) -> Block {
+        // Fail closed past the nesting limit: skip the block's tokens without
+        // recursing (the lexer already reported the located nesting-limit finding),
+        // so a deep brace nest cannot overflow the stack or grow the AST with depth.
+        if self.depth >= crate::NESTING_DEPTH_LIMIT {
+            let start = self.tokens[self.pos].span;
+            let end = self.skip_block();
+            return Block {
+                statements: Vec::new(),
+                comments: Vec::new(),
+                span: join_spans(start, end),
+            };
+        }
+        self.depth += 1;
+        let start = self.advance().span; // `{`
         let outer = std::mem::take(&mut self.comments);
         let statements = self.statements();
         let comments = std::mem::replace(&mut self.comments, outer);
-        let end = if matches!(self.peek(), Some(TokenKind::Dedent)) {
+        let end = if matches!(self.peek(), Some(TokenKind::RightBrace)) {
             self.advance().span
         } else {
             statements.last().map_or(start, Statement::span)
         };
+        self.depth -= 1;
         Block {
             statements,
             comments,
             span: join_spans(start, end),
+        }
+    }
+
+    /// Parse a trailing-clause body: a `{ … }` block, or a single inline statement
+    /// as a one-statement block (the inline diverging form of `else`, `on more`, a
+    /// checked arm, or a match arm). Inline-vs-block enforcement is the formatter's.
+    fn parse_clause_body(&mut self) -> Block {
+        // The body may cuddle the clause keyword (`else return -1`, `else {`) or sit
+        // on the next line (`else`\n`{`); skip the separating newlines either way.
+        self.skip_newlines();
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
+            self.parse_braced_block()
+        } else {
+            self.inline_statement_block()
+        }
+    }
+
+    /// Parse one inline statement as a one-statement block. A missing statement
+    /// (nothing before the line break) yields an empty block whose span is anchored
+    /// at the cursor, so the enclosing statement does not over-claim a sibling.
+    fn inline_statement_block(&mut self) -> Block {
+        let anchor = self.tokens.get(self.pos).map(|token| SourceSpan {
+            end_byte: token.span.start_byte,
+            ..token.span
+        });
+        let outer = std::mem::take(&mut self.comments);
+        let statement = if matches!(
+            self.peek(),
+            None | Some(TokenKind::Newline | TokenKind::RightBrace)
+        ) {
+            None
+        } else {
+            self.statement()
+        };
+        let comments = std::mem::replace(&mut self.comments, outer);
+        let span = statement
+            .as_ref()
+            .map(Statement::span)
+            .or(anchor)
+            .unwrap_or_default();
+        Block {
+            statements: statement.into_iter().collect(),
+            comments,
+            span,
         }
     }
 
@@ -874,47 +1099,22 @@ impl<'a> StmtParser<'a> {
         line_end(self.tokens, self.pos)
     }
 
+    /// Report a `{ … }` block where a statement was expected — a bare block has no
+    /// statement form. Points at the opening `{`.
     fn report_unexpected_indented_block(&mut self) {
-        if let Some(span) = self.first_indented_content_span() {
-            self.error_span_reason(
-                span,
-                ParseDiagnosticReason::UnexpectedIndentation,
-                "unexpected indentation; only compound statements introduce nested blocks",
-            );
-        }
-    }
-
-    fn first_indented_content_span(&self) -> Option<SourceSpan> {
-        let mut depth = 0usize;
-        let mut index = self.pos;
-        while let Some(token) = self.tokens.get(index) {
-            match token.kind {
-                TokenKind::Indent => depth += 1,
-                TokenKind::Dedent => {
-                    if depth == 0 {
-                        return None;
-                    }
-                    depth -= 1;
-                    if depth == 0 {
-                        return None;
-                    }
-                }
-                TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment => {}
-                TokenKind::Eof => return None,
-                _ if depth > 0 => {
-                    let line_start = token.span.start_byte - (token.span.column as usize - 1);
-                    return Some(SourceSpan {
-                        start_byte: token.span.start_byte,
-                        end_byte: first_line_end(self.source, line_start),
-                        line: token.span.line,
-                        column: token.span.column,
-                    });
-                }
-                _ => {}
-            }
-            index += 1;
-        }
-        None
+        let token = self.tokens[self.pos];
+        let line_start = token.span.start_byte - (token.span.column as usize - 1);
+        let span = SourceSpan {
+            start_byte: token.span.start_byte,
+            end_byte: first_line_end(self.source, line_start),
+            line: token.span.line,
+            column: token.span.column,
+        };
+        self.error_span_reason(
+            span,
+            ParseDiagnosticReason::UnexpectedIndentation,
+            "unexpected `{`; only compound statements introduce blocks",
+        );
     }
 
     /// A block-introducing keyword (such as a stray `else`) appearing where it
@@ -938,8 +1138,8 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Consume a block-shaped statement that cannot be structured — its header up
-    /// to the `NEWLINE` and any immediately following indented block — and report
-    /// the given diagnostic over the whole span so following statements parse.
+    /// to the `NEWLINE` or `{`, and any following `{ … }` block — and report the
+    /// given diagnostic over the whole span so following statements parse.
     fn swallow_block_statement(
         &mut self,
         reason: ParseDiagnosticReason,
@@ -953,11 +1153,11 @@ impl<'a> StmtParser<'a> {
                     end = self.advance().span;
                     break;
                 }
-                TokenKind::Indent | TokenKind::Dedent => break,
+                TokenKind::LeftBrace | TokenKind::RightBrace => break,
                 _ => end = self.advance().span,
             }
         }
-        if matches!(self.peek(), Some(TokenKind::Indent)) {
+        if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
             end = self.skip_block();
         }
         self.error_span_reason(join_spans(start, end), reason, message);
@@ -979,24 +1179,21 @@ impl<'a> StmtParser<'a> {
         });
     }
 
-    /// Skip a malformed statement block, returning the span of the last token
-    /// consumed. This stays a separate owner from `consume_balanced_block`: it
-    /// tracks and returns the closing span the caller needs, and on an unmatched
-    /// leading `DEDENT` it breaks without consuming the token, leaving the
-    /// enclosing block's close for the caller instead of swallowing it.
+    /// Skip a malformed `{ … }` block, returning the span of the last token
+    /// consumed. The cursor is at the opening `{`. On an unmatched leading `}` it
+    /// breaks without consuming the token, leaving the enclosing block's close for
+    /// the caller instead of swallowing it — `}` is the hard sync anchor.
     fn skip_block(&mut self) -> SourceSpan {
         let mut depth = 0usize;
         let mut end = self.tokens[self.pos].span;
         while let Some(kind) = self.peek() {
             match kind {
-                TokenKind::Indent => {
+                TokenKind::LeftBrace => {
                     depth += 1;
                     end = self.advance().span;
                 }
-                TokenKind::Dedent => {
+                TokenKind::RightBrace => {
                     if depth == 0 {
-                        // An unmatched DEDENT closes the enclosing block; leave
-                        // it for the caller rather than underflow `depth`.
                         break;
                     }
                     depth -= 1;
@@ -1011,6 +1208,9 @@ impl<'a> StmtParser<'a> {
         end
     }
 
+    /// Skip a stray `{ … }` block where a statement was expected, retaining its
+    /// own-line comments as trivia when the block held no statement tokens. The
+    /// cursor is at the opening `{`.
     fn skip_unexpected_indented_block(&mut self) -> SourceSpan {
         let mut depth = 0usize;
         let mut end = self.tokens[self.pos].span;
@@ -1019,12 +1219,12 @@ impl<'a> StmtParser<'a> {
         let mut has_statement_tokens = false;
         while let Some(kind) = self.peek() {
             match kind {
-                TokenKind::Indent => {
+                TokenKind::LeftBrace => {
                     depth += 1;
                     line_has_content = false;
                     end = self.advance().span;
                 }
-                TokenKind::Dedent => {
+                TokenKind::RightBrace => {
                     if depth == 0 {
                         break;
                     }
@@ -1061,6 +1261,42 @@ impl<'a> StmtParser<'a> {
         }
         end
     }
+}
+
+/// Index of the first top-level `else` keyword (bracket depth 0) in a header line,
+/// the B6 let-else separator, or `None` when none is present.
+fn find_top_level_else(tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                depth = depth.saturating_sub(1)
+            }
+            TokenKind::Keyword(Keyword::Else) if depth == 0 => return Some(index),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The start index of each part of a header split on top-level `and` keywords
+/// (bracket depth 0). The first part starts at 0; each later part starts just after
+/// its separating `and`. A single-element result means no top-level `and`.
+fn top_level_and_starts(tokens: &[Token]) -> Vec<usize> {
+    let mut starts = vec![0];
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::LeftBrace => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::RightBrace => {
+                depth = depth.saturating_sub(1)
+            }
+            TokenKind::Keyword(Keyword::And) if depth == 0 => starts.push(index + 1),
+            _ => {}
+        }
+    }
+    starts
 }
 
 /// Parse the binding prefix of a checked form (everything before `checked`) into a

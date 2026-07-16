@@ -553,6 +553,28 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
                 collect_block_type_refs(block, type_refs);
             }
         }
+        Statement::IfConstChain {
+            bindings,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            for binding in bindings {
+                collect_optional_type_ref(binding.ty.as_ref(), type_refs);
+            }
+            collect_block_type_refs(then_block, type_refs);
+            for else_if in else_ifs {
+                collect_block_type_refs(&else_if.block, type_refs);
+            }
+            if let Some(block) = else_block {
+                collect_block_type_refs(block, type_refs);
+            }
+        }
+        Statement::LetElse { ty, else_block, .. } => {
+            collect_optional_type_ref(ty.as_ref(), type_refs);
+            collect_block_type_refs(else_block, type_refs);
+        }
         Statement::While { body, .. } | Statement::Transaction { body, .. } => {
             collect_block_type_refs(body, type_refs)
         }

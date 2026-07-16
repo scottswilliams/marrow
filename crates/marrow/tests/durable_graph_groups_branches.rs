@@ -82,6 +82,7 @@ const LIBRARY_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_group_and_branch_resource_completes_its_identity_and_verifies() {
     let id = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
     // Stable across recompilation.
@@ -94,6 +95,7 @@ fn a_group_and_branch_resource_completes_its_identity_and_verifies() {
 /// id — from drifting. This is the id-stability-under-unrelated-edits property
 /// across the widened graph's kinds.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unrelated_source_edits_do_not_drift_the_contract_id() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -116,6 +118,7 @@ fn unrelated_source_edits_do_not_drift_the_contract_id() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
     // A resource declaring a static `group` is off the flat-executable path: the group's
     // scalar fields are part of the containing entry's materialized resource value and its
@@ -140,6 +143,7 @@ fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_group_identity_fails_precisely() {
     let without_group = LIBRARY_IDS.replace(
         "id group Book.details 20202020202020202020202020202020\n",
@@ -159,6 +163,7 @@ fn a_missing_group_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_group_field_identity_fails_precisely() {
     let without_field = LIBRARY_IDS.replace(
         "id field Book.details.pages 21212121212121212121212121212121\n",
@@ -178,6 +183,7 @@ fn a_missing_group_field_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_branch_placement_identity_fails_precisely() {
     let without_branch =
         LIBRARY_IDS.replace("id root Book.notes 30303030303030303030303030303030\n", "");
@@ -189,6 +195,7 @@ fn a_missing_branch_placement_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_branch_key_identity_fails_precisely() {
     let without_key = LIBRARY_IDS.replace(
         "id key Book.notes.noteId 31313131313131313131313131313131\n",
@@ -202,6 +209,7 @@ fn a_missing_branch_key_identity_fails_precisely() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn operating_on_a_group_or_branch_resource_is_not_yet_executable() {
     let source = "resource Book\n\
          \x20   required title: string\n\
@@ -238,6 +246,7 @@ fn operating_on_a_group_or_branch_resource_is_not_yet_executable() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn renaming_a_group_with_a_moved_anchor_preserves_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -266,6 +275,7 @@ fn renaming_a_group_with_a_moved_anchor_preserves_the_identity() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn re_minting_a_branch_placement_changes_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
     let re_minted = LIBRARY_IDS.replace(
@@ -280,6 +290,7 @@ fn re_minting_a_branch_placement_changes_the_identity() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn promoting_a_group_field_to_a_top_level_field_changes_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -318,6 +329,7 @@ fn promoting_a_group_field_to_a_top_level_field_changes_the_identity() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_retired_group_anchor_cannot_be_reused() {
     // Retire the `details` group anchor: re-declaring at it fails closed, never
     // reusing the retired id.

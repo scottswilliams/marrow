@@ -25,10 +25,11 @@ pub use ast::{
     AliasDecl, Argument, ArmBinding, BinaryOp, Block, CheckedBind, Comment, CommentMarker,
     CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
     EnumPayloadField, Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl,
-    IdentityTypeExpr, IndexDecl, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
-    ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl, ResourceMember,
-    SavedRoot, SourceFile, Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl,
-    TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp, UseDecl, range_expr,
+    IdentityTypeExpr, IfConstBinding, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
+    LoopOrder, MatchArm, ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl,
+    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, StructDecl, SupportSpelling,
+    TestDecl, TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp, UseDecl,
+    range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
@@ -53,14 +54,15 @@ use parse_decl::DeclParser;
 pub const PARSE_SYNTAX: &str = Code::ParseSyntax.as_str();
 
 /// The maximum nesting depth the front end will structure before it stops and
-/// reports [`NESTING_LIMIT`]. The lexer enforces it for layout blocks (`if`,
-/// resource groups, enum members, …) by capping the indent stack, so the token
-/// stream — and the AST and every later walk over it — stays bounded no matter
-/// how deep the source nests; the expression parser enforces it for token-level
-/// nesting (parentheses, unary and binary operands) on a single line. Deeper
-/// source fails closed with a located diagnostic rather than overflowing the
-/// native stack. 256 follows the Clang/rustc convention; it is fixed in v0.1,
-/// not configurable.
+/// reports [`NESTING_LIMIT`]. Two layers enforce it for `{ … }` blocks (`if`,
+/// resource groups, enum members, …): the lexer reports the located finding when
+/// the brace depth first exceeds the limit, and the recursive-descent parser skips
+/// an over-deep block rather than descending into it, so the AST — and every later
+/// walk over it — stays bounded no matter how deep the source nests. The
+/// expression parser enforces it for token-level nesting (parentheses, unary and
+/// binary operands) on a single line. Deeper source fails closed with a located
+/// diagnostic rather than overflowing the native stack. 256 follows the
+/// Clang/rustc convention; it is fixed in v0.1, not configurable.
 pub const NESTING_DEPTH_LIMIT: usize = 256;
 
 /// Reported when source nests deeper than [`NESTING_DEPTH_LIMIT`]. It renders as
@@ -307,25 +309,34 @@ mod decl_parser_corpus {
         // operand should have followed.
         for (source, gap_byte) in [
             (
-                "fn f()\n    const x: int =\n",
-                "fn f()\n    const x: int =".len(),
-            ),
-            ("fn f()\n    return 1 +\n", "fn f()\n    return 1 +".len()),
-            ("fn f()\n    delete\n", "fn f()\n    delete".len()),
-            ("fn f()\n    x =\n", "fn f()\n    x =".len()),
-            (
-                "fn f()\n    if const x =\n        x\n",
-                "fn f()\n    if const x =".len(),
-            ),
-            ("fn f()\n    if\n        x\n", "fn f()\n    if".len()),
-            ("fn f()\n    while\n        x\n", "fn f()\n    while".len()),
-            (
-                "fn f()\n    match\n        a\n            x\n",
-                "fn f()\n    match".len(),
+                "fn f() {\n    const x: int =\n}\n",
+                "fn f() {\n    const x: int =".len(),
             ),
             (
-                "fn f()\n    if true\n        x\n    else if\n        x\n",
-                "fn f()\n    if true\n        x\n    else if".len(),
+                "fn f() {\n    return 1 +\n}\n",
+                "fn f() {\n    return 1 +".len(),
+            ),
+            ("fn f() {\n    delete\n}\n", "fn f() {\n    delete".len()),
+            ("fn f() {\n    x =\n}\n", "fn f() {\n    x =".len()),
+            (
+                "fn f() {\n    if const x = {\n        x\n    }\n}\n",
+                "fn f() {\n    if const x =".len(),
+            ),
+            (
+                "fn f() {\n    if {\n        x\n    }\n}\n",
+                "fn f() {\n    if".len(),
+            ),
+            (
+                "fn f() {\n    while {\n        x\n    }\n}\n",
+                "fn f() {\n    while".len(),
+            ),
+            (
+                "fn f() {\n    match {\n        a => { x }\n    }\n}\n",
+                "fn f() {\n    match".len(),
+            ),
+            (
+                "fn f() {\n    if true {\n        x\n    } else if {\n        x\n    }\n}\n",
+                "fn f() {\n    if true {\n        x\n    } else if".len(),
             ),
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
@@ -366,7 +377,7 @@ mod decl_parser_corpus {
     fn empty_match_scrutinee_reports_one_expression_gap() {
         use super::{DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason};
 
-        let source = "fn f()\n    match\n        a\n            x\n";
+        let source = "fn f() {\n    match {\n        a => { x }\n    }\n}\n";
         let ParsedSource { diagnostics, .. } = parse_source(source);
         let gaps: Vec<_> = diagnostics
             .iter()
@@ -396,7 +407,7 @@ mod decl_parser_corpus {
     fn empty_assignment_target_reports_a_gap_before_the_equals() {
         use super::{DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason};
 
-        let source = "fn f()\n    = 5\n";
+        let source = "fn f() {\n    = 5\n}\n";
         let ParsedSource { diagnostics, .. } = parse_source(source);
         let expression = diagnostics
             .iter()
@@ -407,7 +418,7 @@ mod decl_parser_corpus {
                     ))
             })
             .unwrap_or_else(|| panic!("expected an expression-gap diagnostic: {diagnostics:#?}"));
-        assert_eq!(expression.span.start_byte, "fn f()\n    ".len());
+        assert_eq!(expression.span.start_byte, "fn f() {\n    ".len());
         assert!(expression.message.contains("expected an expression"));
     }
 
@@ -417,8 +428,8 @@ mod decl_parser_corpus {
     #[test]
     fn empty_for_operand_reports_a_single_header_diagnostic() {
         for source in [
-            "fn f()\n    for x in\n        x\n",
-            "fn f()\n    for x in 1..2 by\n        x\n",
+            "fn f() {\n    for x in {\n        x\n    }\n}\n",
+            "fn f() {\n    for x in 1..2 by {\n        x\n    }\n}\n",
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
             let header: Vec<_> = diagnostics
@@ -449,19 +460,19 @@ mod decl_parser_corpus {
         // should sit at, just past the complete operand.
         for (source, expected, gap_byte) in [
             (
-                "fn f()\n    return (1\n",
+                "fn f() {\n    return (1\n}\n",
                 "expected `)`",
-                "fn f()\n    return (1".len(),
+                "fn f() {\n    return (1".len(),
             ),
             (
-                "fn f()\n    return g(1\n",
+                "fn f() {\n    return g(1\n}\n",
                 "expected `)`",
-                "fn f()\n    return g(1".len(),
+                "fn f() {\n    return g(1".len(),
             ),
             (
-                "fn f()\n    return g(1 2)\n",
+                "fn f() {\n    return g(1 2)\n}\n",
                 "expected `,`",
-                "fn f()\n    return g(1".len(),
+                "fn f() {\n    return g(1".len(),
             ),
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
@@ -494,7 +505,7 @@ mod decl_parser_corpus {
     /// header owns recovery for everything inside it.
     #[test]
     fn for_header_unclosed_paren_reports_only_the_header_diagnostic() {
-        let source = "fn f()\n    for x in (1\n        x\n";
+        let source = "fn f() {\n    for x in (1 {\n        x\n    }\n}\n";
         let ParsedSource { diagnostics, .. } = parse_source(source);
         let header: Vec<_> = diagnostics
             .iter()
@@ -560,7 +571,7 @@ mod decl_parser_corpus {
     /// the offending token: `*` cannot start an expression, so it reports there.
     #[test]
     fn a_non_statement_line_reports_at_the_failure_token() {
-        let ParsedSource { diagnostics, .. } = parse_source("fn f()\n    * nope\n");
+        let ParsedSource { diagnostics, .. } = parse_source("fn f() {\n    * nope\n}\n");
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(
             diagnostics[0].message.contains("expected an expression"),
@@ -599,22 +610,24 @@ mod nesting_limit {
     }
 
     /// A source with `depth` nested `if` blocks, the deep-statement form. Each
-    /// level indents one more level and holds the next `if`.
+    /// level opens one more brace and holds the next `if`.
     fn nested_ifs(depth: usize) -> String {
-        let mut source = String::from("module app\n\npub fn main()\n");
+        let mut source = String::from("module app\n\npub fn main() {\n");
         for level in 0..depth {
-            let indent = "    ".repeat(level + 1);
-            source.push_str(&format!("{indent}if {level} < {}\n", level + 1));
+            source.push_str(&format!("if {level} < {} {{\n", level + 1));
         }
-        source.push_str(&"    ".repeat(depth + 1));
         source.push_str("return\n");
+        for _ in 0..depth {
+            source.push_str("}\n");
+        }
+        source.push_str("}\n");
         source
     }
 
     /// A source returning `depth` nested parentheses, the deep-expression form.
     fn nested_parens(depth: usize) -> String {
         let expr = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
-        format!("module app\n\npub fn main()\n    return {expr}\n")
+        format!("module app\n\npub fn main() {{\n    return {expr}\n}}\n")
     }
 
     /// A flat left-associated `1 op 1 op …` chain of `depth` operators. The AST
@@ -622,36 +635,42 @@ mod nesting_limit {
     /// so it must be counted toward the same nesting limit as parentheses.
     fn flat_operator_chain(op: &str, depth: usize) -> String {
         let chain = vec!["1"; depth + 1].join(&format!(" {op} "));
-        format!("module app\n\npub fn main()\n    return {chain}\n")
+        format!("module app\n\npub fn main() {{\n    return {chain}\n}}\n")
     }
 
     /// A flat field-access chain `a.f.f.…` of `depth` segments. Each `.f` deepens
     /// the AST by one, so it must be counted like a parenthesis.
     fn field_access_chain(depth: usize) -> String {
         let chain = format!("a{}", ".f".repeat(depth));
-        format!("module app\n\npub fn main()\n    return {chain}\n")
+        format!("module app\n\npub fn main() {{\n    return {chain}\n}}\n")
     }
 
-    /// `depth` enum members each nested under the previous one by indentation.
+    /// `depth` enum members each nested under the previous one as a category via
+    /// braces.
     fn nested_enum_members(depth: usize) -> String {
-        let mut source = String::from("module app\n\nenum E\n");
+        let mut source = String::from("module app\n\nenum E {\n");
         for level in 0..depth {
-            source.push_str(&"    ".repeat(level + 1));
-            source.push_str(&format!("m{level}\n"));
+            source.push_str(&format!("m{level} {{\n"));
         }
+        for _ in 0..depth {
+            source.push_str("}\n");
+        }
+        source.push_str("}\n");
         source
     }
 
-    /// `depth` resource groups each nested under the previous one, with a leaf
-    /// field at the bottom so the innermost group has a body.
+    /// `depth` resource groups each nested under the previous one via braces, with a
+    /// leaf field at the bottom so the innermost group has a body.
     fn nested_resource_groups(depth: usize) -> String {
-        let mut source = String::from("module app\n\nresource R\n");
+        let mut source = String::from("module app\n\nresource R {\n");
         for level in 0..depth {
-            source.push_str(&"    ".repeat(level + 1));
-            source.push_str(&format!("g{level}(k: int)\n"));
+            source.push_str(&format!("g{level}(k: int) {{\n"));
         }
-        source.push_str(&"    ".repeat(depth + 1));
         source.push_str("leaf: int\n");
+        for _ in 0..depth {
+            source.push_str("}\n");
+        }
+        source.push_str("}\n");
         source
     }
 
@@ -671,40 +690,49 @@ mod nesting_limit {
             .count()
     }
 
-    /// Layout nesting is capped in the lexer, so however deep the source nests,
-    /// the token stream the parser and every later walk see stays bounded by the
-    /// limit. Without this bound a deep nest would materialize a token, AST node,
-    /// and walk frame per level — the unbounded front-end work the depth limit
-    /// exists to prevent. A 50x-deeper nest must produce essentially the same
-    /// token count, not 50x more.
+    /// The recursive-descent parser fails closed at the nesting limit: past it a
+    /// deep brace nest skips its body rather than recursing, so the AST (and every
+    /// later walk over it) stays bounded no matter how deep the braces go. Without
+    /// this bound a deep nest would materialize an AST node and walk frame per
+    /// level. A 12.5x-deeper nest must yield essentially the same node count.
     #[test]
-    fn over_deep_layout_yields_a_bounded_token_stream() {
-        for build in [
-            nested_resource_groups as fn(usize) -> String,
-            nested_enum_members,
-            nested_ifs,
-        ] {
-            let shallow = super::lex_source(&build(NESTING_DEPTH_LIMIT * 4))
-                .tokens
-                .len();
-            let deep = super::lex_source(&build(NESTING_DEPTH_LIMIT * 50))
-                .tokens
-                .len();
-            // The over-deep tail contributes no content tokens, so going 12.5x
-            // deeper leaves the stream within a few framing tokens of the limit
-            // rather than scaling with depth.
-            assert!(
-                deep <= shallow + 8,
-                "a 50x-deeper nest must not grow the token stream with depth \
-                 (4x-limit={shallow}, 50x-limit={deep})"
-            );
+    fn over_deep_braces_yield_a_bounded_ast() {
+        fn statement_nodes(block: &super::Block) -> usize {
+            block
+                .statements
+                .iter()
+                .map(|statement| {
+                    1 + match statement {
+                        super::Statement::If { then_block, .. } => statement_nodes(then_block),
+                        super::Statement::While { body, .. }
+                        | super::Statement::For { body, .. }
+                        | super::Statement::Transaction { body, .. } => statement_nodes(body),
+                        _ => 0,
+                    }
+                })
+                .sum()
         }
+        let count = |depth: usize| {
+            let parsed = parse_on_large_stack(nested_ifs(depth));
+            parsed
+                .file
+                .function("main")
+                .map(|function| statement_nodes(&function.body))
+                .unwrap_or(0)
+        };
+        let shallow = count(NESTING_DEPTH_LIMIT * 4);
+        let deep = count(NESTING_DEPTH_LIMIT * 50);
+        assert_eq!(
+            shallow, deep,
+            "a deeper brace nest must not grow the AST with depth \
+             (4x-limit={shallow}, 50x-limit={deep})"
+        );
     }
 
-    /// A whole over-deep region trips the limit once, not once per line, so a
+    /// A whole over-deep region trips the limit once, not once per brace, so a
     /// deeply nested file yields a single diagnostic rather than a flood.
     #[test]
-    fn over_deep_layout_reports_the_limit_once() {
+    fn over_deep_braces_report_the_limit_once() {
         assert_eq!(
             nesting_limit_count(&nested_resource_groups(NESTING_DEPTH_LIMIT * 4)),
             1
@@ -721,11 +749,14 @@ mod nesting_limit {
     #[test]
     fn separate_over_deep_regions_each_report() {
         let nest = |name: &str| {
-            let mut source = format!("enum {name}\n");
+            let mut source = format!("enum {name} {{\n");
             for level in 0..(NESTING_DEPTH_LIMIT * 2) {
-                source.push_str(&"    ".repeat(level + 1));
-                source.push_str(&format!("m{level}\n"));
+                source.push_str(&format!("m{level} {{\n"));
             }
+            for _ in 0..(NESTING_DEPTH_LIMIT * 2) {
+                source.push_str("}\n");
+            }
+            source.push_str("}\n");
             source
         };
         let source = format!("module app\n\n{}\n{}", nest("A"), nest("B"));
@@ -733,13 +764,14 @@ mod nesting_limit {
     }
 
     /// Sibling members or statements at the same depth are not nesting; an
-    /// arbitrarily wide body must never trip the layout limit.
+    /// arbitrarily wide body must never trip the nesting limit.
     #[test]
     fn wide_bodies_do_not_trip_the_limit() {
-        let mut wide_resource = String::from("module app\n\nresource R\n");
+        let mut wide_resource = String::from("module app\n\nresource R {\n");
         for index in 0..(NESTING_DEPTH_LIMIT * 10) {
             wide_resource.push_str(&format!("    f{index}: int\n"));
         }
+        wide_resource.push_str("}\n");
         assert_eq!(nesting_limit_count(&wide_resource), 0);
     }
 

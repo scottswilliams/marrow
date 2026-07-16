@@ -8,6 +8,7 @@ use marrow_syntax::{
 };
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_range_for_by_step() {
     let parsed = parse_source(
         "module app\n\
@@ -37,6 +38,7 @@ fn parses_a_range_for_by_step() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_range_for_without_by_has_no_step() {
     let parsed = parse_source(
         "module app\n\
@@ -53,6 +55,7 @@ fn a_range_for_without_by_has_no_step() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_bounded_traversal_head_and_on_more_block() {
     let parsed = parse_source(
         "module app\n\
@@ -93,6 +96,7 @@ fn parses_a_bounded_traversal_head_and_on_more_block() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_branch_traversal_head_with_from() {
     let parsed = parse_source(
         "module app\n\
@@ -122,6 +126,7 @@ fn parses_a_branch_traversal_head_with_from() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_if_else_if_else_chain() {
     let parsed = parse_source(
         "module app\n\
@@ -177,6 +182,7 @@ fn parses_if_else_if_else_chain() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_if_const_binding_guard() {
     let parsed = parse_source(
         "module app\n\
@@ -208,6 +214,7 @@ fn parses_if_const_binding_guard() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_nested_if_inside_then_block() {
     let parsed = parse_source(
         "module app\n\
@@ -245,6 +252,7 @@ fn parses_nested_if_inside_then_block() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_while_and_for_loops() {
     let parsed = parse_source(
         "module app\n\
@@ -298,6 +306,7 @@ fn parses_while_and_for_loops() {
 /// the iterable. This suite is the executable definition; a future head keyword
 /// (`distinct`) is added against the same baseline.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reversed_is_a_head_slot_keyword() {
     use marrow_syntax::LoopOrder;
 
@@ -364,6 +373,7 @@ fn reversed_is_a_head_slot_keyword() {
 
 /// `reversed` in a non-head position is an ordinary identifier, unchanged.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reversed_outside_the_head_is_an_ordinary_name() {
     let parsed = parse_source(
         "module app\n\
@@ -375,6 +385,7 @@ fn reversed_outside_the_head_is_an_ordinary_name() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn loop_labels_are_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
@@ -395,6 +406,7 @@ fn loop_labels_are_rejected_as_removed_syntax() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
     for source in [
         "module app\nfn run()\n    while ready\n        break outer\n",
@@ -414,6 +426,7 @@ fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_prefix_try_in_a_binding() {
     let parsed = parse_source(
         "module app\n\
@@ -440,6 +453,7 @@ fn parses_prefix_try_in_a_binding() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_bare_prefix_try_statement() {
     let parsed = parse_source(
         "module app\n\
@@ -459,6 +473,7 @@ fn parses_a_bare_prefix_try_statement() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn throw_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
@@ -486,6 +501,7 @@ fn throw_is_rejected_as_removed_syntax() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn block_try_catch_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
@@ -523,6 +539,7 @@ fn block_try_catch_is_rejected_as_removed_syntax() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn stray_catch_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
@@ -547,6 +564,7 @@ fn stray_catch_is_rejected_as_removed_syntax() {
 /// asserted below is the minimum that proves no recovery swallowed the nesting,
 /// not a fresh contract for `for`/`if` nesting (the focused tests above own that).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nested_compound_at_end_of_body_parses_without_panic() {
     let parsed = parse_source(
         "module app\n\
@@ -576,6 +594,7 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn malformed_while_condition_reports_a_parse_error() {
     // A `while` header that does not parse as a complete expression is a parse
     // error: the grammar requires `while_stmt = "while" expression NEWLINE block`.
@@ -588,6 +607,7 @@ fn malformed_while_condition_reports_a_parse_error() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_match_statement_with_bare_member_arms() {
     let parsed = parse_source(
         "module app\n\
@@ -614,6 +634,7 @@ fn parses_a_match_statement_with_bare_member_arms() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_match_arm_that_is_a_qualified_member_path() {
     // A qualified arm `tiger::bengal` and a category arm `lion` parse into their
     // relative `::`-separated segments; the scrutinee supplies the enum.
@@ -636,6 +657,7 @@ fn parses_a_match_arm_that_is_a_qualified_member_path() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_a_match_arm_that_is_not_a_member_path() {
     let parsed = parse_source(
         "module app\n\

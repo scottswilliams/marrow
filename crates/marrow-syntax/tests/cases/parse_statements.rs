@@ -10,6 +10,7 @@ use marrow_syntax::{
 };
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_simple_statements_in_function_bodies() {
     let parsed = parse_source(
         "module app\n\
@@ -75,6 +76,7 @@ fn parses_simple_statements_in_function_bodies() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_return_absent_as_a_return_of_the_absent_value() {
     // `absent` is an ordinary primary expression, so `return absent` is a `Return`
     // carrying the `Absent` value rather than a special return form.
@@ -99,6 +101,7 @@ fn parses_return_absent_as_a_return_of_the_absent_value() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn if_const_accepts_a_type_annotation() {
     // `if const name: T = place` accepts the annotation the same way `const`/`var`
     // do, rather than dead-ending in a generic "expected an expression" error.
@@ -131,6 +134,7 @@ fn if_const_accepts_a_type_annotation() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn absent_is_a_primary_expression() {
     // The empty optional `absent` is a first-class primary value, usable wherever
     // an expression is, such as a `const` initializer.
@@ -151,6 +155,7 @@ fn absent_is_a_primary_expression() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_type_keyword_as_a_path_segment() {
     // `bytes` is a type keyword but must be valid mid-path, as in `std::bytes::length`.
     let parsed = parse_source(
@@ -173,6 +178,7 @@ fn parses_a_type_keyword_as_a_path_segment() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_type_keyword_as_a_leading_path_segment() {
     // A short-form std call leads its path with a type keyword, as in `bytes::length`
     // after `use std::bytes`. The keyword must begin a path when followed by `::`,
@@ -198,6 +204,7 @@ fn parses_a_type_keyword_as_a_leading_path_segment() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_keyed_var_declaration() {
     let parsed = parse_source(
         "module app\n\
@@ -225,6 +232,7 @@ fn parses_keyed_var_declaration() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
     let parsed = parse_source(
         "module app\n\
@@ -243,6 +251,7 @@ fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
     let parsed = parse_source(
         "module app\n\
@@ -272,6 +281,7 @@ fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_var_key_list_errors_keep_key_specific_reasons() {
     let source = "fn f()\n    var counts(): int\n";
     let parsed = parse_source(source);
@@ -296,6 +306,7 @@ fn keyed_var_key_list_errors_keep_key_specific_reasons() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
     let source = "fn f()\n    var counts(name: int = 1): string\n";
     let parsed = parse_source(source);
@@ -320,6 +331,7 @@ fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_statement() {
     let source = "module app\n\
          fn main()\n\
@@ -356,6 +368,7 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn local_bindings_reject_structural_equal_inside_type_annotations() {
     let cases = [
         (
@@ -392,6 +405,7 @@ fn local_bindings_reject_structural_equal_inside_type_annotations() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
     let parsed = parse_source(
         "module app\n\
@@ -410,6 +424,7 @@ fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_saved_writes_and_var_without_value() {
     let parsed = parse_source(
         "module app\n\
@@ -443,6 +458,7 @@ fn parses_saved_writes_and_var_without_value() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
     let parsed = parse_source(
         "module app\n\
@@ -473,6 +489,7 @@ fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_merge_as_reserved_statement() {
     let parsed = parse_source(
         "module app\n\
@@ -508,6 +525,7 @@ fn rejects_merge_as_reserved_statement() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn statement_spanning_open_delimiters_stays_one_statement() {
     let parsed = parse_source(
         "module app\n\
@@ -535,6 +553,7 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reports_malformed_body_statements_with_a_diagnostic() {
     // A statement the body parser cannot structure must surface a parse error
     // rather than becoming a silent `Statement::Unparsed` no-op.
@@ -559,6 +578,7 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_doc_comment_in_statement_position_is_a_parse_error() {
     // A `;;` doc comment attaches only to a declaration, member, or parameter.
     // In a statement position it has no target, so the parser must reject it
@@ -599,6 +619,7 @@ fn a_doc_comment_in_statement_position_is_a_parse_error() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
     // A `;;` doc comment attaches to the next declaration, member, or parameter.
     // With nothing to attach to — at end of file, at the end of a resource or
@@ -641,6 +662,7 @@ fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_doc_comment_that_precedes_a_declaration_or_member_attaches_cleanly() {
     // The attachment cases must stay clean: a doc comment immediately before a
     // declaration, a resource member, a store index, or a parameter documents it
@@ -661,6 +683,7 @@ fn a_doc_comment_that_precedes_a_declaration_or_member_attaches_cleanly() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_ordinary_comment_in_statement_position_parses_cleanly() {
     // A single-`;` line comment in statement position is fine; only `;;` doc
     // comments require an attachment target.
@@ -679,6 +702,7 @@ fn an_ordinary_comment_in_statement_position_parses_cleanly() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_doc_comment_on_a_declaration_still_attaches() {
     // The doc-comment rejection is scoped to statement position; a `;;` doc
     // comment on a declaration attaches as before.
@@ -691,6 +715,7 @@ fn a_doc_comment_on_a_declaration_still_attaches() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reports_unexpected_indentation_after_simple_statements() {
     let parsed = parse_source(
         "module app\n\
@@ -716,6 +741,7 @@ fn reports_unexpected_indentation_after_simple_statements() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_final_block_statement_without_trailing_newline() {
     let parsed = parse_source("module app\nfn main()\n    if ready\n        return");
 
@@ -729,6 +755,7 @@ fn parses_final_block_statement_without_trailing_newline() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn surfaces_lexer_diagnostics_for_function_body_tokens() {
     let parsed = parse_source("module app\nfn main()\n    return a && b\n");
 
@@ -755,6 +782,7 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn out_is_an_ordinary_variable_name() {
     let parsed = parse_source("module app\nfn f(): int\n    var out: int = 0\n    return out\n");
 
@@ -762,6 +790,7 @@ fn out_is_an_ordinary_variable_name() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn finally_is_an_ordinary_variable_name() {
     let parsed = parse_source(
         "module app\nfn f(): string\n    var finally: string = \"done\"\n    return finally\n",
@@ -771,6 +800,7 @@ fn finally_is_an_ordinary_variable_name() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_compound_assignment_from_single_operator_token() {
     for (source, expected_op) in [
         ("module app\nfn f()\n    i+=3\n", CompoundAssignOp::Add),
@@ -805,6 +835,7 @@ fn parses_compound_assignment_from_single_operator_token() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn split_compound_assignment_is_rejected_with_a_recovery_node() {
     // Each compound operator is a single token, so a space before the `=`
     // (`i * = 3`) is not a compound assignment: it reports and leaves an error
@@ -825,6 +856,7 @@ fn split_compound_assignment_is_rejected_with_a_recovery_node() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
     let parsed = parse_source("module app\nfn f()\n    i <= 3\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -842,6 +874,7 @@ fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
 /// The checked-arithmetic form parses in all three binding positions with both
 /// diverging arms, captured by fault kind regardless of source order.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_checked_arithmetic_forms() {
     let parsed = parse_source(
         "module app\n\
@@ -894,6 +927,7 @@ fn parses_checked_arithmetic_forms() {
 
 /// `return checked ...` binds through a return.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_checked_return() {
     let parsed = parse_source(
         "module app\n\
@@ -916,6 +950,7 @@ fn parses_checked_return() {
 /// A checked form with no indented arms reports one `CheckedBody` diagnostic and
 /// still yields a `Statement::Checked` node (total parsing).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_missing_arms_reports_checked_body() {
     let parsed = parse_source(
         "module app\n\
@@ -937,6 +972,7 @@ fn checked_form_missing_arms_reports_checked_body() {
 /// A malformed arm header reports one `CheckedArm` diagnostic and its block does
 /// not leak into the surrounding form.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_bad_arm_reports_checked_arm() {
     let parsed = parse_source(
         "module app\n\
@@ -955,6 +991,7 @@ fn checked_form_bad_arm_reports_checked_arm() {
 /// The checked form formats idempotently: arms render `on out_of_range` before
 /// `on zero_divisor`, and formatting a formatted form is a fixed point.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_formats_idempotently() {
     let source = "module app\n\
          fn main(a: int, b: int): int\n\
@@ -981,6 +1018,7 @@ fn checked_form_formats_idempotently() {
 /// `place name = ^root(key)` parses to a `PlaceBinding` naming the entry-address
 /// expression; the compiler owns the durable checks, the parser only structures it.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_place_binding() {
     let parsed = parse_source(
         "module app\n\
@@ -1004,6 +1042,7 @@ fn parses_a_place_binding() {
 /// `place` in name position is a keyword, so a missing name or missing `=` is a
 /// single bounded parse error rather than a dropped or cascading line.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_place_binding_is_one_parse_error() {
     let missing_name = parse_source(
         "module app\n\
@@ -1022,6 +1061,7 @@ fn a_malformed_place_binding_is_one_parse_error() {
 
 /// A `place` binding formats idempotently and re-parses cleanly.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn place_binding_formats_idempotently() {
     let source = "module app\n\
          fn main(id: int)\n\

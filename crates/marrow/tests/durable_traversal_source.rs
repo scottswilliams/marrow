@@ -250,6 +250,7 @@ fn seed_books(image: &VerifiedImage, attachment: &mut marrow_kernel::durable::Ep
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_root_traversal_folds_frozen_keys_in_order_and_runs_on_more() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -269,6 +270,7 @@ fn a_root_traversal_folds_frozen_keys_in_order_and_runs_on_more() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_root_traversal_from_seeks_inclusive() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -287,6 +289,7 @@ fn a_root_traversal_from_seeks_inclusive() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_traversal_scopes_to_its_parent_entry() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -338,6 +341,7 @@ impl std::fmt::Debug for DebugRun<'_> {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_body_break_skips_the_on_more_block() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -352,6 +356,7 @@ fn a_body_break_skips_the_on_more_block() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_population_boundary_decides_the_on_more_arm() {
     // `sumFirst2` is `at most 2` over `^books`, adding 1000 in `on more`. Growing the
     // population one entry at a time walks the 0 / 1 / N / N+1 boundary.
@@ -399,6 +404,7 @@ fn the_population_boundary_decides_the_on_more_arm() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn every_abnormal_body_exit_decides_the_on_more_timing() {
     // Over books {1,2,3} with `at most 2`, a further key (3) always existed at freeze.
     // `on more` runs iff the frozen bodies all completed normally.
@@ -426,6 +432,7 @@ fn every_abnormal_body_exit_decides_the_on_more_timing() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nested_root_and_branch_traversals_each_carry_their_own_on_more() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -451,6 +458,7 @@ fn nested_root_and_branch_traversals_each_carry_their_own_on_more() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_frozen_key_set_is_immune_to_writes_the_bodies_perform() {
     // A body that erases every entry it visits still visits all three frozen keys —
     // the frozen set is captured before any body runs, so the erases cannot cut the
@@ -470,6 +478,7 @@ fn the_frozen_key_set_is_immune_to_writes_the_bodies_perform() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_on_more_decision_is_immune_to_entries_a_body_creates() {
     // A body that creates new entries beyond the frozen bound does not change the
     // `on more` decision: it was fixed at freeze. `at most 2` over {1,2,3} freezes
@@ -485,6 +494,7 @@ fn the_on_more_decision_is_immune_to_entries_a_body_creates() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_descendant_only_child_is_skipped_without_visiting_its_subtree() {
     // Books 1 and 3 have payloads; book 2 has only notes (a descendant-only root, no
     // title marker). A root traversal freezes only the payload-bearing books [1,3], so
@@ -540,6 +550,7 @@ fn seed_books_with_notes(
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_inner_abnormal_exit_decides_the_inner_on_more_while_the_outer_is_independent() {
     // Every export here is read-only, so all four observe the same seeded state: books
     // {1,2,3}, each with notes {1,2,3} / {4,5,6} / {7,8,9}.

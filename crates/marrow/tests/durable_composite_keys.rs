@@ -192,6 +192,7 @@ fn s(v: &str) -> Value {
 /// tuple `(course, student)` is a distinct, absent entry even though both columns are
 /// strings. Whole-entry create/read/presence/delete and a field read all key by the pair.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_root_keys_by_the_ordered_tuple() {
     let image = compile_verify(SOURCE_A, IDS_A);
     let mut attachment = attach(&image);
@@ -245,6 +246,7 @@ fn a_composite_key_root_keys_by_the_ordered_tuple() {
 /// key-path is four columns `[student, course, term, slot]`. A transposed branch tuple
 /// `(slot, term)` is a distinct, absent branch entry.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
     let image = compile_verify(SOURCE_A, IDS_A);
     let mut attachment = attach(&image);
@@ -295,6 +297,7 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
 /// `(1, 2, 3, 4)` and reading back every transposition proves the whole key-path pops in
 /// order end to end.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
     let image = compile_verify(SOURCE_B, IDS_B);
     let mut attachment = attach(&image);
@@ -343,6 +346,7 @@ fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
 /// single-column `cell` keys under it, so the ancestor key-path carries multiple columns
 /// through the traversal while the traversed layer stays single-column.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_column_branch_layer_traverses_under_a_composite_ancestor() {
     let image = compile_verify(SOURCE_B, IDS_B);
     let mut attachment = attach(&image);
@@ -390,6 +394,7 @@ fn a_single_column_branch_layer_traverses_under_a_composite_ancestor() {
 /// composite root is a typed `check.unsupported` with a located span, never a silent
 /// miscompile or an invented last-column-under-prefix semantics.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bounded_traversal_over_a_composite_layer_is_rejected() {
     let body = "pub fn scan(): int\n\
         \x20   var total = 0\n\

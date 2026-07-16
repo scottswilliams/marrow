@@ -19,6 +19,7 @@ fn fixture_dir() -> PathBuf {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn value_equality_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])

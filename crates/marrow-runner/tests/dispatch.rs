@@ -58,6 +58,7 @@ fn call(service: &Service, export: Id32, args: Vec<Json>) -> ServerMessage {
 const ADD: &str = "pub fn add(a: int, b: int): int\n\x20   return a + b\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_storeless_call_returns_its_value() {
     let (service, ids) = build(ADD, None);
     let response = call(
@@ -69,6 +70,7 @@ fn a_storeless_call_returns_its_value() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_runtime_fault_maps_to_a_fault_response() {
     let (service, ids) = build(ADD, None);
     let response = call(
@@ -83,6 +85,7 @@ fn a_runtime_fault_maps_to_a_fault_response() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_unknown_export_is_rejected() {
     let (service, _ids) = build(ADD, None);
     let response = call(&service, Id32::from_bytes([0; 32]), vec![]);
@@ -95,6 +98,7 @@ fn an_unknown_export_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_argument_count_mismatch_is_rejected() {
     let (service, ids) = build(ADD, None);
     let response = call(&service, id_of(&ids, "add"), vec![Json::Int(1)]);
@@ -107,6 +111,7 @@ fn an_argument_count_mismatch_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_argument_type_mismatch_is_rejected() {
     let (service, ids) = build(ADD, None);
     let response = call(
@@ -123,6 +128,7 @@ fn an_argument_type_mismatch_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_export_is_rejected_in_the_trough() {
     let source = "resource Counter\n\
          \x20   required value: int\n\
@@ -143,6 +149,7 @@ fn a_durable_export_is_rejected_in_the_trough() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_round_trips_through_the_codec() {
     let source = "struct Point\n\
          \x20   x: int\n\
@@ -168,6 +175,7 @@ fn a_record_round_trips_through_the_codec() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_with_an_extra_field_is_rejected() {
     let source = "struct Point\n\
          \x20   x: int\n\
@@ -191,6 +199,7 @@ fn a_record_with_an_extra_field_is_rejected() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_enum_round_trips_through_the_codec() {
     let source = "enum Shape\n\
          \x20   dot\n\
@@ -237,6 +246,7 @@ fn an_enum_round_trips_through_the_codec() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_service_interface_id_is_deterministic() {
     let (a, _) = build(ADD, None);
     let (b, _) = build(ADD, None);

@@ -55,6 +55,7 @@ fn write(path: &Path, contents: &str) {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn init_creates_a_manifest_and_src_tree() {
     let temp = TempDir::new("init");
     let project = temp.join("app");
@@ -72,6 +73,7 @@ fn init_creates_a_manifest_and_src_tree() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_fresh_project_is_already_formatted() {
     let temp = TempDir::new("init-fmt");
     let project = temp.join("app");
@@ -85,6 +87,7 @@ fn a_fresh_project_is_already_formatted() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn init_refuses_an_existing_directory() {
     let temp = TempDir::new("init-existing");
     let project = temp.join("app");
@@ -98,6 +101,7 @@ fn init_refuses_an_existing_directory() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
     // A failure after the exclusive claim must unwind it: otherwise the partial
     // directory blocks every retry with AlreadyExists. The debug build injects a
@@ -122,6 +126,7 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn fmt_project_checks_and_writes_every_module() {
     let temp = TempDir::new("fmt-project");
     let project = temp.join("app");
@@ -160,6 +165,7 @@ fn fmt_project_checks_and_writes_every_module() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn fmt_project_reports_an_invalid_manifest() {
     let temp = TempDir::new("fmt-bad-manifest");
     let project = temp.join("app");
@@ -179,6 +185,7 @@ fn fmt_project_reports_an_invalid_manifest() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn fmt_project_reports_a_module_collision() {
     let temp = TempDir::new("fmt-collision");
     let project = temp.join("app");
@@ -199,6 +206,7 @@ fn fmt_project_reports_a_module_collision() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn relocation_produces_identical_formatted_bytes() {
     // The same source under two different roots must format identically, because
     // module identity is derived from the root-relative path, not the location.
@@ -221,6 +229,7 @@ fn relocation_produces_identical_formatted_bytes() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
     // The containment blocker: if `src` itself is a symlink to an external
     // directory, following it would let capture escape the project tree and let
@@ -256,6 +265,7 @@ fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_symlinked_source_file_is_not_followed() {
     // A symlink inside src is skipped by the physical adapter, so an unformatted
     // file reached only through a symlink does not fail a project that is

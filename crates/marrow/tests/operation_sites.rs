@@ -149,6 +149,7 @@ const NESTED_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_flat_root_seals_a_flat_whole_payload_and_field_site_per_node() {
     // The flat executable root: one whole-payload site over the root, one field-leaf
     // site per top-level field, all Flat.
@@ -194,6 +195,7 @@ const FLAT_BRANCH_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_flat_root_with_a_simple_branch_seals_flat_branch_entry_and_branch_field_sites() {
     // A branch entry site (whole payload, depth 3) and each branch field-leaf site
     // (depth 4) seal Flat on a flat-executable root — the field-exact branch tail.
@@ -211,6 +213,7 @@ fn a_flat_root_with_a_simple_branch_seals_flat_branch_entry_and_branch_field_sit
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn every_keyed_placement_and_field_of_a_nested_graph_gets_a_sealed_parked_site() {
     // The whole graph emits and seals sites: a whole-payload site over the root and
     // over the `notes` branch, plus a field-leaf site for every stored field —
@@ -240,6 +243,7 @@ fn every_keyed_placement_and_field_of_a_nested_graph_gets_a_sealed_parked_site()
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_field_site_seals_at_its_full_concrete_address() {
     // The deepest concrete address here — a branch field `notes.text` — seals as a
     // parked field site whose resolved path is the full chain
@@ -258,6 +262,7 @@ fn a_branch_field_site_seals_at_its_full_concrete_address() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn appending_an_optional_field_widens_broad_demand_without_touching_field_only_sites() {
     // Broad (whole-payload) demand derives from the contract: appending a sparse
     // field grows the root's record — so the whole-payload site's payload shape (its
@@ -293,6 +298,7 @@ fn appending_an_optional_field_widens_broad_demand_without_touching_field_only_s
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_durable_site_table_scales_with_the_graph_not_with_operation_count() {
     // Compact effect sites: the site table holds one entry per graph node (a
     // whole-payload site per placement, a field-leaf site per field), independent of

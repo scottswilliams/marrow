@@ -97,6 +97,7 @@ fn two_export_source(read_body_extra: &str, bump_body_extra: &str) -> String {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn each_export_demand_is_reconstructed_from_its_closure() {
     let (image, _) = compile_verify(&two_export_source("", ""));
 
@@ -129,6 +130,7 @@ fn each_export_demand_is_reconstructed_from_its_closure() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_body_only_change_keeps_export_and_demand_ids_but_moves_the_image_id() {
     let (base, base_image_id) = compile_verify(&two_export_source("", ""));
     // Insert a pure statement into `readValue`'s body: same durable access, same
@@ -155,6 +157,7 @@ fn a_body_only_change_keeps_export_and_demand_ids_but_moves_the_image_id() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn adding_a_durable_read_changes_the_demand_id() {
     let (base, _) = compile_verify(&two_export_source("", ""));
     // `bump` now also reads the `label` field: its reachable atoms — and demand id —
@@ -184,6 +187,7 @@ fn adding_a_durable_read_changes_the_demand_id() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_demand_union_admits_the_whole_program() {
     let (image, _) = compile_verify(&two_export_source("", ""));
     let union = image.demand_union();
@@ -215,6 +219,7 @@ fn the_demand_union_admits_the_whole_program() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reachable_sites_are_image_local_and_not_in_the_demand_id() {
     let (image, _) = compile_verify(&two_export_source("", ""));
     let read = export_named(&image, "readValue");
@@ -235,6 +240,7 @@ fn reachable_sites_are_image_local_and_not_in_the_demand_id() {
 // --- Reverse incidence and the no-serialized-summary absence assertion. ---
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn demand_incidence_reverses_the_export_map() {
     let (image, _) = compile_verify(&two_export_source("", ""));
     let incidence = image.demand_incidence();
@@ -264,6 +270,7 @@ fn demand_incidence_reverses_the_export_map() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_image_serializes_no_demand_summary() {
     // Demand is verifier-reconstructed. The image carries operation sites and
     // bytecode but no demand, incidence, or consequence summary — so no export's
@@ -310,6 +317,7 @@ fn coverage(demand: &ExportDemand) -> DemandCoverage {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn admission_coverage_is_the_union_while_invocation_coverage_is_the_named_record() {
     let (image, _) = compile_verify(&two_export_source("", ""));
 

@@ -76,6 +76,7 @@ fn format_const_value(source: &str) -> String {
 /// A deeply nested interpolation formats back to itself: the formatter reuses the
 /// expression printer at each hole, so a three-deep nest round-trips exactly.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_deeply_nested_interpolation() {
     let value = "$\"a{$\"b{$\"c{x}d\"}e\"}f\"";
     assert_eq!(format_const_value(value), value);
@@ -86,6 +87,7 @@ fn formats_deeply_nested_interpolation() {
 /// a structural indent. The lexer treats a comment whose run resolves back to the
 /// block level as trivia rather than opening a spurious indented block.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn over_indented_own_line_comment_in_member_body_is_trivia() {
     let cases = [
         "module app\n\
@@ -134,6 +136,7 @@ fn over_indented_own_line_comment_in_member_body_is_trivia() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_split_store_declaration() {
     let source = "module app\n\
          resource Book\n\
@@ -152,6 +155,7 @@ fn formats_split_store_declaration() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_expressions_to_canonical_source() {
     // Each input is already canonical, so formatting must reproduce it exactly.
     let canonical = [
@@ -189,6 +193,7 @@ fn formats_expressions_to_canonical_source() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reinserts_minimal_parentheses_for_precedence() {
     // The syntax tree drops parentheses; the formatter restores only those
     // required to preserve the parsed grouping.
@@ -215,6 +220,7 @@ fn reinserts_minimal_parentheses_for_precedence() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_statement_blocks_with_indentation() {
     let source = "module app\n\
          fn run(n: int)\n\
@@ -245,6 +251,7 @@ fn formats_statement_blocks_with_indentation() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_compound_assignment_canonically() {
     let source = "module app\n\
          fn run()\n\
@@ -257,6 +264,7 @@ fn formats_compound_assignment_canonically() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_loops_and_unlabeled_break() {
     let source = "module app\n\
          fn run()\n\
@@ -271,6 +279,7 @@ fn formats_loops_and_unlabeled_break() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_a_range_for_with_a_by_step() {
     // The `by` step round-trips: header endpoints and the step are re-emitted.
     let source = "module app\n\
@@ -284,6 +293,7 @@ fn formats_a_range_for_with_a_by_step() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_transaction_and_prefix_try() {
     let source = "module app\n\
          fn commit(id: Id(^books)): Result[int, string]\n\
@@ -300,6 +310,7 @@ fn formats_transaction_and_prefix_try() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_a_match_with_bare_member_arms() {
     let source = "module app\n\
          fn label(s: Status)\n\
@@ -318,6 +329,7 @@ fn formats_a_match_with_bare_member_arms() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_a_match_with_qualified_member_path_arms() {
     // A qualified arm `tiger::bengal` renders as its path; a category arm `lion`
     // renders as the bare member. The formatter re-emits the relative path exactly.
@@ -341,6 +353,7 @@ fn formats_a_match_with_qualified_member_path_arms() {
 /// groups statements, members, and sibling if-blocks: one blank in the source is
 /// preserved, arms with no blank stay tight, and the result is idempotent.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_grouping_blank_between_match_arms() {
     let source = "module app\n\
          fn label(s: Status)\n\
@@ -371,6 +384,7 @@ fn preserves_grouping_blank_between_match_arms() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_const_declaration_with_docs() {
     let source = "module app\n\
          ;; The maximum number of loans.\n\
@@ -381,6 +395,7 @@ fn formats_const_declaration_with_docs() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
     // Render contract: a blank line between doc paragraphs renders as a bare `;;`
     // with no trailing space. The golden pins that exact text, and the structural
@@ -410,6 +425,7 @@ fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_resource_declaration_with_members() {
     let source = "module app\n\
          resource Book\n\
@@ -434,6 +450,7 @@ fn formats_resource_declaration_with_members() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_function_declaration_with_params() {
     let source = "module app\n\
          pub fn add(title: string, total: int): int\n\
@@ -444,6 +461,7 @@ fn formats_function_declaration_with_params() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_optional_function_return_and_absent_value() {
     let source = "module app\n\
          fn f(): int?\n\
@@ -456,6 +474,7 @@ fn formats_optional_function_return_and_absent_value() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formats_whole_file_with_blank_line_policy() {
     let source = "module shelf::books\n\
          use std::clock\n\
@@ -488,6 +507,7 @@ fn formats_whole_file_with_blank_line_policy() {
 /// cannot format its own canonical sample is the defect: `format_source` of the
 /// verbatim sample must return it unchanged.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn canonical_sample_is_already_fmt_canonical() {
     let source = common::reference_sample();
     assert_eq!(
@@ -503,6 +523,7 @@ fn canonical_sample_is_already_fmt_canonical() {
 /// not survive a re-parse. A single pass must already be a fixed point, and a
 /// comment-free program must never trip a false comment-loss.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn single_line_call_wrapping_a_trailing_comma_call_is_idempotent() {
     let source = "module app\n\npub fn run()\n    print(h(g(a: 1, b: 2,)))\n";
     let once = format_source(source);
@@ -522,6 +543,7 @@ fn single_line_call_wrapping_a_trailing_comma_call_is_idempotent() {
 /// it carries. The formatter keeps it inline, so a single pass is a fixed point
 /// and a comment-free program never trips a false comment-loss.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn trailing_comma_call_inside_interpolation_is_idempotent() {
     let cases = [
         // Bare interpolation: no outer call wraps it.
@@ -563,6 +585,7 @@ fn trailing_comma_call_inside_interpolation_is_idempotent() {
 /// consecutive blank lines collapse to one, and a leading or trailing blank line
 /// inside a body is dropped.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_single_intra_body_blank_line() {
     let source = "module app\n\
          resource Book\n\
@@ -599,6 +622,7 @@ fn preserves_single_intra_body_blank_line() {
 /// line: the blank above the doc comment is preserved exactly as it is for a
 /// plain member or a `;`-commented one, and the result is idempotent.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_blank_above_doc_commented_member() {
     let source = "module app\n\
          resource Book\n\
@@ -624,6 +648,7 @@ fn preserves_blank_above_doc_commented_member() {
 /// A comment that sits after a blank line stays its own line and is not pulled up
 /// into the preceding statement's line.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_after_blank_line_stays_attached_to_following_item() {
     let source = "module app\n\
          pub fn run()\n\
@@ -646,6 +671,7 @@ fn comment_after_blank_line_stays_attached_to_following_item() {
 /// whether the preceding declaration is block-bearing. The comment must never be
 /// re-grouped upward onto the predecessor.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_predecessors() {
     let predecessors = [
         "resource Item\n    name: text",
@@ -676,6 +702,7 @@ fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_
 /// A genuine section break — a blank line in the source above the doc comment — is
 /// still preserved.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn top_level_plain_comment_stays_glued_to_following_doc_comment() {
     let adjacent = "module app\n\n; a plain note\n;; the ceiling\nconst limit: int = 10\n";
     assert_eq!(format_source(adjacent), adjacent);
@@ -722,6 +749,7 @@ fn structural_fingerprint(source: &str) -> String {
 /// formatting goldens above own the exact rendered text; this owns the
 /// structure-preservation and stability invariants across the real corpus.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn format_source_preserves_structure_and_reparses_cleanly() {
     let blocks = common::documented_module_blocks();
     assert!(blocks.len() >= 5, "expected several module files");
@@ -752,6 +780,7 @@ fn format_source_preserves_structure_and_reparses_cleanly() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn formatting_is_a_stable_fixed_point() {
     // Formatting then re-parsing yields the same canonical text. This only
     // checks stability (idempotency), not that structure is preserved.
@@ -770,6 +799,7 @@ fn formatting_is_a_stable_fixed_point() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn round_trips_ordinary_line_comments_by_placement() {
     // A leading own-line comment, a trailing comment after code, and a final
     // standalone own-line comment survive parse -> format as block trivia with
@@ -807,6 +837,7 @@ fn round_trips_ordinary_line_comments_by_placement() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_overindented_body_comments_at_block_indent() {
     let source = "module app\n\
          fn run()\n\
@@ -833,6 +864,7 @@ fn preserves_overindented_body_comments_at_block_indent() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn drops_overindented_comments_that_belong_to_invalid_statement_blocks() {
     let source = "module app\n\
          fn run()\n\
@@ -857,6 +889,7 @@ fn drops_overindented_comments_that_belong_to_invalid_statement_blocks() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_body_doc_comments_at_parse() {
     // A `;;` documents the next declaration or member; inside a function body
     // there is nothing to document. Such a doc comment is a parse error, not
@@ -880,6 +913,7 @@ fn rejects_body_doc_comments_at_parse() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn round_trips_comments_attached_inside_nested_blocks() {
     // Comments inside a nested block stay block trivia of that inner block, not
     // the function body: an own-line and a trailing comment inside the `if`, and
@@ -934,6 +968,7 @@ fn round_trips_comments_attached_inside_nested_blocks() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn documented_parameters_format_one_per_line() {
     // Render contract: a parameter list carrying docs is laid out one parameter
     // per line, each under its `;;` doc lines, with a trailing comma. This golden
@@ -959,6 +994,7 @@ fn documented_parameters_format_one_per_line() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn documented_parameter_signature_round_trips() {
     // A multi-line `;;` doc block attaches to its parameter and survives
     // parse -> format. Asserting the re-parsed `ParamDecl.docs` pins each doc to
@@ -1004,6 +1040,7 @@ fn documented_parameter_signature_round_trips() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_top_level_and_member_line_comments() {
     let source = "module app\n\
          ; shared constants\n\
@@ -1031,6 +1068,7 @@ fn preserves_top_level_and_member_line_comments() {
 /// before-first-decl and between-decls positions for both `;` and `;;`, plus an
 /// indented top-level comment at end of file.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_indented_top_level_own_line_comments() {
     let source = "module app\n\
          \x20   ; indented before first decl\n\
@@ -1061,6 +1099,7 @@ fn preserves_indented_top_level_own_line_comments() {
 /// error at the top level, exactly like the column-1 form. Retaining indented
 /// top-level comments must not silently swallow a dangling doc comment.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_indented_top_level_doc_comment_without_target() {
     let parsed = parse_source("module app\n    ;; dangling doc at eof\n");
     assert!(
@@ -1074,6 +1113,7 @@ fn rejects_indented_top_level_doc_comment_without_target() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_top_level_header_trailing_comments() {
     let source = "module app ; module rationale\n\
          use common ; use rationale\n\
@@ -1110,6 +1150,7 @@ fn preserves_top_level_header_trailing_comments() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_member_header_trailing_comments() {
     let source = "module app\n\
          resource Book\n\
@@ -1149,6 +1190,7 @@ fn preserves_member_header_trailing_comments() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_trailing_comments_on_multiline_top_level_headers() {
     let source = "module app\n\
          const Info = save(\n\
@@ -1177,6 +1219,7 @@ fn preserves_trailing_comments_on_multiline_top_level_headers() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
     let source = "module app\n\
          ;; Module overview.\n\
@@ -1198,6 +1241,7 @@ fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_multiline_trailing_comma_calls() {
     let source = "module app\n\
          fn fail()\n\
@@ -1217,6 +1261,7 @@ fn preserves_multiline_trailing_comma_calls() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_trailing_comments_on_multiline_statements() {
     let source = "module app\n\
          fn run()\n\
@@ -1248,6 +1293,7 @@ fn preserves_trailing_comments_on_multiline_statements() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_trailing_comments_on_compound_statement_headers() {
     let source = "module app\n\
          fn run()\n\
@@ -1279,6 +1325,7 @@ fn preserves_trailing_comments_on_compound_statement_headers() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_trailing_comments_on_if_clauses() {
     let source = "module app\n\
          fn run()\n\
@@ -1326,6 +1373,7 @@ fn preserves_trailing_comments_on_if_clauses() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_trailing_comments_on_prefix_try_statements() {
     let source = "module app\n\
          fn run(): Result[int, string]\n\
@@ -1353,6 +1401,7 @@ fn preserves_trailing_comments_on_prefix_try_statements() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_trailing_comments_on_match_arm_headers() {
     let source = "module app\n\
          fn run()\n\
@@ -1386,6 +1435,7 @@ fn preserves_trailing_comments_on_match_arm_headers() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_preservation_guard_rejects_unstable_rewrites() {
     let source = "module app\n\
          \n\

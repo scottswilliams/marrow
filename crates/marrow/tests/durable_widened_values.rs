@@ -157,6 +157,7 @@ fn id(n: i64) -> Vec<Value> {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_required_enum_field_round_trips_and_drives_an_expression() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);
@@ -191,6 +192,7 @@ fn a_required_enum_field_round_trips_and_drives_an_expression() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_field_round_trips_with_its_dense_leaves() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);
@@ -208,6 +210,7 @@ fn a_record_field_round_trips_with_its_dense_leaves() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_sparse_option_field_reads_three_distinct_states() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);

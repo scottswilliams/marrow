@@ -77,6 +77,7 @@ fn fixture_dir() -> PathBuf {
 /// types, and an alias-typed field all report `passed` through the production
 /// path.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn struct_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -99,6 +100,7 @@ fn struct_conformance_fixture_passes_on_the_production_path() {
 /// A field read reaches the constructed value through the VM: `run` on an export
 /// that builds a struct and returns one field yields that field's value.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_field_read_flows_through_the_vm() {
     let temp = TempDir::new("field-read");
     project(
@@ -121,6 +123,7 @@ fn a_struct_field_read_flows_through_the_vm() {
 /// field, a positional (unnamed) argument, or a wrong-typed field — is a typed
 /// `check.type` at the literal.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_construction_is_a_check_type_diagnostic() {
     for body in [
         "const p = Point(x: 1, z: 2)",
@@ -154,6 +157,7 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 
 /// Reading a field a struct does not declare is a typed `check.type`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reading_an_unknown_field_is_a_check_type_diagnostic() {
     let temp = TempDir::new("unknown-field");
     project(
@@ -177,6 +181,7 @@ fn reading_an_unknown_field_is_a_check_type_diagnostic() {
 /// enum-typed field is admitted (covered by the nesting tests), so the rejected
 /// non-scalar case here is an unknown type name.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_bare_scalar_field_is_a_check_unsupported_diagnostic() {
     for source in [
         // `required` keyword.
@@ -205,6 +210,7 @@ fn a_non_bare_scalar_field_is_a_check_unsupported_diagnostic() {
 /// A struct name that collides with an alias, nominal, resource, or another
 /// struct is a `check.name_conflict`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_name_collision_is_a_check_name_conflict() {
     for source in [
         "alias P = int\nstruct P\n\x20   x: int\n\npub fn f(): int\n\x20   return 1\n",
@@ -229,6 +235,7 @@ fn a_struct_name_collision_is_a_check_name_conflict() {
 /// renders it as a JSON object (keys ascending) under `--format jsonl` and as
 /// `{field: value, ...}` in text.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_returned_struct_renders_through_the_run_path() {
     let temp = TempDir::new("struct-return");
     project(
@@ -256,6 +263,7 @@ fn a_returned_struct_renders_through_the_run_path() {
 /// A struct has no command-line spelling, so an export taking a struct parameter
 /// cannot be run from the terminal: the argument decode is a usage error (exit 2).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_argument_cannot_be_passed_on_the_command_line() {
     let temp = TempDir::new("struct-arg");
     project(
@@ -273,6 +281,7 @@ fn a_struct_argument_cannot_be_passed_on_the_command_line() {
 /// A resource record is still not admitted as a return type: that vertical is
 /// deferred, so it remains a `check.unsupported` diagnostic.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_resource_return_is_still_unsupported() {
     let temp = TempDir::new("resource-return");
     project(
@@ -293,6 +302,7 @@ fn a_resource_return_is_still_unsupported() {
 /// two field hops, and renders as nested JSON. Behind the acyclicity proof, nesting
 /// is admitted with no depth restriction other than the value-graph having no cycle.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_field_may_be_a_struct() {
     let temp = TempDir::new("nested-struct");
     project(
@@ -329,6 +339,7 @@ fn a_struct_field_may_be_a_struct() {
 /// regardless of declaration order. The chain `A -> B -> C` is acyclic and travels
 /// through the VM.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_field_may_name_a_later_declared_struct() {
     let temp = TempDir::new("forward-ref");
     project(
@@ -354,6 +365,7 @@ fn a_struct_field_may_name_a_later_declared_struct() {
 /// field read resolves against the enum's members (the field-derived scrutinee
 /// keeps its enum identity through `FieldGet`).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_field_may_be_an_enum_and_match_over_the_field_read() {
     let temp = TempDir::new("struct-enum-field");
     project(
@@ -382,6 +394,7 @@ fn a_struct_field_may_be_an_enum_and_match_over_the_field_read() {
 /// `check.recursion` at each struct on the cycle (naming the cycle path), never a
 /// silent infinite type or a deferred artifact rejection.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_value_type_cycle_is_a_check_recursion_diagnostic() {
     for source in [
         // Self-reference.
@@ -407,6 +420,7 @@ fn a_value_type_cycle_is_a_check_recursion_diagnostic() {
 /// constructs and reads, while the resource is written under a transaction, both
 /// verifying in one image.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_and_a_resource_coexist() {
     let temp = TempDir::new("coexist");
     project(

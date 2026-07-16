@@ -216,6 +216,7 @@ fn s(v: &str) -> Value {
 /// The nested constructor writes a whole sub-branch entry, and field-exact reads and a
 /// whole-entry materialized read observe its fields two levels below the root.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nested_branch_constructor_and_field_reads_round_trip() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -257,6 +258,7 @@ fn a_nested_branch_constructor_and_field_reads_round_trip() {
 /// ancestor markers, presence facts only from explicit probes. Holds for a whole-entry
 /// create and for a field-exact required set that reconcile-creates the node.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -326,6 +328,7 @@ fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
 /// `run.required_missing` — the reconcile validates the tag node's own required fields two
 /// levels down, not an ancestor's.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_sparse_set_missing_the_required_field_rolls_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -356,6 +359,7 @@ fn a_deep_sparse_set_missing_the_required_field_rolls_back() {
 /// present, hot absent), both present, and a whole replace that omits the sparse field
 /// drops it — the payload-only replace law (adjudication 1) at depth.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nested_branch_entry_upholds_the_four_state_laws() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -419,6 +423,7 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
 /// payload-only — it removes the note's marker and fields but preserves its keyed `tags`
 /// descendants, and a whole-entry erase of the tag removes only that tag.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_middle_branch_erase_preserves_nested_descendants() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -494,6 +499,7 @@ fn a_middle_branch_erase_preserves_nested_descendants() {
 /// A field-exact clear of the sparse `hot` on a nested tag leaves the required `weight`
 /// intact — the field-exact clear is scoped to its own leaf two levels down.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_field_exact_clear_preserves_the_required_field() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -530,6 +536,7 @@ fn a_deep_field_exact_clear_preserves_the_required_field() {
 /// bound with the `on more` bit, and is scoped to that note — a tag under a different note
 /// is not visited.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);

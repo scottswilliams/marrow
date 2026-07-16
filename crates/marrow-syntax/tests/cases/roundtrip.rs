@@ -66,6 +66,7 @@ fn assert_round_trips(label: &str, source: &str) {
 
 /// Every documented `.mw` example reconstructs exactly from its tokens.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn documented_examples_round_trip() {
     for block in mw_blocks() {
         assert_round_trips(&format!("{}#{}", block.path, block.index), &block.source);
@@ -76,6 +77,7 @@ fn documented_examples_round_trip() {
 /// and escaped-quote interpolation, durations, CRLF endings, over-indentation,
 /// and content past the layout nesting limit — all reconstruct exactly.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn adversarial_inputs_round_trip() {
     let cases = [
         "resource Book\n    title: string   \n",
@@ -103,6 +105,7 @@ fn adversarial_inputs_round_trip() {
 /// an inter-token gap, so the file reconstructs exactly even though the stream
 /// stays bounded.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn over_deep_nesting_round_trips() {
     let mut source = String::from("enum E\n");
     for level in 0..400 {

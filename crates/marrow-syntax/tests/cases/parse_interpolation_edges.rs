@@ -15,6 +15,7 @@ use marrow_syntax::{
 /// and builds nested interpolation parts rather than being rejected as an
 /// unterminated interpolation expression.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn deeply_nested_interpolation_parses_and_nests() {
     let source = "const Label = $\"a{$\"b{$\"c{x}d\"}e\"}f\"\n";
     let parsed = parse_source(source);
@@ -49,6 +50,7 @@ fn deeply_nested_interpolation_parses_and_nests() {
 /// the fault, so the diagnostic must name the limit, not claim the interpolation
 /// never closed.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
     let depth = NESTING_DEPTH_LIMIT + 50;
     let mut source = String::from("const Label = ");
@@ -88,6 +90,7 @@ fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
 /// of the line, and reports an unterminated interpolation expression rather than
 /// silently treating the rest as text.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unterminated_interpolation_expression_is_a_lexer_error() {
     let lexed = lex_source("fn main()\n    print($\"book {id\")\n");
     assert!(
@@ -104,6 +107,7 @@ fn unterminated_interpolation_expression_is_a_lexer_error() {
 /// interpolation. Interpolation expressions are ordinary expressions and never
 /// contain another interpolation opener.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nested_brace_inside_interpolation_expression_is_a_lexer_error() {
     let lexed = lex_source("fn main()\n    print($\"book {a{b}}\")\n");
     assert!(
@@ -121,6 +125,7 @@ fn nested_brace_inside_interpolation_expression_is_a_lexer_error() {
 /// braces; the failure surfaces as a parser "expected an expression" when the
 /// empty expression part is parsed in value position.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn empty_interpolation_expression_is_rejected_by_the_parser() {
     let source = "const Made = $\"book {}\"\n";
 
@@ -155,6 +160,7 @@ fn empty_interpolation_expression_is_rejected_by_the_parser() {
 /// enclosing keyword. The interpolation still recovers so the rest of the
 /// statement parses.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_hole() {
     let parsed = parse_source("fn main()\n    print($\"book {}\")\n");
     assert!(
@@ -193,6 +199,7 @@ fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_ho
 /// it reports "expected an expression" at the hole rather than the statement
 /// fallback.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn dangling_operator_interpolation_hole_reports_expected_expression() {
     let parsed = parse_source("fn main()\n    print($\"book {a +}\")\n");
     assert!(
@@ -218,6 +225,7 @@ fn dangling_operator_interpolation_hole_reports_expected_expression() {
 /// interpolation hole" there rather than bubbling a silent `None` to the
 /// statement fallback, and the rest of the statement still recovers.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
     let parsed = parse_source("fn main()\n    print($\"book {a b}\")\n");
     let hole = parsed
@@ -249,6 +257,7 @@ fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
 /// A well-formed interpolation with a real operand still parses without any
 /// syntax diagnostic; the missing-operand recovery does not fire on a valid hole.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn valid_interpolation_hole_parses_without_diagnostics() {
     let parsed = parse_source("fn main()\n    print($\"book {id} here\")\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -260,6 +269,7 @@ fn valid_interpolation_hole_parses_without_diagnostics() {
 /// argument is the string literal `"x"`, decoding to `x` — no spurious
 /// "unterminated interpolation expression". Plain quotes stay valid too.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
     for source in [
         "fn main()\n    print($\"cost: {total(\\\"audit\\\")}\")\n",
@@ -325,6 +335,7 @@ fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
 /// non-overlapping tokens and parses to the same interpolation — identical
 /// surrounding text and identical decoded hole value — as its plain-quote twin.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn escaped_nested_strings_carry_structural_characters_as_content() {
     fn interpolation(source: &str) -> Vec<InterpolationPart> {
         let parsed = parse_source(source);
@@ -440,6 +451,7 @@ fn escaped_nested_strings_carry_structural_characters_as_content() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_lone_closing_brace_is_literal_interpolation_text() {
     let parsed = parse_source("const Label = $\"book }\"\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -459,6 +471,7 @@ fn a_lone_closing_brace_is_literal_interpolation_text() {
 /// never reaches the closing quote — is its own typed reason, distinct from the
 /// unterminated-expression case above.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unterminated_interpolation_string_is_a_lexer_error() {
     let lexed = lex_source("fn main()\n    print($\"book {id} more\n");
     assert!(

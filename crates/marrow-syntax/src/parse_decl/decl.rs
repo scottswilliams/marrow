@@ -8,7 +8,7 @@ use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
     PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, import_name,
-    line_span_or, line_text_end_before, module_name, parse_type,
+    line_span_or, module_name, parse_type,
 };
 use crate::ast::{
     AliasDecl, Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl,
@@ -18,11 +18,11 @@ use crate::ast::{
 use crate::diagnostic::{Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::literal::decode_string_literal;
 use crate::parse_expr::{ExprParser, ParseComplete};
-use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword, tokens_in_range};
+use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword};
 
 /// Recursive-descent parser for top-level declarations over the file-wide token
 /// stream, the same stream `StmtParser`/`ExprParser` consume. It dispatches on
-/// token shape, frames resource and function bodies by `INDENT`/`DEDENT` tokens,
+/// token shape, frames resource and function bodies with `{`/`}` braces,
 /// and delegates statement and expression parsing to those parsers. A
 /// declaration spans its whole first physical line at column 1.
 pub(crate) struct DeclParser<'a> {
@@ -30,6 +30,11 @@ pub(crate) struct DeclParser<'a> {
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
     pub(super) diagnostics: Vec<Diagnostic>,
+    /// Nested member-block depth (resource groups, enum categories). The lexer
+    /// reports the nesting-limit diagnostic; this second layer stops the recursive
+    /// descent at [`crate::NESTING_DEPTH_LIMIT`] so a deep group/category nest skips
+    /// its body rather than overflowing the native stack.
+    pub(super) depth: usize,
 }
 
 impl<'a> DeclParser<'a> {
@@ -39,6 +44,7 @@ impl<'a> DeclParser<'a> {
             tokens,
             pos: 0,
             diagnostics: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -50,7 +56,7 @@ impl<'a> DeclParser<'a> {
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::Eof => break,
-                TokenKind::Newline | TokenKind::Dedent => {
+                TokenKind::Newline | TokenKind::RightBrace => {
                     self.advance();
                 }
                 TokenKind::Comment => {
@@ -91,9 +97,9 @@ impl<'a> DeclParser<'a> {
         saw_top_level_item: bool,
     ) {
         match self.peek() {
-            // Indentation where a top-level declaration was expected: report each
-            // stray indented line.
-            Some(TokenKind::Indent) => self.report_stray_indented_lines(),
+            // A `{` where a top-level declaration was expected: report the stray
+            // block and skip it.
+            Some(TokenKind::LeftBrace) => self.report_stray_indented_lines(),
             Some(TokenKind::Keyword(Keyword::Module)) if self.keyword_introduces_decl() => {
                 self.flush_docs_as_comments(docs, &mut file.comments);
                 let trailing_comment = self.peek_header_trailing_comment();
@@ -667,13 +673,13 @@ impl<'a> DeclParser<'a> {
                 (String::new(), SourceSpan::default())
             }
         };
-        let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (members, indexes, comments) = if self.at_block_open() {
             self.parse_resource_members(false)
         } else {
             self.error_span(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
-                "expected an indented resource body",
+                "expected a `{ … }` resource body",
             );
             (Vec::new(), Vec::new(), Vec::new())
         };
@@ -702,13 +708,13 @@ impl<'a> DeclParser<'a> {
                 (String::new(), SourceSpan::default(), Vec::new())
             }
         };
-        let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (members, indexes, comments) = if self.at_block_open() {
             self.parse_resource_members(false)
         } else {
             self.error_span(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
-                "expected an indented struct body",
+                "expected a `{ … }` struct body",
             );
             (Vec::new(), Vec::new(), Vec::new())
         };
@@ -741,7 +747,7 @@ impl<'a> DeclParser<'a> {
                 )
             }
         };
-        let (indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (indexes, comments) = if self.at_block_open() {
             self.parse_store_members()
         } else {
             (Vec::new(), Vec::new())
@@ -766,13 +772,13 @@ impl<'a> DeclParser<'a> {
                 (false, String::new(), SourceSpan::default(), Vec::new())
             }
         };
-        let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let (members, comments) = if self.at_block_open() {
             self.parse_enum_members()
         } else {
             self.error_span(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::EnumBody),
-                "expected an indented enum body",
+                "expected a `{ … }` enum body",
             );
             (Vec::new(), Vec::new())
         };
@@ -810,13 +816,13 @@ impl<'a> DeclParser<'a> {
                 }
             }
         };
-        let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let body = if self.at_block_open() {
             self.parse_function_body()
         } else {
             self.error_span(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionBody),
-                "expected an indented function body",
+                "expected a `{ … }` function body",
             );
             Block {
                 statements: Vec::new(),
@@ -858,13 +864,13 @@ impl<'a> DeclParser<'a> {
                 (String::new(), name_span)
             }
         };
-        let body = if matches!(self.peek(), Some(TokenKind::Indent)) {
+        let body = if self.at_block_open() {
             self.parse_function_body()
         } else {
             self.error_span(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::TestBody),
-                "expected an indented test body",
+                "expected a `{ … }` test body",
             );
             Block {
                 statements: Vec::new(),
@@ -881,31 +887,30 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Parse a function body from its `INDENT … DEDENT` run via the statement
-    /// parser. The body span runs from the first body line at column 1 to the end
-    /// of the last physical line of the body.
+    /// Parse a function body from its `{ … }` block via the statement parser. The
+    /// cursor is at the opening `{`; the body span runs from that `{` to the
+    /// matching `}`. The statement parser is fed the tokens strictly between the
+    /// braces and frames nested `{ … }` blocks itself.
     pub(super) fn parse_function_body(&mut self) -> Block {
-        let indent = self.tokens[self.pos];
+        let open = self.tokens[self.pos]; // `{`
         let start = self.pos;
-        let end = self.consume_block();
-        // The block ends just before the line that closed it; that line is where
-        // the matching `DEDENT` sits (or end-of-file for the final body).
-        let closing = self.tokens[start..end]
-            .iter()
-            .rev()
-            .find(|token| token.kind == TokenKind::Dedent)
-            .map(|dedent| dedent.span.start_byte - (dedent.span.column as usize - 1))
-            .unwrap_or_else(|| self.source.len());
-        let span = SourceSpan {
-            start_byte: indent.span.start_byte,
-            end_byte: line_text_end_before(self.source, closing),
-            line: indent.span.line,
-            column: 1,
+        let end = self.consume_block(); // index just past the matching `}`
+        // `consume_block` consumed `{` at `start` and the matching `}` at `end - 1`
+        // (or ran to end-of-input). The body is everything strictly between them.
+        let closed = end > start + 1 && self.tokens[end - 1].kind == TokenKind::RightBrace;
+        let inner_end = if closed { end - 1 } else { end };
+        let body_tokens = &self.tokens[start + 1..inner_end];
+        let end_byte = if closed {
+            self.tokens[end - 1].span.end_byte
+        } else {
+            open.span.end_byte
         };
-        // Feed the statement parser a byte-bounded slice: tokens inside the body
-        // span, so a `DEDENT` emitted past the last body line (at end of file) is
-        // excluded and nested-block spans stay anchored to the source.
-        let body_tokens = tokens_in_range(self.tokens, span.start_byte, span.end_byte);
+        let span = SourceSpan {
+            start_byte: open.span.start_byte,
+            end_byte,
+            line: open.span.line,
+            column: open.span.column,
+        };
         let (statements, comments, diagnostics) =
             StmtParser::new(self.source, body_tokens).parse_block();
         self.diagnostics.extend(diagnostics);

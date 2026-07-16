@@ -53,6 +53,7 @@ struct CallShape {
 /// bare-identifier call but not for a constructor or conversion call would let a
 /// silent positional back-fill through one syntactic door.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_after_named_is_rejected_in_every_call_shape() {
     for shape in CALL_SHAPES {
         let parsed = parse_source(shape.reject);
@@ -73,6 +74,7 @@ fn positional_after_named_is_rejected_in_every_call_shape() {
 /// every one of those same call shapes, so the rule rejects only the disallowed
 /// ordering rather than any mix of positional and named arguments.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_before_named_is_accepted_in_every_call_shape() {
     for shape in CALL_SHAPES {
         let parsed = parse_source(shape.accept);

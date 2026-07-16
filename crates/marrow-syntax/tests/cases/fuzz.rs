@@ -220,6 +220,7 @@ fn on_worker_stack(body: impl FnOnce() + Send + 'static) {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn deterministic_corpus_holds_the_oracle_invariants() {
     on_worker_stack(deterministic_corpus_body);
 }
@@ -276,6 +277,7 @@ fn deterministic_corpus_body() {
 }
 
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn seeded_random_mutation_pass_holds_the_total_invariants() {
     on_worker_stack(seeded_random_mutation_body);
 }

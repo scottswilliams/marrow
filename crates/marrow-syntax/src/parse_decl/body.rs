@@ -1,21 +1,21 @@
-//! The shared declaration-body frame: the one `INDENT … DEDENT` trivia skeleton
-//! that the resource, store, and enum bodies drive their member loops from. Each
-//! body advances its opening `INDENT`, then repeatedly asks for the next line:
-//! the frame consumes blank lines, own-line comments, and stray nested blocks,
-//! and reports a member header for the caller to parse. The caller supplies the
-//! doc-comment accumulator every member attaches to and the diagnostic a stray
-//! nested block reports.
+//! The shared declaration-body frame: the one `{ … }` trivia skeleton that the
+//! resource, store, and enum bodies drive their member loops from. Each body
+//! advances its opening `{`, then repeatedly asks for the next line: the frame
+//! consumes blank lines, own-line comments, and stray nested blocks, and reports a
+//! member header for the caller to parse. The caller supplies the doc-comment
+//! accumulator every member attaches to and the diagnostic a stray nested block
+//! reports.
 
 use super::tokens::{comment_from_token, is_line_comment};
 use super::{DeclParser, ParseError};
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::token::{Token, TokenKind};
 
-/// The classification of the next line of an indented declaration body, after the
-/// shared trivia (dedent, blank lines, comments, stray nested blocks) has been
-/// handled.
+/// The classification of the next line of a `{ … }` declaration body, after the
+/// shared trivia (closing brace, blank lines, comments, stray nested blocks) has
+/// been handled.
 pub(super) enum BodyLine {
-    /// The block closed on its `DEDENT` (or end of input); stop the loop.
+    /// The block closed on its `}` (or end of input); stop the loop.
     End,
     /// A trivia line was consumed; continue without parsing an item.
     Trivia,
@@ -24,8 +24,8 @@ pub(super) enum BodyLine {
 }
 
 impl<'a> DeclParser<'a> {
-    /// Classify and consume the next line of an indented declaration body. The
-    /// caller supplies its own-line comment accumulator (`docs` collects `;;` doc
+    /// Classify and consume the next line of a `{ … }` declaration body. The
+    /// caller supplies its own-line comment accumulator (`docs` collects `///` doc
     /// comments to attach to the next member) and the diagnostic to report for a
     /// stray nested block; an `Item` result leaves the member header in place.
     pub(super) fn next_body_line(
@@ -35,8 +35,8 @@ impl<'a> DeclParser<'a> {
         stray: &ParseError,
     ) -> BodyLine {
         match self.peek() {
-            None | Some(TokenKind::Dedent) => {
-                if matches!(self.peek(), Some(TokenKind::Dedent)) {
+            None | Some(TokenKind::RightBrace) => {
+                if matches!(self.peek(), Some(TokenKind::RightBrace)) {
                     self.advance();
                 }
                 BodyLine::End
@@ -49,7 +49,7 @@ impl<'a> DeclParser<'a> {
                 self.take_body_comment(docs, comments);
                 BodyLine::Trivia
             }
-            Some(TokenKind::Indent) => {
+            Some(TokenKind::LeftBrace) => {
                 self.consume_stray_block(stray);
                 BodyLine::Trivia
             }
@@ -57,9 +57,9 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Consume one own-line comment token and its trailing `NEWLINE`. A `;;` doc
+    /// Consume one own-line comment token and its trailing `NEWLINE`. A `///` doc
     /// comment accumulates into `docs` to attach to the next member; an ordinary
-    /// `;` line comment is retained as own-line trivia.
+    /// `//` line comment is retained as own-line trivia.
     fn take_body_comment(&mut self, docs: &mut Vec<Token>, comments: &mut Vec<Comment>) {
         if matches!(self.peek(), Some(TokenKind::DocComment)) {
             self.push_pending_doc(docs, comments);
@@ -82,18 +82,17 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Consume a stray nested block opening at the current `INDENT`, reporting
-    /// `error` at the first content line when the block is non-empty. A member
-    /// with a body of its own (a resource group) opens it right after its header,
-    /// before the frame sees the next line, so a block reaching here is stray.
+    /// Consume a stray nested block opening at the current `{`, reporting `error`
+    /// at the first content line when the block is non-empty. A member with a body
+    /// of its own (a resource group) opens it right after its header, before the
+    /// frame sees the next line, so a block reaching here is stray.
     fn consume_stray_block(&mut self, error: &ParseError) {
-        self.advance(); // INDENT
-        if self.peek().is_some_and(|kind| {
-            !matches!(
-                kind,
-                TokenKind::Dedent | TokenKind::Newline | TokenKind::Eof
-            )
-        }) {
+        self.advance(); // `{`
+        self.skip_newlines();
+        if self
+            .peek()
+            .is_some_and(|kind| !matches!(kind, TokenKind::RightBrace | TokenKind::Eof))
+        {
             let span = self.content_span();
             self.error_span(span, error.reason.clone(), error.message.clone());
         }

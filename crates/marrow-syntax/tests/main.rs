@@ -1,5 +1,7 @@
 mod common;
 
+#[path = "cases/brace_grammar.rs"]
+mod brace_grammar;
 #[path = "cases/format.rs"]
 mod format;
 #[path = "cases/fuzz.rs"]

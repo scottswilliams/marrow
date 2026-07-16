@@ -22,7 +22,7 @@ impl<'a> DeclParser<'a> {
         (indexes, comments)
     }
 
-    /// Parse an `INDENT … DEDENT` block of resource members. Nested groups recurse
+    /// Parse a `{ … }` block of resource members. Nested groups recurse
     /// on their own child block. Each member's span is its whole header line.
     pub(super) fn parse_resource_members(
         &mut self,
@@ -32,11 +32,18 @@ impl<'a> DeclParser<'a> {
         let mut indexes = Vec::new();
         let mut comments = Vec::new();
         let mut docs: Vec<Token> = Vec::new();
-        self.advance(); // INDENT
+        // Fail closed past the nesting limit: skip the group body without recursing.
+        if self.depth >= crate::NESTING_DEPTH_LIMIT {
+            self.advance(); // `{`
+            self.skip_to_block_end();
+            return (members, indexes, comments);
+        }
+        self.depth += 1;
+        self.open_brace_block(); // `{`
 
         let stray = ParseError::new(
             ParseDiagnosticReason::UnexpectedIndentation,
-            "unexpected indentation in resource body; only groups introduce nested resource members",
+            "unexpected block in resource body; only groups introduce nested resource members",
         );
         while self.peek().is_some() {
             match self.next_body_line(&mut docs, &mut comments, &stray) {
@@ -66,6 +73,7 @@ impl<'a> DeclParser<'a> {
             }
         }
         self.flush_docs_as_comments(&mut docs, &mut comments);
+        self.depth -= 1;
         (members, indexes, comments)
     }
 
@@ -131,17 +139,16 @@ impl<'a> DeclParser<'a> {
                 name_span,
                 keys,
             }) => {
-                let (children, child_indexes, child_comments) =
-                    if matches!(self.peek(), Some(TokenKind::Indent)) {
-                        self.parse_resource_members(false)
-                    } else {
-                        self.error_span(
-                            err,
-                            ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
-                            "expected an indented resource group body",
-                        );
-                        (Vec::new(), Vec::new(), Vec::new())
-                    };
+                let (children, child_indexes, child_comments) = if self.at_block_open() {
+                    self.parse_resource_members(false)
+                } else {
+                    self.error_span(
+                        err,
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceBody),
+                        "expected a `{ … }` resource group body",
+                    );
+                    (Vec::new(), Vec::new(), Vec::new())
+                };
                 debug_assert!(child_indexes.is_empty());
                 Some(ResourceMember::Group(GroupDecl {
                     docs,
@@ -159,7 +166,7 @@ impl<'a> DeclParser<'a> {
             }
         }
     }
-    /// Parse an `INDENT … DEDENT` block of enum members. A member is a bare
+    /// Parse a `{ … }` block of enum members. A member is a bare
     /// identifier on its own line; anything else (a type annotation, key
     /// parameters, or a deeper indent) is a parse error. This mirrors
     /// `parse_resource_members` but accepts only the bare-name form.
@@ -167,7 +174,14 @@ impl<'a> DeclParser<'a> {
         let mut members = Vec::new();
         let mut comments = Vec::new();
         let mut docs: Vec<Token> = Vec::new();
-        self.advance(); // INDENT
+        // Fail closed past the nesting limit: skip the category body without recursing.
+        if self.depth >= crate::NESTING_DEPTH_LIMIT {
+            self.advance(); // `{`
+            self.skip_to_block_end();
+            return (members, comments);
+        }
+        self.depth += 1;
+        self.open_brace_block(); // `{`
 
         // A stray indent here opens before any member header to nest under; a
         // member's own nested block is consumed right after its header, below.
@@ -190,12 +204,11 @@ impl<'a> DeclParser<'a> {
                             // A member's children are the indented block that
                             // immediately follows its header, parsed by the same
                             // routine and attached, so members nest to any depth.
-                            let (nested, nested_comments) =
-                                if matches!(self.peek(), Some(TokenKind::Indent)) {
-                                    self.parse_enum_members()
-                                } else {
-                                    (Vec::new(), Vec::new())
-                                };
+                            let (nested, nested_comments) = if self.at_block_open() {
+                                self.parse_enum_members()
+                            } else {
+                                (Vec::new(), Vec::new())
+                            };
                             members.push(EnumMember {
                                 docs: member_docs,
                                 name: head.name,
@@ -213,6 +226,7 @@ impl<'a> DeclParser<'a> {
             }
         }
         self.flush_docs_as_comments(&mut docs, &mut comments);
+        self.depth -= 1;
         (members, comments)
     }
 }

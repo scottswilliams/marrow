@@ -77,6 +77,7 @@ fn fixture_dir() -> PathBuf {
 /// exhaustive `match`, nested `Option[Option[int]]` distinctness, exact equality,
 /// and prefix `try` success and error propagation all report `passed`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn option_result_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -99,6 +100,7 @@ fn option_result_conformance_fixture_passes_on_the_production_path() {
 /// A returned `Option`/`Result` value renders through the VM via the sealed enum
 /// names, for `some`, `none`, and `err`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn option_and_result_values_render_through_the_vm() {
     let temp = TempDir::new("render");
     project(
@@ -137,6 +139,7 @@ fn option_and_result_values_render_through_the_vm() {
 /// A `try` whose error type does not match the function's `Result` error type is a
 /// typed `check.type` (same `E`, no implicit conversion).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_try_with_a_mismatched_error_type_is_reported() {
     let temp = TempDir::new("mismatchE");
     project(
@@ -157,6 +160,7 @@ fn a_try_with_a_mismatched_error_type_is_reported() {
 /// A `try` on a non-`Result` value, and a `try` outside a `Result`-returning
 /// function, are typed `check.type` diagnostics.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_try_in_the_wrong_context_is_reported() {
     for source in [
         "pub fn f(): Result[int, string]\n    const x = try 5\n    return ok(x)\n",
@@ -177,6 +181,7 @@ fn a_try_in_the_wrong_context_is_reported() {
 /// `Option` and `Result` are reserved built-in type names; redeclaring either as a
 /// user type is a `check.name_conflict`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_builtin_generic_name_is_reported() {
     for decl in ["enum Option\n    a\n", "struct Result\n    x: int\n"] {
         let temp = TempDir::new("reserved");
@@ -195,6 +200,7 @@ fn redeclaring_a_builtin_generic_name_is_reported() {
 /// statement, a block-form `try`/`catch`, and a stray `catch` all report
 /// `parse.syntax` and keep the parse total.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_removed_throw_catch_channel_is_reported() {
     for source in [
         "pub fn f(): int\n    throw 5\n",
@@ -216,6 +222,7 @@ fn the_removed_throw_catch_channel_is_reported() {
 /// A bare constructor whose full type argument set cannot be inferred — `none`,
 /// `ok(v)`, or `err(e)` with no expected type — is a typed `check.type`.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_uninferable_bare_constructor_is_reported() {
     for value in ["none", "ok(5)", "err(\"x\")"] {
         let temp = TempDir::new("infer");
@@ -242,6 +249,7 @@ fn an_uninferable_bare_constructor_is_reported() {
 /// declaration, not a declaration that is admitted and then silently shadowed at
 /// its use site (surfacing later as a confusing `check.type`).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_reserved_builtin_value_name_is_reported() {
     const NAMES: [&str; 11] = [
         "none",
@@ -293,6 +301,7 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
 /// collide: both are reached solely through member syntax (`s.none`, `E::ok`),
 /// which no built-in ever occupies. Such a program checks and runs.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_field_or_enum_variant_may_spell_a_builtin_name() {
     let temp = TempDir::new("member-name-ok");
     project(

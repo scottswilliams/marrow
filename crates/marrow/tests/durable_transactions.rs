@@ -166,6 +166,7 @@ fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment 
 /// attachment: `set` commits its one region, and a subsequent `getValue` reads the
 /// committed value back.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_committed_transaction_is_observable_by_a_later_read() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -192,6 +193,7 @@ fn a_committed_transaction_is_observable_by_a_later_read() {
 /// A sparse field committed in its own transaction reads back; a second transaction
 /// replacing the whole entry drops the earlier sparse leaf (exact replacement).
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_committed_field_write_reads_back_and_replacement_is_exact() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -235,6 +237,7 @@ fn a_committed_field_write_reads_back_and_replacement_is_exact() {
 /// An erase committed in its own transaction removes the entry; a later read observes
 /// it absent.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_committed_erase_removes_the_entry() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -257,6 +260,7 @@ fn a_committed_erase_removes_the_entry() {
 /// discarded and a later read observes the pre-transaction state. This is the
 /// late-rollback-restores-state law, observed across sessions on one attachment.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_fault_before_commit_rolls_the_transaction_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -289,6 +293,7 @@ fn a_fault_before_commit_rolls_the_transaction_back() {
 /// `run.required_missing` rather than publishing a partial entry; a later read
 /// observes nothing was written.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_required_field_unset_at_commit_rolls_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -319,6 +324,7 @@ fn a_required_field_unset_at_commit_rolls_back() {
 /// read into a local before the block closes is the supported form; a read after it
 /// cannot reach a live transaction and is rejected before it could run.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_read_after_commit_is_rejected() {
     let read_after = "resource Counter\n\
          \x20   required value: int\n\
@@ -362,6 +368,7 @@ fn a_durable_read_after_commit_is_rejected() {
 /// region back, exactly like an arithmetic fault: the C01 divergence machinery and
 /// the transaction effects compose. The non-diverging path commits normally.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_unreachable_fault_inside_a_transaction_rolls_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);

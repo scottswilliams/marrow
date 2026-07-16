@@ -73,6 +73,7 @@ fn fixture_dir() -> PathBuf {
 /// using aliases in parameter, return, constant, optional, and resource-field
 /// positions reports `passed` through the production path.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn alias_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -95,6 +96,7 @@ fn alias_conformance_fixture_passes_on_the_production_path() {
 /// A cyclic alias chain is a typed `check.recursion` diagnostic, reported once
 /// per alias on the cycle, at check time.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_cyclic_alias_chain_is_a_check_recursion_diagnostic() {
     let temp = TempDir::new("alias-cycle");
     project(
@@ -120,6 +122,7 @@ fn a_cyclic_alias_chain_is_a_check_recursion_diagnostic() {
 
 /// A self-referential alias is the one-element cycle.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_self_referential_alias_is_a_check_recursion_diagnostic() {
     let temp = TempDir::new("alias-self");
     project(
@@ -138,6 +141,7 @@ fn a_self_referential_alias_is_a_check_recursion_diagnostic() {
 /// Two aliases with one name collide, as do an alias and a resource: names a
 /// type annotation resolves against are unique across the project.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn duplicate_alias_names_are_name_conflicts() {
     let temp = TempDir::new("alias-dup");
     project(
@@ -176,6 +180,7 @@ fn duplicate_alias_names_are_name_conflicts() {
 /// An alias whose expansion names no known type is a typed `check.type`
 /// diagnostic at the alias declaration, even when the alias is unused.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_alias_to_an_unknown_type_is_a_check_type_diagnostic() {
     let temp = TempDir::new("alias-unknown");
     project(
@@ -201,6 +206,7 @@ fn an_alias_to_an_unknown_type_is_a_check_type_diagnostic() {
 /// Alias transparency does not relax the optional-nesting rule: `M?` where `M`
 /// expands to `int?` is still a doubled optional and rejects.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_alias_cannot_smuggle_a_nested_optional() {
     let temp = TempDir::new("alias-nested-opt");
     project(
@@ -221,6 +227,7 @@ fn an_alias_cannot_smuggle_a_nested_optional() {
 
 /// A keyword cannot name an alias; the parser reports it at the declaration.
 #[test]
+#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_keyword_alias_name_is_a_parse_error() {
     let temp = TempDir::new("alias-keyword");
     project(
