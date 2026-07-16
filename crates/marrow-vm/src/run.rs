@@ -1191,14 +1191,21 @@ fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
 /// over a flat executable site, so the referenced site is `Flat`.
 fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
     let (root, target) = match &image.sites()[site as usize] {
-        SealedSite::Flat { root, target } => (*root, *target),
+        SealedSite::Flat { root, target } => (*root, target),
         SealedSite::Parked { .. } => {
             unreachable!("the verifier admits a durable opcode only over a flat site")
         }
     };
     let root = &image.roots()[root as usize];
     match target {
-        SealedSiteTarget::BranchEntry(branch) => root.branches()[branch as usize].record(),
+        SealedSiteTarget::BranchEntry(path) => {
+            // The verifier seals only single-hop branch paths (a nested branch parks),
+            // so the path names one direct branch of the root.
+            let [branch] = path.as_ref() else {
+                unreachable!("the verifier seals only single-hop branch paths")
+            };
+            root.branches()[*branch as usize].record()
+        }
         // A field-leaf site (top-level or branch) never reaches a whole-entry read
         // (the verifier rejects `DurReadEntry` over a field site), so this arm is
         // never observed; it keeps the match total.

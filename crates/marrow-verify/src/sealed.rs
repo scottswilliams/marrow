@@ -255,21 +255,29 @@ pub enum SealedInstr {
 /// semantic path: `WholePayload` over a keyed placement, or `FieldLeaf` carrying the
 /// resolved index of the field within its root's record. The index is a verifier
 /// derivation from the resolved graph node, never a value trusted from the image.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// A branch target names its node by a *branch path*: the per-level branch indices from
+/// the root down to the addressed branch node. The representation admits nested branches
+/// (a longer path), but the verifier currently seals only single-hop branch paths — a
+/// nested branch parks (its whole root is not flat-executable), so every sealed branch
+/// path here has exactly one element. When nested-branch admission lands (post
+/// checkpoint 1), [`SealedRoot::branches`] becomes recursive and the seal fills deeper
+/// paths; until then a consumer resolves the single hop against the flat branch list.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedSiteTarget {
     WholePayload,
     FieldLeaf(u16),
-    /// The whole payload of a single-level keyed branch entry nested beneath the
-    /// root: the branch's index among its root's declaration-ordered branch members
-    /// (into [`SealedRoot::branches`]). Its operations address the two-element
-    /// key-path `[root_key, branch_key]`.
-    BranchEntry(u16),
-    /// One field leaf of a single-level keyed branch entry: the branch's index (into
-    /// [`SealedRoot::branches`]) and the field's index within that branch's
-    /// materialized record. Its field-exact operations address the two-element
-    /// key-path `[root_key, branch_key]`, one level below the root.
+    /// The whole payload of a keyed branch entry, named by its branch path (per-level
+    /// branch indices into the declaration-ordered branch list at each level; single-hop
+    /// at this stage). Its operations address the `(1 + path.len())`-element key-path
+    /// `[root_key, branch_key, …]`.
+    BranchEntry(Box<[u16]>),
+    /// One field leaf of a keyed branch entry: the branch node's branch path and the
+    /// field's index within that branch's materialized record. Its field-exact
+    /// operations address the `(1 + path.len())`-element key-path
+    /// `[root_key, branch_key, …]`, one or more levels below the root.
     BranchField {
-        branch: u16,
+        branch: Box<[u16]>,
         field: u16,
     },
 }

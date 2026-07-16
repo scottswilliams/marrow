@@ -233,14 +233,14 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
                 target: SealedSiteTarget::BranchEntry(branch),
                 ..
             } => SiteSpec {
-                target: SiteTarget::BranchEntry(*branch),
+                target: SiteTarget::BranchEntry(branch.clone()),
             },
             SealedSite::Flat {
                 target: SealedSiteTarget::BranchField { branch, field },
                 ..
             } => SiteSpec {
                 target: SiteTarget::BranchField {
-                    branch: *branch,
+                    branch: branch.clone(),
                     field: *field,
                 },
             },

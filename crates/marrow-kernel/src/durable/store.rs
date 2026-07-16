@@ -10,9 +10,10 @@ use super::physical::{self, CellKind};
 use super::plan::{CellWrite, Planner};
 use super::profile;
 use super::{
-    AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, BranchHop, CommitResult, CreateOutcome,
-    DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, InvocationGrant, KernelFault,
-    NextKey, Presence, Reopen, ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
+    AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, BranchHop, BranchSchema, CommitResult,
+    CreateOutcome, DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, InvocationGrant,
+    KernelFault, NextKey, Presence, Reopen, ReplaceOutcome, SessionError, SiteSpec, SiteTarget,
+    StoreSchema,
 };
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, decode_value, encode_value};
@@ -183,7 +184,7 @@ impl<E: ByteEngine> DurableStore<E> {
     fn authorized_sites(&self) -> Vec<AuthorizedSite> {
         self.sites
             .iter()
-            .map(|site| resolve_site(&self.schema, site.target))
+            .map(|site| resolve_site(&self.schema, &site.target))
             .collect()
     }
 
@@ -266,20 +267,16 @@ fn resolve_authority(
 /// [`AuthorizedSite`] the kernel ops address, once at session setup: the addressed
 /// node's root, its branch path, its own record fields (for whole-entry ops), and —
 /// for a field target — the field's name, kind, and required flag. A branch target
-/// resolves the branch from the schema so the addressed node carries its own key kind
-/// and record.
-fn resolve_site(schema: &StoreSchema, target: SiteTarget) -> AuthorizedSite {
-    // The container node the site addresses: its branch path and own record fields. A
-    // root target's container is the root; a branch target's (whole entry or field) is
-    // the branch node one level down.
+/// walks its branch path through the recursive schema so the addressed node carries the
+/// key kind and record of the branch the path descends to, at any depth.
+fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
+    // The container node the site addresses: its branch path (one hop per branch-path
+    // element) and own record fields. A root target's container is the root; a branch
+    // target's (whole entry or field) is the branch node the path descends to.
     let (branch, container_fields): (Vec<BranchHop>, &[FieldSchema]) = match target {
         SiteTarget::WholePayload | SiteTarget::FieldLeaf(_) => (Vec::new(), &schema.fields),
-        SiteTarget::BranchEntry(branch) | SiteTarget::BranchField { branch, .. } => {
-            let branch = &schema.branches[branch as usize];
-            (
-                vec![BranchHop::new(branch.name.clone(), branch.key)],
-                &branch.fields,
-            )
+        SiteTarget::BranchEntry(path) | SiteTarget::BranchField { branch: path, .. } => {
+            resolve_branch_path(schema, path)
         }
     };
     // A whole-entry site enumerates the container's footprint, so it carries the
@@ -290,10 +287,32 @@ fn resolve_site(schema: &StoreSchema, target: SiteTarget) -> AuthorizedSite {
             AuthTarget::Entry(container_fields.to_vec())
         }
         SiteTarget::FieldLeaf(index) | SiteTarget::BranchField { field: index, .. } => {
-            AuthTarget::field(&container_fields[index as usize], container_fields)
+            AuthTarget::field(&container_fields[*index as usize], container_fields)
         }
     };
     AuthorizedSite::new(schema.root_name.clone(), schema.key, branch, target)
+}
+
+/// Walk a branch path through the recursive branch schema, one hop per element: the hops
+/// down to the addressed branch node — each carrying that branch's name and key kind —
+/// and the node's own record fields. The single owner of branch-path-to-node resolution,
+/// so a direct branch and a nested branch resolve the same way at increasing depth: hop
+/// `i` indexes level `i`'s declaration-ordered branch list, and the next level's list is
+/// that branch's own sub-branches.
+fn resolve_branch_path<'a>(
+    schema: &'a StoreSchema,
+    path: &[u16],
+) -> (Vec<BranchHop>, &'a [FieldSchema]) {
+    let mut hops = Vec::with_capacity(path.len());
+    let mut branches: &[BranchSchema] = &schema.branches;
+    let mut fields: &[FieldSchema] = &schema.fields;
+    for &index in path {
+        let branch = &branches[index as usize];
+        hops.push(BranchHop::new(branch.name.clone(), branch.key));
+        fields = &branch.fields;
+        branches = &branch.branches;
+    }
+    (hops, fields)
 }
 
 /// The physical marker stem of the node `site` addresses at key-path `keys`: the root
@@ -1127,6 +1146,20 @@ mod tests {
         ]
     }
 
+    /// A branch-entry target naming the branch node the `path` of per-level branch
+    /// indices descends to (`&[0]` a direct child branch, `&[0, 1]` a nested one).
+    fn branch_entry(path: &[u16]) -> SiteTarget {
+        SiteTarget::BranchEntry(path.into())
+    }
+
+    /// A branch-field target: the branch node `path` descends to, field index `field`.
+    fn branch_field(path: &[u16], field: u16) -> SiteTarget {
+        SiteTarget::BranchField {
+            branch: path.into(),
+            field,
+        }
+    }
+
     fn value_entry(v: i64) -> EntryValue {
         EntryValue {
             fields: vec![Some(RuntimeScalar::Int(v)), None],
@@ -1264,10 +1297,7 @@ mod tests {
             }],
         };
         let sites = vec![SiteSpec {
-            target: SiteTarget::BranchField {
-                branch: 0,
-                field: 0,
-            },
+            target: branch_field(&[0], 0),
         }];
         let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
         let mut txn = store
@@ -1384,7 +1414,7 @@ mod tests {
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
-                target: SiteTarget::BranchEntry(0),
+                target: branch_entry(&[0]),
             },
         ];
         (schema, sites)
@@ -1751,19 +1781,13 @@ mod tests {
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
-                target: SiteTarget::BranchEntry(0),
+                target: branch_entry(&[0]),
             },
             SiteSpec {
-                target: SiteTarget::BranchField {
-                    branch: 0,
-                    field: 3,
-                },
+                target: branch_field(&[0], 3),
             },
             SiteSpec {
-                target: SiteTarget::BranchField {
-                    branch: 0,
-                    field: 0,
-                },
+                target: branch_field(&[0], 0),
             },
         ];
         (schema, sites)

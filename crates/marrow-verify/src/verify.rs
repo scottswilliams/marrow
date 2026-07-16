@@ -1340,9 +1340,11 @@ fn resolve_site(
                     return Ok(parked());
                 }
                 match branch_index(&root.members, steps[2].id) {
+                    // A single-hop branch path: a direct branch of the root. A nested
+                    // branch parked above (its root is not flat-executable).
                     Some(index) => SealedSite::Flat {
                         root: root_index,
-                        target: SealedSiteTarget::BranchEntry(index),
+                        target: SealedSiteTarget::BranchEntry(Box::from([index])),
                     },
                     None => parked(),
                 }
@@ -1367,9 +1369,13 @@ fn resolve_site(
             // field — more steps — parks (E04).
             n if n == marrow_image::bounds::MIN_SITE_PATH_STEPS + 2 => {
                 match branch_field_index(&root.members, steps[2].id, steps[3].id) {
+                    // A single-hop branch path: a field of a direct branch of the root.
                     Some((branch, field)) => SealedSite::Flat {
                         root: root_index,
-                        target: SealedSiteTarget::BranchField { branch, field },
+                        target: SealedSiteTarget::BranchField {
+                            branch: Box::from([branch]),
+                            field,
+                        },
                     },
                     None => parked(),
                 }
@@ -4687,7 +4693,7 @@ fn apply_durable(
     // identity but no executable operation; an opcode over one is a forged or
     // not-yet-executable image and is refused here, independently of the compiler.
     let (site_root, site_target) = match site {
-        SealedSite::Flat { root, target } => (*root, *target),
+        SealedSite::Flat { root, target } => (*root, target),
         SealedSite::Parked { .. } => {
             return Err(reject(
                 VerifyPhase::Function,
@@ -4725,11 +4731,15 @@ fn apply_durable(
         // `[root_key, branch_key]`, pushed root-first so the branch key is on top. The
         // record is the branch's own; a branch field op reads no whole-entry record, so
         // `entry_record` is unused there but kept the branch's for consistency.
-        SealedSiteTarget::BranchEntry(branch) | SealedSiteTarget::BranchField { branch, .. } => {
-            let branch = root.branches.get(branch as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "durable branch index out of range",
-            ))?;
+        SealedSiteTarget::BranchEntry(path)
+        | SealedSiteTarget::BranchField { branch: path, .. } => {
+            let branch = root
+                .branches
+                .get(single_branch_hop(path) as usize)
+                .ok_or(reject(
+                    VerifyPhase::Function,
+                    "durable branch index out of range",
+                ))?;
             (vec![VType::bare_scalar(branch.key), key_ty], branch.record)
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
@@ -4916,17 +4926,20 @@ fn pop_key_path(stack: &mut Vec<VType>, key_path: &[VType]) -> Result<(), Verify
 /// against its branch's record, one level down.
 fn field_of<'a>(
     ctx: &'a Ctx,
-    target: SealedSiteTarget,
+    target: &SealedSiteTarget,
     root: &SealedRoot,
 ) -> Result<&'a SealedField, VerifyRejection> {
     let (record, field) = match target {
-        SealedSiteTarget::FieldLeaf(field) => (root.record, field),
+        SealedSiteTarget::FieldLeaf(field) => (root.record, *field),
         SealedSiteTarget::BranchField { branch, field } => {
-            let branch = root.branches.get(branch as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "durable branch index out of range",
-            ))?;
-            (branch.record, field)
+            let branch = root
+                .branches
+                .get(single_branch_hop(branch) as usize)
+                .ok_or(reject(
+                    VerifyPhase::Function,
+                    "durable branch index out of range",
+                ))?;
+            (branch.record, *field)
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => {
             return Err(reject(
@@ -4952,13 +4965,27 @@ fn durable_field_vtype(field: &SealedField) -> VType {
 
 /// Require an entry-target site: the root's whole payload or a keyed branch entry. A
 /// field-leaf site (top-level or branch) is not an entry.
-fn require_entry(target: SealedSiteTarget) -> Result<(), VerifyRejection> {
+fn require_entry(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
     match target {
         SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => Ok(()),
         SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. } => Err(reject(
             VerifyPhase::Function,
             "operation requires an entry site",
         )),
+    }
+}
+
+/// The single branch index of a sealed single-hop branch path. The verifier seals only
+/// single-hop branch paths — a nested branch parks (its root is not flat-executable), so
+/// every sealed `SealedSite::Flat` branch path has exactly one element — so this resolves
+/// the hop against the flat sealed branch list. A verifier-established invariant over the
+/// verifier's own resolved sites, not image-derived data; a multi-hop flat site cannot be
+/// sealed. Nested admission (post checkpoint 1) makes the branch list recursive and walks
+/// the whole path here instead.
+fn single_branch_hop(path: &[u16]) -> u16 {
+    match path {
+        [hop] => *hop,
+        _ => unreachable!("the verifier seals only single-hop branch paths"),
     }
 }
 

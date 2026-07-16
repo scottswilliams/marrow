@@ -72,31 +72,37 @@ pub struct BranchSchema {
 /// image's site index. Its root is the single T01 root; the target is the sealed
 /// [`SemanticTarget`](marrow_verify::SemanticTarget) projected to the physical flat
 /// root — the whole payload or one of the root's fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteSpec {
     pub target: SiteTarget,
 }
 
 /// The closed operation-target set the kernel serves: the root's whole keyed payload,
 /// one of the root's field leaves (by field index into [`StoreSchema::fields`]), or a
-/// keyed branch entry's whole payload. The kernel owns the mapping from this sealed
-/// semantic target to the name-keyed physical layout (see `physical`); it is the
-/// physical projection of the verifier's closed `SemanticTarget`. E03 executes
-/// single-level branches; a branch field-leaf target arrives with the field-exact
-/// branch tail (it needs branch commit reconcile).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// keyed branch entry's whole payload or one of its field leaves. The kernel owns the
+/// mapping from this sealed semantic target to the name-keyed physical layout (see
+/// `physical`); it is the physical projection of the verifier's closed `SemanticTarget`.
+///
+/// A branch target names its node by a *branch path*: the per-level branch indices from
+/// the root down to the addressed branch node, each an index into that level's
+/// declaration-ordered branch list (the root's [`StoreSchema::branches`], then each
+/// branch's [`BranchSchema::branches`]). A single-element path names a direct child
+/// branch; a longer path names a nested branch one level deeper per element. The node's
+/// key-path is the root key followed by one key per path element, so a path of length
+/// `d` addresses a `(1 + d)`-element key-path `d` levels below the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SiteTarget {
     WholePayload,
     FieldLeaf(u16),
-    /// The whole payload of a keyed branch entry: the branch's index into
-    /// [`StoreSchema::branches`].
-    BranchEntry(u16),
-    /// One field leaf of a keyed branch entry: the branch's index into
-    /// [`StoreSchema::branches`] and the field's index into that branch's
-    /// [`BranchSchema::fields`]. Its field-exact operations address the two-element
-    /// key-path `[root_key, branch_key]`, one level below the root.
+    /// The whole payload of a keyed branch entry, named by its branch path (per-level
+    /// branch indices from the root down).
+    BranchEntry(Box<[u16]>),
+    /// One field leaf of a keyed branch entry: the branch node's branch path and the
+    /// field's index into that branch's [`BranchSchema::fields`]. Its field-exact
+    /// operations address the `(1 + path.len())`-element key-path
+    /// `[root_key, branch_key, …]` one or more levels below the root.
     BranchField {
-        branch: u16,
+        branch: Box<[u16]>,
         field: u16,
     },
 }
