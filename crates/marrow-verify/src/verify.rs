@@ -164,17 +164,17 @@ impl DecodedMember {
         )
     }
 
-    /// Whether this member is a single-column-keyed scalar-field branch, recursively —
-    /// the branch shape the kernel executes at any depth. Its key is one column and every
-    /// direct member itself keeps flat: a plain scalar field, or a nested branch that is
-    /// itself a simple branch. A composite branch key, a group, or a widened field breaks
-    /// it. The recursion admits an arbitrarily deep chain of single-column scalar-field
-    /// branches, which the recursive physical layout and profile serve.
+    /// Whether this member is a scalar-field keyed branch, recursively — the branch shape
+    /// the kernel executes at any depth. Its key is one or more columns and every direct
+    /// member itself keeps flat: a plain scalar field, or a nested branch that is itself a
+    /// simple branch. A group or a widened field breaks it. The recursion admits an
+    /// arbitrarily deep chain of scalar-field branches with composite keys, which the
+    /// recursive physical layout and profile serve.
     fn is_simple_branch(&self) -> bool {
         matches!(
             self,
             DecodedMember::Branch { keys, members, .. }
-                if keys.len() == 1
+                if !keys.is_empty()
                     && members.iter().all(DecodedMember::keeps_root_flat)
         )
     }
@@ -1388,7 +1388,7 @@ fn resolve_site(
 /// nested or composite-key branch, no widened field). Re-derived from the decoded
 /// graph, so the flat/parked classification never trusts a compiler summary.
 fn is_flat_executable_root(root: &DecodedRoot) -> bool {
-    root.keys.len() == 1 && root.members.iter().all(DecodedMember::keeps_root_flat)
+    !root.keys.is_empty() && root.members.iter().all(DecodedMember::keeps_root_flat)
 }
 
 /// Seal a member tree's keyed branches into the recursive [`SealedBranch`] tree, in
@@ -1408,7 +1408,7 @@ fn seal_branches(members: &[DecodedMember], strings: &[Rc<str>]) -> Vec<SealedBr
                 ..
             } => Some(SealedBranch {
                 name: strings[*name as usize].clone(),
-                key: keys[0].0,
+                keys: keys.iter().map(|(scalar, _)| *scalar).collect(),
                 record: *record,
                 branches: seal_branches(members, strings),
             }),
@@ -4714,47 +4714,50 @@ fn apply_durable(
         VerifyPhase::Function,
         "durable site root out of range",
     ))?;
-    // Defense in depth: a flat site's root is single-column and free of groups,
-    // nested/composite branches, and widened fields by construction (single-level
-    // scalar-field branches are executable), but recheck at the opcode.
+    // Defense in depth: a flat site's root is free of groups and widened fields by
+    // construction (scalar-field branches with composite keys are executable), but
+    // recheck at the opcode.
     if root.has_extras {
         return Err(reject(
             VerifyPhase::Function,
             "a durable operation site requires a flat-executable root",
         ));
     }
-    let [key] = root.keys.as_slice() else {
+    if root.keys.is_empty() {
         return Err(reject(
             VerifyPhase::Function,
-            "a durable operation site requires a single-column keyed root",
+            "a durable operation site requires a keyed root",
         ));
-    };
-    let key_ty = VType::bare_scalar(*key);
-    // A branch site addresses the `(1 + path.len())`-element key-path
-    // `[root_key, branch_key, …]`, pushed root-first so the deepest branch key is on top;
-    // every other site addresses the single root key. `key_path` lists the key types in
-    // stack-pop order (deepest branch key first, root key last), and `entry_record` is the
-    // record a whole-entry op reads or writes — the addressed branch's own record for a
-    // branch site, the root's otherwise.
-    let (key_path, entry_record): (Vec<VType>, u16) = match site_target {
-        // A branch entry and a branch field both address the branch node's key-path; the
-        // record is the branch's own. A branch field op reads no whole-entry record, so
-        // `entry_record` is unused there but kept the branch's for consistency.
+    }
+    // A site addresses a key-path of one column per key column of every node from the root
+    // down to the addressed node: the root's key columns, then each branch hop's key
+    // columns. The lowering pushes them root-first in column-declaration order, so the
+    // stack-pop order is that whole column sequence reversed. `entry_record` is the record
+    // a whole-entry op reads or writes (the addressed branch's own for a branch site);
+    // `traversed_arity` is the addressed layer's own key column count, used to park
+    // composite-keyed traversal.
+    let mut columns: Vec<VType> = root
+        .keys
+        .iter()
+        .map(|scalar| VType::bare_scalar(*scalar))
+        .collect();
+    let (entry_record, traversed_arity) = match site_target {
         SealedSiteTarget::BranchEntry(path)
         | SealedSiteTarget::BranchField { branch: path, .. } => {
             let branch = resolve_sealed_branch(root, path)?;
-            // Key types in stack-pop order: the branch chain's keys deepest-first, then the
-            // root key. `branch_key_path` yields the chain root-first, so reverse it onto
-            // the root key.
-            let mut key_path = branch_key_path(root, path)?;
-            key_path.reverse();
-            key_path.push(key_ty);
-            (key_path, branch.record)
+            for scalar in branch_key_columns(root, path)? {
+                columns.push(VType::bare_scalar(scalar));
+            }
+            (branch.record, branch.keys().len())
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
-            (vec![key_ty], root.record)
+            (root.record, root.keys.len())
         }
     };
+    // Stack-pop order is the root-first column sequence reversed (deepest last column on
+    // top of the stack, popped first).
+    let mut key_path = columns;
+    key_path.reverse();
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurExists(_) => {
@@ -4811,6 +4814,17 @@ fn apply_durable(
                     "set-sparse-present requires a root field site",
                 ));
             }
+            // The strict form carries exactly one `key_slot`, so it addresses a
+            // single-column root key-path; a composite-key root's guarded set lowers as the
+            // unguarded form instead. A forged strict form over a composite root is refused
+            // here so the kernel is never handed a single column where several are needed.
+            let [root_key] = root.keys.as_slice() else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "set-sparse-present requires a single-column keyed root",
+                ));
+            };
+            let key_ty = VType::bare_scalar(*root_key);
             let field = field_of(ctx, site_target, root)?;
             if field.required {
                 return Err(reject(
@@ -4877,10 +4891,20 @@ fn apply_durable(
                     "bounded traversal bound is out of range",
                 ));
             }
+            // Bounded traversal iterates a single key column: the loop binds one immediate
+            // key and takes one inclusive `from`. A composite-keyed traversed layer has no
+            // spelled single-column iteration in the current language, so it parks with a
+            // typed rejection rather than inventing a last-column-under-prefix semantics.
+            if traversed_arity != 1 {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "bounded traversal over a composite-keyed layer is not yet executable",
+                ));
+            }
             // The traversed key is what iteration enumerates — the first element of the
-            // site's whole-entry key-path; the remainder is the ancestor key-path
-            // locating the traversed layer's parent entry (empty for a root site,
-            // `[root_key]` for a single-level branch site).
+            // site's whole-entry key-path (the single traversed column); the remainder is
+            // the ancestor key-path locating the traversed layer's parent entry (empty for
+            // a root site, the parent columns for a branch site).
             let (traversed_key, ancestor_path) = key_path
                 .split_first()
                 .expect("an entry site has a non-empty key-path");
@@ -5001,21 +5025,21 @@ fn resolve_sealed_branch<'a>(
     ))
 }
 
-/// The branch chain's key types root-first (`[b1_key, b2_key, …]`) along a branch path,
-/// each a bare scalar. Refuses a path element out of range at any level, the same
-/// forged-image backstop as [`resolve_sealed_branch`].
-fn branch_key_path(root: &SealedRoot, path: &[u16]) -> Result<Vec<VType>, VerifyRejection> {
+/// The branch chain's key columns, root-first and flattened across hops (each hop
+/// contributes its whole ordered key tuple), along a branch path. Refuses a path element
+/// out of range at any level, the same forged-image backstop as [`resolve_sealed_branch`].
+fn branch_key_columns(root: &SealedRoot, path: &[u16]) -> Result<Vec<Scalar>, VerifyRejection> {
     let mut branches = &root.branches;
-    let mut keys = Vec::with_capacity(path.len());
+    let mut columns = Vec::with_capacity(path.len());
     for &index in path {
         let branch = branches.get(index as usize).ok_or(reject(
             VerifyPhase::Function,
             "durable branch index out of range",
         ))?;
-        keys.push(VType::bare_scalar(branch.key));
+        columns.extend_from_slice(&branch.keys);
         branches = &branch.branches;
     }
-    Ok(keys)
+    Ok(columns)
 }
 
 /// Require `value` to be exactly `want`.

@@ -99,7 +99,8 @@ pub(crate) struct DurableBranchField {
 /// order.
 pub(crate) struct DurableBranch {
     pub(crate) name: String,
-    pub(crate) key: ScalarType,
+    /// The branch's ordered key columns (one or more), the whole composite branch key.
+    pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
     pub(crate) entry_site: u16,
     pub(crate) fields: Vec<DurableBranchField>,
@@ -138,7 +139,8 @@ pub(crate) struct DurableRoot {
     /// The resource (product) name backing this store — the head of a branch's
     /// qualified constructor path `Resource.branch(…)`.
     pub(crate) resource: String,
-    pub(crate) key: ScalarType,
+    /// The root's ordered key columns (one or more), the whole composite root key.
+    pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
     pub(crate) entry_site: u16,
     pub(crate) fields: Vec<DurableField>,
@@ -430,9 +432,11 @@ impl DurableRegistry {
             .fields
             .iter()
             .all(|f| matches!(f.ty, GArg::Scalar(_)));
-        let single_key = matches!(key_scalars.as_slice(), [_]);
+        // A keyed root of scalar fields with only scalar-field branches is executable, at
+        // any key arity (one or more columns); a singleton root (no key columns) parks.
+        let keyed = !key_scalars.is_empty();
         let members_flat = members.iter().all(member_keeps_root_flat);
-        let executable = single_key && all_scalar_fields && members_flat;
+        let executable = keyed && all_scalar_fields && members_flat;
         let branches = if executable {
             build_executable_branches(records, resource, &top_branches)
         } else {
@@ -455,9 +459,6 @@ impl DurableRegistry {
         if !executable {
             return Self::declared(&store.root.root);
         }
-        let [key] = key_scalars.as_slice() else {
-            unreachable!("an executable root has exactly one key column");
-        };
         // A flat root has only top-level scalar fields, so `top_field_sites[i]` is the
         // field-leaf site of `record.fields[i]` (both in member/record order).
         let fields = record
@@ -479,7 +480,7 @@ impl DurableRegistry {
             executable: Some(DurableRoot {
                 name: store.root.root.clone(),
                 resource: store.resource.clone(),
-                key: *key,
+                key: key_scalars.clone(),
                 record: record.type_id,
                 entry_site,
                 fields,
@@ -1227,7 +1228,7 @@ fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
         DurableMemberDef::Field { value, .. } => matches!(value, DurableValueShape::Scalar(_)),
         DurableMemberDef::Group { .. } => false,
         DurableMemberDef::Branch { keys, members, .. } => {
-            keys.len() == 1 && members.iter().all(member_keeps_root_flat)
+            !keys.is_empty() && members.iter().all(member_keeps_root_flat)
         }
     }
 }
@@ -1265,8 +1266,14 @@ fn build_branches(
         })
         .zip(sites)
         .map(|(group, sites)| {
-            let key = scalar_of(&records.expand(&group.keys[0].ty))
-                .expect("an executable branch has a single orderable-key-scalar column");
+            let key = group
+                .keys
+                .iter()
+                .map(|column| {
+                    scalar_of(&records.expand(&column.ty))
+                        .expect("an executable branch key column is an orderable key scalar")
+                })
+                .collect();
             let fields = group
                 .members
                 .iter()

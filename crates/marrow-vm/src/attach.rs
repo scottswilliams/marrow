@@ -173,16 +173,17 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // field values, and composite root keys park; a parked shape stays parked until its
     // owner lands it.
     let root = image.roots().first()?;
-    // A root with a group, a composite branch key, or a widened field is not yet executable
-    // (`has_extras`); single-column-keyed scalar-field branches nested to any depth are
-    // executable and do not set that flag.
-    if root.has_extras() {
+    // A root with a group or a widened field is not yet executable (`has_extras`);
+    // scalar-field branches nested to any depth, with composite keys, are executable and do
+    // not set that flag. A singleton root has no key columns and parks.
+    if root.has_extras() || root.keys().is_empty() {
         return None;
     }
-    let [key] = root.keys() else {
-        return None;
-    };
-    let key = scalar_kind(*key);
+    let key: Vec<ScalarKind> = root
+        .keys()
+        .iter()
+        .map(|scalar| scalar_kind(*scalar))
+        .collect();
 
     let fields = scalar_fields(image, root.record())?;
 
@@ -261,7 +262,11 @@ fn branch_schema(
     }
     Some(BranchSchema {
         name: branch.name().to_string(),
-        key: scalar_kind(branch.key()),
+        key: branch
+            .keys()
+            .iter()
+            .map(|scalar| scalar_kind(*scalar))
+            .collect(),
         fields: scalar_fields(image, branch.record())?,
         branches,
     })

@@ -2424,8 +2424,9 @@ impl<'a> FnLowerer<'a> {
                     self.fail(diagnostic);
                     return None;
                 };
-                let (entry_site, key_ty) = (root.entry_site, root.key);
+                let entry_site = root.entry_site;
                 self.check_root_name(root, name, *span)?;
+                let key_ty = self.single_traversal_column(&root.key, *span)?;
                 Some(TraversalTarget {
                     entry_site,
                     key_ty,
@@ -2461,14 +2462,39 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return None;
                 };
+                let entry_site = layer.entry_site;
+                let key_ty = self.single_traversal_column(&layer.key, *span)?;
                 Some(TraversalTarget {
-                    entry_site: layer.entry_site,
-                    key_ty: layer.key,
+                    entry_site,
+                    key_ty,
                     ancestor_keys,
                     span: *span,
                 })
             }
             _ => None,
+        }
+    }
+
+    /// The single key column of a traversable layer, or a typed `check.unsupported` when
+    /// the layer is composite-keyed. Bounded traversal binds one immediate key and takes
+    /// one inclusive `from`; the current language spells no composite-key iteration, so a
+    /// composite-keyed layer parks rather than inventing a last-column-under-prefix
+    /// semantics.
+    fn single_traversal_column(
+        &mut self,
+        columns: &[ScalarType],
+        span: SourceSpan,
+    ) -> Option<ScalarType> {
+        match columns {
+            [only] => Some(*only),
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    "bounded traversal over a composite-keyed layer",
+                ));
+                None
+            }
         }
     }
 
@@ -5767,23 +5793,19 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         match &**callee {
-            // The base case `^root(key)`: the root whole-entry address.
+            // The base case `^root(k1, …)`: the root whole-entry address, one key operand
+            // per root key column in declaration order.
             Expression::SavedRoot {
                 name,
                 span: root_span,
             } => {
                 self.check_root_name(root, name, *root_span)?;
-                let key = self.single_key_arg(args, *span)?;
-                Some((
-                    vec![DurKey {
-                        key: PlaceKey::Expr(key),
-                        key_ty: root.key,
-                    }],
-                    DurNode::Root(root),
-                ))
+                let mut keys = Vec::new();
+                self.push_key_columns(&mut keys, args, &root.key, *span)?;
+                Some((keys, DurNode::Root(root)))
             }
-            // The recursive case `<entry-address>.branch(key)`: extend the parent entry's
-            // key-path with this branch's key.
+            // The recursive case `<entry-address>.branch(bk1, …)`: extend the parent
+            // entry's key-path with this branch's own key columns in declaration order.
             Expression::Field {
                 base,
                 name: branch_name,
@@ -5800,15 +5822,43 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return None;
                 };
-                let key = self.single_key_arg(args, *span)?;
-                keys.push(DurKey {
-                    key: PlaceKey::Expr(key),
-                    key_ty: branch.key,
-                });
+                self.push_key_columns(&mut keys, args, &branch.key, *span)?;
                 Some((keys, DurNode::Branch(branch)))
             }
             _ => None,
         }
+    }
+
+    /// Match the positional key operands of one node against its ordered key columns,
+    /// pushing one [`DurKey`] per column onto `keys` in declaration order (so the whole
+    /// key-path is assembled root-first, column order, the order the kernel expects).
+    /// Reports a diagnostic and returns `None` on a wrong operand count or a named operand.
+    fn push_key_columns<'e>(
+        &mut self,
+        keys: &mut Vec<DurKey<'e>>,
+        args: &'e [Argument],
+        columns: &[ScalarType],
+        span: SourceSpan,
+    ) -> Option<()> {
+        if args.len() != columns.len() || args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "a store access takes {} positional key column(s), one per key column",
+                    columns.len()
+                ),
+            ));
+            return None;
+        }
+        for (arg, &key_ty) in args.iter().zip(columns) {
+            keys.push(DurKey {
+                key: PlaceKey::Expr(&arg.value),
+                key_ty,
+            });
+        }
+        Some(())
     }
 
     fn check_root_name(
@@ -5822,25 +5872,6 @@ impl<'a> FnLowerer<'a> {
         } else {
             self.fail(name_error(self.file, span, name));
             None
-        }
-    }
-
-    fn single_key_arg<'e>(
-        &mut self,
-        args: &'e [Argument],
-        span: SourceSpan,
-    ) -> Option<&'e Expression> {
-        match args {
-            [arg] if arg.name.is_none() => Some(&arg.value),
-            _ => {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    span,
-                    "a store access takes one positional key".to_string(),
-                ));
-                None
-            }
         }
     }
 

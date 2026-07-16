@@ -332,9 +332,9 @@ pub struct SealedRoot {
     pub(crate) branches: Vec<SealedBranch>,
 }
 
-/// A verified single-column-keyed keyed branch of a flat-executable root: its physical
-/// name, its single key column's scalar, its materialized record type index, and its own
-/// nested branches in declaration order. The branch entry is a distinct durable node one
+/// A verified keyed branch of a flat-executable root: its physical name, its ordered key
+/// columns (one or more), its materialized record type index, and its own nested branches
+/// in declaration order. The branch entry is a distinct durable node one
 /// level below its parent, reusing the parent's marker/field topology; its whole-payload
 /// operations address the parent's key-path extended with the branch key. The list is
 /// recursive — a branch may declare keyed branches of its own — so a
@@ -342,7 +342,7 @@ pub struct SealedRoot {
 #[derive(Debug, Clone)]
 pub struct SealedBranch {
     pub(crate) name: Rc<str>,
-    pub(crate) key: Scalar,
+    pub(crate) keys: Vec<Scalar>,
     pub(crate) record: u16,
     pub(crate) branches: Vec<SealedBranch>,
 }
@@ -352,9 +352,9 @@ impl SealedBranch {
     pub fn name(&self) -> &str {
         &self.name
     }
-    /// The branch's single key column scalar.
-    pub fn key(&self) -> Scalar {
-        self.key
+    /// The branch's ordered key columns (one or more), the whole composite branch key.
+    pub fn keys(&self) -> &[Scalar] {
+        &self.keys
     }
     /// The branch entry's materialized record type index.
     pub fn record(&self) -> u16 {
