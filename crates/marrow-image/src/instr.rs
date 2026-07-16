@@ -303,15 +303,19 @@ pub enum Instr {
     DurEraseField(u16),
     DurEraseEntry(u16),
     DurNextKey(u16),
-    /// `[K?] → List[K], Bool`: the bounded nested traversal `for … at most N …
-    /// on more`. Freeze the first `limit` immediate keys of the layer the whole-entry
-    /// `site` belongs to — the root's entry family (a root site) or a keyed branch
-    /// family under a fixed parent entry (a branch site) — beginning inclusively at a
-    /// `from` key popped from the stack when `from` is set, then push the frozen key
-    /// list (bounded by `limit`) and whether a further key existed (the `on more` bit).
-    /// `limit` is the positive compile-time `N`. The keys are frozen before any loop
-    /// body runs, so a body's writes cannot change the set; no cursor, page, or
-    /// continuation is threaded — the frozen list is the whole result.
+    /// The bounded nested traversal `for … at most N … on more`. Freeze the first
+    /// `limit` immediate keys of the layer the whole-entry `site` belongs to — the
+    /// root's entry family (a root site) or a keyed branch family under a fixed parent
+    /// entry (a branch site) — then push the frozen key list (bounded by `limit`) and
+    /// whether a further key existed (the `on more` bit).
+    ///
+    /// Stack effect `[ancestor-keys, from?] → List[K], Bool`: pop the layer's ancestor
+    /// key-path (a root site pops none; a single-level branch site pops `[root_key]`),
+    /// then the inclusive `from` key of the traversed key type `K` when `from` is set,
+    /// and push `List[K]` then `Bool`. `limit` is the positive compile-time `N`. The
+    /// keys are frozen before any loop body runs, so a body's writes cannot change the
+    /// set; no cursor, page, or continuation is threaded — the frozen list is the whole
+    /// result.
     DurIterateBounded {
         site: u16,
         limit: u32,

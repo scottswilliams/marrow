@@ -71,10 +71,7 @@ pub(super) fn entry_family_prefix(root: &str) -> Vec<u8> {
 /// marker *stem*: the byte prefix from which its field leaves, its branch
 /// descendants, and its cursor all derive (see [`stem_field_leaf`], [`stem_cursor`]).
 pub(super) fn marker_key(root: &str, key: &KeyScalar) -> Vec<u8> {
-    let mut out = entry_family_prefix(root);
-    out.extend_from_slice(&encode_key_value(key));
-    out.push(MARKER_TERMINATOR);
-    out
+    child_marker(&entry_family_prefix(root), key)
 }
 
 /// The field-leaf key of `field` of the node whose marker `stem` is given. The leaf

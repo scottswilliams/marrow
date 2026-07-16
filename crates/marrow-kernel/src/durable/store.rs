@@ -56,9 +56,11 @@ pub trait Durable {
     /// for a single-level branch layer — one fewer than the site's whole-entry key
     /// arity, since the traversed key is what iteration enumerates rather than an
     /// operand. At most `limit + 1` distinct present keys are acquired and the frozen
-    /// set is bounded by `limit`, so the walk is `O(limit + 1)` seeks regardless of
-    /// descendant fan-out. A descendant-only child (branch children, no payload) is
-    /// skipped by one prefix-successor seek past its subtree.
+    /// set is bounded by `limit`. The walk costs `O(limit + 1 + d)` seeks, where `d` is
+    /// the number of descendant-only siblings interspersed among the visited keys: a
+    /// descendant-only child (branch children, no payload) is skipped by one
+    /// prefix-successor seek past its subtree, and its own fan-out — however large — is
+    /// never read.
     fn iterate_bounded(
         &mut self,
         site: &AuthorizedSite,
@@ -1030,9 +1032,10 @@ fn layer_of(site: &AuthorizedSite, ancestor_keys: &[KeyScalar]) -> physical::Lay
 /// Freeze the first `limit` immediate keys of the layer `site` traverses and report
 /// whether a further key existed. Acquires at most `limit + 1` distinct present keys —
 /// the frozen set plus one existence probe — through the bounded [`layer_step`] walk,
-/// so it costs `O(limit + 1)` seeks whatever the descendant fan-out. The frozen keys
-/// are captured before any caller runs a loop body, so writes a body performs cannot
-/// change the set.
+/// costing `O(limit + 1 + d)` seeks, where `d` is the count of descendant-only siblings
+/// interspersed among them (each skipped by one prefix-successor seek without its
+/// fan-out being read). The frozen keys are captured before any caller runs a loop
+/// body, so writes a body performs cannot change the set.
 fn op_iterate_bounded<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,

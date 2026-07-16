@@ -561,6 +561,27 @@ fn a_zero_or_oversized_traversal_bound_is_refused() {
 }
 
 #[test]
+fn a_malformed_from_flag_byte_is_refused_at_decode() {
+    // The `from` operand is a strict 0/1 flag. A hostile image that sets it to 0x02 —
+    // re-digested so the envelope passes — is refused when the opcode is decoded, so no
+    // third from-state can be smuggled past the bounded-traversal decoder.
+    let mut bytes = iterate_root_export(2, false).encode().unwrap().bytes;
+    // The encoded opcode is `0x3B <site:2=0> <limit:4=2> <from:1=0>`; locate it and
+    // flip the trailing from flag to an out-of-range 0x02.
+    let opcode = [0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00];
+    let at = bytes
+        .windows(opcode.len())
+        .position(|w| w == opcode)
+        .expect("the bounded-traversal opcode is present");
+    assert_eq!(bytes[at + 7], 0x00, "the from flag starts cleared");
+    bytes[at + 7] = 0x02;
+    rehash(&mut bytes);
+    let rejection = verify(&bytes).expect_err("a malformed from flag is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.detail(), "malformed bool operand");
+}
+
+#[test]
 fn durable_put_export_verifies() {
     // The well-formed baseline the flow hostiles derive from.
     let (_entry, value_site, _label) = {

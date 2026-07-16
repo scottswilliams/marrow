@@ -110,10 +110,14 @@ pub const MAX_TEXT_BYTES: usize = 64 * 1024;
 
 /// The largest `at most N` bound a bounded durable traversal
 /// (`DurIterateBounded`) may declare. `N` is the compile-time count of immediate
-/// keys frozen per acquisition; the verifier rejects a larger or zero bound before
-/// the runtime allocates the frozen key list (§ law 9). Aligned with the VM's
-/// private `MAX_COLLECTION_LEN`, since the frozen keys materialize as one bounded
-/// `List[K]`.
+/// keys frozen per acquisition; the verifier rejects a zero or larger bound before
+/// the runtime allocates the frozen key list (§ law 9). It caps the element *count*
+/// at the VM's private `MAX_COLLECTION_LEN`. The frozen keys materialize as one
+/// ordinary bounded `List[K]`, so they are additionally subject to the same
+/// aggregate-byte ceiling (`MAX_AGGREGATE_BYTES`) every list obeys — a traversal over
+/// wide keys can reach that byte ceiling (a deterministic `run.collection_limit`
+/// fault) at fewer than `N` keys. There is one collection ceiling, not a second
+/// traversal-specific one.
 pub const MAX_TRAVERSAL_BOUND: u32 = 65_536;
 
 /// The node budget for structurally expanding one export's wire transfer graph
