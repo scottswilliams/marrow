@@ -168,6 +168,29 @@ pub(super) fn classify_cell(root: &str, cell_key: &[u8]) -> CellKind {
     }
 }
 
+/// What a cell sorting strictly after a node's marker `stem`, under the stem's own
+/// prefix, is: one of the node's own field leaves (`stem 0x10 …`), a cell of one of
+/// its branch descendants (`stem 0x30 …`), or foreign (not under the stem — which
+/// the bounded probe's prefix bound already excludes). The probe reads the first
+/// such cell to tell a descendant-only node (a branch descendant with no marker)
+/// from an orphan (an own field leaf with no marker).
+pub(super) enum BelowMarker {
+    OwnField,
+    BranchDescendant,
+    Foreign,
+}
+
+/// Classify a cell sitting strictly after the marker `stem`, relative to that stem.
+/// The structural tag immediately after the stem distinguishes an own field leaf
+/// from a branch descendant.
+pub(super) fn below_marker(stem: &[u8], cell_key: &[u8]) -> BelowMarker {
+    match cell_key.strip_prefix(stem) {
+        Some([FIELD_TAG, ..]) => BelowMarker::OwnField,
+        Some([BRANCH_TAG, ..]) => BelowMarker::BranchDescendant,
+        _ => BelowMarker::Foreign,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

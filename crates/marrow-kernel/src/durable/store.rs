@@ -292,7 +292,9 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<Option<EntryValue>, KernelFault> {
-        op_read_entry(&self.view, self.schema, site, &key)
+        // A coherent read session observes committed state with no staging, so a
+        // markerless own field leaf is a persisted orphan (corruption), not pending.
+        op_read_entry(&self.view, self.schema, site, &key, false)
     }
     fn next_key(
         &mut self,
@@ -509,7 +511,9 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         key: KeyScalar,
     ) -> Result<Option<EntryValue>, KernelFault> {
-        op_read_entry(self.txn(), self.schema, site, &key)
+        // A transaction may hold sparse fields staged for reconcile at commit, so a
+        // markerless own field leaf is tolerated as payload-absent, not corruption.
+        op_read_entry(self.txn(), self.schema, site, &key, true)
     }
     fn next_key(
         &mut self,
@@ -578,12 +582,22 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
         let planner = Planner::new(&site.root, self.schema);
-        if read_raw(self.txn(), &planner.marker(&key))?.is_some() {
-            return Ok(CreateOutcome::AlreadyPresent);
+        let stem = planner.marker(&key);
+        // Marker-first precedence through the one bounded prefix probe: a create over
+        // a present payload is a no-op, while a create over an absent or
+        // descendant-only slot writes the payload. `write_entry` stages only the
+        // marker and the entry's own present field leaves, so a descendant-only node
+        // gains a payload without its branch descendants being touched. A markerless
+        // own field leaf staged earlier in this transaction is reconcile-pending, not
+        // a create barrier, so it is written through like an absent slot.
+        match probe_slot(self.txn(), &stem)? {
+            SlotClass::Present => Ok(CreateOutcome::AlreadyPresent),
+            SlotClass::DescendantOnly | SlotClass::Absent | SlotClass::Orphan => {
+                let ops = planner.write_entry(&key, &entry)?;
+                self.apply(ops)?;
+                Ok(CreateOutcome::Created)
+            }
         }
-        let ops = planner.write_entry(&key, &entry)?;
-        self.apply(ops)?;
-        Ok(CreateOutcome::Created)
     }
     fn replace_entry(
         &mut self,
@@ -681,6 +695,46 @@ fn read_raw<V: ReadView>(cells: &V, key: &[u8]) -> Result<Option<Vec<u8>>, Kerne
     cells.get(key).map_err(KernelFault::Engine)
 }
 
+/// The four-state classification of a whole-entry slot the bounded prefix probe
+/// yields.
+enum SlotClass {
+    /// The payload marker is present: the entry has a payload.
+    Present,
+    /// No marker, but a branch descendant exists — a descendant-only node (children,
+    /// no payload). It reads as payload-absent; a create gives it a payload without
+    /// disturbing the descendants.
+    DescendantOnly,
+    /// No marker, but an own field leaf exists — a marker/field mismatch. A persisted
+    /// orphan is corruption; a sparse field staged earlier in the same transaction is
+    /// reconcile-pending, so a mutating session tolerates it (see [`op_read_entry`]).
+    Orphan,
+    /// No marker and nothing beneath: the slot is absent.
+    Absent,
+}
+
+/// One bounded prefix probe over an entry's marker `stem`: a point read of the
+/// marker plus, when the marker is absent, one bounded scan for the first cell
+/// beneath it. This is the single owner of whole-entry slot classification —
+/// separating an absent slot from a descendant-only node and from a marker/field
+/// mismatch — so create/read/replace/erase share one marker-first precedence rather
+/// than each re-deriving presence. The scan reads the node's own cells in key order,
+/// and own field leaves sort ahead of branch descendants, so the first cell decides
+/// (an orphan own-leaf takes precedence over a descendant, surfacing corruption).
+fn probe_slot<V: ReadView>(cells: &V, stem: &[u8]) -> Result<SlotClass, KernelFault> {
+    if read_raw(cells, stem)?.is_some() {
+        return Ok(SlotClass::Present);
+    }
+    let page = cells.scan_after(stem, stem).map_err(KernelFault::Engine)?;
+    Ok(match page.first() {
+        None => SlotClass::Absent,
+        Some((cell_key, _)) => match physical::below_marker(stem, cell_key) {
+            physical::BelowMarker::OwnField => SlotClass::Orphan,
+            physical::BelowMarker::BranchDescendant => SlotClass::DescendantOnly,
+            physical::BelowMarker::Foreign => SlotClass::Absent,
+        },
+    })
+}
+
 fn op_presence<V: ReadView>(
     cells: &V,
     site: &AuthorizedSite,
@@ -718,10 +772,26 @@ fn op_read_entry<V: ReadView>(
     schema: &StoreSchema,
     site: &AuthorizedSite,
     key: &KeyScalar,
+    tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
     let planner = Planner::new(&site.root, schema);
-    if read_raw(cells, &planner.marker(key))?.is_none() {
-        return Ok(None);
+    let stem = planner.marker(key);
+    // Marker-first precedence through the one bounded prefix probe. A node with no
+    // payload marker reads as payload-absent whether it is empty or a descendant-only
+    // node (branch children, no payload). A markerless slot carrying an own field
+    // leaf is a marker/field mismatch: in a committed read session it is a persisted
+    // orphan (corruption); inside a transaction it may be a sparse field staged for
+    // reconcile at commit, so a mutating session tolerates it as payload-absent.
+    match probe_slot(cells, &stem)? {
+        SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
+        SlotClass::Orphan => {
+            return if tolerate_pending {
+                Ok(None)
+            } else {
+                Err(KernelFault::Corruption)
+            };
+        }
+        SlotClass::Present => {}
     }
     let mut fields = Vec::with_capacity(schema.fields.len());
     for field in &schema.fields {
@@ -957,5 +1027,55 @@ mod tests {
         )
         .expect("set sparse");
         assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
+    }
+
+    #[test]
+    fn a_committed_orphan_reads_as_corruption() {
+        // A committed store with a field leaf but no entry marker is corrupt. A
+        // whole-entry read through a coherent read session reports corruption via the
+        // bounded prefix probe rather than silently reading the slot as absent.
+        let mut engine = MemoryEngine::new();
+        {
+            let mut txn = engine.begin().expect("begin");
+            txn.put(
+                &physical::field_leaf_key("counters", &KeyScalar::Str("x".into()), "value"),
+                b"5".to_vec(),
+            )
+            .expect("seed orphan leaf");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let mut store = DurableStore::from_engine(engine, schema(), sites());
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let entry = read.site(0);
+        assert_eq!(
+            read.read_entry(&entry, KeyScalar::Str("x".into())),
+            Err(KernelFault::Corruption),
+        );
+    }
+
+    #[test]
+    fn a_transaction_tolerates_a_staged_sparse_field_as_payload_absent() {
+        // Inside a transaction a sparse field staged before its entry's marker is
+        // reconcile-pending, not corruption: a whole-entry read observes it as
+        // payload-absent, matching the pre-probe behavior the reconcile model needs.
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write_demand())
+            .expect("txn session");
+        let label = txn.site(2);
+        let entry = txn.site(0);
+        txn.set_sparse(
+            &label,
+            KeyScalar::Str("x".into()),
+            Some(RuntimeScalar::Str("hi".into())),
+        )
+        .expect("set sparse");
+        assert_eq!(
+            txn.read_entry(&entry, KeyScalar::Str("x".into())),
+            Ok(None),
+            "a staged sparse field reads as payload-absent, not corruption",
+        );
     }
 }
