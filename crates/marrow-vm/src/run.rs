@@ -1143,48 +1143,90 @@ fn key_to_value(key: KeyScalar) -> Value {
     }
 }
 
-/// Convert a scalar runtime value to a typed runtime scalar.
+/// Convert a scalar runtime value to a typed runtime scalar. Total over the closed
+/// scalar domain the verifier proves a durable scalar field or composite leaf holds.
 fn value_to_scalar(value: Value) -> RuntimeScalar {
     match value {
         Value::Int(v) => RuntimeScalar::Int(v),
         Value::Bool(v) => RuntimeScalar::Bool(v),
         Value::Text(v) => RuntimeScalar::Str(v.to_string()),
         Value::Bytes(v) => RuntimeScalar::Bytes(v.to_vec()),
+        Value::Date(v) => RuntimeScalar::Date(v),
+        Value::Instant(v) => RuntimeScalar::Instant(v),
+        Value::Duration(v) => RuntimeScalar::Duration(v),
         _ => unreachable!("verifier proved a scalar value operand"),
     }
 }
 
-/// Convert a typed runtime scalar back to a runtime value.
+/// Convert a typed runtime scalar back to a runtime value. Total over the closed
+/// scalar domain: every scalar a durable field (or a widened composite leaf) may hold.
 fn scalar_to_value(scalar: RuntimeScalar) -> Value {
     match scalar {
         RuntimeScalar::Int(v) => Value::Int(v),
         RuntimeScalar::Bool(v) => Value::Bool(v),
         RuntimeScalar::Str(v) => Value::Text(v.into()),
         RuntimeScalar::Bytes(v) => Value::Bytes(Rc::from(v.as_slice())),
-        _ => unreachable!("C01 durable values are int, bool, string, or bytes"),
+        RuntimeScalar::Date(v) => Value::Date(v),
+        RuntimeScalar::Instant(v) => Value::Instant(v),
+        RuntimeScalar::Duration(v) => Value::Duration(v),
     }
 }
 
 /// Convert a runtime value crossing into the durable kernel to its storable value
-/// domain. A durable field value is a scalar today; the widened-value lowering (records
-/// to products, enums/optionals to sums) extends this boundary when those field shapes
-/// stop parking.
+/// domain: a scalar, a record (dense product), or an enum/`Option`/`Result` value
+/// (a sum). A record slot recurses; an enum payload leaf recurses. `Value::Optional`
+/// is the presence axis (stripped by `as_optional` before this boundary) and never a
+/// stored value; a collection is never an inline field value (the checker/verifier
+/// refuse it), so no list/map arm exists.
 fn value_to_domain(value: Value) -> ValueDomain {
-    ValueDomain::Scalar(value_to_scalar(value))
+    match value {
+        Value::Record(ty, slots) => ValueDomain::Product {
+            ty,
+            fields: slots
+                .into_vec()
+                .into_iter()
+                .map(|slot| slot.map(value_to_domain))
+                .collect(),
+        },
+        Value::Enum(ty, variant, payload) => ValueDomain::Sum {
+            ty,
+            variant,
+            payload: payload
+                .into_vec()
+                .into_iter()
+                .map(value_to_domain)
+                .collect(),
+        },
+        scalar => ValueDomain::Scalar(value_to_scalar(scalar)),
+    }
 }
 
-/// Convert a storable value domain read from the durable kernel back to a runtime value.
-/// The inverse of [`value_to_domain`]; a durable field value is a scalar until the
-/// widened-value lowering lands.
+/// Convert a storable value domain read from the durable kernel back to a runtime value,
+/// the inverse of [`value_to_domain`]: a scalar, a product to a `Value::Record`, or a sum
+/// to a `Value::Enum` (an `Option`/`Result` is an ordinary enum value). A `unit`,
+/// collection, or product slot the verifier never stores in a field would be a kernel
+/// invariant breach.
 fn domain_to_value(domain: ValueDomain) -> Value {
     match domain {
         ValueDomain::Scalar(scalar) => scalar_to_value(scalar),
-        ValueDomain::Unit
-        | ValueDomain::Product { .. }
-        | ValueDomain::Sum { .. }
-        | ValueDomain::List { .. }
-        | ValueDomain::Map { .. } => {
-            unreachable!("a durable field value is scalar until widened-value lowering lands")
+        ValueDomain::Product { ty, fields } => Value::Record(
+            ty,
+            fields
+                .into_iter()
+                .map(|slot| slot.map(domain_to_value))
+                .collect(),
+        ),
+        ValueDomain::Sum {
+            ty,
+            variant,
+            payload,
+        } => Value::Enum(
+            ty,
+            variant,
+            payload.into_iter().map(domain_to_value).collect(),
+        ),
+        ValueDomain::Unit | ValueDomain::List { .. } | ValueDomain::Map { .. } => {
+            unreachable!("a durable field value is a scalar, dense product, or sum")
         }
     }
 }

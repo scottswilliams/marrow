@@ -87,16 +87,6 @@ impl GArg {
         }
     }
 
-    /// The scalar this argument denotes, if it is one. `None` for a nominal,
-    /// struct, enum, or collection argument — the callers that need a durable scalar
-    /// field use this to reject a non-scalar field.
-    pub(crate) fn as_scalar(self) -> Option<ScalarType> {
-        match self {
-            GArg::Scalar(scalar) => Some(scalar),
-            _ => None,
-        }
-    }
-
     /// Whether this argument is admitted as a `Map` key type: any scalar key type
     /// (`int`/`bool`/`string`/`bytes`/`date`/`instant`/`duration`) or a nominal int
     /// (which erases to `int`). Structs, enums, and collections are rejected as keys,

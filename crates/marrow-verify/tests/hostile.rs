@@ -1300,6 +1300,104 @@ fn an_index_component_naming_no_leaf_of_its_root_rejects() {
     );
 }
 
+/// A `Counter` root whose `owner` field is a widened dense struct, with a unique index
+/// forging a component over that widened field. A widened field is executable (framed
+/// inline in its cell) but never index-eligible — an index component must project an
+/// orderable durable-key scalar, which a composite is not — so the verifier refuses the
+/// component independently of the compiler. This is the index-eligibility decouple: the
+/// same field keeps the root flat-executable yet stays out of every index.
+fn widened_field_indexed_draft() -> ImageDraft {
+    const OWNER_FIELD_ID: [u8; 16] = [0x1e; 16];
+    let mut draft = ImageDraft::new();
+    let name_ty = draft.intern_string("Name");
+    let first = draft.intern_string("first");
+    let last = draft.intern_string("last");
+    let name_record = draft.add_record_type(RecordTypeDef {
+        name: name_ty,
+        fields: vec![
+            FieldDef {
+                name: first,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            },
+            FieldDef {
+                name: last,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            },
+        ],
+    });
+    let counter = draft.intern_string("Counter");
+    let value = draft.intern_string("value");
+    let owner = draft.intern_string("owner");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: counter,
+        fields: vec![
+            FieldDef {
+                name: value,
+                ty: ImageType::scalar(Scalar::Int),
+                required: true,
+            },
+            FieldDef {
+                name: owner,
+                ty: ImageType::Record {
+                    idx: name_record.index(),
+                    optional: false,
+                },
+                required: true,
+            },
+        ],
+    });
+    let root = draft.intern_string("counters");
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes(OWNER_FIELD_ID),
+                    required: true,
+                    value: DurableValueShape::Struct(vec![
+                        DurableValueShape::Scalar(Scalar::Text),
+                        DurableValueShape::Scalar(Scalar::Text),
+                    ]),
+                },
+            ],
+            indexes: vec![DurableIndexShape {
+                id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
+                unique: true,
+                components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                    OWNER_FIELD_ID,
+                ))],
+            }],
+        },
+    });
+    draft
+}
+
+#[test]
+fn an_index_component_over_a_widened_field_rejects() {
+    // The widened `owner` field is admitted (its root is flat-executable), but naming it
+    // as an index component is refused at decode — index eligibility is decoupled from
+    // field executability, so a widened field is never an index leaf.
+    assert_eq!(
+        code_of(&widened_field_indexed_draft().encode().unwrap().bytes),
+        "image.table",
+    );
+}
+
 #[test]
 fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     // The unique index `byValue` admits only a complete-key exact lookup. A forged

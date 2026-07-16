@@ -6,10 +6,11 @@
 //! (`Option`/`Result`/a user `enum`), or an `Option` of one. The field anchors the
 //! ledger id; a durable-reachable enum additionally carries a sum identity (kind 5)
 //! and one member identity (kind 6) per variant, so append-only member evolution has
-//! stable per-member codes. A resource with any widened (non-plain-scalar) field
-//! completes its identity and verifies but is not yet executable — an operation over
-//! it is a precise `check.unsupported`, never a silent drop, and never the pre-slice
-//! `check.type` on the declaration.
+//! stable per-member codes. A resource with a widened (struct/enum/`Option`) field
+//! completes its identity, verifies, and is executable — the durable value codec frames
+//! the composite inline in the one field-leaf cell (end-to-end store/read coverage lives
+//! in `durable_widened_values.rs`); a nominal field stays severed and a collection field
+//! is a precise `check.unsupported`.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_verify::DurableContractId;
@@ -231,7 +232,9 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
 // --- The executable-vs-identity boundary. ---
 
 #[test]
-fn operating_on_a_widened_field_store_is_not_yet_executable() {
+fn operating_on_a_widened_field_store_compiles_and_verifies() {
+    // A read of a widened (enum) field is executable: it compiles, and the sealed image
+    // verifies with a durable read opcode over the field-leaf site (no longer parked).
     let source = "resource Account\n\
          \x20   required id: int\n\
          \x20   required kind: Access\n\
@@ -257,17 +260,8 @@ fn operating_on_a_widened_field_store_is_not_yet_executable() {
          id member Access.writer 52525252525252525252525252525252\n\
          high-water 0\n\
          end\n";
-    let diagnostics = compile(source, ids).expect_err("not yet executable");
-    assert!(
-        codes(&diagnostics).contains(&"check.unsupported"),
-        "{diagnostics:?}"
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message.contains("not yet executable")),
-        "{diagnostics:?}"
-    );
+    let compiled = compile(source, ids).expect("a widened-field read compiles");
+    marrow_verify::verify(&compiled.image.bytes).expect("the image verifies with the read opcode");
 }
 
 #[test]
@@ -294,6 +288,42 @@ fn a_cyclic_value_graph_through_a_durable_field_is_rejected() {
     let diagnostics = compile(source, ids).expect_err("cyclic value graph");
     assert!(
         codes(&diagnostics).contains(&"check.recursion"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn an_index_over_a_widened_field_is_refused() {
+    // Index eligibility is decoupled from executability: a widened (struct) field is
+    // executable but is not an orderable durable-key scalar, so declaring an index over
+    // it is a precise `check.type` — mirroring the verifier's independent refusal.
+    let source = "resource Account\n\
+         \x20   required id: int\n\
+         \x20   owner: Name\n\
+         \n\
+         struct Name\n\
+         \x20   first: string\n\
+         \x20   last: string\n\
+         \n\
+         store ^accounts(id: int): Account\n\
+         \x20   index byOwner(owner) unique\n\
+         \n\
+         pub fn label(): string\n\
+         \x20   return \"accounts\"\n";
+    let ids = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+         id product Account 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+         id root accounts 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+         id key accounts.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+         id field Account.id 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+         id field Account.owner 11111111111111111111111111111111\n\
+         id index accounts.byOwner 70707070707070707070707070707070\n\
+         high-water 0\n\
+         end\n";
+    let diagnostics = compile(source, ids).expect_err("an index over a widened field is refused");
+    assert!(
+        codes(&diagnostics).contains(&"check.type"),
         "{diagnostics:?}"
     );
 }

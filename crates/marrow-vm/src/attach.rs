@@ -11,10 +11,10 @@
 //!
 //! The flat keyed root of scalar fields (one or more key columns), with keyed
 //! scalar-field branches nested to any depth, is executable here; a wider durable shape —
-//! a composite key, a group, or a non-scalar field — is [`DurableRun::Parked`], reported
+//! a composite key or a group — is [`DurableRun::Parked`], reported
 //! honestly rather than run against a partial store.
 
-use marrow_kernel::codec::value::ScalarKind;
+use marrow_kernel::codec::value::{ScalarKind, ValueShape};
 use marrow_kernel::durable::{
     BranchSchema, CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment,
     FieldSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
@@ -34,8 +34,8 @@ pub enum DurableRun {
     /// The test ran; the inner result is its VM value or source-mapped fault.
     Ran(Result<Option<Value>, RuntimeFault>),
     /// The image's durable shape is not yet executable by the ephemeral read kernel
-    /// (a composite key, a group, or a non-scalar field). Wider shapes stay parked;
-    /// scalar-field keyed branches nested to any depth are executable.
+    /// (a composite key or a group). Wider shapes stay parked;
+    /// field-only keyed branches nested to any depth are executable.
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
     Failed(&'static str),
@@ -103,7 +103,7 @@ pub enum Ephemeral {
     /// keeps it and drives several export invocations against the same store.
     Ready(EphemeralAttachment),
     /// The image's durable shape is not yet executable by the flat kernel (a
-    /// composite key, a group, or a non-scalar field).
+    /// composite key or a group).
     Parked,
     /// Minting the attachment failed operationally; the stable code names why.
     Failed(&'static str),
@@ -168,13 +168,13 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // v0 carries at most one durable root; a durable test with demand has exactly
     // one. A flat executable root is keyed (one or more columns) with no member tree.
     //
-    // The executable layout is the keyed scalar root plus scalar-field keyed
-    // scalar-field branches nested to any depth. Groups, composite-keyed branches, widened
-    // field values, and composite root keys park; a parked shape stays parked until its
-    // owner lands it.
+    // The executable layout is the keyed root (its fields scalar or widened composite)
+    // plus field-only keyed branches nested to any depth. Groups, composite-keyed
+    // branches, and composite root keys park; a parked shape stays parked until its owner
+    // lands it.
     let root = image.roots().first()?;
-    // A root with a group or a widened field is not yet executable (`has_extras`);
-    // scalar-field branches nested to any depth, with composite keys, are executable and do
+    // A root with a group or composite/nested branch is not yet executable (`has_extras`);
+    // field-only branches nested to any depth, with composite keys, are executable and do
     // not set that flag. A singleton root has no key columns and parks.
     if root.has_extras() || root.keys().is_empty() {
         return None;
@@ -185,7 +185,7 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         .map(|scalar| scalar_kind(*scalar))
         .collect();
 
-    let fields = scalar_fields(image, root.record())?;
+    let fields = field_schemas(image, root.record())?;
 
     // Each executable branch derives its own record and nested branches from the image; the
     // sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes it
@@ -247,11 +247,11 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     Some((schema, sites))
 }
 
-/// Derive one branch's recursive [`BranchSchema`] from the image: its name, single key
-/// scalar, materialized record fields, and — recursively — its own nested branches. `None`
-/// when any record field is non-scalar (the whole derivation parks), mirroring
-/// [`scalar_fields`]. The verifier proves an executable branch's fields are scalars and its
-/// sub-branches are simple, so this is defense in depth over that proof.
+/// Derive one branch's recursive [`BranchSchema`] from the image: its name, key columns,
+/// materialized record fields, and — recursively — its own nested branches. `None` when a
+/// record field is not an inline field value (a collection), mirroring [`field_schemas`].
+/// The verifier proves an executable branch's fields are storable and its sub-branches are
+/// simple, so this is defense in depth over that proof.
 fn branch_schema(
     image: &VerifiedImage,
     branch: &marrow_verify::SealedBranch,
@@ -267,30 +267,60 @@ fn branch_schema(
             .iter()
             .map(|scalar| scalar_kind(*scalar))
             .collect(),
-        fields: scalar_fields(image, branch.record())?,
+        fields: field_schemas(image, branch.record())?,
         branches,
     })
 }
 
 /// The kernel field schemas of a node's materialized record: one per field, in order,
-/// each a plain durable scalar. `None` when a field is non-scalar — a shape the flat
-/// kernel does not store — so the whole derivation parks. The verifier proves an
-/// executable root's and branch's record fields are scalars, so this is defense in
-/// depth over that proof.
-fn scalar_fields(image: &VerifiedImage, record: u16) -> Option<Vec<FieldSchema>> {
+/// each carrying the field's storable value shape (a scalar, a dense product, or a
+/// closed sum). `None` when a field is a collection or unit — shapes the durable field
+/// codec never stores inline — so the whole derivation parks. The verifier proves an
+/// executable node's record fields are a scalar or a widened composite, so this is
+/// defense in depth over that proof.
+fn field_schemas(image: &VerifiedImage, record: u16) -> Option<Vec<FieldSchema>> {
     let record = image.record_type(record);
     let mut fields = Vec::with_capacity(record.fields().len());
     for field in record.fields() {
-        let ImageType::Scalar { scalar, .. } = field.ty else {
-            return None;
-        };
-        fields.push(FieldSchema::scalar(
-            field.name.to_string(),
-            scalar_kind(scalar),
-            field.required,
-        ));
+        fields.push(FieldSchema {
+            name: field.name.to_string(),
+            shape: value_shape(image, field.ty)?,
+            required: field.required,
+        });
     }
     Some(fields)
+}
+
+/// Derive a field's kernel [`ValueShape`] from its image type, recursively: a scalar
+/// carries its kind; a record becomes a product of its fields' shapes in declaration
+/// order; a closed enum (`Option`/`Result`/a user `enum`) becomes a sum of its variants'
+/// dense payload shapes. A collection or unit is not an inline field value, so it parks
+/// (`None`). The image is depth-bounded by the verifier, so the recursion terminates.
+fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
+    match ty {
+        ImageType::Scalar { scalar, .. } => Some(ValueShape::Scalar(scalar_kind(scalar))),
+        ImageType::Record { idx, .. } => {
+            let record = image.record_type(idx);
+            let mut fields = Vec::with_capacity(record.fields().len());
+            for field in record.fields() {
+                fields.push(value_shape(image, field.ty)?);
+            }
+            Some(ValueShape::Product { ty: idx, fields })
+        }
+        ImageType::Enum { idx, .. } => {
+            let sealed = image.enums().get(idx as usize)?;
+            let mut variants = Vec::with_capacity(sealed.variants().len());
+            for variant in sealed.variants() {
+                let mut payload = Vec::with_capacity(variant.payload.len());
+                for leaf in &variant.payload {
+                    payload.push(value_shape(image, *leaf)?);
+                }
+                variants.push(payload);
+            }
+            Some(ValueShape::Sum { ty: idx, variants })
+        }
+        ImageType::Unit | ImageType::Collection { .. } => None,
+    }
 }
 
 /// Map an image scalar type to the runtime codec's scalar kind. Total over the

@@ -149,26 +149,11 @@ enum DecodedMember {
 }
 
 impl DecodedMember {
-    /// Whether this member is a top-level field whose stored value is not a plain
-    /// scalar (a nominal erases to a scalar; a struct or enum does not). Such a field
-    /// carries a complete identity but is not part of the kernel-executable flat
-    /// scalar record, so — like a group or branch — it makes a root not yet
-    /// executable.
-    fn is_nonscalar_field(&self) -> bool {
-        matches!(
-            self,
-            DecodedMember::Field {
-                value: DurableValueShape::Struct(_) | DurableValueShape::Enum { .. },
-                ..
-            }
-        )
-    }
-
-    /// Whether this member is a scalar-field keyed branch, recursively — the branch shape
+    /// Whether this member is a field-only keyed branch, recursively — the branch shape
     /// the kernel executes at any depth. Its key is one or more columns and every direct
-    /// member itself keeps flat: a plain scalar field, or a nested branch that is itself a
-    /// simple branch. A group or a widened field breaks it. The recursion admits an
-    /// arbitrarily deep chain of scalar-field branches with composite keys, which the
+    /// member itself keeps flat: a field (scalar or widened composite), or a nested branch
+    /// that is itself a simple branch. A static `group` breaks it. The recursion admits an
+    /// arbitrarily deep chain of field-only branches with composite keys, which the
     /// recursive physical layout and profile serve.
     fn is_simple_branch(&self) -> bool {
         matches!(
@@ -179,12 +164,13 @@ impl DecodedMember {
         )
     }
 
-    /// Whether this member keeps its containing root flat-executable: a plain scalar
-    /// field or a simple (recursively scalar-field, keyed) branch. A group, a
-    /// composite branch, or a widened field does not.
+    /// Whether this member keeps its containing root flat-executable: a field (scalar or
+    /// widened composite — the durable field codec frames a composite inline in the one
+    /// field-leaf cell) or a simple (recursively field-only, keyed) branch. A static
+    /// `group` and a composite/nested branch still park the root.
     fn keeps_root_flat(&self) -> bool {
         match self {
-            DecodedMember::Field { .. } => !self.is_nonscalar_field(),
+            DecodedMember::Field { .. } => true,
             DecodedMember::Group { .. } => false,
             DecodedMember::Branch { .. } => self.is_simple_branch(),
         }
@@ -1708,6 +1694,22 @@ fn decode_indexes(
             _ => None,
         })
         .collect();
+    // Index eligibility is decoupled from field executability: an index component must
+    // project an orderable durable-key *scalar* leaf, which a widened (struct/enum) field
+    // is not. A widened field is executable (framed inline in its cell) but never an index
+    // component, so the eligible set is the scalar top-level fields only — refused
+    // independently of `keeps_root_flat`, which now admits widened fields.
+    let scalar_field_ids: Vec<LedgerIdBytes> = members
+        .iter()
+        .filter_map(|member| match member {
+            DecodedMember::Field {
+                id,
+                value: DurableValueShape::Scalar(_),
+                ..
+            } => Some(*id),
+            _ => None,
+        })
+        .collect();
     let count = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short durable index count"))? as usize;
@@ -1757,10 +1759,15 @@ fn decode_indexes(
             let leaf = LedgerIdBytes::from_bytes(leaf);
             let component = match kind {
                 0x02 => {
-                    if !field_ids.contains(&leaf) {
+                    if !scalar_field_ids.contains(&leaf) {
                         return Err(reject(
                             VerifyPhase::Table,
-                            "durable index field component names no top-level field of its root",
+                            if field_ids.contains(&leaf) {
+                                "durable index field component names a widened (non-scalar) \
+                                 field, which is not index-eligible"
+                            } else {
+                                "durable index field component names no top-level field of its root"
+                            },
                         ));
                     }
                     DurableIndexComponent::Field(leaf)
@@ -2516,8 +2523,9 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
                 keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
                 record: root.record,
                 // A root is flat-executable (no extras) when every member keeps it flat:
-                // a scalar field or a simple branch. A group, a nested/composite branch,
-                // or a widened field is an extra that parks the root's operations.
+                // a field (scalar or widened composite) or a simple branch. A static
+                // `group` or a nested/composite branch is an extra that parks the root's
+                // operations; a widened field no longer parks (it is framed inline).
                 has_extras: !root.members.iter().all(DecodedMember::keeps_root_flat),
                 branches,
             }
@@ -4696,10 +4704,10 @@ fn apply_durable(
         "durable site index out of range",
     ))?;
     // A durable opcode may reference only a kernel-executable flat site. A parked
-    // site (a nested placement, a group-scoped or widened field, or a site on a
-    // singleton, composite-key, or group/branch-bearing root) carries a complete
-    // identity but no executable operation; an opcode over one is a forged or
-    // not-yet-executable image and is refused here, independently of the compiler.
+    // site (a nested placement, a group-scoped field, or a site on a singleton or
+    // group/branch-bearing root) carries a complete identity but no executable
+    // operation; an opcode over one is a forged or not-yet-executable image and is
+    // refused here, independently of the compiler. A widened field site is executable.
     let (site_root, site_target) = match site {
         SealedSite::Flat { root, target } => (*root, target),
         SealedSite::Parked { .. } => {
@@ -4713,9 +4721,9 @@ fn apply_durable(
         VerifyPhase::Function,
         "durable site root out of range",
     ))?;
-    // Defense in depth: a flat site's root is free of groups and widened fields by
-    // construction (scalar-field branches with composite keys are executable), but
-    // recheck at the opcode.
+    // Defense in depth: a flat site's root is free of groups and composite/nested
+    // branches by construction (field-only branches with composite keys are executable;
+    // a widened field is inline-framed and executable), but recheck at the opcode.
     if root.has_extras {
         return Err(reject(
             VerifyPhase::Function,
@@ -4982,10 +4990,11 @@ fn field_of<'a>(
         ))
 }
 
-/// The bare value type of a durable field. A durable root record is verified to
-/// carry only scalar fields, so the field type is always a bare scalar here.
+/// The bare value type of a durable field: a scalar, a record (dense product), or an
+/// enum/`Option`/`Result` (a sum) — the storable durable value set. A collection or unit
+/// is never an admitted durable field type, so `from_image` always resolves here.
 fn durable_field_vtype(field: &SealedField) -> VType {
-    VType::from_image(field.ty).expect("a durable field type is a bare scalar")
+    VType::from_image(field.ty).expect("a durable field type is scalar, record, or enum")
 }
 
 /// Require an entry-target site: the root's whole payload or a keyed branch entry. A

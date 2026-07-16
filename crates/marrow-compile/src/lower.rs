@@ -649,7 +649,9 @@ enum DurTarget {
     },
     Field {
         site: u16,
-        scalar: ScalarType,
+        /// The field's value type (a scalar or a widened composite), from which the
+        /// read result and written-value type are built.
+        ty: GArg,
         required: bool,
     },
 }
@@ -668,7 +670,9 @@ enum DurNode<'a> {
 /// root field or a branch field uniformly.
 struct DurFieldRef {
     site: u16,
-    scalar: ScalarType,
+    /// The field's value type: a root field's widened value set, or a branch field's
+    /// scalar (branch fields stay scalar-only this lane) lifted to `GArg::Scalar`.
+    ty: GArg,
     required: bool,
 }
 
@@ -698,12 +702,12 @@ impl<'a> DurNode<'a> {
         match self {
             DurNode::Root(root) => root.field(name).map(|field| DurFieldRef {
                 site: field.site,
-                scalar: field.scalar,
+                ty: field.ty,
                 required: field.required,
             }),
             DurNode::Branch(branch) => branch.field(name).map(|field| DurFieldRef {
                 site: field.site,
-                scalar: field.scalar,
+                ty: GArg::Scalar(field.scalar),
                 required: field.required,
             }),
         }
@@ -5568,21 +5572,17 @@ impl<'a> FnLowerer<'a> {
                     self.durable
                         .branch_by_record(record)
                         .and_then(|branch| branch.field(field_name))
-                        .map(|field| (field.site, field.scalar, field.required))
+                        .map(|field| (field.site, GArg::Scalar(field.scalar), field.required))
                 } else {
                     self.durable
                         .root()
                         .and_then(|root| root.field(field_name))
-                        .map(|field| (field.site, field.scalar, field.required))
+                        .map(|field| (field.site, field.ty, field.required))
                 };
                 match field {
-                    Some((site, scalar, required)) => Some(DurablePlace {
+                    Some((site, ty, required)) => Some(DurablePlace {
                         keys,
-                        target: DurTarget::Field {
-                            site,
-                            scalar,
-                            required,
-                        },
+                        target: DurTarget::Field { site, ty, required },
                         span: *span,
                     }),
                     None => {
@@ -5765,7 +5765,7 @@ impl<'a> FnLowerer<'a> {
                     keys,
                     target: DurTarget::Field {
                         site: field.site,
-                        scalar: field.scalar,
+                        ty: field.ty,
                         required: field.required,
                     },
                     span: *span,
@@ -5887,9 +5887,9 @@ impl<'a> FnLowerer<'a> {
                     optional: true,
                 }
             }
-            DurTarget::Field { site, scalar, .. } => {
+            DurTarget::Field { site, ty, .. } => {
                 self.push(Instr::DurReadField(site), place.span);
-                LTy::bare_scalar(scalar).to_optional()
+                garg_to_lty(ty).to_optional()
             }
         })
     }
@@ -6515,22 +6515,19 @@ impl<'a> FnLowerer<'a> {
                     self.mark_present(slot);
                 }
             }
-            DurTarget::Field {
-                site,
-                scalar,
-                required,
-            } => {
+            DurTarget::Field { site, ty, required } => {
                 // A sparse set through a root `place` a presence fact dominates lowers to
                 // the strict present-entry form: it reads the entry key from the place's
                 // pre-evaluated slot and asserts the entry is present, so it pushes no key
                 // operand. Every other field set keeps the bare form (unchanged:
                 // create-or-reconcile at commit for a sparse set). Field targets are root
                 // fields only — branch field-exact operations do not resolve here.
+                let bare = garg_to_lty(ty);
                 if !required
                     && let Some(slot) = place.root_bound_slot()
                     && self.is_present_slot(slot)
                 {
-                    let expected = LTy::bare_scalar(scalar).to_optional();
+                    let expected = bare.to_optional();
                     if self.lower_as(value, expected).is_none() {
                         return;
                     }
@@ -6546,11 +6543,7 @@ impl<'a> FnLowerer<'a> {
                 if self.emit_key_path(&place.keys, place.span).is_none() {
                     return;
                 }
-                let expected = if required {
-                    LTy::bare_scalar(scalar)
-                } else {
-                    LTy::bare_scalar(scalar).to_optional()
-                };
+                let expected = if required { bare } else { bare.to_optional() };
                 if self.lower_as(value, expected).is_none() {
                     return;
                 }

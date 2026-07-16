@@ -74,7 +74,10 @@ fn is_orderable_key_value(value: &DurableValueShape) -> bool {
 pub(crate) struct DurableField {
     pub(crate) name: String,
     pub(crate) site: u16,
-    pub(crate) scalar: ScalarType,
+    /// The field's resolved value type: a scalar, or a widened composite (a dense
+    /// `struct`, or a closed `enum`/`Option`/`Result`). The lowerer builds the read
+    /// result and written-value type from it.
+    pub(crate) ty: GArg,
     pub(crate) required: bool,
 }
 
@@ -417,25 +420,25 @@ impl DurableRegistry {
         // member tree (which carries each branch's materialized record type) is still in
         // hand — it moves into the `RootDef` below.
         //
-        // Executable durable operations exist for the flat keyed root of
-        // plain scalar fields, together with its scalar-field keyed
-        // scalar-field branches — the shape the kernel serves. A singleton, composite-key,
-        // group-bearing, widened-field, or nested/composite-branch root (a top-level
-        // field that is a nominal scalar, struct, enum, or `Option`; a group; or a branch
-        // with more than one key column or any non-scalar/nested member) carries its
-        // identity and its full site set, but the lowerer reports any operation over it as
-        // not yet executable — its sites seal and park. `has_extras` (any group or branch)
-        // no longer parks on its own: a simple branch is executable and mirrors the
+        // Executable durable operations exist for the flat keyed root whose fields are
+        // each a scalar or a widened composite (a dense struct, or a closed
+        // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
+        // codec), together with its field-only keyed branches — the shape the kernel
+        // serves. A singleton, composite-key, group-bearing, or nested/composite-branch
+        // root still parks, as does a nominal field (severed until its lane lands): it
+        // carries its identity and full site set, but the lowerer reports any operation
+        // over it as not yet executable. `has_extras` (any group or branch) no longer parks
+        // on its own; a simple branch and a widened field are executable, mirroring the
         // verifier's independent `keeps_root_flat`.
-        let all_scalar_fields = record
+        let all_fields_executable = record
             .fields
             .iter()
-            .all(|f| matches!(f.ty, GArg::Scalar(_)));
-        // A keyed root of scalar fields with only scalar-field branches is executable, at
+            .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)));
+        // A keyed root of executable fields with only field-only branches is executable, at
         // any key arity (one or more columns); a singleton root (no key columns) parks.
         let keyed = !key_scalars.is_empty();
         let members_flat = members.iter().all(member_keeps_root_flat);
-        let executable = keyed && all_scalar_fields && members_flat;
+        let executable = keyed && all_fields_executable && members_flat;
         let branches = if executable {
             build_executable_branches(records, resource, &top_branches)
         } else {
@@ -458,8 +461,10 @@ impl DurableRegistry {
         if !executable {
             return Self::declared(&store.root.root);
         }
-        // A flat root has only top-level scalar fields, so `top_field_sites[i]` is the
-        // field-leaf site of `record.fields[i]` (both in member/record order).
+        // A flat root's top-level fields map positionally to `top_field_sites`, so
+        // `top_field_sites[i]` is the field-leaf site of `record.fields[i]` (both in
+        // member/record order). Each field carries its resolved value type (a scalar or a
+        // widened composite), from which the lowerer builds the read/written value type.
         let fields = record
             .fields
             .iter()
@@ -467,10 +472,7 @@ impl DurableRegistry {
             .map(|(index, field)| DurableField {
                 name: field.name.clone(),
                 site: top_field_sites[index],
-                scalar: field
-                    .ty
-                    .as_scalar()
-                    .expect("a stored resource field is a scalar"),
+                ty: field.ty,
                 required: field.required,
             })
             .collect();
@@ -1219,12 +1221,19 @@ fn emit_subtree_sites(
 }
 
 /// Whether a durable member keeps its containing root flat-executable, mirroring the
-/// verifier's independent `keeps_root_flat`: a plain scalar field, or a scalar-field keyed
-/// branch (one or more key columns) whose direct members recursively keep flat. A group or
-/// a widened (struct/enum) field does not.
+/// verifier's independent `keeps_root_flat`: a field (scalar or widened struct/enum — the
+/// durable field codec frames a composite inline in its cell), or a field-only keyed
+/// branch (one or more key columns) whose direct members recursively keep flat. A static
+/// `group` does not. (A `Field`'s value shape is always a scalar, struct, or enum — a
+/// collection field is rejected upstream — so any field keeps the root flat here.)
 fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
     match member {
-        DurableMemberDef::Field { value, .. } => matches!(value, DurableValueShape::Scalar(_)),
+        DurableMemberDef::Field { value, .. } => matches!(
+            value,
+            DurableValueShape::Scalar(_)
+                | DurableValueShape::Struct(_)
+                | DurableValueShape::Enum { .. }
+        ),
         DurableMemberDef::Group { .. } => false,
         DurableMemberDef::Branch { keys, members, .. } => {
             !keys.is_empty() && members.iter().all(member_keeps_root_flat)
