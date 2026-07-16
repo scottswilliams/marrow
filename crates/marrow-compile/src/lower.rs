@@ -488,6 +488,33 @@ fn constructor_kind(expr: &Expression) -> Option<CtorKind> {
     }
 }
 
+/// Split a dotted constructor base into its single-segment head name (with span) and the
+/// branch-name chain before the final call segment. `Book` yields `("Book", span, [])`;
+/// `Book.notes` yields `("Book", span, ["notes"])`; deeper chains accumulate. `None` for a
+/// head that is not a single-segment name (a `::`-qualified or otherwise non-head base).
+fn split_dotted_head(expr: &Expression) -> Option<(&str, SourceSpan, Vec<&str>)> {
+    match expr {
+        Expression::Name { segments, span, .. } if segments.len() == 1 => {
+            Some((segments[0].as_str(), *span, Vec::new()))
+        }
+        Expression::Field { base, name, .. } => {
+            let (head, span, mut names) = split_dotted_head(base)?;
+            names.push(name.as_str());
+            Some((head, span, names))
+        }
+        _ => None,
+    }
+}
+
+/// The source-shaped display of a branch constructor head, `Resource.b1.….bn`, for a
+/// diagnostic.
+fn branch_ctor_display(resource: &str, path: &[&str]) -> String {
+    std::iter::once(resource)
+        .chain(path.iter().copied())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// Whether control continues past a statement or block, or leaves it (via `return`,
 /// `break`, or `continue`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,6 +652,82 @@ enum DurTarget {
         scalar: ScalarType,
         required: bool,
     },
+}
+
+/// A node reached along a resolved durable entry address: the root, or a keyed branch on
+/// the address's branch chain. Both expose the same navigation — a nested branch by name,
+/// a stored field, a whole-entry site, and a materialized record — so the recursive address
+/// resolver walks them uniformly at any depth.
+#[derive(Clone, Copy)]
+enum DurNode<'a> {
+    Root(&'a crate::durable::DurableRoot),
+    Branch(&'a crate::durable::DurableBranch),
+}
+
+/// The pieces of one resolved durable field a [`DurTarget::Field`] needs, projected from a
+/// root field or a branch field uniformly.
+struct DurFieldRef {
+    site: u16,
+    scalar: ScalarType,
+    required: bool,
+}
+
+impl<'a> DurNode<'a> {
+    fn entry_site(&self) -> u16 {
+        match self {
+            DurNode::Root(root) => root.entry_site,
+            DurNode::Branch(branch) => branch.entry_site,
+        }
+    }
+
+    fn record(&self) -> TypeId {
+        match self {
+            DurNode::Root(root) => root.record,
+            DurNode::Branch(branch) => branch.record,
+        }
+    }
+
+    fn branch(&self, name: &str) -> Option<&'a crate::durable::DurableBranch> {
+        match self {
+            DurNode::Root(root) => root.branch(name),
+            DurNode::Branch(branch) => branch.branch(name),
+        }
+    }
+
+    fn field(&self, name: &str) -> Option<DurFieldRef> {
+        match self {
+            DurNode::Root(root) => root.field(name).map(|field| DurFieldRef {
+                site: field.site,
+                scalar: field.scalar,
+                required: field.required,
+            }),
+            DurNode::Branch(branch) => branch.field(name).map(|field| DurFieldRef {
+                site: field.site,
+                scalar: field.scalar,
+                required: field.required,
+            }),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            DurNode::Root(root) => &root.name,
+            DurNode::Branch(branch) => &branch.name,
+        }
+    }
+
+    fn no_field_message(&self, field: &str) -> String {
+        match self {
+            DurNode::Root(root) => format!("`{}` has no field `{field}`", root.name),
+            DurNode::Branch(branch) => {
+                format!("branch `{}` has no field `{field}`", branch.name)
+            }
+        }
+    }
+
+    fn no_branch_message(&self, branch: &str) -> String {
+        format!("`{}` has no keyed branch `{branch}`", self.name())
+    }
 }
 
 /// A resolved durable traversal place: the traversed layer's whole-entry site, the
@@ -2288,27 +2391,41 @@ impl<'a> FnLowerer<'a> {
         self.lower_for_collection(binding, iterable, body, span)
     }
 
-    /// Whether `iterable` names a durable traversal place syntactically: a bare store
-    /// root `^root` (the root entry family) or `^root(key).branch` (a single-level
-    /// branch family under a fixed root key). The resolver rechecks the store and
-    /// branch names; this only routes the head to the durable path.
+    /// Whether `iterable` names a durable traversal place syntactically: a bare store root
+    /// `^root` (the root entry family) or an entry address extended by a bare branch-layer
+    /// name `^root(key)….branch` (a keyed branch family under a fixed ancestor key-path, at
+    /// any depth). The resolver rechecks the store and branch names; this only routes the
+    /// head to the durable path.
     fn is_traversal_place(iterable: &Expression) -> bool {
         match iterable {
             Expression::SavedRoot { .. } => true,
-            Expression::Field { base, .. } => matches!(
-                &**base,
-                Expression::Call { callee, .. }
-                    if matches!(&**callee, Expression::SavedRoot { .. })
-            ),
+            Expression::Field { base, .. } => Self::is_entry_address(base),
+            _ => false,
+        }
+    }
+
+    /// Whether `expr` is a durable whole-entry address `^root(key)….branch(bkey)`
+    /// syntactically: a call whose callee bottoms out at the store root, chained through
+    /// branch field-calls. The resolver rechecks names; this only recognizes the shape.
+    fn is_entry_address(expr: &Expression) -> bool {
+        let Expression::Call { callee, .. } = expr else {
+            return false;
+        };
+        match &**callee {
+            Expression::SavedRoot { .. } => true,
+            Expression::Field { base, .. } => Self::is_entry_address(base),
             _ => false,
         }
     }
 
     /// Resolve a durable traversal place into the traversed layer's entry site, its
-    /// immediate key type, and the ancestor key-path locating its parent entry (empty
-    /// for a root family, `[root_key]` for a branch family). Reports a precise
-    /// diagnostic and returns `None` on a missing store, a wrong store name, or an
-    /// unknown branch.
+    /// immediate key type, and the ancestor key-path locating its parent entry (empty for a
+    /// root family, `[root_key]` for a single-level branch family, deeper for a nested
+    /// branch layer). The iterable is the root itself, or an entry address extended by a
+    /// bare branch-layer name `^root(k)….b(bk).layer`; the branch chain before the layer
+    /// resolves through the recursive entry-address walker, so an inner branch layer
+    /// iterates under a full ancestor key-path. Reports a precise diagnostic and returns
+    /// `None` on a missing store, a wrong store name, or an unknown branch.
     fn resolve_traversal_place<'e>(
         &mut self,
         iterable: &'e Expression,
@@ -2332,57 +2449,34 @@ impl<'a> FnLowerer<'a> {
             }
             Expression::Field {
                 base,
-                name: branch_name,
-                name_span: branch_span,
+                name: layer_name,
+                name_span: layer_span,
                 span,
                 ..
             } => {
-                let Expression::Call { callee, args, .. } = &**base else {
-                    return None;
-                };
-                let Expression::SavedRoot {
-                    name,
-                    span: root_span,
-                } = &**callee
-                else {
-                    return None;
-                };
                 let Some(root) = self.durable.root() else {
                     let diagnostic =
-                        self.no_executable_root_diagnostic(*root_span, "iterating without a store");
+                        self.no_executable_root_diagnostic(iterable.span(), "iterating without a store");
                     self.fail(diagnostic);
                     return None;
                 };
-                let root_key_ty = root.key;
-                self.check_root_name(root, name, *root_span)?;
-                let root_key = self.single_key_arg(args, *span)?;
-                // The branch's Copy coordinates, read out before the diagnostic borrow.
-                let branch = self
-                    .durable
-                    .root()
-                    .and_then(|root| root.branch(branch_name))
-                    .map(|branch| (branch.entry_site, branch.key));
-                let Some((entry_site, key_ty)) = branch else {
-                    let root_name = self
-                        .durable
-                        .root()
-                        .map(|root| root.name.clone())
-                        .unwrap_or_default();
+                // The base is the addressed parent entry `^root(k)….b(bk)`; the final bare
+                // name is the branch family iterated under it. Its ancestor key-path is the
+                // parent entry's whole key-path (root-first).
+                let (ancestor_keys, parent) = self.resolve_entry_address(root, base)?;
+                let Some(layer) = parent.branch(layer_name) else {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         self.file,
-                        *branch_span,
-                        format!("`{root_name}` has no keyed branch `{branch_name}`"),
+                        *layer_span,
+                        parent.no_branch_message(layer_name),
                     ));
                     return None;
                 };
                 Some(TraversalTarget {
-                    entry_site,
-                    key_ty,
-                    ancestor_keys: vec![DurKey {
-                        key: PlaceKey::Expr(root_key),
-                        key_ty: root_key_ty,
-                    }],
+                    entry_site: layer.entry_site,
+                    key_ty: layer.key,
+                    ancestor_keys,
                     span: *span,
                 })
             }
@@ -3750,21 +3844,18 @@ impl<'a> FnLowerer<'a> {
                         .lower_checked_nominal(id, args, span)
                         .map(CallResult::Value);
                 }
-                // `Resource.branch(field: value, …)`: a keyed branch entry constructor,
-                // symmetric with the root constructor `Resource(field: value, …)` and
-                // resolved through the one type-namespace owner (the store's resource and
-                // its executable branch).
-                if let Expression::Name {
-                    segments,
-                    span: head_span,
-                    ..
-                } = &**base
-                    && let [head] = segments.as_slice()
-                    && self.executable_branch(head, name).is_some()
-                {
-                    return self
-                        .lower_branch_constructor(head, name, *head_span, args, span)
-                        .map(CallResult::Value);
+                // `Resource.branch.…(field: value, …)`: a keyed branch entry constructor at
+                // any depth, symmetric with the root constructor `Resource(field: value, …)`
+                // and resolved through the one type-namespace owner (the store's resource and
+                // its executable branch tree).
+                if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
+                    path.push(name.as_str());
+                    if let Some(branch) = self.executable_branch_path(resource, &path) {
+                        let display = branch_ctor_display(resource, &path);
+                        return self
+                            .lower_branch_constructor(resource, &display, branch, head_span, args, span)
+                            .map(CallResult::Value);
+                    }
                 }
             }
             self.fail(unsupported(self.file, span, "this call"));
@@ -4387,16 +4478,26 @@ impl<'a> FnLowerer<'a> {
     /// resource and `branch` is one of its single-level keyed branches. The returned
     /// reference borrows the durable registry (lifetime `'a`), not `self`, so it stays
     /// valid across later mutating calls.
-    fn executable_branch(
+    /// The executable branch reached by the branch-name `path` from `resource`, if
+    /// `resource` is the store's executable resource and each name is a keyed branch at its
+    /// level. Walks the recursive branch tree so `Book.notes.tags` resolves the nested
+    /// `tags` branch of `notes`. The returned reference borrows the durable registry
+    /// (lifetime `'a`), not `self`, so it stays valid across later mutating calls.
+    fn executable_branch_path(
         &self,
         resource: &str,
-        branch: &str,
+        path: &[&str],
     ) -> Option<&'a crate::durable::DurableBranch> {
         let root = self.durable.root()?;
         if root.resource != resource {
             return None;
         }
-        root.branch(branch)
+        let (first, rest) = path.split_first()?;
+        let mut branch = root.branch(first)?;
+        for name in rest {
+            branch = branch.branch(name)?;
+        }
+        Some(branch)
     }
 
     /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
@@ -4408,7 +4509,8 @@ impl<'a> FnLowerer<'a> {
     fn lower_branch_constructor(
         &mut self,
         resource: &str,
-        branch_name: &str,
+        display: &str,
+        branch: &'a crate::durable::DurableBranch,
         head_span: SourceSpan,
         args: &[Argument],
         span: SourceSpan,
@@ -4420,12 +4522,11 @@ impl<'a> FnLowerer<'a> {
                 head_span,
                 format!(
                     "`{resource}` is a resource type here (the head of a branch constructor \
-                     `{resource}.{branch_name}(…)`); a value binding may not shadow it"
+                     `{display}(…)`); a value binding may not shadow it"
                 ),
             ));
             return None;
         }
-        let branch = self.executable_branch(resource, branch_name)?;
         let record = branch.record;
 
         // Validate argument names against the branch's fields before emitting, so
@@ -4445,7 +4546,7 @@ impl<'a> FnLowerer<'a> {
                     Code::CheckType.as_str(),
                     self.file,
                     argument.value.span(),
-                    format!("`{resource}.{branch_name}` has no field `{arg_name}`"),
+                    format!("`{display}` has no field `{arg_name}`"),
                 ));
                 return None;
             }
@@ -5619,83 +5720,20 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         match expr {
-            Expression::Call {
-                callee, args, span, ..
-            } => match &**callee {
-                // `^root(key)` — a root whole-entry address.
-                Expression::SavedRoot {
-                    name,
-                    span: root_span,
-                } => {
-                    self.check_root_name(root, name, *root_span)?;
-                    let key = self.single_key_arg(args, *span)?;
-                    Some(DurablePlace {
-                        keys: vec![DurKey {
-                            key: PlaceKey::Expr(key),
-                            key_ty: root.key,
-                        }],
-                        target: DurTarget::Entry {
-                            entry_site: root.entry_site,
-                            record: root.record,
-                        },
-                        span: *span,
-                    })
-                }
-                // `^root(key).branch(bkey)` — a single-level branch whole-entry address.
-                Expression::Field {
-                    base,
-                    name: branch_name,
-                    name_span: branch_span,
-                    ..
-                } => {
-                    let Expression::Call {
-                        callee: root_callee,
-                        args: root_args,
-                        span: root_call_span,
-                        ..
-                    } = &**base
-                    else {
-                        return None;
-                    };
-                    let Expression::SavedRoot {
-                        name,
-                        span: root_span,
-                    } = &**root_callee
-                    else {
-                        return None;
-                    };
-                    self.check_root_name(root, name, *root_span)?;
-                    let root_key = self.single_key_arg(root_args, *root_call_span)?;
-                    let branch_key = self.single_key_arg(args, *span)?;
-                    let Some(branch) = root.branch(branch_name) else {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
-                            self.file,
-                            *branch_span,
-                            format!("`{}` has no keyed branch `{branch_name}`", root.name),
-                        ));
-                        return None;
-                    };
-                    Some(DurablePlace {
-                        keys: vec![
-                            DurKey {
-                                key: PlaceKey::Expr(root_key),
-                                key_ty: root.key,
-                            },
-                            DurKey {
-                                key: PlaceKey::Expr(branch_key),
-                                key_ty: branch.key,
-                            },
-                        ],
-                        target: DurTarget::Entry {
-                            entry_site: branch.entry_site,
-                            record: branch.record,
-                        },
-                        span: *span,
-                    })
-                }
-                _ => None,
-            },
+            // A whole-entry address `^root(key).b1(k1)….bn(kn)` at any depth.
+            Expression::Call { span, .. } => {
+                let (keys, node) = self.resolve_entry_address(root, expr)?;
+                Some(DurablePlace {
+                    keys,
+                    target: DurTarget::Entry {
+                        entry_site: node.entry_site(),
+                        record: node.record(),
+                    },
+                    span: *span,
+                })
+            }
+            // A field-exact address `<entry-address>.field` at any depth: a field of the
+            // root or of a keyed branch entry, addressed by the entry's whole key-path.
             Expression::Field {
                 base,
                 name: field_name,
@@ -5703,115 +5741,87 @@ impl<'a> FnLowerer<'a> {
                 span,
                 ..
             } => {
-                let Expression::Call {
-                    callee,
-                    args,
-                    span: call_span,
-                    ..
-                } = &**base
-                else {
+                let (keys, node) = self.resolve_entry_address(root, base)?;
+                let Some(field) = node.field(field_name) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *name_span,
+                        node.no_field_message(field_name),
+                    ));
                     return None;
                 };
-                match &**callee {
-                    // `^root(key).field` — a root field address.
-                    Expression::SavedRoot {
-                        name,
-                        span: root_span,
-                    } => {
-                        self.check_root_name(root, name, *root_span)?;
-                        let key = self.single_key_arg(args, *call_span)?;
-                        let Some(field) = root.field(field_name) else {
-                            self.fail(SourceDiagnostic::at(
-                                Code::CheckType.as_str(),
-                                self.file,
-                                *name_span,
-                                format!("`{}` has no field `{field_name}`", root.name),
-                            ));
-                            return None;
-                        };
-                        Some(DurablePlace {
-                            keys: vec![DurKey {
-                                key: PlaceKey::Expr(key),
-                                key_ty: root.key,
-                            }],
-                            target: DurTarget::Field {
-                                site: field.site,
-                                scalar: field.scalar,
-                                required: field.required,
-                            },
-                            span: *span,
-                        })
-                    }
-                    // `^root(key).branch(bkey).field` — a branch field-exact address: a
-                    // field of a single-level branch entry, addressed by the two-column
-                    // key-path `[root_key, branch_key]`.
-                    Expression::Field {
-                        base: branch_base,
-                        name: branch_name,
-                        name_span: branch_span,
-                        ..
-                    } => {
-                        let Expression::Call {
-                            callee: root_callee,
-                            args: root_args,
-                            span: root_call_span,
-                            ..
-                        } = &**branch_base
-                        else {
-                            return None;
-                        };
-                        let Expression::SavedRoot {
-                            name,
-                            span: root_span,
-                        } = &**root_callee
-                        else {
-                            return None;
-                        };
-                        self.check_root_name(root, name, *root_span)?;
-                        let root_key = self.single_key_arg(root_args, *root_call_span)?;
-                        let branch_key = self.single_key_arg(args, *call_span)?;
-                        let Some(branch) = root.branch(branch_name) else {
-                            self.fail(SourceDiagnostic::at(
-                                Code::CheckType.as_str(),
-                                self.file,
-                                *branch_span,
-                                format!("`{}` has no keyed branch `{branch_name}`", root.name),
-                            ));
-                            return None;
-                        };
-                        let Some(field) = branch.field(field_name) else {
-                            self.fail(SourceDiagnostic::at(
-                                Code::CheckType.as_str(),
-                                self.file,
-                                *name_span,
-                                format!(
-                                    "branch `{branch_name}` of `{}` has no field `{field_name}`",
-                                    root.name
-                                ),
-                            ));
-                            return None;
-                        };
-                        Some(DurablePlace {
-                            keys: vec![
-                                DurKey {
-                                    key: PlaceKey::Expr(root_key),
-                                    key_ty: root.key,
-                                },
-                                DurKey {
-                                    key: PlaceKey::Expr(branch_key),
-                                    key_ty: branch.key,
-                                },
-                            ],
-                            target: DurTarget::Field {
-                                site: field.site,
-                                scalar: field.scalar,
-                                required: field.required,
-                            },
-                            span: *span,
-                        })
-                    }
-                    _ => None,
-                }
+                Some(DurablePlace {
+                    keys,
+                    target: DurTarget::Field {
+                        site: field.site,
+                        scalar: field.scalar,
+                        required: field.required,
+                    },
+                    span: *span,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a durable whole-entry address expression `^root(key).b1(k1)….bn(kn)` into
+    /// its key-path (root-first, one column per hop) and the addressed node, walking the
+    /// nested branch chain level by level. Returns `None` on a shape that is not an entry
+    /// address, and reports a diagnostic then `None` on a bad root or branch name. The
+    /// key-path columns are pushed root-first so the innermost key is on top, the order the
+    /// kernel's `pop_key_path` expects.
+    fn resolve_entry_address<'e>(
+        &mut self,
+        root: &'a crate::durable::DurableRoot,
+        expr: &'e Expression,
+    ) -> Option<(Vec<DurKey<'e>>, DurNode<'a>)> {
+        let Expression::Call {
+            callee, args, span, ..
+        } = expr
+        else {
+            return None;
+        };
+        match &**callee {
+            // The base case `^root(key)`: the root whole-entry address.
+            Expression::SavedRoot {
+                name,
+                span: root_span,
+            } => {
+                self.check_root_name(root, name, *root_span)?;
+                let key = self.single_key_arg(args, *span)?;
+                Some((
+                    vec![DurKey {
+                        key: PlaceKey::Expr(key),
+                        key_ty: root.key,
+                    }],
+                    DurNode::Root(root),
+                ))
+            }
+            // The recursive case `<entry-address>.branch(key)`: extend the parent entry's
+            // key-path with this branch's key.
+            Expression::Field {
+                base,
+                name: branch_name,
+                name_span: branch_span,
+                ..
+            } => {
+                let (mut keys, parent) = self.resolve_entry_address(root, base)?;
+                let Some(branch) = parent.branch(branch_name) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *branch_span,
+                        parent.no_branch_message(branch_name),
+                    ));
+                    return None;
+                };
+                let key = self.single_key_arg(args, *span)?;
+                keys.push(DurKey {
+                    key: PlaceKey::Expr(key),
+                    key_ty: branch.key,
+                });
+                Some((keys, DurNode::Branch(branch)))
             }
             _ => None,
         }

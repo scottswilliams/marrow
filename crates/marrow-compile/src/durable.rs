@@ -175,13 +175,22 @@ impl DurableRegistry {
 
     /// The executable branch whose materialized entry record is the image type `ty`, if
     /// any — the owner that resolves a field of a materialized branch entry value read
-    /// through `if const n = ^root(k).branch(bk)`.
+    /// through `if const n = ^root(k)….branch(bk)`. Searches the whole recursive branch
+    /// tree, so a nested branch's record resolves to its own branch; each branch has its
+    /// own materialized record type, so at most one branch matches.
     pub(crate) fn branch_by_record(&self, ty: marrow_image::TypeId) -> Option<&DurableBranch> {
-        self.executable
-            .as_ref()?
-            .branches
-            .iter()
-            .find(|branch| branch.record == ty)
+        fn find(branches: &[DurableBranch], ty: marrow_image::TypeId) -> Option<&DurableBranch> {
+            for branch in branches {
+                if branch.record == ty {
+                    return Some(branch);
+                }
+                if let Some(found) = find(&branch.branches, ty) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.executable.as_ref()?.branches, ty)
     }
 
     /// The name of a declared root the kernel cannot yet serve (a singleton or
