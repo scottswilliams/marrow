@@ -231,6 +231,15 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
             } => SiteSpec {
                 target: SiteTarget::BranchEntry(*branch),
             },
+            SealedSite::Flat {
+                target: SealedSiteTarget::BranchField { branch, field },
+                ..
+            } => SiteSpec {
+                target: SiteTarget::BranchField {
+                    branch: *branch,
+                    field: *field,
+                },
+            },
             SealedSite::Parked { .. } => SiteSpec {
                 target: SiteTarget::WholePayload,
             },

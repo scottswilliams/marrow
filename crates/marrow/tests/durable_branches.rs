@@ -13,7 +13,7 @@
 //! or root write is observable by a later read invocation.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_vm::{DurableRun, Ephemeral, RuntimeFault, Value, mint_ephemeral, run_export};
 
 // application, product, the top-level `title` field, the root placement and its key,
 // then the `notes` branch (a `root` placement), its key, and its two fields.
@@ -660,5 +660,276 @@ fn two_branches_of_different_shape_keep_their_own_fields() {
         ),
         absent(),
         "the tag write did not appear in the notes branch"
+    );
+}
+
+// --- Field-exact branch operations (E03w slice A). ---
+//
+// `^root(k).branch(bk).field = v`, its clear (`delete ^root(k).branch(bk).field`),
+// its read, and its presence test address one leaf of a branch entry directly, one
+// level below the root. A field-exact set on a not-yet-present branch entry stages
+// that leaf and reconciles the *branch* node's marker and required fields at commit
+// exactly as a root field set reconciles the root node — proving the reconcile
+// extension is node-parametric.
+
+/// The same `Book`/`notes(noteId)` schema as `SOURCE`/`IDS`, with field-exact branch
+/// operations: a sparse-field set/clear, a required-field set that reconcile-creates
+/// the branch entry, a field read, and a field presence test.
+const FIELD_SOURCE: &str = "resource Book\n\
+     \x20   required title: string\n\
+     \n\
+     \x20   notes(noteId: string)\n\
+     \x20       required text: string\n\
+     \x20       pinned: bool\n\
+     \n\
+     store ^books(id: int): Book\n\
+     \n\
+     pub fn addNote(id: int, nid: string, body: string)\n\
+     \x20   transaction\n\
+     \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
+     \n\
+     pub fn setPinned(id: int, nid: string, flag: bool)\n\
+     \x20   transaction\n\
+     \x20       ^books(id).notes(nid).pinned = flag\n\
+     \n\
+     pub fn clearPinned(id: int, nid: string)\n\
+     \x20   transaction\n\
+     \x20       delete ^books(id).notes(nid).pinned\n\
+     \n\
+     pub fn setText(id: int, nid: string, body: string)\n\
+     \x20   transaction\n\
+     \x20       ^books(id).notes(nid).text = body\n\
+     \n\
+     pub fn notePinned(id: int, nid: string): bool?\n\
+     \x20   return ^books(id).notes(nid).pinned\n\
+     \n\
+     pub fn pinnedPresent(id: int, nid: string): bool\n\
+     \x20   return exists(^books(id).notes(nid).pinned)\n\
+     \n\
+     pub fn noteText(id: int, nid: string): string?\n\
+     \x20   if const n = ^books(id).notes(nid)\n\
+     \x20       return n.text\n\
+     \x20   return absent\n\
+     \n\
+     pub fn rootPresent(id: int): bool\n\
+     \x20   return exists(^books(id))\n";
+
+/// Run an export whose commit is expected to fault, returning the runtime fault code.
+fn run_fault(
+    image: &VerifiedImage,
+    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    name: &str,
+    args: Vec<Value>,
+) -> &'static str {
+    match run_export(image, attachment, export(image, name), args) {
+        DurableRun::Ran(Err(fault)) => RuntimeFault::code(&fault),
+        other => panic!("{name} did not fault as expected: {:?}", DebugRun(&other)),
+    }
+}
+
+/// A field-exact sparse set and clear on a present branch entry change only that
+/// field, and its field read and presence test observe it, while the branch's other
+/// fields are undisturbed.
+#[test]
+fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
+    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let mut attachment = attach(&image);
+    let key = || vec![Value::Int(6), Value::Text("a".into())];
+
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(6),
+            Value::Text("a".into()),
+            Value::Text("hi".into()),
+        ],
+    );
+    assert_eq!(run(&image, &mut attachment, "notePinned", key()), absent());
+    assert_eq!(
+        run(&image, &mut attachment, "pinnedPresent", key()),
+        present(false)
+    );
+
+    // Field-exact set of the sparse `pinned`: the required `text` is preserved.
+    run(
+        &image,
+        &mut attachment,
+        "setPinned",
+        vec![Value::Int(6), Value::Text("a".into()), Value::Bool(true)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "notePinned", key()),
+        some_bool(true)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "pinnedPresent", key()),
+        present(true)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteText", key()),
+        some_text("hi"),
+        "a field-exact sparse set preserves the branch's required field"
+    );
+
+    // Field-exact clear of the sparse `pinned`: text still preserved.
+    run(
+        &image,
+        &mut attachment,
+        "clearPinned",
+        vec![Value::Int(6), Value::Text("a".into())],
+    );
+    assert_eq!(run(&image, &mut attachment, "notePinned", key()), absent());
+    assert_eq!(
+        run(&image, &mut attachment, "noteText", key()),
+        some_text("hi"),
+        "a field-exact clear preserves the branch's required field"
+    );
+}
+
+/// A field-exact set of a branch entry's *required* field on an absent branch stages
+/// that leaf and reconcile-creates the branch node's marker at commit (all required
+/// fields present), leaving the root descendant-only. This proves the commit reconcile
+/// extends to a branch node's marker and record, not the root's.
+#[test]
+fn a_field_exact_required_set_reconcile_creates_the_branch_node() {
+    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let mut attachment = attach(&image);
+
+    assert_eq!(
+        run(&image, &mut attachment, "rootPresent", vec![Value::Int(7)]),
+        present(false)
+    );
+    run(
+        &image,
+        &mut attachment,
+        "setText",
+        vec![
+            Value::Int(7),
+            Value::Text("a".into()),
+            Value::Text("made".into()),
+        ],
+    );
+    // The branch marker was created by the reconcile, so a whole-entry read materializes.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "noteText",
+            vec![Value::Int(7), Value::Text("a".into())]
+        ),
+        some_text("made"),
+        "the branch node's marker was created by the commit reconcile"
+    );
+    // The branch set did not create the root: it stays descendant-only.
+    assert_eq!(
+        run(&image, &mut attachment, "rootPresent", vec![Value::Int(7)]),
+        present(false),
+        "a field-exact branch set does not create the root node"
+    );
+}
+
+/// Reconcile soundness: staging a *sparse* branch field on an absent branch entry
+/// whose required field is missing rolls the whole transaction back with
+/// `run.required_missing`, and nothing persists. If the reconcile mistakenly checked
+/// the root node's required fields (the root's `title`) instead of the branch node's
+/// (`text`), it would not roll back here.
+#[test]
+fn a_branch_sparse_set_missing_the_required_branch_field_rolls_back() {
+    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let mut attachment = attach(&image);
+
+    assert_eq!(
+        run_fault(
+            &image,
+            &mut attachment,
+            "setPinned",
+            vec![Value::Int(8), Value::Text("a".into()), Value::Bool(true)]
+        ),
+        marrow_codes::Code::RunRequiredMissing.as_str(),
+        "a staged branch sparse set with the branch's required field missing rolls back",
+    );
+    // The rolled-back transaction persisted nothing: the branch field is absent.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "pinnedPresent",
+            vec![Value::Int(8), Value::Text("a".into())]
+        ),
+        present(false),
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "noteText",
+            vec![Value::Int(8), Value::Text("a".into())]
+        ),
+        absent(),
+    );
+}
+
+/// A field-exact set on one branch entry does not leak to a sibling branch entry.
+#[test]
+fn a_field_exact_set_is_scoped_to_its_branch_entry() {
+    let image = compile_verify_ids(FIELD_SOURCE, IDS);
+    let mut attachment = attach(&image);
+
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(9),
+            Value::Text("a".into()),
+            Value::Text("one".into()),
+        ],
+    );
+    run(
+        &image,
+        &mut attachment,
+        "addNote",
+        vec![
+            Value::Int(9),
+            Value::Text("b".into()),
+            Value::Text("two".into()),
+        ],
+    );
+    run(
+        &image,
+        &mut attachment,
+        "setPinned",
+        vec![Value::Int(9), Value::Text("a".into()), Value::Bool(true)],
+    );
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "notePinned",
+            vec![Value::Int(9), Value::Text("a".into())]
+        ),
+        some_bool(true)
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "notePinned",
+            vec![Value::Int(9), Value::Text("b".into())]
+        ),
+        absent(),
+        "a field-exact set on entry a did not leak to sibling b"
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "noteText",
+            vec![Value::Int(9), Value::Text("b".into())]
+        ),
+        some_text("two")
     );
 }

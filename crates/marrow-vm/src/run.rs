@@ -1199,7 +1199,12 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
     let root = &image.roots()[root as usize];
     match target {
         SealedSiteTarget::BranchEntry(branch) => root.branches()[branch as usize].record(),
-        SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => root.record(),
+        // A field-leaf site (top-level or branch) never reaches a whole-entry read
+        // (the verifier rejects `DurReadEntry` over a field site), so this arm is
+        // never observed; it keeps the match total.
+        SealedSiteTarget::WholePayload
+        | SealedSiteTarget::FieldLeaf(_)
+        | SealedSiteTarget::BranchField { .. } => root.record(),
     }
 }
 

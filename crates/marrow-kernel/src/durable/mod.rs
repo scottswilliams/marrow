@@ -88,6 +88,14 @@ pub enum SiteTarget {
     /// The whole payload of a keyed branch entry: the branch's index into
     /// [`StoreSchema::branches`].
     BranchEntry(u16),
+    /// One field leaf of a keyed branch entry: the branch's index into
+    /// [`StoreSchema::branches`] and the field's index into that branch's
+    /// [`BranchSchema::fields`]. Its field-exact operations address the two-element
+    /// key-path `[root_key, branch_key]`, one level below the root.
+    BranchField {
+        branch: u16,
+        field: u16,
+    },
 }
 
 /// The read/write coverage of a durable demand: whether it observes or mutates the
@@ -306,16 +314,22 @@ enum AuthTarget {
         name: String,
         kind: ScalarKind,
         required: bool,
+        /// The addressed field's containing node record — the root's fields for a
+        /// top-level field, a branch's fields for a branch field. A staged sparse or
+        /// required set carries this so the commit reconcile validates the *node's*
+        /// marker and required fields, node-parametrically, one level down for a branch.
+        record: Vec<FieldSchema>,
     },
 }
 
 impl AuthTarget {
-    /// A field target from a resolved field schema.
-    fn field(field: &FieldSchema) -> Self {
+    /// A field target from a resolved field schema and its containing node record.
+    fn field(field: &FieldSchema, record: &[FieldSchema]) -> Self {
         Self::Field {
             name: field.name.clone(),
             kind: field.kind,
             required: field.required,
+            record: record.to_vec(),
         }
     }
 }

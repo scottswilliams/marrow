@@ -23,7 +23,6 @@
 
 use super::physical;
 use super::{EntryValue, FieldSchema, KernelFault};
-use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_value;
 
 /// One physical cell operation a mutation implies, in apply order.
@@ -35,22 +34,15 @@ pub(super) enum CellWrite {
 }
 
 /// The consequence planner: the single owner of how a logical mutation over one
-/// root's entry family decomposes into ordered physical cell operations. It borrows
-/// the root name for the marker/cursor conveniences; the node-parametric core takes
-/// each node's fields explicitly, so a root and a branch node share one topology owner.
-pub(super) struct Planner<'a> {
-    root: &'a str,
-}
+/// durable node decomposes into ordered physical cell operations. It is node-parametric
+/// and stateless — every operation takes the node's resolved marker stem and its fields
+/// explicitly, so a root entry and a branch entry share one topology owner regardless of
+/// depth.
+pub(super) struct Planner;
 
-impl<'a> Planner<'a> {
-    pub(super) fn new(root: &'a str) -> Self {
-        Self { root }
-    }
-
-    /// The marker key (marker stem) of root entry `key`: the entry's payload-presence
-    /// record and the base its own leaves, branches, and cursor derive from.
-    pub(super) fn marker(&self, key: &KeyScalar) -> Vec<u8> {
-        physical::marker_key(self.root, key)
+impl Planner {
+    pub(super) fn new() -> Self {
+        Self
     }
 
     /// The leaf key of `field` of the node whose marker `stem` is given. The
@@ -59,12 +51,6 @@ impl<'a> Planner<'a> {
     /// has a single owner regardless of a node's depth.
     pub(super) fn node_field_leaf(&self, stem: &[u8], field: &str) -> Vec<u8> {
         physical::stem_field_leaf(stem, field)
-    }
-
-    /// The leaf key of `field` of root entry `key`, the root convenience over
-    /// [`Self::node_field_leaf`].
-    pub(super) fn field_leaf(&self, key: &KeyScalar, field: &str) -> Vec<u8> {
-        self.node_field_leaf(&self.marker(key), field)
     }
 
     /// Every cell key of the node with marker `stem` over `fields`: its marker
@@ -125,6 +111,7 @@ impl<'a> Planner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::key::KeyScalar;
     use crate::codec::value::{RuntimeScalar, ScalarKind};
     use crate::durable::{FieldSchema, StoreSchema};
 
@@ -161,9 +148,9 @@ mod tests {
     #[test]
     fn node_cells_are_the_marker_then_one_leaf_per_field_in_order() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name);
+        let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = planner.marker(&key);
+        let stem = physical::marker_key(&schema.root_name, &key);
         assert_eq!(
             planner.node_cells(&stem, &schema.fields),
             vec![
@@ -179,9 +166,9 @@ mod tests {
     #[test]
     fn node_write_plans_the_marker_and_only_present_leaves() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name);
+        let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = planner.marker(&key);
+        let stem = physical::marker_key(&schema.root_name, &key);
         // Required value present, sparse label absent.
         let entry = EntryValue {
             fields: vec![Some(RuntimeScalar::Int(5)), None],
@@ -208,9 +195,9 @@ mod tests {
     #[test]
     fn node_erase_removes_the_marker_and_every_field_leaf() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name);
+        let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = planner.marker(&key);
+        let stem = physical::marker_key(&schema.root_name, &key);
         let ops = planner.node_erase(&stem, &schema.fields);
         assert!(ops.iter().all(|op| matches!(op, CellWrite::Remove(_))));
         assert_eq!(
@@ -228,10 +215,10 @@ mod tests {
     #[test]
     fn the_node_core_operates_on_an_arbitrary_node_stem_and_fields() {
         let schema = schema();
-        let planner = Planner::new(&schema.root_name);
+        let planner = Planner::new();
         // Any marker stem stands in for a node here (a branch entry's stem is one such
         // stem, one level below the root); the fields differ from the root's schema.
-        let stem = planner.marker(&KeyScalar::Int(7));
+        let stem = physical::marker_key(&schema.root_name, &KeyScalar::Int(7));
         let fields = vec![FieldSchema {
             name: "text".into(),
             kind: ScalarKind::Str,

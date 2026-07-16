@@ -1,6 +1,6 @@
 //! The durable store handle and its read/transaction sessions (design §G).
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,7 +14,7 @@ use super::{
     DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, InvocationGrant, KernelFault,
     NextKey, Presence, Reopen, ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
-use crate::codec::key::{KeyScalar, decode_key_value, encode_key_value};
+use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, decode_value, encode_value};
 
 /// The durable operations the VM drives. Object-safe so the VM holds a
@@ -214,14 +214,11 @@ impl<E: ByteEngine> DurableStore<E> {
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let descriptor = profile::descriptor(&self.schema);
-        // Split the store's fields into disjoint borrows: the transaction borrows
-        // the engine mutably while the session still reads the schema and writes
-        // the poison flag.
+        // Split the store's fields into disjoint borrows: the transaction borrows the
+        // engine mutably while the session still writes the poison flag. The schema is
+        // read here (into `descriptor` and the resolved sites) before the split.
         let Self {
-            engine,
-            schema,
-            poisoned,
-            ..
+            engine, poisoned, ..
         } = self;
         let mut txn = engine.begin().map_err(SessionError::Engine)?;
         // First provision: record the profile inside this transaction if absent.
@@ -236,11 +233,10 @@ impl<E: ByteEngine> DurableStore<E> {
         }
         Ok(TxnSession {
             txn: Some(txn),
-            schema,
             poisoned,
             auth,
             token: mint_token(),
-            pending: BTreeSet::new(),
+            pending: BTreeMap::new(),
         })
     }
 }
@@ -273,11 +269,12 @@ fn resolve_authority(
 /// resolves the branch from the schema so the addressed node carries its own key kind
 /// and record.
 fn resolve_site(schema: &StoreSchema, target: SiteTarget) -> AuthorizedSite {
-    // The container node the site addresses: its branch path and own record fields.
-    // A root target's container is the root; a branch target's is the branch node.
+    // The container node the site addresses: its branch path and own record fields. A
+    // root target's container is the root; a branch target's (whole entry or field) is
+    // the branch node one level down.
     let (branch, container_fields): (Vec<BranchHop>, &[FieldSchema]) = match target {
         SiteTarget::WholePayload | SiteTarget::FieldLeaf(_) => (Vec::new(), &schema.fields),
-        SiteTarget::BranchEntry(branch) => {
+        SiteTarget::BranchEntry(branch) | SiteTarget::BranchField { branch, .. } => {
             let branch = &schema.branches[branch as usize];
             (
                 vec![BranchHop::new(branch.name.clone(), branch.key)],
@@ -286,12 +283,15 @@ fn resolve_site(schema: &StoreSchema, target: SiteTarget) -> AuthorizedSite {
         }
     };
     // A whole-entry site enumerates the container's footprint, so it carries the
-    // container's record; a field-target site touches one leaf and carries no fields.
+    // container's record; a field-target site carries its field plus the container
+    // record so a staged set can reconcile the node at commit.
     let target = match target {
         SiteTarget::WholePayload | SiteTarget::BranchEntry(_) => {
             AuthTarget::Entry(container_fields.to_vec())
         }
-        SiteTarget::FieldLeaf(index) => AuthTarget::field(&container_fields[index as usize]),
+        SiteTarget::FieldLeaf(index) | SiteTarget::BranchField { field: index, .. } => {
+            AuthTarget::field(&container_fields[index as usize], container_fields)
+        }
     };
     AuthorizedSite::new(schema.root_name.clone(), schema.key, branch, target)
 }
@@ -441,15 +441,27 @@ where
     /// The engine write transaction. `None` after commit consumes it, so a
     /// second commit is a fault and drop is a no-op.
     txn: Option<E::Txn<'s>>,
-    schema: &'s StoreSchema,
     /// The store's poison flag, set on an indeterminate commit so a reopen
     /// reclassifies.
     poisoned: &'s mut bool,
     auth: Vec<AuthorizedSite>,
     token: [u8; 16],
-    /// Keys whose fields were staged; reconciled at commit to decide created vs
-    /// required-missing.
-    pending: BTreeSet<Vec<u8>>,
+    /// The durable nodes whose fields were staged this transaction, keyed by the
+    /// node's marker stem so several field sets on one node stage it once. Each is
+    /// reconciled at commit to decide created vs required-missing — a root node or a
+    /// branch node identically, since the stem and record are resolved when the field
+    /// is staged rather than re-derived from the root schema.
+    pending: BTreeMap<Vec<u8>, PendingNode>,
+}
+
+/// A durable node staged for commit reconcile: its own record fields and the leaf-most
+/// key of its address (for a `RequiredMissing` report). The node's marker stem is the
+/// map key. This is what makes reconcile node-parametric — it validates the staged
+/// node's marker and required fields at its own physical stem, one level down for a
+/// branch node.
+struct PendingNode {
+    fields: Vec<FieldSchema>,
+    key: KeyScalar,
 }
 
 impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
@@ -512,34 +524,24 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         }
     }
 
-    /// Validate every staged entry: a live entry missing a required field is a
-    /// `RequiredMissing`; a live markerless entry with all required fields present
-    /// gets its marker (created at commit). The staged set holds root-level entry
-    /// keys, so this reconciles root nodes; a branch node reached only by whole-entry
-    /// create/replace/erase never stages a field and needs no reconcile. Reconciling a
-    /// staged branch field (the field-exact branch tail) extends this to the branch
-    /// node's marker and record.
+    /// Validate every staged node: a node with any present leaf but a missing required
+    /// field is a `RequiredMissing` rollback; a markerless node whose required fields
+    /// are all present gets its marker (created at commit); a fully-erased staged node
+    /// is a no-op. Each staged node carries its own marker stem (the map key) and its
+    /// own record, so a root node and a branch node reconcile identically — the branch
+    /// node at its own stem one level down, never confused with the root's marker or
+    /// fields. A node reached only by whole-entry create/replace/erase writes its
+    /// marker directly and never stages, so it needs no reconcile.
     fn reconcile(&mut self) -> Result<(), CommitResult> {
-        let root = self.schema.root_name.clone();
-        let planner = Planner::new(&root);
-        let staged: Vec<KeyScalar> = self
-            .pending
-            .iter()
-            .map(|bytes| {
-                decode_key_value(bytes)
-                    .expect("a staged key was our own encoding")
-                    .0
-            })
-            .collect();
-        for key in staged {
-            let marker_key = planner.marker(&key);
-            let marker_present = read_raw(self.txn(), &marker_key)
+        let pending = std::mem::take(&mut self.pending);
+        for (stem, node) in &pending {
+            let marker_present = read_raw(self.txn(), stem)
                 .map_err(|_| CommitResult::CommitFault)?
                 .is_some();
             let mut any_leaf = false;
             let mut missing_required: Option<String> = None;
-            for field in &self.schema.fields {
-                let leaf = planner.field_leaf(&key, &field.name);
+            for field in &node.fields {
+                let leaf = physical::stem_field_leaf(stem, &field.name);
                 let present = read_raw(self.txn(), &leaf)
                     .map_err(|_| CommitResult::CommitFault)?
                     .is_some();
@@ -552,15 +554,39 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
                 continue; // fully erased; nothing to reconcile.
             }
             if let Some(field) = missing_required {
-                return Err(CommitResult::RequiredMissing { key, field });
+                return Err(CommitResult::RequiredMissing {
+                    key: node.key.clone(),
+                    field,
+                });
             }
             if !marker_present {
                 self.txn_mut()
-                    .put(&marker_key, physical::MARKER_VALUE.to_vec())
+                    .put(stem, physical::MARKER_VALUE.to_vec())
                     .map_err(|_| CommitResult::CommitFault)?;
             }
         }
         Ok(())
+    }
+
+    /// Stage the node a field set touches for commit reconcile, keyed by its marker
+    /// stem so several sets on one node stage it once. The node's own record (root or
+    /// branch) and reporting key are read from the field-target site, so reconcile
+    /// validates the addressed node rather than the root — the field-exact branch tail's
+    /// soundness rests here. A whole-entry op carries no field target and stages nothing
+    /// (it writes its marker directly).
+    fn stage_node(&mut self, site: &AuthorizedSite, keys: &[KeyScalar]) {
+        let AuthTarget::Field { record, .. } = &site.target else {
+            return;
+        };
+        let stem = node_stem(site, keys);
+        let key = keys
+            .last()
+            .cloned()
+            .expect("a durable key-path is non-empty");
+        self.pending.entry(stem).or_insert_with(|| PendingNode {
+            fields: record.clone(),
+            key,
+        });
     }
 }
 
@@ -611,7 +637,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         self.txn_mut()
             .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
-        self.pending.insert(encode_key_value(&keys[0]));
+        self.stage_node(site, keys);
         Ok(())
     }
     fn set_sparse(
@@ -627,7 +653,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
                 self.txn_mut()
                     .put(&leaf, bytes)
                     .map_err(KernelFault::Engine)?;
-                self.pending.insert(encode_key_value(&keys[0]));
+                self.stage_node(site, keys);
             }
             None => {
                 self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
@@ -659,7 +685,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     ) -> Result<CreateOutcome, KernelFault> {
         let stem = node_stem(site, keys);
         let fields = node_fields(site);
-        let planner = Planner::new(&site.root);
+        let planner = Planner::new();
         // Marker-first precedence through the one bounded prefix probe: a create over
         // a present payload is a no-op, while a create over an absent or
         // descendant-only slot writes the payload. `node_write` stages only the marker
@@ -685,7 +711,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     ) -> Result<ReplaceOutcome, KernelFault> {
         let stem = node_stem(site, keys);
         let fields = node_fields(site);
-        let planner = Planner::new(&site.root);
+        let planner = Planner::new();
         // A markerless node (absent or descendant-only) has no payload to replace, so
         // it reports Missing without touching any descendants (the compiler lowers a
         // whole assignment as exists?→replace:create, so this is the defense-in-depth
@@ -722,7 +748,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     ) -> Result<EraseOutcome, KernelFault> {
         let stem = node_stem(site, keys);
         let fields = node_fields(site);
-        let planner = Planner::new(&site.root);
+        let planner = Planner::new();
         let existed = read_raw(self.txn(), &stem)?.is_some();
         // Whole-node removal through the node-parametric planner: marker plus every own
         // field leaf, by exact key — a branch tag is never enumerated, so a node's
@@ -1058,7 +1084,7 @@ fn mint_token() -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, WriteTxn};
+    use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, ReadView, WriteTxn};
 
     use super::super::physical;
     use super::super::{
@@ -1632,6 +1658,205 @@ mod tests {
                 "an inclusive from inside the descendant-only run still yields the next present key",
             );
         }
+    }
+
+    // --- Field-exact branch operations and the branch commit reconcile (E03w slice A). ---
+    //
+    // A field-exact set on a branch entry addresses one leaf of a branch node directly
+    // (`BranchField`). Its engine write is one cell regardless of the branch record's
+    // width (constant records), and the commit reconcile validates the *branch* node's
+    // marker and required fields at its own stem — never the root's.
+
+    /// A wide-record branch schema: root `books` keyed by string with a required
+    /// `title`, and a branch `notes` keyed by int with a required `text` plus six sparse
+    /// `f0..f5` fields. The site table addresses the root (0), the branch entry (1), the
+    /// middle sparse branch field `f2` (2, branch field index 3), and the required branch
+    /// field `text` (3, branch field index 0).
+    fn wide_branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
+        let mut branch_fields = vec![FieldSchema {
+            name: "text".into(),
+            kind: ScalarKind::Str,
+            required: true,
+        }];
+        for i in 0..6 {
+            branch_fields.push(FieldSchema {
+                name: format!("f{i}"),
+                kind: ScalarKind::Int,
+                required: false,
+            });
+        }
+        let schema = StoreSchema {
+            root_name: "books".into(),
+            key: ScalarKind::Str,
+            fields: vec![FieldSchema {
+                name: "title".into(),
+                kind: ScalarKind::Str,
+                required: true,
+            }],
+            branches: vec![BranchSchema {
+                name: "notes".into(),
+                key: ScalarKind::Int,
+                fields: branch_fields,
+            }],
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::BranchEntry(0),
+            },
+            SiteSpec {
+                target: SiteTarget::BranchField {
+                    branch: 0,
+                    field: 3,
+                },
+            },
+            SiteSpec {
+                target: SiteTarget::BranchField {
+                    branch: 0,
+                    field: 0,
+                },
+            },
+        ];
+        (schema, sites)
+    }
+
+    /// Every raw cell of a store, as an owned key→value map (the test stores are small
+    /// enough that one page holds them all).
+    fn all_cells(
+        store: &DurableStore<MemoryEngine>,
+    ) -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
+        let view = store.engine.read_view().expect("read view");
+        view.scan_after(&[], &[])
+            .expect("scan")
+            .into_iter()
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect()
+    }
+
+    /// The physical marker stem of note `note` under book `book`.
+    fn note_stem(book: &str, note: i64) -> Vec<u8> {
+        physical::branch_child_stem(
+            &physical::marker_key("books", &KeyScalar::Str(book.into())),
+            "notes",
+            &KeyScalar::Int(note),
+        )
+    }
+
+    /// A field-exact set on a present wide-record branch entry writes exactly one new
+    /// leaf cell, independent of the branch record's width, and leaves every other cell
+    /// (the marker, the required `text`, and the untouched sparse fields) byte-identical.
+    /// This is the branch wide-resource evidence: field-exact write work is O(1) plus the
+    /// node's own incident cells, not proportional to the record width.
+    #[test]
+    fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
+        let (schema, sites) = wide_branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
+
+        // Create the branch entry with only its required `text` present.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let branch = txn.site(1);
+            let mut fields = vec![Some(RuntimeScalar::Str("hi".into()))];
+            fields.extend(std::iter::repeat_n(None, 6));
+            txn.create_entry(&branch, &note, EntryValue { fields })
+                .expect("branch create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let before = all_cells(&store);
+
+        // A field-exact set of one middle sparse field on the present wide branch entry.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let f2 = txn.site(2);
+            txn.set_sparse(&f2, &note, Some(RuntimeScalar::Int(42)))
+                .expect("field-exact set");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let after = all_cells(&store);
+
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "a field-exact set on a 7-field branch record writes exactly one new leaf",
+        );
+        // Every pre-existing cell is byte-identical, except the per-commit witness token
+        // (commit metadata, not application data): the write touched only the one leaf.
+        let witness = physical::meta_key(super::WITNESS);
+        for (key, value) in &before {
+            if key == &witness {
+                continue;
+            }
+            assert_eq!(
+                after.get(key),
+                Some(value),
+                "a field-exact set left every prior cell untouched",
+            );
+        }
+    }
+
+    /// The branch commit reconcile creates the *branch* node's marker (never the root's)
+    /// when a field-exact required set stages the branch node with all required fields
+    /// present. Site 3 is the required `text` branch field; setting it on an absent
+    /// branch entry reconcile-creates the branch marker, and the root gains no marker.
+    #[test]
+    fn a_field_exact_required_branch_set_reconcile_creates_the_branch_marker() {
+        let (schema, sites) = wide_branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
+
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let text = txn.site(3);
+            txn.set_required(&text, &note, RuntimeScalar::Str("made".into()))
+                .expect("required branch set");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        let cells = all_cells(&store);
+        assert!(
+            cells.contains_key(&note_stem("a", 7)),
+            "the reconcile created the branch node's marker",
+        );
+        assert!(
+            !cells.contains_key(&physical::marker_key("books", &KeyScalar::Str("a".into()))),
+            "a field-exact branch set does not create the root marker",
+        );
+    }
+
+    /// A staged sparse branch-field set whose branch node's required field is missing
+    /// rolls the transaction back with `RequiredMissing` — validated at the branch node's
+    /// own stem and record, not the root's. Nothing persists, proving the reconcile
+    /// checked the branch node's required `text` rather than the root's `title`.
+    #[test]
+    fn a_sparse_branch_set_missing_the_branch_required_field_rolls_back() {
+        let (schema, sites) = wide_branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
+        let before = all_cells(&store);
+
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write_demand())
+            .expect("txn session");
+        let f2 = txn.site(2);
+        txn.set_sparse(&f2, &note, Some(RuntimeScalar::Int(9)))
+            .expect("field-exact sparse set");
+        // The branch node's required `text` is missing, so commit rolls back.
+        assert!(matches!(txn.commit(), CommitResult::RequiredMissing { .. }));
+        // The whole transaction aborted, including the profile provision: nothing persists.
+        assert_eq!(
+            all_cells(&store),
+            before,
+            "the rolled-back set persisted nothing"
+        );
     }
 
     // --- E04 bounded acquisition law (the freeze-then-run kernel primitive). ---

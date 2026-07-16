@@ -5331,6 +5331,9 @@ impl<'a> FnLowerer<'a> {
             Expression::Call { callee, .. } if is_root_field(callee) => Some(DurShape::Entry),
             // `^root(key).field` — a root field address.
             Expression::Field { base, .. } if is_root_call(base) => Some(DurShape::Field),
+            // `^root(key).branch(bkey).field` — a branch field-exact address: a field
+            // selection on a branch whole-entry call.
+            Expression::Field { base, .. } if is_branch_call(base) => Some(DurShape::Field),
             _ => None,
         }
     }
@@ -5444,25 +5447,23 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let place = self.lookup_place(name)?;
-                // A branch place addresses a nested entry; its field-exact operations
-                // are not yet lowered (a later slice), so only whole-entry operations
-                // flow through it.
-                if place.is_nested() {
-                    self.fail(unsupported(
-                        self.file,
-                        *name_span,
-                        "a field of a keyed `branch` entry",
-                    ));
-                    return None;
-                }
+                // The field-exact site comes from the node the place addresses: a branch
+                // place's branch record, or the flat root's record. Copy the key-path and
+                // the scalar facts out before any diagnostic borrow of `self`.
                 let keys = place.bound_keys();
-                // The field sites are re-derived from the one executable root a root
-                // place implies; copy the scalar facts out before any diagnostic borrow.
-                let field = self
-                    .durable
-                    .root()
-                    .and_then(|root| root.field(field_name))
-                    .map(|field| (field.site, field.scalar, field.required));
+                let nested = place.is_nested();
+                let record = place.record;
+                let field = if nested {
+                    self.durable
+                        .branch_by_record(record)
+                        .and_then(|branch| branch.field(field_name))
+                        .map(|field| (field.site, field.scalar, field.required))
+                } else {
+                    self.durable
+                        .root()
+                        .and_then(|root| root.field(field_name))
+                        .map(|field| (field.site, field.scalar, field.required))
+                };
                 match field {
                     Some((site, scalar, required)) => Some(DurablePlace {
                         keys,
@@ -5474,16 +5475,22 @@ impl<'a> FnLowerer<'a> {
                         span: *span,
                     }),
                     None => {
-                        let root_name = self
-                            .durable
-                            .root()
-                            .map(|root| root.name.clone())
-                            .unwrap_or_default();
+                        let container = if nested {
+                            self.durable
+                                .branch_by_record(record)
+                                .map(|branch| branch.name.clone())
+                                .unwrap_or_default()
+                        } else {
+                            self.durable
+                                .root()
+                                .map(|root| root.name.clone())
+                                .unwrap_or_default()
+                        };
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,
                             *name_span,
-                            format!("`{root_name}` has no field `{field_name}`"),
+                            format!("`{container}` has no field `{field_name}`"),
                         ));
                         None
                     }
@@ -5696,39 +5703,115 @@ impl<'a> FnLowerer<'a> {
                 span,
                 ..
             } => {
-                let Expression::Call { callee, args, .. } = &**base else {
-                    return None;
-                };
-                let Expression::SavedRoot {
-                    name,
-                    span: root_span,
-                } = &**callee
+                let Expression::Call {
+                    callee,
+                    args,
+                    span: call_span,
+                    ..
+                } = &**base
                 else {
                     return None;
                 };
-                self.check_root_name(root, name, *root_span)?;
-                let key = self.single_key_arg(args, *span)?;
-                let Some(field) = root.field(field_name) else {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        *name_span,
-                        format!("`{}` has no field `{field_name}`", root.name),
-                    ));
-                    return None;
-                };
-                Some(DurablePlace {
-                    keys: vec![DurKey {
-                        key: PlaceKey::Expr(key),
-                        key_ty: root.key,
-                    }],
-                    target: DurTarget::Field {
-                        site: field.site,
-                        scalar: field.scalar,
-                        required: field.required,
-                    },
-                    span: *span,
-                })
+                match &**callee {
+                    // `^root(key).field` — a root field address.
+                    Expression::SavedRoot {
+                        name,
+                        span: root_span,
+                    } => {
+                        self.check_root_name(root, name, *root_span)?;
+                        let key = self.single_key_arg(args, *call_span)?;
+                        let Some(field) = root.field(field_name) else {
+                            self.fail(SourceDiagnostic::at(
+                                Code::CheckType.as_str(),
+                                self.file,
+                                *name_span,
+                                format!("`{}` has no field `{field_name}`", root.name),
+                            ));
+                            return None;
+                        };
+                        Some(DurablePlace {
+                            keys: vec![DurKey {
+                                key: PlaceKey::Expr(key),
+                                key_ty: root.key,
+                            }],
+                            target: DurTarget::Field {
+                                site: field.site,
+                                scalar: field.scalar,
+                                required: field.required,
+                            },
+                            span: *span,
+                        })
+                    }
+                    // `^root(key).branch(bkey).field` — a branch field-exact address: a
+                    // field of a single-level branch entry, addressed by the two-column
+                    // key-path `[root_key, branch_key]`.
+                    Expression::Field {
+                        base: branch_base,
+                        name: branch_name,
+                        name_span: branch_span,
+                        ..
+                    } => {
+                        let Expression::Call {
+                            callee: root_callee,
+                            args: root_args,
+                            span: root_call_span,
+                            ..
+                        } = &**branch_base
+                        else {
+                            return None;
+                        };
+                        let Expression::SavedRoot {
+                            name,
+                            span: root_span,
+                        } = &**root_callee
+                        else {
+                            return None;
+                        };
+                        self.check_root_name(root, name, *root_span)?;
+                        let root_key = self.single_key_arg(root_args, *root_call_span)?;
+                        let branch_key = self.single_key_arg(args, *call_span)?;
+                        let Some(branch) = root.branch(branch_name) else {
+                            self.fail(SourceDiagnostic::at(
+                                Code::CheckType.as_str(),
+                                self.file,
+                                *branch_span,
+                                format!("`{}` has no keyed branch `{branch_name}`", root.name),
+                            ));
+                            return None;
+                        };
+                        let Some(field) = branch.field(field_name) else {
+                            self.fail(SourceDiagnostic::at(
+                                Code::CheckType.as_str(),
+                                self.file,
+                                *name_span,
+                                format!(
+                                    "branch `{branch_name}` of `{}` has no field `{field_name}`",
+                                    root.name
+                                ),
+                            ));
+                            return None;
+                        };
+                        Some(DurablePlace {
+                            keys: vec![
+                                DurKey {
+                                    key: PlaceKey::Expr(root_key),
+                                    key_ty: root.key,
+                                },
+                                DurKey {
+                                    key: PlaceKey::Expr(branch_key),
+                                    key_ty: branch.key,
+                                },
+                            ],
+                            target: DurTarget::Field {
+                                site: field.site,
+                                scalar: field.scalar,
+                                required: field.required,
+                            },
+                            span: *span,
+                        })
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -7124,6 +7207,12 @@ fn is_root_call(expr: &Expression) -> bool {
 /// root field address or the branch selector at the head of a branch address.
 fn is_root_field(expr: &Expression) -> bool {
     matches!(expr, Expression::Field { base, .. } if is_root_call(base))
+}
+
+/// Whether `expr` is a branch key application `^root(key).branch(bkey)` — a single-level
+/// branch whole-entry address and the base of a branch field address.
+fn is_branch_call(expr: &Expression) -> bool {
+    matches!(expr, Expression::Call { callee, .. } if is_root_field(callee))
 }
 
 /// A durable operation over a declared-but-not-executable root (a singleton or

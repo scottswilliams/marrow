@@ -1349,18 +1349,33 @@ fn resolve_site(
             }
             _ => unreachable!("a whole-payload target resolved to a root or branch node"),
         },
-        SemanticTarget::FieldLeaf => {
-            if steps.len() != marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 {
-                return Ok(parked());
+        SemanticTarget::FieldLeaf => match steps.len() {
+            // A top-level root field: application, root placement, field.
+            n if n == marrow_image::bounds::MIN_SITE_PATH_STEPS + 1 => {
+                match top_level_field_index(&root.members, steps[2].id) {
+                    Some(field_index) => SealedSite::Flat {
+                        root: root_index,
+                        target: SealedSiteTarget::FieldLeaf(field_index),
+                    },
+                    None => parked(),
+                }
             }
-            match top_level_field_index(&root.members, steps[2].id) {
-                Some(field_index) => SealedSite::Flat {
-                    root: root_index,
-                    target: SealedSiteTarget::FieldLeaf(field_index),
-                },
-                None => parked(),
+            // A single-level branch field: application, root placement, branch
+            // placement, field. The root is flat-executable here, so its direct branches
+            // are single-level scalar-field branches; resolve the branch's position and
+            // the field's position within that branch's record. A deeper (nested) branch
+            // field — more steps — parks (E04).
+            n if n == marrow_image::bounds::MIN_SITE_PATH_STEPS + 2 => {
+                match branch_field_index(&root.members, steps[2].id, steps[3].id) {
+                    Some((branch, field)) => SealedSite::Flat {
+                        root: root_index,
+                        target: SealedSiteTarget::BranchField { branch, field },
+                    },
+                    None => parked(),
+                }
             }
-        }
+            _ => parked(),
+        },
         // Index scan/lookup targets returned parked above, before the flat/field logic.
         SemanticTarget::IndexScan | SemanticTarget::IndexLookup => {
             unreachable!("index read targets are sealed and returned before this point")
@@ -1392,6 +1407,29 @@ fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> 
         })
         .position(|id| id == field_id)
         .map(|index| index as u16)
+}
+
+/// The branch index and field index of a single-level branch field: the branch with
+/// placement id `branch_placement` among a root's declaration-ordered branch members,
+/// paired with the field's position among that branch's stored field members (which is
+/// the field's index into the branch's materialized record — both count the branch's
+/// direct field members in declaration order). `None` when either does not resolve, so
+/// a branch-field site whose branch or field does not exist parks rather than sealing
+/// against a wrong node.
+fn branch_field_index(
+    members: &[DecodedMember],
+    branch_placement: LedgerIdBytes,
+    field_id: LedgerIdBytes,
+) -> Option<(u16, u16)> {
+    let branch = branch_index(members, branch_placement)?;
+    let branch_members = members.iter().find_map(|member| match member {
+        DecodedMember::Branch {
+            placement, members, ..
+        } if *placement == branch_placement => Some(members),
+        _ => None,
+    })?;
+    let field = top_level_field_index(branch_members, field_id)?;
+    Some((branch, field))
 }
 
 /// The index of the keyed `branch` with placement id `placement` among a root's
@@ -4683,7 +4721,11 @@ fn apply_durable(
     // first), and `entry_record` is the record a whole-entry op reads or writes — the
     // branch's own record for a branch site, the root's otherwise.
     let (key_path, entry_record): (Vec<VType>, u16) = match site_target {
-        SealedSiteTarget::BranchEntry(branch) => {
+        // A branch entry and a branch field both address the two-element key-path
+        // `[root_key, branch_key]`, pushed root-first so the branch key is on top. The
+        // record is the branch's own; a branch field op reads no whole-entry record, so
+        // `entry_record` is unused there but kept the branch's for consistency.
+        SealedSiteTarget::BranchEntry(branch) | SealedSiteTarget::BranchField { branch, .. } => {
             let branch = root.branches.get(branch as usize).ok_or(reject(
                 VerifyPhase::Function,
                 "durable branch index out of range",
@@ -4856,19 +4898,30 @@ fn pop_key_path(stack: &mut Vec<VType>, key_path: &[VType]) -> Result<(), Verify
 }
 
 /// The field a field-target site addresses, or a rejection when the site is an
-/// entry site.
+/// entry site. A top-level field resolves against the root's record; a branch field
+/// against its branch's record, one level down.
 fn field_of<'a>(
     ctx: &'a Ctx,
     target: SealedSiteTarget,
     root: &SealedRoot,
 ) -> Result<&'a SealedField, VerifyRejection> {
-    let SealedSiteTarget::FieldLeaf(field) = target else {
-        return Err(reject(
-            VerifyPhase::Function,
-            "operation requires a field site",
-        ));
+    let (record, field) = match target {
+        SealedSiteTarget::FieldLeaf(field) => (root.record, field),
+        SealedSiteTarget::BranchField { branch, field } => {
+            let branch = root.branches.get(branch as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "durable branch index out of range",
+            ))?;
+            (branch.record, field)
+        }
+        SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "operation requires a field site",
+            ));
+        }
     };
-    ctx.types[root.record as usize]
+    ctx.types[record as usize]
         .fields()
         .get(field as usize)
         .ok_or(reject(
@@ -4883,11 +4936,12 @@ fn durable_field_vtype(field: &SealedField) -> VType {
     VType::from_image(field.ty).expect("a durable field type is a bare scalar")
 }
 
-/// Require an entry-target site: the root's whole payload or a keyed branch entry.
+/// Require an entry-target site: the root's whole payload or a keyed branch entry. A
+/// field-leaf site (top-level or branch) is not an entry.
 fn require_entry(target: SealedSiteTarget) -> Result<(), VerifyRejection> {
     match target {
         SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => Ok(()),
-        SealedSiteTarget::FieldLeaf(_) => Err(reject(
+        SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. } => Err(reject(
             VerifyPhase::Function,
             "operation requires an entry site",
         )),

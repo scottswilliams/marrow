@@ -42,11 +42,13 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
                     SealedSiteTarget::WholePayload => "whole",
                     SealedSiteTarget::FieldLeaf(_) => "field",
                     SealedSiteTarget::BranchEntry(_) => "branch",
+                    SealedSiteTarget::BranchField { .. } => "field",
                 },
                 match target {
                     SealedSiteTarget::WholePayload => 2,
                     SealedSiteTarget::FieldLeaf(_) => 3,
                     SealedSiteTarget::BranchEntry(_) => 3,
+                    SealedSiteTarget::BranchField { .. } => 4,
                 },
             ),
             SealedSite::Parked { path, target } => (
@@ -157,6 +159,53 @@ fn a_flat_root_seals_a_flat_whole_payload_and_field_site_per_node() {
             (true, "field", 3), // title
             (true, "field", 3), // subtitle
             (true, "whole", 2), // ^books entry
+        ]
+    );
+}
+
+// A flat single-column keyed root with one single-level single-column-keyed
+// scalar-field branch `notes`: the E03/E03w executable shape. The root and its
+// top-level field seal Flat, and the branch's whole-payload site and each of its field
+// leaves seal Flat too (a branch entry and a branch field-exact operation).
+const FLAT_BRANCH_SOURCE: &str = "resource Book\n\
+     \x20   required title: string\n\
+     \n\
+     \x20   notes(noteId: string)\n\
+     \x20       required text: string\n\
+     \x20       pinned: bool\n\
+     \n\
+     store ^books(id: int): Book\n\
+     \n\
+     pub fn label(): string\n\
+     \x20   return \"books\"\n";
+
+const FLAT_BRANCH_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root Book.notes 30303030303030303030303030303030\n\
+     id key Book.notes.noteId 31313131313131313131313131313131\n\
+     id field Book.notes.text 32323232323232323232323232323232\n\
+     id field Book.notes.pinned 33333333333333333333333333333333\n\
+     high-water 0\n\
+     end\n";
+
+#[test]
+fn a_flat_root_with_a_simple_branch_seals_flat_branch_entry_and_branch_field_sites() {
+    // A branch entry site (whole payload, depth 3) and each branch field-leaf site
+    // (depth 4) seal Flat on a flat-executable root — the field-exact branch tail.
+    let shapes = site_shapes(&image(FLAT_BRANCH_SOURCE, FLAT_BRANCH_IDS));
+    assert_eq!(
+        shapes,
+        vec![
+            (true, "branch", 3), // notes branch entry:  app -> root -> branch
+            (true, "field", 3),  // title:               app -> root -> field
+            (true, "field", 4),  // notes.text:          app -> root -> branch -> field
+            (true, "field", 4),  // notes.pinned:        app -> root -> branch -> field
+            (true, "whole", 2),  // ^books entry:        app -> root
         ]
     );
 }

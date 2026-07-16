@@ -264,6 +264,14 @@ pub enum SealedSiteTarget {
     /// (into [`SealedRoot::branches`]). Its operations address the two-element
     /// key-path `[root_key, branch_key]`.
     BranchEntry(u16),
+    /// One field leaf of a single-level keyed branch entry: the branch's index (into
+    /// [`SealedRoot::branches`]) and the field's index within that branch's
+    /// materialized record. Its field-exact operations address the two-element
+    /// key-path `[root_key, branch_key]`, one level below the root.
+    BranchField {
+        branch: u16,
+        field: u16,
+    },
 }
 
 /// A verified durable operation site. The verifier reconstructs it by resolving the
