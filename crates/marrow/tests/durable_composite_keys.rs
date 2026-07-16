@@ -1,0 +1,365 @@
+//! Composite (multi-column) keys at the root and branch levels, executed end to end.
+//!
+//! A composite key identifies each entry by its whole ordered tuple: `^r(k1, k2)`
+//! addresses one root entry, `^r(k1, k2).b(bk1, bk2)` one branch entry. The physical key
+//! is the prefix-free concatenation of the columns, so column *order* is load-bearing —
+//! two entries whose columns are the same values in a different order are distinct. These
+//! tests drive the whole production path — capture -> compile -> verify -> attach -> VM —
+//! over one persistent ephemeral attachment.
+
+use marrow_compile::SourceDiagnostic;
+use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+
+// A composite-key root `^enrollments(student: string, course: string)` with a required
+// `grade`, plus a composite-key branch `sessions(term: int, slot: int)` holding `room`.
+const IDS_A: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Enrollment 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Enrollment.grade 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root enrollments 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key enrollments.student 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id key enrollments.course 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     id root Enrollment.sessions 30303030303030303030303030303030\n\
+     id key Enrollment.sessions.term 31313131313131313131313131313131\n\
+     id key Enrollment.sessions.slot 32323232323232323232323232323232\n\
+     id field Enrollment.sessions.room 33333333333333333333333333333333\n\
+     high-water 0\n\
+     end\n";
+
+const SOURCE_A: &str = "resource Enrollment\n\
+     \x20   required grade: int\n\
+     \n\
+     \x20   sessions(term: int, slot: int)\n\
+     \x20       required room: string\n\
+     \n\
+     store ^enrollments(student: string, course: string): Enrollment\n\
+     \n\
+     pub fn enroll(student: string, course: string, grade: int)\n\
+     \x20   transaction\n\
+     \x20       ^enrollments(student, course) = Enrollment(grade: grade)\n\
+     \n\
+     pub fn gradeOf(student: string, course: string): int?\n\
+     \x20   return ^enrollments(student, course).grade\n\
+     \n\
+     pub fn enrolled(student: string, course: string): bool\n\
+     \x20   return exists(^enrollments(student, course))\n\
+     \n\
+     pub fn unenroll(student: string, course: string)\n\
+     \x20   transaction\n\
+     \x20       delete ^enrollments(student, course)\n\
+     \n\
+     pub fn setSession(student: string, course: string, term: int, slot: int, room: string)\n\
+     \x20   transaction\n\
+     \x20       ^enrollments(student, course).sessions(term, slot) = Enrollment.sessions(room: room)\n\
+     \n\
+     pub fn sessionRoom(student: string, course: string, term: int, slot: int): string?\n\
+     \x20   return ^enrollments(student, course).sessions(term, slot).room\n";
+
+// The L2 review obligation: a depth-3 branch chain with FOUR key columns, all `int` (the
+// same type at every level), so no scalar-kind check can distinguish the columns — only
+// their pop order is correct end to end. Root `^grid(a, b)`, branch `cell(c)`, nested
+// branch `mark(d)`.
+const IDS_B: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Grid 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Grid.label 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root grid 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key grid.a 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id key grid.b 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     id root Grid.cell 30303030303030303030303030303030\n\
+     id key Grid.cell.c 31313131313131313131313131313131\n\
+     id field Grid.cell.cval 32323232323232323232323232323232\n\
+     id root Grid.cell.mark 40404040404040404040404040404040\n\
+     id key Grid.cell.mark.d 41414141414141414141414141414141\n\
+     id field Grid.cell.mark.v 42424242424242424242424242424242\n\
+     high-water 0\n\
+     end\n";
+
+const SOURCE_B: &str = "resource Grid\n\
+     \x20   required label: string\n\
+     \n\
+     \x20   cell(c: int)\n\
+     \x20       required cval: int\n\
+     \n\
+     \x20       mark(d: int)\n\
+     \x20           required v: int\n\
+     \n\
+     store ^grid(a: int, b: int): Grid\n\
+     \n\
+     pub fn setMark(a: int, b: int, c: int, d: int, val: int)\n\
+     \x20   transaction\n\
+     \x20       ^grid(a, b).cell(c).mark(d) = Grid.cell.mark(v: val)\n\
+     \n\
+     pub fn markV(a: int, b: int, c: int, d: int): int?\n\
+     \x20   return ^grid(a, b).cell(c).mark(d).v\n\
+     \n\
+     pub fn markPresent(a: int, b: int, c: int, d: int): bool\n\
+     \x20   return exists(^grid(a, b).cell(c).mark(d))\n";
+
+fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(ids.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&project).expect("compile");
+    marrow_verify::verify(&compiled.image.bytes).expect("verify")
+}
+
+fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
+    image
+        .exports()
+        .iter()
+        .find(|export| image.function(export.function()).name() == name)
+        .expect("export present")
+}
+
+struct DebugRun<'a>(&'a DurableRun);
+impl std::fmt::Debug for DebugRun<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Parked => write!(f, "Parked"),
+            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+        }
+    }
+}
+
+fn run(
+    image: &VerifiedImage,
+    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    name: &str,
+    args: Vec<Value>,
+) -> Option<Value> {
+    match run_export(image, attachment, export(image, name), args) {
+        DurableRun::Ran(Ok(value)) => value,
+        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
+    }
+}
+
+fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
+    match mint_ephemeral(image) {
+        Ephemeral::Ready(attachment) => attachment,
+        Ephemeral::Parked => panic!("a composite-key root must be executable"),
+        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+    }
+}
+
+fn some_int(v: i64) -> Option<Value> {
+    Some(Value::Optional(Some(Box::new(Value::Int(v)))))
+}
+
+fn some_text(s: &str) -> Option<Value> {
+    Some(Value::Optional(Some(Box::new(Value::Text(s.into())))))
+}
+
+fn absent() -> Option<Value> {
+    Some(Value::Optional(None))
+}
+
+fn present(b: bool) -> Option<Value> {
+    Some(Value::Bool(b))
+}
+
+fn s(v: &str) -> Value {
+    Value::Text(v.into())
+}
+
+/// A composite-key root addresses each entry by the whole ordered tuple: the transposed
+/// tuple `(course, student)` is a distinct, absent entry even though both columns are
+/// strings. Whole-entry create/read/presence/delete and a field read all key by the pair.
+#[test]
+fn a_composite_key_root_keys_by_the_ordered_tuple() {
+    let image = compile_verify(SOURCE_A, IDS_A);
+    let mut attachment = attach(&image);
+
+    run(
+        &image,
+        &mut attachment,
+        "enroll",
+        vec![s("amy"), s("cs"), Value::Int(90)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "gradeOf", vec![s("amy"), s("cs")]),
+        some_int(90)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "enrolled", vec![s("amy"), s("cs")]),
+        present(true)
+    );
+    // The transposed tuple is a different entry — column order is load-bearing.
+    assert_eq!(
+        run(&image, &mut attachment, "gradeOf", vec![s("cs"), s("amy")]),
+        absent(),
+        "the transposed (course, student) tuple addresses a distinct, absent entry",
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "enrolled", vec![s("cs"), s("amy")]),
+        present(false)
+    );
+
+    // A whole-entry delete keys by the same tuple and leaves the transposed entry alone.
+    run(
+        &image,
+        &mut attachment,
+        "enroll",
+        vec![s("cs"), s("amy"), Value::Int(10)],
+    );
+    run(&image, &mut attachment, "unenroll", vec![s("amy"), s("cs")]);
+    assert_eq!(
+        run(&image, &mut attachment, "enrolled", vec![s("amy"), s("cs")]),
+        present(false),
+        "the addressed entry was deleted"
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "gradeOf", vec![s("cs"), s("amy")]),
+        some_int(10),
+        "the transposed sibling entry is untouched"
+    );
+}
+
+/// A composite-key *branch* keys by its own tuple under a composite-key root, so the whole
+/// key-path is four columns `[student, course, term, slot]`. A transposed branch tuple
+/// `(slot, term)` is a distinct, absent branch entry.
+#[test]
+fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
+    let image = compile_verify(SOURCE_A, IDS_A);
+    let mut attachment = attach(&image);
+
+    run(
+        &image,
+        &mut attachment,
+        "setSession",
+        vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2), s("A100")],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sessionRoom",
+            vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2)]
+        ),
+        some_text("A100"),
+    );
+    // Transpose the branch tuple: a different branch entry.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sessionRoom",
+            vec![s("amy"), s("cs"), Value::Int(2), Value::Int(1)]
+        ),
+        absent(),
+        "the transposed (slot, term) branch tuple is a distinct, absent entry",
+    );
+    // Transpose a root column: the branch layer under the transposed root is empty.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sessionRoom",
+            vec![s("cs"), s("amy"), Value::Int(1), Value::Int(2)]
+        ),
+        absent(),
+        "a transposed root tuple locates a different (empty) branch layer",
+    );
+}
+
+/// The L2 pop-order pin: a depth-3 chain of four `int` key columns
+/// `^grid(a, b).cell(c).mark(d)`. Because every column is the same type, only the exact
+/// column order produces the right physical address — a same-type reversal at any level
+/// would pass every scalar-kind check yet address a different node. Writing at
+/// `(1, 2, 3, 4)` and reading back every transposition proves the whole key-path pops in
+/// order end to end.
+#[test]
+fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
+    let image = compile_verify(SOURCE_B, IDS_B);
+    let mut attachment = attach(&image);
+
+    let write = vec![
+        Value::Int(1),
+        Value::Int(2),
+        Value::Int(3),
+        Value::Int(4),
+        Value::Int(99),
+    ];
+    run(&image, &mut attachment, "setMark", write);
+
+    let at = |a, b, c, d| vec![Value::Int(a), Value::Int(b), Value::Int(c), Value::Int(d)];
+    // The exact tuple reads back; the mark entry is present.
+    assert_eq!(
+        run(&image, &mut attachment, "markV", at(1, 2, 3, 4)),
+        some_int(99)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "markPresent", at(1, 2, 3, 4)),
+        present(true)
+    );
+    // Every transposition addresses a different, absent node — proving the pop order.
+    for (a, b, c, d) in [
+        (2, 1, 3, 4), // swap the two root columns
+        (1, 2, 4, 3), // swap the two branch keys (cell vs mark)
+        (1, 3, 2, 4), // swap a root column with the cell key
+        (3, 2, 1, 4), // swap the first root column with the cell key
+        (4, 2, 3, 1), // swap the first root column with the mark key
+    ] {
+        assert_eq!(
+            run(&image, &mut attachment, "markV", at(a, b, c, d)),
+            absent(),
+            "transposition ({a},{b},{c},{d}) must address a distinct, absent node",
+        );
+        assert_eq!(
+            run(&image, &mut attachment, "markPresent", at(a, b, c, d)),
+            present(false),
+        );
+    }
+}
+
+/// Bounded traversal over a composite-keyed layer parks: the language spells no
+/// composite-key iteration (one loop variable, one `from`), so a `for` head over a
+/// composite root is a typed `check.unsupported` with a located span, never a silent
+/// miscompile or an invented last-column-under-prefix semantics.
+#[test]
+fn bounded_traversal_over_a_composite_layer_is_rejected() {
+    let body = "pub fn scan(): int\n\
+        \x20   var total = 0\n\
+        \x20   for k in ^enrollments at most 10\n\
+        \x20       total += 1\n\
+        \x20   on more\n\
+        \x20       total = -1\n\
+        \x20   return total\n";
+    let source = format!("{SOURCE_A}\n{body}");
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS_A.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let diagnostics: Vec<SourceDiagnostic> =
+        marrow_compile::compile(&project).expect_err("composite-key traversal must be rejected");
+    let hit = diagnostics
+        .iter()
+        .find(|d| d.code == marrow_codes::Code::CheckUnsupported.as_str())
+        .expect("a check.unsupported diagnostic for composite-key traversal");
+    assert!(
+        hit.line >= 1 && hit.column >= 1,
+        "the rejection carries a located span",
+    );
+}

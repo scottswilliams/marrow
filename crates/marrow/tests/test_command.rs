@@ -228,8 +228,8 @@ fn a_failing_durable_assert_reports_run_assert() {
 /// marker/presence-after-partial-write law (E03, the marker is written only at
 /// commit); the transaction region, required-completeness at commit, nested
 /// transactions, and delete/erase (E02); keyed-leaf/sequence collections, nested
-/// layers, and saved-root/layer streaming loops (E03/E04); composite keys and
-/// nested group/branch hops (the codec-widening deferral, E03/E04). The
+/// layers, and saved-root/layer streaming loops (E03/E04); nested `group` hops and
+/// widened field values (the group and codec-widening deferrals). The
 /// output-only, local-keyed-parameter, error-code, and compile-time key/type
 /// families are not durable read-kernel behaviors at all.
 #[test]

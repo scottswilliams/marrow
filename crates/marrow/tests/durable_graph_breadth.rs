@@ -168,23 +168,9 @@ fn renaming_a_key_column_with_a_moved_anchor_preserves_the_identity() {
 }
 
 // --- The executable-vs-identity boundary: operations over shapes the single-root
-// kernel cannot yet serve are a precise typed rejection, not a silent drop. ---
-
-#[test]
-fn operating_on_a_composite_root_is_not_yet_executable() {
-    let source = "resource Enrollment\n\
-         \x20   required grade: int\n\
-         \n\
-         store ^enrollments(student: string, course: string): Enrollment\n\
-         \n\
-         pub fn grade(student: string, course: string): int?\n\
-         \x20   return ^enrollments(student, course).grade\n";
-    let diagnostics = compile(source, ENROLLMENTS_IDS).expect_err("not yet executable");
-    assert!(
-        codes(&diagnostics).contains(&"check.unsupported"),
-        "{diagnostics:?}"
-    );
-}
+// kernel cannot yet serve are a precise typed rejection, not a silent drop. A
+// composite-key root is now executable (see `durable_composite_keys`); a singleton root
+// still parks. ---
 
 #[test]
 fn operating_on_a_singleton_root_is_not_yet_executable() {

@@ -987,11 +987,12 @@ fn rehashed_mutated_key_id_breaks_the_contract_id() {
 }
 
 #[test]
-fn executable_site_over_a_composite_root_rejects() {
-    // A composite-key root carries a complete identity but is not executable: the
-    // single-root kernel serves only single-column keyed roots. A forged image that
-    // adds an operation site over a two-column root is refused independently during
-    // flow validation, regardless of the compiler's own boundary.
+fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
+    // A composite-key root is executable, addressed by its whole two-column key tuple. A
+    // forged write whose body supplies the value plus only one key column — too few for
+    // the two-column key-path the verifier derives from the schema — cannot satisfy the
+    // operand stack, so it is refused during per-function typing (the write-path
+    // counterpart of the read-path truncation hostile).
     let mut draft = ImageDraft::new();
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
@@ -1053,8 +1054,8 @@ fn executable_site_over_a_composite_root_rejects() {
         code,
     });
     draft.add_export(ExportId::of_local("", "e"), func);
-    // The composite-key root is rejected during per-function structural/type
-    // recording (the `image.function` phase), where the operation site is typed.
+    // The truncated key-path is rejected during per-function structural/type recording
+    // (the `image.function` phase), where the operation's key-path is typed.
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
@@ -3748,4 +3749,124 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
         ])))
         .index();
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
+}
+
+// --- Composite-key admission hostiles (E03w slice C) ---
+//
+// A composite-key root addresses each entry by its whole ordered key tuple. The verifier
+// derives the expected key-path — one column per key column, in order — from the sealed
+// schema and type-checks the operand stack against it, so a forged opcode key-path that is
+// too short, or whose columns are the wrong type or transposed to the wrong type, is
+// refused during per-function typing. A same-typed transposition is a distinct valid
+// program the physical layout distinguishes (see the composite kernel and source tests);
+// the verifier catches only the count/type skews here.
+
+/// A flat-executable root `^cells(row: int, col: text)` — a two-column composite key of
+/// distinct column types, so a transposed key-path is type-detectable — with one required
+/// int field `v`. Returns the draft and the whole-entry site index.
+fn composite_root_draft() -> (ImageDraft, u16) {
+    let mut draft = ImageDraft::new();
+    let cell = draft.intern_string("Cell");
+    let v = draft.intern_string("v");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: cell,
+        fields: vec![FieldDef {
+            name: v,
+            ty: ImageType::scalar(Scalar::Int),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("cells");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![
+            KeyColumn {
+                scalar: Scalar::Int,
+                id: LedgerIdBytes::from_bytes([0x0c; 16]),
+            },
+            KeyColumn {
+                scalar: Scalar::Text,
+                id: LedgerIdBytes::from_bytes([0x1c; 16]),
+            },
+        ],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members: vec![DurableMemberDef::Field {
+                id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                required: true,
+                value: DurableValueShape::Scalar(Scalar::Int),
+            }],
+        },
+    });
+    let entry = draft.add_site(SiteDef::whole_payload(root_path())).index();
+    (draft, entry)
+}
+
+/// Encode a read-only `has` export over the composite `entry` site whose body pushes the
+/// given key locals (by type) then runs `DurExists`. `params` types the locals the body
+/// reads; a correct call pushes `[Int, Text]` (row then col, root-first).
+fn composite_exists_export(mut draft: ImageDraft, entry: u16, params: Vec<ImageType>) -> Vec<u8> {
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("has");
+    let mut code: Vec<Instr> = (0..params.len() as u16).map(Instr::LocalGet).collect();
+    code.push(Instr::DurExists(entry));
+    code.push(Instr::Return);
+    let local_count = params.len() as u16;
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params,
+        ret: ImageType::scalar(Scalar::Bool),
+        local_count,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "has"), func);
+    draft.encode().unwrap().bytes
+}
+
+#[test]
+fn a_composite_root_opcode_with_the_full_ordered_key_path_verifies() {
+    // The positive control: pushing both columns in order (row:int, col:text) type-checks
+    // the two-column key-path and verifies.
+    let (draft, entry) = composite_root_draft();
+    let bytes = composite_exists_export(
+        draft,
+        entry,
+        vec![
+            ImageType::scalar(Scalar::Int),
+            ImageType::scalar(Scalar::Text),
+        ],
+    );
+    assert_eq!(code_of(&bytes), "VERIFIED");
+}
+
+#[test]
+fn a_composite_root_opcode_with_a_truncated_key_path_rejects() {
+    // Only one key column pushed where the two-column composite key-path needs two: the
+    // operand stack cannot satisfy the derived key-path, refused at per-function typing.
+    let (draft, entry) = composite_root_draft();
+    let bytes = composite_exists_export(draft, entry, vec![ImageType::scalar(Scalar::Int)]);
+    assert_eq!(code_of(&bytes), "image.function");
+}
+
+#[test]
+fn a_composite_root_opcode_with_transposed_column_types_rejects() {
+    // The columns pushed in the wrong order (text then int, where int then text is
+    // required): the key-path type check fails, so a transposed key-path over distinctly
+    // typed columns cannot mis-address a durable operation.
+    let (draft, entry) = composite_root_draft();
+    let bytes = composite_exists_export(
+        draft,
+        entry,
+        vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.function");
 }
