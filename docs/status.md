@@ -102,12 +102,13 @@ durable-contract identity computed over those ledger ids and the graph shape
 ledger-model property; a rename becomes an anchor move under the future apply
 action, while the additive-only `run` mint does not) — which the verifier
 independently recomputes from the image and rejects on mismatch. The
-compiler fully lowers operations over the single-column keyed root and its
-single-level single-column-keyed scalar-field branches; singleton, composite-key,
-group-bearing, nested/composite-branch, and widened-field roots declare and verify
-their identity but their operations are not yet lowered. The admitted subset is narrow
-and grows lane by lane; a well-formed construct outside it is a typed
-`check.unsupported` diagnostic.
+compiler fully lowers operations over a keyed root — single-column or a composite tuple
+— of scalar fields and its scalar-field `branch` placements (with one or more key
+columns each) nested to any depth; bounded traversal, however, iterates a single key
+column, so a `for` head over a composite-keyed layer parks. Singleton, group-bearing,
+and widened-field roots declare and verify their identity but their operations are not
+yet lowered. The admitted subset is narrow and grows lane by lane; a well-formed
+construct outside it is a typed `check.unsupported` diagnostic.
 
 ### Local wire and TypeScript client
 

@@ -18,13 +18,18 @@ on more
     statements
 ```
 
-`<place>` is a store root such as `^books` (the root entry family) or a
-single-level branch such as `^books(id).notes` (the branch family beneath one
-fixed root entry). The single loop variable `k` binds each immediate key in
-ascending [typed key order](types-and-values.md#key-types); the value at that key
+`<place>` is a store root such as `^books` (the root entry family) or a keyed
+branch such as `^books(id).notes` (the branch family beneath one fixed parent
+entry, at any nesting depth). The single loop variable `k` binds each immediate key
+in ascending [typed key order](types-and-values.md#key-types); the value at that key
 is read separately inside the body. `N` is a positive integer literal no larger
 than the traversal ceiling (65536). An inclusive `from f` starts the walk at or
 after the key `f`.
+
+The traversed layer must be keyed by a single column: the loop binds one immediate key
+and takes one inclusive `from`. A `for` head over a composite-keyed root or branch layer
+is the typed `check.unsupported` rejection, since the language spells no composite-key
+iteration.
 
 ```mw
 module docs::traversal

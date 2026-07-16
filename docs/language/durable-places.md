@@ -74,7 +74,22 @@ resource Enrollment
     required grade: int
 
 store ^enrollments(student: string, course: string): Enrollment
+
+pub fn enroll(student: string, course: string, grade: int)
+    transaction
+        ^enrollments(student, course) = Enrollment(grade: grade)
+
+pub fn gradeOf(student: string, course: string): int?
+    return ^enrollments(student, course).grade
 ```
+
+A composite key addresses each entry by its whole tuple in column order, so
+`^enrollments(student, course)` and `^enrollments(course, student)` are distinct
+entries. Every whole-entry and field operation supplies one key operand per column, in
+declaration order; a `branch` may likewise declare more than one key column. Bounded
+traversal, however, iterates a single key column, so a `for` head over a composite-keyed
+root or branch layer is the typed `check.unsupported` rejection (see
+[Traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
 Each root — singleton, single-column, or composite — is a distinct durable graph
 node with its own complete identity (its placement, its stored product, one
@@ -98,29 +113,28 @@ store, so a durable export does not run from `marrow run` (it reports the typed
 (F02). The operations described below are the current durable *language* — they are
 checked and their identity is complete; see [Project status](../status.md).
 
-Within that checked language, the *flat scalar* single-column keyed root is the
-form whose operations the compiler fully lowers: a root with one key column and only
-plain scalar fields, whose entries are read and written through the operations below.
-Its single-column-keyed scalar-field `branch` placements are executable in the same
-way, nested to any depth (see [Keyed branches](#keyed-branches)). A singleton root, a
-composite-key root, a root whose resource declares a static `group`, a branch with more
-than one key column, or a root whose resource declares a widened field (a nominal
-scalar, struct, enum, or `Option` value) declares and verifies its full identity, but
-its read and write operations are not yet lowered — an operation over one is the typed
-`check.unsupported` rejection rather than a silent drop, until the wider durable runtime
-lands. (Declaring such a store is no longer a `check.type` on the resource, as it was
-before durable field values widened; the store is identity-complete, only its
-operations are deferred.)
+Within that checked language, the *flat scalar* keyed root is the form whose operations
+the compiler fully lowers: a keyed root — one or more key columns — of only plain scalar
+fields, whose entries are read and written through the operations below. Its
+scalar-field `branch` placements, with one or more key columns each, are executable in
+the same way, nested to any depth (see [Keyed branches](#keyed-branches)). A singleton
+root (no key columns), a root whose resource declares a static `group`, or a root whose
+resource declares a widened field (a nominal scalar, struct, enum, or `Option` value)
+declares and verifies its full identity, but its read and write operations are not yet
+lowered — an operation over one is the typed `check.unsupported` rejection rather than a
+silent drop, until the wider durable runtime lands. (Declaring such a store is no longer
+a `check.type` on the resource, as it was before durable field values widened; the store
+is identity-complete, only its operations are deferred.)
 
 The compiler emits an **operation site** for every node of the whole durable graph
 — a whole-payload site for each keyed placement (the store root and every nested
 `branch`) and a field-leaf site for each stored field (top-level, group-scoped, or
 branch-scoped) — and the verifier seals each one by resolving its concrete address
 against the graph it independently reconstructs. A site on the flat executable root, or
-on one of its single-column scalar-field branches at any depth, seals as executable;
-every other site — over a group-scoped or widened field, a composite-key branch, or a
-non-flat root — seals with a complete identity but parks, so its concrete address is
-checked and recorded while its execution waits for the wider kernel. The site table holds one entry per graph node regardless of how many
+on one of its scalar-field branches at any depth, seals as executable; every other site
+— over a group-scoped or widened field, or a non-flat root — seals with a complete
+identity but parks, so its concrete address is checked and recorded while its execution
+waits for the wider kernel. The site table holds one entry per graph node regardless of how many
 operations reference it, and appending a sparse field adds one field-leaf site
 without disturbing any existing site.
 
@@ -266,8 +280,8 @@ address (`^books(id).title`), or to another place is rejected.
 
 A place binds an address the same way an inline `^root(key...)` operation does, so a
 place over a store shape whose operations are not yet lowered (a singleton,
-composite-key, group- or branch-bearing, or widened-field root) reports the same
-not-yet-executable result as the inline form.
+group-bearing, or widened-field root) reports the same not-yet-executable result as the
+inline form.
 
 ## Field Assignment
 
