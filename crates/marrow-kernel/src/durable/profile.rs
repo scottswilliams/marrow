@@ -11,8 +11,7 @@ use crate::codec::value::{ScalarKind, VALUE_CODEC_VERSION, ValueShape};
 
 use super::{BranchSchema, FieldSchema, StoreSchema};
 
-/// The T01 profile version. D00 introduces a distinct version; the E03w widened-value
-/// slice bumps it once more, because the canonical §A7 value-shape descriptor gives every
+/// The store profile version. The canonical value-shape descriptor gives every
 /// field shape a leading discriminant byte (`0x00` scalar / `0x01` product / `0x02` sum),
 /// so even a scalar-only descriptor's bytes differ from the pre-slice form and a pre-slice
 /// store is refused a reopen by this toolchain (pre-beta, no stored user data).

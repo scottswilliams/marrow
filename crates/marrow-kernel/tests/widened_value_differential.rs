@@ -1,5 +1,5 @@
-//! Independent-decoder differential for the widened durable field-value codec (E03w slice E,
-//! finalized in slice F). The module under `support/` is an independent strict decoder written
+//! Independent-decoder differential for the widened durable field-value codec. The
+//! module under `support/` is an independent strict decoder written
 //! from the design brief alone — it never reads the production encoder. This test vendors that
 //! module with only rustfmt whitespace normalization applied (the workspace fmt gate is
 //! mandatory); its decode logic and decisions are byte-for-byte the author's, unaltered and
@@ -12,10 +12,10 @@
 //! `#[cfg(test)] mod tests`), so the brief's KAT byte strings — including the §A7 18-byte
 //! descriptor KAT — are checked from the independent side in this binary.
 //!
-//! Slice-F reconciliation: the decoder is now the A12-final version (i128-scale durations,
-//! depth = 32 composites leaves-free, big-endian descriptor tags, identity-bearing
-//! type-index). The two prior pinned encoder/decoder divergences (duration `u64` seconds,
-//! depth off-by-one) are resolved and are now agreement coverage below.
+//! The vendored decoder implements the brief's final form (i128-scale durations,
+//! depth = 32 composites with scalar leaves free, big-endian descriptor tags,
+//! identity-bearing type-index); the corpus below covers those boundaries as
+//! agreement cases.
 
 // The vendored oracle keeps the author's own form (dead_code is allowed inside the file).
 // Its idioms are suppressed at this boundary rather than rewritten, so the independent

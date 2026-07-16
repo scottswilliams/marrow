@@ -1370,8 +1370,8 @@ fn resolve_site(
 }
 
 /// Whether a decoded root is the flat keyed root the kernel executes: at least one key
-/// column and a member tree of only plain top-level scalar fields and scalar-field keyed
-/// branches (no group, no widened field). The key may be single-column or a composite
+/// column and a member tree of top-level storable-value fields (scalar or widened) and
+/// keyed branches of the same shape (no group). The key may be single-column or a composite
 /// tuple, at the root and at every branch. Re-derived from the decoded graph, so the
 /// flat/parked classification never trusts a compiler summary.
 fn is_flat_executable_root(root: &DecodedRoot) -> bool {

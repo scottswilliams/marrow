@@ -212,12 +212,12 @@ pub fn scalar_key_matches_type(key: &KeyScalar, expected: ScalarKind) -> bool {
     key.scalar_kind() == expected && validate_scalar_key(key).is_ok()
 }
 
-// --- Widened composite value codec (E03w slice E) ---
+// --- Widened composite value codec ---
 //
 // A durable field value widens from a bare scalar to the closed acyclic storable set:
 // scalars, dense products (`struct`/record), and sums (closed `enum`/`Option`/`Result`).
-// Collections are never inline field payloads (they are keyed branches); a nominal field
-// is severed this lane. The codec extends the one scalar codec above — a scalar leaf is
+// Collections are never inline field payloads (they are keyed branches); a nominal-typed
+// field is not yet admitted. The codec extends the one scalar codec above — a scalar leaf is
 // still `encode_value`/`decode_value` — and frames composites within one field-leaf cell:
 // a top-level scalar is raw (byte-identical to today); inside a composite each scalar leaf
 // is minimal-LEB128 length-prefixed, a sum carries a minimal-LEB128 variant index, and a

@@ -183,9 +183,8 @@ fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr
 /// A sparse-field set through a two-key branch `place` dominated by an `exists(p)`
 /// guard lowers to the strict present-entry form (`DurSetSparsePresent`) carrying the
 /// place's whole `[root, branch]` key-path, not the bare create-or-reconcile
-/// `DurSetSparse`. This is the key-path generalization of the strict guarded set
-/// (adjudication 4): a guarded branch-place set no longer falls back to the unguarded
-/// form.
+/// `DurSetSparse`: a presence-guarded set over a branch place lowers to the strict
+/// form, so the guard is enforced at the kernel marker rather than silently widened.
 #[test]
 fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
