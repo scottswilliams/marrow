@@ -351,7 +351,8 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
         "expected `(count ?? 0) < 5`: {value:?}"
     );
 
-    let value = parsed_return_expr("fn f(start: int, n: int): int {\n    return start ?? 1..n\n}\n");
+    let value =
+        parsed_return_expr("fn f(start: int, n: int): int {\n    return start ?? 1..n\n}\n");
     assert!(
         matches!(
             value,
@@ -383,7 +384,8 @@ fn chained_coalesce_is_right_associative() {
     // `??` is right-associative, so `a ?? b ?? c` parses as `a ?? (b ?? c)`: the
     // top `??` keeps the inner chain as its right operand, and the chain types
     // under the coalesce rule.
-    let value = parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0 ?? 1\n}\n");
+    let value =
+        parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0 ?? 1\n}\n");
     let Expression::Binary {
         op: BinaryOp::Coalesce,
         left,

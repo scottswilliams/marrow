@@ -30,7 +30,8 @@ fn parses_pub_enum() {
 
 #[test]
 fn attaches_doc_comments_to_enum_members() {
-    let parsed = parse_source("module app\nenum Status {\n    /// Currently live.\n    active\n}\n");
+    let parsed =
+        parse_source("module app\nenum Status {\n    /// Currently live.\n    active\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert_eq!(status.members[0].docs, ["Currently live."]);
@@ -122,8 +123,9 @@ fn parses_nested_enum_members_into_a_tree() {
 
 #[test]
 fn the_category_modifier_sets_the_flag_and_a_bare_member_does_not() {
-    let parsed =
-        parse_source("module app\nenum Cat {\n    category tiger {\n        bengal\n    }\n    housecat\n}\n");
+    let parsed = parse_source(
+        "module app\nenum Cat {\n    category tiger {\n        bengal\n    }\n    housecat\n}\n",
+    );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
     assert!(cat.members[0].category, "category tiger");

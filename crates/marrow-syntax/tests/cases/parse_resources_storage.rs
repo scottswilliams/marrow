@@ -249,7 +249,10 @@ store ^books[id: int]: Book {
 #[test]
 fn header_helper_errors_report_specific_expected_parts() {
     for (source, expected) in [
-        ("module app\nenum 123 {\n    One\n}\n", ExpectedSyntax::EnumName),
+        (
+            "module app\nenum 123 {\n    One\n}\n",
+            ExpectedSyntax::EnumName,
+        ),
         (
             "module app\nenum Status extra {\n    One\n}\n",
             ExpectedSyntax::EnumHeader,
@@ -302,8 +305,9 @@ fn header_helper_errors_report_specific_expected_parts() {
 #[test]
 fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
-        let resource =
-            parse_source(&format!("module app\nresource {word} {{\n    title: string\n}}\n"));
+        let resource = parse_source(&format!(
+            "module app\nresource {word} {{\n    title: string\n}}\n"
+        ));
         assert!(
             has_reason(
                 &resource.diagnostics,
