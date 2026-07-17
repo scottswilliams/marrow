@@ -5184,6 +5184,22 @@ impl<'a> FnLowerer<'a> {
     /// resolve to their variants recovered from the minting template.
     fn lower_ctor_as(&mut self, kind: CtorKind, expr: &Expression, expected: LTy) -> Option<()> {
         let span = expr.span();
+        // A sparse optional enum target (`Option<T>?`/`Result<T, E>?`) takes a bare
+        // constructor wrapped present: lower against the bare enum, then `SomeWrap`.
+        // This makes `= none`/`= some(v)` write a sparse optional-enum field or
+        // local in one line — the present-value analogue of `= absent`.
+        if let LTy::Enum { ty, optional: true } = expected {
+            self.lower_ctor_as(
+                kind,
+                expr,
+                LTy::Enum {
+                    ty,
+                    optional: false,
+                },
+            )?;
+            self.push(Instr::SomeWrap, span);
+            return Some(());
+        }
         let LTy::Enum {
             ty: enum_id,
             optional: false,

@@ -135,6 +135,48 @@ pub fn res(n: int): Result<int, string> {
     );
 }
 
+/// A sparse `Option<T>?` target takes each of its three states in one line:
+/// `= absent` clears the outer cell, `= none` stores a present `none`, and
+/// `= some(v)` stores a value. The bare constructor infers its instantiation from
+/// the optional-enum target and is wrapped present, so no helper function is
+/// needed and the three states render distinctly through the VM.
+#[test]
+fn a_sparse_optional_enum_target_takes_all_three_states_in_one_line() {
+    let temp = TempDir::new("three-state");
+    project(
+        &temp,
+        r#"pub fn state(sel: int): Option<int>? {
+    if sel == 0 {
+        const cleared: Option<int>? = absent
+        return cleared
+    }
+    if sel == 1 {
+        const stored: Option<int>? = none
+        return stored
+    }
+    const value: Option<int>? = some(9)
+    return value
+}
+"#,
+    );
+    let absent = run_in(&temp, &["run", "state", "--format", "jsonl", "--", "0"]);
+    let absent_out = String::from_utf8_lossy(&absent.stdout);
+    assert!(absent.status.success(), "{absent_out}");
+    assert!(absent_out.contains(r#""data":null"#), "{absent_out}");
+    let none = run_in(&temp, &["run", "state", "--format", "jsonl", "--", "1"]);
+    let none_out = String::from_utf8_lossy(&none.stdout);
+    assert!(
+        none_out.contains(r#""data":{"enum":"Option","member":"none","payload":[]}"#),
+        "{none_out}"
+    );
+    let some = run_in(&temp, &["run", "state", "--format", "jsonl", "--", "2"]);
+    let some_out = String::from_utf8_lossy(&some.stdout);
+    assert!(
+        some_out.contains(r#""data":{"enum":"Option","member":"some","payload":[9]}"#),
+        "{some_out}"
+    );
+}
+
 /// A `try` whose error type does not match the function's `Result` error type is a
 /// typed `check.type` (same `E`, no implicit conversion).
 #[test]
