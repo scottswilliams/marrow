@@ -97,18 +97,21 @@ fn has_function(image: &VerifiedImage, name: &str) -> bool {
 /// `use3` export therefore holds exactly one `Call` (the one key evaluation) while
 /// carrying three durable effect sites.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_place_key_operand_is_lowered_exactly_once() {
     let source = format!(
-        "{HEADER}\
-         pub fn use3(n: int): int\n\
-         \x20   place p = ^counters(keyOf(n))\n\
-         \x20   const present = exists(p)\n\
-         \x20   const a = p.value ?? 0\n\
-         \x20   const b = p.value ?? 0\n\
-         \x20   if present\n\
-         \x20       return a + b\n\
-         \x20   return 0\n"
+        "{HEADER}{}",
+        r#"
+pub fn use3(n: int): int {
+    place p = ^counters[keyOf(n)]
+    const present = exists(p)
+    const a = p.value ?? 0
+    const b = p.value ?? 0
+    if present {
+        return a + b
+    }
+    return 0
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "use3");
@@ -141,13 +144,15 @@ fn a_place_key_operand_is_lowered_exactly_once() {
 /// operand that faults at the binding therefore faults before any durable
 /// operation is recorded — the effect sites are unreachable past the fault.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_place_binding_emits_no_effect_site_before_its_uses() {
     let source = format!(
-        "{HEADER}\
-         pub fn readIt(n: int): int\n\
-         \x20   place p = ^counters(keyOf(n))\n\
-         \x20   return p.value ?? 0\n"
+        "{HEADER}{}",
+        r#"
+pub fn readIt(n: int): int {
+    place p = ^counters[keyOf(n)]
+    return p.value ?? 0
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "readIt");
@@ -184,16 +189,19 @@ fn a_place_binding_emits_no_effect_site_before_its_uses() {
 /// through the place's one pre-evaluated key: the mutating export reads the key
 /// slot for each operation and never re-calls `keyOf`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_place_reused_across_writes_evaluates_its_key_once() {
     let source = format!(
-        "{HEADER}\
-         pub fn writeIt(n: int, v: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(keyOf(n))\n\
-         \x20       p = Counter(value: v)\n\
-         \x20       p.label = \"tag\"\n\
-         \x20       delete p.label\n"
+        "{HEADER}{}",
+        r#"
+pub fn writeIt(n: int, v: int) {
+    transaction {
+        place p = ^counters[keyOf(n)]
+        p = Counter(value: v)
+        p.label = "tag"
+        delete p.label
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "writeIt");
@@ -241,15 +249,19 @@ fn count_bare(instrs: &[SealedInstr]) -> usize {
 /// the place's slot and assumes the entry present; the same set with no dominating
 /// guard stays the bare `DurSetSparse` (create-or-reconcile at commit).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_exists_guarded_sparse_set_is_strict() {
     let guarded = format!(
-        "{HEADER}\
-         pub fn tag(n: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       if exists(p)\n\
-         \x20           p.label = \"x\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int) {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            p.label = "x"
+        }
+    }
+}
+"#
     );
     let instrs = compile_verify(&guarded);
     let instrs = export_instrs(&instrs, "tag");
@@ -257,11 +269,15 @@ fn an_exists_guarded_sparse_set_is_strict() {
     assert_eq!(count_bare(instrs), 0, "no bare set remains");
 
     let unguarded = format!(
-        "{HEADER}\
-         pub fn tag(n: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       p.label = \"x\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int) {
+    transaction {
+        place p = ^counters[n]
+        p.label = "x"
+    }
+}
+"#
     );
     let image = compile_verify(&unguarded);
     let instrs = export_instrs(&image, "tag");
@@ -272,15 +288,19 @@ fn an_exists_guarded_sparse_set_is_strict() {
 /// An `if const c = p` entry read proves the entry present in its then-block, so a
 /// sparse set through the same place there is strict.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_if_const_guarded_sparse_set_is_strict() {
     let source = format!(
-        "{HEADER}\
-         pub fn tag(n: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       if const c = p\n\
-         \x20           p.label = \"x\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int) {
+    transaction {
+        place p = ^counters[n]
+        if const c = p {
+            p.label = "x"
+        }
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "tag");
@@ -290,15 +310,18 @@ fn an_if_const_guarded_sparse_set_is_strict() {
 /// A whole-entry upsert (`p = Record(...)`) leaves the entry present, so a following
 /// sparse set through the place is strict.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_sparse_set_after_an_upsert_is_strict() {
     let source = format!(
-        "{HEADER}\
-         pub fn tag(n: int, v: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       p = Counter(value: v)\n\
-         \x20       p.label = \"x\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int, v: int) {
+    transaction {
+        place p = ^counters[n]
+        p = Counter(value: v)
+        p.label = "x"
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "tag");
@@ -308,14 +331,18 @@ fn a_sparse_set_after_an_upsert_is_strict() {
 /// Presence facts attach to a lexical `place` binding only: an inline `^root(k)`
 /// address never carries one, so an inline sparse set stays bare even under a guard.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_inline_sparse_set_is_never_strict() {
     let source = format!(
-        "{HEADER}\
-         pub fn tag(n: int)\n\
-         \x20   transaction\n\
-         \x20       if exists(^counters(n))\n\
-         \x20           ^counters(n).label = \"x\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int) {
+    transaction {
+        if exists(^counters[n]) {
+            ^counters[n].label = "x"
+        }
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "tag");
@@ -327,16 +354,20 @@ fn an_inline_sparse_set_is_never_strict() {
 /// erased is bare again (the compiler drops the fact; the verifier would reject a
 /// strict set there).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_sparse_set_after_delete_is_not_strict() {
     let source = format!(
-        "{HEADER}\
-         pub fn tag(n: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       if exists(p)\n\
-         \x20           delete p\n\
-         \x20           p.label = \"x\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int) {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            delete p
+            p.label = "x"
+        }
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "tag");
@@ -347,16 +378,20 @@ fn a_sparse_set_after_delete_is_not_strict() {
 /// The fact does not leak past the guarded block: a sparse set after the `if
 /// exists(p)` block closes is bare, since the entry is not known present there.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_presence_fact_does_not_outlive_its_block() {
     let source = format!(
-        "{HEADER}\
-         pub fn tag(n: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       if exists(p)\n\
-         \x20           p.label = \"in\"\n\
-         \x20       p.label = \"out\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(n: int) {
+    transaction {
+        place p = ^counters[n]
+        if exists(p) {
+            p.label = "in"
+        }
+        p.label = "out"
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "tag");
@@ -370,20 +405,25 @@ fn the_presence_fact_does_not_outlive_its_block() {
 /// unguarded `q` stays bare — and the mirror holds inside `if exists(q)`. The two
 /// facts never merge across places, and neither survives past its own block.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn interleaved_guarded_places_keep_independent_presence_facts() {
     let source = format!(
-        "{HEADER}\
-         pub fn tag(a: int, b: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(a)\n\
-         \x20       place q = ^counters(b)\n\
-         \x20       if exists(p)\n\
-         \x20           p.label = \"p-strict\"\n\
-         \x20           q.label = \"q-bare\"\n\
-         \x20       if exists(q)\n\
-         \x20           q.label = \"q-strict\"\n\
-         \x20           p.label = \"p-bare\"\n"
+        "{HEADER}{}",
+        r#"
+pub fn tag(a: int, b: int) {
+    transaction {
+        place p = ^counters[a]
+        place q = ^counters[b]
+        if exists(p) {
+            p.label = "p-strict"
+            q.label = "q-bare"
+        }
+        if exists(q) {
+            q.label = "q-strict"
+            p.label = "p-bare"
+        }
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     let instrs = export_instrs(&image, "tag");
@@ -407,22 +447,28 @@ fn interleaved_guarded_places_keep_independent_presence_facts() {
 /// field-projected address, another place, and a re-binding of an existing name are
 /// each a typed `check.type` diagnostic.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_place_must_name_a_whole_durable_entry() {
-    let non_durable = format!("{HEADER}pub fn f(): int\n    place p = 5\n    return 0\n");
+    let non_durable = format!(
+        "{HEADER}{}",
+        "pub fn f(): int {\n    place p = 5\n    return 0\n}\n"
+    );
     assert!(compile_error_codes(&non_durable).contains(&"check.type".to_string()));
 
-    let field =
-        format!("{HEADER}pub fn f(n: int): int\n    place p = ^counters(n).value\n    return 0\n");
+    let field = format!(
+        "{HEADER}{}",
+        "pub fn f(n: int): int {\n    place p = ^counters[n].value\n    return 0\n}\n"
+    );
     assert!(compile_error_codes(&field).contains(&"check.type".to_string()));
 
     let another_place = format!(
-        "{HEADER}pub fn f(n: int): int\n    place p = ^counters(n)\n    place q = p\n    return 0\n"
+        "{HEADER}{}",
+        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    place q = p\n    return 0\n}\n"
     );
     assert!(compile_error_codes(&another_place).contains(&"check.type".to_string()));
 
     let rebind = format!(
-        "{HEADER}pub fn f(n: int): int\n    place p = ^counters(n)\n    place p = ^counters(n)\n    return 0\n"
+        "{HEADER}{}",
+        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    place p = ^counters[n]\n    return 0\n}\n"
     );
     assert!(compile_error_codes(&rebind).contains(&"check.type".to_string()));
 }
@@ -431,14 +477,17 @@ fn a_place_must_name_a_whole_durable_entry() {
 /// value position (passing it, returning it) is a typed `check.type` diagnostic,
 /// while `p.field`, `if const`, and `exists` are the read forms.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_bare_place_name_is_not_a_value() {
-    let returned =
-        format!("{HEADER}pub fn f(n: int): int\n    place p = ^counters(n)\n    return p\n");
+    let returned = format!(
+        "{HEADER}{}",
+        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    return p\n}\n"
+    );
     assert!(compile_error_codes(&returned).contains(&"check.type".to_string()));
 
-    let passed =
-        format!("{HEADER}pub fn f(n: int): int\n    place p = ^counters(n)\n    return keyOf(p)\n");
+    let passed = format!(
+        "{HEADER}{}",
+        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    return keyOf(p)\n}\n"
+    );
     assert!(compile_error_codes(&passed).contains(&"check.type".to_string()));
 }
 
@@ -446,10 +495,10 @@ fn a_bare_place_name_is_not_a_value() {
 /// reuses an in-scope place name is a typed `check.type` diagnostic, so a name
 /// resolves to exactly one of a place or a value.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_value_binding_cannot_reuse_a_place_name() {
     let shadowed = format!(
-        "{HEADER}pub fn f(n: int): int\n    place p = ^counters(n)\n    const p = 1\n    return p\n"
+        "{HEADER}{}",
+        "pub fn f(n: int): int {\n    place p = ^counters[n]\n    const p = 1\n    return p\n}\n"
     );
     assert!(compile_error_codes(&shadowed).contains(&"check.type".to_string()));
 }
@@ -458,26 +507,32 @@ fn a_value_binding_cannot_reuse_a_place_name() {
 /// root, so the image is well-formed and identity-complete (execution is parked in
 /// the trough until E01). One export exercises the whole algebra through a place.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn every_place_operation_form_compiles_and_verifies() {
     let source = format!(
-        "{HEADER}\
-         pub fn present(n: int): bool\n\
-         \x20   place p = ^counters(n)\n\
-         \x20   return exists(p)\n\
-         \n\
-         pub fn titleOrZero(n: int): int\n\
-         \x20   place p = ^counters(n)\n\
-         \x20   if const c = p\n\
-         \x20       return c.value\n\
-         \x20   return 0\n\
-         \n\
-         pub fn edit(n: int, v: int)\n\
-         \x20   transaction\n\
-         \x20       place p = ^counters(n)\n\
-         \x20       p = Counter(value: v)\n\
-         \x20       p.label = \"x\"\n\
-         \x20       delete p\n"
+        "{HEADER}{}",
+        r#"
+pub fn present(n: int): bool {
+    place p = ^counters[n]
+    return exists(p)
+}
+
+pub fn titleOrZero(n: int): int {
+    place p = ^counters[n]
+    if const c = p {
+        return c.value
+    }
+    return 0
+}
+
+pub fn edit(n: int, v: int) {
+    transaction {
+        place p = ^counters[n]
+        p = Counter(value: v)
+        p.label = "x"
+        delete p
+    }
+}
+"#
     );
     let image = compile_verify(&source);
     for name in ["present", "titleOrZero", "edit"] {
