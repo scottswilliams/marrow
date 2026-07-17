@@ -164,6 +164,25 @@ impl<'a> DeclParser<'a> {
         matches!(self.peek(), Some(TokenKind::LeftBrace))
     }
 
+    /// Whether a `{ … }` body follows the current header line: the token after the
+    /// header content — either the cuddled `{` itself, or the `{` after the single
+    /// terminating `NEWLINE` that [`take_header_line_with_trailing_comment`] would
+    /// consume — is a `LeftBrace`. Used to decide whether a header-trailing comment
+    /// belongs to the construct's body (present) or to file scope (bodyless).
+    pub(super) fn body_follows_header(&self) -> bool {
+        let mut index = self.header_end();
+        if matches!(
+            self.tokens.get(index).map(|token| token.kind),
+            Some(TokenKind::Newline)
+        ) {
+            index += 1;
+        }
+        matches!(
+            self.tokens.get(index).map(|token| token.kind),
+            Some(TokenKind::LeftBrace)
+        )
+    }
+
     /// Advance past a block-opening `{` and the `NEWLINE`s that follow the header
     /// line, leaving the cursor at the first body line. Returns the span of the `{`,
     /// which anchors the diagnostic reported when the block reaches end of input

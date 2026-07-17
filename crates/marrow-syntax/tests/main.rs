@@ -2,6 +2,8 @@ mod common;
 
 #[path = "cases/brace_grammar.rs"]
 mod brace_grammar;
+#[path = "cases/comment_ownership.rs"]
+mod comment_ownership;
 #[path = "cases/flip2_bracket_angle.rs"]
 mod flip2_bracket_angle;
 #[path = "cases/format.rs"]

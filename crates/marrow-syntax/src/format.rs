@@ -10,9 +10,9 @@
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
     ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding, FunctionDecl,
-    InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl, ParamDecl, ResourceDecl,
-    ResourceMember, Statement, StoreDecl, StructDecl, TokenKind, TraversalBound, TypeExpr, UnaryOp,
-    encode_string_literal,
+    IfConstBinding, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl, ParamDecl,
+    ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind, TraversalBound,
+    TypeExpr, UnaryOp, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -315,7 +315,7 @@ fn format_resource(source: &str, decl: &ResourceDecl) -> String {
     out.push_str("resource ");
     out.push_str(&decl.name);
     let body = format_resource_body(source, &decl.members, &decl.comments, 1);
-    append_braced_body(&mut out, "", &body);
+    append_braced_body(&mut out, "", &body, EmptyBody::Braces);
     out
 }
 
@@ -325,7 +325,7 @@ fn format_struct(source: &str, decl: &StructDecl) -> String {
     out.push_str(&decl.name);
     out.push_str(&format_type_params(&decl.type_params));
     let body = format_resource_body(source, &decl.members, &decl.comments, 1);
-    append_braced_body(&mut out, "", &body);
+    append_braced_body(&mut out, "", &body, EmptyBody::Braces);
     out
 }
 
@@ -338,7 +338,7 @@ fn format_store(source: &str, decl: &StoreDecl) -> String {
         decl.resource
     ));
     let body = format_store_body(source, &decl.indexes, &decl.comments, 1);
-    append_braced_body(&mut out, "", &body);
+    append_braced_body(&mut out, "", &body, EmptyBody::HeaderAlone);
     out
 }
 
@@ -351,10 +351,9 @@ fn format_enum(source: &str, decl: &EnumDecl) -> String {
         format_type_params(&decl.type_params)
     ));
     let body = format_enum_body(source, &decl.members, &decl.comments, 1);
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(&body);
-    }
+    // An enum requires at least one member, so an empty body appears only over an
+    // erroring parse; render `{}` for consistency with the other mandatory blocks.
+    append_braced_body(&mut out, "", &body, EmptyBody::Braces);
     out
 }
 
@@ -379,7 +378,7 @@ fn format_enum_member(source: &str, member: &EnumMember, level: usize) -> String
     let pad = INDENT.repeat(level);
     out.push_str(&format!("{pad}{category}{}{payload}", member.name));
     let body = format_enum_body(source, &member.members, &member.comments, level + 1);
-    append_braced_body(&mut out, &pad, &body);
+    append_braced_body(&mut out, &pad, &body, EmptyBody::HeaderAlone);
     out
 }
 
@@ -392,6 +391,7 @@ fn format_resource_body(
     format_body_lines(
         source,
         comments,
+        level,
         members.iter().map(|member| FormattedBodyLine {
             span: member.span(),
             text: format_resource_member(source, member, level),
@@ -409,6 +409,7 @@ fn format_store_body(
     format_body_lines(
         source,
         comments,
+        level,
         indexes.iter().map(|index| FormattedBodyLine {
             span: index.span,
             text: format_index_decl(index, level),
@@ -426,6 +427,7 @@ fn format_enum_body(
     format_body_lines(
         source,
         comments,
+        level,
         members.iter().map(|member| FormattedBodyLine {
             span: member.span,
             text: format_enum_member(source, member, level),
@@ -444,6 +446,7 @@ fn resource_member_trailing_comment_line(member: &ResourceMember) -> TrailingCom
 fn format_body_lines(
     source: &str,
     comments: &[Comment],
+    level: usize,
     items: impl Iterator<Item = FormattedBodyLine>,
 ) -> String {
     let mut lines = BlankAwareLines::new(source);
@@ -455,7 +458,7 @@ fn format_body_lines(
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < item.span.start_byte
             {
-                lines.push(format_comment(comment), comment.span);
+                lines.push(format_block_comment(comment, level), comment.span);
                 comments.next();
             } else {
                 break;
@@ -478,7 +481,7 @@ fn format_body_lines(
     }
 
     for comment in comments {
-        lines.push(format_comment(comment), comment.span);
+        lines.push(format_block_comment(comment, level), comment.span);
     }
 
     lines.finish()
@@ -619,7 +622,7 @@ fn format_resource_member(source: &str, member: &ResourceMember, level: usize) -
                 format_key_params(&group.keys)
             ));
             let body = format_resource_body(source, &group.members, &group.comments, level + 1);
-            append_braced_body(&mut out, &pad, &body);
+            append_braced_body(&mut out, &pad, &body, EmptyBody::HeaderAlone);
             out
         }
     }
@@ -647,7 +650,12 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         format_params(&decl.params),
         format_type_annotation(&decl.return_type)
     ));
-    append_braced_body(&mut out, "", &format_block(source, &decl.body, 1));
+    append_braced_body(
+        &mut out,
+        "",
+        &format_block(source, &decl.body, 1),
+        EmptyBody::Braces,
+    );
     out
 }
 
@@ -673,7 +681,12 @@ fn format_type_params(params: &[crate::TypeParamDecl]) -> String {
 fn format_test(source: &str, decl: &crate::TestDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     out.push_str(&format!("test {}", encode_string_literal(&decl.name)));
-    append_braced_body(&mut out, "", &format_block(source, &decl.body, 1));
+    append_braced_body(
+        &mut out,
+        "",
+        &format_block(source, &decl.body, 1),
+        EmptyBody::Braces,
+    );
     out
 }
 
@@ -901,48 +914,47 @@ fn format_header_block(
     body: &Block,
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
-    let comment = header_trailing_comment(ctx.comments, ctx.start_byte, body.span.start_byte);
     let mut out = header;
-    append_braced_body_commented(
+    append_braced_body(
         &mut out,
         &pad,
         &format_block(ctx.source, body, ctx.level + 1),
-        comment,
+        EmptyBody::Braces,
     );
     out
 }
 
-/// Append a non-empty body as a brace-delimited block. The opening `{` cuddles
-/// the header already in `out`; `body` is the pre-indented block content (its
-/// statements or members one indent level deeper than the header); the closing
-/// `}` sits at `pad`, the header's own indent. Every body-bearing construct —
-/// declarations, the compound statements, and the block form of `else`/`on
-/// more`/checked/match-arm clauses — joins its body through here.
-///
-/// An empty body appends nothing, leaving the header to stand alone: the parser
-/// models every body as optional (an absent block is an empty block), so a brace
-/// pair around no statements has nothing to delimit, and omitting it keeps the
-/// header form idempotent. `match`, whose parser requires its braces even when
-/// empty, brace-wraps its own body directly rather than here.
-fn append_braced_body(out: &mut String, pad: &str, body: &str) {
-    append_braced_body_commented(out, pad, body, None);
+/// Whether an empty body renders as `{}` or lets the header stand alone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EmptyBody {
+    /// The grammar mandates a block, so an empty body renders `{}` (a `fn`, `test`,
+    /// `resource`, `struct`, the compound statements, and their clause blocks).
+    Braces,
+    /// The body is optional — a member-less `store`, an enum leaf or category with no
+    /// sub-members, a childless group — so an empty body leaves the header alone.
+    HeaderAlone,
 }
 
-/// Like [`append_braced_body`] but places a header trailing comment (one sitting
-/// between the header and its body) just after the opening `{`. An empty body with
-/// a comment still opens the braces so the comment has a home.
-fn append_braced_body_commented(out: &mut String, pad: &str, body: &str, comment: Option<String>) {
-    if body.is_empty() && comment.is_none() {
+/// Append a body as a brace-delimited block. The opening `{` cuddles the header
+/// already in `out`; `body` is the pre-indented block content (its statements or
+/// members one indent level deeper than the header); the closing `}` sits at `pad`,
+/// the header's own indent. Every body-bearing construct — declarations, the compound
+/// statements, and the block form of `else`/`on more`/checked/match-arm clauses —
+/// joins its body through here. A header-trailing comment is owned by the block (the
+/// parser records it as the block's first own-line comment), so it flows through
+/// `body` and needs no special placement.
+///
+/// An empty body renders per `empty`: `{}` for a mandatory block, or nothing for an
+/// optional one.
+fn append_braced_body(out: &mut String, pad: &str, body: &str, empty: EmptyBody) {
+    if body.is_empty() {
+        if empty == EmptyBody::Braces {
+            out.push_str(" {}");
+        }
         return;
     }
-    out.push_str(" {");
-    if let Some(comment) = comment {
-        out.push_str(&comment);
-    }
-    if !body.is_empty() {
-        out.push('\n');
-        out.push_str(body);
-    }
+    out.push_str(" {\n");
+    out.push_str(body);
     out.push('\n');
     out.push_str(pad);
     out.push('}');
@@ -1027,8 +1039,9 @@ fn push_clause_keyword(out: &mut String, pad: &str, keyword: &str) {
 }
 
 /// Append a clause body after its already-emitted keyword: an inline single
-/// statement when it is eligible, carries no comment, and fits the line; otherwise
-/// a braced block (with any header comment placed after the `{`).
+/// statement when it is eligible and fits the line; otherwise a braced block. A
+/// comment on the clause is owned by the block (the parser records it inside), so it
+/// flows through `format_block` and blocks the inline form by being present.
 fn append_clause_or_block(
     out: &mut String,
     source: &str,
@@ -1036,38 +1049,26 @@ fn append_clause_or_block(
     block: &Block,
     level: usize,
     require_diverging: bool,
-    comment: Option<String>,
 ) {
-    if comment.is_none()
-        && let Some(rendered) = inline_clause_statement(source, block, require_diverging)
+    if let Some(rendered) = inline_clause_statement(source, block, require_diverging)
         && current_line_width(out) + 1 + rendered.chars().count() <= MAX_LINE_WIDTH
     {
         out.push(' ');
         out.push_str(&rendered);
         return;
     }
-    append_braced_body_commented(out, pad, &format_block(source, block, level + 1), comment);
-}
-
-/// Find and render a header trailing comment (a comment on the header line, between
-/// the header start and its body's open) as ` // text`, for placement after `{`.
-fn header_trailing_comment(
-    comments: &[&Comment],
-    start_byte: usize,
-    end_byte: usize,
-) -> Option<String> {
-    comments
-        .iter()
-        .copied()
-        .find(|comment| trailing_comment_between(comment, start_byte, end_byte))
-        .map(format_trailing_comment)
+    append_braced_body(
+        out,
+        pad,
+        &format_block(source, block, level + 1),
+        EmptyBody::Braces,
+    );
 }
 
 #[derive(Clone, Copy)]
 struct StatementFormatContext<'source, 'comments> {
     source: &'source str,
     comments: &'comments [&'comments Comment],
-    start_byte: usize,
     level: usize,
 }
 
@@ -1140,12 +1141,11 @@ fn format_statement_with_comments(
             then_block,
             else_ifs,
             else_block,
-            span,
+            span: _,
         } => {
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
             return format_if(ctx, condition, then_block, else_ifs, else_block.as_ref());
@@ -1157,12 +1157,11 @@ fn format_statement_with_comments(
             then_block,
             else_ifs,
             else_block,
-            span,
+            span: _,
         } => {
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
             return format_if_const(
@@ -1178,13 +1177,12 @@ fn format_statement_with_comments(
         Statement::While {
             condition,
             body,
-            span,
+            span: _,
         } => {
             let header = format!("{pad}while {}", format_expression_at(condition, level));
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
             return format_header_block(ctx, header, body);
@@ -1196,12 +1194,11 @@ fn format_statement_with_comments(
             step,
             bound,
             body,
-            span,
+            span: _,
         } => {
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
             return format_for(
@@ -1214,11 +1211,10 @@ fn format_statement_with_comments(
                 body,
             );
         }
-        Statement::Transaction { body, span } => {
+        Statement::Transaction { body, span: _ } => {
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
             return format_header_block(ctx, format!("{pad}transaction"), body);
@@ -1226,15 +1222,14 @@ fn format_statement_with_comments(
         Statement::Match {
             scrutinee,
             arms,
-            span,
+            span: _,
         } => {
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
-            return format_match(ctx, scrutinee, arms, *span);
+            return format_match(ctx, scrutinee, arms);
         }
         Statement::Checked {
             bind,
@@ -1246,7 +1241,6 @@ fn format_statement_with_comments(
             let ctx = StatementFormatContext {
                 source,
                 comments,
-                start_byte: span.start_byte,
                 level,
             };
             return format_checked(
@@ -1258,12 +1252,49 @@ fn format_statement_with_comments(
                 *span,
             );
         }
-        // The B5/B6 parse-only forms are rejected as `check.unsupported` before any
-        // emission (the CLI gates on `!has_errors`), so canonical rendering is the
-        // adopting lane's work. Echo the source span verbatim here so a best-effort
-        // `format_source` loses nothing.
-        Statement::IfConstChain { span, .. } | Statement::LetElse { span, .. } => {
-            format!("{pad}{}", &source[span.start_byte..span.end_byte])
+        // B5: a chained `if const` head — one or more existence bindings joined by
+        // `and`, an optional trailing bare condition, then the block and any else
+        // chain. Parse-only (rejected as `check.unsupported` until adopted), but
+        // rendered canonically so `format` is idempotent over the parsed form.
+        Statement::IfConstChain {
+            bindings,
+            condition,
+            then_block,
+            else_ifs,
+            else_block,
+            span: _,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                level,
+            };
+            return format_if_const_chain(
+                ctx,
+                bindings,
+                condition.as_ref(),
+                then_block,
+                else_ifs,
+                else_block.as_ref(),
+            );
+        }
+        // B6: let-else — a `const`/`var` binding with a diverging `else`, rendered
+        // inline (`const x = e else return -1`) or braced. Parse-only, rendered
+        // canonically so `format` is idempotent over the parsed form.
+        Statement::LetElse {
+            is_var,
+            name,
+            ty,
+            value,
+            else_block,
+            span: _,
+        } => {
+            let ctx = StatementFormatContext {
+                source,
+                comments,
+                level,
+            };
+            return format_let_else(ctx, *is_var, name, ty, value, else_block);
         }
         // The formatter is invoked on parsed source and the CLI gates emission on
         // `!has_errors`, so this renders only in a best-effort `format_source` over
@@ -1298,21 +1329,14 @@ fn format_if(
             return candidate;
         }
     }
-    let comment = header_trailing_comment(ctx.comments, ctx.start_byte, then_block.span.start_byte);
     let mut out = header;
-    append_braced_body_commented(
+    append_braced_body(
         &mut out,
         &pad,
         &format_block(ctx.source, then_block, ctx.level + 1),
-        comment,
+        EmptyBody::Braces,
     );
-    format_else_chain(
-        ctx,
-        &mut out,
-        then_block.span.end_byte,
-        else_ifs,
-        else_block,
-    );
+    format_else_chain(ctx, &mut out, else_ifs, else_block);
     out
 }
 
@@ -1331,32 +1355,82 @@ fn format_if_const(
         format_type_annotation(ty),
         format_expression_at(value, ctx.level)
     );
-    let comment = header_trailing_comment(ctx.comments, ctx.start_byte, then_block.span.start_byte);
     let mut out = header;
-    append_braced_body_commented(
+    append_braced_body(
         &mut out,
         &pad,
         &format_block(ctx.source, then_block, ctx.level + 1),
-        comment,
+        EmptyBody::Braces,
     );
-    format_else_chain(
-        ctx,
+    format_else_chain(ctx, &mut out, else_ifs, else_block);
+    out
+}
+
+/// Render a B5 chained `if const` head: each existence binding as `const name = e`,
+/// joined by ` and `, with an optional trailing bare condition, then the block and
+/// any else chain — the same body and else machinery as the other `if` forms.
+fn format_if_const_chain(
+    ctx: StatementFormatContext<'_, '_>,
+    bindings: &[IfConstBinding],
+    condition: Option<&Expression>,
+    then_block: &Block,
+    else_ifs: &[ElseIf],
+    else_block: Option<&Block>,
+) -> String {
+    let pad = INDENT.repeat(ctx.level);
+    let mut parts: Vec<String> = bindings
+        .iter()
+        .map(|binding| {
+            format!(
+                "const {}{} = {}",
+                binding.name,
+                format_type_annotation(&binding.ty),
+                format_expression_at(&binding.value, ctx.level)
+            )
+        })
+        .collect();
+    if let Some(condition) = condition {
+        parts.push(format_expression_at(condition, ctx.level));
+    }
+    let mut out = format!("{pad}if {}", parts.join(" and "));
+    append_braced_body(
         &mut out,
-        then_block.span.end_byte,
-        else_ifs,
-        else_block,
+        &pad,
+        &format_block(ctx.source, then_block, ctx.level + 1),
+        EmptyBody::Braces,
     );
+    format_else_chain(ctx, &mut out, else_ifs, else_block);
+    out
+}
+
+/// Render a B6 let-else: the `const`/`var` binding, then a cuddled `else` whose body
+/// is the inline diverging form (`const x = e else return -1`) or a braced block.
+fn format_let_else(
+    ctx: StatementFormatContext<'_, '_>,
+    is_var: bool,
+    name: &str,
+    ty: &Option<TypeExpr>,
+    value: &Expression,
+    else_block: &Block,
+) -> String {
+    let pad = INDENT.repeat(ctx.level);
+    let keyword = if is_var { "var" } else { "const" };
+    let mut out = format!(
+        "{pad}{keyword} {name}{} = {}",
+        format_type_annotation(ty),
+        format_expression_at(value, ctx.level)
+    );
+    out.push_str(" else");
+    append_clause_or_block(&mut out, ctx.source, &pad, else_block, ctx.level, true);
     out
 }
 
 /// Append the `else if` chain and optional trailing `else` block shared by both
 /// `if` forms. Each clause cuddles the preceding block's `}` (`} else {`) and takes
-/// the inline-diverging or braced body form. `previous_end` is the end byte of the
-/// preceding block, used to place any trailing comment before the next header.
+/// the inline-diverging or braced body form.
 fn format_else_chain(
     ctx: StatementFormatContext<'_, '_>,
     out: &mut String,
-    mut previous_end: usize,
     else_ifs: &[ElseIf],
     else_block: Option<&Block>,
 ) {
@@ -1364,24 +1438,11 @@ fn format_else_chain(
     for else_if in else_ifs {
         let condition = format_expression_at(&else_if.condition, ctx.level);
         push_clause_keyword(out, &pad, &format!("else if {condition}"));
-        let comment =
-            header_trailing_comment(ctx.comments, previous_end, else_if.block.span.start_byte);
-        append_clause_or_block(
-            out,
-            ctx.source,
-            &pad,
-            &else_if.block,
-            ctx.level,
-            true,
-            comment,
-        );
-        previous_end = else_if.block.span.end_byte;
+        append_clause_or_block(out, ctx.source, &pad, &else_if.block, ctx.level, true);
     }
     if let Some(else_block) = else_block {
         push_clause_keyword(out, &pad, "else");
-        let comment =
-            header_trailing_comment(ctx.comments, previous_end, else_block.span.start_byte);
-        append_clause_or_block(out, ctx.source, &pad, else_block, ctx.level, true, comment);
+        append_clause_or_block(out, ctx.source, &pad, else_block, ctx.level, true);
     }
 }
 
@@ -1438,20 +1499,15 @@ fn format_for(
     };
     // A bounded traversal's `on more` clause cuddles the loop body's `}` and takes
     // the inline-diverging or braced form, like `else`.
-    let body_comment = header_trailing_comment(ctx.comments, ctx.start_byte, body.span.start_byte);
     let mut out = header;
-    append_braced_body_commented(
+    append_braced_body(
         &mut out,
         &pad,
         &format_block(ctx.source, body, ctx.level + 1),
-        body_comment,
+        EmptyBody::Braces,
     );
     push_clause_keyword(&mut out, &pad, "on more");
-    let on_comment =
-        header_trailing_comment(ctx.comments, body.span.end_byte, on_more.span.start_byte);
-    append_clause_or_block(
-        &mut out, ctx.source, &pad, on_more, ctx.level, true, on_comment,
-    );
+    append_clause_or_block(&mut out, ctx.source, &pad, on_more, ctx.level, true);
     out
 }
 
@@ -1459,27 +1515,20 @@ fn format_match(
     ctx: StatementFormatContext<'_, '_>,
     scrutinee: &Expression,
     arms: &[MatchArm],
-    span: crate::SourceSpan,
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
     let arm_pad = INDENT.repeat(ctx.level + 1);
     let mut out = format!("{pad}match {}", format_expression_at(scrutinee, ctx.level));
-    let first_arm_start = arms
-        .first()
-        .map_or(span.end_byte, |arm| arm.span.start_byte);
-    // `match` always brace-wraps its arms — its parser requires the braces even for
-    // an empty body. A header trailing comment lands just after the opening `{`.
-    out.push_str(" {");
-    if let Some(comment) = header_trailing_comment(ctx.comments, span.start_byte, first_arm_start) {
-        out.push_str(&comment);
+    // `match` always brace-wraps its arms — its parser requires the braces even for an
+    // empty body, which renders `{}`. A comment trailing the header before the `{` is
+    // owned as the first leading arm comment (the parser reclassifies it), so it flows
+    // through the leading-comment loop below like any inter-arm comment.
+    if arms.is_empty() && ctx.comments.is_empty() {
+        out.push_str(" {}");
+        return out;
     }
-    let arm_comments: Vec<&Comment> = ctx
-        .comments
-        .iter()
-        .copied()
-        .filter(|comment| !trailing_comment_between(comment, span.start_byte, first_arm_start))
-        .collect();
-    let mut comments = arm_comments.into_iter().peekable();
+    out.push_str(" {");
+    let mut comments = ctx.comments.iter().copied().peekable();
     for (i, arm) in arms.iter().enumerate() {
         let mut emitted_leading = false;
         while let Some(comment) = comments.peek().copied() {
@@ -1513,17 +1562,7 @@ fn format_match(
                     .join(", ")
             )
         };
-        // The arm head `pattern =>`; a trailing comment between the head and its body
-        // is placed after the `=>` (block form) or forces the braced form below.
         let head = format!("{arm_pad}{}{bindings} =>", arm.path.join("::"));
-        let arm_comment = if let Some(comment) = comments.peek().copied()
-            && trailing_comment_between(comment, arm.span.start_byte, arm.block.span.start_byte)
-        {
-            comments.next();
-            Some(format_trailing_comment(comment))
-        } else {
-            None
-        };
         out.push('\n');
         out.push_str(&head);
         // T6: an arm whose body is a single statement that fits renders inline
@@ -1535,7 +1574,6 @@ fn format_match(
             &arm.block,
             ctx.level + 1,
             false,
-            arm_comment,
         );
     }
     for comment in comments {
@@ -1592,15 +1630,7 @@ fn format_checked(
     ] {
         if let Some(block) = block {
             push_clause_keyword(&mut out, &arm_pad, &format!("on {kind}"));
-            append_clause_or_block(
-                &mut out,
-                ctx.source,
-                &arm_pad,
-                block,
-                ctx.level + 1,
-                true,
-                None,
-            );
+            append_clause_or_block(&mut out, ctx.source, &arm_pad, block, ctx.level + 1, true);
         }
     }
     out

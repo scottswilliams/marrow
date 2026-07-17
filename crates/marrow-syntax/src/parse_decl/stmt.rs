@@ -140,6 +140,42 @@ impl<'a> StmtParser<'a> {
         }
     }
 
+    /// Detach a comment that trails this construct's header — recorded while taking
+    /// the header line, so it is the most recent comment and starts after
+    /// `header_start` — and hand it back reclassified as an own-line comment. The
+    /// block that follows adopts it as its first leading comment, so the `{`-cuddled,
+    /// next-line-`{`, and own-line spellings of a header comment all parse to one tree
+    /// and format to one fixed point. A trailing comment on an earlier sibling starts
+    /// before `header_start` and is left in place.
+    fn detach_header_comment(&mut self, header_start: usize) -> Option<Comment> {
+        if !self.header_comment_pending(header_start) {
+            return None;
+        }
+        let mut comment = self.comments.pop().expect("checked above");
+        comment.placement = CommentPlacement::OwnLine;
+        Some(comment)
+    }
+
+    /// Reclassify a pending header-trailing comment as an own-line comment in place,
+    /// for `match`, whose arms have no single owning block: it then renders as the
+    /// first leading arm comment rather than cuddled after `{`.
+    fn own_header_comment_in_place(&mut self, header_start: usize) {
+        if self.header_comment_pending(header_start)
+            && let Some(comment) = self.comments.last_mut()
+        {
+            comment.placement = CommentPlacement::OwnLine;
+        }
+    }
+
+    fn header_comment_pending(&self, header_start: usize) -> bool {
+        matches!(
+            self.comments.last(),
+            Some(comment)
+                if comment.placement == CommentPlacement::Trailing
+                    && comment.span.start_byte > header_start
+        )
+    }
+
     fn report_doc_comment_without_target(&mut self, span: SourceSpan) {
         self.error_span_reason(
             span,
@@ -326,7 +362,7 @@ impl<'a> StmtParser<'a> {
     fn while_stmt(&mut self) -> Statement {
         let keyword = self.advance(); // `while`
         let condition = self.header_expression(keyword.span);
-        let body = self.block_body();
+        let body = self.block_body(keyword.span.start_byte);
         Statement::While {
             condition,
             span: join_spans(keyword.span, body.span),
@@ -339,7 +375,7 @@ impl<'a> StmtParser<'a> {
         let header = self.take_line();
         let header_span = line_span_or(header, keyword.span);
         let parsed = parse_for_header(self.source, header);
-        let body = self.block_body();
+        let body = self.block_body(keyword.span.start_byte);
 
         match parsed {
             Some((binding, order, iterable, step, bound_head)) => {
@@ -493,7 +529,7 @@ impl<'a> StmtParser<'a> {
     fn if_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `if`
         let head = self.if_head(start);
-        let then_block = self.block_body();
+        let then_block = self.block_body(start.start_byte);
         let mut end = then_block.span;
         let mut else_ifs = Vec::new();
         let mut else_block = None;
@@ -512,7 +548,7 @@ impl<'a> StmtParser<'a> {
             if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::If))) {
                 let if_keyword = self.advance(); // `if`
                 let condition = self.header_expression(if_keyword.span);
-                let block = self.block_body();
+                let block = self.block_body(if_keyword.span.start_byte);
                 end = block.span;
                 else_ifs.push(ElseIf { condition, block });
             } else {
@@ -567,7 +603,7 @@ impl<'a> StmtParser<'a> {
     fn transaction_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `transaction`
         self.consume_header_line();
-        let body = self.block_body();
+        let body = self.block_body(start.start_byte);
         Statement::Transaction {
             span: join_spans(start, body.span),
             body,
@@ -582,6 +618,9 @@ impl<'a> StmtParser<'a> {
     fn match_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `match`
         let scrutinee = self.header_expression(start);
+        // A comment trailing the `match` header before its `{` becomes an own-line
+        // comment leading the first arm, the one owner `match` arms share.
+        self.own_header_comment_in_place(start.start_byte);
         let mut end = start;
         let mut arms = Vec::new();
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
@@ -978,12 +1017,19 @@ impl<'a> StmtParser<'a> {
         }
     }
 
-    /// Parse the mandatory `{ … }` block that follows a compound-statement header.
-    /// If no `{` is present (a malformed empty body), returns an empty block; the
-    /// missing brace is a formatter/checker concern.
-    fn block_body(&mut self) -> Block {
+    /// Parse the mandatory `{ … }` block that follows a compound-statement header
+    /// whose keyword starts at `header_start`. A comment trailing the header is moved
+    /// into the block as its first leading comment (see [`detach_header_comment`]). If
+    /// no `{` is present (a malformed empty body), returns an empty block; the missing
+    /// brace is a formatter/checker concern.
+    fn block_body(&mut self, header_start: usize) -> Block {
+        let leading = self.detach_header_comment(header_start);
         if matches!(self.peek(), Some(TokenKind::LeftBrace)) {
-            self.parse_braced_block()
+            let mut block = self.parse_braced_block();
+            if let Some(comment) = leading {
+                block.comments.insert(0, comment);
+            }
+            block
         } else {
             // An empty body occupies no source. Anchor a zero-width span at the
             // point a body would start rather than adopting a whole token's span,
@@ -1015,7 +1061,7 @@ impl<'a> StmtParser<'a> {
             };
             Block {
                 statements: Vec::new(),
-                comments: Vec::new(),
+                comments: leading.into_iter().collect(),
                 span: point,
             }
         }

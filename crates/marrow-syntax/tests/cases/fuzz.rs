@@ -344,6 +344,16 @@ fn brace_grammar_corpus() -> Vec<String> {
         "module app\nconst S = \"a\\u{1F600}b\"\n",
         "module app\nfn run() {\n    ^books[1].title = \"x\"\n}\n",
         "module app\nfn run() {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return\n    }\n}\n",
+        // Comment-bearing seeds (MSY01): a header-trailing comment before the `{`, a
+        // cuddled one, an own-line body comment, inter-arm and arm-trailing match
+        // comments, doc comments on members, and a declaration header comment — every
+        // spelling must format to one fixed point that preserves the comment.
+        "module app\nfn run(n: int) {\n    if n < 0 // note\n    {\n        return\n    }\n}\n",
+        "module app\nfn run(n: int) {\n    while n < 0 { // w\n        n = n\n    }\n}\n",
+        "module app\nfn run(n: int) {\n    transaction // t\n    {\n        n = n\n    }\n}\n",
+        "module app\nfn run(n: int) {\n    match n {\n        // leading\n        dot => return // arm\n        // between\n        circle => {\n            return\n        }\n    }\n}\n",
+        "module app\nresource B // r\n{\n    /// the title\n    t: string\n}\n",
+        "module app\nfn run() // fn\n{\n    return\n}\n",
         // Unclosed and stray-brace forms: a member loop must terminate on these.
         "module app\nresource B {\n    t: string\n",
         "module app\nenum E {\n    a\n    b\n",
@@ -361,15 +371,15 @@ fn brace_grammar_corpus() -> Vec<String> {
     .collect()
 }
 
-/// The termination and diagnostic invariants that hold for any source bytes on the
-/// live brace grammar: parsing returns within a wall-clock bound (so a member loop
-/// that fails to terminate on a missing `}` is a test failure, not a hang), is
-/// deterministic, and recovers with a bounded number of diagnostics carrying
-/// in-bounds 1-based spans. The formatter's idempotence lens is deliberately not
-/// asserted here — the formatter is still converted from layout to brace output in a
-/// later flip, so the full oracle corpus stays ignored until then. The parse runs on
-/// a large stack so a deep mutated input fails closed at the nesting limit rather
-/// than overflowing.
+/// The full total-invariant oracle under a wall-clock bound: parsing returns
+/// promptly (so a member loop that fails to terminate on a missing `}` is a test
+/// failure, not a hang), is deterministic, tiles the source losslessly, recovers with
+/// a bounded number of well-spanned diagnostics, and — for a clean parse — is a
+/// formatter fixed point that re-parses cleanly. The formatter leg now asserts
+/// idempotence unconditionally over comments (MSY01), so a comment-bearing clean
+/// parse is held to the same fixed-point contract as a comment-free one. The parse
+/// runs on a large stack so a deep mutated input fails closed at the nesting limit
+/// rather than overflowing.
 fn assert_bounded_recovery(source: &str) {
     const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
     let owned = source.to_string();
@@ -377,7 +387,7 @@ fn assert_bounded_recovery(source: &str) {
     let worker = std::thread::Builder::new()
         .stack_size(WORKER_STACK_BYTES)
         .spawn(move || {
-            check_bounded_recovery(&owned);
+            assert_total_invariants(&owned);
             let _ = tx.send(());
         })
         .expect("spawn brace-grammar fuzz worker");
@@ -399,47 +409,18 @@ fn assert_bounded_recovery(source: &str) {
     }
 }
 
-fn check_bounded_recovery(source: &str) {
-    let first = marrow_syntax::parse_source(source);
-    let second = marrow_syntax::parse_source(source);
-    assert_eq!(
-        first.file, second.file,
-        "parse is not deterministic for {source:?}"
-    );
-    assert_eq!(
-        first.diagnostics, second.diagnostics,
-        "diagnostics are not deterministic for {source:?}"
-    );
-    assert!(
-        first.diagnostics.len() <= source.len() + 1,
-        "recovery emitted {} diagnostics, past the bound, for {source:?}",
-        first.diagnostics.len()
-    );
-    for diagnostic in &first.diagnostics {
-        let span = diagnostic.span;
-        assert!(
-            span.start_byte <= span.end_byte && span.end_byte <= source.len(),
-            "diagnostic span {}..{} out of bounds for len {} in {source:?}",
-            span.start_byte,
-            span.end_byte,
-            source.len()
-        );
-        assert!(
-            span.line >= 1 && span.column >= 1,
-            "diagnostic anchored at line {} column {} (positions are 1-based) in {source:?}",
-            span.line,
-            span.column
-        );
-    }
-}
-
 /// The brace-grammar corpus and a small seeded mutation pass hold the oracle
 /// invariants under a per-iteration wall-clock bound, so a member loop that fails to
-/// terminate on a missing `}` is a test failure rather than a hung suite.
+/// terminate on a missing `}` is a test failure rather than a hung suite. Each
+/// cleanly-parsing corpus entry additionally holds the faithful lens (comment- and
+/// structure-preserving), pinning the MSY01 comment-ownership fix.
 #[test]
 fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
     for source in brace_grammar_corpus() {
         assert_bounded_recovery(&source);
+        if !marrow_syntax::parse_source(&source).has_errors() {
+            assert_formatter_faithful(&source);
+        }
     }
 
     // A seeded, fixed-iteration mutation pass over the brace corpus, bounded to a few

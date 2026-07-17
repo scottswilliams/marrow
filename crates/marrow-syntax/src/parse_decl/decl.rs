@@ -135,45 +135,81 @@ impl<'a> DeclParser<'a> {
             }
             Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
+                let has_body = self.body_follows_header();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let resource = self.parse_resource(decl_docs);
+                let mut resource = self.parse_resource(decl_docs);
+                Self::route_header_comment(
+                    &mut file.comments,
+                    &mut resource.comments,
+                    has_body,
+                    trailing_comment,
+                );
                 file.declarations.push(Declaration::Resource(resource));
-                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Struct)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
+                let has_body = self.body_follows_header();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let decl = self.parse_struct(decl_docs);
+                let mut decl = self.parse_struct(decl_docs);
+                Self::route_header_comment(
+                    &mut file.comments,
+                    &mut decl.comments,
+                    has_body,
+                    trailing_comment,
+                );
                 file.declarations.push(Declaration::Struct(decl));
-                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Store)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
+                let has_body = self.body_follows_header();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let store = self.parse_store(decl_docs);
+                let mut store = self.parse_store(decl_docs);
+                Self::route_header_comment(
+                    &mut file.comments,
+                    &mut store.comments,
+                    has_body,
+                    trailing_comment,
+                );
                 file.declarations.push(Declaration::Store(store));
-                file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Test)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
+                let has_body = self.body_follows_header();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let test = self.parse_test(decl_docs);
+                let mut test = self.parse_test(decl_docs);
+                Self::route_header_comment(
+                    &mut file.comments,
+                    &mut test.body.comments,
+                    has_body,
+                    trailing_comment,
+                );
                 file.declarations.push(Declaration::Test(test));
-                file.comments.extend(trailing_comment);
             }
             _ if self.starts_enum_header() => {
                 let trailing_comment = self.peek_header_trailing_comment();
+                let has_body = self.body_follows_header();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let decl = self.parse_enum(decl_docs);
+                let mut decl = self.parse_enum(decl_docs);
+                Self::route_header_comment(
+                    &mut file.comments,
+                    &mut decl.comments,
+                    has_body,
+                    trailing_comment,
+                );
                 file.declarations.push(Declaration::Enum(decl));
-                file.comments.extend(trailing_comment);
             }
             _ if self.starts_function_header() => {
                 let trailing_comment = self.peek_header_trailing_comment();
+                let has_body = self.body_follows_header();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
-                let function = self.parse_function(decl_docs);
+                let mut function = self.parse_function(decl_docs);
+                Self::route_header_comment(
+                    &mut file.comments,
+                    &mut function.body.comments,
+                    has_body,
+                    trailing_comment,
+                );
                 file.declarations.push(Declaration::Function(function));
-                file.comments.extend(trailing_comment);
             }
             // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is
             // reported at the `pub` token, which is then dropped so the rest of the
@@ -194,6 +230,28 @@ impl<'a> DeclParser<'a> {
                     "expected module, use, alias, type, const, resource, store, or fn declaration",
                 );
             }
+        }
+    }
+
+    /// Route a body-bearing declaration's header-trailing comment to its one owner.
+    /// When the construct has a `{ … }` body the comment belongs to the block — it
+    /// renders as the block's first own-line comment, so the `{`-cuddled, next-line
+    /// and own-line spellings all format alike. A body-less form (only `store`) has no
+    /// block, so the comment stays a header-trailing comment at file scope.
+    fn route_header_comment(
+        file_comments: &mut Vec<Comment>,
+        body_comments: &mut Vec<Comment>,
+        has_body: bool,
+        comment: Option<Comment>,
+    ) {
+        let Some(mut comment) = comment else {
+            return;
+        };
+        if has_body {
+            comment.placement = CommentPlacement::OwnLine;
+            body_comments.insert(0, comment);
+        } else {
+            file_comments.push(comment);
         }
     }
 

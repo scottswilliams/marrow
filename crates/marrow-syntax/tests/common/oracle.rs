@@ -20,8 +20,8 @@
 //! `cases/fuzz.rs`, then a fix.
 
 use marrow_syntax::{
-    NESTING_DEPTH_LIMIT, ParsedSource, Severity, TokenKind, format_preserves_comments,
-    format_source, lex_source, parse_source,
+    NESTING_DEPTH_LIMIT, ParsedSource, Severity, format_preserves_comments, format_source,
+    lex_source, parse_source,
 };
 
 /// Recovery is bounded to at most one diagnostic per source byte, plus one. Every
@@ -88,23 +88,18 @@ pub fn assert_total_invariants(source: &str) {
     assert_formatter_total(&first, source);
 }
 
-/// The formatter's contract that holds for any comment-free input that parses
-/// without error nodes: a single pass is already a fixed point, and its output is
-/// itself valid Marrow. A malformed parse carries error nodes whose rendering is
-/// not a contract, so the formatter is only exercised over a clean parse.
+/// The formatter's total contract that holds for any input that parses without error
+/// nodes, comment-bearing or not: a single pass is already a fixed point, and its
+/// output is itself valid Marrow. A malformed parse carries error nodes whose
+/// rendering is not a contract, so the formatter is only exercised over a clean parse.
 ///
-/// Comment-bearing inputs are exercised by the faithful lens over the curated valid
-/// corpus (well-formed programs), not by this arbitrary-bytes lens. An own-line
-/// comment at an irregular indentation inside a compound-statement or `match` body
-/// has no stable home in the current AST — the `Match`/compound-body nodes do not
-/// own inter-arm own-line comments, so such a comment is attributed by byte span
-/// and can shift or be dropped when formatting normalizes indentation. That
-/// limitation is tracked separately; here the formatter's structural idempotence is
-/// asserted where it is unconditional (comment-free), so a real structural
-/// non-idempotency (the blank-line and empty-body defects this lens first caught)
-/// is still enforced over arbitrary bytes.
+/// Idempotence is asserted unconditionally over comments (MSY01): a comment trailing a
+/// body-bearing header attaches to one deterministic owner — the block — so every
+/// admitted spelling formats to one fixed point. A regression that re-introduced a
+/// byte-span-attributed comment with no stable home, or the earlier blank-line and
+/// empty-body non-idempotencies, is caught here over arbitrary bytes.
 fn assert_formatter_total(parsed: &ParsedSource, source: &str) {
-    if parsed.has_errors() || has_comment_tokens(source) {
+    if parsed.has_errors() {
         return;
     }
     let once = format_source(source);
@@ -119,16 +114,6 @@ fn assert_formatter_total(parsed: &ParsedSource, source: &str) {
         "formatted output must re-parse without errors:\n{once}\n{:#?}",
         reparsed.diagnostics
     );
-}
-
-/// Whether the token stream carries any comment. A `;` inside a string or bytes
-/// literal is not a comment, so this classifies precisely rather than scanning the
-/// raw text for `;`.
-fn has_comment_tokens(source: &str) -> bool {
-    lex_source(source)
-        .tokens
-        .iter()
-        .any(|token| matches!(token.kind, TokenKind::Comment | TokenKind::DocComment))
 }
 
 /// The stronger formatter contract for a valid program: the canonical output
