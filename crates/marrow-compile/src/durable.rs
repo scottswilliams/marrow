@@ -12,15 +12,17 @@
 //! contribution to the durable-contract identity the verifier independently
 //! re-encodes.
 //!
-//! The executable durable subset the single-root kernel can serve at this stage is
-//! a flat keyed root: one or more key columns and no groups, whose fields are each a
-//! scalar or a widened value (`struct`/`enum`/`Option`, framed inline). A
-//! singleton root, or any root whose resource declares a group or a nominal-typed field, completes its identity and verifies but has no executable operation
-//! sites — an operation over one is a precise typed `check.unsupported` rejection at
-//! lowering ("not yet executable"). Those shapes run when their lanes land. This module
-//! validates the declaration, adds the root, its member tree, and — for the
-//! executable subset — its operation sites to the draft, and exposes the resolved
-//! sites the function lowerer emits against.
+//! The executable durable subset the single-root kernel can serve at this stage is a flat
+//! keyed root: one or more key columns, whose top-level fields are each a scalar or a
+//! widened value (`struct`/`enum`/`Option`, framed inline), whose root-level `group`
+//! members hold only such fields, and whose keyed `branch` placements are field-only
+//! (nested to any depth). A singleton (keyless) root, a root whose resource declares a
+//! nominal-typed field, a group nested in a branch or in another group, completes its
+//! identity and verifies but has no executable operation sites — an operation over one is a
+//! precise typed `check.unsupported` rejection at lowering ("not yet executable"). Those
+//! shapes run when their lanes land. This module validates the declaration, adds the root,
+//! its member tree, and — for the executable subset — its operation sites to the draft, and
+//! exposes the resolved sites the function lowerer emits against.
 
 use std::collections::BTreeSet;
 
@@ -126,6 +128,43 @@ pub(crate) struct DurableBranchField {
     pub(crate) site: u16,
 }
 
+/// One scalar/widened leaf of an executable root-level `group`: its source name, value
+/// type (a scalar or a widened composite), and required flag. A leaf is not addressed by
+/// a durable site of its own — a group-leaf access reads or rewrites the whole group — so
+/// it carries no site, only the shape a group-leaf read projects and a group-leaf write
+/// stores into the group record's slot.
+pub(crate) struct DurableGroupLeaf {
+    pub(crate) name: String,
+    pub(crate) ty: GArg,
+    pub(crate) required: bool,
+}
+
+/// One executable root-level unkeyed `group` of a flat-executable root: a value unit of
+/// the root entry addressed by the root's own key-path (a group is markerless — its
+/// presence is the entry's presence). Its whole read/replace/erase address the
+/// `GroupEntry` site `entry_site` over the group node; a group-leaf access
+/// `^root(k).group.leaf` is a whole-group read-modify-write over the materialized group
+/// `record`, so a leaf never has a durable site of its own.
+pub(crate) struct DurableGroup {
+    pub(crate) name: String,
+    pub(crate) record: marrow_image::TypeId,
+    pub(crate) entry_site: u16,
+    pub(crate) fields: Vec<DurableGroupLeaf>,
+}
+
+impl DurableGroup {
+    /// The declaration-order slot index and descriptor of the group leaf `name` — the
+    /// slot into the group's materialized record a leaf read projects and a leaf write
+    /// rewrites, so a group-leaf operation addresses the same slot the record types.
+    pub(crate) fn field_index(&self, name: &str) -> Option<(u16, &DurableGroupLeaf)> {
+        self.fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name == name)
+            .map(|(index, field)| (index as u16, field))
+    }
+}
+
 /// One executable keyed `branch` of a flat-executable root: a scalar-field keyed
 /// scalar-field subtree one or more levels below the root, carrying its own nested
 /// branches recursively. Its whole-entry operations address the key-path
@@ -164,11 +203,12 @@ impl DurableBranch {
     }
 }
 
-/// The project's single executable durable root, its operation sites, and its
-/// executable branches. A keyed root (any key arity) whose fields are scalars or
-/// widened values and whose only nested placements are field-only keyed branches
-/// reaches this form; its key columns back the kernel-serviceable read/write
-/// path and each branch adds its own key tuple below it.
+/// The project's single executable durable root, its operation sites, its executable
+/// root-level groups, and its executable branches. A keyed root (any key arity) whose
+/// top-level fields are scalars or widened values, whose root-level groups hold only such
+/// fields, and whose only nested placements are field-only keyed branches reaches this
+/// form; its key columns back the kernel-serviceable read/write path, each group is a value
+/// unit of the root entry, and each branch adds its own key tuple below it.
 pub(crate) struct DurableRoot {
     pub(crate) name: String,
     /// The resource (product) name backing this store — the head of a branch's
@@ -179,6 +219,7 @@ pub(crate) struct DurableRoot {
     pub(crate) record: marrow_image::TypeId,
     pub(crate) entry_site: u16,
     pub(crate) fields: Vec<DurableField>,
+    pub(crate) groups: Vec<DurableGroup>,
     pub(crate) branches: Vec<DurableBranch>,
     pub(crate) indexes: Vec<DurableIndex>,
 }
@@ -186,6 +227,13 @@ pub(crate) struct DurableRoot {
 impl DurableRoot {
     pub(crate) fn field(&self, name: &str) -> Option<&DurableField> {
         self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// The executable root-level group declared with the simple name `name`, if any —
+    /// the owner a group whole access `^root(k).group` or a group-leaf access
+    /// `^root(k).group.leaf` resolves against.
+    pub(crate) fn group(&self, name: &str) -> Option<&DurableGroup> {
+        self.groups.iter().find(|group| group.name == name)
     }
 
     /// The executable branch declared with the simple name `name`, if any.
@@ -237,10 +285,10 @@ impl DurableRegistry {
         find(&self.executable.as_ref()?.branches, ty)
     }
 
-    /// The name of a declared root the kernel cannot yet serve (a singleton root, or a
-    /// resource declaring a static `group` or a nominal-typed field). `Some` exactly when a root
-    /// is declared but not executable, so the lowerer can distinguish a not-yet-executable
-    /// operation from an operation with no store at all.
+    /// The name of a declared root the kernel cannot yet serve (a singleton root, a
+    /// resource declaring a nominal-typed field, or a group nested in a branch or another
+    /// group). `Some` exactly when a root is declared but not executable, so the lowerer can
+    /// distinguish a not-yet-executable operation from an operation with no store at all.
     pub(crate) fn not_yet_executable_root(&self) -> Option<&str> {
         match (&self.executable, &self.declared_root) {
             (None, Some(name)) => Some(name),
@@ -443,7 +491,8 @@ impl DurableRegistry {
                 root_steps.clone(),
             )))
             .index();
-        let (top_field_sites, top_branches) = emit_root_member_sites(draft, &root_steps, &members);
+        let (top_field_sites, top_groups, top_branches) =
+            emit_root_member_sites(draft, &root_steps, &members);
         // One read site per managed index: a nonunique index is a progressive-prefix
         // scan, a unique index a complete-key exact lookup. There is deliberately no
         // index-write site — maintenance is compiler-owned. Every index site seals as
@@ -474,30 +523,39 @@ impl DurableRegistry {
         // member tree (which carries each branch's materialized record type) is still in
         // hand — it moves into the `RootDef` below.
         //
-        // Executable durable operations exist for the flat keyed root whose fields are
-        // each a scalar or a widened composite (a dense struct, or a closed
+        // Executable durable operations exist for the flat keyed root whose top-level fields
+        // are each a scalar or a widened composite (a dense struct, or a closed
         // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
-        // codec), together with its field-only keyed branches nested to any depth — the shape
-        // the kernel serves. A singleton (keyless) root or any group-bearing root still parks,
-        // as does a nominal field (severed until its lane lands): it carries its identity and
-        // full site set, but the lowerer reports any operation over it as not yet executable.
-        // Composite root keys and keyed branches (including composite-keyed) are executable for
-        // whole/field sites; `has_extras` (a group, or a branch enclosing a group) no longer
-        // parks on a simple branch or a widened field, mirroring the verifier's independent
-        // `keeps_root_flat`.
+        // codec), together with its root-level groups of such fields and its field-only keyed
+        // branches nested to any depth — the shape the kernel serves. A singleton (keyless)
+        // root, a nominal field, or a group nested in a branch or another group parks
+        // (severed until its lane lands): it carries its identity and full site set, but the
+        // lowerer reports any operation over it as not yet executable. Composite root keys and
+        // keyed branches (including composite-keyed) are executable for whole/field sites; a
+        // root-level group no longer parks, mirroring the verifier's independent
+        // `member_flat_at_root`.
+        // `record.fields` (the registry record) carries only the top-level value fields;
+        // its unkeyed groups live in `record.groups`, so a group value never appears here.
         let all_fields_executable = record
             .fields
             .iter()
             .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)));
-        // A keyed root of executable fields with only field-only branches is executable, at
-        // any key arity (one or more columns); a singleton root (no key columns) parks.
+        // A keyed root of executable fields with root-level scalar/widened-field groups and
+        // only field-only branches is executable, at any key arity (one or more columns); a
+        // singleton root (no key columns) parks. `member_flat_at_root` admits a root-level
+        // group of storable-value fields while `member_keeps_root_flat` (the branch-member
+        // predicate) keeps a group parked below the root, so a group in a branch or another
+        // group never makes the root flat — mirroring the verifier's `member_flat_at_root`.
         let keyed = !key_scalars.is_empty();
-        let members_flat = members.iter().all(member_keeps_root_flat);
+        let members_flat = members.iter().all(member_flat_at_root);
         let executable = keyed && all_fields_executable && members_flat;
-        let branches = if executable {
-            build_executable_branches(records, resource, &top_branches)
+        let (branches, groups) = if executable {
+            (
+                build_executable_branches(records, resource, &top_branches),
+                build_executable_groups(&record.groups, &top_groups),
+            )
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
 
         let root_name = draft.intern_string(&store.root.root);
@@ -540,6 +598,7 @@ impl DurableRegistry {
                 record: record.type_id,
                 entry_site,
                 fields,
+                groups,
                 branches,
                 indexes: lowered_indexes,
             }),
@@ -549,8 +608,9 @@ impl DurableRegistry {
 
     /// A registry recording that a root of the named placement is declared, in the
     /// image with a complete identity, but not executable — the kernel does not serve
-    /// its shape (a singleton/keyless root, a group-bearing resource, or a nominal-typed
-    /// field). Used only after the root has entered the draft.
+    /// its shape (a singleton/keyless root, a resource with a nominal-typed field, or a
+    /// group nested in a branch or another group). Used only after the root has entered the
+    /// draft.
     fn declared(root: &str) -> Self {
         Self {
             executable: None,
@@ -1209,18 +1269,21 @@ fn emit_placement_site(draft: &mut ImageDraft, steps: &[SemanticStep]) -> u16 {
 }
 
 /// Emit the operation sites of the root's whole member tree under `root_steps`,
-/// capturing the root's direct field-leaf sites and each top-level branch's captured
-/// sites (recursively) for the flat executable lowerer. A static `group` emits its sites
-/// through [`emit_subtree_sites`] without capture — a group parks the whole root. The
-/// emission order is pre-order, a placement site before its members, mirroring
-/// [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every site resolves
-/// against the verifier's independently reconstructed node set.
+/// capturing the root's direct field-leaf sites, each root-level group's `GroupEntry`
+/// site (in declaration order), and each top-level branch's captured sites (recursively)
+/// for the flat executable lowerer. A root-level group emits one `GroupEntry` site over
+/// the group node and its leaf field-leaf sites (parked, for identity completeness); a
+/// group leaf is never executed through its own site, so only the group's entry site is
+/// captured. The emission order is pre-order, a placement or group node before its
+/// members, mirroring [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every
+/// site resolves against the verifier's independently reconstructed node set.
 fn emit_root_member_sites(
     draft: &mut ImageDraft,
     root_steps: &[SemanticStep],
     members: &[DurableMemberDef],
-) -> (Vec<u16>, Vec<BranchSites>) {
+) -> (Vec<u16>, Vec<u16>, Vec<BranchSites>) {
     let mut top_field_sites = Vec::new();
+    let mut top_group_sites = Vec::new();
     let mut top_branches = Vec::new();
     for member in members {
         match member {
@@ -1229,6 +1292,12 @@ fn emit_root_member_sites(
             }
             DurableMemberDef::Group { id, members } => {
                 let steps = child_steps(root_steps, SemanticStepKind::Group, *id);
+                let entry = draft
+                    .add_site(SiteDef::group_entry(SemanticPath::from_steps(
+                        steps.clone(),
+                    )))
+                    .index();
+                top_group_sites.push(entry);
                 emit_subtree_sites(draft, &steps, members);
             }
             DurableMemberDef::Branch {
@@ -1243,7 +1312,7 @@ fn emit_root_member_sites(
             }
         }
     }
-    (top_field_sites, top_branches)
+    (top_field_sites, top_group_sites, top_branches)
 }
 
 /// Emit one keyed branch's sites under `parent_steps` and capture them recursively: its
@@ -1343,6 +1412,51 @@ fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
             !keys.is_empty() && members.iter().all(member_keeps_root_flat)
         }
     }
+}
+
+/// Whether a root's *direct* member keeps the root flat-executable, mirroring the
+/// verifier's independent `member_flat_at_root`. It admits one more shape than
+/// [`member_keeps_root_flat`]: a root-level unkeyed `group` whose own members are all
+/// storable-value fields (a scalar or a widened composite). A group is a value unit of the
+/// root entry, executable at the root level; a group nested in a branch or in another
+/// group still parks, because branch members are classified by [`member_keeps_root_flat`]
+/// (which keeps `Group => false`), so a group below the root's direct members never makes
+/// its enclosing branch flat.
+fn member_flat_at_root(member: &DurableMemberDef) -> bool {
+    match member {
+        DurableMemberDef::Field { .. } => member_keeps_root_flat(member),
+        DurableMemberDef::Group { members, .. } => members
+            .iter()
+            .all(|inner| matches!(inner, DurableMemberDef::Field { .. })),
+        DurableMemberDef::Branch { .. } => member_keeps_root_flat(member),
+    }
+}
+
+/// The executable root-level group descriptors of a flat-executable root, in declaration
+/// order. Each group's materialized record and its scalar/widened leaves come from the
+/// registry `GroupInfo` (`groups`), and its captured `GroupEntry` site from `sites` — both
+/// in the same declaration order, so a group descriptor and its site align by position.
+/// Called only when the caller has proven the root flat-executable, so every group is a
+/// storable-value-field group.
+fn build_executable_groups(groups: &[crate::types::GroupInfo], sites: &[u16]) -> Vec<DurableGroup> {
+    groups
+        .iter()
+        .zip(sites)
+        .map(|(group, &entry_site)| DurableGroup {
+            name: group.name.clone(),
+            record: group.type_id,
+            entry_site,
+            fields: group
+                .fields
+                .iter()
+                .map(|leaf| DurableGroupLeaf {
+                    name: leaf.name.clone(),
+                    ty: leaf.ty,
+                    required: leaf.required,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// The executable branch descriptors of a flat-executable root, in declaration order,

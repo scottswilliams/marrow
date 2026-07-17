@@ -249,6 +249,7 @@ fn a_root_level_group_graph_seals_flat_except_its_group_leaf_field_site() {
             (true, "field", 3),  // title:            app -> root -> field
             (true, "field", 4),  // notes.text:       app -> root -> branch -> field
             (true, "field", 4),  // notes.createdAt:  app -> root -> branch -> field
+            (true, "group", 3),  // details group:    app -> root -> group (whole-group site)
             (true, "whole", 2),  // ^books entry:     app -> root
         ]
     );

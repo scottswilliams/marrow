@@ -9,12 +9,11 @@
 //! per stored field with a group- or branch-qualified path — a slot in the image
 //! DURABLE member tree, and a contribution to the durable-contract identity the
 //! verifier independently re-encodes. A keyed `branch` of scalar fields is executable
-//! (see `durable_branches`/`durable_nested_branches`); a resource declaring a static
-//! `group` is not yet executable, so every durable operation over a group-bearing root is
-//! a precise typed `check.unsupported` rejection rather than a silent drop. A group's
-//! fields are part of the containing entry's materialized resource value, a model the flat
-//! durable record does not yet carry, so groups park until that materialized-value model
-//! lands.
+//! (see `durable_branches`/`durable_nested_branches`), and a resource declaring a
+//! root-level `group` of scalar/widened leaves is executable too — its whole read/replace/
+//! erase and group-leaf operations run end to end in `durable_groups`. A group nested in a
+//! branch or in another group still parks. This module covers the identity side; its
+//! executability assertions confirm a root-level group no longer parks the root.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_verify::DurableContractId;
@@ -123,27 +122,22 @@ fn unrelated_source_edits_do_not_drift_the_contract_id() {
 }
 
 #[test]
-fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
-    // A resource declaring a static `group` is off the flat-executable path: the group's
-    // scalar fields are part of the containing entry's materialized resource value and its
-    // required-completeness, a model the flat durable record does not yet carry, so every
-    // durable operation over the group-bearing root is a precise typed `check.unsupported`
-    // rejection rather than a silent drop or a guessed partial-group semantics. (A keyed
-    // `branch` on the same resource is executable; the group is what parks the root.)
+fn an_operation_over_a_root_level_group_bearing_root_is_executable() {
+    // A resource declaring a root-level `group` of scalar/widened leaves is on the
+    // flat-executable path: the group's leaves are a markerless value unit of the
+    // containing entry, so a top-level field read (and the group operations, exercised end
+    // to end in `durable_groups`) compiles cleanly rather than parking. (A keyed `branch`
+    // on the same resource is executable too; the nested group inside that branch stays
+    // parked, but it does not park the whole root.)
     let source = format!(
         "{LIBRARY_SOURCE}\npub fn firstTitle(id: int): string? {{\n    return ^books[id].title\n}}\n"
     );
-    let diagnostics = compile(&source, LIBRARY_IDS).expect_err("a group-bearing root parks");
+    let compiled = compile(&source, LIBRARY_IDS);
     assert!(
-        codes(&diagnostics).contains(&"check.unsupported"),
-        "{diagnostics:?}"
+        compiled.is_ok(),
+        "a root-level group-bearing root is executable: {:?}",
+        compiled.err()
     );
-    // The rejection carries a located span (1-based line/column into the source).
-    let hit = diagnostics
-        .iter()
-        .find(|d| d.code == "check.unsupported")
-        .expect("a check.unsupported diagnostic");
-    assert!(hit.line >= 1 && hit.column >= 1, "{hit:?}");
 }
 
 #[test]
@@ -209,7 +203,7 @@ fn a_missing_branch_key_identity_fails_precisely() {
 }
 
 #[test]
-fn operating_on_a_group_or_branch_resource_is_not_yet_executable() {
+fn a_complete_identity_root_level_group_resource_is_executable() {
     let source = r#"resource Book {
     required title: string
 
@@ -223,6 +217,10 @@ store ^books[id: int]: Book
 pub fn title(id: int): string? {
     return ^books[id].title
 }
+
+pub fn pages(id: int): int? {
+    return ^books[id].details.pages
+}
 "#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
@@ -235,16 +233,13 @@ pub fn title(id: int): string? {
          id field Book.details.pages 21212121212121212121212121212121\n\
          high-water 0\n\
          end\n";
-    // The identity is complete, so this is a not-yet-executable rejection — not an
-    // identity gap.
-    let diagnostics = compile(source, ids).expect_err("not yet executable");
+    // A complete-identity root-level group resource is executable: a top-level field read
+    // and a group-leaf read both compile.
+    let compiled = compile(source, ids);
     assert!(
-        codes(&diagnostics).contains(&"check.unsupported"),
-        "{diagnostics:?}"
-    );
-    assert!(
-        !codes(&diagnostics).contains(&"check.durable_identity"),
-        "a complete-identity group resource reports executability, not a gap: {diagnostics:?}"
+        compiled.is_ok(),
+        "a complete-identity root-level group resource is executable: {:?}",
+        compiled.err()
     );
 }
 

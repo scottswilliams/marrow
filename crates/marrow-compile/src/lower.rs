@@ -709,7 +709,9 @@ impl PlaceLocal {
     }
 }
 
-/// A resolved durable target: the whole entry or one field.
+/// A resolved durable target: the whole entry, one field, a whole root-level group, or one
+/// group leaf.
+#[derive(Clone, Copy)]
 enum DurTarget {
     Entry {
         entry_site: u16,
@@ -722,6 +724,29 @@ enum DurTarget {
         ty: GArg,
         required: bool,
     },
+    /// A whole root-level `group` (`^root(k).group`): read, replaced, or erased as one
+    /// materialized `record` value through the `GroupEntry` site `entry_site`.
+    Group {
+        entry_site: u16,
+        record: TypeId,
+    },
+    /// One leaf of a root-level group (`^root(k).group.leaf`). A read materializes the
+    /// whole group through `entry_site` and projects `slot`; a write or clear is a
+    /// whole-group read-modify-write that rewrites `slot` on the read-back group record and
+    /// replaces the group, so a leaf never has a durable site of its own.
+    GroupLeaf {
+        entry_site: u16,
+        slot: u16,
+        ty: GArg,
+        required: bool,
+    },
+}
+
+/// The leaf edit a group-leaf read-modify-write applies to the materialized group record:
+/// set the leaf present to a bare value, or clear a sparse leaf to vacant.
+enum GroupLeafEdit<'e> {
+    Set { value: &'e Expression, ty: GArg },
+    Unset,
 }
 
 /// A node reached along a resolved durable entry address: the root, or a keyed branch on
@@ -6450,7 +6475,10 @@ impl<'a> FnLowerer<'a> {
     fn durable_shape(expr: &Expression) -> Option<DurShape> {
         if is_entry_address(expr) {
             Some(DurShape::Entry)
-        } else if is_field_address(expr) {
+        } else if is_field_address(expr) || is_group_leaf_address(expr) {
+            // A field-exact address, a whole root-level group (both `<entry>.name`), or a
+            // group-leaf address `<entry>.group.leaf`. The resolver disambiguates a group
+            // from a field by name; a group leaf is one field selection deeper.
             Some(DurShape::Field)
         } else {
             None
@@ -6834,8 +6862,8 @@ impl<'a> FnLowerer<'a> {
                     span: *span,
                 })
             }
-            // A field-exact address `<entry-address>.field` at any depth: a field of the
-            // root or of a keyed branch entry, addressed by the entry's whole key-path.
+            // A field-exact address `<entry-address>.field`, a whole root-level group
+            // `<root-address>.group`, or a group-leaf address `<root-address>.group.leaf`.
             Expression::Field {
                 base,
                 name: field_name,
@@ -6843,28 +6871,90 @@ impl<'a> FnLowerer<'a> {
                 span,
                 ..
             } => {
+                // A group-leaf address: the base resolves to a root-level group, and this
+                // selector names one of its leaves. Resolved before the entry-address forms
+                // because its base is a group address, not an entry address.
+                if let Some((keys, group)) = self.resolve_group_address(root, base) {
+                    let Some((slot, leaf)) = group.field_index(field_name) else {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            *name_span,
+                            format!("group `{}` has no field `{field_name}`", group.name),
+                        ));
+                        return None;
+                    };
+                    return Some(DurablePlace {
+                        keys,
+                        target: DurTarget::GroupLeaf {
+                            entry_site: group.entry_site,
+                            slot,
+                            ty: leaf.ty,
+                            required: leaf.required,
+                        },
+                        span: *span,
+                    });
+                }
                 let (keys, node) = self.resolve_entry_address(root, base)?;
-                let Some(field) = node.field(field_name) else {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        *name_span,
-                        node.no_field_message(field_name),
-                    ));
-                    return None;
-                };
-                Some(DurablePlace {
-                    keys,
-                    target: DurTarget::Field {
-                        site: field.site,
-                        ty: field.ty,
-                        required: field.required,
-                    },
-                    span: *span,
-                })
+                if let Some(field) = node.field(field_name) {
+                    return Some(DurablePlace {
+                        keys,
+                        target: DurTarget::Field {
+                            site: field.site,
+                            ty: field.ty,
+                            required: field.required,
+                        },
+                        span: *span,
+                    });
+                }
+                // A whole root-level group address `^root(k).group`. Groups are executable
+                // only at the root level, so only a root node offers one.
+                if let DurNode::Root(root) = node
+                    && let Some(group) = root.group(field_name)
+                {
+                    return Some(DurablePlace {
+                        keys,
+                        target: DurTarget::Group {
+                            entry_site: group.entry_site,
+                            record: group.record,
+                        },
+                        span: *span,
+                    });
+                }
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    *name_span,
+                    node.no_field_message(field_name),
+                ));
+                None
             }
             _ => None,
         }
+    }
+
+    /// Resolve a durable group address `^root(k).group` to its root key-path and the
+    /// addressed root-level group, or `None` when `expr` is not a group address. Only a
+    /// syntactic entry-address base is followed, and only a root node offers groups, so a
+    /// field or branch selector resolves cleanly to `None` without a diagnostic — the
+    /// caller falls through to the entry-address forms.
+    fn resolve_group_address<'e>(
+        &mut self,
+        root: &'a crate::durable::DurableRoot,
+        expr: &'e Expression,
+    ) -> Option<(Vec<DurKey<'e>>, &'a crate::durable::DurableGroup)> {
+        let Expression::Field { base, name, .. } = expr else {
+            return None;
+        };
+        if !is_entry_address(base) {
+            return None;
+        }
+        let (keys, node) = self.resolve_entry_address(root, base)?;
+        let DurNode::Root(root) = node else {
+            return None;
+        };
+        let group = root.group(name)?;
+        Some((keys, group))
     }
 
     /// Resolve a durable whole-entry address expression `^root[key].b1[k1]….bn[kn]` into
@@ -7017,6 +7107,41 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::DurReadField(site), place.span);
                 garg_to_lty(ty).to_optional()
             }
+            // A whole root-level group materializes as one optional group record: the
+            // group's own leaves, present exactly when the entry is present.
+            DurTarget::Group { entry_site, record } => {
+                self.push(Instr::DurReadGroup(entry_site), place.span);
+                LTy::Record {
+                    ty: record,
+                    optional: true,
+                }
+            }
+            // A group leaf reads as group-read-then-project: materialize the whole group,
+            // then project the leaf slot. An absent entry (absent group) short-circuits to
+            // a vacant of the leaf's optional type; a present group yields the leaf wrapped
+            // optional (a required leaf is `SomeWrap`ped, a sparse leaf already reads `T?`).
+            DurTarget::GroupLeaf {
+                entry_site,
+                slot,
+                ty,
+                required,
+                ..
+            } => {
+                self.push(Instr::DurReadGroup(entry_site), place.span);
+                let result = garg_to_lty(ty).to_optional();
+                let to_absent = self.push_branch_present(place.span);
+                self.push(Instr::FieldGet(slot), place.span);
+                if required {
+                    self.push(Instr::SomeWrap, place.span);
+                }
+                let to_end = self.push_jump(place.span);
+                let absent = self.here();
+                self.patch(to_absent, absent);
+                self.push(Instr::VacantLoad(result.image()), place.span);
+                let end = self.here();
+                self.patch(to_end, end);
+                result
+            }
         })
     }
 
@@ -7053,6 +7178,20 @@ impl<'a> FnLowerer<'a> {
             let site = match place.target {
                 DurTarget::Entry { entry_site, .. } => entry_site,
                 DurTarget::Field { site, .. } => site,
+                // A group is markerless — its presence is the entry's presence — so a
+                // group-cell presence probe has no distinct meaning yet; a group leaf has no
+                // site of its own. Probe the containing entry instead.
+                DurTarget::Group { .. } | DurTarget::GroupLeaf { .. } => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckUnsupported.as_str(),
+                        self.file,
+                        arg.value.span(),
+                        "`exists` over a group or a group leaf is not supported; probe the \
+                         containing entry `^root(key)`"
+                            .to_string(),
+                    ));
+                    return None;
+                }
             };
             self.push(Instr::DurExists(site), place.span);
             return Some(LTy::bare_scalar(ScalarType::Bool));
@@ -7770,7 +7909,125 @@ impl<'a> FnLowerer<'a> {
                 };
                 self.push(instr, place.span);
             }
+            // `^root(k).group = R.group(…)`: an exact whole-group replacement, group-scoped
+            // (the entry's other groups, top-level fields, and branches are untouched). The
+            // key-path is pushed first, then the group record, the order `DurReplaceGroup`
+            // reads. A replace over an absent entry is Missing and touches nothing — a group
+            // is a value unit of an existing entry, never created on its own.
+            DurTarget::Group { entry_site, record } => {
+                if self.emit_key_path(&place.keys, place.span).is_none() {
+                    return;
+                }
+                if self
+                    .lower_as(
+                        value,
+                        LTy::Record {
+                            ty: record,
+                            optional: false,
+                        },
+                    )
+                    .is_none()
+                {
+                    return;
+                }
+                self.push(Instr::DurReplaceGroup(entry_site), place.span);
+            }
+            // `^root(k).group.leaf = value`: a whole-group read-modify-write.
+            DurTarget::GroupLeaf {
+                entry_site,
+                slot,
+                ty,
+                ..
+            } => {
+                self.lower_group_leaf_rmw(
+                    &place.keys,
+                    entry_site,
+                    slot,
+                    GroupLeafEdit::Set { value, ty },
+                    place.span,
+                );
+            }
         }
+    }
+
+    /// Lower a group-leaf read-modify-write `^root(k).group.leaf = value` or
+    /// `delete ^root(k).group.leaf`: evaluate the key-path once into slots, read the whole
+    /// group, and — only when the entry (and so the group) is present — rewrite the leaf
+    /// slot (set present, or unset to vacant) on the materialized group record and replace
+    /// the whole group. An absent entry short-circuits to a no-op: a group is a value unit
+    /// of an existing entry, never created on its own. The group is materialized whole and
+    /// written back, so a sibling leaf is preserved.
+    fn lower_group_leaf_rmw(
+        &mut self,
+        keys: &[DurKey],
+        entry_site: u16,
+        slot: u16,
+        edit: GroupLeafEdit,
+        span: SourceSpan,
+    ) -> Option<()> {
+        // Evaluate each key column once into a fresh slot (root-first) so the read and the
+        // replace key off the same evaluated columns.
+        let mut key_slots = Vec::with_capacity(keys.len());
+        for column in keys {
+            let key_slot = match column.key {
+                PlaceKey::Bound(existing) => existing,
+                PlaceKey::Expr(_) => {
+                    let key_slot = self.alloc_slot();
+                    self.emit_key(column.key, column.key_ty, span)?;
+                    self.push(Instr::LocalSet(key_slot), span);
+                    key_slot
+                }
+                PlaceKey::Identity(_) => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckUnsupported.as_str(),
+                        self.file,
+                        span,
+                        "writing a group leaf through an identity key is not yet supported"
+                            .to_string(),
+                    ));
+                    return None;
+                }
+            };
+            key_slots.push(key_slot);
+        }
+        // A set evaluates its bare leaf value once into a slot before the read, so the read
+        // record is on top of the stack when the leaf op runs.
+        let value_slot = match &edit {
+            GroupLeafEdit::Set { value, ty } => {
+                let value_slot = self.alloc_slot();
+                self.lower_as(value, garg_to_lty(*ty))?;
+                self.push(Instr::LocalSet(value_slot), span);
+                Some(value_slot)
+            }
+            GroupLeafEdit::Unset => None,
+        };
+        // Read the group; present -> its materialized record is on the stack and the write
+        // back runs; absent -> jump past the write back, a clean no-op (the group was never
+        // there to modify).
+        self.emit_slots(&key_slots, span);
+        self.push(Instr::DurReadGroup(entry_site), span);
+        let to_end = self.push_branch_present(span);
+        // Present: rewrite the leaf slot on the materialized record, then replace the group.
+        match edit {
+            GroupLeafEdit::Set { .. } => {
+                self.push(
+                    Instr::LocalGet(value_slot.expect("a set evaluates its value")),
+                    span,
+                );
+                self.push(Instr::FieldSet(slot), span);
+            }
+            GroupLeafEdit::Unset => {
+                self.push(Instr::FieldUnset(slot), span);
+            }
+        }
+        let rec_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(rec_slot), span);
+        self.emit_slots(&key_slots, span);
+        self.push(Instr::LocalGet(rec_slot), span);
+        self.push(Instr::DurReplaceGroup(entry_site), span);
+        let end = self.here();
+        self.patch(to_end, end);
+        Some(())
     }
 
     /// Lower `^r(k) = record` or `^r(k).branch(bk) = Resource.branch(...)` to the
@@ -7863,6 +8120,33 @@ impl<'a> FnLowerer<'a> {
         let Some(place) = self.resolve_durable(path) else {
             return;
         };
+        // A group-leaf clear is a whole-group read-modify-write (its key-path is evaluated
+        // inside the helper), so it is handled before the shared single key-path emission.
+        if let DurTarget::GroupLeaf {
+            entry_site,
+            slot,
+            required,
+            ..
+        } = place.target
+        {
+            if required {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    place.span,
+                    "a required group leaf cannot be deleted".to_string(),
+                ));
+                return;
+            }
+            self.lower_group_leaf_rmw(
+                &place.keys,
+                entry_site,
+                slot,
+                GroupLeafEdit::Unset,
+                place.span,
+            );
+            return;
+        }
         let key_path = place.bound_key_path();
         if self.emit_key_path(&place.keys, place.span).is_none() {
             return;
@@ -7887,6 +8171,14 @@ impl<'a> FnLowerer<'a> {
                     return;
                 }
                 self.push(Instr::DurEraseField(site), place.span);
+            }
+            // `delete ^root(k).group`: erase only that group's leaves; the entry's other
+            // groups, top-level fields, and branches are untouched.
+            DurTarget::Group { entry_site, .. } => {
+                self.push(Instr::DurEraseGroup(entry_site), place.span);
+            }
+            DurTarget::GroupLeaf { .. } => {
+                unreachable!("a group-leaf delete is handled before the shared key-path emit")
             }
         }
     }
@@ -8479,26 +8771,36 @@ fn is_entry_address(expr: &Expression) -> bool {
 }
 
 /// Whether `expr` is a durable field-exact address `<entry-address>.field` at any depth: a
-/// field selection on an entry address.
+/// field selection on an entry address. A whole root-level group `^root(k).group` has the
+/// same shape; the resolver tells a group from a field by name.
 fn is_field_address(expr: &Expression) -> bool {
     matches!(expr, Expression::Field { base, .. } if is_entry_address(base))
 }
 
-/// A durable operation over a declared-but-not-executable root (a singleton root, or a
-/// root whose resource declares a static `group` or a nominal-typed field): the shape's
-/// identity is complete and in the image, but the kernel does not yet serve it, so the
-/// operation is rejected precisely rather than silently dropped. Keyed roots — single-column
-/// or a composite tuple — whose fields are scalars or widened values (`struct`/`enum`/
-/// `Option`), and their `branch` placements, are executable.
+/// Whether `expr` is a durable group-leaf address `^root(k).group.leaf`: a field selection
+/// whose base is itself a field-of-an-entry-address (the whole-group address). The resolver
+/// confirms the middle selector names a root-level group; a base that turns out to be a
+/// stored field is a clean resolution failure, not a group leaf.
+fn is_group_leaf_address(expr: &Expression) -> bool {
+    matches!(expr, Expression::Field { base, .. } if is_field_address(base))
+}
+
+/// A durable operation over a declared-but-not-executable root (a singleton root, a root
+/// whose resource declares a nominal-typed field, or one whose only durable content is a
+/// group nested in a branch or another group): the shape's identity is complete and in the
+/// image, but the kernel does not yet serve it, so the operation is rejected precisely
+/// rather than silently dropped. Keyed roots — single-column or a composite tuple — whose
+/// top-level fields are scalars or widened values (`struct`/`enum`/`Option`), their
+/// root-level `group` members, and their `branch` placements, are executable.
 fn not_yet_executable(file: &str, span: SourceSpan, root: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,
         span,
         format!(
-            "durable operations over `^{root}` are not yet executable: a singleton root, or a \
-             root whose resource declares a static `group` or a nominal-typed field, declares \
-             and verifies its identity but cannot yet be read or written"
+            "durable operations over `^{root}` are not yet executable: a singleton root, a root \
+             whose resource declares a nominal-typed field, or a group nested in a branch or \
+             another group, declares and verifies its identity but cannot yet be read or written"
         ),
     )
 }
