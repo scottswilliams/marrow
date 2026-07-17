@@ -46,10 +46,8 @@ pub fn format_source(source: &str) -> String {
 
 /// Render an already-parsed file back to canonical Marrow `.mw` source, reading
 /// leaf text and blank-line structure from the `source` the AST's spans index
-/// into. `format_source` parses with the production parser and delegates here;
-/// the corpus converter reuses it to print an AST produced by the frozen layout
-/// parser (which shares this crate's AST) with the brace formatter.
-pub(crate) fn format_parsed(source: &str, parsed: &crate::ast::ParsedSource) -> String {
+/// into. `format_source` parses with the production parser and delegates here.
+fn format_parsed(source: &str, parsed: &crate::ast::ParsedSource) -> String {
     let file = &parsed.file;
     let mut sections: Vec<FormatSection> = Vec::new();
 

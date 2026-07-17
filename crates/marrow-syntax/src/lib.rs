@@ -9,11 +9,8 @@
 
 mod active_call;
 mod ast;
-#[cfg(test)]
-mod corpus_converter;
 mod diagnostic;
 mod format;
-mod layout_legacy;
 mod lexer;
 mod literal;
 mod parse_decl;

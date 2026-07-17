@@ -329,9 +329,8 @@ fn char_boundaries(source: &str) -> Vec<usize> {
 /// The brace-grammar fuzz corpus (BS01): declarations with `{ … }` bodies —
 /// resource, store, enum, and function — plus `=>` match arms, `//` and `///`
 /// comments, `\u{}` escapes, bracket key groups, and angle generics, including the
-/// unclosed and stray-brace forms that a member loop must survive. Unlike the layout
-/// corpus this is written against the live grammar, so it runs un-ignored. The
-/// layout corpus stays ignored until the converter flip rewrites it.
+/// unclosed and stray-brace forms that a member loop must survive. It is written
+/// against the live brace grammar.
 fn brace_grammar_corpus() -> Vec<String> {
     [
         "module app\nfn run() {\n    return\n}\n",

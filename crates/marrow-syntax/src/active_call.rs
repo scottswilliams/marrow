@@ -1032,12 +1032,7 @@ fn context_tokens(lexed: &LexedSource) -> Vec<Token> {
     lexed
         .tokens
         .iter()
-        .filter(|token| {
-            !matches!(
-                token.kind,
-                TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
-            )
-        })
+        .filter(|token| !matches!(token.kind, TokenKind::Eof))
         .copied()
         .collect()
 }

@@ -12,8 +12,8 @@
 //! satisfied by any tiling; the load-bearing guard is the span well-formedness
 //! this asserts alongside it — spans in bounds, sorted by start, and
 //! non-overlapping. A regression that made the interpolation lexer emit
-//! overlapping or out-of-order spans (the case `tokens_in_range` warns about),
-//! or that dropped a byte from a token boundary, breaks this property.
+//! overlapping or out-of-order spans, or that dropped a byte from a token
+//! boundary, breaks this property.
 
 use marrow_syntax::lex_source;
 

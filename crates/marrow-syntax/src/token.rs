@@ -39,11 +39,6 @@ pub enum TokenKind {
     Keyword(Keyword),
     Comment,
     DocComment,
-    /// Layout block tokens. No longer emitted by the brace lexer; retained because
-    /// the frozen pre-migration snapshot (`layout_legacy`) still emits them and the
-    /// converter flip consumes that snapshot.
-    Indent,
-    Dedent,
     Newline,
     Eof,
     LeftParen,
@@ -183,24 +178,10 @@ pub fn is_expression_path_segment_keyword(keyword: Keyword) -> bool {
     )
 }
 
-/// The tokens whose spans fall entirely within `[start_byte, end_byte)`. Relies
-/// on tokens being sorted by start byte with monotonic end bytes (true in the
-/// value positions that call this; nested interpolation would break it).
-pub(crate) fn tokens_in_range(tokens: &[Token], start_byte: usize, end_byte: usize) -> &[Token] {
-    let first = tokens.partition_point(|token| token.span.start_byte < start_byte);
-    let last = first + tokens[first..].partition_point(|token| token.span.end_byte <= end_byte);
-    &tokens[first..last]
-}
-
 pub(crate) fn is_trivia(kind: TokenKind) -> bool {
     matches!(
         kind,
-        TokenKind::Newline
-            | TokenKind::Eof
-            | TokenKind::Comment
-            | TokenKind::DocComment
-            | TokenKind::Indent
-            | TokenKind::Dedent
+        TokenKind::Newline | TokenKind::Eof | TokenKind::Comment | TokenKind::DocComment
     )
 }
 
