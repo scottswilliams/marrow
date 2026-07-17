@@ -26,7 +26,16 @@ const IDS: &str = "marrow ids v0\n\
 
 /// The shared schema prefix: a `Book` root with a single-level `notes(pos)` branch. Each
 /// test appends one function whose `for` head is the defect under test.
-const HEADER: &str = "resource Book\n    required title: string\n\n    notes(pos: int)\n        required text: string\n\nstore ^books(id: int): Book\n\n";
+const HEADER: &str = r#"resource Book {
+    required title: string
+
+    notes[pos: int] {
+        required text: string
+    }
+}
+
+store ^books[id: int]: Book
+"#;
 
 /// Capture and compile `HEADER + body`, returning the rejection diagnostics.
 fn diagnostics_of(body: &str) -> Vec<SourceDiagnostic> {
@@ -66,100 +75,186 @@ fn assert_rejected(body: &str, code: &str) {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_for_without_at_most_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k in ^books\n        t += k\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k in ^books {
+        t += k
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_bounded_traversal_without_on_more_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k in ^books at most 2\n        t += k\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k in ^books at most 2 {
+        t += k
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn at_most_on_a_range_for_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for i in 0..10 at most 5\n        t += i\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for i in 0..10 at most 5 {
+        t += i
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn at_most_on_a_local_collection_for_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    var xs: List[int] = List()\n    xs = append(xs, 1)\n    for x in xs at most 5\n        t += x\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    var xs: List<int> = List()
+    xs = append(xs, 1)
+    for x in xs at most 5 {
+        t += x
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_reversed_durable_traversal_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k in reversed ^books at most 5\n        t += k\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k in reversed ^books at most 5 {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.unsupported",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_for_binding_an_entry_value_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k, v in ^books at most 5\n        t += k\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k, v in ^books at most 5 {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.unsupported",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_literal_bound_is_rejected() {
     assert_rejected(
-        "pub fn f(n: int): int\n    var t = 0\n    for k in ^books at most n\n        t += k\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(n: int): int {
+    var t = 0
+    for k in ^books at most n {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_zero_bound_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k in ^books at most 0\n        t += k\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k in ^books at most 0 {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_negative_bound_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k in ^books at most -1\n        t += k\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k in ^books at most -1 {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_oversized_bound_is_rejected() {
     assert_rejected(
-        "pub fn f(): int\n    var t = 0\n    for k in ^books at most 65537\n        t += k\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(): int {
+    var t = 0
+    for k in ^books at most 65537 {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_unknown_traversed_branch_is_rejected() {
     assert_rejected(
-        "pub fn f(n: int): int\n    var t = 0\n    for p in ^books(n).unknownBranch at most 5\n        t += p\n    on more\n        t = -1\n    return t\n",
+        r#"pub fn f(n: int): int {
+    var t = 0
+    for p in ^books[n].unknownBranch at most 5 {
+        t += p
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
         "check.type",
     );
 }

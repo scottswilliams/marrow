@@ -47,7 +47,6 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 /// reachability fixpoint, a layered topological order, and cycle detection all report
 /// `passed` through the production `marrow test` path.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn graph_report_conformance_fixture_passes_on_the_production_path() {
     let output = run_in(
         &conformance_dir("graph_report"),
@@ -72,7 +71,6 @@ fn graph_report_conformance_fixture_passes_on_the_production_path() {
 /// report and a trailing newline; JSONL carries the identical text as the `data`
 /// field of a `value` outcome, so the two renderings agree on the same bytes.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn report_renders_a_deterministic_multiline_report_through_run() {
     let dir = conformance_dir("graph_report");
     let input = "-> a\na -> b\nb -> c";
@@ -112,7 +110,6 @@ fn report_renders_a_deterministic_multiline_report_through_run() {
 /// nodes are named on the `-- cycle --` line, evidencing the bounded Kahn traversal
 /// runs on the real VM, not only under `marrow test`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn report_detects_a_cycle_through_run() {
     let dir = conformance_dir("graph_report");
     let input = "a -> b\nb -> c\nc -> a\nd -> a";

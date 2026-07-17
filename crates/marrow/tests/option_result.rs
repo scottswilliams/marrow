@@ -77,7 +77,6 @@ fn fixture_dir() -> PathBuf {
 /// exhaustive `match`, nested `Option[Option[int]]` distinctness, exact equality,
 /// and prefix `try` success and error propagation all report `passed`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn option_result_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -100,20 +99,20 @@ fn option_result_conformance_fixture_passes_on_the_production_path() {
 /// A returned `Option`/`Result` value renders through the VM via the sealed enum
 /// names, for `some`, `none`, and `err`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn option_and_result_values_render_through_the_vm() {
     let temp = TempDir::new("render");
     project(
         &temp,
-        "pub fn opt(n: int): Option[int]\n\
-         \x20   if n == 0\n\
-         \x20       return none\n\
-         \x20   return some(n)\n\
-         \n\
-         pub fn res(n: int): Result[int, string]\n\
-         \x20   if n < 0\n\
-         \x20       return err(\"neg\")\n\
-         \x20   return ok(n)\n",
+        r#"pub fn opt(n: int): Option<int> {
+    if n == 0 { return none }
+    return some(n)
+}
+
+pub fn res(n: int): Result<int, string> {
+    if n < 0 { return err("neg") }
+    return ok(n)
+}
+"#,
     );
     let some = run_in(&temp, &["run", "opt", "--format", "jsonl", "--", "7"]);
     let stdout = String::from_utf8_lossy(&some.stdout);
@@ -139,17 +138,19 @@ fn option_and_result_values_render_through_the_vm() {
 /// A `try` whose error type does not match the function's `Result` error type is a
 /// typed `check.type` (same `E`, no implicit conversion).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_try_with_a_mismatched_error_type_is_reported() {
     let temp = TempDir::new("mismatchE");
     project(
         &temp,
-        "pub fn g(n: int): Result[int, string]\n\
-         \x20   return ok(n)\n\
-         \n\
-         pub fn f(): Result[int, int]\n\
-         \x20   const x = try g(1)\n\
-         \x20   return ok(x)\n",
+        r#"pub fn g(n: int): Result<int, string> {
+    return ok(n)
+}
+
+pub fn f(): Result<int, int> {
+    const x = try g(1)
+    return ok(x)
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -160,11 +161,18 @@ fn a_try_with_a_mismatched_error_type_is_reported() {
 /// A `try` on a non-`Result` value, and a `try` outside a `Result`-returning
 /// function, are typed `check.type` diagnostics.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_try_in_the_wrong_context_is_reported() {
     for source in [
-        "pub fn f(): Result[int, string]\n    const x = try 5\n    return ok(x)\n",
-        "pub fn f(): int\n    const x = try 5\n    return x\n",
+        r#"pub fn f(): Result<int, string> {
+    const x = try 5
+    return ok(x)
+}
+"#,
+        r#"pub fn f(): int {
+    const x = try 5
+    return x
+}
+"#,
     ] {
         let temp = TempDir::new("trycontext");
         project(&temp, source);
@@ -183,7 +191,16 @@ fn a_try_in_the_wrong_context_is_reported() {
 #[test]
 #[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_builtin_generic_name_is_reported() {
-    for decl in ["enum Option\n    a\n", "struct Result\n    x: int\n"] {
+    for decl in [
+        r#"enum Option {
+    a
+}
+"#,
+        r#"struct Result {
+    x: int
+}
+"#,
+    ] {
         let temp = TempDir::new("reserved");
         project(&temp, &format!("{decl}\npub fn f(): int\n    return 0\n"));
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
@@ -200,7 +217,6 @@ fn redeclaring_a_builtin_generic_name_is_reported() {
 /// statement, a block-form `try`/`catch`, and a stray `catch` all report
 /// `parse.syntax` and keep the parse total.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_removed_throw_catch_channel_is_reported() {
     for source in [
         "pub fn f(): int\n    throw 5\n",
@@ -301,27 +317,30 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
 /// collide: both are reached solely through member syntax (`s.none`, `E::ok`),
 /// which no built-in ever occupies. Such a program checks and runs.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_struct_field_or_enum_variant_may_spell_a_builtin_name() {
     let temp = TempDir::new("member-name-ok");
     project(
         &temp,
-        "struct S\n\
-         \x20   none: int\n\
-         \x20   trim: int\n\
-         \n\
-         enum E\n\
-         \x20   ok\n\
-         \x20   err\n\
-         \n\
-         pub fn pick(b: bool): E\n\
-         \x20   if b\n\
-         \x20       return E::ok\n\
-         \x20   return E::err\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   const s = S(none: 3, trim: 4)\n\
-         \x20   return s.none + s.trim\n",
+        r#"struct S {
+    none: int
+    trim: int
+}
+
+enum E {
+    ok
+    err
+}
+
+pub fn pick(b: bool): E {
+    if b { return E::ok }
+    return E::err
+}
+
+pub fn f(): int {
+    const s = S(none: 3, trim: 4)
+    return s.none + s.trim
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

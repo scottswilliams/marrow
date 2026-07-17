@@ -15,21 +15,27 @@ use std::process::{Command, Output};
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
 
 /// The counter tracer project: one durable root over one resource.
-const COUNTER_SOURCE: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \x20   label: string\n\
-     \n\
-     store ^counters(name: string): Counter\n\
-     \n\
-     pub fn set(name: string, v: int)\n\
-     \x20   transaction\n\
-     \x20       ^counters(name) = Counter(value: v)\n\
-     \n\
-     pub fn get(name: string): int?\n\
-     \x20   return ^counters(name).value\n\
-     \n\
-     test \"storeless arithmetic\"\n\
-     \x20   assert 1 + 1 == 2\n";
+const COUNTER_SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[name: string]: Counter
+
+pub fn set(name: string, v: int) {
+    transaction {
+        ^counters[name] = Counter(value: v)
+    }
+}
+
+pub fn get(name: string): int? {
+    return ^counters[name].value
+}
+
+test "storeless arithmetic" {
+    assert 1 + 1 == 2
+}
+"#;
 
 struct TempDir {
     root: PathBuf,
@@ -118,7 +124,6 @@ fn contract_of(source: &str, ids: &str) -> marrow_verify::DurableContractId {
 /// CI path: `marrow test` reports the typed `check.durable_identity` diagnostic
 /// and writes nothing into the tree.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
     let temp = TempDir::new("no-ledger-test");
     project(&temp, COUNTER_SOURCE);
@@ -145,7 +150,6 @@ fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
 /// and re-running on a complete ledger is a no-op (mint fires only for a genuinely
 /// new declaration).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn run_mints_missing_identities_once_and_reuses_them() {
     let temp = TempDir::new("run-mints");
     project(&temp, COUNTER_SOURCE);
@@ -200,7 +204,6 @@ fn run_mints_missing_identities_once_and_reuses_them() {
 /// committed `marrow.ids` included) at a different location reuses the
 /// committed ids — nothing re-mints and the artifact stays byte-identical.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
     let temp = TempDir::new("clone-src");
     project(&temp, COUNTER_SOURCE);
@@ -247,7 +250,6 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
 /// a merged double-mint (two rows claiming one anchor) are both rejected whole
 /// with the typed corruption code, and the run never rewrites the artifact.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn conflicted_and_double_minted_artifacts_reject_whole() {
     let temp = TempDir::new("merge-conflict");
     project(&temp, COUNTER_SOURCE);
@@ -304,7 +306,6 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
 /// end marker) is rejected whole with the typed corruption code — never
 /// half-read, never silently re-minted over.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
     let temp = TempDir::new("torn");
     project(&temp, COUNTER_SOURCE);
@@ -339,7 +340,6 @@ fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
 /// tombstoned `(kind, path)` fails precisely on every path — `marrow run` does
 /// not mint over it and the artifact stays byte-identical.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
     let temp = TempDir::new("tombstone");
     project(&temp, COUNTER_SOURCE);
@@ -386,13 +386,16 @@ const LIBRARY_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-const LIBRARY_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn title(id: int): string?\n\
-     \x20   return ^books(id).title\n";
+const LIBRARY_SOURCE: &str = r#"resource Book {
+    required title: string
+}
+
+store ^books[id: int]: Book
+
+pub fn title(id: int): string? {
+    return ^books[id].title
+}
+"#;
 
 /// Renaming a durable field preserves the durable-contract identity when the
 /// ledger anchor moves with it (same id at the new path), and a delete-then-
@@ -400,7 +403,6 @@ const LIBRARY_SOURCE: &str = "resource Book\n\
 /// property the descriptor-over-ledger-ids payload exists for, observed
 /// through the full production path: capture → compile → verify.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_rename_with_a_moved_anchor_preserves_the_contract_id() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 

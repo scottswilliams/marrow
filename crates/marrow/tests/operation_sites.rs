@@ -69,14 +69,17 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
 
 // A flat single-column keyed root of scalar fields: a kernel-executable shape. Its
 // whole-payload and field-leaf sites seal as `Flat`.
-const FLAT_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \x20   subtitle: string\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"books\"\n";
+const FLAT_SOURCE: &str = r#"resource Book {
+    required title: string
+    subtitle: string
+}
+
+store ^books[id: int]: Book
+
+pub fn label(): string {
+    return "books"
+}
+"#;
 
 const FLAT_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -92,15 +95,18 @@ const FLAT_IDS: &str = "marrow ids v0\n\
 // FLAT_SOURCE plus an appended sparse `edition` field: append-only optional-field
 // evolution. The record and graph grow by one field; every prior field's site is
 // unchanged.
-const WIDENED_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \x20   subtitle: string\n\
-     \x20   edition: string\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"books\"\n";
+const WIDENED_SOURCE: &str = r#"resource Book {
+    required title: string
+    subtitle: string
+    edition: string
+}
+
+store ^books[id: int]: Book
+
+pub fn label(): string {
+    return "books"
+}
+"#;
 
 const WIDENED_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -117,20 +123,25 @@ const WIDENED_IDS: &str = "marrow ids v0\n\
 // A resource with a top-level field, a static `group` holding a field, and a keyed
 // `branch` holding two fields — a non-flat graph whose every node seals as a parked
 // site.
-const NESTED_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   details\n\
-     \x20       pages: int\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \x20       createdAt: instant\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"books\"\n";
+const NESTED_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+    }
+
+    notes[noteId: string] {
+        required text: string
+        createdAt: instant
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn label(): string {
+    return "books"
+}
+"#;
 
 const NESTED_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -149,7 +160,6 @@ const NESTED_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_flat_root_seals_a_flat_whole_payload_and_field_site_per_node() {
     // The flat executable root: one whole-payload site over the root, one field-leaf
     // site per top-level field, all Flat.
@@ -168,17 +178,21 @@ fn a_flat_root_seals_a_flat_whole_payload_and_field_site_per_node() {
 // scalar-field branch `notes`: the E03/E03w executable shape. The root and its
 // top-level field seal Flat, and the branch's whole-payload site and each of its field
 // leaves seal Flat too (a branch entry and a branch field-exact operation).
-const FLAT_BRANCH_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \x20       pinned: bool\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"books\"\n";
+const FLAT_BRANCH_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    notes[noteId: string] {
+        required text: string
+        pinned: bool
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn label(): string {
+    return "books"
+}
+"#;
 
 const FLAT_BRANCH_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -195,7 +209,6 @@ const FLAT_BRANCH_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_flat_root_with_a_simple_branch_seals_flat_branch_entry_and_branch_field_sites() {
     // A branch entry site (whole payload, depth 3) and each branch field-leaf site
     // (depth 4) seal Flat on a flat-executable root — the field-exact branch tail.
@@ -213,7 +226,6 @@ fn a_flat_root_with_a_simple_branch_seals_flat_branch_entry_and_branch_field_sit
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn every_keyed_placement_and_field_of_a_nested_graph_gets_a_sealed_parked_site() {
     // The whole graph emits and seals sites: a whole-payload site over the root and
     // over the `notes` branch, plus a field-leaf site for every stored field —
@@ -243,7 +255,6 @@ fn every_keyed_placement_and_field_of_a_nested_graph_gets_a_sealed_parked_site()
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_field_site_seals_at_its_full_concrete_address() {
     // The deepest concrete address here — a branch field `notes.text` — seals as a
     // parked field site whose resolved path is the full chain
@@ -262,7 +273,6 @@ fn a_branch_field_site_seals_at_its_full_concrete_address() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn appending_an_optional_field_widens_broad_demand_without_touching_field_only_sites() {
     // Broad (whole-payload) demand derives from the contract: appending a sparse
     // field grows the root's record — so the whole-payload site's payload shape (its
@@ -298,7 +308,6 @@ fn appending_an_optional_field_widens_broad_demand_without_touching_field_only_s
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_durable_site_table_scales_with_the_graph_not_with_operation_count() {
     // Compact effect sites: the site table holds one entry per graph node (a
     // whole-payload site per placement, a field-leaf site per field), independent of

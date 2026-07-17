@@ -38,89 +38,122 @@ const IDS: &str = "marrow ids v0\n\
 /// The exports exercise the nested constructor, field-exact reads/writes at depth, deep
 /// sets under absent ancestors, whole-entry erase preserving descendants, and bounded
 /// traversal over the inner `tags` layer.
-const SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \n\
-     \x20       tags(tagId: int)\n\
-     \x20           required weight: int\n\
-     \x20           hot: bool\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn setRoot(id: int, t: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id) = Book(title: t)\n\
-     \n\
-     pub fn addNote(id: int, nid: string, body: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
-     \n\
-     pub fn addTag(id: int, nid: string, tid: int, w: int)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid).tags(tid) = Book.notes.tags(weight: w)\n\
-     \n\
-     pub fn addFullTag(id: int, nid: string, tid: int, w: int, h: bool)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid).tags(tid) = Book.notes.tags(weight: w, hot: h)\n\
-     \n\
-     pub fn setTagWeight(id: int, nid: string, tid: int, w: int)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid).tags(tid).weight = w\n\
-     \n\
-     pub fn setTagHot(id: int, nid: string, tid: int, h: bool)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid).tags(tid).hot = h\n\
-     \n\
-     pub fn clearTagHot(id: int, nid: string, tid: int)\n\
-     \x20   transaction\n\
-     \x20       delete ^books(id).notes(nid).tags(tid).hot\n\
-     \n\
-     pub fn eraseTag(id: int, nid: string, tid: int)\n\
-     \x20   transaction\n\
-     \x20       delete ^books(id).notes(nid).tags(tid)\n\
-     \n\
-     pub fn eraseNote(id: int, nid: string)\n\
-     \x20   transaction\n\
-     \x20       delete ^books(id).notes(nid)\n\
-     \n\
-     pub fn tagWeight(id: int, nid: string, tid: int): int?\n\
-     \x20   return ^books(id).notes(nid).tags(tid).weight\n\
-     \n\
-     pub fn tagHot(id: int, nid: string, tid: int): bool?\n\
-     \x20   return ^books(id).notes(nid).tags(tid).hot\n\
-     \n\
-     pub fn tagWeightMaterialized(id: int, nid: string, tid: int): int?\n\
-     \x20   if const t = ^books(id).notes(nid).tags(tid)\n\
-     \x20       return t.weight\n\
-     \x20   return absent\n\
-     \n\
-     pub fn tagPresent(id: int, nid: string, tid: int): bool\n\
-     \x20   return exists(^books(id).notes(nid).tags(tid))\n\
-     \n\
-     pub fn notePresent(id: int, nid: string): bool\n\
-     \x20   return exists(^books(id).notes(nid))\n\
-     \n\
-     pub fn rootPresent(id: int): bool\n\
-     \x20   return exists(^books(id))\n\
-     \n\
-     pub fn sumTags(id: int, nid: string): int\n\
-     \x20   var total = 0\n\
-     \x20   for t in ^books(id).notes(nid).tags at most 100\n\
-     \x20       total += t\n\
-     \x20   on more\n\
-     \x20       total = total + 1000\n\
-     \x20   return total\n\
-     \n\
-     pub fn sumTagsBounded(id: int, nid: string): int\n\
-     \x20   var total = 0\n\
-     \x20   for t in ^books(id).notes(nid).tags at most 2\n\
-     \x20       total += t\n\
-     \x20   on more\n\
-     \x20       total = total + 1000\n\
-     \x20   return total\n";
+const SOURCE: &str = r#"resource Book {
+    required title: string
+
+    notes[noteId: string] {
+        required text: string
+
+        tags[tagId: int] {
+            required weight: int
+            hot: bool
+        }
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn setRoot(id: int, t: string) {
+    transaction {
+        ^books[id] = Book(title: t)
+    }
+}
+
+pub fn addNote(id: int, nid: string, body: string) {
+    transaction {
+        ^books[id].notes[nid] = Book.notes(text: body)
+    }
+}
+
+pub fn addTag(id: int, nid: string, tid: int, w: int) {
+    transaction {
+        ^books[id].notes[nid].tags[tid] = Book.notes.tags(weight: w)
+    }
+}
+
+pub fn addFullTag(id: int, nid: string, tid: int, w: int, h: bool) {
+    transaction {
+        ^books[id].notes[nid].tags[tid] = Book.notes.tags(weight: w, hot: h)
+    }
+}
+
+pub fn setTagWeight(id: int, nid: string, tid: int, w: int) {
+    transaction {
+        ^books[id].notes[nid].tags[tid].weight = w
+    }
+}
+
+pub fn setTagHot(id: int, nid: string, tid: int, h: bool) {
+    transaction {
+        ^books[id].notes[nid].tags[tid].hot = h
+    }
+}
+
+pub fn clearTagHot(id: int, nid: string, tid: int) {
+    transaction {
+        delete ^books[id].notes[nid].tags[tid].hot
+    }
+}
+
+pub fn eraseTag(id: int, nid: string, tid: int) {
+    transaction {
+        delete ^books[id].notes[nid].tags[tid]
+    }
+}
+
+pub fn eraseNote(id: int, nid: string) {
+    transaction {
+        delete ^books[id].notes[nid]
+    }
+}
+
+pub fn tagWeight(id: int, nid: string, tid: int): int? {
+    return ^books[id].notes[nid].tags[tid].weight
+}
+
+pub fn tagHot(id: int, nid: string, tid: int): bool? {
+    return ^books[id].notes[nid].tags[tid].hot
+}
+
+pub fn tagWeightMaterialized(id: int, nid: string, tid: int): int? {
+    if const t = ^books[id].notes[nid].tags[tid] {
+        return t.weight
+    }
+    return absent
+}
+
+pub fn tagPresent(id: int, nid: string, tid: int): bool {
+    return exists(^books[id].notes[nid].tags[tid])
+}
+
+pub fn notePresent(id: int, nid: string): bool {
+    return exists(^books[id].notes[nid])
+}
+
+pub fn rootPresent(id: int): bool {
+    return exists(^books[id])
+}
+
+pub fn sumTags(id: int, nid: string): int {
+    var total = 0
+    for t in ^books[id].notes[nid].tags at most 100 {
+        total += t
+    } on more {
+        total = total + 1000
+    }
+    return total
+}
+
+pub fn sumTagsBounded(id: int, nid: string): int {
+    var total = 0
+    for t in ^books[id].notes[nid].tags at most 2 {
+        total += t
+    } on more {
+        total = total + 1000
+    }
+    return total
+}
+"#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -216,7 +249,6 @@ fn s(v: &str) -> Value {
 /// The nested constructor writes a whole sub-branch entry, and field-exact reads and a
 /// whole-entry materialized read observe its fields two levels below the root.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nested_branch_constructor_and_field_reads_round_trip() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -258,7 +290,6 @@ fn a_nested_branch_constructor_and_field_reads_round_trip() {
 /// ancestor markers, presence facts only from explicit probes. Holds for a whole-entry
 /// create and for a field-exact required set that reconcile-creates the node.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -328,7 +359,6 @@ fn a_deep_write_under_absent_ancestors_leaves_them_descendant_only() {
 /// `run.required_missing` — the reconcile validates the tag node's own required fields two
 /// levels down, not an ancestor's.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_sparse_set_missing_the_required_field_rolls_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -359,7 +389,6 @@ fn a_deep_sparse_set_missing_the_required_field_rolls_back() {
 /// present, hot absent), both present, and a whole replace that omits the sparse field
 /// drops it — the payload-only replace law (adjudication 1) at depth.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nested_branch_entry_upholds_the_four_state_laws() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -423,7 +452,6 @@ fn a_nested_branch_entry_upholds_the_four_state_laws() {
 /// payload-only — it removes the note's marker and fields but preserves its keyed `tags`
 /// descendants, and a whole-entry erase of the tag removes only that tag.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_middle_branch_erase_preserves_nested_descendants() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -499,7 +527,6 @@ fn a_middle_branch_erase_preserves_nested_descendants() {
 /// A field-exact clear of the sparse `hot` on a nested tag leaves the required `weight`
 /// intact — the field-exact clear is scoped to its own leaf two levels down.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_field_exact_clear_preserves_the_required_field() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -536,7 +563,6 @@ fn a_deep_field_exact_clear_preserves_the_required_field() {
 /// bound with the `on more` bit, and is scoped to that note — a tag under a different note
 /// is not visited.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);

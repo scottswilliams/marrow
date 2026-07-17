@@ -33,53 +33,73 @@ const IDS: &str = "marrow ids v0\n\
 
 /// A root of one scalar field with a single-level single-column-keyed scalar-field
 /// branch `notes`. Whole-entry operations over both the root and the branch.
-const SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \x20       pinned: bool\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn addNote(id: int, nid: string, body: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
-     \n\
-     pub fn addFullNote(id: int, nid: string, body: string, flag: bool)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid) = Book.notes(text: body, pinned: flag)\n\
-     \n\
-     pub fn notePinned(id: int, nid: string): bool?\n\
-     \x20   if const n = ^books(id).notes(nid)\n\
-     \x20       return n.pinned\n\
-     \x20   return absent\n\
-     \n\
-     pub fn setRoot(id: int, t: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id) = Book(title: t)\n\
-     \n\
-     pub fn eraseRoot(id: int)\n\
-     \x20   transaction\n\
-     \x20       delete ^books(id)\n\
-     \n\
-     pub fn eraseNote(id: int, nid: string)\n\
-     \x20   transaction\n\
-     \x20       delete ^books(id).notes(nid)\n\
-     \n\
-     pub fn rootPresent(id: int): bool\n\
-     \x20   return exists(^books(id))\n\
-     \n\
-     pub fn notePresent(id: int, nid: string): bool\n\
-     \x20   return exists(^books(id).notes(nid))\n\
-     \n\
-     pub fn rootTitle(id: int): string?\n\
-     \x20   return ^books(id).title\n\
-     \n\
-     pub fn noteText(id: int, nid: string): string?\n\
-     \x20   if const n = ^books(id).notes(nid)\n\
-     \x20       return n.text\n\
-     \x20   return absent\n";
+const SOURCE: &str = r#"resource Book {
+    required title: string
+
+    notes[noteId: string] {
+        required text: string
+        pinned: bool
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn addNote(id: int, nid: string, body: string) {
+    transaction {
+        ^books[id].notes[nid] = Book.notes(text: body)
+    }
+}
+
+pub fn addFullNote(id: int, nid: string, body: string, flag: bool) {
+    transaction {
+        ^books[id].notes[nid] = Book.notes(text: body, pinned: flag)
+    }
+}
+
+pub fn notePinned(id: int, nid: string): bool? {
+    if const n = ^books[id].notes[nid] {
+        return n.pinned
+    }
+    return absent
+}
+
+pub fn setRoot(id: int, t: string) {
+    transaction {
+        ^books[id] = Book(title: t)
+    }
+}
+
+pub fn eraseRoot(id: int) {
+    transaction {
+        delete ^books[id]
+    }
+}
+
+pub fn eraseNote(id: int, nid: string) {
+    transaction {
+        delete ^books[id].notes[nid]
+    }
+}
+
+pub fn rootPresent(id: int): bool {
+    return exists(^books[id])
+}
+
+pub fn notePresent(id: int, nid: string): bool {
+    return exists(^books[id].notes[nid])
+}
+
+pub fn rootTitle(id: int): string? {
+    return ^books[id].title
+}
+
+pub fn noteText(id: int, nid: string): string? {
+    if const n = ^books[id].notes[nid] {
+        return n.text
+    }
+    return absent
+}
+"#;
 
 // application, product, the top-level `title` field, the root and its key, then two
 // branches of different shape: `notes` (a `root` placement) keyed by string with one
@@ -107,40 +127,54 @@ const IDS_TWO: &str = "marrow ids v0\n\
 /// types and field shapes make a crossed branch alignment observable — a note read
 /// through the tags plan (or a tag through the notes plan) cannot reproduce the written
 /// fields.
-const SOURCE_TWO: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \n\
-     \x20   tags(tagId: int)\n\
-     \x20       required weight: int\n\
-     \x20       hot: bool\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn addNote(id: int, nid: string, body: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
-     \n\
-     pub fn addTag(id: int, tid: int, w: int, flag: bool)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).tags(tid) = Book.tags(weight: w, hot: flag)\n\
-     \n\
-     pub fn noteText(id: int, nid: string): string?\n\
-     \x20   if const n = ^books(id).notes(nid)\n\
-     \x20       return n.text\n\
-     \x20   return absent\n\
-     \n\
-     pub fn tagWeight(id: int, tid: int): int?\n\
-     \x20   if const t = ^books(id).tags(tid)\n\
-     \x20       return t.weight\n\
-     \x20   return absent\n\
-     \n\
-     pub fn tagHot(id: int, tid: int): bool?\n\
-     \x20   if const t = ^books(id).tags(tid)\n\
-     \x20       return t.hot\n\
-     \x20   return absent\n";
+const SOURCE_TWO: &str = r#"resource Book {
+    required title: string
+
+    notes[noteId: string] {
+        required text: string
+    }
+
+    tags[tagId: int] {
+        required weight: int
+        hot: bool
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn addNote(id: int, nid: string, body: string) {
+    transaction {
+        ^books[id].notes[nid] = Book.notes(text: body)
+    }
+}
+
+pub fn addTag(id: int, tid: int, w: int, flag: bool) {
+    transaction {
+        ^books[id].tags[tid] = Book.tags(weight: w, hot: flag)
+    }
+}
+
+pub fn noteText(id: int, nid: string): string? {
+    if const n = ^books[id].notes[nid] {
+        return n.text
+    }
+    return absent
+}
+
+pub fn tagWeight(id: int, tid: int): int? {
+    if const t = ^books[id].tags[tid] {
+        return t.weight
+    }
+    return absent
+}
+
+pub fn tagHot(id: int, tid: int): bool? {
+    if const t = ^books[id].tags[tid] {
+        return t.hot
+    }
+    return absent
+}
+"#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
     compile_verify_ids(source, IDS)
@@ -186,7 +220,6 @@ fn function_instrs<'a>(image: &'a VerifiedImage, name: &str) -> &'a [SealedInstr
 /// `DurSetSparse`: a presence-guarded set over a branch place lowers to the strict
 /// form, so the guard is enforced at the kernel marker rather than silently widened.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_guarded_branch_place_sparse_set_lowers_strict_over_the_whole_key_path() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let instrs = function_instrs(&image, "setPinnedViaPlace");
@@ -267,7 +300,6 @@ fn present(b: bool) -> Option<Value> {
 /// reads payload-absent and `exists` is false, while the branch entry is present.
 /// Giving the root a payload with `create` does not disturb the branch.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the_branch() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -369,7 +401,6 @@ fn a_branch_create_leaves_the_root_descendant_only_and_root_create_preserves_the
 /// A whole-entry root erase is payload-only: it removes the root's marker and fields
 /// but preserves its keyed branch descendants, so the root returns to descendant-only.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_root_erase_preserves_keyed_branches() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -417,7 +448,6 @@ fn a_root_erase_preserves_keyed_branches() {
 /// A branch entry erase removes only that branch entry's payload; the root and other
 /// branch entries are untouched.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_erase_removes_only_the_addressed_branch_entry() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -484,7 +514,6 @@ fn a_branch_erase_removes_only_the_addressed_branch_entry() {
 
 /// A whole-entry branch replace rewrites the branch entry exactly.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_replace_is_exact() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -538,7 +567,6 @@ fn some_bool(b: bool) -> Option<Value> {
 /// it), so a required field is never missing while the marker is present — there is no
 /// partial-marker state to read.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -629,7 +657,6 @@ fn a_branch_entry_upholds_the_four_state_required_and_optional_laws() {
 /// reading both back materialized pins the alignment: each branch's own fields land on
 /// that branch, and a swap could not reproduce them.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn two_branches_of_different_shape_keep_their_own_fields() {
     let image = compile_verify_ids(SOURCE_TWO, IDS_TWO);
     let mut attachment = attach(&image);
@@ -725,54 +752,74 @@ fn two_branches_of_different_shape_keep_their_own_fields() {
 /// The same `Book`/`notes(noteId)` schema as `SOURCE`/`IDS`, with field-exact branch
 /// operations: a sparse-field set/clear, a required-field set that reconcile-creates
 /// the branch entry, a field read, and a field presence test.
-const FIELD_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \x20       pinned: bool\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn addNote(id: int, nid: string, body: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid) = Book.notes(text: body)\n\
-     \n\
-     pub fn setPinned(id: int, nid: string, flag: bool)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid).pinned = flag\n\
-     \n\
-     pub fn clearPinned(id: int, nid: string)\n\
-     \x20   transaction\n\
-     \x20       delete ^books(id).notes(nid).pinned\n\
-     \n\
-     pub fn setText(id: int, nid: string, body: string)\n\
-     \x20   transaction\n\
-     \x20       ^books(id).notes(nid).text = body\n\
-     \n\
-     pub fn notePinned(id: int, nid: string): bool?\n\
-     \x20   return ^books(id).notes(nid).pinned\n\
-     \n\
-     pub fn pinnedPresent(id: int, nid: string): bool\n\
-     \x20   return exists(^books(id).notes(nid).pinned)\n\
-     \n\
-     pub fn noteText(id: int, nid: string): string?\n\
-     \x20   if const n = ^books(id).notes(nid)\n\
-     \x20       return n.text\n\
-     \x20   return absent\n\
-     \n\
-     pub fn setPinnedViaPlace(id: int, nid: string, flag: bool)\n\
-     \x20   transaction\n\
-     \x20       place note = ^books(id).notes(nid)\n\
-     \x20       if exists(note)\n\
-     \x20           note.pinned = flag\n\
-     \n\
-     pub fn notePinnedViaPlace(id: int, nid: string): bool?\n\
-     \x20   place note = ^books(id).notes(nid)\n\
-     \x20   return note.pinned\n\
-     \n\
-     pub fn rootPresent(id: int): bool\n\
-     \x20   return exists(^books(id))\n";
+const FIELD_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    notes[noteId: string] {
+        required text: string
+        pinned: bool
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn addNote(id: int, nid: string, body: string) {
+    transaction {
+        ^books[id].notes[nid] = Book.notes(text: body)
+    }
+}
+
+pub fn setPinned(id: int, nid: string, flag: bool) {
+    transaction {
+        ^books[id].notes[nid].pinned = flag
+    }
+}
+
+pub fn clearPinned(id: int, nid: string) {
+    transaction {
+        delete ^books[id].notes[nid].pinned
+    }
+}
+
+pub fn setText(id: int, nid: string, body: string) {
+    transaction {
+        ^books[id].notes[nid].text = body
+    }
+}
+
+pub fn notePinned(id: int, nid: string): bool? {
+    return ^books[id].notes[nid].pinned
+}
+
+pub fn pinnedPresent(id: int, nid: string): bool {
+    return exists(^books[id].notes[nid].pinned)
+}
+
+pub fn noteText(id: int, nid: string): string? {
+    if const n = ^books[id].notes[nid] {
+        return n.text
+    }
+    return absent
+}
+
+pub fn setPinnedViaPlace(id: int, nid: string, flag: bool) {
+    transaction {
+        place note = ^books[id].notes[nid]
+        if exists(note) {
+            note.pinned = flag
+        }
+    }
+}
+
+pub fn notePinnedViaPlace(id: int, nid: string): bool? {
+    place note = ^books[id].notes[nid]
+    return note.pinned
+}
+
+pub fn rootPresent(id: int): bool {
+    return exists(^books[id])
+}
+"#;
 
 /// Run an export whose commit is expected to fault, returning the runtime fault code.
 fn run_fault(
@@ -791,7 +838,6 @@ fn run_fault(
 /// field, and its field read and presence test observe it, while the branch's other
 /// fields are undisturbed.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -854,7 +900,6 @@ fn a_field_exact_sparse_set_and_clear_leave_sibling_branch_fields_intact() {
 /// fields present), leaving the root descendant-only. This proves the commit reconcile
 /// extends to a branch node's marker and record, not the root's.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_exact_required_set_reconcile_creates_the_branch_node() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -898,7 +943,6 @@ fn a_field_exact_required_set_reconcile_creates_the_branch_node() {
 /// the root node's required fields (the root's `title`) instead of the branch node's
 /// (`text`), it would not roll back here.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_branch_sparse_set_missing_the_required_branch_field_rolls_back() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -936,7 +980,6 @@ fn a_branch_sparse_set_missing_the_required_branch_field_rolls_back() {
 
 /// A field-exact set on one branch entry does not leak to a sibling branch entry.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_exact_set_is_scoped_to_its_branch_entry() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);
@@ -1003,7 +1046,6 @@ fn a_field_exact_set_is_scoped_to_its_branch_entry() {
 /// pre-evaluated `[root, branch]` key-path, and the guarded set preserves the branch's
 /// required field.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place() {
     let image = compile_verify_ids(FIELD_SOURCE, IDS);
     let mut attachment = attach(&image);

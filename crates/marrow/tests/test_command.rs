@@ -64,16 +64,18 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 /// `run.assert` code, and the run ends with a typed summary. The command exits
 /// nonzero because a test failed.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn passing_and_failing_tests_report_typed_jsonl() {
     let temp = TempDir::new("pass-fail");
     project(
         &temp,
-        "test \"one plus one\"\n\
-         \x20   assert 1 + 1 == 2\n\
-         \n\
-         test \"one is two\"\n\
-         \x20   assert 1 == 2\n",
+        r#"test "one plus one" {
+    assert 1 + 1 == 2
+}
+
+test "one is two" {
+    assert 1 == 2
+}
+"#,
     );
 
     let output = run_in(&temp, &["test", "--format", "jsonl"]);
@@ -109,14 +111,15 @@ fn passing_and_failing_tests_report_typed_jsonl() {
 
 /// `assert` outside a `test` body is a source diagnostic, not a runtime concept.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn assert_outside_a_test_is_a_check_diagnostic() {
     let temp = TempDir::new("assert-outside");
     project(
         &temp,
-        "pub fn bad(): int\n\
-         \x20   assert true\n\
-         \x20   return 0\n",
+        r#"pub fn bad(): int {
+    assert true
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "bad", "--format", "jsonl"]);
     assert!(!output.status.success(), "{output:?}");
@@ -143,22 +146,25 @@ const COUNTERS_IDS: &str = "marrow ids v0\n\
 /// empty attachment `exists(^counters(1))` is false, so the probe passes. The
 /// storeless test in the same project runs and passes too.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_read_test_runs_against_a_fresh_attachment() {
     let temp = TempDir::new("durable-test");
     project(
         &temp,
-        "resource Counter\n\
-         \x20   required value: int\n\
-         \x20   label: string\n\
-         \n\
-         store ^counters(id: int): Counter\n\
-         \n\
-         test \"storeless holds\"\n\
-         \x20   assert 1 + 1 == 2\n\
-         \n\
-         test \"durable probe\"\n\
-         \x20   assert exists(^counters(1)) == false\n",
+        r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+test "storeless holds" {
+    assert 1 + 1 == 2
+}
+
+test "durable probe" {
+    assert exists(^counters[1]) == false
+}
+"#,
     );
     write(&temp.join("marrow.ids"), COUNTERS_IDS);
 
@@ -187,19 +193,21 @@ fn a_durable_read_test_runs_against_a_fresh_attachment() {
 /// reports `failed` with `run.assert`, distinct from an operational error. Proves
 /// the read kernel's runtime fault reaches the test report.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_failing_durable_assert_reports_run_assert() {
     let temp = TempDir::new("durable-fail");
     project(
         &temp,
-        "resource Counter\n\
-         \x20   required value: int\n\
-         \x20   label: string\n\
-         \n\
-         store ^counters(id: int): Counter\n\
-         \n\
-         test \"present on empty\"\n\
-         \x20   assert exists(^counters(1))\n",
+        r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+test "present on empty" {
+    assert exists(^counters[1])
+}
+"#,
     );
     write(&temp.join("marrow.ids"), COUNTERS_IDS);
 
@@ -237,70 +245,86 @@ fn a_failing_durable_assert_reports_run_assert() {
 /// output-only, local-keyed-parameter, error-code, and compile-time key/type
 /// families are not durable read-kernel behaviors at all.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn flat_durable_place_behaviors_run_as_source_tests() {
     let temp = TempDir::new("flat-durable-extraction");
     project(
         &temp,
-        "resource Counter\n\
-         \x20   required value: int\n\
-         \x20   label: string\n\
-         \n\
-         store ^counters(id: int): Counter\n\
-         \n\
-         test \"entry absent on a fresh attachment\"\n\
-         \x20   assert exists(^counters(9)) == false\n\
-         \n\
-         test \"field absent on a fresh attachment\"\n\
-         \x20   assert exists(^counters(1).value) == false\n\
-         \n\
-         test \"field present after a write\"\n\
-         \x20   ^counters(1).value = 5\n\
-         \x20   assert exists(^counters(1).value)\n\
-         \n\
-         test \"field coalesce returns the default when absent\"\n\
-         \x20   assert (^counters(1).value ?? 0) == 0\n\
-         \n\
-         test \"field coalesce returns the value when present\"\n\
-         \x20   ^counters(1).value = 5\n\
-         \x20   assert (^counters(1).value ?? 0) == 5\n\
-         \n\
-         test \"required field write persists and reads back\"\n\
-         \x20   ^counters(1).value = 7\n\
-         \x20   assert (^counters(1).value ?? 0) == 7\n\
-         \n\
-         test \"sparse field write persists and reads back\"\n\
-         \x20   ^counters(1).label = \"hi\"\n\
-         \x20   assert (^counters(1).label ?? \"x\") == \"hi\"\n\
-         \n\
-         test \"sparse field coalesce returns the default when absent\"\n\
-         \x20   assert (^counters(1).label ?? \"none\") == \"none\"\n\
-         \n\
-         test \"overwrite keeps the last write\"\n\
-         \x20   ^counters(1).value = 1\n\
-         \x20   ^counters(1).value = 2\n\
-         \x20   assert (^counters(1).value ?? 0) == 2\n\
-         \n\
-         test \"binding guard skips an absent field\"\n\
-         \x20   if const v = ^counters(1).value\n\
-         \x20       assert false\n\
-         \x20   assert true\n\
-         \n\
-         test \"binding guard reads a present field\"\n\
-         \x20   ^counters(1).value = 42\n\
-         \x20   if const v = ^counters(1).value\n\
-         \x20       assert v == 42\n\
-         \x20   else\n\
-         \x20       assert false\n\
-         \n\
-         test \"one test writes a field\"\n\
-         \x20   ^counters(77).value = 1\n\
-         \x20   assert (^counters(77).value ?? 0) == 1\n\
-         \n\
-         test \"a fresh attachment does not observe another test's write\"\n\
-         \x20   ^counters(88).value = 2\n\
-         \x20   assert (^counters(88).value ?? -1) == 2\n\
-         \x20   assert (^counters(77).value ?? -1) == -1\n",
+        r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+test "entry absent on a fresh attachment" {
+    assert exists(^counters[9]) == false
+}
+
+test "field absent on a fresh attachment" {
+    assert exists(^counters[1].value) == false
+}
+
+test "field present after a write" {
+    ^counters[1].value = 5
+    assert exists(^counters[1].value)
+}
+
+test "field coalesce returns the default when absent" {
+    assert ^counters[1].value ?? 0 == 0
+}
+
+test "field coalesce returns the value when present" {
+    ^counters[1].value = 5
+    assert ^counters[1].value ?? 0 == 5
+}
+
+test "required field write persists and reads back" {
+    ^counters[1].value = 7
+    assert ^counters[1].value ?? 0 == 7
+}
+
+test "sparse field write persists and reads back" {
+    ^counters[1].label = "hi"
+    assert ^counters[1].label ?? "x" == "hi"
+}
+
+test "sparse field coalesce returns the default when absent" {
+    assert ^counters[1].label ?? "none" == "none"
+}
+
+test "overwrite keeps the last write" {
+    ^counters[1].value = 1
+    ^counters[1].value = 2
+    assert ^counters[1].value ?? 0 == 2
+}
+
+test "binding guard skips an absent field" {
+    if const v = ^counters[1].value {
+        assert false
+    }
+    assert true
+}
+
+test "binding guard reads a present field" {
+    ^counters[1].value = 42
+    if const v = ^counters[1].value {
+        assert v == 42
+    } else {
+        assert false
+    }
+}
+
+test "one test writes a field" {
+    ^counters[77].value = 1
+    assert ^counters[77].value ?? 0 == 1
+}
+
+test "a fresh attachment does not observe another test's write" {
+    ^counters[88].value = 2
+    assert ^counters[88].value ?? -1 == 2
+    assert ^counters[77].value ?? -1 == -1
+}
+"#,
     );
     write(&temp.join("marrow.ids"), COUNTERS_IDS);
 
@@ -328,16 +352,18 @@ fn flat_durable_place_behaviors_run_as_source_tests() {
 
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn filter_selects_a_subset_by_name() {
     let temp = TempDir::new("filter");
     project(
         &temp,
-        "test \"alpha check\"\n\
-         \x20   assert true\n\
-         \n\
-         test \"beta check\"\n\
-         \x20   assert true\n",
+        r#"test "alpha check" {
+    assert true
+}
+
+test "beta check" {
+    assert true
+}
+"#,
     );
     let output = run_in(&temp, &["test", "--format", "jsonl", "--filter", "alpha"]);
     assert!(output.status.success(), "{output:?}");

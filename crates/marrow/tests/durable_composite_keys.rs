@@ -28,34 +28,46 @@ const IDS_A: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-const SOURCE_A: &str = "resource Enrollment\n\
-     \x20   required grade: int\n\
-     \n\
-     \x20   sessions(term: int, slot: int)\n\
-     \x20       required room: string\n\
-     \n\
-     store ^enrollments(student: string, course: string): Enrollment\n\
-     \n\
-     pub fn enroll(student: string, course: string, grade: int)\n\
-     \x20   transaction\n\
-     \x20       ^enrollments(student, course) = Enrollment(grade: grade)\n\
-     \n\
-     pub fn gradeOf(student: string, course: string): int?\n\
-     \x20   return ^enrollments(student, course).grade\n\
-     \n\
-     pub fn enrolled(student: string, course: string): bool\n\
-     \x20   return exists(^enrollments(student, course))\n\
-     \n\
-     pub fn unenroll(student: string, course: string)\n\
-     \x20   transaction\n\
-     \x20       delete ^enrollments(student, course)\n\
-     \n\
-     pub fn setSession(student: string, course: string, term: int, slot: int, room: string)\n\
-     \x20   transaction\n\
-     \x20       ^enrollments(student, course).sessions(term, slot) = Enrollment.sessions(room: room)\n\
-     \n\
-     pub fn sessionRoom(student: string, course: string, term: int, slot: int): string?\n\
-     \x20   return ^enrollments(student, course).sessions(term, slot).room\n";
+const SOURCE_A: &str = r#"resource Enrollment {
+    required grade: int
+
+    sessions[term: int, slot: int] {
+        required room: string
+    }
+}
+
+store ^enrollments[student: string, course: string]: Enrollment
+
+pub fn enroll(student: string, course: string, grade: int) {
+    transaction {
+        ^enrollments[student, course] = Enrollment(grade: grade)
+    }
+}
+
+pub fn gradeOf(student: string, course: string): int? {
+    return ^enrollments[student, course].grade
+}
+
+pub fn enrolled(student: string, course: string): bool {
+    return exists(^enrollments[student, course])
+}
+
+pub fn unenroll(student: string, course: string) {
+    transaction {
+        delete ^enrollments[student, course]
+    }
+}
+
+pub fn setSession(student: string, course: string, term: int, slot: int, room: string) {
+    transaction {
+        ^enrollments[student, course].sessions[term, slot] = Enrollment.sessions(room: room)
+    }
+}
+
+pub fn sessionRoom(student: string, course: string, term: int, slot: int): string? {
+    return ^enrollments[student, course].sessions[term, slot].room
+}
+"#;
 
 // The L2 review obligation: a depth-3 branch chain with FOUR key columns, all `int` (the
 // same type at every level), so no scalar-kind check can distinguish the columns — only
@@ -78,38 +90,50 @@ const IDS_B: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-const SOURCE_B: &str = "resource Grid\n\
-     \x20   required label: string\n\
-     \n\
-     \x20   cell(c: int)\n\
-     \x20       required cval: int\n\
-     \n\
-     \x20       mark(d: int)\n\
-     \x20           required v: int\n\
-     \n\
-     store ^grid(a: int, b: int): Grid\n\
-     \n\
-     pub fn setMark(a: int, b: int, c: int, d: int, val: int)\n\
-     \x20   transaction\n\
-     \x20       ^grid(a, b).cell(c).mark(d) = Grid.cell.mark(v: val)\n\
-     \n\
-     pub fn markV(a: int, b: int, c: int, d: int): int?\n\
-     \x20   return ^grid(a, b).cell(c).mark(d).v\n\
-     \n\
-     pub fn markPresent(a: int, b: int, c: int, d: int): bool\n\
-     \x20   return exists(^grid(a, b).cell(c).mark(d))\n\
-     \n\
-     pub fn setCell(a: int, b: int, c: int, cval: int)\n\
-     \x20   transaction\n\
-     \x20       ^grid(a, b).cell(c) = Grid.cell(cval: cval)\n\
-     \n\
-     pub fn sumCells(a: int, b: int): int\n\
-     \x20   var total = 0\n\
-     \x20   for c in ^grid(a, b).cell at most 100\n\
-     \x20       total += c\n\
-     \x20   on more\n\
-     \x20       total = -1\n\
-     \x20   return total\n";
+const SOURCE_B: &str = r#"resource Grid {
+    required label: string
+
+    cell[c: int] {
+        required cval: int
+
+        mark[d: int] {
+            required v: int
+        }
+    }
+}
+
+store ^grid[a: int, b: int]: Grid
+
+pub fn setMark(a: int, b: int, c: int, d: int, val: int) {
+    transaction {
+        ^grid[a, b].cell[c].mark[d] = Grid.cell.mark(v: val)
+    }
+}
+
+pub fn markV(a: int, b: int, c: int, d: int): int? {
+    return ^grid[a, b].cell[c].mark[d].v
+}
+
+pub fn markPresent(a: int, b: int, c: int, d: int): bool {
+    return exists(^grid[a, b].cell[c].mark[d])
+}
+
+pub fn setCell(a: int, b: int, c: int, cval: int) {
+    transaction {
+        ^grid[a, b].cell[c] = Grid.cell(cval: cval)
+    }
+}
+
+pub fn sumCells(a: int, b: int): int {
+    var total = 0
+    for c in ^grid[a, b].cell at most 100 {
+        total += c
+    } on more {
+        total = -1
+    }
+    return total
+}
+"#;
 
 fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -192,7 +216,6 @@ fn s(v: &str) -> Value {
 /// tuple `(course, student)` is a distinct, absent entry even though both columns are
 /// strings. Whole-entry create/read/presence/delete and a field read all key by the pair.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_root_keys_by_the_ordered_tuple() {
     let image = compile_verify(SOURCE_A, IDS_A);
     let mut attachment = attach(&image);
@@ -246,7 +269,6 @@ fn a_composite_key_root_keys_by_the_ordered_tuple() {
 /// key-path is four columns `[student, course, term, slot]`. A transposed branch tuple
 /// `(slot, term)` is a distinct, absent branch entry.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
     let image = compile_verify(SOURCE_A, IDS_A);
     let mut attachment = attach(&image);
@@ -297,7 +319,6 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
 /// `(1, 2, 3, 4)` and reading back every transposition proves the whole key-path pops in
 /// order end to end.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
     let image = compile_verify(SOURCE_B, IDS_B);
     let mut attachment = attach(&image);
@@ -346,7 +367,6 @@ fn a_deep_same_typed_key_path_pins_column_order_end_to_end() {
 /// single-column `cell` keys under it, so the ancestor key-path carries multiple columns
 /// through the traversal while the traversed layer stays single-column.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_column_branch_layer_traverses_under_a_composite_ancestor() {
     let image = compile_verify(SOURCE_B, IDS_B);
     let mut attachment = attach(&image);
@@ -394,15 +414,17 @@ fn a_single_column_branch_layer_traverses_under_a_composite_ancestor() {
 /// composite root is a typed `check.unsupported` with a located span, never a silent
 /// miscompile or an invented last-column-under-prefix semantics.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bounded_traversal_over_a_composite_layer_is_rejected() {
-    let body = "pub fn scan(): int\n\
-        \x20   var total = 0\n\
-        \x20   for k in ^enrollments at most 10\n\
-        \x20       total += 1\n\
-        \x20   on more\n\
-        \x20       total = -1\n\
-        \x20   return total\n";
+    let body = r#"pub fn scan(): int {
+    var total = 0
+    for k in ^enrollments at most 10 {
+        total += 1
+    } on more {
+        total = -1
+    }
+    return total
+}
+"#;
     let source = format!("{SOURCE_A}\n{body}");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(

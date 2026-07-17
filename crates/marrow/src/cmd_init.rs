@@ -117,7 +117,7 @@ fn manifest_source() -> String {
 
 /// The starter module a fresh project contains. It parses cleanly and is already
 /// formatted, so `marrow fmt --check` on a fresh project passes.
-const STARTER_MODULE: &str = "pub fn main()\n    return\n";
+const STARTER_MODULE: &str = "pub fn main() {\n    return\n}\n";
 
 fn write_new(path: PathBuf, contents: &str) -> io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;

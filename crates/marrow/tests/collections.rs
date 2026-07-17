@@ -75,7 +75,6 @@ fn fixture_dir() -> PathBuf {
 /// collections, struct/enum element values, and the collection-returning text floor
 /// (`split`/`lines`/`join`) all report `passed` through the production path.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn collection_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -98,18 +97,19 @@ fn collection_conformance_fixture_passes_on_the_production_path() {
 /// A returned list renders as a JSON array (insertion order) under `--format jsonl`
 /// and as `[a, b, ...]` in text.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_returned_list_renders_through_the_run_path() {
     let temp = TempDir::new("list-return");
     project(
         &temp,
-        "module main\n\
-         \n\
-         pub fn nums(): List[int]\n\
-         \x20   var xs: List[int] = List()\n\
-         \x20   xs = append(xs, 1)\n\
-         \x20   xs = append(xs, 2)\n\
-         \x20   return xs\n",
+        r#"module main
+
+pub fn nums(): List<int> {
+    var xs: List<int> = List()
+    xs = append(xs, 1)
+    xs = append(xs, 2)
+    return xs
+}
+"#,
     );
     let jsonl = run_in(&temp, &["run", "nums", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
@@ -124,18 +124,19 @@ fn a_returned_list_renders_through_the_run_path() {
 /// A returned map renders as a JSON object with keys in ascending order under
 /// `--format jsonl` and as `[k: v, ...]` in text.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_returned_map_renders_in_ascending_key_order() {
     let temp = TempDir::new("map-return");
     project(
         &temp,
-        "module main\n\
-         \n\
-         pub fn scores(): Map[string, int]\n\
-         \x20   var m: Map[string, int] = Map()\n\
-         \x20   m = insert(m, \"grace\", 12)\n\
-         \x20   m = insert(m, \"ada\", 10)\n\
-         \x20   return m\n",
+        r#"module main
+
+pub fn scores(): Map<string, int> {
+    var m: Map<string, int> = Map()
+    m = insert(m, "grace", 12)
+    m = insert(m, "ada", 10)
+    return m
+}
+"#,
     );
     let jsonl = run_in(&temp, &["run", "scores", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
@@ -153,7 +154,6 @@ fn a_returned_map_renders_in_ascending_key_order() {
 /// Appending past the aggregate-byte bound faults with `run.collection_limit`, the
 /// law-9 typed runtime fault, rather than allocating unboundedly.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn exceeding_the_aggregate_bound_faults() {
     let output = run_in(
         &fixture_dir(),
@@ -171,7 +171,6 @@ fn exceeding_the_aggregate_bound_faults() {
 /// `run.text_limit`, the bounded-allocation guard on `join`, rather than
 /// materializing an unbounded string.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn exceeding_the_join_text_ceiling_faults() {
     let output = run_in(
         &fixture_dir(),
@@ -206,24 +205,46 @@ fn a_bare_constructor_without_expected_type_is_a_check_type() {
 /// A non-key map key type (a struct), an `append` on a map, a `get` on a list, and a
 /// wrong-typed element are typed diagnostics, not silent acceptance.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn misused_collection_operations_are_typed_diagnostics() {
     // A struct key type is not admitted: `check.unsupported` at the annotation.
     let cases: [(&str, &str); 4] = [
         (
-            "struct P\n\x20   x: int\n\npub fn f(): int\n\x20   const m: Map[P, int] = Map()\n\x20   return 0\n",
+            r#"struct P {
+    x: int
+}
+
+pub fn f(): int {
+    const m: Map<P, int> = Map()
+    return 0
+}
+"#,
             "check.unsupported",
         ),
         (
-            "pub fn f(): int\n\x20   var m: Map[string, int] = Map()\n\x20   m = append(m, 1)\n\x20   return 0\n",
+            r#"pub fn f(): int {
+    var m: Map<string, int> = Map()
+    m = append(m, 1)
+    return 0
+}
+"#,
             "check.unsupported",
         ),
         (
-            "pub fn f(): int\n\x20   var xs: List[int] = List()\n\x20   const v = get(xs, 0)\n\x20   return 0\n",
+            r#"pub fn f(): int {
+    var xs: List<int> = List()
+    const v = get(xs, 0)
+    return 0
+}
+"#,
             "check.unsupported",
         ),
         (
-            "pub fn f(): int\n\x20   var xs: List[int] = List()\n\x20   xs = append(xs, \"s\")\n\x20   return 0\n",
+            r#"pub fn f(): int {
+    var xs: List<int> = List()
+    xs = append(xs, "s")
+    return 0
+}
+"#,
             "check.type",
         ),
     ];
@@ -295,11 +316,20 @@ fn redeclaring_a_text_floor_builtin_is_a_conflict() {
 /// pins the recorded decision that collection `==` stays a typed check error rather
 /// than a language operator.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_top_level_collection_equality_is_a_check_type() {
     let cases = [
-        "pub fn f(): bool\n\x20   var a: List[int] = List()\n\x20   var b: List[int] = List()\n\x20   return a == b\n",
-        "pub fn f(): bool\n\x20   var a: Map[int, int] = Map()\n\x20   var b: Map[int, int] = Map()\n\x20   return a == b\n",
+        r#"pub fn f(): bool {
+    var a: List<int> = List()
+    var b: List<int> = List()
+    return a == b
+}
+"#,
+        r#"pub fn f(): bool {
+    var a: Map<int, int> = Map()
+    var b: Map<int, int> = Map()
+    return a == b
+}
+"#,
     ];
     for source in cases {
         let temp = TempDir::new("coll-eq");
@@ -317,12 +347,17 @@ fn a_top_level_collection_equality_is_a_check_type() {
 /// `join` on a list whose element type is not `string` is a typed `check.unsupported`
 /// — the text floor joins only a list of string.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn join_on_a_non_string_list_is_unsupported() {
     let temp = TempDir::new("join-misuse");
     project(
         &temp,
-        "module main\n\npub fn f(): string\n\x20   var xs: List[int] = List()\n\x20   return join(xs, \",\")\n",
+        r#"module main
+
+pub fn f(): string {
+    var xs: List<int> = List()
+    return join(xs, ",")
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

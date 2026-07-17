@@ -857,7 +857,6 @@ fn comment_preservation_guard_rejects_unstable_rewrites() {
 /// The canonical runnable sample is the conformance oracle. `sample.md` is still
 /// layout-form until the flip-5 doc conversion, so this un-ignores then.
 #[test]
-#[ignore = "BS01: reads sample.md (layout); un-ignore when flip 5 converts the doc corpus"]
 fn canonical_sample_is_already_fmt_canonical() {
     let source = common::reference_sample();
     assert_eq!(
@@ -871,7 +870,6 @@ fn canonical_sample_is_already_fmt_canonical() {
 /// `format_source` is a fixed point, re-parses cleanly, and preserves the declaration
 /// tree. The doc corpus is layout-form until flip 5, so this un-ignores then.
 #[test]
-#[ignore = "BS01: reads docs/language module blocks (layout); un-ignore at flip 5"]
 fn format_source_preserves_structure_and_reparses_cleanly() {
     let blocks = common::documented_module_blocks();
     assert!(blocks.len() >= 5, "expected several module files");

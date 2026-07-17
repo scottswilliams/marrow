@@ -75,7 +75,6 @@ fn fixture_dir() -> PathBuf {
 /// ignoring arms, exact `==`/`!=` equality over the variant and payload, and
 /// construction/matching across function boundaries all report `passed`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn enum_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -98,17 +97,19 @@ fn enum_conformance_fixture_passes_on_the_production_path() {
 /// A returned enum value renders through the VM: `run` on an export that
 /// constructs a payload variant yields the canonical enum object.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_payload_enum_value_renders_through_the_vm() {
     let temp = TempDir::new("render");
     project(
         &temp,
-        "enum Shape\n\
-         \x20   dot\n\
-         \x20   circle(radius: int)\n\
-         \n\
-         pub fn make(r: int): Shape\n\
-         \x20   return Shape::circle(radius: r)\n",
+        r#"enum Shape {
+    dot
+    circle(radius: int)
+}
+
+pub fn make(r: int): Shape {
+    return Shape::circle(radius: r)
+}
+"#,
     );
     let output = run_in(&temp, &["run", "make", "--format", "jsonl", "--", "7"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -121,19 +122,21 @@ fn a_payload_enum_value_renders_through_the_vm() {
 
 /// A non-exhaustive `match` is `check.match_nonexhaustive`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_exhaustive_match_is_reported() {
     let temp = TempDir::new("nonexhaustive");
     project(
         &temp,
-        "enum E\n\
-         \x20   a\n\
-         \x20   b\n\
-         \n\
-         pub fn f(e: E): int\n\
-         \x20   match e\n\
-         \x20       a\n\
-         \x20           return 1\n",
+        r#"enum E {
+    a
+    b
+}
+
+pub fn f(e: E): int {
+    match e {
+        a => return 1
+    }
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -172,21 +175,22 @@ fn a_malformed_arm_is_a_check_match_arm_diagnostic() {
 
 /// A payload-arity mismatch on a binding arm is a typed `check.match_arm`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_payload_arity_mismatch_is_reported() {
     let temp = TempDir::new("arity");
     project(
         &temp,
-        "enum E\n\
-         \x20   a(x: int)\n\
-         \x20   b\n\
-         \n\
-         pub fn f(e: E): int\n\
-         \x20   match e\n\
-         \x20       a(x, y)\n\
-         \x20           return x\n\
-         \x20       b\n\
-         \x20           return 0\n",
+        r#"enum E {
+    a(x: int)
+    b
+}
+
+pub fn f(e: E): int {
+    match e {
+        a(x, y) => return x
+        b => return 0
+    }
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -198,7 +202,6 @@ fn a_payload_arity_mismatch_is_reported() {
 /// a payload on a payloadless member, or a non-existent member — is a typed
 /// `check.type`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_construction_is_a_check_type_diagnostic() {
     for expr in [
         "Shape::circle(radius: 1, z: 2)",
@@ -227,18 +230,21 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
 
 /// A `category` member or a nested member is deferred: `check.unsupported`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_hierarchical_enum_is_deferred() {
     let temp = TempDir::new("hierarchy");
     project(
         &temp,
-        "enum Animal\n\
-         \x20   category cat\n\
-         \x20       tiger\n\
-         \x20   dog\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 0\n",
+        r#"enum Animal {
+    category cat {
+        tiger
+    }
+    dog
+}
+
+pub fn f(): int {
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -248,19 +254,22 @@ fn a_hierarchical_enum_is_deferred() {
 
 /// An enum whose name collides with another type is a `check.name_conflict`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_enum_name_collision_is_reported() {
     let temp = TempDir::new("collision");
     project(
         &temp,
-        "struct Color\n\
-         \x20   r: int\n\
-         \n\
-         enum Color\n\
-         \x20   red\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 0\n",
+        r#"struct Color {
+    r: int
+}
+
+enum Color {
+    red
+}
+
+pub fn f(): int {
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -277,25 +286,27 @@ fn an_enum_name_collision_is_reported() {
 /// the production path. (The resource is a local value here; a resource backing a
 /// `store` still admits only scalar fields.)
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
     let temp = TempDir::new("resource-enum-field");
     project(
         &temp,
-        "resource Paint\n\
-         \x20   required shade: Color\n\
-         \n\
-         enum Color\n\
-         \x20   red\n\
-         \x20   green\n\
-         \n\
-         pub fn name(): string\n\
-         \x20   const p = Paint(shade: Color::green)\n\
-         \x20   match p.shade\n\
-         \x20       red\n\
-         \x20           return \"r\"\n\
-         \x20       green\n\
-         \x20           return \"g\"\n",
+        r#"resource Paint {
+    required shade: Color
+}
+
+enum Color {
+    red
+    green
+}
+
+pub fn name(): string {
+    const p = Paint(shade: Color::green)
+    match p.shade {
+        red => return "r"
+        green => return "g"
+    }
+}
+"#,
     );
     let output = run_in(&temp, &["run", "name", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -313,23 +324,26 @@ fn a_resource_field_may_be_a_user_enum_and_match_over_the_field_read() {
 /// durable operation over the store is a precise `check.unsupported` (covered in the
 /// durable-field widening suite); it is no longer a `check.type` on the declaration.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_stored_resource_with_an_enum_field_is_identity_complete() {
     let temp = TempDir::new("stored-enum-field");
     project(
         &temp,
-        "resource Paint\n\
-         \x20   required id: int\n\
-         \x20   required shade: Color\n\
-         \n\
-         enum Color\n\
-         \x20   red\n\
-         \x20   green\n\
-         \n\
-         store ^paints(id: int): Paint\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 0\n",
+        r#"resource Paint {
+    required id: int
+    required shade: Color
+}
+
+enum Color {
+    red
+    green
+}
+
+store ^paints[id: int]: Paint
+
+pub fn f(): int {
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

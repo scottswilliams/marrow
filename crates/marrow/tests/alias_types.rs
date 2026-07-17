@@ -73,7 +73,6 @@ fn fixture_dir() -> PathBuf {
 /// using aliases in parameter, return, constant, optional, and resource-field
 /// positions reports `passed` through the production path.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn alias_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -101,11 +100,14 @@ fn a_cyclic_alias_chain_is_a_check_recursion_diagnostic() {
     let temp = TempDir::new("alias-cycle");
     project(
         &temp,
-        "alias A = B\n\
-         alias B = A\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 1\n",
+        r#"alias A = B
+
+alias B = A
+
+pub fn f(): int {
+    return 1
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -122,15 +124,16 @@ fn a_cyclic_alias_chain_is_a_check_recursion_diagnostic() {
 
 /// A self-referential alias is the one-element cycle.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_self_referential_alias_is_a_check_recursion_diagnostic() {
     let temp = TempDir::new("alias-self");
     project(
         &temp,
-        "alias Loop = Loop?\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 1\n",
+        r#"alias Loop = Loop?
+
+pub fn f(): int {
+    return 1
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -141,16 +144,18 @@ fn a_self_referential_alias_is_a_check_recursion_diagnostic() {
 /// Two aliases with one name collide, as do an alias and a resource: names a
 /// type annotation resolves against are unique across the project.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn duplicate_alias_names_are_name_conflicts() {
     let temp = TempDir::new("alias-dup");
     project(
         &temp,
-        "alias Count = int\n\
-         alias Count = string\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 1\n",
+        r#"alias Count = int
+
+alias Count = string
+
+pub fn f(): int {
+    return 1
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -160,13 +165,16 @@ fn duplicate_alias_names_are_name_conflicts() {
     let temp = TempDir::new("alias-resource-clash");
     project(
         &temp,
-        "resource Item\n\
-         \x20   required count: int\n\
-         \n\
-         alias Item = int\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 1\n",
+        r#"resource Item {
+    required count: int
+}
+
+alias Item = int
+
+pub fn f(): int {
+    return 1
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -180,15 +188,16 @@ fn duplicate_alias_names_are_name_conflicts() {
 /// An alias whose expansion names no known type is a typed `check.type`
 /// diagnostic at the alias declaration, even when the alias is unused.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_alias_to_an_unknown_type_is_a_check_type_diagnostic() {
     let temp = TempDir::new("alias-unknown");
     project(
         &temp,
-        "alias Broken = Missing\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 1\n",
+        r#"alias Broken = Missing
+
+pub fn f(): int {
+    return 1
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -206,15 +215,16 @@ fn an_alias_to_an_unknown_type_is_a_check_type_diagnostic() {
 /// Alias transparency does not relax the optional-nesting rule: `M?` where `M`
 /// expands to `int?` is still a doubled optional and rejects.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_alias_cannot_smuggle_a_nested_optional() {
     let temp = TempDir::new("alias-nested-opt");
     project(
         &temp,
-        "alias MaybeInt = int?\n\
-         \n\
-         pub fn f(v: bool): MaybeInt?\n\
-         \x20   return absent\n",
+        r#"alias MaybeInt = int?
+
+pub fn f(v: bool): MaybeInt? {
+    return absent
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -227,7 +237,6 @@ fn an_alias_cannot_smuggle_a_nested_optional() {
 
 /// A keyword cannot name an alias; the parser reports it at the declaration.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_keyword_alias_name_is_a_parse_error() {
     let temp = TempDir::new("alias-keyword");
     project(

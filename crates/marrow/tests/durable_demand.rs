@@ -24,12 +24,13 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-const HEADER: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \x20   label: string\n\
-     \n\
-     store ^counters(id: int): Counter\n\
-     \n";
+const HEADER: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+"#;
 
 const VALUE_FIELD: [u8; 16] = [0x0e; 16];
 const LABEL_FIELD: [u8; 16] = [0x0f; 16];

@@ -101,20 +101,23 @@ fn interface_id(source: &str) -> InterfaceId {
         .interface_id()
 }
 
-const TWO_EXPORTS: &str = "struct Point\n\
-    \x20   x: int\n\
-    \x20   y: int\n\
-    \n\
-    pub fn add(a: int, b: int): int\n\
-    \x20   return a + b\n\
-    \n\
-    pub fn shift(p: Point, dx: int): Point\n\
-    \x20   return Point(x: p.x + dx, y: p.y)\n";
+const TWO_EXPORTS: &str = r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn add(a: int, b: int): int {
+    return a + b
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+"#;
 
 /// The two-export storeless fixture reconstructs a two-descriptor interface, and its
 /// `InterfaceId` is deterministic across recompiles.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn two_export_interface_reconstructs_deterministically() {
     let image = compile_verify(TWO_EXPORTS);
     let interface = interface_of(&image).expect("interface reconstructs");
@@ -126,22 +129,25 @@ fn two_export_interface_reconstructs_deterministically() {
 /// A body-only edit — the observable signatures and demands are unchanged — leaves
 /// the `InterfaceId` fixed, even though the image bytes (and `ImageId`) change.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_body_edit_keeps_the_interface_id() {
     let base = interface_id(TWO_EXPORTS);
 
     // `add` returns `b + a` and `shift` uses a local; neither signature nor demand
     // changes, so the interface identity must not move.
-    let edited = "struct Point\n\
-        \x20   x: int\n\
-        \x20   y: int\n\
-        \n\
-        pub fn add(a: int, b: int): int\n\
-        \x20   return b + a\n\
-        \n\
-        pub fn shift(p: Point, dx: int): Point\n\
-        \x20   const nx = p.x + dx\n\
-        \x20   return Point(x: nx, y: p.y)\n";
+    let edited = r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn add(a: int, b: int): int {
+    return b + a
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    const nx = p.x + dx
+    return Point(x: nx, y: p.y)
+}
+"#;
 
     let base_image = compile_verify(TWO_EXPORTS);
     let edited_image = compile_verify(edited);
@@ -152,47 +158,54 @@ fn a_body_edit_keeps_the_interface_id() {
 
 /// A parameter-type change moves the `InterfaceId`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_parameter_type_change_moves_the_interface_id() {
     let base = interface_id(TWO_EXPORTS);
-    let widened = "struct Point\n\
-        \x20   x: int\n\
-        \x20   y: int\n\
-        \n\
-        pub fn add(a: int, b: string): int\n\
-        \x20   return a\n\
-        \n\
-        pub fn shift(p: Point, dx: int): Point\n\
-        \x20   return Point(x: p.x + dx, y: p.y)\n";
+    let widened = r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn add(a: int, b: string): int {
+    return a
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+"#;
     assert_ne!(base, interface_id(widened));
 }
 
 /// Renaming a record field used in a signature moves the `InterfaceId` — a record's
 /// field names are part of the observable transfer shape.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_field_rename_moves_the_interface_id() {
     let base = interface_id(TWO_EXPORTS);
-    let renamed = "struct Point\n\
-        \x20   x: int\n\
-        \x20   z: int\n\
-        \n\
-        pub fn add(a: int, b: int): int\n\
-        \x20   return a + b\n\
-        \n\
-        pub fn shift(p: Point, dz: int): Point\n\
-        \x20   return Point(x: p.x, z: p.z + dz)\n";
+    let renamed = r#"struct Point {
+    x: int
+    z: int
+}
+
+pub fn add(a: int, b: int): int {
+    return a + b
+}
+
+pub fn shift(p: Point, dz: int): Point {
+    return Point(x: p.x, z: p.z + dz)
+}
+"#;
     assert_ne!(base, interface_id(renamed));
 }
 
 /// A signature reaching a collection is rejected with a typed exclusion, observed
 /// through the production path: collections are not yet in the transfer graph.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_collection_returning_export_is_excluded() {
-    let source = "pub fn items(): List[int]\n\
-        \x20   var xs: List[int] = List()\n\
-        \x20   return xs\n";
+    let source = r#"pub fn items(): List<int> {
+    var xs: List<int> = List()
+    return xs
+}
+"#;
     let image = compile_verify(source);
     let error = interface_of(&image).expect_err("a collection return is excluded");
     assert!(matches!(error, InterfaceError::TransferTypeExcluded { .. }));

@@ -66,7 +66,6 @@ fn fixture_dir() -> PathBuf {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn temporal_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -120,12 +119,16 @@ fn a_malformed_temporal_literal_is_a_check_type() {
 /// A temporal constructor argument must be a static string literal; a non-literal
 /// argument is a typed `check.unsupported` (there is no runtime temporal parse).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_literal_temporal_argument_is_a_check_unsupported() {
     let temp = TempDir::new("non-lit");
     project(
         &temp,
-        "module main\n\npub fn f(s: string): date\n\x20   return date(s)\n",
+        r#"module main
+
+pub fn f(s: string): date {
+    return date(s)
+}
+"#,
     );
     let output = run_in(
         &temp,
@@ -139,12 +142,16 @@ fn a_non_literal_temporal_argument_is_a_check_unsupported() {
 /// The prototype's `1.second` duration-suffix literal is not in the beta floor; it
 /// is a typed `check.unsupported` pointing at the canonical-text constructor.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duration_suffix_literal_is_rejected() {
     let temp = TempDir::new("suffix");
     project(
         &temp,
-        "module main\n\npub fn f(): duration\n\x20   return 1.second\n",
+        r#"module main
+
+pub fn f(): duration {
+    return 1.second
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -155,18 +162,19 @@ fn a_duration_suffix_literal_is_rejected() {
 /// A `Map[date, V]` is admitted (temporal types are key scalars) and iterates in
 /// ascending date order regardless of insertion order.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_date_keyed_map_iterates_in_date_order() {
     let temp = TempDir::new("date-map");
     project(
         &temp,
-        "module main\n\
-         \n\
-         pub fn schedule(): Map[date, int]\n\
-         \x20   var m: Map[date, int] = Map()\n\
-         \x20   m = insert(m, date(\"2026-07-25\"), 2)\n\
-         \x20   m = insert(m, date(\"2026-07-15\"), 1)\n\
-         \x20   return m\n",
+        r#"module main
+
+pub fn schedule(): Map<date, int> {
+    var m: Map<date, int> = Map()
+    m = insert(m, date("2026-07-25"), 2)
+    m = insert(m, date("2026-07-15"), 1)
+    return m
+}
+"#,
     );
     let jsonl = run_in(&temp, &["run", "schedule", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&jsonl.stdout);
@@ -180,12 +188,16 @@ fn a_date_keyed_map_iterates_in_date_order() {
 
 /// A temporal export renders its result as canonical text (and JSONL string).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_temporal_result_renders_as_canonical_text() {
     let temp = TempDir::new("render");
     project(
         &temp,
-        "module main\n\npub fn tomorrow(d: date): date\n\x20   return date_add_days(d, 1)\n",
+        r#"module main
+
+pub fn tomorrow(d: date): date {
+    return date_add_days(d, 1)
+}
+"#,
     );
     let text = run_in(&temp, &["run", "tomorrow", "--", "2026-07-15"]);
     let stdout = String::from_utf8_lossy(&text.stdout);
@@ -203,12 +215,16 @@ fn a_temporal_result_renders_as_canonical_text() {
 /// `date_add_days` past the supported range faults `run.temporal_overflow` at
 /// runtime (the value is computed from arguments, not a compile-time literal).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn date_add_days_overflow_is_a_runtime_fault() {
     let temp = TempDir::new("overflow");
     project(
         &temp,
-        "module main\n\npub fn f(d: date, n: int): date\n\x20   return date_add_days(d, n)\n",
+        r#"module main
+
+pub fn f(d: date, n: int): date {
+    return date_add_days(d, n)
+}
+"#,
     );
     let output = run_in(
         &temp,

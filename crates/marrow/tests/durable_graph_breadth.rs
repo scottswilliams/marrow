@@ -44,13 +44,16 @@ fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
 
 // --- Singleton roots: `store ^name: Resource` with no key column. ---
 
-const SETTINGS_SOURCE: &str = "resource Settings\n\
-     \x20   required locale: string\n\
-     \n\
-     store ^settings: Settings\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"settings\"\n";
+const SETTINGS_SOURCE: &str = r#"resource Settings {
+    required locale: string
+}
+
+store ^settings: Settings
+
+pub fn label(): string {
+    return "settings"
+}
+"#;
 
 /// A singleton root's ledger carries no key anchor: application, product, one
 /// field, and the placement, but no `key` row.
@@ -64,7 +67,6 @@ const SETTINGS_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_singleton_root_compiles_and_completes_its_identity() {
     // Declaration-only: the singleton root is identity-complete and verifies.
     let id = contract_of(SETTINGS_SOURCE, SETTINGS_IDS);
@@ -75,7 +77,6 @@ fn a_singleton_root_compiles_and_completes_its_identity() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_singleton_root_missing_its_placement_identity_fails_precisely() {
     let without_root =
         SETTINGS_IDS.replace("id root settings 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n", "");
@@ -88,13 +89,16 @@ fn a_singleton_root_missing_its_placement_identity_fails_precisely() {
 
 // --- Multi-column key tuples: `store ^name(k1: K1, k2: K2): Resource`. ---
 
-const ENROLLMENTS_SOURCE: &str = "resource Enrollment\n\
-     \x20   required grade: int\n\
-     \n\
-     store ^enrollments(student: string, course: string): Enrollment\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"enrollments\"\n";
+const ENROLLMENTS_SOURCE: &str = r#"resource Enrollment {
+    required grade: int
+}
+
+store ^enrollments[student: string, course: string]: Enrollment
+
+pub fn label(): string {
+    return "enrollments"
+}
+"#;
 
 const ENROLLMENTS_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -108,14 +112,12 @@ const ENROLLMENTS_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_root_compiles_and_completes_its_identity() {
     let id = contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS);
     assert_eq!(id, contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_composite_key_root_missing_one_key_identity_fails_precisely() {
     let without_course = ENROLLMENTS_IDS.replace(
         "id key enrollments.course 02020202020202020202020202020202\n",
@@ -148,7 +150,6 @@ fn key_column_order_is_part_of_the_durable_identity() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn renaming_a_key_column_with_a_moved_anchor_preserves_the_identity() {
     let base = contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS);
 
@@ -179,15 +180,17 @@ fn renaming_a_key_column_with_a_moved_anchor_preserves_the_identity() {
 // still parks. ---
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn operating_on_a_singleton_root_is_not_yet_executable() {
-    let source = "resource Settings\n\
-         \x20   required locale: string\n\
-         \n\
-         store ^settings: Settings\n\
-         \n\
-         pub fn locale(): string?\n\
-         \x20   return ^settings.locale\n";
+    let source = r#"resource Settings {
+    required locale: string
+}
+
+store ^settings: Settings
+
+pub fn locale(): string? {
+    return ^settings.locale
+}
+"#;
     let diagnostics = compile(source, SETTINGS_IDS).expect_err("not yet executable");
     assert!(
         codes(&diagnostics).contains(&"check.unsupported"),
@@ -197,13 +200,16 @@ fn operating_on_a_singleton_root_is_not_yet_executable() {
 
 // --- The single-column keyed root remains executable end to end (unchanged). ---
 
-const COUNTER_SOURCE: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \n\
-     store ^counters(name: string): Counter\n\
-     \n\
-     pub fn get(name: string): int?\n\
-     \x20   return ^counters(name).value\n";
+const COUNTER_SOURCE: &str = r#"resource Counter {
+    required value: int
+}
+
+store ^counters[name: string]: Counter
+
+pub fn get(name: string): int? {
+    return ^counters[name].value
+}
+"#;
 
 const COUNTER_IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -219,15 +225,17 @@ const COUNTER_IDS: &str = "marrow ids v0\n\
 /// precise identity gap — never mislabelled "not yet executable" (the single-key
 /// shape *is* executable; it only lacks a ledger identity, which the gap names).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_key_root_with_a_missing_identity_reports_the_gap_not_executability() {
-    let source = "resource Counter\n\
-         \x20   required value: int\n\
-         \n\
-         store ^counters(name: string): Counter\n\
-         \n\
-         pub fn get(name: string): int?\n\
-         \x20   return ^counters(name).value\n";
+    let source = r#"resource Counter {
+    required value: int
+}
+
+store ^counters[name: string]: Counter
+
+pub fn get(name: string): int? {
+    return ^counters[name].value
+}
+"#;
     let without_field = COUNTER_IDS.replace(
         "id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n",
         "",
@@ -244,7 +252,6 @@ fn a_single_key_root_with_a_missing_identity_reports_the_gap_not_executability()
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_column_keyed_root_still_compiles_and_verifies() {
     // The one kernel-serviceable shape: it both completes its identity and lowers
     // an executable read.

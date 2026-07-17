@@ -76,7 +76,6 @@ fn fixture_dir() -> PathBuf {
 /// semantics are independent, and an `Option[string]` sparse field keeps absent
 /// distinct from a present `Option` none.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn local_sparse_conformance_fixture_passes_on_the_production_path() {
     let output = Command::new(MARROW)
         .args(["test", "--format", "jsonl"])
@@ -99,19 +98,21 @@ fn local_sparse_conformance_fixture_passes_on_the_production_path() {
 /// A sparse field assignment flows through the VM: an export that builds a record,
 /// assigns a sparse field, and reads it back yields the assigned value.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_sparse_field_assignment_flows_through_the_vm() {
     let temp = TempDir::new("assign");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \x20   note: string\n\
-         \n\
-         pub fn f(): string\n\
-         \x20   var b = Box(id: 1)\n\
-         \x20   b.note = \"hi\"\n\
-         \x20   return b.note ?? \"absent\"\n",
+        r#"resource Box {
+    required id: int
+    note: string
+}
+
+pub fn f(): string {
+    var b = Box(id: 1)
+    b.note = "hi"
+    return b.note ?? "absent"
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -121,19 +122,21 @@ fn a_sparse_field_assignment_flows_through_the_vm() {
 
 /// `unset` clears a present sparse field back to absent, observed through the VM.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unset_clears_a_sparse_field_through_the_vm() {
     let temp = TempDir::new("unset");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \x20   note: string\n\
-         \n\
-         pub fn f(): string\n\
-         \x20   var b = Box(id: 1, note: \"hi\")\n\
-         \x20   unset b.note\n\
-         \x20   return b.note ?? \"absent\"\n",
+        r#"resource Box {
+    required id: int
+    note: string
+}
+
+pub fn f(): string {
+    var b = Box(id: 1, note: "hi")
+    unset b.note
+    return b.note ?? "absent"
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -143,18 +146,20 @@ fn unset_clears_a_sparse_field_through_the_vm() {
 
 /// A required field cannot be unset: it is a typed `check.type` at the field.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unsetting_a_required_field_is_a_check_type_diagnostic() {
     let temp = TempDir::new("required-unset");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   var b = Box(id: 1)\n\
-         \x20   unset b.id\n\
-         \x20   return 0\n",
+        r#"resource Box {
+    required id: int
+}
+
+pub fn f(): int {
+    var b = Box(id: 1)
+    unset b.id
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -164,20 +169,23 @@ fn unsetting_a_required_field_is_a_check_type_diagnostic() {
 
 /// `unset` on a durable place is rejected: durable erasure uses `delete`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unsetting_a_durable_place_is_a_check_type_diagnostic() {
     let temp = TempDir::new("durable-unset");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \x20   note: string\n\
-         \n\
-         store ^boxes(id: int): Box\n\
-         \n\
-         pub fn f(k: int)\n\
-         \x20   transaction\n\
-         \x20       unset ^boxes(k).note\n",
+        r#"resource Box {
+    required id: int
+    note: string
+}
+
+store ^boxes[id: int]: Box
+
+pub fn f(k: int) {
+    transaction {
+        unset ^boxes[k].note
+    }
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "1"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -192,19 +200,21 @@ fn unsetting_a_durable_place_is_a_check_type_diagnostic() {
 /// a durable operation over the store is a precise `check.unsupported`; it is no
 /// longer a `check.type` on the declaration.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_store_over_an_option_field_resource_is_identity_complete() {
     let temp = TempDir::new("store-option");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \x20   tag: Option[string]\n\
-         \n\
-         store ^boxes(id: int): Box\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   return 0\n",
+        r#"resource Box {
+    required id: int
+    tag: Option<string>
+}
+
+store ^boxes[id: int]: Box
+
+pub fn f(): int {
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -221,28 +231,32 @@ fn a_store_over_an_option_field_resource_is_identity_complete() {
 /// absent runtime value is needed — vacancy is one representation, a present none
 /// another.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_option_typed_sparse_field_keeps_absent_and_present_none_distinct() {
     let temp = TempDir::new("option-field");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \x20   tag: Option[string]\n\
-         \n\
-         pub fn classify(mode: int): string\n\
-         \x20   var b = Box(id: 1)\n\
-         \x20   if mode == 1\n\
-         \x20       b.tag = none\n\
-         \x20   if mode == 2\n\
-         \x20       b.tag = some(\"hi\")\n\
-         \x20   if const t = b.tag\n\
-         \x20       match t\n\
-         \x20           none\n\
-         \x20               return \"present-none\"\n\
-         \x20           some(v)\n\
-         \x20               return v\n\
-         \x20   return \"absent\"\n",
+        r#"resource Box {
+    required id: int
+    tag: Option<string>
+}
+
+pub fn classify(mode: int): string {
+    var b = Box(id: 1)
+    if mode == 1 {
+        b.tag = none
+    }
+    if mode == 2 {
+        b.tag = some("hi")
+    }
+    if const t = b.tag {
+        match t {
+            none => return "present-none"
+            some(v) => return v
+        }
+    }
+    return "absent"
+}
+"#,
     );
     for (mode, expected) in [(0, "absent"), (1, "present-none"), (2, "hi")] {
         let output = run_in(
@@ -268,19 +282,21 @@ fn an_option_typed_sparse_field_keeps_absent_and_present_none_distinct() {
 /// Assigning to a field of a `const`-bound record is rejected: the binding is
 /// immutable, so the field cannot be reassigned.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn assigning_a_field_of_a_const_record_is_a_check_type_diagnostic() {
     let temp = TempDir::new("const-field");
     project(
         &temp,
-        "resource Box\n\
-         \x20   required id: int\n\
-         \x20   note: string\n\
-         \n\
-         pub fn f(): int\n\
-         \x20   const b = Box(id: 1)\n\
-         \x20   b.note = \"x\"\n\
-         \x20   return 0\n",
+        r#"resource Box {
+    required id: int
+    note: string
+}
+
+pub fn f(): int {
+    const b = Box(id: 1)
+    b.note = "x"
+    return 0
+}
+"#,
     );
     let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

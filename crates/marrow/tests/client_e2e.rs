@@ -77,44 +77,55 @@ fn write(path: &Path, contents: &str) {
     fs::write(path, contents).expect("write file");
 }
 
-const FIXTURE: &str = "struct Point\n\
-    \x20   x: int\n\
-    \x20   y: int\n\
-    \n\
-    enum Shape\n\
-    \x20   dot\n\
-    \x20   circle(radius: int)\n\
-    \n\
-    pub fn add(a: int, b: int): int\n\
-    \x20   return a + b\n\
-    \n\
-    pub fn shift(p: Point, dx: int): Point\n\
-    \x20   return Point(x: p.x + dx, y: p.y)\n\
-    \n\
-    pub fn grow(s: Shape): Shape\n\
-    \x20   match s\n\
-    \x20       dot\n\
-    \x20           return Shape::dot\n\
-    \x20       circle(r)\n\
-    \x20           return Shape::circle(radius: r + 1)\n\
-    \n\
-    pub fn ping()\n\
-    \x20   return\n\
-    \n\
-    pub fn echoText(s: string): string\n\
-    \x20   return s\n\
-    \n\
-    pub fn echoBytes(b: bytes): bytes\n\
-    \x20   return b\n\
-    \n\
-    pub fn echoDate(d: date): date\n\
-    \x20   return d\n\
-    \n\
-    pub fn echoInstant(i: instant): instant\n\
-    \x20   return i\n\
-    \n\
-    pub fn echoDuration(u: duration): duration\n\
-    \x20   return u\n";
+const FIXTURE: &str = r#"struct Point {
+    x: int
+    y: int
+}
+
+enum Shape {
+    dot
+    circle(radius: int)
+}
+
+pub fn add(a: int, b: int): int {
+    return a + b
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+
+pub fn grow(s: Shape): Shape {
+    match s {
+        dot => return Shape::dot
+        circle(r) => return Shape::circle(radius: r + 1)
+    }
+}
+
+pub fn ping() {
+    return
+}
+
+pub fn echoText(s: string): string {
+    return s
+}
+
+pub fn echoBytes(b: bytes): bytes {
+    return b
+}
+
+pub fn echoDate(d: date): date {
+    return d
+}
+
+pub fn echoInstant(i: instant): instant {
+    return i
+}
+
+pub fn echoDuration(u: duration): duration {
+    return u
+}
+"#;
 
 /// Build the project, generate the client, compile the image to a file, and
 /// return the project directory.

@@ -29,44 +29,61 @@ const IDS: &str = "marrow ids v0\n\
 
 /// A counter store with one mutating export per operation and read-only observers.
 /// Every mutation sits inside the export's single `transaction` region.
-const SOURCE: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \x20   label: string\n\
-     \n\
-     store ^counters(id: int): Counter\n\
-     \n\
-     pub fn set(id: int, v: int)\n\
-     \x20   transaction\n\
-     \x20       ^counters(id) = Counter(value: v)\n\
-     \n\
-     pub fn setLabel(id: int, text: string)\n\
-     \x20   transaction\n\
-     \x20       ^counters(id).label = text\n\
-     \n\
-     pub fn eraseEntry(id: int)\n\
-     \x20   transaction\n\
-     \x20       delete ^counters(id)\n\
-     \n\
-     pub fn labelOnly(id: int, text: string)\n\
-     \x20   transaction\n\
-     \x20       ^counters(id).label = text\n\
-     \n\
-     pub fn setThenOverflow(id: int, big: int)\n\
-     \x20   transaction\n\
-     \x20       ^counters(id) = Counter(value: 1)\n\
-     \x20       ^counters(id).value = big + big\n\
-     \n\
-     pub fn setThenMaybeDiverge(id: int, v: int, boom: bool)\n\
-     \x20   transaction\n\
-     \x20       ^counters(id) = Counter(value: v)\n\
-     \x20       if boom\n\
-     \x20           unreachable(\"the invariant broke mid-transaction\")\n\
-     \n\
-     pub fn getValue(id: int): int?\n\
-     \x20   return ^counters(id).value\n\
-     \n\
-     pub fn getLabel(id: int): string?\n\
-     \x20   return ^counters(id).label\n";
+const SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn set(id: int, v: int) {
+    transaction {
+        ^counters[id] = Counter(value: v)
+    }
+}
+
+pub fn setLabel(id: int, text: string) {
+    transaction {
+        ^counters[id].label = text
+    }
+}
+
+pub fn eraseEntry(id: int) {
+    transaction {
+        delete ^counters[id]
+    }
+}
+
+pub fn labelOnly(id: int, text: string) {
+    transaction {
+        ^counters[id].label = text
+    }
+}
+
+pub fn setThenOverflow(id: int, big: int) {
+    transaction {
+        ^counters[id] = Counter(value: 1)
+        ^counters[id].value = big + big
+    }
+}
+
+pub fn setThenMaybeDiverge(id: int, v: int, boom: bool) {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        if boom {
+            unreachable("the invariant broke mid-transaction")
+        }
+    }
+}
+
+pub fn getValue(id: int): int? {
+    return ^counters[id].value
+}
+
+pub fn getLabel(id: int): string? {
+    return ^counters[id].label
+}
+"#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -166,7 +183,6 @@ fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment 
 /// attachment: `set` commits its one region, and a subsequent `getValue` reads the
 /// committed value back.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_committed_transaction_is_observable_by_a_later_read() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -193,7 +209,6 @@ fn a_committed_transaction_is_observable_by_a_later_read() {
 /// A sparse field committed in its own transaction reads back; a second transaction
 /// replacing the whole entry drops the earlier sparse leaf (exact replacement).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_committed_field_write_reads_back_and_replacement_is_exact() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -237,7 +252,6 @@ fn a_committed_field_write_reads_back_and_replacement_is_exact() {
 /// An erase committed in its own transaction removes the entry; a later read observes
 /// it absent.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_committed_erase_removes_the_entry() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -260,7 +274,6 @@ fn a_committed_erase_removes_the_entry() {
 /// discarded and a later read observes the pre-transaction state. This is the
 /// late-rollback-restores-state law, observed across sessions on one attachment.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_fault_before_commit_rolls_the_transaction_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -293,7 +306,6 @@ fn a_fault_before_commit_rolls_the_transaction_back() {
 /// `run.required_missing` rather than publishing a partial entry; a later read
 /// observes nothing was written.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_required_field_unset_at_commit_rolls_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);
@@ -324,33 +336,40 @@ fn a_required_field_unset_at_commit_rolls_back() {
 /// read into a local before the block closes is the supported form; a read after it
 /// cannot reach a live transaction and is rejected before it could run.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_read_after_commit_is_rejected() {
-    let read_after = "resource Counter\n\
-         \x20   required value: int\n\
-         \x20   label: string\n\
-         \n\
-         store ^counters(id: int): Counter\n\
-         \n\
-         pub fn setAndGet(id: int, v: int): int?\n\
-         \x20   transaction\n\
-         \x20       ^counters(id) = Counter(value: v)\n\
-         \x20   return ^counters(id).value\n";
+    let read_after = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn setAndGet(id: int, v: int): int? {
+    transaction {
+        ^counters[id] = Counter(value: v)
+    }
+    return ^counters[id].value
+}
+"#;
     assert_eq!(verify_rejection(read_after).as_deref(), Some("image.flow"));
 
     // The supported form captures the value inside the region and returns the local.
-    let read_inside = "resource Counter\n\
-         \x20   required value: int\n\
-         \x20   label: string\n\
-         \n\
-         store ^counters(id: int): Counter\n\
-         \n\
-         pub fn setAndGet(id: int, v: int): int?\n\
-         \x20   var result: int? = absent\n\
-         \x20   transaction\n\
-         \x20       ^counters(id) = Counter(value: v)\n\
-         \x20       result = ^counters(id).value\n\
-         \x20   return result\n";
+    let read_inside = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn setAndGet(id: int, v: int): int? {
+    var result: int? = absent
+    transaction {
+        ^counters[id] = Counter(value: v)
+        result = ^counters[id].value
+    }
+    return result
+}
+"#;
     let image = compile_verify(read_inside);
     let mut attachment = attach(&image);
     assert_eq!(
@@ -368,7 +387,6 @@ fn a_durable_read_after_commit_is_rejected() {
 /// region back, exactly like an arithmetic fault: the C01 divergence machinery and
 /// the transaction effects compose. The non-diverging path commits normally.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_unreachable_fault_inside_a_transaction_rolls_back() {
     let image = compile_verify(SOURCE);
     let mut attachment = attach(&image);

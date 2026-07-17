@@ -66,7 +66,6 @@ fn assert_round_trips(label: &str, source: &str) {
 
 /// Every documented `.mw` example reconstructs exactly from its tokens.
 #[test]
-#[ignore = "BS01: reads docs/language fences (layout); un-ignore when flip 5 converts them"]
 fn documented_examples_round_trip() {
     for block in mw_blocks() {
         assert_round_trips(&format!("{}#{}", block.path, block.index), &block.source);

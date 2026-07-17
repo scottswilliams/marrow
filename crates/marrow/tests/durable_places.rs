@@ -22,15 +22,17 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
-const HEADER: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \x20   label: string\n\
-     \n\
-     store ^counters(id: int): Counter\n\
-     \n\
-     fn keyOf(n: int): int\n\
-     \x20   return n + 100\n\
-     \n";
+const HEADER: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+fn keyOf(n: int): int {
+    return n + 100
+}
+"#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");

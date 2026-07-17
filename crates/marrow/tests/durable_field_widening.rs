@@ -44,28 +44,33 @@ fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
 // A resource storing every widened value kind: a plain scalar (`id`), a user enum
 // (`kind`), a nominal scalar (`balance`), a dense struct (`owner`), and an
 // `Option` (`note`).
-const ACCOUNT_SOURCE: &str = "resource Account\n\
-     \x20   required id: int\n\
-     \x20   required kind: Access\n\
-     \x20   balance: Money\n\
-     \x20   owner: Name\n\
-     \x20   note: Option[string]\n\
-     \n\
-     struct Name\n\
-     \x20   first: string\n\
-     \x20   last: string\n\
-     \n\
-     enum Access\n\
-     \x20   reader\n\
-     \x20   writer\n\
-     \x20   admin\n\
-     \n\
-     type Money: int in 0..=1000000\n\
-     \n\
-     store ^accounts(id: int): Account\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"accounts\"\n";
+const ACCOUNT_SOURCE: &str = r#"resource Account {
+    required id: int
+    required kind: Access
+    balance: Money
+    owner: Name
+    note: Option<string>
+}
+
+struct Name {
+    first: string
+    last: string
+}
+
+enum Access {
+    reader
+    writer
+    admin
+}
+
+type Money: int in 0..=1000000
+
+store ^accounts[id: int]: Account
+
+pub fn label(): string {
+    return "accounts"
+}
+"#;
 
 // The full ledger. Note the struct `Name`'s leaves (`first`/`last`) mint no ids —
 // they are shape bytes — while each durable-reachable enum carries a sum id and one
@@ -92,7 +97,6 @@ const ACCOUNT_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_widened_field_resource_completes_its_identity_and_verifies() {
     let id = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
     assert_eq!(id, contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS), "stable");
@@ -122,7 +126,6 @@ fn unrelated_source_edits_do_not_drift_the_widened_contract_id() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_enum_sum_identity_fails_precisely() {
     let without_sum = ACCOUNT_IDS.replace("id sum Access 50505050505050505050505050505050\n", "");
     let diagnostics = compile(ACCOUNT_SOURCE, &without_sum).expect_err("incomplete identity");
@@ -139,7 +142,6 @@ fn a_missing_enum_sum_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_enum_member_identity_fails_precisely() {
     let without_member = ACCOUNT_IDS.replace(
         "id member Access.writer 52525252525252525252525252525252\n",
@@ -159,7 +161,6 @@ fn a_missing_enum_member_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_option_field_mints_its_generic_enum_sum_and_members() {
     // The `Option[string]` reachable through the store carries its own sum/member
     // identities anchored at its space-free spelling.
@@ -180,7 +181,6 @@ fn an_option_field_mints_its_generic_enum_sum_and_members() {
 // --- Enum member evolution: rename preserves, append changes and cannot reuse. ---
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn renaming_an_enum_member_with_a_moved_anchor_preserves_the_identity() {
     // A rename edits the source member and moves its ledger anchor while keeping the
     // same id: identity follows the id, not the spelling.
@@ -205,7 +205,6 @@ fn renaming_an_enum_member_with_a_moved_anchor_preserves_the_identity() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
     // Append a fourth variant to `Access`. A fresh member id is required; the
     // existing members keep their ids and positions.
@@ -239,22 +238,25 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
 // --- The executable-vs-identity boundary. ---
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn operating_on_a_widened_field_store_compiles_and_verifies() {
     // A read of a widened (enum) field is executable: it compiles, and the sealed image
     // verifies with a durable read opcode over the field-leaf site (no longer parked).
-    let source = "resource Account\n\
-         \x20   required id: int\n\
-         \x20   required kind: Access\n\
-         \n\
-         enum Access\n\
-         \x20   reader\n\
-         \x20   writer\n\
-         \n\
-         store ^accounts(id: int): Account\n\
-         \n\
-         pub fn kind(id: int): Access?\n\
-         \x20   return ^accounts(id).kind\n";
+    let source = r#"resource Account {
+    required id: int
+    required kind: Access
+}
+
+enum Access {
+    reader
+    writer
+}
+
+store ^accounts[id: int]: Account
+
+pub fn kind(id: int): Access? {
+    return ^accounts[id].kind
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -273,23 +275,26 @@ fn operating_on_a_widened_field_store_compiles_and_verifies() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_cyclic_value_graph_through_a_durable_field_is_rejected() {
     // A durable field's value must be acyclic. A self-referential struct reached
     // through a stored field is an infinite value, rejected at check time as a
     // recursion (and independently re-rejected by the verifier's value-type cycle
     // pass), so it never enters the durable graph.
-    let source = "resource Tree\n\
-         \x20   required id: int\n\
-         \x20   node: Node\n\
-         \n\
-         struct Node\n\
-         \x20   child: Node\n\
-         \n\
-         store ^trees(id: int): Tree\n\
-         \n\
-         pub fn label(): string\n\
-         \x20   return \"trees\"\n";
+    let source = r#"resource Tree {
+    required id: int
+    node: Node
+}
+
+struct Node {
+    child: Node
+}
+
+store ^trees[id: int]: Tree
+
+pub fn label(): string {
+    return "trees"
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          high-water 0\n\
@@ -302,24 +307,28 @@ fn a_cyclic_value_graph_through_a_durable_field_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_over_a_widened_field_is_refused() {
     // Index eligibility is decoupled from executability: a widened (struct) field is
     // executable but is not an orderable durable-key scalar, so declaring an index over
     // it is a precise `check.type` — mirroring the verifier's independent refusal.
-    let source = "resource Account\n\
-         \x20   required id: int\n\
-         \x20   owner: Name\n\
-         \n\
-         struct Name\n\
-         \x20   first: string\n\
-         \x20   last: string\n\
-         \n\
-         store ^accounts(id: int): Account\n\
-         \x20   index byOwner(owner) unique\n\
-         \n\
-         pub fn label(): string\n\
-         \x20   return \"accounts\"\n";
+    let source = r#"resource Account {
+    required id: int
+    owner: Name
+}
+
+struct Name {
+    first: string
+    last: string
+}
+
+store ^accounts[id: int]: Account {
+    index byOwner[owner] unique
+}
+
+pub fn label(): string {
+    return "accounts"
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -339,19 +348,21 @@ fn an_index_over_a_widened_field_is_refused() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_collection_durable_field_is_unsupported() {
     // A collection is not a durable value leaf (a large collection belongs under a
     // keyed branch), so a resource field storing one is a precise `check.unsupported`
     // rather than being admitted into the durable graph.
-    let source = "resource Bag\n\
-         \x20   required id: int\n\
-         \x20   items: List[int]\n\
-         \n\
-         store ^bags(id: int): Bag\n\
-         \n\
-         pub fn label(): string\n\
-         \x20   return \"bags\"\n";
+    let source = r#"resource Bag {
+    required id: int
+    items: List<int>
+}
+
+store ^bags[id: int]: Bag
+
+pub fn label(): string {
+    return "bags"
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          high-water 0\n\

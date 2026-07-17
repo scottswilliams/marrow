@@ -60,10 +60,15 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn return_const_travels_the_full_production_path() {
     let temp = TempDir::new("return-const");
-    project(&temp, "pub fn answer(): int\n    return 42\n");
+    project(
+        &temp,
+        r#"pub fn answer(): int {
+    return 42
+}
+"#,
+    );
 
     let output = run_in(&temp, &["run", "answer"]);
     assert!(
@@ -75,10 +80,15 @@ fn return_const_travels_the_full_production_path() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn return_const_jsonl_is_canonical() {
     let temp = TempDir::new("return-const-jsonl");
-    project(&temp, "pub fn answer(): int\n    return 42\n");
+    project(
+        &temp,
+        r#"pub fn answer(): int {
+    return 42
+}
+"#,
+    );
 
     let output = run_in(&temp, &["run", "answer", "--format", "jsonl"]);
     assert!(output.status.success(), "{output:?}");
@@ -89,10 +99,15 @@ fn return_const_jsonl_is_canonical() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_type_mismatch_is_a_source_diagnostic() {
     let temp = TempDir::new("type-mismatch");
-    project(&temp, "pub fn answer(): int\n    return true\n");
+    project(
+        &temp,
+        r#"pub fn answer(): int {
+    return true
+}
+"#,
+    );
 
     let output = run_in(&temp, &["run", "answer", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -107,28 +122,33 @@ fn a_type_mismatch_is_a_source_diagnostic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_export_is_a_usage_error() {
     let temp = TempDir::new("missing-export");
-    project(&temp, "pub fn answer(): int\n    return 42\n");
+    project(
+        &temp,
+        r#"pub fn answer(): int {
+    return 42
+}
+"#,
+    );
 
     let output = run_in(&temp, &["run", "nope"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn locals_arithmetic_and_control_flow_compute_a_value() {
     let temp = TempDir::new("compute");
     project(
         &temp,
-        "pub fn compute(): int\n\
-         \x20   const a = 3\n\
-         \x20   var b = 4\n\
-         \x20   b = b * a\n\
-         \x20   if b > 10\n\
-         \x20       return b + 1\n\
-         \x20   return b\n",
+        r#"pub fn compute(): int {
+    const a = 3
+    var b = 4
+    b = b * a
+    if b > 10 { return b + 1 }
+    return b
+}
+"#,
     );
 
     let output = run_in(&temp, &["run", "compute"]);
@@ -142,18 +162,20 @@ fn locals_arithmetic_and_control_flow_compute_a_value() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_while_loop_sums() {
     let temp = TempDir::new("sum-loop");
     project(
         &temp,
-        "pub fn total(): int\n\
-         \x20   var sum = 0\n\
-         \x20   var i = 0\n\
-         \x20   while i < 5\n\
-         \x20       sum = sum + i\n\
-         \x20       i = i + 1\n\
-         \x20   return sum\n",
+        r#"pub fn total(): int {
+    var sum = 0
+    var i = 0
+    while i < 5 {
+        sum = sum + i
+        i = i + 1
+    }
+    return sum
+}
+"#,
     );
 
     let output = run_in(&temp, &["run", "total"]);
@@ -163,15 +185,16 @@ fn a_while_loop_sums() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn short_circuit_boolean_logic() {
     let temp = TempDir::new("andor");
     project(
         &temp,
-        "pub fn andor(): bool\n\
-         \x20   const t = true\n\
-         \x20   const f = false\n\
-         \x20   return t and (f or t)\n",
+        r#"pub fn andor(): bool {
+    const t = true
+    const f = false
+    return t and (f or t)
+}
+"#,
     );
 
     let output = run_in(&temp, &["run", "andor"]);
@@ -180,14 +203,15 @@ fn short_circuit_boolean_logic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn runtime_overflow_is_a_source_mapped_fault() {
     let temp = TempDir::new("overflow");
     project(
         &temp,
-        "pub fn over(): int\n\
-         \x20   const big = 9223372036854775807\n\
-         \x20   return big + 1\n",
+        r#"pub fn over(): int {
+    const big = 9223372036854775807
+    return big + 1
+}
+"#,
     );
 
     let output = run_in(&temp, &["run", "over", "--format", "jsonl"]);
@@ -199,13 +223,14 @@ fn runtime_overflow_is_a_source_mapped_fault() {
 
 /// Integer `/` truncates toward zero through the full production path.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn integer_division_truncates_toward_zero() {
     let temp = TempDir::new("div");
     project(
         &temp,
-        "pub fn q(a: int, b: int): int\n\
-         \x20   return a / b\n",
+        r#"pub fn q(a: int, b: int): int {
+    return a / b
+}
+"#,
     );
     let output = run_in(&temp, &["run", "q", "--", "-7", "2"]);
     assert!(output.status.success(), "run failed: {output:?}");
@@ -214,19 +239,22 @@ fn integer_division_truncates_toward_zero() {
 
 /// The closed scalar conversions travel the full path and render canonically.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn scalar_conversions_travel_the_full_path() {
     let temp = TempDir::new("conv");
     project(
         &temp,
-        "pub fn asString(n: int): string\n\
-         \x20   return string(n)\n\
-         \n\
-         pub fn flag(b: bool): string\n\
-         \x20   return string(b)\n\
-         \n\
-         pub fn asBytes(s: string): bytes\n\
-         \x20   return bytes(s)\n",
+        r#"pub fn asString(n: int): string {
+    return string(n)
+}
+
+pub fn flag(b: bool): string {
+    return string(b)
+}
+
+pub fn asBytes(s: string): bytes {
+    return bytes(s)
+}
+"#,
     );
     let n = run_in(&temp, &["run", "asString", "--", "-7"]);
     assert!(n.status.success(), "{n:?}");
@@ -247,16 +275,18 @@ fn scalar_conversions_travel_the_full_path() {
 /// prefix, an odd hex length, or `1` for a bool — is a usage error (exit 2), never
 /// a silent coercion.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
     let temp = TempDir::new("noncanonical");
     project(
         &temp,
-        "pub fn firstByte(b: bytes): int\n\
-         \x20   return 0\n\
-         \n\
-         pub fn flag(b: bool): bool\n\
-         \x20   return b\n",
+        r#"pub fn firstByte(b: bytes): int {
+    return 0
+}
+
+pub fn flag(b: bool): bool {
+    return b
+}
+"#,
     );
     for (export, arg) in [
         ("firstByte", "0xAB"),  // uppercase hex
@@ -290,15 +320,17 @@ fn a_noncanonical_terminal_value_literal_is_a_usage_error() {
 /// faults with `run.budget` — the VM's dynamic-limit backstop — rather than running
 /// forever. There is no runner or environment override.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nonterminating_loop_faults_on_the_instruction_budget() {
     let temp = TempDir::new("budget");
     project(
         &temp,
-        "pub fn spin()\n\
-         \x20   var n: int = 0\n\
-         \x20   while true\n\
-         \x20       n = n + 1\n",
+        r#"pub fn spin() {
+    var n: int = 0
+    while true {
+        n = n + 1
+    }
+}
+"#,
     );
     let output = run_in(&temp, &["run", "spin", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -310,23 +342,23 @@ fn nonterminating_loop_faults_on_the_instruction_budget() {
 /// The checked-arithmetic form: the success path binds the result; each fault
 /// runs its diverging arm.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_arithmetic_success_and_each_arm() {
     let temp = TempDir::new("checked");
     project(
         &temp,
-        "pub fn safeMul(a: int, b: int): int\n\
-         \x20   const p: int = checked a * b\n\
-         \x20       on out_of_range\n\
-         \x20           return -1\n\
-         \x20   return p\n\
-         \n\
-         pub fn safeDiv(a: int, b: int): int\n\
-         \x20   return checked a / b\n\
-         \x20       on out_of_range\n\
-         \x20           return -1\n\
-         \x20       on zero_divisor\n\
-         \x20           return 0\n",
+        r#"pub fn safeMul(a: int, b: int): int {
+    const p: int = checked a * b
+        on out_of_range return -1
+    return p
+}
+
+pub fn safeDiv(a: int, b: int): int {
+    return checked a / b
+        on out_of_range {
+            return -1
+        } on zero_divisor return 0
+}
+"#,
     );
     // Success paths.
     assert_eq!(
@@ -365,23 +397,23 @@ fn checked_arithmetic_success_and_each_arm() {
 /// Complex nested procedural code reads clearly with the checked form, without
 /// combinator ceremony: a running total that both guards overflow and short-circuits.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_reads_clearly_in_nested_procedural_code() {
     let temp = TempDir::new("checked-nested");
     project(
         &temp,
-        "pub fn boundedFactorial(n: int, cap: int): int\n\
-         \x20   var acc: int = 1\n\
-         \x20   var i: int = 2\n\
-         \x20   while i <= n\n\
-         \x20       const next: int = checked acc * i\n\
-         \x20           on out_of_range\n\
-         \x20               return -1\n\
-         \x20       if next > cap\n\
-         \x20           return cap\n\
-         \x20       acc = next\n\
-         \x20       i = i + 1\n\
-         \x20   return acc\n",
+        r#"pub fn boundedFactorial(n: int, cap: int): int {
+    var acc: int = 1
+    var i: int = 2
+    while i <= n {
+        const next: int = checked acc * i
+            on out_of_range return -1
+        if next > cap { return cap }
+        acc = next
+        i = i + 1
+    }
+    return acc
+}
+"#,
     );
     assert_eq!(
         String::from_utf8_lossy(
@@ -419,17 +451,19 @@ fn checked_reads_clearly_in_nested_procedural_code() {
 /// A checked form whose arm does not diverge, or that omits a required arm, is a
 /// source diagnostic.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_arm_rules_are_diagnostics() {
     let temp = TempDir::new("checked-bad");
     // Non-diverging out_of_range arm.
     project(
         &temp,
-        "pub fn bad(a: int, b: int): int\n\
-         \x20   const p: int = checked a + b\n\
-         \x20       on out_of_range\n\
-         \x20           const x: int = 0\n\
-         \x20   return p\n",
+        r#"pub fn bad(a: int, b: int): int {
+    const p: int = checked a + b
+        on out_of_range {
+            const x: int = 0
+        }
+    return p
+}
+"#,
     );
     let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1", "2"]);
     assert!(!out.status.success());
@@ -440,10 +474,11 @@ fn checked_form_arm_rules_are_diagnostics() {
     // Missing zero_divisor arm on a checked division.
     project(
         &temp,
-        "pub fn bad(a: int, b: int): int\n\
-         \x20   return checked a / b\n\
-         \x20       on out_of_range\n\
-         \x20           return -1\n",
+        r#"pub fn bad(a: int, b: int): int {
+    return checked a / b
+        on out_of_range return -1
+}
+"#,
     );
     let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1", "2"]);
     assert!(!out.status.success());
@@ -455,16 +490,18 @@ fn checked_form_arm_rules_are_diagnostics() {
 
 /// The closed pure text floor: isEmpty / contains / trim.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn text_floor_builtins_travel_the_full_path() {
     let temp = TempDir::new("textfloor");
     project(
         &temp,
-        "pub fn empty(s: string): bool\n\
-         \x20   return isEmpty(trim(s))\n\
-         \n\
-         pub fn has(h: string, n: string): bool\n\
-         \x20   return contains(h, n)\n",
+        r#"pub fn empty(s: string): bool {
+    return isEmpty(trim(s))
+}
+
+pub fn has(h: string, n: string): bool {
+    return contains(h, n)
+}
+"#,
     );
     assert_eq!(
         String::from_utf8_lossy(&run_in(&temp, &["run", "empty", "--", "   "]).stdout),
@@ -486,13 +523,14 @@ fn text_floor_builtins_travel_the_full_path() {
 
 /// `string` comparisons order lexicographically through the full path.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn string_comparison_orders_lexicographically() {
     let temp = TempDir::new("strcmp");
     project(
         &temp,
-        "pub fn before(a: string, b: string): bool\n\
-         \x20   return a < b\n",
+        r#"pub fn before(a: string, b: string): bool {
+    return a < b
+}
+"#,
     );
     let yes = run_in(&temp, &["run", "before", "--", "apple", "banana"]);
     assert!(yes.status.success(), "run failed: {yes:?}");
@@ -502,13 +540,14 @@ fn string_comparison_orders_lexicographically() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn integer_division_by_zero_is_a_source_mapped_fault() {
     let temp = TempDir::new("divzero");
     project(
         &temp,
-        "pub fn q(a: int, b: int): int\n\
-         \x20   return a / b\n",
+        r#"pub fn q(a: int, b: int): int {
+    return a / b
+}
+"#,
     );
     let output = run_in(&temp, &["run", "q", "--format", "jsonl", "--", "1", "0"]);
     assert!(!output.status.success());
@@ -521,19 +560,17 @@ fn integer_division_by_zero_is_a_source_mapped_fault() {
 /// value-returning function whose earlier branches cover every real case, and it
 /// runs the returning path normally.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
     let temp = TempDir::new("unreach-ok");
     project(
         &temp,
-        "pub fn sign(n: int): int\n\
-         \x20   if n > 0\n\
-         \x20       return 1\n\
-         \x20   if n < 0\n\
-         \x20       return -1\n\
-         \x20   if n == 0\n\
-         \x20       return 0\n\
-         \x20   unreachable(\"n is int, so one branch always returns\")\n",
+        r#"pub fn sign(n: int): int {
+    if n > 0 { return 1 }
+    if n < 0 { return -1 }
+    if n == 0 { return 0 }
+    unreachable("n is int, so one branch always returns")
+}
+"#,
     );
     let output = run_in(&temp, &["run", "sign", "--", "-5"]);
     assert!(output.status.success(), "run failed: {output:?}");
@@ -543,13 +580,15 @@ fn unreachable_satisfies_exhaustive_return_and_runs_the_real_path() {
 /// Reaching an `unreachable` faults with `run.unreachable`; the text output carries
 /// the static author text, while the typed JSONL surface stays code and span.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unreachable_faults_and_carries_static_text() {
     let temp = TempDir::new("unreach-fault");
-    let source = "pub fn boom(hit: bool): int\n\
-         \x20   if hit\n\
-         \x20       unreachable(\"the invariant broke\")\n\
-         \x20   return 0\n";
+    let source = r#"pub fn boom(hit: bool): int {
+    if hit {
+        unreachable("the invariant broke")
+    }
+    return 0
+}
+"#;
     project(&temp, source);
 
     let jsonl = run_in(&temp, &["run", "boom", "--format", "jsonl", "--", "true"]);
@@ -572,13 +611,14 @@ fn unreachable_faults_and_carries_static_text() {
 /// `unreachable` requires a static string literal, so a computed argument is a
 /// source diagnostic, not a runtime value.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unreachable_rejects_a_computed_argument() {
     let temp = TempDir::new("unreach-arg");
     project(
         &temp,
-        "pub fn bad(s: string): int\n\
-         \x20   unreachable(s)\n",
+        r#"pub fn bad(s: string): int {
+    unreachable(s)
+}
+"#,
     );
     let output = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "x"]);
     assert!(!output.status.success());
@@ -589,30 +629,38 @@ fn unreachable_rejects_a_computed_argument() {
 
 /// A project whose resource, constructor, field reads, optional coalescing, and
 /// `if const` guard travel the full path. One source file drives several exports.
-const RECORDS_SOURCE: &str = "resource Note\n\
-     \x20   required title: string\n\
-     \x20   body: string\n\
-     \n\
-     pub fn titleOf(): string\n\
-     \x20   const n = Note(title: \"hello\")\n\
-     \x20   return n.title\n\
-     \n\
-     pub fn bodyOrDefault(): string\n\
-     \x20   const n = Note(title: \"hi\", body: \"there\")\n\
-     \x20   return n.body ?? \"none\"\n\
-     \n\
-     pub fn missingBody(): string\n\
-     \x20   const n = Note(title: \"hi\")\n\
-     \x20   return n.body ?? \"none\"\n\
-     \n\
-     pub fn guardedBody(): string\n\
-     \x20   const n = Note(title: \"hi\", body: \"yo\")\n\
-     \x20   if const b = n.body\n\
-     \x20       return b\n\
-     \x20   return \"none\"\n\
-     \n\
-     pub fn maybe(): string?\n\
-     \x20   return absent\n";
+const RECORDS_SOURCE: &str = r#"resource Note {
+    required title: string
+    body: string
+}
+
+pub fn titleOf(): string {
+    const n = Note(title: "hello")
+    return n.title
+}
+
+pub fn bodyOrDefault(): string {
+    const n = Note(title: "hi", body: "there")
+    return n.body ?? "none"
+}
+
+pub fn missingBody(): string {
+    const n = Note(title: "hi")
+    return n.body ?? "none"
+}
+
+pub fn guardedBody(): string {
+    const n = Note(title: "hi", body: "yo")
+    if const b = n.body {
+        return b
+    }
+    return "none"
+}
+
+pub fn maybe(): string? {
+    return absent
+}
+"#;
 
 fn run_records(export: &str) -> String {
     let temp = TempDir::new(&format!("records-{export}"));
@@ -627,37 +675,31 @@ fn run_records(export: &str) -> String {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn required_field_read() {
     assert_eq!(run_records("titleOf"), "hello\n");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn present_sparse_field_coalesces_to_itself() {
     assert_eq!(run_records("bodyOrDefault"), "there\n");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn vacant_sparse_field_coalesces_to_default() {
     assert_eq!(run_records("missingBody"), "none\n");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn if_const_binds_a_present_optional() {
     assert_eq!(run_records("guardedBody"), "yo\n");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_absent_optional_return_renders_absent() {
     assert_eq!(run_records("maybe"), "absent\n");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_qualified_export_in_a_second_module_runs() {
     // Two modules, each with its own public export. The export in `src/math.mw`
     // (module `math`) is invoked by its qualified `module.item` path through the
@@ -667,11 +709,17 @@ fn a_qualified_export_in_a_second_module_runs() {
     write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
     write(
         &temp.join("src").join("main.mw"),
-        "pub fn start(): int\n    return 1\n",
+        r#"pub fn start(): int {
+    return 1
+}
+"#,
     );
     write(
         &temp.join("src").join("math.mw"),
-        "pub fn two(): int\n    return 2\n",
+        r#"pub fn two(): int {
+    return 2
+}
+"#,
     );
 
     let output = run_in(&temp, &["run", "math.two"]);
@@ -691,13 +739,19 @@ fn a_qualified_export_in_a_second_module_runs() {
 // --- Module constants (C00). ---
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_module_constant_folds_into_a_function() {
     let temp = multi_module(
         "module-const",
         &[(
             "main.mw",
-            "module main\n\nconst MAX: int = 100\n\npub fn cap(): int\n    return MAX + 1\n",
+            r#"module main
+
+const MAX: int = 100
+
+pub fn cap(): int {
+    return MAX + 1
+}
+"#,
         )],
     );
     let output = run_in(&temp, &["run", "main.cap"]);
@@ -706,13 +760,19 @@ fn a_module_constant_folds_into_a_function() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_negated_integer_constant_is_allowed() {
     let temp = multi_module(
         "neg-const",
         &[(
             "main.mw",
-            "module main\n\nconst MIN = -5\n\npub fn floor(): int\n    return MIN\n",
+            r#"module main
+
+const MIN = -5
+
+pub fn floor(): int {
+    return MIN
+}
+"#,
         )],
     );
     let output = run_in(&temp, &["run", "main.floor"]);
@@ -721,33 +781,44 @@ fn a_negated_integer_constant_is_allowed() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_constant_type_annotation_must_match_its_value() {
     let temp = multi_module(
         "const-type",
         &[(
             "main.mw",
-            "module main\n\nconst FLAG: bool = 1\n\npub fn run(): bool\n    return FLAG\n",
+            r#"module main
+
+const FLAG: bool = 1
+
+pub fn run(): bool {
+    return FLAG
+}
+"#,
         )],
     );
     assert!(run_diagnostic_code(&temp, "main.run").contains("check.type"));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_non_literal_constant_is_unsupported() {
     let temp = multi_module(
         "const-nonliteral",
         &[(
             "main.mw",
-            "module main\n\nconst SUM = 1 + 2\n\npub fn run(): int\n    return SUM\n",
+            r#"module main
+
+const SUM = 1 + 2
+
+pub fn run(): int {
+    return SUM
+}
+"#,
         )],
     );
     assert!(run_diagnostic_code(&temp, "main.run").contains("check.unsupported"));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_module_constant_is_private_to_its_module() {
     // `SECRET` is declared in `lib`; referencing it unqualified from `main` is not
     // in scope, and a qualified constant reference is not a supported form.
@@ -757,7 +828,12 @@ fn a_module_constant_is_private_to_its_module() {
             ("lib.mw", "module lib\n\nconst SECRET = 7\n"),
             (
                 "main.mw",
-                "module main\n\npub fn run(): int\n    return SECRET\n",
+                r#"module main
+
+pub fn run(): int {
+    return SECRET
+}
+"#,
             ),
         ],
     );
@@ -766,13 +842,21 @@ fn a_module_constant_is_private_to_its_module() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duplicate_constant_in_one_module_conflicts() {
     let temp = multi_module(
         "dup-const",
         &[(
             "main.mw",
-            "module main\n\nconst K = 1\n\nconst K = 2\n\npub fn run(): int\n    return K\n",
+            r#"module main
+
+const K = 1
+
+const K = 2
+
+pub fn run(): int {
+    return K
+}
+"#,
         )],
     );
     assert!(run_diagnostic_code(&temp, "main.run").contains("check.name_conflict"));
@@ -799,18 +883,29 @@ fn run_diagnostic_code(dir: &Path, export: &str) -> String {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_use_import_resolves_a_cross_module_call() {
     let temp = multi_module(
         "use-import",
         &[
             (
                 "mathlib/ops.mw",
-                "module mathlib::ops\n\npub fn double(n: int): int\n    return n + n\n",
+                r#"module mathlib::ops
+
+pub fn double(n: int): int {
+    return n + n
+}
+"#,
             ),
             (
                 "main.mw",
-                "module main\n\nuse mathlib::ops\n\npub fn run(): int\n    return ops::double(21)\n",
+                r#"module main
+
+use mathlib::ops
+
+pub fn run(): int {
+    return ops::double(21)
+}
+"#,
             ),
         ],
     );
@@ -824,18 +919,27 @@ fn a_use_import_resolves_a_cross_module_call() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_fully_qualified_call_resolves_without_a_use() {
     let temp = multi_module(
         "fully-qualified",
         &[
             (
                 "mathlib/ops.mw",
-                "module mathlib::ops\n\npub fn triple(n: int): int\n    return n + n + n\n",
+                r#"module mathlib::ops
+
+pub fn triple(n: int): int {
+    return n + n + n
+}
+"#,
             ),
             (
                 "main.mw",
-                "module main\n\npub fn run(): int\n    return mathlib::ops::triple(4)\n",
+                r#"module main
+
+pub fn run(): int {
+    return mathlib::ops::triple(4)
+}
+"#,
             ),
         ],
     );
@@ -845,16 +949,32 @@ fn a_fully_qualified_call_resolves_without_a_use() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_same_name_function_in_another_module_does_not_conflict() {
     // Two modules each define `helper`; an unqualified call binds the caller's own.
     let temp = multi_module(
         "same-name",
         &[
-            ("a.mw", "module a\n\npub fn helper(): int\n    return 1\n"),
+            (
+                "a.mw",
+                r#"module a
+
+pub fn helper(): int {
+    return 1
+}
+"#,
+            ),
             (
                 "b.mw",
-                "module b\n\nfn helper(): int\n    return 2\n\npub fn run(): int\n    return helper()\n",
+                r#"module b
+
+fn helper(): int {
+    return 2
+}
+
+pub fn run(): int {
+    return helper()
+}
+"#,
             ),
         ],
     );
@@ -864,7 +984,6 @@ fn a_same_name_function_in_another_module_does_not_conflict() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_bare_call_does_not_reach_a_function_in_another_module() {
     // `greet` exists only in `other`; an unqualified call from `main` resolves in
     // `main` alone and is unresolved, not silently bound across the boundary.
@@ -873,11 +992,21 @@ fn a_bare_call_does_not_reach_a_function_in_another_module() {
         &[
             (
                 "other.mw",
-                "module other\n\npub fn greet(): int\n    return 1\n",
+                r#"module other
+
+pub fn greet(): int {
+    return 1
+}
+"#,
             ),
             (
                 "main.mw",
-                "module main\n\npub fn run(): int\n    return greet()\n",
+                r#"module main
+
+pub fn run(): int {
+    return greet()
+}
+"#,
             ),
         ],
     );
@@ -885,7 +1014,6 @@ fn a_bare_call_does_not_reach_a_function_in_another_module() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_qualified_call_to_an_own_module_private_function_resolves() {
     // Qualifying a call with the caller's own module reaches a private function
     // there; visibility only gates crossing a module boundary.
@@ -893,7 +1021,16 @@ fn a_qualified_call_to_an_own_module_private_function_resolves() {
         "own-qualified-private",
         &[(
             "main.mw",
-            "module main\n\nfn secret(): int\n    return 7\n\npub fn run(): int\n    return main::secret()\n",
+            r#"module main
+
+fn secret(): int {
+    return 7
+}
+
+pub fn run(): int {
+    return main::secret()
+}
+"#,
         )],
     );
     let output = run_in(&temp, &["run", "main.run"]);
@@ -902,15 +1039,27 @@ fn a_qualified_call_to_an_own_module_private_function_resolves() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn calling_a_private_function_across_modules_is_a_visibility_error() {
     let temp = multi_module(
         "visibility",
         &[
-            ("lib.mw", "module lib\n\nfn secret(): int\n    return 1\n"),
+            (
+                "lib.mw",
+                r#"module lib
+
+fn secret(): int {
+    return 1
+}
+"#,
+            ),
             (
                 "main.mw",
-                "module main\n\npub fn run(): int\n    return lib::secret()\n",
+                r#"module main
+
+pub fn run(): int {
+    return lib::secret()
+}
+"#,
             ),
         ],
     );
@@ -918,30 +1067,48 @@ fn calling_a_private_function_across_modules_is_a_visibility_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_use_of_an_unknown_module_is_an_import_error() {
     let temp = multi_module(
         "unknown-import",
         &[(
             "main.mw",
-            "module main\n\nuse nope::missing\n\npub fn run(): int\n    return 1\n",
+            r#"module main
+
+use nope::missing
+
+pub fn run(): int {
+    return 1
+}
+"#,
         )],
     );
     assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_headerless_script_is_not_importable_by_module_path() {
     // `lib.mw` has no `module` header, so it is a single-file script, not an
     // importable module; a `use` of it does not resolve.
     let temp = multi_module(
         "script-not-importable",
         &[
-            ("lib.mw", "pub fn helper(): int\n    return 1\n"),
+            (
+                "lib.mw",
+                r#"pub fn helper(): int {
+    return 1
+}
+"#,
+            ),
             (
                 "main.mw",
-                "module main\n\nuse lib\n\npub fn run(): int\n    return 1\n",
+                r#"module main
+
+use lib
+
+pub fn run(): int {
+    return 1
+}
+"#,
             ),
         ],
     );
@@ -949,43 +1116,61 @@ fn a_headerless_script_is_not_importable_by_module_path() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_module_header_that_disagrees_with_its_path_is_rejected() {
     let temp = multi_module(
         "module-path",
         &[(
             "main.mw",
-            "module wrong\n\npub fn run(): int\n    return 1\n",
+            r#"module wrong
+
+pub fn run(): int {
+    return 1
+}
+"#,
         )],
     );
     assert!(run_diagnostic_code(&temp, "main.run").contains("check.module_path"));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duplicate_function_name_in_one_module_conflicts() {
     let temp = multi_module(
         "dup-in-module",
         &[(
             "main.mw",
-            "module main\n\nfn helper(): int\n    return 1\n\nfn helper(): int\n    return 2\n\npub fn run(): int\n    return helper()\n",
+            r#"module main
+
+fn helper(): int {
+    return 1
+}
+
+fn helper(): int {
+    return 2
+}
+
+pub fn run(): int {
+    return helper()
+}
+"#,
         )],
     );
     assert!(run_diagnostic_code(&temp, "main.run").contains("check.name_conflict"));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn direct_calls_resolve_forward_and_compute() {
     let temp = TempDir::new("calls");
     // `quad` is declared before `double`, exercising forward resolution.
     project(
         &temp,
-        "pub fn quad(): int\n\
-         \x20   return double(double(5))\n\
-         \n\
-         fn double(n: int): int\n\
-         \x20   return n + n\n",
+        r#"pub fn quad(): int {
+    return double(double(5))
+}
+
+fn double(n: int): int {
+    return n + n
+}
+"#,
     );
     let output = run_in(&temp, &["run", "quad"]);
     assert!(output.status.success(), "{output:?}");
@@ -993,7 +1178,6 @@ fn direct_calls_resolve_forward_and_compute() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn mutual_recursion_is_a_check_time_diagnostic() {
     // Recursion is caught at check time as a source diagnostic, before an image is
     // produced. (The verifier still independently rejects a cyclic image it is
@@ -1001,11 +1185,14 @@ fn mutual_recursion_is_a_check_time_diagnostic() {
     let temp = TempDir::new("recursion");
     project(
         &temp,
-        "pub fn ping(): int\n\
-         \x20   return pong()\n\
-         \n\
-         fn pong(): int\n\
-         \x20   return ping()\n",
+        r#"pub fn ping(): int {
+    return pong()
+}
+
+fn pong(): int {
+    return ping()
+}
+"#,
     );
     let output = run_in(&temp, &["run", "ping", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -1015,13 +1202,14 @@ fn mutual_recursion_is_a_check_time_diagnostic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn direct_self_recursion_is_a_check_time_diagnostic() {
     let temp = TempDir::new("self-recursion");
     project(
         &temp,
-        "pub fn loops(): int\n\
-         \x20   return loops()\n",
+        r#"pub fn loops(): int {
+    return loops()
+}
+"#,
     );
     let output = run_in(&temp, &["run", "loops", "--format", "jsonl"]);
     assert!(!output.status.success());
@@ -1039,18 +1227,23 @@ fn direct_self_recursion_is_a_check_time_diagnostic() {
 // writing a store, a fresh process reading it back — returns at F02b over the
 // companion runner, and its end-to-end CLI restart gate returns with it. ---
 
-const COUNTER_SOURCE: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \x20   label: string\n\
-     \n\
-     store ^counters(name: string): Counter\n\
-     \n\
-     pub fn set(name: string, v: int)\n\
-     \x20   transaction\n\
-     \x20       ^counters(name) = Counter(value: v)\n\
-     \n\
-     pub fn get(name: string): int?\n\
-     \x20   return ^counters(name).value\n";
+const COUNTER_SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[name: string]: Counter
+
+pub fn set(name: string, v: int) {
+    transaction {
+        ^counters[name] = Counter(value: v)
+    }
+}
+
+pub fn get(name: string): int? {
+    return ^counters[name].value
+}
+"#;
 
 /// A durable export compiles, verifies, mints its identity, and then parks: the
 /// CLI reports the typed `cli.durable_unsupported` trough outcome and never opens
@@ -1058,7 +1251,6 @@ const COUNTER_SOURCE: &str = "resource Counter\n\
 /// (capture → compile → verify → resolve) succeeded, so a park is positive
 /// evidence the durable image is well-formed and identity-complete.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_export_parks_in_the_trough() {
     let temp = TempDir::new("counter-trough");
     project(&temp, COUNTER_SOURCE);
@@ -1086,7 +1278,6 @@ fn a_durable_export_parks_in_the_trough() {
 /// `--store` no longer names a CLI open path: it died at D00 and returns at F02b.
 /// Until then it is an unknown option, a usage error before the command body.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_store_flag_is_gone() {
     let temp = TempDir::new("counter-store-flag");
     project(&temp, COUNTER_SOURCE);
@@ -1097,18 +1288,20 @@ fn the_store_flag_is_gone() {
 /// `duration` is a span, not an identity, so it is not in the durable-key set: a
 /// duration-keyed store is a source diagnostic, not a runnable graph.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duration_keyed_store_is_a_source_diagnostic() {
     let temp = TempDir::new("dur-key");
     project(
         &temp,
-        "resource Span\n\
-         \x20   required n: int\n\
-         \n\
-         store ^spans(d: duration): Span\n\
-         \n\
-         pub fn get(d: duration): int?\n\
-         \x20   return ^spans(d).n\n",
+        r#"resource Span {
+    required n: int
+}
+
+store ^spans[d: duration]: Span
+
+pub fn get(d: duration): int? {
+    return ^spans[d].n
+}
+"#,
     );
     assert!(run_diagnostic_code(&temp, "get").contains("check.type"));
 }
@@ -1117,7 +1310,6 @@ fn a_duration_keyed_store_is_a_source_diagnostic() {
 /// committed `marrow.ids` is complete, so a durable export travels the full
 /// pipeline and parks in the trough (its runtime journey returns at E01/F02b).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn tracer_fixture_compiles_verifies_and_parks() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/v01/conformance/tracer_counter");
@@ -1133,27 +1325,31 @@ fn tracer_fixture_compiles_verifies_and_parks() {
 // the whole pipeline (parse -> compile -> verify -> resolve) and parks in the
 // trough exactly like the inline address forms; execution returns at E01/F02b. ---
 
-const PLACE_SOURCE: &str = "resource Counter\n\
-     \x20   required value: int\n\
-     \x20   label: string\n\
-     \n\
-     store ^counters(name: string): Counter\n\
-     \n\
-     pub fn bump(name: string, v: int)\n\
-     \x20   transaction\n\
-     \x20       place p = ^counters(name)\n\
-     \x20       p = Counter(value: v)\n\
-     \x20       p.label = \"tag\"\n\
-     \n\
-     pub fn get(name: string): int?\n\
-     \x20   place p = ^counters(name)\n\
-     \x20   return p.value\n";
+const PLACE_SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[name: string]: Counter
+
+pub fn bump(name: string, v: int) {
+    transaction {
+        place p = ^counters[name]
+        p = Counter(value: v)
+        p.label = "tag"
+    }
+}
+
+pub fn get(name: string): int? {
+    place p = ^counters[name]
+    return p.value
+}
+"#;
 
 /// A durable export written with named `place` bindings compiles, verifies, mints
 /// its identities, and parks: the pipeline reaching the trough is positive evidence
 /// the place image is well-formed and identity-complete.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_place_binding_export_parks_in_the_trough() {
     let temp = TempDir::new("place-trough");
     project(&temp, PLACE_SOURCE);
@@ -1179,7 +1375,6 @@ fn a_place_binding_export_parks_in_the_trough() {
 /// The checked-in `place_counter` fixture: a complete `marrow.ids`, so a place-based
 /// durable export travels the full pipeline and parks in the trough.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn place_fixture_compiles_verifies_and_parks() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/v01/conformance/place_counter");

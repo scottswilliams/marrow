@@ -21,17 +21,21 @@ fn rep(byte: u8) -> LedgerIdBytes {
 
 /// A `Book` resource with an indexed `shelf` and a unique `isbn`, over a keyed root
 /// with two managed indexes: nonunique `byShelf(shelf, id)` and unique `byIsbn(isbn)`.
-const INDEXED_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \x20   shelf: string\n\
-     \x20   isbn: string\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \x20   index byShelf(shelf, id)\n\
-     \x20   index byIsbn(isbn) unique\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"books\"\n";
+const INDEXED_SOURCE: &str = r#"resource Book {
+    required title: string
+    shelf: string
+    isbn: string
+}
+
+store ^books[id: int]: Book {
+    index byShelf[shelf, id]
+    index byIsbn[isbn] unique
+}
+
+pub fn label(): string {
+    return "books"
+}
+"#;
 
 /// A complete ledger for the indexed graph, including both `Index` anchors.
 const INDEXED_IDS: &str = "marrow ids v0\n\
@@ -87,7 +91,6 @@ fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_identity() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("indexed graph verifies");
     let indexes = image.indexes();
@@ -115,7 +118,6 @@ fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_ident
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_verifier_derives_field_and_root_incidence() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
 
@@ -134,7 +136,6 @@ fn the_verifier_derives_field_and_root_incidence() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
     let index_nodes: Vec<_> = image
@@ -160,7 +161,6 @@ fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn index_read_sites_seal_parked_as_reads_only() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
     let index_sites: Vec<SemanticTarget> = image
@@ -189,7 +189,6 @@ fn index_read_sites_seal_parked_as_reads_only() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
     // The closed unique_index_collision outcome layout for a create/replace on root 0
@@ -199,7 +198,6 @@ fn a_create_or_replace_collides_only_on_the_roots_unique_indexes() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn no_application_opcode_maintains_a_managed_index() {
     // The keep-list law and the release veto: managed-index maintenance is
     // compiler-owned and has no application write path. The absence is structural,
@@ -255,7 +253,6 @@ fn no_application_opcode_maintains_a_managed_index() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_index_identity_is_a_precise_mintable_gap() {
     // Drop the byIsbn index anchor: the declaration is well-formed but its identity
     // is incomplete, so the compile fails with the mintable durable-identity gap.
@@ -328,22 +325,26 @@ fn an_index_repeating_a_projection_component_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_component_that_is_not_an_orderable_key_scalar_is_rejected() {
     // A dense `struct`-typed field is a widened durable value, not an orderable
     // durable-key scalar, so it cannot be a projection leaf.
-    let source = "struct Money\n\
-         \x20   cents: int\n\
-         \n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   price: Money\n\
-         \n\
-         store ^books(id: int): Book\n\
-         \x20   index byPrice(price, id)\n\
-         \n\
-         pub fn label(): string\n\
-         \x20   return \"books\"\n";
+    let source = r#"struct Money {
+    cents: int
+}
+
+resource Book {
+    required title: string
+    price: Money
+}
+
+store ^books[id: int]: Book {
+    index byPrice[price, id]
+}
+
+pub fn label(): string {
+    return "books"
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -379,16 +380,19 @@ fn a_duplicate_index_name_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_on_a_singleton_root_is_rejected() {
-    let source = "resource Settings\n\
-         \x20   theme: string\n\
-         \n\
-         store ^settings: Settings\n\
-         \x20   index byTheme(theme)\n\
-         \n\
-         pub fn label(): string\n\
-         \x20   return \"s\"\n";
+    let source = r#"resource Settings {
+    theme: string
+}
+
+store ^settings: Settings {
+    index byTheme[theme]
+}
+
+pub fn label(): string {
+    return "s"
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -401,23 +405,27 @@ fn an_index_on_a_singleton_root_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_source_index_read_is_a_precise_not_yet_executable_diagnostic() {
     // Runtime index traversal/lookup lands at E05. Until then a source read through a
     // managed index is the honest capability-trough diagnostic — a precise
     // `check.unsupported` at the read — not a confusing "no such field" error and
     // never a lowered operation.
-    let source = "resource Book\n\
-         \x20   required title: string\n\
-         \x20   shelf: string\n\
-         \n\
-         store ^books(id: int): Book\n\
-         \x20   index byShelf(shelf, id)\n\
-         \n\
-         pub fn find(s: string): Id(^books)?\n\
-         \x20   for id in ^books.byShelf(s)\n\
-         \x20       return id\n\
-         \x20   return absent\n";
+    let source = r#"resource Book {
+    required title: string
+    shelf: string
+}
+
+store ^books[id: int]: Book {
+    index byShelf[shelf, id]
+}
+
+pub fn find(s: string): Id(^books)? {
+    for id in ^books.byShelf[s] {
+        return id
+    }
+    return absent
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\

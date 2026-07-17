@@ -55,10 +55,12 @@ fn call(service: &Service, export: Id32, args: Vec<Json>) -> ServerMessage {
     service.handle(ClientMessage::Request { export, args })
 }
 
-const ADD: &str = "pub fn add(a: int, b: int): int\n\x20   return a + b\n";
+const ADD: &str = r#"pub fn add(a: int, b: int): int {
+    return a + b
+}
+"#;
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_storeless_call_returns_its_value() {
     let (service, ids) = build(ADD, None);
     let response = call(
@@ -70,7 +72,6 @@ fn a_storeless_call_returns_its_value() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_runtime_fault_maps_to_a_fault_response() {
     let (service, ids) = build(ADD, None);
     let response = call(
@@ -85,7 +86,6 @@ fn a_runtime_fault_maps_to_a_fault_response() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_unknown_export_is_rejected() {
     let (service, _ids) = build(ADD, None);
     let response = call(&service, Id32::from_bytes([0; 32]), vec![]);
@@ -98,7 +98,6 @@ fn an_unknown_export_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_argument_count_mismatch_is_rejected() {
     let (service, ids) = build(ADD, None);
     let response = call(&service, id_of(&ids, "add"), vec![Json::Int(1)]);
@@ -111,7 +110,6 @@ fn an_argument_count_mismatch_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_argument_type_mismatch_is_rejected() {
     let (service, ids) = build(ADD, None);
     let response = call(
@@ -128,16 +126,18 @@ fn an_argument_type_mismatch_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_durable_export_is_rejected_in_the_trough() {
-    let source = "resource Counter\n\
-         \x20   required value: int\n\
-         \x20   label: string\n\
-         \n\
-         store ^counters(id: int): Counter\n\
-         \n\
-         pub fn readValue(n: int): int\n\
-         \x20   return ^counters(n).value ?? 0\n";
+    let source = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn readValue(n: int): int {
+    return ^counters[n].value ?? 0
+}
+"#;
     let (service, ids) = build(source, Some(IDS.as_bytes()));
     let response = call(&service, id_of(&ids, "readValue"), vec![Json::Int(1)]);
     assert_eq!(
@@ -149,14 +149,16 @@ fn a_durable_export_is_rejected_in_the_trough() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_round_trips_through_the_codec() {
-    let source = "struct Point\n\
-         \x20   x: int\n\
-         \x20   y: int\n\
-         \n\
-         pub fn shift(p: Point, dx: int): Point\n\
-         \x20   return Point(x: p.x + dx, y: p.y)\n";
+    let source = r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+"#;
     let (service, ids) = build(source, None);
     let point = Json::Object(vec![
         ("x".to_string(), Json::Int(1)),
@@ -175,14 +177,16 @@ fn a_record_round_trips_through_the_codec() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_with_an_extra_field_is_rejected() {
-    let source = "struct Point\n\
-         \x20   x: int\n\
-         \x20   y: int\n\
-         \n\
-         pub fn shift(p: Point, dx: int): Point\n\
-         \x20   return Point(x: p.x + dx, y: p.y)\n";
+    let source = r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn shift(p: Point, dx: int): Point {
+    return Point(x: p.x + dx, y: p.y)
+}
+"#;
     let (service, ids) = build(source, None);
     let point = Json::Object(vec![
         ("x".to_string(), Json::Int(1)),
@@ -199,18 +203,19 @@ fn a_record_with_an_extra_field_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_enum_round_trips_through_the_codec() {
-    let source = "enum Shape\n\
-         \x20   dot\n\
-         \x20   circle(radius: int)\n\
-         \n\
-         pub fn grow(s: Shape): Shape\n\
-         \x20   match s\n\
-         \x20       dot\n\
-         \x20           return Shape::dot\n\
-         \x20       circle(r)\n\
-         \x20           return Shape::circle(radius: r + 1)\n";
+    let source = r#"enum Shape {
+    dot
+    circle(radius: int)
+}
+
+pub fn grow(s: Shape): Shape {
+    match s {
+        dot => return Shape::dot
+        circle(r) => return Shape::circle(radius: r + 1)
+    }
+}
+"#;
     let (service, ids) = build(source, None);
     let export = id_of(&ids, "grow");
 
@@ -246,7 +251,6 @@ fn an_enum_round_trips_through_the_codec() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_service_interface_id_is_deterministic() {
     let (a, _) = build(ADD, None);
     let (b, _) = build(ADD, None);

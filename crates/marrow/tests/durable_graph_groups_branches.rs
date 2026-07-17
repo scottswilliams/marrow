@@ -47,20 +47,25 @@ fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
 
 // A resource with a top-level field, a static `group` holding a field, and a keyed
 // `branch` holding a field and its own nested group.
-const LIBRARY_SOURCE: &str = "resource Book\n\
-     \x20   required title: string\n\
-     \n\
-     \x20   details\n\
-     \x20       pages: int\n\
-     \n\
-     \x20   notes(noteId: string)\n\
-     \x20       required text: string\n\
-     \x20       createdAt: instant\n\
-     \n\
-     store ^books(id: int): Book\n\
-     \n\
-     pub fn label(): string\n\
-     \x20   return \"books\"\n";
+const LIBRARY_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+    }
+
+    notes[noteId: string] {
+        required text: string
+        createdAt: instant
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn label(): string {
+    return "books"
+}
+"#;
 
 // The full ledger: application, product, the top-level field, the root placement
 // and its key, the `details` group and its field, and the `notes` branch (a `root`
@@ -82,7 +87,6 @@ const LIBRARY_IDS: &str = "marrow ids v0\n\
      end\n";
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_group_and_branch_resource_completes_its_identity_and_verifies() {
     let id = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
     // Stable across recompilation.
@@ -143,7 +147,6 @@ fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_group_identity_fails_precisely() {
     let without_group = LIBRARY_IDS.replace(
         "id group Book.details 20202020202020202020202020202020\n",
@@ -163,7 +166,6 @@ fn a_missing_group_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_group_field_identity_fails_precisely() {
     let without_field = LIBRARY_IDS.replace(
         "id field Book.details.pages 21212121212121212121212121212121\n",
@@ -183,7 +185,6 @@ fn a_missing_group_field_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_branch_placement_identity_fails_precisely() {
     let without_branch =
         LIBRARY_IDS.replace("id root Book.notes 30303030303030303030303030303030\n", "");
@@ -195,7 +196,6 @@ fn a_missing_branch_placement_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_branch_key_identity_fails_precisely() {
     let without_key = LIBRARY_IDS.replace(
         "id key Book.notes.noteId 31313131313131313131313131313131\n",
@@ -209,18 +209,21 @@ fn a_missing_branch_key_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn operating_on_a_group_or_branch_resource_is_not_yet_executable() {
-    let source = "resource Book\n\
-         \x20   required title: string\n\
-         \n\
-         \x20   details\n\
-         \x20       pages: int\n\
-         \n\
-         store ^books(id: int): Book\n\
-         \n\
-         pub fn title(id: int): string?\n\
-         \x20   return ^books(id).title\n";
+    let source = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn title(id: int): string? {
+    return ^books[id].title
+}
+"#;
     let ids = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
          id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
@@ -246,7 +249,6 @@ fn operating_on_a_group_or_branch_resource_is_not_yet_executable() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn renaming_a_group_with_a_moved_anchor_preserves_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -275,7 +277,6 @@ fn renaming_a_group_with_a_moved_anchor_preserves_the_identity() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn re_minting_a_branch_placement_changes_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
     let re_minted = LIBRARY_IDS.replace(
@@ -290,7 +291,6 @@ fn re_minting_a_branch_placement_changes_the_identity() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn promoting_a_group_field_to_a_top_level_field_changes_the_identity() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 
@@ -298,18 +298,22 @@ fn promoting_a_group_field_to_a_top_level_field_changes_the_identity() {
     // keeping its ledger id at the new (top-level) anchor. The graph structure
     // changed — a top-level field versus a group-nested field — so the identity
     // changes even though no id was re-minted.
-    let flat_source = "resource Book\n\
-         \x20   required title: string\n\
-         \x20   pages: int\n\
-         \n\
-         \x20   notes(noteId: string)\n\
-         \x20       required text: string\n\
-         \x20       createdAt: instant\n\
-         \n\
-         store ^books(id: int): Book\n\
-         \n\
-         pub fn label(): string\n\
-         \x20   return \"books\"\n";
+    let flat_source = r#"resource Book {
+    required title: string
+    pages: int
+
+    notes[noteId: string] {
+        required text: string
+        createdAt: instant
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn label(): string {
+    return "books"
+}
+"#;
     // The group is gone; `pages` now anchors at `Book.pages` with the same id, and
     // the `details` group anchor is dropped.
     let flat_ids = LIBRARY_IDS
@@ -329,7 +333,6 @@ fn promoting_a_group_field_to_a_top_level_field_changes_the_identity() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_retired_group_anchor_cannot_be_reused() {
     // Retire the `details` group anchor: re-declaring at it fails closed, never
     // reusing the retired id.

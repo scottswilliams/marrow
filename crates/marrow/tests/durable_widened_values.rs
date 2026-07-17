@@ -36,61 +36,81 @@ const IDS: &str = "marrow ids v0\n\
 // `Account` stores a required enum (`kind`), a required dense struct (`owner`), and a
 // sparse `Option[string]` (`note`). The sparse `note` gives the cell-presence axis on
 // top of the in-band `Option` value — the three-state fixture.
-const SOURCE: &str = "resource Account\n\
-     \x20   required id: int\n\
-     \x20   required kind: Access\n\
-     \x20   required owner: Name\n\
-     \x20   note: Option[string]\n\
-     \n\
-     struct Name\n\
-     \x20   first: string\n\
-     \x20   last: string\n\
-     \n\
-     enum Access\n\
-     \x20   reader\n\
-     \x20   writer\n\
-     \x20   admin\n\
-     \n\
-     store ^accounts(id: int): Account\n\
-     \n\
-     fn ada(): Name\n\
-     \x20   return Name(first: \"Ada\", last: \"Lovelace\")\n\
-     \n\
-     fn wrapSome(s: string): Option[string]\n\
-     \x20   return some(s)\n\
-     \n\
-     fn wrapNone(): Option[string]\n\
-     \x20   return none\n\
-     \n\
-     pub fn createReader(id: int)\n\
-     \x20   transaction\n\
-     \x20       ^accounts(id) = Account(id: id, kind: Access::reader, owner: ada())\n\
-     \n\
-     pub fn createAdmin(id: int)\n\
-     \x20   transaction\n\
-     \x20       ^accounts(id) = Account(id: id, kind: Access::admin, owner: ada())\n\
-     \n\
-     pub fn readKind(id: int): Access?\n\
-     \x20   return ^accounts(id).kind\n\
-     \n\
-     pub fn isAdmin(id: int): bool\n\
-     \x20   if const k = ^accounts(id).kind\n\
-     \x20       return k == Access::admin\n\
-     \x20   return false\n\
-     \n\
-     pub fn readOwner(id: int): Name?\n\
-     \x20   return ^accounts(id).owner\n\
-     \n\
-     pub fn createNoteSome(id: int, s: string)\n\
-     \x20   transaction\n\
-     \x20       ^accounts(id) = Account(id: id, kind: Access::reader, owner: ada(), note: wrapSome(s))\n\
-     \n\
-     pub fn createNoteNone(id: int)\n\
-     \x20   transaction\n\
-     \x20       ^accounts(id) = Account(id: id, kind: Access::reader, owner: ada(), note: wrapNone())\n\
-     \n\
-     pub fn readNote(id: int): Option[string]?\n\
-     \x20   return ^accounts(id).note\n";
+const SOURCE: &str = r#"resource Account {
+    required id: int
+    required kind: Access
+    required owner: Name
+    note: Option<string>
+}
+
+struct Name {
+    first: string
+    last: string
+}
+
+enum Access {
+    reader
+    writer
+    admin
+}
+
+store ^accounts[id: int]: Account
+
+fn ada(): Name {
+    return Name(first: "Ada", last: "Lovelace")
+}
+
+fn wrapSome(s: string): Option<string> {
+    return some(s)
+}
+
+fn wrapNone(): Option<string> {
+    return none
+}
+
+pub fn createReader(id: int) {
+    transaction {
+        ^accounts[id] = Account(id: id, kind: Access::reader, owner: ada())
+    }
+}
+
+pub fn createAdmin(id: int) {
+    transaction {
+        ^accounts[id] = Account(id: id, kind: Access::admin, owner: ada())
+    }
+}
+
+pub fn readKind(id: int): Access? {
+    return ^accounts[id].kind
+}
+
+pub fn isAdmin(id: int): bool {
+    if const k = ^accounts[id].kind {
+        return k == Access::admin
+    }
+    return false
+}
+
+pub fn readOwner(id: int): Name? {
+    return ^accounts[id].owner
+}
+
+pub fn createNoteSome(id: int, s: string) {
+    transaction {
+        ^accounts[id] = Account(id: id, kind: Access::reader, owner: ada(), note: wrapSome(s))
+    }
+}
+
+pub fn createNoteNone(id: int) {
+    transaction {
+        ^accounts[id] = Account(id: id, kind: Access::reader, owner: ada(), note: wrapNone())
+    }
+}
+
+pub fn readNote(id: int): Option<string>? {
+    return ^accounts[id].note
+}
+"#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
@@ -157,7 +177,6 @@ fn id(n: i64) -> Vec<Value> {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_required_enum_field_round_trips_and_drives_an_expression() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);
@@ -192,7 +211,6 @@ fn a_required_enum_field_round_trips_and_drives_an_expression() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_record_field_round_trips_with_its_dense_leaves() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);
@@ -210,7 +228,6 @@ fn a_record_field_round_trips_with_its_dense_leaves() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_sparse_option_field_reads_three_distinct_states() {
     let image = compile_verify(SOURCE);
     let mut store = attach(&image);
