@@ -5,10 +5,68 @@
 //! against the brace grammar (the layout corpus is allowlisted until the converter
 //! flip rewrites it).
 
+use std::sync::mpsc;
+use std::time::Duration;
+
 use marrow_syntax::{
-    Declaration, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ResourceMember,
-    Statement, parse_source,
+    Declaration, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ParsedSource,
+    ResourceMember, Statement, parse_source,
 };
+
+/// Parse `source` on a worker thread and fail if it does not return promptly. A
+/// parser that loops on a declaration body missing its `}` would otherwise hang the
+/// whole suite; the bounded wait turns such a regression into a test failure rather
+/// than a stuck run.
+fn parse_bounded(source: &str) -> ParsedSource {
+    let owned = source.to_string();
+    let (tx, rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let parsed = parse_source(&owned);
+        let _ = tx.send(parsed);
+    });
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(parsed) => {
+            let _ = worker.join();
+            parsed
+        }
+        Err(_) => panic!("parse_source did not terminate within 5s for {source:?}"),
+    }
+}
+
+fn has_unclosed_block(parsed: &ParsedSource) -> bool {
+    parsed.diagnostics.iter().any(|d| {
+        d.reason
+            == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(ExpectedSyntax::CloseBrace))
+    })
+}
+
+fn all_spans_one_based(parsed: &ParsedSource) -> bool {
+    parsed
+        .diagnostics
+        .iter()
+        .all(|d| d.span.line >= 1 && d.span.column >= 1)
+}
+
+/// An unclosed declaration body must return promptly with a bounded, well-spanned
+/// diagnostic naming the missing close brace.
+fn assert_unclosed_block(source: &str) {
+    let parsed = parse_bounded(source);
+    assert!(
+        parsed.diagnostics.len() < 16,
+        "diagnostics stay bounded for {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        all_spans_one_based(&parsed),
+        "every diagnostic keeps a valid 1-based span for {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        has_unclosed_block(&parsed),
+        "an unclosed block reports a CloseBrace diagnostic for {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+}
 
 fn clean(source: &str) {
     let parsed = parse_source(source);
@@ -329,4 +387,102 @@ fn a_match_arm_body_expression_uses_expected_syntax() {
         "a match with no brace body reports MatchBody: {:#?}",
         parsed.diagnostics
     );
+}
+
+// ---- unclosed declaration bodies terminate with a bounded diagnostic ----
+
+#[test]
+fn a_resource_body_missing_its_close_brace_reports_and_terminates() {
+    assert_unclosed_block("module app\nresource B {\n    t: string\n");
+}
+
+#[test]
+fn an_enum_body_missing_its_close_brace_reports_and_terminates() {
+    assert_unclosed_block("module app\nenum E {\n    a\n    b\n");
+}
+
+#[test]
+fn a_store_body_missing_its_close_brace_reports_and_terminates() {
+    assert_unclosed_block(
+        "module app\nresource B {\n    t: string\n}\nstore ^books[id: int]: B {\n    index byT[t]\n",
+    );
+}
+
+#[test]
+fn a_nested_group_stealing_the_outer_brace_reports_and_terminates() {
+    // The inner group `a { ... }` consumes the only `}`, so the outer resource is
+    // left unclosed; parsing still terminates with bounded, well-spanned diagnostics
+    // and reports the outer block as unclosed.
+    let parsed = parse_bounded("module app\nresource B {\n    a{b\n}\n");
+    assert!(
+        parsed.diagnostics.len() < 16,
+        "bounded diagnostics: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        all_spans_one_based(&parsed),
+        "valid 1-based spans: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        has_unclosed_block(&parsed),
+        "the stolen outer brace reports unclosed: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn a_bare_resource_open_brace_at_eof_reports_and_terminates() {
+    assert_unclosed_block("module app\nresource B {\n");
+}
+
+// ---- no diagnostic ever anchors at the invalid 0,0 default span ----
+
+#[test]
+fn an_if_const_chain_with_a_trailing_and_never_anchors_at_zero() {
+    // A trailing `and` leaves the final condition slice empty; the empty-slice
+    // fallback must anchor on the `and`/line, never the invalid line-0/column-0
+    // default span.
+    let parsed =
+        parse_source("module app\nfn run() {\n    if const a = x and{\n        return\n    }\n}\n");
+    assert!(
+        !parsed.diagnostics.is_empty(),
+        "the empty trailing condition is reported"
+    );
+    assert!(
+        all_spans_one_based(&parsed),
+        "a trailing `and` must not anchor a diagnostic at line 0 / column 0: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+/// The whole brace-grammar hostile corpus must never surface a diagnostic at the
+/// invalid line-0/column-0 default span.
+#[test]
+fn no_parser_diagnostic_anchors_at_line_or_column_zero() {
+    let corpus = [
+        "module app\nresource B {\n    t: string\n",
+        "module app\nenum E {\n    a\n    b\n",
+        "module app\nresource B {\n    a{b\n}\n",
+        "module app\nresource B {\n",
+        "module app\nfn run() {\n    if const a = x and{\n        return\n    }\n}\n",
+        "module app\nfn run() {\n    if const a = x and const b = y and{\n        return\n    }\n}\n",
+        "module app\nfn run() {\n    match s {\n        dot =>\n    }\n}\n",
+        "module app\nfn run() {\n    for i in {\n        return\n    }\n}\n",
+        "module app\nfn run() {\n    return\n",
+        "module app\nfn a() {\n    }\n}\nfn b() {\n    return\n}\n",
+        "module app\nstore ^books[id: int]: B {\n    index byT[t]\n",
+        "module app\nfn run(): Map<string, int> {\n    return\n}\n",
+    ];
+    for source in corpus {
+        let parsed = parse_bounded(source);
+        for d in &parsed.diagnostics {
+            assert!(
+                d.span.line >= 1 && d.span.column >= 1,
+                "diagnostic at line {} column {} (positions are 1-based) for {source:?}: {d:#?}",
+                d.span.line,
+                d.span.column
+            );
+        }
+    }
 }

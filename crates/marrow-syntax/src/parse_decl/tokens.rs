@@ -298,14 +298,17 @@ fn expr_slice(
     }
 }
 
+/// Parse `tokens` as one complete expression. An empty slice has no source bytes
+/// to anchor a missing-expression diagnostic at, so the caller supplies a
+/// guaranteed-valid `anchor` (the enclosing keyword, operator, or line) rather than
+/// the invalid line-0/column-0 default span.
 pub(super) fn expr_of(
     source: &str,
     tokens: &[Token],
+    anchor: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Expression> {
-    let gap = tokens
-        .first()
-        .map_or_else(SourceSpan::default, |token| token.span);
+    let gap = tokens.first().map_or(anchor, |token| token.span);
     expr_slice(source, tokens, gap, diagnostics)
 }
 
@@ -336,10 +339,12 @@ pub(super) fn expr_of_before(
 /// Parse an operand inside a `for` header. A malformed or empty operand is
 /// reported once against the whole header by the caller, so this discards the
 /// operand's own diagnostics and yields `None`.
-pub(super) fn expr_of_in_header(source: &str, tokens: &[Token]) -> Option<Expression> {
-    let gap = tokens
-        .first()
-        .map_or_else(SourceSpan::default, |token| token.span);
+pub(super) fn expr_of_in_header(
+    source: &str,
+    tokens: &[Token],
+    anchor: SourceSpan,
+) -> Option<Expression> {
+    let gap = tokens.first().map_or(anchor, |token| token.span);
     let mut discarded = Vec::new();
     match ExprParser::new(source, tokens, gap).parse_complete(&mut discarded) {
         ParseComplete::Complete(expr) => Some(expr),

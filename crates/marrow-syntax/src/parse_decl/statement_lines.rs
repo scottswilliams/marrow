@@ -421,7 +421,9 @@ fn parse_assign_or_expr(
             value,
         })
     } else {
-        let value = expr_of(source, line, diagnostics)?;
+        // `line` is non-empty here (the caller extracted its first token), so its
+        // first token anchors any missing-expression diagnostic.
+        let value = expr_of(source, line, line[0].span, diagnostics)?;
         Some(Statement::Expr {
             span: value.span(),
             value,
@@ -550,28 +552,35 @@ pub(super) fn parse_for_header(
     // A bounded durable traversal `<place> at most N [from f]` splits at the `at most`
     // marker; a `from` after it separates the limit from the inclusive lower bound.
     if let Some(at_index) = find_top_level_at_most(source, rest) {
-        let iterable = expr_of_in_header(source, &rest[..at_index])?;
+        // The `at` marker at `rest[at_index]` bounds the iterable and limit slices
+        // and is always present, so it anchors an empty operand on either side.
+        let at_span = rest[at_index].span;
+        let iterable = expr_of_in_header(source, &rest[..at_index], at_span)?;
         let after_most = &rest[at_index + 2..];
         let (limit_tokens, from) = match find_top_level_word(source, after_most, "from") {
             Some(from_index) => {
-                let from = expr_of_in_header(source, &after_most[from_index + 1..])?;
+                let from_span = after_most[from_index].span;
+                let from = expr_of_in_header(source, &after_most[from_index + 1..], from_span)?;
                 (&after_most[..from_index], Some(from))
             }
             None => (after_most, None),
         };
-        let limit = expr_of_in_header(source, limit_tokens)?;
+        let limit = expr_of_in_header(source, limit_tokens, at_span)?;
         return Some((binding, order, iterable, None, Some((limit, from))));
     }
     // A bare `reversed` in the head slot has no iterable to walk; the empty rest
     // fails `expr_of_in_header` below, which the caller reports as a for-header error.
     let (iterable_tokens, step) = match find_top_level_word(source, rest, "by") {
         Some(by_index) => {
-            let step = expr_of_in_header(source, &rest[by_index + 1..])?;
+            let by_span = rest[by_index].span;
+            let step = expr_of_in_header(source, &rest[by_index + 1..], by_span)?;
             (&rest[..by_index], Some(step))
         }
         None => (rest, None),
     };
-    let iterable = expr_of_in_header(source, iterable_tokens)?;
+    // The `in` keyword always precedes the iterable, so it anchors an empty iterable
+    // (a bare `reversed` head with nothing to walk).
+    let iterable = expr_of_in_header(source, iterable_tokens, header[in_index].span)?;
     Some((binding, order, iterable, step, None))
 }
 

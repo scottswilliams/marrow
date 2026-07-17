@@ -39,14 +39,14 @@ impl<'a> DeclParser<'a> {
             return (members, indexes, comments);
         }
         self.depth += 1;
-        self.open_brace_block(); // `{`
+        let open = self.open_brace_block(); // `{`
 
         let stray = ParseError::new(
             ParseDiagnosticReason::UnexpectedIndentation,
             "unexpected block in resource body; only groups introduce nested resource members",
         );
-        while self.peek().is_some() {
-            match self.next_body_line(&mut docs, &mut comments, &stray) {
+        loop {
+            match self.next_body_line(open, &mut docs, &mut comments, &stray) {
                 BodyLine::End => break,
                 BodyLine::Trivia => continue,
                 BodyLine::Item => {
@@ -181,7 +181,7 @@ impl<'a> DeclParser<'a> {
             return (members, comments);
         }
         self.depth += 1;
-        self.open_brace_block(); // `{`
+        let open = self.open_brace_block(); // `{`
 
         // A stray indent here opens before any member header to nest under; a
         // member's own nested block is consumed right after its header, below.
@@ -189,8 +189,8 @@ impl<'a> DeclParser<'a> {
             ParseDiagnosticReason::EnumMemberMustBeBareName,
             "an enum member has no nested body",
         );
-        while self.peek().is_some() {
-            match self.next_body_line(&mut docs, &mut comments, &stray) {
+        loop {
+            match self.next_body_line(open, &mut docs, &mut comments, &stray) {
                 BodyLine::End => break,
                 BodyLine::Trivia => continue,
                 BodyLine::Item => {

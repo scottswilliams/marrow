@@ -165,10 +165,13 @@ impl<'a> DeclParser<'a> {
     }
 
     /// Advance past a block-opening `{` and the `NEWLINE`s that follow the header
-    /// line, leaving the cursor at the first body line.
-    pub(super) fn open_brace_block(&mut self) {
-        self.advance(); // `{`
+    /// line, leaving the cursor at the first body line. Returns the span of the `{`,
+    /// which anchors the diagnostic reported when the block reaches end of input
+    /// without its matching `}`.
+    pub(super) fn open_brace_block(&mut self) -> SourceSpan {
+        let open = self.advance(); // `{`
         self.skip_newlines();
+        open.span
     }
 
     pub(super) fn skip_newlines(&mut self) {

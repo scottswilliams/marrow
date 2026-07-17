@@ -326,6 +326,143 @@ fn char_boundaries(source: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The brace-grammar fuzz corpus (BS01): declarations with `{ … }` bodies —
+/// resource, store, enum, and function — plus `=>` match arms, `//` and `///`
+/// comments, `\u{}` escapes, bracket key groups, and angle generics, including the
+/// unclosed and stray-brace forms that a member loop must survive. Unlike the layout
+/// corpus this is written against the live grammar, so it runs un-ignored. The
+/// layout corpus stays ignored until the converter flip rewrites it.
+fn brace_grammar_corpus() -> Vec<String> {
+    [
+        "module app\nfn run() {\n    return\n}\n",
+        "module app\nresource B {\n    required title: string\n    notes[id: string] {\n        text: string\n    }\n}\n",
+        "module app\nstore ^books[id: int]: B {\n    index byTitle[title]\n}\n",
+        "module app\nenum Cat {\n    lion\n    tiger {\n        bengal\n        siberian\n    }\n}\n",
+        "module app\nfn area(s: Shape): int {\n    match s {\n        dot => return 0\n        circle(r) => {\n            return r\n        }\n    }\n    return -1\n}\n",
+        "module app\n// a line comment\n/// a doc comment\nfn run() {\n    return // trailing\n}\n",
+        "module app\nfn run(): Map<string, int> {\n    var m: Map<string, List<int>> = Map()\n    return get(m, \"a\")\n}\n",
+        "module app\nconst S = \"a\\u{1F600}b\"\n",
+        "module app\nfn run() {\n    ^books[1].title = \"x\"\n}\n",
+        "module app\nfn run() {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return\n    }\n}\n",
+        // Unclosed and stray-brace forms: a member loop must terminate on these.
+        "module app\nresource B {\n    t: string\n",
+        "module app\nenum E {\n    a\n    b\n",
+        "module app\nresource B {\n    a{b\n}\n",
+        "module app\nresource B {\n",
+        "module app\nstore ^books[id: int]: B {\n    index byT[t]\n",
+        "module app\nfn run() {\n    match s {\n        dot =>\n    }\n",
+        "module app\nfn a() {\n    }\n}\nfn b() {\n    return\n}\n",
+        "module app\nfn run() {\n    if const a = x and{\n        return\n    }\n}\n",
+        "module app\nenum E {\n    a {\n        b {\n            c\n",
+        "module app\nresource B {\n    x[k: int]: string\n    g[j: int] {\n        y: int\n",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// The termination and diagnostic invariants that hold for any source bytes on the
+/// live brace grammar: parsing returns within a wall-clock bound (so a member loop
+/// that fails to terminate on a missing `}` is a test failure, not a hang), is
+/// deterministic, and recovers with a bounded number of diagnostics carrying
+/// in-bounds 1-based spans. The formatter's idempotence lens is deliberately not
+/// asserted here — the formatter is still converted from layout to brace output in a
+/// later flip, so the full oracle corpus stays ignored until then. The parse runs on
+/// a large stack so a deep mutated input fails closed at the nesting limit rather
+/// than overflowing.
+fn assert_bounded_recovery(source: &str) {
+    const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
+    let owned = source.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .stack_size(WORKER_STACK_BYTES)
+        .spawn(move || {
+            check_bounded_recovery(&owned);
+            let _ = tx.send(());
+        })
+        .expect("spawn brace-grammar fuzz worker");
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(()) => {
+            if let Err(panic) = worker.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("parsing did not terminate within 10s for {source:?}");
+        }
+        // The worker dropped its sender without a result: it panicked inside an
+        // invariant assertion. Re-raise that panic with its message.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => panic!("brace-grammar fuzz worker exited without a result for {source:?}"),
+        },
+    }
+}
+
+fn check_bounded_recovery(source: &str) {
+    let first = marrow_syntax::parse_source(source);
+    let second = marrow_syntax::parse_source(source);
+    assert_eq!(
+        first.file, second.file,
+        "parse is not deterministic for {source:?}"
+    );
+    assert_eq!(
+        first.diagnostics, second.diagnostics,
+        "diagnostics are not deterministic for {source:?}"
+    );
+    assert!(
+        first.diagnostics.len() <= source.len() + 1,
+        "recovery emitted {} diagnostics, past the bound, for {source:?}",
+        first.diagnostics.len()
+    );
+    for diagnostic in &first.diagnostics {
+        let span = diagnostic.span;
+        assert!(
+            span.start_byte <= span.end_byte && span.end_byte <= source.len(),
+            "diagnostic span {}..{} out of bounds for len {} in {source:?}",
+            span.start_byte,
+            span.end_byte,
+            source.len()
+        );
+        assert!(
+            span.line >= 1 && span.column >= 1,
+            "diagnostic anchored at line {} column {} (positions are 1-based) in {source:?}",
+            span.line,
+            span.column
+        );
+    }
+}
+
+/// The brace-grammar corpus and a small seeded mutation pass hold the oracle
+/// invariants under a per-iteration wall-clock bound, so a member loop that fails to
+/// terminate on a missing `}` is a test failure rather than a hung suite.
+#[test]
+fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
+    for source in brace_grammar_corpus() {
+        assert_bounded_recovery(&source);
+    }
+
+    // A seeded, fixed-iteration mutation pass over the brace corpus, bounded to a few
+    // hundred iterations so a failure reproduces exactly and CI stays bounded.
+    const SEED: u64 = 0x4252_4143_455f_465a; // "BRACE_FZ"
+    const ITERATIONS: usize = 300;
+    const MAX_MUTATIONS: usize = 24;
+    let seeds: Vec<Vec<u8>> = brace_grammar_corpus()
+        .into_iter()
+        .map(String::into_bytes)
+        .collect();
+    let mut rng = SplitMix64::new(SEED);
+    for _ in 0..ITERATIONS {
+        let mut bytes = seeds[rng.below(seeds.len() as u64) as usize].clone();
+        let rounds = 1 + rng.below(MAX_MUTATIONS as u64) as usize;
+        for _ in 0..rounds {
+            mutate(&mut bytes, &mut rng);
+        }
+        let source = String::from_utf8_lossy(&bytes);
+        assert_bounded_recovery(&source);
+    }
+}
+
 /// Bytes chosen to stress the lexer and parser: string and interpolation
 /// delimiters, layout, comment and path punctuation, an invalid-UTF-8 lead byte,
 /// and NUL.

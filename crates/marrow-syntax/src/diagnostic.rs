@@ -105,6 +105,7 @@ impl ParseDiagnosticReason {
 pub enum ExpectedSyntax {
     AliasName,
     AliasType,
+    CloseBrace,
     CloseBracket,
     CloseParen,
     Comma,

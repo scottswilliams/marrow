@@ -942,8 +942,13 @@ impl<'a> StmtParser<'a> {
                 break;
             }
         }
-        let condition = condition_from
-            .and_then(|from| expr_of(self.source, &line[from..], &mut self.diagnostics));
+        let condition = condition_from.and_then(|from| {
+            // `from` is the start of a part that follows a top-level `and`, so
+            // `line[from - 1]` is that `and`: a guaranteed-valid anchor for an empty
+            // trailing condition (`... and` with nothing after it).
+            let anchor = line[from - 1].span;
+            expr_of(self.source, &line[from..], anchor, &mut self.diagnostics)
+        });
         IfHead::Chain {
             bindings,
             condition,

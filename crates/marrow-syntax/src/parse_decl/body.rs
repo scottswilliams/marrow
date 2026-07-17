@@ -9,6 +9,7 @@
 use super::tokens::{comment_from_token, is_line_comment};
 use super::{DeclParser, ParseError};
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
+use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::token::{Token, TokenKind};
 
 /// The classification of the next line of a `{ … }` declaration body, after the
@@ -25,20 +26,29 @@ pub(super) enum BodyLine {
 
 impl<'a> DeclParser<'a> {
     /// Classify and consume the next line of a `{ … }` declaration body. The
-    /// caller supplies its own-line comment accumulator (`docs` collects `///` doc
-    /// comments to attach to the next member) and the diagnostic to report for a
-    /// stray nested block; an `Item` result leaves the member header in place.
+    /// caller supplies the opening `{` span (to anchor an unclosed-block diagnostic),
+    /// its own-line comment accumulator (`docs` collects `///` doc comments to attach
+    /// to the next member), and the diagnostic to report for a stray nested block; an
+    /// `Item` result leaves the member header in place.
+    ///
+    /// The token stream carries the lexer's `Eof` sentinel after the last content
+    /// token, so end of input reaches here as `Eof` rather than `None`; both close
+    /// the loop, but only a real `}` is consumed, and reaching the sentinel reports
+    /// the block as unclosed.
     pub(super) fn next_body_line(
         &mut self,
+        open: SourceSpan,
         docs: &mut Vec<Token>,
         comments: &mut Vec<Comment>,
         stray: &ParseError,
     ) -> BodyLine {
         match self.peek() {
-            None | Some(TokenKind::RightBrace) => {
-                if matches!(self.peek(), Some(TokenKind::RightBrace)) {
-                    self.advance();
-                }
+            Some(TokenKind::RightBrace) => {
+                self.advance();
+                BodyLine::End
+            }
+            None | Some(TokenKind::Eof) => {
+                self.report_unclosed_block(open);
                 BodyLine::End
             }
             Some(TokenKind::Newline) => {
@@ -55,6 +65,16 @@ impl<'a> DeclParser<'a> {
             }
             Some(_) => BodyLine::Item,
         }
+    }
+
+    /// Report a `{ … }` declaration body that reached end of input without its
+    /// matching `}`, anchored at the opening brace.
+    fn report_unclosed_block(&mut self, open: SourceSpan) {
+        self.error_span(
+            open,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::CloseBrace),
+            "expected `}` to close this block",
+        );
     }
 
     /// Consume one own-line comment token and its trailing `NEWLINE`. A `///` doc
