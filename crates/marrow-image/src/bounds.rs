@@ -5,6 +5,20 @@
 //! bound against the received bytes *before* it allocates, so a hostile image can
 //! never drive unbounded work. Widening any of these is a later lane's decision,
 //! recorded with its own known-answer coverage.
+//!
+//! A bound is a decode-time allocation guard, not a stored-format byte: the profile
+//! descriptor and the image byte layout encode *actual* `u16` counts, never a bound
+//! constant (see `marrow_kernel::durable::profile`). Widening a bound therefore
+//! needs no image-container or profile version bump today, even though it enlarges
+//! the accepted-image set. The widen is safe because it is **monotone** — every
+//! image a narrower bound accepted a wider one still accepts, byte-for-byte — so an
+//! old toolchain meeting a new image either accepts it unchanged or refuses it with
+//! a typed bound rejection (it never misreads bytes), and no released consumer pins
+//! these v0 values. Forward note: once images cross a trust or version boundary
+//! (signed artifacts, cross-node acceptance, a capability-gated profile), a bound
+//! widen becomes an acceptance-set change that a version or capability descriptor
+//! must record, because a peer's acceptance can no longer be assumed to track this
+//! toolchain's.
 
 /// Whole-image byte ceiling.
 pub const MAX_IMAGE_BYTES: usize = 256 * 1024;
@@ -20,10 +34,20 @@ pub const MAX_STRING_BYTES: usize = 4 * 1024;
 /// Record types per image, and the top-level field width of one record type. A
 /// durable resource's declared field set is bounded by [`MAX_RECORD_FIELDS`]: the
 /// M-shaped workload declares thousands of mostly-sparse fields, so the width
-/// admits thousands with headroom, staying within the u16 field-count encoding and
-/// [`MAX_IMAGE_BYTES`]. This is deliberately distinct from the dense
-/// inline-composite leaf count ([`MAX_STRUCT_LEAVES`]) and the index projection
-/// width ([`MAX_INDEX_COMPONENTS`]): neither scales with the record field width.
+/// admits thousands with headroom, staying within the u16 field-count encoding. This
+/// is deliberately distinct from the dense inline-composite leaf count
+/// ([`MAX_STRUCT_LEAVES`]) and the index projection width ([`MAX_INDEX_COMPONENTS`]):
+/// neither scales with the record field width.
+///
+/// This width is the count guard; [`MAX_IMAGE_BYTES`] is the binding ceiling for a
+/// *durable* resource. Because the compiler emits one operation site per stored
+/// field, a durable root costs ~84 image bytes per declared field, so the whole-image
+/// ceiling admits ~3125 durable fields (measured: 3100 fields encode at ~259 KB;
+/// 3200 refuse as `ImageTooLarge`). The full 4096 width is reachable only for a bare
+/// record *type* with no durable root (no per-field sites). The M-shaped durable
+/// workload is proven at 2000 fields. The per-field image cost — eager per-field site
+/// emission — is the coupling a later representation lane can retire to lift the
+/// durable ceiling toward this count guard.
 pub const MAX_TYPES: usize = 64;
 pub const MAX_RECORD_FIELDS: usize = 4096;
 

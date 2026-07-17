@@ -1527,7 +1527,11 @@ fn read_record_leaves<V: ReadView>(
         for (key, bytes) in &page {
             // A present own-field leaf under this node that resolves to no declared
             // field is a forged or orphaned cell: fail closed as corruption rather than
-            // silently dropping it.
+            // silently dropping it. Evolution constraint: because a whole-entry read
+            // now scans present leaves rather than probing declared names, a field drop
+            // or rename must delete or migrate the retired field's stored leaves before
+            // a whole-entry read runs — a stale leaf under a shrunk schema is
+            // indistinguishable from corruption here.
             let index = *position.get(key).ok_or(KernelFault::Corruption)?;
             values[index] =
                 Some(decode_domain(bytes, &fields[index].shape).ok_or(KernelFault::Corruption)?);
