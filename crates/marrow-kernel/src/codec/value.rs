@@ -670,6 +670,15 @@ mod composite_codec {
             })
             .is_err()
         );
+        // An entry identity is not a durable value: the encoder refuses it, the
+        // store-boundary half of the no-identity-at-the-encoder contract.
+        assert!(
+            encode_domain(&ValueDomain::Identity {
+                root: crate::equality::RootId(0),
+                keys: vec![crate::codec::key::KeyScalar::Int(1)],
+            })
+            .is_err()
+        );
         // Also proves the scalar codec is unchanged for a bare scalar leaf.
         assert_eq!(
             decode_value(b"5", ScalarKind::Int),

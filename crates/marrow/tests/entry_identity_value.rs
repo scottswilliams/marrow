@@ -7,6 +7,7 @@
 //! dereference (`^books[id]`) composing with an ordinary entry read. An entry identity
 //! is not durably stored here: it is a runtime/lookup value only.
 
+use marrow_compile::SourceDiagnostic;
 use marrow_kernel::durable::EphemeralAttachment;
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
@@ -66,6 +67,30 @@ fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
+}
+
+/// Compile a source that the checker must reject, returning its diagnostics.
+fn compile_errors(source: &str) -> Vec<SourceDiagnostic> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => panic!("expected the checker to reject this program"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
+    diagnostics.iter().any(|d| d.code == code)
 }
 
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
@@ -155,4 +180,65 @@ fn identity_equality_is_key_tuple_equality() {
         run(&image, &mut store, "different", vec![id1, id2]),
         Some(Value::Bool(true)),
     );
+}
+
+// --- Adversarial rejections: the identity value's boundaries. ---
+
+const PREAMBLE: &str = "resource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book\n\n";
+
+fn program(body: &str) -> String {
+    format!("{PREAMBLE}{body}")
+}
+
+#[test]
+fn an_identity_type_over_an_undeclared_root_is_unsupported() {
+    let diagnostics = compile_errors(&program("pub fn f(x: Id(^nope)): int {\n    return 0\n}\n"));
+    assert!(has_code(&diagnostics, "check.unsupported"));
+}
+
+#[test]
+fn an_identity_constructor_over_an_undeclared_root_is_rejected() {
+    let diagnostics =
+        compile_errors(&program("pub fn f(): Id(^books) {\n    return Id(^nope, 1)\n}\n"));
+    assert!(has_code(&diagnostics, "check.type"));
+}
+
+#[test]
+fn an_identity_constructor_with_the_wrong_key_arity_is_rejected() {
+    // The root has one key column; supplying none is a key-arity error.
+    let diagnostics =
+        compile_errors(&program("pub fn f(): Id(^books) {\n    return Id(^books)\n}\n"));
+    assert!(has_code(&diagnostics, "check.type"));
+}
+
+#[test]
+fn an_identity_constructor_with_the_wrong_key_type_is_rejected() {
+    // The single key column is `int`; a string operand does not coerce.
+    let diagnostics =
+        compile_errors(&program("pub fn f(): Id(^books) {\n    return Id(^books, \"x\")\n}\n"));
+    assert!(has_code(&diagnostics, "check.type"));
+}
+
+#[test]
+fn comparing_an_identity_with_a_scalar_is_rejected() {
+    let diagnostics = compile_errors(&program(
+        "pub fn f(a: Id(^books)): bool {\n    return a == 5\n}\n",
+    ));
+    assert!(has_code(&diagnostics, "check.type"));
+}
+
+#[test]
+fn an_identity_is_not_an_orderable_collection_key() {
+    // Entry identities are not admitted in a key position, so a map keyed by one is
+    // an unsupported type.
+    let diagnostics = compile_errors(&program(
+        "pub fn f(): int {\n    const m: Map<Id(^books), int> = Map()\n    return length(m)\n}\n",
+    ));
+    assert!(has_code(&diagnostics, "check.unsupported"));
+}
+
+#[test]
+fn a_declaration_named_id_is_reserved() {
+    let diagnostics = compile_errors(&program("pub fn Id(): int {\n    return 0\n}\n"));
+    assert!(!diagnostics.is_empty());
 }

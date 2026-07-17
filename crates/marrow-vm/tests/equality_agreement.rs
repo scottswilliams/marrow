@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
-use marrow_kernel::equality::{ValueDomain, value_equality};
+use marrow_kernel::equality::{RootId, ValueDomain, value_equality};
 use marrow_vm::Value;
 
 /// Project a runtime value into the kernel equality domain. A nominal value is an
@@ -56,6 +56,14 @@ fn to_domain(value: &Value) -> ValueDomain {
                 .iter()
                 .map(|(key, value)| (key.clone(), to_domain(value)))
                 .collect(),
+        },
+        // An entry identity projects to the nominal identity domain point: its root and
+        // key tuple. It is not a durable value (`value_to_domain` refuses it at the
+        // store boundary), but it participates in `==`, so the specification must cover
+        // it, and this projection is the contract the runtime `Value::Id` equality meets.
+        Value::Id(root, keys) => ValueDomain::Identity {
+            root: RootId(*root),
+            keys: keys.to_vec(),
         },
     }
 }
@@ -180,6 +188,19 @@ fn corpus() -> Vec<Value> {
             11,
             Rc::new(vec![(KeyScalar::Int(1), Value::Enum(3, 0, Box::new([])))]),
         ),
+        // Entry identities: same root differing by key value and by key-tuple length, a
+        // distinct root with an equal single key, and a composite key tuple. Paired with
+        // a single-field record whose type index and field value would ALIAS an identity
+        // if identities reused the product domain — the all-pairs sweep asserts they stay
+        // unequal under both relations, the injectivity probe for the RootId newtype.
+        Value::Id(0, Rc::from([KeyScalar::Int(1)].as_slice())),
+        Value::Id(0, Rc::from([KeyScalar::Int(2)].as_slice())),
+        Value::Id(
+            0,
+            Rc::from([KeyScalar::Int(1), KeyScalar::Str("a".into())].as_slice()),
+        ),
+        Value::Id(1, Rc::from([KeyScalar::Int(1)].as_slice())),
+        Value::Record(0, Box::new([Some(Value::Int(1))])),
     ]
 }
 
