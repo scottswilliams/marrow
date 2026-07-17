@@ -44,6 +44,13 @@ use crate::types::{GArg, TypeRegistry};
 /// project, so the anchor is the project itself.
 const APPLICATION_ANCHOR_PATH: &str = ".";
 
+/// The most managed indexes one `store` root may declare. The checker owns this product
+/// limit; it sits well below the image's structural `MAX_INDEXES` decode bound (32), which
+/// stays as headroom. `8` keeps a root's per-write index maintenance bounded and small while
+/// comfortably covering the identity-plus-a-few-secondary-orderings shape narrow indexes are
+/// for.
+const MAX_STORE_INDEXES: usize = 8;
+
 /// One top-level stored field as an index-projection candidate: its source name, its
 /// ledger id, and whether its stored value is an orderable durable-key scalar (the
 /// predicate a projected leaf must satisfy).
@@ -899,6 +906,24 @@ impl<'a> IdentityResolver<'a> {
         fields: &[IndexFieldLeaf],
         indexes: &[IndexDecl],
     ) -> Vec<DurableIndexShape> {
+        // The checker caps the per-root index count well below the image's structural
+        // decode bound (`marrow_image::bounds::MAX_INDEXES`): each declared index is
+        // compiler-maintained on every write to the root, so the cap bounds a root's write
+        // amplification. The tighter checker limit is a product choice; the image bound
+        // remains as headroom for a later increase without an image-format change.
+        if indexes.len() > MAX_STORE_INDEXES {
+            // The count itself is malformed, so report it and discard the graph rather than
+            // validating and minting identities for indexes that cannot all be admitted.
+            self.reject_index(
+                indexes[MAX_STORE_INDEXES].span,
+                format!(
+                    "store root `{root}` declares {} managed indexes; at most \
+                     {MAX_STORE_INDEXES} are allowed",
+                    indexes.len()
+                ),
+            );
+            return Vec::new();
+        }
         let mut shapes = Vec::with_capacity(indexes.len());
         let mut seen_names: Vec<&str> = Vec::new();
         for index in indexes {

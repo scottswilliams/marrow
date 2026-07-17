@@ -394,6 +394,22 @@ fn a_duplicate_index_name_is_rejected() {
 }
 
 #[test]
+fn a_root_exceeding_the_managed_index_cap_is_rejected() {
+    // The checker caps a store root at eight managed indexes (well below the image's
+    // structural decode bound). Nine well-formed declarations are refused on the count
+    // alone — the graph is discarded before any index mints an identity, so no ledger
+    // anchors are needed.
+    let mut body = String::new();
+    for n in 1..=9 {
+        body.push_str(&format!("    index by{n}[shelf, id]\n"));
+    }
+    assert_eq!(
+        compile_codes(&base_source(&body), BASE_IDS),
+        vec!["check.type"]
+    );
+}
+
+#[test]
 fn an_index_on_a_singleton_root_is_rejected() {
     let source = r#"resource Settings {
     theme: string
