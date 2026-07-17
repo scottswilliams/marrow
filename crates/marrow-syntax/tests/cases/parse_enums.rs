@@ -10,9 +10,9 @@ fn member_names(decl: &marrow_syntax::EnumDecl) -> Vec<&str> {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_flat_enum_declaration() {
-    let parsed = parse_source("module app\nenum Status\n    active\n    archived\n    banned\n");
+    let parsed =
+        parse_source("module app\nenum Status {\n    active\n    archived\n    banned\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert!(!status.public);
@@ -20,9 +20,8 @@ fn parses_a_flat_enum_declaration() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_pub_enum() {
-    let parsed = parse_source("module app\npub enum Status\n    active\n");
+    let parsed = parse_source("module app\npub enum Status {\n    active\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert!(status.public);
@@ -30,18 +29,16 @@ fn parses_pub_enum() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn attaches_doc_comments_to_enum_members() {
-    let parsed = parse_source("module app\nenum Status\n    ;; Currently live.\n    active\n");
+    let parsed = parse_source("module app\nenum Status {\n    /// Currently live.\n    active\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert_eq!(status.members[0].docs, ["Currently live."]);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_an_enum_with_no_members() {
-    let parsed = parse_source("module app\nenum Status\nfn main()\n    return\n");
+    let parsed = parse_source("module app\nenum Status {}\nfn main() {\n    return\n}\n");
     assert!(parsed.has_errors());
     assert!(
         parsed
@@ -54,9 +51,8 @@ fn rejects_an_enum_with_no_members() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_an_enum_member_with_a_type_annotation() {
-    let parsed = parse_source("module app\nenum Status\n    active: int\n");
+    let parsed = parse_source("module app\nenum Status {\n    active: int\n}\n");
     assert!(parsed.has_errors());
     assert!(
         parsed
@@ -69,10 +65,9 @@ fn rejects_an_enum_member_with_a_type_annotation() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_payload_member() {
     let parsed = parse_source(
-        "module app\nenum Shape\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n",
+        "module app\nenum Shape {\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let shape = parsed.file.enum_decl("Shape").expect("Shape enum");
@@ -85,9 +80,8 @@ fn parses_a_payload_member() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_an_enum_member_with_an_empty_payload() {
-    let parsed = parse_source("module app\nenum Status\n    active()\n");
+    let parsed = parse_source("module app\nenum Status {\n    active()\n}\n");
     assert!(parsed.has_errors());
     assert!(
         parsed
@@ -100,19 +94,18 @@ fn rejects_an_enum_member_with_an_empty_payload() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn round_trips_a_payload_enum_through_the_formatter() {
-    let source = "enum Shape\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)";
+    let source =
+        "enum Shape {\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n}";
     let parsed = parse_source(source);
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     assert_eq!(marrow_syntax::format_source(source), format!("{source}\n"));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_nested_enum_members_into_a_tree() {
     let parsed = parse_source(
-        "module app\nenum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n",
+        "module app\nenum Cat {\n    category tiger {\n        bengal\n        siberian\n    }\n    housecat\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
@@ -128,10 +121,9 @@ fn parses_nested_enum_members_into_a_tree() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_category_modifier_sets_the_flag_and_a_bare_member_does_not() {
     let parsed =
-        parse_source("module app\nenum Cat\n    category tiger\n        bengal\n    housecat\n");
+        parse_source("module app\nenum Cat {\n    category tiger {\n        bengal\n    }\n    housecat\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
     assert!(cat.members[0].category, "category tiger");
@@ -141,9 +133,8 @@ fn the_category_modifier_sets_the_flag_and_a_bare_member_does_not() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn round_trips_an_enum_through_the_formatter() {
-    let source = "enum Status\n    active\n    archived\n    banned";
+    let source = "enum Status {\n    active\n    archived\n    banned\n}";
     let parsed = parse_source(source);
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     // The canonical form of a single declaration is the declaration followed by a
