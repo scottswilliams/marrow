@@ -114,7 +114,13 @@ compiler fully lowers operations over a keyed root — single-column or a compos
 — whose fields are each a scalar or a widened value (a dense `struct`/record, a closed
 `enum`, or an `Option`/`Result`), together with its `branch` placements (with one or more
 key columns each) nested to any depth; bounded traversal, however, iterates a single key
-column, so a `for` head over a composite-keyed layer parks. Singleton, group-bearing, and
+column, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
+is a first-class runtime value — constructed with `Id(^root, keys)`, compared, passed and
+returned, and dereferenced with `^root[id]` — but is not a durable field value. A managed
+index read executes: a non-unique index is scanned with a bounded `for` head binding the
+source `Id(^root)`, and a unique index is an exact `^root.index[keys]` lookup yielding the
+optional `Id(^root)`; the scan requires a single-column-identity root and binds the
+trailing identity component. Singleton, group-bearing, and
 nominal-field roots declare and verify their identity but their operations are not yet
 lowered, and a collection in a field is rejected. The admitted subset is narrow and grows
 lane by lane; a well-formed construct outside it is a typed `check.unsupported` diagnostic.

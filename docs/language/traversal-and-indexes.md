@@ -182,12 +182,80 @@ other durable identity; renaming an index preserves it, and a retired index name
 never reused. The compiler maintains every index — assignment, clearing, whole
 replacement, and deletion keep the affected indexes coherent; source has no
 operation that writes an index, so an index can never be left incoherent by
-application code. A non-unique index read is a progressive typed-prefix refinement
-(an incomplete prefix yields the next distinct component; the complete projection
-yields the source-root key), and a `unique` index read is a complete-key exact lookup
-that yields exactly the one matching `Id(^root)` or absent — never a sibling.
+application code.
 
-**Future.** Runtime index maintenance and index reads — traversal of a non-unique
-index and the exact lookup of a `unique` index — are not yet executable on the beta
-line. A source read through an index reports a precise not-yet-supported diagnostic
-until the managed-index runtime lands (see `docs/status.md`).
+## Reading An Index
+
+A source program reads a managed index through the store root that declares it,
+`^root.indexName`. The read shape follows the index kind.
+
+A **non-unique** index is scanned with a bounded `for` head, holding its leading
+field components as a bracket prefix and binding the source-root identity `Id(^root)`
+of each matching entry:
+
+```mw
+module docs::index_scan
+
+resource Book {
+    required title: string
+    required shelf: string
+}
+
+store ^books[id: int]: Book {
+    index byShelf[shelf, id]
+}
+
+pub fn countOnShelf(shelf: string): int {
+    var count = 0
+    for bookId in ^books.byShelf[shelf] at most 100 {
+        if const b = ^books[bookId] {
+            count += 1
+        }
+    } on more {
+        count = -1
+    }
+    return count
+}
+```
+
+The scan is bounded exactly like a durable traversal (`at most N`, a mandatory
+`on more`, freeze-then-run over the frozen identities). It holds every leading field
+component of the projection and yields the trailing identity component, so the loop
+variable is the `Id(^root)` of each entry — dereference it with `^root[id]` to read the
+entry. The store root's identity is a single key column, so the yielded component is a
+whole identity; a composite-identity root, a `from` cursor, and a per-iteration address
+pin are not admitted on a scan.
+
+A **unique** index is read with a complete-key bracket access `^root.indexName[keys]`,
+supplying the whole projection and yielding the optional matching identity — present
+with exactly the one `Id(^root)`, or absent, never a sibling. An `if const` head binds
+the present identity:
+
+```mw
+module docs::index_lookup
+
+resource Book {
+    required title: string
+    required isbn: string
+}
+
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}
+
+pub fn titleByIsbn(isbn: string): string? {
+    if const found = ^books.byIsbn[isbn] {
+        return ^books[found].title
+    }
+    return absent
+}
+```
+
+A non-unique index read is a progressive typed-prefix refinement (an incomplete prefix
+yields the next distinct component; the complete projection yields the source-root key),
+and a `unique` index read is a complete-key exact lookup that yields exactly the one
+matching `Id(^root)` or absent — never a sibling.
+
+**Future.** A scan that binds an intermediate distinct component (rather than the
+trailing identity), a composite-identity scan, and a `from` cursor on a scan are not yet
+spelled; a source read of those shapes reports a precise not-yet-supported diagnostic.

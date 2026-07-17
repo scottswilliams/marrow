@@ -99,6 +99,32 @@ fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
 }
 
+fn compile_errors(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
+    let source = format!("{SOURCE}\n{body}");
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => panic!("expected the checker to reject this program"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+fn has_type_error(diagnostics: &[marrow_compile::SourceDiagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|d| d.code == "check.type" || d.code == "check.unsupported")
+}
+
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
@@ -208,4 +234,46 @@ fn a_unique_lookup_dereferences_the_found_identity() {
         run(&image, &mut store, "titleByIsbn", vec![s("missing")]),
         Some(Value::Optional(None)),
     );
+}
+
+// --- Adversarial rejections: unsupported index-read forms. ---
+
+#[test]
+fn scanning_a_unique_index_is_rejected() {
+    let diagnostics = compile_errors(
+        "pub fn bad(isbn: string): int {\n    var n = 0\n    for x in ^books.byIsbn[isbn] at most 10 {\n        n += 1\n    } on more {\n        n = -1\n    }\n    return n\n}\n",
+    );
+    assert!(has_type_error(&diagnostics));
+}
+
+#[test]
+fn reading_a_nonunique_index_as_a_value_is_rejected() {
+    let diagnostics = compile_errors(
+        "pub fn bad(shelf: string): bool {\n    if const found = ^books.byShelf[shelf] {\n        return true\n    }\n    return false\n}\n",
+    );
+    assert!(has_type_error(&diagnostics));
+}
+
+#[test]
+fn a_unique_lookup_with_the_wrong_arity_is_rejected() {
+    let diagnostics = compile_errors(
+        "pub fn bad(a: string, b: string): bool {\n    if const found = ^books.byIsbn[a, b] {\n        return true\n    }\n    return false\n}\n",
+    );
+    assert!(has_type_error(&diagnostics));
+}
+
+#[test]
+fn a_from_cursor_on_a_scan_is_rejected() {
+    let diagnostics = compile_errors(
+        "pub fn bad(shelf: string): int {\n    var n = 0\n    for x in ^books.byShelf[shelf] at most 10 from 1 {\n        n += 1\n    } on more {\n        n = -1\n    }\n    return n\n}\n",
+    );
+    assert!(has_type_error(&diagnostics));
+}
+
+#[test]
+fn a_two_binding_index_scan_is_rejected() {
+    let diagnostics = compile_errors(
+        "pub fn bad(shelf: string): int {\n    var n = 0\n    for x, p in ^books.byShelf[shelf] at most 10 {\n        n += 1\n    } on more {\n        n = -1\n    }\n    return n\n}\n",
+    );
+    assert!(has_type_error(&diagnostics));
 }
