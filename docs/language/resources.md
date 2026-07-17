@@ -104,10 +104,15 @@ are created, read, replaced, and erased through the key-path address
 A top-level field may also hold a widened value — a dense `struct`/record, a closed
 `enum`, or an `Option`/`Result` — stored inline in its field cell and read whole or by
 field; `branch` fields stay scalar-only.
-Other durable shapes are not yet executable: a resource declaring a static `group`, or a
-nominal-typed field, declares and verifies its complete durable identity, but an
-operation over it is the typed `check.unsupported` rejection rather than a silent drop,
-until its lane lands. A keyed scalar leaf such as
+A root-level `group` of scalar or widened leaves is part of the executable durable graph:
+its leaves join the containing entry's materialized value, and the group is read,
+replaced, and erased whole through `^root[key…].group`, with each leaf read and rewritten
+through `^root[key…].group.leaf` (see
+[Durable places](durable-places.md#groups)).
+Other durable shapes are not yet executable: a resource declaring a nominal-typed field,
+or a group nested in a branch or in another group, declares and verifies its complete
+durable identity, but an operation over it is the typed `check.unsupported` rejection
+rather than a silent drop, until its lane lands. A keyed scalar leaf such as
 `tags(pos: int): string` is likewise not yet part of the executable durable graph.
 
 ## Local Resource Values
@@ -179,10 +184,8 @@ children are addressed collections and are not included when a resource is read
 into a local binding, passed to a function, returned, or constructed.
 
 This distinction applies to durable entries as well. Reading `^books[id]`
-materializes its top-level fields as `Book` (a stored group-bearing entry is not
-yet readable — a group-bearing root's operations report not-yet-executable until
-durable group materialization lands); it can never package `^books[id].tags` or
-`^books[id].notes` into that value. Traverse keyed children
+materializes its top-level fields and its root-level groups as `Book`; it can never
+package `^books[id].tags` or `^books[id].notes` into that value. Traverse keyed children
 at their paths.
 
 A keyed family is navigated, never materialized as a whole: the language spells no

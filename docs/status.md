@@ -111,18 +111,19 @@ ledger-model property; a rename becomes an anchor move under the future apply
 action, while the additive-only `run` mint does not) — which the verifier
 independently recomputes from the image and rejects on mismatch. The
 compiler fully lowers operations over a keyed root — single-column or a composite tuple
-— whose fields are each a scalar or a widened value (a dense `struct`/record, a closed
-`enum`, or an `Option`/`Result`), together with its `branch` placements (with one or more
-key columns each) nested to any depth; bounded traversal, however, iterates a single key
-column, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
+— whose top-level fields are each a scalar or a widened value (a dense `struct`/record, a
+closed `enum`, or an `Option`/`Result`), together with its root-level `group` members (of
+scalar or widened leaves, read/replaced/erased whole and by leaf) and its `branch`
+placements (with one or more key columns each) nested to any depth; bounded traversal,
+however, iterates a single key column, so a `for` head over a composite-keyed layer parks. An entry identity `Id(^root)`
 is a first-class runtime value — constructed with `Id(^root, keys)`, compared, passed and
 returned, and dereferenced with `^root[id]` — but is not a durable field value. A managed
 index read executes: a non-unique index is scanned with a bounded `for` head binding the
 source `Id(^root)`, and a unique index is an exact `^root.index[keys]` lookup yielding the
 optional `Id(^root)`; the scan requires a single-column-identity root and binds the
-trailing identity component. Singleton, group-bearing, and
-nominal-field roots declare and verify their identity but their operations are not yet
-lowered, and a collection in a field is rejected. The admitted subset is narrow and grows
+trailing identity component. Singleton and nominal-field roots, and a group nested in a
+branch or in another group, declare and verify their identity but their operations are not
+yet lowered, and a collection in a field is rejected. The admitted subset is narrow and grows
 lane by lane; a well-formed construct outside it is a typed `check.unsupported` diagnostic.
 
 ### Local wire and TypeScript client

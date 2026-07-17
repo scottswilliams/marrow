@@ -127,10 +127,12 @@ compiler fully lowers: a keyed root — one or more key columns — whose fields
 plain scalar or a widened value (a dense `struct`/record, a closed `enum`, or an
 `Option`/`Result`), whose entries are read and written through the operations below. A
 widened field value is framed inline in its single field-leaf cell and round-trips as a
-runtime value. Such a root's `branch` placements, with one or more key columns each, are
-executable in the same way, nested to any depth (see [Keyed branches](#keyed-branches)).
-A singleton root (no key columns), a root whose resource declares a static `group`, or a
-root whose resource declares a **nominal-typed** field declares and verifies its full
+runtime value. Such a root's root-level `group` members (of scalar or widened leaves, see
+[Groups](#groups)) and its `branch` placements, with one or more key columns each, are
+executable in the same way; branches nest to any depth (see
+[Keyed branches](#keyed-branches)).
+A singleton root (no key columns), a root whose resource declares a **nominal-typed**
+field, or a group nested in a branch or in another group declares and verifies its full
 identity, but its read and write operations are not yet lowered — an operation over one
 is the typed `check.unsupported` rejection rather than a silent drop, until the remaining
 durable runtime lands. (Declaring such a store is no longer a `check.type` on the
@@ -140,15 +142,17 @@ inline.)
 
 The compiler emits an **operation site** for every node of the whole durable graph
 — a whole-payload site for each keyed placement (the store root and every nested
-`branch`) and a field-leaf site for each stored field (top-level, group-scoped, or
-branch-scoped) — and the verifier seals each one by resolving its concrete address
-against the graph it independently reconstructs. A site on the flat executable root
-(its fields scalar or widened), or on one of its scalar-field branches at any depth,
-seals as executable; every other site — over a group-scoped or nominal-typed field, or a
+`branch`), a whole-group site for each root-level `group`, and a field-leaf site for each
+stored field (top-level, group-scoped, or branch-scoped) — and the verifier seals each one
+by resolving its concrete address against the graph it independently reconstructs. A site
+on the flat executable root (its fields scalar or widened), on one of its root-level
+groups, or on one of its scalar-field branches at any depth, seals as executable; every
+other site — over a group nested in a branch or another group, a nominal-typed field, or a
 non-flat root — seals with a complete identity but parks, so its concrete address is
-checked and recorded while its execution waits for the remaining kernel. The site table holds one entry per graph node regardless of how many
-operations reference it, and appending a sparse field adds one field-leaf site
-without disturbing any existing site.
+checked and recorded while its execution waits for the remaining kernel. A group leaf has
+no site of its own: it is reached through its whole-group site. The site table holds one
+entry per graph node regardless of how many operations reference it, and appending a
+sparse field adds one field-leaf site without disturbing any existing site.
 
 ## Durable Identity
 
@@ -306,9 +310,9 @@ test presence with `exists`. Binding a place to a non-durable value, to a field
 address (`^books[id].title`), or to another place is rejected.
 
 A place binds an address the same way an inline `^root[key...]` operation does, so a
-place over a store shape whose operations are not yet lowered (a singleton,
-group-bearing, or nominal-field root) reports the same not-yet-executable result as the
-inline form.
+place over a store shape whose operations are not yet lowered (a singleton or
+nominal-field root, or one whose only durable content is a group nested in a branch or
+another group) reports the same not-yet-executable result as the inline form.
 
 ## Field Assignment
 
@@ -421,6 +425,88 @@ omitted sparse field. A required field left unset when the entry commits rolls
 the transaction back with `run.required_missing` rather than storing a partial
 entry. The replacement rewrites the entry's own payload only; its keyed `branch`
 descendants are preserved.
+
+## Groups
+
+A resource may declare a root-level unkeyed `group`: a static field-path namespace whose
+leaves are part of the containing entry's own payload (see
+[Resources](resources.md#groups-and-branches)). A group of scalar or widened leaves is
+executable. A group is *markerless* — its presence is the entry's presence, so it is
+addressed by the entry's own key-path — and it is a value unit: it is read, replaced, and
+erased whole through `^root[key…].group`, and each leaf is read and rewritten through
+`^root[key…].group.leaf`:
+
+```mw
+module docs::durable_group
+
+resource Book {
+    required title: string
+
+    details {
+        pages: int
+        language: string
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn setBook(id: int, title: string, pages: int, language: string) {
+    transaction {
+        ^books[id] = Book(title: title, details: Book.details(pages: pages, language: language))
+    }
+}
+
+pub fn pages(id: int): int? {
+    return ^books[id].details.pages
+}
+
+pub fn setPages(id: int, pages: int) {
+    transaction {
+        ^books[id].details.pages = pages
+    }
+}
+
+pub fn clearPages(id: int) {
+    transaction {
+        delete ^books[id].details.pages
+    }
+}
+
+pub fn replaceDetails(id: int, pages: int) {
+    transaction {
+        ^books[id].details = Book.details(pages: pages)
+    }
+}
+
+pub fn eraseDetails(id: int) {
+    transaction {
+        delete ^books[id].details
+    }
+}
+
+pub fn detailPages(id: int): int? {
+    if const d = ^books[id].details {
+        return d.pages
+    }
+    return absent
+}
+```
+
+A group leaf read (`^books[id].details.pages`) materializes the whole group and projects
+the leaf, so it reads `absent` when the entry is absent and follows each leaf's own
+presence otherwise. A group-leaf assignment or `delete` is a whole-group read-modify-write:
+it reads the group, updates the one leaf, and writes the group back, so a sibling leaf is
+preserved. Because the group is a value unit of an existing entry — never created on its
+own — a leaf write over an absent entry is a no-op. A whole-group assignment
+(`^books[id].details = Book.details(...)`) is exact: it rewrites the group's own leaves and
+drops every leaf the assigned value omits, and a `delete` of the whole group clears only
+that group's leaves. All three leave the entry's top-level fields and its keyed `branch`
+descendants in place. A whole-entry read materializes the entry's root-level groups along
+with its top-level fields, and a whole-entry assignment rewrites them exactly, dropping an
+omitted all-sparse group's leaves along with any omitted top-level sparse field.
+
+A group nested in a branch or in another group is not yet executable; its identity is
+complete, but an operation over it reports the typed `check.unsupported` result.
 
 ## Keyed Branches
 
