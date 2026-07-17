@@ -9,7 +9,6 @@ use marrow_syntax::{
 };
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_top_level_multi_line_const_value() {
     // A column-0 `const` whose value spans several physical lines inside open
     // delimiters must parse as one call, not break apart line by line.
@@ -41,7 +40,6 @@ fn parses_top_level_multi_line_const_value() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_interpolation_into_text_and_expression_parts() {
     let parsed = parse_source("const Label: string = $\"book {id}: {{ready}}\"\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -74,10 +72,9 @@ fn parses_interpolation_into_text_and_expression_parts() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_interpolation_with_embedded_call_path() {
-    // From the reference sample: $"{id}: {^books(id).title}".
-    let parsed = parse_source("const Line: string = $\"{id}: {^books(id).title}\"\n");
+    // From the reference sample: $"{id}: {^books[id].title}".
+    let parsed = parse_source("const Line: string = $\"{id}: {^books[id].title}\"\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
@@ -100,10 +97,9 @@ fn parses_interpolation_with_embedded_call_path() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_calls_paths_and_field_access() {
-    // `^books(id).title` is SavedRoot -> Call -> Field.
-    let parsed = parse_source("const Title = ^books(id).title\n");
+    // `^books[id].title` is SavedRoot -> Keyed -> Field.
+    let parsed = parse_source("const Title = ^books[id].title\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
@@ -112,35 +108,33 @@ fn parses_calls_paths_and_field_access() {
         panic!("expected field access, got {:?}", decl.value);
     };
     assert_eq!(name, "title");
-    let Expression::Call { callee, args, .. } = base.as_ref() else {
-        panic!("expected call under field, got {base:?}");
+    let Expression::Keyed { base, keys, .. } = base.as_ref() else {
+        panic!("expected keyed access under field, got {base:?}");
     };
-    assert_eq!(args.len(), 1);
+    assert_eq!(keys.len(), 1);
     assert!(
-        matches!(callee.as_ref(), Expression::SavedRoot { name, .. } if name == "books"),
-        "expected saved root callee, got {callee:?}"
+        matches!(base.as_ref(), Expression::SavedRoot { name, .. } if name == "books"),
+        "expected saved root base, got {base:?}"
     );
     assert!(
-        matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["id"]),
-        "expected id argument, got {:?}",
-        args[0].value
+        matches!(&keys[0], Expression::Name { segments, .. } if segments == &["id"]),
+        "expected id key, got {:?}",
+        keys[0]
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn absent_is_a_value_keyword_not_a_path_segment() {
     // `absent` is the empty-optional primary value, so it cannot also stand as a
     // `::` path segment.
-    let parsed = parse_source("fn f()\n    std::assert::absent(^books(1))\n");
+    let parsed = parse_source("fn f() {\n    std::assert::absent(^books[1])\n}\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn open_range_arguments_parse_in_calls() {
     let parsed = parse_source(
-        "fn f(start: int, end: int)\n    for id in ^posts.byDate(start.., ..end, ..=end)\n        print(id)\n",
+        "fn f(start: int, end: int) {\n    for id in ^posts.byDate[start.., ..end, ..=end] {\n        print(id)\n    }\n}\n",
     );
     assert!(
         parsed.diagnostics.is_empty(),
@@ -150,9 +144,8 @@ fn open_range_arguments_parse_in_calls() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn quoted_field_segments_are_parse_errors() {
-    let parsed = parse_source("const Old = ^books(id).\"old-title\"\n");
+    let parsed = parse_source("const Old = ^books[id].\"old-title\"\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
         has_reason(
@@ -178,7 +171,6 @@ fn quoted_field_segments_are_parse_errors() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unterminated_quoted_field_segment_does_not_panic() {
     // The trailing `"` is an unterminated string (a lexer error). Parsing must
     // surface the diagnostic without panicking on the empty quoted segment.
@@ -195,12 +187,11 @@ fn unterminated_quoted_field_segment_does_not_panic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyword_field_name_reports_a_parse_error() {
     // `if` is a reserved word. Used as a bare field
     // name it violates `field_name = identifier`, so the parser
     // must report it rather than silently dropping the statement.
-    let source = "fn touch(id: int)\n    ^events(id).if = now\n";
+    let source = "fn touch(id: int) {\n    ^events[id].if = now\n}\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
@@ -220,12 +211,11 @@ fn keyword_field_name_reports_a_parse_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyword_field_name_reports_once_not_also_expected_a_statement() {
     // A line that fails because of a keyword field name carries the specific
     // diagnostic only: the generic "expected a statement" fallback must not also
     // fire on the same line.
-    let source = "fn touch(id: int)\n    ^events(id).if = now\n";
+    let source = "fn touch(id: int) {\n    ^events[id].if = now\n}\n";
     let parsed = parse_source(source);
     let on_offending_line: Vec<_> = parsed
         .diagnostics
@@ -245,9 +235,8 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn quoted_keyword_field_name_reports_a_parse_error() {
-    let parsed = parse_source("const Bad = ^events(id).\"if\"\n");
+    let parsed = parse_source("const Bad = ^events[id].\"if\"\n");
     assert!(
         has_reason(
             &parsed.diagnostics,
@@ -261,7 +250,6 @@ fn quoted_keyword_field_name_reports_a_parse_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
     // `a.if` fails because `if` is a keyword used as a field name. The const
     // value path drains that specific diagnostic, so the generic "expected an
@@ -281,11 +269,10 @@ fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
     // The same single-report guard applies to header expressions: an `if`
     // condition that fails on a keyword field name carries only that diagnostic.
-    let parsed = parse_source("fn f()\n    if a.if\n        return\n");
+    let parsed = parse_source("fn f() {\n    if a.if {\n        return\n    }\n}\n");
     let on_offending_line: Vec<_> = parsed
         .diagnostics
         .iter()
@@ -304,7 +291,6 @@ fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_named_call_arguments() {
     let parsed = parse_source("const Made = save(book: draft, total: 1)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -320,12 +306,11 @@ fn parses_named_call_arguments() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn removed_call_argument_modes_are_rejected() {
     for source in [
         "const Made = save(book: draft, inout total)\n",
         "const Made = save(book: draft, out result)\n",
-        "const Made = normalize(inout ^books(id))\n",
+        "const Made = normalize(inout ^books[id])\n",
     ] {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected removed mode rejection");
@@ -343,7 +328,6 @@ fn removed_call_argument_modes_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn out_and_inout_parse_as_ordinary_names() {
     let parsed = parse_source("const Made = save(out, inout)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -359,7 +343,6 @@ fn out_and_inout_parse_as_ordinary_names() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn out_and_inout_can_head_ordinary_call_argument_expressions() {
     let parsed = parse_source("const Made = save(out(1), inout - 1)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -381,7 +364,6 @@ fn out_and_inout_can_head_ordinary_call_argument_expressions() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_argument_after_named_is_rejected() {
     // After the first named argument, every remaining argument must be named.
     // A plain positional argument after a named one is a parse error that points
@@ -427,7 +409,6 @@ fn positional_argument_after_named_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_then_named_arguments_are_accepted() {
     // Positional arguments may precede named ones; only the reverse is rejected.
     let parsed = parse_source("const Made = sub(1, b: 2)\n");
@@ -435,19 +416,17 @@ fn positional_then_named_arguments_are_accepted() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn all_named_arguments_are_accepted() {
     let parsed = parse_source("const Made = sub(a: 1, b: 2)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_after_named_is_rejected_inside_function_bodies() {
     // A call statement in a function body reaches the parser through a different
     // path than a `const` value, so it confirms the rule is checked over the
     // whole tree, not just top-level values.
-    let parsed = parse_source("fn run()\n    log(level: 1, 2)\n");
+    let parsed = parse_source("fn run() {\n    log(level: 1, 2)\n}\n");
     assert!(
         has_reason(
             &parsed.diagnostics,
@@ -459,7 +438,6 @@ fn positional_after_named_is_rejected_inside_function_bodies() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_after_named_is_rejected_in_nested_calls() {
     // The walk descends into argument values, so an offending inner call is
     // reported even when the surrounding call is well-formed.
@@ -475,7 +453,6 @@ fn positional_after_named_is_rejected_in_nested_calls() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_conversion_and_constructor_calls() {
     // Conversion call on a type keyword.
     let parsed = parse_source("const Count: int = int(raw)\n");
@@ -521,7 +498,6 @@ fn parses_conversion_and_constructor_calls() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyword_head_and_keyword_path_segment_are_rejected() {
     // The parser has no dedicated qualified-`Id` rule; these strings are rejected
     // because `Id` is a reserved keyword. A keyword head (`Id::fromKey`) cannot
