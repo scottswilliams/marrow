@@ -188,6 +188,65 @@ pub fn hasAddr(): int {
     assert!(stdout.contains(r#""data":-1"#), "{stdout}");
 }
 
+/// `?.` reads a member through an optional composite value: absent short-circuits
+/// to absent, present yields the member wrapped optional, and it chains through a
+/// sparse composite field without a double wrap.
+#[test]
+fn optional_member_read_propagates_absence_and_chains() {
+    let temp = TempDir::new("optional-member");
+    project(
+        &temp,
+        r#"struct Inner {
+    tag: string
+}
+
+struct Outer {
+    label: string
+    inner: Inner
+}
+
+pub fn tagOf(hit: bool): string {
+    var o: Outer? = absent
+    if hit {
+        o = Outer(label: "L", inner: Inner(tag: "T"))
+    }
+    return o?.inner?.tag ?? "none"
+}
+"#,
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "tagOf", "--", "true"]).stdout),
+        "T\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "tagOf", "--", "false"]).stdout),
+        "none\n"
+    );
+}
+
+/// `?.` on a value that is not optional, or is optional but not a composite, is a
+/// typed `check.type` — the operator has exactly one meaning.
+#[test]
+fn optional_member_read_rejects_a_non_optional_or_non_composite_base() {
+    for (source, entry) in [
+        (
+            "struct P { x: int }\npub fn f(): int {\n    const p = P(x: 3)\n    return p?.x ?? 0\n}\n",
+            "f",
+        ),
+        (
+            "pub fn f(): int {\n    var n: int? = absent\n    return n?.x ?? 0\n}\n",
+            "f",
+        ),
+    ] {
+        let temp = TempDir::new("optional-member-bad");
+        project(&temp, source);
+        let output = run_in(&temp, &["run", entry, "--format", "jsonl"]);
+        assert!(!output.status.success(), "{source}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("check.type"), "{source}: {stdout}");
+    }
+}
+
 /// A malformed construction — an unknown field, a missing field, a duplicated
 /// field, a positional (unnamed) argument, or a wrong-typed field — is a typed
 /// `check.type` at the literal.

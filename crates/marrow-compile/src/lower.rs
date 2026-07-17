@@ -3300,6 +3300,9 @@ impl<'a> FnLowerer<'a> {
             Expression::Field {
                 base, name, span, ..
             } => self.lower_field(base, name, *span),
+            Expression::OptionalField {
+                base, name, span, ..
+            } => self.lower_optional_field(base, name, *span),
             Expression::Try { inner, span } => self.lower_try(inner, *span),
             Expression::Interpolation { parts, span } => self.lower_interpolation(parts, *span),
             other => {
@@ -5444,6 +5447,55 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::FieldGet(index), span);
         let bare = garg_to_lty(field_ty);
         Some(if required { bare } else { bare.to_optional() })
+    }
+
+    /// Lower `base?.name`: a member read through an *optional composite value*. The
+    /// base is an optional record/struct value (local, or the value of a durable
+    /// read); an absent base short-circuits the whole read to absent, and a present
+    /// base yields the field wrapped optional. The result is always optional, so
+    /// `?.` is the present-propagating analogue of `.` — its one meaning. This is a
+    /// local-value operator: a durable address propagates absence structurally on
+    /// its own and needs no `?.`.
+    fn lower_optional_field(
+        &mut self,
+        base: &Expression,
+        name: &str,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let base_ty = self.lower_expr(base)?;
+        if !base_ty.is_optional() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                base.span(),
+                format!(
+                    "`?.` needs an optional value on the left, found {}; use `.` for a \
+                     present value",
+                    base_ty.spelling(self.records)
+                ),
+            ));
+            return None;
+        }
+        let (index, field_ty, required) =
+            self.resolve_product_field(base_ty.to_bare(), name, base.span(), span)?;
+        let result = garg_to_lty(field_ty).to_optional();
+
+        // Present: unwrap the optional composite to its bare record and read the
+        // field; a required field is wrapped present, a sparse field already reads
+        // optional. Absent: short-circuit to a vacant of the result type. Both paths
+        // join at `result`.
+        let to_absent = self.push_branch_present(base.span());
+        self.push(Instr::FieldGet(index), span);
+        if required {
+            self.push(Instr::SomeWrap, span);
+        }
+        let to_end = self.push_jump(span);
+        let absent = self.here();
+        self.patch(to_absent, absent);
+        self.push(Instr::VacantLoad(result.image()), span);
+        let end = self.here();
+        self.patch(to_end, end);
+        Some(result)
     }
 
     /// Resolve `name` against a bare product (`record` or `struct`) value type to

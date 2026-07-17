@@ -332,7 +332,10 @@ and optional standard-library functions. Four constructs consume them:
 - `if const name = value` enters its block and binds `name` only when the value
   is present.
 - `exists(place)` tests path presence and narrows the guarded path.
-- `value?.member` propagates absence while reading a resource member.
+- `value?.member` reads a member through an optional composite (`resource` or
+  `struct`) value: an absent value yields `absent`, and a present value yields the
+  member wrapped optional, so the read never faults on absence and its result is
+  itself optional.
 
 `if const` accepts any optional expression. It is not limited to durable reads.
 

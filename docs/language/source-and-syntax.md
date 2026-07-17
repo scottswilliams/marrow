@@ -208,8 +208,9 @@ and
 or
 ```
 
-The optional member operator `?.` propagates absence through a resource member
-read. Numeric binary operators require matching numeric types; there are no
+The optional member operator `?.` reads a member through an optional composite
+value, yielding `absent` when the value is absent and the member wrapped optional
+otherwise. Numeric binary operators require matching numeric types; there are no
 implicit numeric conversions. String and temporal operator combinations are
 listed in [Types and values](types-and-values.md#operators). Division and
 remainder by zero are runtime errors.
