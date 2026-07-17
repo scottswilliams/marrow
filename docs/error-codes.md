@@ -159,8 +159,9 @@ Source-mapped runtime faults raised by the VM and the path kernel while running 
 verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
-authority denial, a required field left unset at commit, an unconfirmed commit,
-and durable corruption. These are not catchable inside the program.
+authority denial, a required field left unset at commit, a unique-index
+collision, an unconfirmed commit, and durable corruption. These are not
+catchable inside the program.
 
 | Code | Meaning |
 |---|---|
@@ -174,6 +175,7 @@ and durable corruption. These are not catchable inside the program.
 | `run.range` | A value outside a nominal type's declared interval reached a construction or arithmetic result at runtime: `Age(n)` or a `supports`-unlocked operation produced an int the type's `in` range does not admit. The fault is mapped to the source span of the operation and is not catchable inside the program; use `Type.checked(n)` for a fault-free range test. |
 | `run.authority` | An export's verified durable demand is not covered by the deployment ceiling intersected with the invocation grant, so the call is denied before the first engine access. The demand never grants access; it is only checked against it. Not catchable inside the program. |
 | `run.required_missing` | A durable transaction reached its commit with an entry it created or staged that still leaves a required field unset. The transaction rolls back rather than committing a partial entry, and the fault is mapped to the transaction's source span. Not catchable inside the program. |
+| `run.unique_index` | A durable write would place two distinct entries into one `unique` managed index — two rows whose unique projection is equal but which name different store identities. Managed-index maintenance detects the collision when it stages the row and faults, rolling the whole transaction back without poisoning the store. The fault is mapped to the operation's source span and is not catchable inside the program. |
 | `run.commit` | A durable transaction commit did not confirm. The store handle is poisoned and every later operation fails; the process must exit and reopen, where the recorded witness classifies whether the commit completed. The fault is mapped to the transaction's source span and is not catchable inside the program. |
 | `run.corruption` | The path kernel found the durable store internally inconsistent while running a verified program: a field leaf with no entry marker (an orphan leaf), a cell it could not decode as its typed value, or a stored schema descriptor that does not match the program image. The fault is mapped to the operation's source span and is not catchable inside the program. |
 | `run.collection_limit` | A `List` append or `Map` insert would grow a collection past a fixed representational bound: more than 65536 elements, or an aggregate value size over 1 MiB. The operation faults rather than allocating unboundedly, mapped to its source span, and is not catchable inside the program. |

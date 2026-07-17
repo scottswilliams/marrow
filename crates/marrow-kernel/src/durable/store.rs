@@ -7,13 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use marrow_store::{ByteEngine, CommitOutcome, ReadView, StoreError, WriteTxn};
 
 use super::physical::{self, CellKind};
-use super::plan::{CellWrite, Planner};
+use super::plan::{CellWrite, IndexOp, Planner};
 use super::profile;
 use super::{
     AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, BranchHop, BranchSchema, CommitResult,
-    CreateOutcome, DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, InvocationGrant,
-    KernelFault, NextKey, Presence, Reopen, ReplaceOutcome, SessionError, SiteSpec, SiteTarget,
-    StoreSchema,
+    CreateOutcome, DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, IndexComponent,
+    IndexSchema, InvocationGrant, KernelFault, NextKey, Presence, Reopen, ReplaceOutcome,
+    SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, decode_domain, encode_domain};
@@ -216,6 +216,7 @@ impl<E: ByteEngine> DurableStore<E> {
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let descriptor = profile::descriptor(&self.schema);
+        let indexes = self.schema.indexes.clone();
         // Split the store's fields into disjoint borrows: the transaction borrows the
         // engine mutably while the session still writes the poison flag. The schema is
         // read here (into `descriptor` and the resolved sites) before the split.
@@ -238,6 +239,7 @@ impl<E: ByteEngine> DurableStore<E> {
             poisoned,
             auth,
             token: mint_token(),
+            indexes,
             pending: BTreeMap::new(),
         })
     }
@@ -485,6 +487,10 @@ where
     poisoned: &'s mut bool,
     auth: Vec<AuthorizedSite>,
     token: [u8; 16],
+    /// The root's managed indexes, in stable declaration order. Every root-level write
+    /// keeps them coherent as a consequence of the source write; a store with no index
+    /// carries an empty list and skips maintenance entirely.
+    indexes: Vec<IndexSchema>,
     /// The durable nodes whose fields were staged this transaction, keyed by the
     /// node's marker stem so several field sets on one node stage it once. Each is
     /// reconciled at commit to decide created vs required-missing — a root node or a
@@ -501,6 +507,15 @@ where
 struct PendingNode {
     fields: Vec<FieldSchema>,
     key: KeyScalar,
+}
+
+/// The pre-write state a root field write captures for index maintenance: the entry's
+/// projected field values before the write and the written field's record position. The
+/// new projected state is the old with that one position replaced, so a field write moves
+/// only the indexes projecting it.
+struct FieldMaintenance {
+    old: Vec<Option<ValueDomain>>,
+    position: usize,
 }
 
 impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
@@ -672,12 +687,15 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         value: ValueDomain,
     ) -> Result<(), KernelFault> {
-        let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, true));
+        let stem = node_stem(site, keys)?;
+        let leaf = physical::stem_field_leaf(&stem, field_name(site, true));
         let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
+        let maintenance = self.field_maintenance_before(site, &stem)?;
         self.txn_mut()
             .put(&leaf, bytes)
             .map_err(KernelFault::Engine)?;
         self.stage_node(site, keys)?;
+        self.maintain_field_write(site, keys, maintenance, Some(value))?;
         Ok(())
     }
     fn set_sparse(
@@ -686,7 +704,9 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
         value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
-        let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, false));
+        let stem = node_stem(site, keys)?;
+        let leaf = physical::stem_field_leaf(&stem, field_name(site, false));
+        let maintenance = self.field_maintenance_before(site, &stem)?;
         match value {
             Some(value) => {
                 let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
@@ -694,9 +714,11 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
                     .put(&leaf, bytes)
                     .map_err(KernelFault::Engine)?;
                 self.stage_node(site, keys)?;
+                self.maintain_field_write(site, keys, maintenance, Some(value))?;
             }
             None => {
                 self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
+                self.maintain_field_write(site, keys, maintenance, None)?;
             }
         }
         Ok(())
@@ -737,8 +759,17 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         match probe_slot(self.txn(), &stem)? {
             SlotClass::Present => Ok(CreateOutcome::AlreadyPresent),
             SlotClass::DescendantOnly | SlotClass::Absent | SlotClass::Orphan => {
+                let maintains = self.maintains_root(site);
+                let old = if maintains {
+                    self.read_projected(&stem, fields)?
+                } else {
+                    Vec::new()
+                };
                 let ops = planner.node_write(&stem, fields, &entry)?;
                 self.apply(ops)?;
+                if maintains {
+                    self.maintain_indexes(site, keys, &old, &entry.fields)?;
+                }
                 Ok(CreateOutcome::Created)
             }
         }
@@ -759,12 +790,21 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         if read_raw(self.txn(), &stem)?.is_none() {
             return Ok(ReplaceOutcome::Missing);
         }
+        let maintains = self.maintains_root(site);
+        let old = if maintains {
+            self.read_projected(&stem, fields)?
+        } else {
+            Vec::new()
+        };
         // Exact replacement through the one node-parametric planner: remove the node's
         // own cells, then write the new payload, so unlisted sparse leaves do not
         // survive and keyed branch descendants are left intact.
         let mut ops = planner.node_erase(&stem, fields);
         ops.extend(planner.node_write(&stem, fields, &entry)?);
         self.apply(ops)?;
+        if maintains {
+            self.maintain_indexes(site, keys, &old, &entry.fields)?;
+        }
         Ok(ReplaceOutcome::Replaced)
     }
     fn erase_field(
@@ -772,9 +812,12 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
-        let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, field_name(site, false));
+        let stem = node_stem(site, keys)?;
+        let leaf = physical::stem_field_leaf(&stem, field_name(site, false));
         let existed = read_raw(self.txn(), &leaf)?.is_some();
+        let maintenance = self.field_maintenance_before(site, &stem)?;
         self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
+        self.maintain_field_write(site, keys, maintenance, None)?;
         Ok(if existed {
             EraseOutcome::Erased
         } else {
@@ -790,11 +833,21 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         let fields = node_fields(site);
         let planner = Planner::new();
         let existed = read_raw(self.txn(), &stem)?.is_some();
+        let maintains = self.maintains_root(site);
+        let old = if maintains {
+            self.read_projected(&stem, fields)?
+        } else {
+            Vec::new()
+        };
         // Whole-node removal through the node-parametric planner: marker plus every own
         // field leaf, by exact key — a branch tag is never enumerated, so a node's
         // keyed descendants survive an erase of its payload.
         let ops = planner.node_erase(&stem, fields);
         self.apply(ops)?;
+        if maintains {
+            let new = vec![None; fields.len()];
+            self.maintain_indexes(site, keys, &old, &new)?;
+        }
         Ok(if existed {
             EraseOutcome::Erased
         } else {
@@ -825,6 +878,156 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         }
         Ok(())
     }
+
+    /// Whether root-level managed-index maintenance applies to a write on `site`: the
+    /// store declares indexes and the write addresses a root entry. A branch entry carries
+    /// no index (indexes project a root's own keys and top-level fields), so a branch write
+    /// never maintains one.
+    fn maintains_root(&self, site: &AuthorizedSite) -> bool {
+        !self.indexes.is_empty() && site.branch.is_empty()
+    }
+
+    /// The distinct root field positions the managed indexes project, so maintenance reads
+    /// exactly the projected leaves a write's indexes need — never the whole record.
+    fn projected_positions(&self) -> Vec<usize> {
+        let mut positions: Vec<usize> = self
+            .indexes
+            .iter()
+            .flat_map(|index| {
+                index
+                    .projection
+                    .iter()
+                    .filter_map(|component| match component {
+                        IndexComponent::Field(field) => Some(*field as usize),
+                        IndexComponent::Key(_) => None,
+                    })
+            })
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        positions
+    }
+
+    /// The current stored values of the projected fields of the root entry with marker
+    /// `stem`, aligned to `record` positions (an unprojected position stays `None` and is
+    /// never read). Reads observe this transaction's staged writes, so an in-flight change
+    /// is captured; a projected leaf that will not decode is corruption.
+    fn read_projected(
+        &self,
+        stem: &[u8],
+        record: &[FieldSchema],
+    ) -> Result<Vec<Option<ValueDomain>>, KernelFault> {
+        let mut fields = vec![None; record.len()];
+        for position in self.projected_positions() {
+            let field = &record[position];
+            let leaf = physical::stem_field_leaf(stem, &field.name);
+            if let Some(bytes) = read_raw(self.txn(), &leaf)? {
+                fields[position] =
+                    Some(decode_domain(&bytes, &field.shape).ok_or(KernelFault::Corruption)?);
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Capture the pre-write state a root field write needs for index maintenance, before
+    /// the write overwrites the field leaf. `None` when the write maintains no index (an
+    /// unindexed store or a branch field), so the field ops pay nothing on the common path.
+    fn field_maintenance_before(
+        &self,
+        site: &AuthorizedSite,
+        stem: &[u8],
+    ) -> Result<Option<FieldMaintenance>, KernelFault> {
+        if !self.maintains_root(site) {
+            return Ok(None);
+        }
+        let record = site_record(site);
+        let old = self.read_projected(stem, record)?;
+        let position = field_index_in_record(site, record);
+        Ok(Some(FieldMaintenance { old, position }))
+    }
+
+    /// Maintain the indexes for a root field write from its captured pre-write state and
+    /// the field's new value (`None` for a clear/erase). The new projected state is the old
+    /// with the written position replaced, so only the indexes projecting the field move.
+    fn maintain_field_write(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+        maintenance: Option<FieldMaintenance>,
+        new_value: Option<ValueDomain>,
+    ) -> Result<(), KernelFault> {
+        let Some(FieldMaintenance { old, position }) = maintenance else {
+            return Ok(());
+        };
+        let mut new = old.clone();
+        new[position] = new_value;
+        self.maintain_indexes(site, keys, &old, &new)
+    }
+
+    /// Maintain every managed index for a root entry write, given the entry's projected
+    /// field values before (`old`) and after (`new`) the write. An index row exists exactly
+    /// when every projected component is present, so a field absent in a state contributes
+    /// no row for that state. For each index in stable declaration order, an unchanged row
+    /// is left alone, a changed row is removed at its old key and staged at its new key, and
+    /// a unique index whose new key already holds a *different* source identity faults
+    /// [`KernelFault::UniqueIndexViolation`] — the whole transaction then rolls back without
+    /// poisoning the store. The removes and puts ride this session's transaction, so index
+    /// and source changes commit or roll back as one unit.
+    fn maintain_indexes(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+        old: &[Option<ValueDomain>],
+        new: &[Option<ValueDomain>],
+    ) -> Result<(), KernelFault> {
+        let ops = Planner::new().index_writes(&site.root, &self.indexes, keys, old, new)?;
+        for op in ops {
+            match op {
+                IndexOp::Remove(cell) => {
+                    self.txn_mut().remove(&cell).map_err(KernelFault::Engine)?;
+                }
+                IndexOp::Put(cell, value) => {
+                    self.txn_mut()
+                        .put(&cell, value)
+                        .map_err(KernelFault::Engine)?;
+                }
+                IndexOp::UniquePut(cell, value) => {
+                    // A unique index rejects a second, differently-owned row at one key: the
+                    // collision faults and the transaction rolls back. A cell already
+                    // holding this same source key is a coherent re-put (the row did not
+                    // move), so it is written through.
+                    if read_raw(self.txn(), &cell)?.is_some_and(|existing| existing != value) {
+                        return Err(KernelFault::UniqueIndexViolation);
+                    }
+                    self.txn_mut()
+                        .put(&cell, value)
+                        .map_err(KernelFault::Engine)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The record whose fields a site addresses: the entry's own record for a whole-entry
+/// site, the containing node's record for a field site. Index maintenance reads projected
+/// leaves from it.
+fn site_record(site: &AuthorizedSite) -> &[FieldSchema] {
+    match &site.target {
+        AuthTarget::Entry(fields) => fields,
+        AuthTarget::Field { record, .. } => record,
+    }
+}
+
+/// The position of a field site's field within its containing record.
+fn field_index_in_record(site: &AuthorizedSite, record: &[FieldSchema]) -> usize {
+    let AuthTarget::Field { name, .. } = &site.target else {
+        unreachable!("a field op targets a field site")
+    };
+    record
+        .iter()
+        .position(|field| &field.name == name)
+        .expect("a field site names a record field")
 }
 
 /// The field name of a field-target site, checking the required flag matches the
@@ -1133,13 +1336,13 @@ fn mint_token() -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, ReadView, WriteTxn};
+    use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, NativeEngine, ReadView, WriteTxn};
 
     use super::super::physical;
     use super::super::{
         BoundedKeys, BoundedLimit, BranchSchema, CommitResult, CreateOutcome, DemandCoverage,
-        EntryValue, EraseOutcome, FieldSchema, InvocationGrant, KernelFault, Presence,
-        ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
+        EntryValue, EraseOutcome, FieldSchema, IndexComponent, IndexSchema, InvocationGrant,
+        KernelFault, Presence, ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
     };
     use super::{Durable, DurableStore};
     use crate::codec::key::KeyScalar;
@@ -3121,6 +3324,381 @@ mod tests {
         assert_eq!(
             read.iterate_bounded(&cell, &[ki(1)], None, bound(10)),
             Err(KernelFault::Corruption),
+        );
+    }
+
+    // --- managed-index maintenance differential (E05) ---
+
+    const BY_LABEL: [u8; 16] = [0x70; 16];
+    const BY_VALUE: [u8; 16] = [0x71; 16];
+
+    /// The `counters` root with a non-unique `byLabel(label, name)` index and a unique
+    /// `byValue(value)` index — the maintenance the write path keeps coherent.
+    fn indexed_schema() -> StoreSchema {
+        let mut schema = schema();
+        schema.indexes = vec![
+            IndexSchema {
+                id: BY_LABEL,
+                unique: false,
+                projection: vec![IndexComponent::Field(1), IndexComponent::Key(0)],
+            },
+            IndexSchema {
+                id: BY_VALUE,
+                unique: true,
+                projection: vec![IndexComponent::Field(0)],
+            },
+        ];
+        schema
+    }
+
+    /// Every managed-index cell (family `0x02`) of a store, in ascending key order — the
+    /// raw index state a maintained write leaves behind.
+    fn index_cells<E: ByteEngine>(store: &DurableStore<E>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let view = store.engine.read_view().expect("read view");
+        let mut cells = view
+            .scan_after(&[0x02], &[0x02])
+            .expect("scan index family");
+        cells.sort();
+        cells
+    }
+
+    /// The expected `byLabel` cell for entry `name` with label `label`: keyed by the
+    /// projected `[label, name]` tuple, valued by the source key `[name]`.
+    fn label_cell(name: &str, label: &str) -> (Vec<u8>, Vec<u8>) {
+        (
+            physical::index_cell_key(
+                "counters",
+                &BY_LABEL,
+                &[KeyScalar::Str(label.into()), KeyScalar::Str(name.into())],
+            ),
+            physical::index_cell_value(&[KeyScalar::Str(name.into())]),
+        )
+    }
+
+    /// The expected unique `byValue` cell for entry `name` with value `value`: keyed by
+    /// the projected `[value]`, valued by the source key `[name]`.
+    fn value_cell(name: &str, value: i64) -> (Vec<u8>, Vec<u8>) {
+        (
+            physical::index_cell_key("counters", &BY_VALUE, &[KeyScalar::Int(value)]),
+            physical::index_cell_value(&[KeyScalar::Str(name.into())]),
+        )
+    }
+
+    fn sorted(mut cells: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        cells.sort();
+        cells
+    }
+
+    /// A fresh redb-backed store over the indexed schema, in a temp dir kept alive by the
+    /// returned guard.
+    fn native_indexed() -> (DurableStore<NativeEngine>, TempDir) {
+        let temp = TempDir::new("index-maint");
+        let engine = NativeEngine::open(&temp.store()).expect("open native");
+        (
+            DurableStore::from_engine(engine, indexed_schema(), sites()),
+            temp,
+        )
+    }
+
+    struct TempDir {
+        root: std::path::PathBuf,
+    }
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("create temp dir");
+            TempDir { root }
+        }
+        fn store(&self) -> std::path::PathBuf {
+            self.root.join("store")
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.root).ok();
+        }
+    }
+
+    fn ent(value: i64, label: Option<&str>) -> EntryValue {
+        EntryValue {
+            fields: vec![
+                Some(ValueDomain::Scalar(RuntimeScalar::Int(value))),
+                label.map(|l| ValueDomain::Scalar(RuntimeScalar::Str(l.into()))),
+            ],
+        }
+    }
+
+    /// Creating an indexed entry adds exactly its row to every index whose projection is
+    /// fully present: the non-unique `byLabel` and the unique `byValue`.
+    #[test]
+    fn create_adds_a_row_to_every_index() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            assert_eq!(
+                txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap(),
+                CreateOutcome::Created,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![label_cell("a", "x"), value_cell("a", 1)]),
+        );
+    }
+
+    /// Changing a projected field moves that index's row and leaves an index the field
+    /// does not project untouched. Setting `label` from `x` to `y` moves the `byLabel`
+    /// row; `byValue` (over `value`) is unchanged.
+    #[test]
+    fn changing_a_projected_field_moves_only_its_index_row() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            let label = txn.site(2);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            txn.set_sparse(
+                &label,
+                &[ks("a")],
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("y".into()))),
+            )
+            .unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![label_cell("a", "y"), value_cell("a", 1)]),
+        );
+    }
+
+    /// Erasing an indexed entry removes exactly its rows and leaves a sibling entry's rows
+    /// intact — the index analogue of the descendant-preserving erase.
+    #[test]
+    fn erasing_one_entry_leaves_a_siblings_rows_intact() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            txn.create_entry(&e, &[ks("b")], ent(2, Some("y"))).unwrap();
+            assert_eq!(
+                txn.erase_entry(&e, &[ks("a")]).unwrap(),
+                EraseOutcome::Erased
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![label_cell("b", "y"), value_cell("b", 2)]),
+        );
+    }
+
+    /// A clear of a projected sparse field removes that index's row (the entry drops out
+    /// of `byLabel`) without disturbing an index the field does not project.
+    #[test]
+    fn clearing_a_projected_field_removes_its_row() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            let label = txn.site(2);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            txn.set_sparse(&label, &[ks("a")], None).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        // Only the unique byValue row survives; byLabel has no row for an absent label.
+        assert_eq!(index_cells(&store), sorted(vec![value_cell("a", 1)]));
+    }
+
+    /// A replace rewrites the rows to the new projected values, dropping the old.
+    #[test]
+    fn replacing_an_entry_rewrites_its_rows() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            assert_eq!(
+                txn.replace_entry(&e, &[ks("a")], ent(9, Some("z")))
+                    .unwrap(),
+                ReplaceOutcome::Replaced,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![label_cell("a", "z"), value_cell("a", 9)]),
+        );
+    }
+
+    /// A second entry colliding on a unique index faults `UniqueIndexViolation`, and the
+    /// transaction rolls back without poisoning: the committed first entry survives and a
+    /// fresh transaction still works.
+    #[test]
+    fn a_unique_collision_faults_and_rolls_back_without_poisoning() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            // "b" collides with "a" on the unique byValue index (both value 1).
+            assert_eq!(
+                txn.create_entry(&e, &[ks("b")], ent(1, Some("y"))),
+                Err(KernelFault::UniqueIndexViolation),
+            );
+            // The transaction is dropped without commit: a rollback.
+        }
+        // Only "a"'s rows remain; "b" never landed.
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![label_cell("a", "x"), value_cell("a", 1)]),
+        );
+        // The store is not poisoned: a fresh transaction commits.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            txn.create_entry(&e, &[ks("c")], ent(2, Some("z"))).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![
+                label_cell("a", "x"),
+                label_cell("c", "z"),
+                value_cell("a", 1),
+                value_cell("c", 2),
+            ]),
+        );
+    }
+
+    /// Setting a projected field that was absent adds the index row without removing a
+    /// non-existent old row (the missing-old case): an entry created without a `label` has
+    /// no `byLabel` row until the field is set.
+    #[test]
+    fn setting_an_absent_projected_field_adds_a_row() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            let label = txn.site(2);
+            // Created with no label: only the unique byValue row exists.
+            txn.create_entry(&e, &[ks("a")], ent(1, None)).unwrap();
+            txn.set_sparse(
+                &label,
+                &[ks("a")],
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into()))),
+            )
+            .unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            index_cells(&store),
+            sorted(vec![label_cell("a", "x"), value_cell("a", 1)]),
+        );
+    }
+
+    /// A projected leaf that will not decode is corruption: maintenance reading the old
+    /// projected state over a tampered store faults `Corruption` rather than trusting an
+    /// undecodable value into an index key.
+    #[test]
+    fn a_corrupt_projected_leaf_faults_corruption() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        // Tamper the `label` leaf of entry "a" with bytes no value decodes.
+        let marker = physical::marker_key("counters", &[ks("a")]);
+        let leaf = physical::stem_field_leaf(&marker, "label");
+        {
+            let mut txn = store.engine.begin().expect("begin");
+            // Bytes no value codec decodes (decimal to avoid spelling a structural tag
+            // literal the layout-owner gate reserves for physical.rs).
+            txn.put(&leaf, vec![255, 255, 255]).expect("put garbage");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        // A field write that maintains byLabel must read the corrupt old value and fault.
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write_demand())
+            .unwrap();
+        let label = txn.site(2);
+        assert_eq!(
+            txn.set_sparse(
+                &label,
+                &[ks("a")],
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("y".into()))),
+            ),
+            Err(KernelFault::Corruption),
+        );
+    }
+
+    /// The same index cells result over the in-memory and redb engines: maintenance is
+    /// kernel logic above the byte engine, so the two backends agree cell for cell.
+    #[test]
+    fn index_maintenance_agrees_across_engines() {
+        fn replay<E: ByteEngine>(store: &mut DurableStore<E>) {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            let label = txn.site(2);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            txn.create_entry(&e, &[ks("b")], ent(2, Some("y"))).unwrap();
+            txn.set_sparse(
+                &label,
+                &[ks("a")],
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("z".into()))),
+            )
+            .unwrap();
+            txn.erase_entry(&e, &[ks("b")]).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut mem = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        replay(&mut mem);
+        let (mut native, _temp) = native_indexed();
+        replay(&mut native);
+        assert_eq!(
+            index_cells(&mem),
+            index_cells(&native),
+            "the two engines disagree on maintained index cells",
+        );
+        assert_eq!(
+            index_cells(&mem),
+            sorted(vec![label_cell("a", "z"), value_cell("a", 1)])
         );
     }
 }

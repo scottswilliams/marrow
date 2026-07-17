@@ -309,6 +309,10 @@ pub enum KernelFault {
     Poisoned,
     /// A value reaching the store codec is outside its supported range.
     ValueRange,
+    /// A durable write would place two distinct entries into one `unique` managed index.
+    /// The maintenance write detects the equal-projection collision and faults; the
+    /// transaction rolls back without poisoning the store.
+    UniqueIndexViolation,
     /// The ordered-byte engine failed mid-operation.
     Engine(StoreError),
 }
@@ -320,6 +324,7 @@ impl KernelFault {
             KernelFault::Corruption => marrow_codes::Code::RunCorruption.as_str(),
             KernelFault::Poisoned => marrow_codes::Code::RunCommit.as_str(),
             KernelFault::ValueRange => marrow_codes::Code::ValueRange.as_str(),
+            KernelFault::UniqueIndexViolation => marrow_codes::Code::RunUniqueIndex.as_str(),
             KernelFault::Engine(error) => error.code(),
         }
     }

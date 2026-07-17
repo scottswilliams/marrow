@@ -205,8 +205,9 @@ Source-mapped runtime faults raised by the VM and the path kernel while running 
 verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
-authority denial, a required field left unset at commit, an unconfirmed commit,
-and durable corruption. These are not catchable inside the program.
+authority denial, a required field left unset at commit, a unique-index
+collision, an unconfirmed commit, and durable corruption. These are not
+catchable inside the program.
 
 | Code | Meaning |
 |---|---|"#
@@ -222,6 +223,7 @@ and durable corruption. These are not catchable inside the program.
             Code::RunRange,
             Code::RunAuthority,
             Code::RunRequiredMissing,
+            Code::RunUniqueIndex,
             Code::RunCommit,
             Code::RunCorruption,
             Code::RunCollectionLimit,

@@ -13,8 +13,21 @@
 //! field leaf key        <marker> 0x10 esc(field)                           value = codec bytes
 //! branch child marker   <marker> 0x30 esc(branch) enc(childTuple) 0x00     value = 0x01
 //! iteration cursor      <family> enc(keytuple) 0xFF
+//! index cell key        0x02 esc(root_name) index_id[16] enc(projValues)   value = enc(sourceKey)
 //! meta cell key         0x10 esc(name)
 //! ```
+//!
+//! A managed index's cells form their own family (`0x02`), disjoint from the entry family
+//! (`0x01`) and the meta family (`0x10`). One index's cells are separated from another's
+//! under the same root by the index's stable 16-byte identity, so an index rename (which
+//! preserves that identity) never orphans its cells. After the identity comes the
+//! prefix-free encoding of the index's ordered projected component values; because that
+//! encoding self-delimits every column, two index rows never share a key where one is a
+//! prefix of the other, and a leading-component prefix is a valid scan bound. Each cell's
+//! value is the encoded source key tuple — the `Id(^root)` a lookup or scan yields. A
+//! non-unique index's projection ends with the identity suffix, so its rows are distinct
+//! by construction; a unique index's projection omits it, so two rows with equal projected
+//! values collide on one key (the uniqueness constraint the maintenance write enforces).
 //!
 //! `enc(keytuple)` is the ordered concatenation of the node's key columns, each column
 //! encoded prefix-free (see [`encode_key_tuple`]); a single-column key is the one-column
@@ -64,6 +77,9 @@ const MARKER_TERMINATOR: u8 = 0x00;
 const CURSOR_SENTINEL: u8 = 0xFF;
 /// First byte of every meta cell (witness, profile). Disjoint from [`ENTRY_FAMILY`].
 const META_FAMILY: u8 = 0x10;
+/// First byte of every managed-index cell. Disjoint from [`ENTRY_FAMILY`] and
+/// [`META_FAMILY`], so an index cell never aliases an entry or meta cell.
+const INDEX_FAMILY: u8 = 0x02;
 
 /// The value stored at a marker cell: the payload presence record.
 pub(super) const MARKER_VALUE: &[u8] = &[0x01];
@@ -163,6 +179,28 @@ pub(super) fn meta_key(name: &str) -> Vec<u8> {
     let mut out = vec![META_FAMILY];
     encode_escaped_bytes(name.as_bytes(), &mut out);
     out
+}
+
+/// The physical cell key of one managed-index row: the index family byte, the escaped
+/// root name, the index's 16-byte identity, and the prefix-free encoding of its ordered
+/// projected component values. The single owner of the index cell key shape — the
+/// consequence planner builds every index write and removal through it, so no second site
+/// spells an index cell. Because `esc(root)` self-terminates, the identity is fixed width,
+/// and the projected-value encoding is prefix-free, one index's cells occupy a distinct,
+/// self-delimited key range under the root.
+pub(super) fn index_cell_key(root: &str, index_id: &[u8; 16], projected: &[KeyScalar]) -> Vec<u8> {
+    let mut out = vec![INDEX_FAMILY];
+    encode_escaped_bytes(root.as_bytes(), &mut out);
+    out.extend_from_slice(index_id);
+    out.extend_from_slice(&encode_key_tuple(projected));
+    out
+}
+
+/// The value stored at a managed-index cell: the prefix-free encoding of the source
+/// entry's key tuple — the `Id(^root)` an index lookup or scan yields. Paired with
+/// [`index_cell_key`] as the single owner of the index cell shape.
+pub(super) fn index_cell_value(source_key: &[KeyScalar]) -> Vec<u8> {
+    encode_key_tuple(source_key)
 }
 
 /// The structural role of the byte immediately after a node's marker terminator: one
@@ -641,5 +679,99 @@ mod tests {
                 "a composite entry's cursor precedes the next sibling's marker"
             );
         }
+    }
+
+    const IDX_A: [u8; 16] = [0x70; 16];
+    const IDX_B: [u8; 16] = [0x71; 16];
+
+    /// An index cell begins with the index family byte, disjoint from the entry and meta
+    /// families, so an index cell never aliases an entry marker/leaf or a meta cell.
+    #[test]
+    fn index_cells_are_their_own_family() {
+        let key = index_cell_key("books", &IDX_A, &[KeyScalar::Str("a".into())]);
+        assert_eq!(key.first(), Some(&INDEX_FAMILY));
+        let entry = marker_key("books", &[KeyScalar::Int(1)]);
+        let meta = meta_key("profile");
+        assert_ne!(key.first(), entry.first(), "disjoint from the entry family");
+        assert_ne!(key.first(), meta.first(), "disjoint from the meta family");
+    }
+
+    /// One index's cells are separated from another's, and from a different root's, by the
+    /// index identity and the escaped root name; the same identity, root, and projected
+    /// values are deterministic.
+    #[test]
+    fn index_cell_keys_separate_by_identity_root_and_values() {
+        let proj = [KeyScalar::Str("a".into()), KeyScalar::Int(1)];
+        let base = index_cell_key("books", &IDX_A, &proj);
+        assert_eq!(
+            base,
+            index_cell_key("books", &IDX_A, &proj),
+            "deterministic"
+        );
+        assert_ne!(
+            base,
+            index_cell_key("books", &IDX_B, &proj),
+            "distinct index id"
+        );
+        assert_ne!(
+            base,
+            index_cell_key("tomes", &IDX_A, &proj),
+            "distinct root"
+        );
+        assert_ne!(
+            base,
+            index_cell_key(
+                "books",
+                &IDX_A,
+                &[KeyScalar::Str("a".into()), KeyScalar::Int(2)],
+            ),
+            "distinct projected values",
+        );
+    }
+
+    /// The projected-value encoding is prefix-free and column-major: two rows differing in
+    /// a later component order correctly with neither key a prefix of the other, and a
+    /// leading-component projection is a byte-prefix of the full key — the bound a
+    /// progressive-prefix scan seeks over.
+    #[test]
+    fn index_cell_keys_are_prefix_free_and_prefix_bounded() {
+        let a1 = index_cell_key(
+            "books",
+            &IDX_A,
+            &[KeyScalar::Str("a".into()), KeyScalar::Int(1)],
+        );
+        let a2 = index_cell_key(
+            "books",
+            &IDX_A,
+            &[KeyScalar::Str("a".into()), KeyScalar::Int(2)],
+        );
+        let ab = index_cell_key(
+            "books",
+            &IDX_A,
+            &[KeyScalar::Str("ab".into()), KeyScalar::Int(1)],
+        );
+        assert!(a1 < a2, "later component orders the rows");
+        assert!(!a2.starts_with(&a1), "no row key is a prefix of a sibling");
+        assert!(
+            !ab.starts_with(&a1),
+            "a longer leading column does not prefix-alias"
+        );
+
+        // The leading-component projection is a byte-prefix of every full key sharing it,
+        // so a scan over `shelf = "a"` seeks that prefix and meets a1 then a2.
+        let a_prefix = index_cell_key("books", &IDX_A, &[KeyScalar::Str("a".into())]);
+        assert!(a1.starts_with(&a_prefix) && a2.starts_with(&a_prefix));
+        assert!(
+            !ab.starts_with(&a_prefix),
+            "shelf=\"ab\" is outside the shelf=\"a\" prefix",
+        );
+    }
+
+    /// An index cell's value is the encoded source key tuple — the `Id(^root)` a read
+    /// yields — through the shared key-tuple codec.
+    #[test]
+    fn index_cell_value_is_the_encoded_source_key() {
+        let source = [KeyScalar::Int(42)];
+        assert_eq!(index_cell_value(&source), encode_key_tuple(&source));
     }
 }

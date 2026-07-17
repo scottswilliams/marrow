@@ -22,8 +22,10 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, FieldSchema, KernelFault};
+use super::{EntryValue, FieldSchema, IndexComponent, IndexSchema, KernelFault};
+use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_domain;
+use crate::equality::ValueDomain;
 
 /// One physical cell operation a mutation implies, in apply order.
 pub(super) enum CellWrite {
@@ -31,6 +33,20 @@ pub(super) enum CellWrite {
     Put(Vec<u8>, Vec<u8>),
     /// Remove cell `key`.
     Remove(Vec<u8>),
+}
+
+/// One physical managed-index cell operation a root entry write implies, in apply order.
+/// Separate from [`CellWrite`] because a unique-index put carries a maintenance obligation
+/// the pure planner cannot discharge: the session must reject a differently-owned existing
+/// cell (a read the planner never performs).
+pub(super) enum IndexOp {
+    /// Remove the index cell at `key` (a row that left an index).
+    Remove(Vec<u8>),
+    /// Write `value` at non-unique index cell `key`.
+    Put(Vec<u8>, Vec<u8>),
+    /// Write `value` at unique index cell `key`; the session faults if the cell already
+    /// holds a different source identity.
+    UniquePut(Vec<u8>, Vec<u8>),
 }
 
 /// The consequence planner: the single owner of how a logical mutation over one
@@ -106,6 +122,83 @@ impl Planner {
             .map(CellWrite::Remove)
             .collect()
     }
+
+    /// The ordered index-cell operations a root entry write implies, given the entry's key
+    /// tuple and its projected field values before (`old`) and after (`new`) the write, for
+    /// the root's `indexes` in stable declaration order. A row exists exactly when every
+    /// projected component is present, so a field absent in a state contributes no row for
+    /// it; an unchanged row emits nothing, and a changed row emits a remove of the old key
+    /// then a put of the new. A unique index's put is a [`IndexOp::UniquePut`] the session
+    /// enforces. This is the single owner of the source-write-to-index-cell decomposition —
+    /// the pure widening of the consequence planner for E05, matching how E03/E04 widened it
+    /// rather than a second maintenance path. A non-scalar or non-key-eligible projected
+    /// value is [`KernelFault::Corruption`] (the verifier's eligibility rule already
+    /// excludes it).
+    pub(super) fn index_writes(
+        &self,
+        root: &str,
+        indexes: &[IndexSchema],
+        keys: &[KeyScalar],
+        old: &[Option<ValueDomain>],
+        new: &[Option<ValueDomain>],
+    ) -> Result<Vec<IndexOp>, KernelFault> {
+        let mut ops = Vec::new();
+        for index in indexes {
+            let old_row = project_row(index, keys, old)?;
+            let new_row = project_row(index, keys, new)?;
+            if old_row == new_row {
+                continue;
+            }
+            if let Some(row) = &old_row {
+                ops.push(IndexOp::Remove(physical::index_cell_key(
+                    root, &index.id, row,
+                )));
+            }
+            if let Some(row) = &new_row {
+                let cell = physical::index_cell_key(root, &index.id, row);
+                let value = physical::index_cell_value(keys);
+                ops.push(if index.unique {
+                    IndexOp::UniquePut(cell, value)
+                } else {
+                    IndexOp::Put(cell, value)
+                });
+            }
+        }
+        Ok(ops)
+    }
+}
+
+/// One index's projected row for an entry: the ordered projected component values — a key
+/// column from `keys`, a top-level field from `fields`. `Ok(None)` when a projected field
+/// is absent, so the entry contributes no row to this index; a non-scalar or
+/// non-key-eligible projected value is [`KernelFault::Corruption`].
+fn project_row(
+    index: &IndexSchema,
+    keys: &[KeyScalar],
+    fields: &[Option<ValueDomain>],
+) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
+    let mut row = Vec::with_capacity(index.projection.len());
+    for component in &index.projection {
+        let key = match component {
+            IndexComponent::Key(column) => keys
+                .get(*column as usize)
+                .cloned()
+                .ok_or(KernelFault::Corruption)?,
+            IndexComponent::Field(field) => {
+                match fields.get(*field as usize).and_then(Option::as_ref) {
+                    None => return Ok(None),
+                    Some(ValueDomain::Scalar(scalar)) => scalar
+                        .as_key()
+                        .ok()
+                        .flatten()
+                        .ok_or(KernelFault::Corruption)?,
+                    Some(_) => return Err(KernelFault::Corruption),
+                }
+            }
+        };
+        row.push(key);
+    }
+    Ok(Some(row))
 }
 
 #[cfg(test)]
@@ -238,5 +331,77 @@ mod tests {
 
     fn keys_of(cells: &[Vec<u8>]) -> Vec<&[u8]> {
         cells.iter().map(Vec::as_slice).collect()
+    }
+
+    fn scalar(value: i64) -> Option<ValueDomain> {
+        Some(ValueDomain::Scalar(RuntimeScalar::Int(value)))
+    }
+
+    /// The pure index decomposition: for a changed row, a remove of the old key then a put
+    /// of the new, per index in stable declaration order; a unique index yields a
+    /// `UniquePut`. A key column value comes from `keys`, a field value from the state.
+    #[test]
+    fn index_writes_emit_remove_then_put_per_changed_index_in_order() {
+        let planner = Planner::new();
+        // Two indexes over a root keyed by one int column, with one int field (position 0):
+        // a non-unique index projecting [field 0, key 0] and a unique index projecting
+        // [field 0].
+        let indexes = vec![
+            IndexSchema {
+                id: [0xA0; 16],
+                unique: false,
+                projection: vec![IndexComponent::Field(0), IndexComponent::Key(0)],
+            },
+            IndexSchema {
+                id: [0xB1; 16],
+                unique: true,
+                projection: vec![IndexComponent::Field(0)],
+            },
+        ];
+        let keys = [KeyScalar::Int(7)];
+        // Field 0 changes from 1 to 2: both indexes' rows move.
+        let ops = planner
+            .index_writes("counters", &indexes, &keys, &[scalar(1)], &[scalar(2)])
+            .expect("in range");
+
+        let nonunique_old = physical::index_cell_key(
+            "counters",
+            &[0xA0; 16],
+            &[KeyScalar::Int(1), KeyScalar::Int(7)],
+        );
+        let nonunique_new = physical::index_cell_key(
+            "counters",
+            &[0xA0; 16],
+            &[KeyScalar::Int(2), KeyScalar::Int(7)],
+        );
+        let unique_old = physical::index_cell_key("counters", &[0xB1; 16], &[KeyScalar::Int(1)]);
+        let unique_new = physical::index_cell_key("counters", &[0xB1; 16], &[KeyScalar::Int(2)]);
+        let value = physical::index_cell_value(&keys);
+
+        // Stable order: the first index's remove+put precede the second's; the unique
+        // index's put is a UniquePut.
+        assert_eq!(ops.len(), 4);
+        assert!(matches!(&ops[0], IndexOp::Remove(k) if *k == nonunique_old));
+        assert!(matches!(&ops[1], IndexOp::Put(k, v) if *k == nonunique_new && *v == value));
+        assert!(matches!(&ops[2], IndexOp::Remove(k) if *k == unique_old));
+        assert!(matches!(&ops[3], IndexOp::UniquePut(k, v) if *k == unique_new && *v == value));
+    }
+
+    /// A row exists only when every projected field is present: an absent projected field
+    /// contributes no row, so a create with that field absent emits nothing for its index.
+    #[test]
+    fn an_absent_projected_field_contributes_no_row() {
+        let planner = Planner::new();
+        let indexes = vec![IndexSchema {
+            id: [0xA0; 16],
+            unique: false,
+            projection: vec![IndexComponent::Field(0), IndexComponent::Key(0)],
+        }];
+        let keys = [KeyScalar::Int(7)];
+        // Create (old all-absent) with the projected field absent: no row.
+        let ops = planner
+            .index_writes("counters", &indexes, &keys, &[None], &[None])
+            .expect("in range");
+        assert!(ops.is_empty());
     }
 }
