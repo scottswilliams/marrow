@@ -844,8 +844,8 @@ fn assemble_oracle_project(scratch: &ScratchDir, fixture: &Fixture) -> PathBuf {
     std::fs::remove_file(project.join("src").join(fixture.checks_file))
         .expect("fixture carries its beta checks module");
     let module_file = format!("{}.mw", fixture.module);
-    let layout_twin =
-        std::fs::read_to_string(source.join("oracle").join(&module_file)).unwrap_or_else(|error| {
+    let layout_twin = std::fs::read_to_string(source.join("oracle").join(&module_file))
+        .unwrap_or_else(|error| {
             panic!("fixture carries its layout module twin at oracle/{module_file}: {error}")
         });
     std::fs::write(project.join("src").join(&module_file), layout_twin)
