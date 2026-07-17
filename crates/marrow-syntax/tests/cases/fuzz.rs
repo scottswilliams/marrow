@@ -132,7 +132,7 @@ fn deep_parens(depth: usize) -> String {
 fn deep_enum_members(depth: usize) -> String {
     let mut source = String::from("module app\n\nenum E {\n");
     for level in 0..depth {
-        source.push_str(&"    ".repeat(1));
+        source.push_str("    ");
         source.push_str(&format!("m{level}\n"));
     }
     source.push_str("}\n");
