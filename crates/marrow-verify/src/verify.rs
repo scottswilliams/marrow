@@ -1791,6 +1791,13 @@ fn decode_indexes(
             };
             components.push(component);
         }
+        // Re-enforce projection well-formedness the compiler owns: a reference-valid but
+        // malformed projection (an empty projection, a repeated component, or a
+        // non-unique index whose identity suffix is missing, misordered, or preceded by a
+        // key) must never reach the sealed index model the runtime trusts to order rows.
+        if let Err(detail) = validate_index_projection(unique, &components, keys) {
+            return Err(reject(VerifyPhase::Table, detail));
+        }
         indexes.push(DecodedIndex {
             id,
             unique,
@@ -1798,6 +1805,57 @@ fn decode_indexes(
         });
     }
     Ok(indexes)
+}
+
+/// Re-check one decoded index's projection against the closed well-formedness rules the
+/// compiler owns, so a hostile image cannot smuggle a malformed projection past the
+/// verifier. Every component id is already re-resolved to a real scalar field or identity
+/// key of the root (the orderable-key predicate); this owns the ordering and cardinality
+/// rules: the projection is non-empty, no component repeats, and a non-unique index ends
+/// with exactly the identity keys in declaration order — the row-distinguishing suffix. A
+/// unique index carries no suffix obligation. Returns a static detail describing the first
+/// violation.
+///
+/// The no-leading-key rule (a non-unique index carries no identity key before its suffix)
+/// needs no separate branch: distinctness forbids any component from repeating, and the
+/// suffix must already hold every identity key, so a leading identity key would duplicate
+/// a suffix key and is rejected by the distinctness check.
+fn validate_index_projection(
+    unique: bool,
+    components: &[DurableIndexComponent],
+    keys: &[(Scalar, LedgerIdBytes)],
+) -> Result<(), &'static str> {
+    if components.is_empty() {
+        return Err("durable index has an empty projection");
+    }
+    for (position, component) in components.iter().enumerate() {
+        if components[..position]
+            .iter()
+            .any(|earlier| earlier.id() == component.id())
+        {
+            return Err("durable index repeats a projection component");
+        }
+    }
+    if !unique {
+        // The trailing `keys.len()` components must be exactly the identity keys in
+        // declaration order.
+        if components.len() < keys.len() {
+            return Err("non-unique durable index does not end with the identity suffix");
+        }
+        let suffix_start = components.len() - keys.len();
+        for (offset, (_, key_id)) in keys.iter().enumerate() {
+            match components[suffix_start + offset] {
+                DurableIndexComponent::Key(id) if id == *key_id => {}
+                _ => {
+                    return Err(
+                        "non-unique durable index does not end with the identity keys in \
+                         declaration order",
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Decode a durable field's stored value shape: `u8(value_tag) ‖ body`. A scalar is

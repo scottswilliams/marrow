@@ -1201,10 +1201,27 @@ fn index_path(index_id: [u8; 16]) -> SemanticPath {
 }
 
 /// A well-formed indexed tracer graph: the counters root plus a nonunique
-/// `byLabel(label, k)` and a unique `byValue(value)`. `component` overrides the first
-/// index's projection, so a hostile test can point a component at a leaf the root does
-/// not carry.
+/// `byLabel(label, k)` and a unique `byValue(value)`. `by_label_components` overrides the
+/// first index's projection, so a hostile test can point a component at a leaf the root
+/// does not carry; the unique `byValue` stays well formed.
 fn indexed_draft(by_label_components: Vec<DurableIndexComponent>) -> ImageDraft {
+    indexed_draft_full(by_label_components, by_value_projection())
+}
+
+/// The well-formed unique `byValue(value)` projection: the single `value` scalar field,
+/// which a unique index may carry without the identity suffix.
+fn by_value_projection() -> Vec<DurableIndexComponent> {
+    vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+        VALUE_FIELD_ID,
+    ))]
+}
+
+/// The indexed tracer graph with both index projections overridable, so a hostile test
+/// can malform either the nonunique `byLabel` or the unique `byValue` projection.
+fn indexed_draft_full(
+    by_label_components: Vec<DurableIndexComponent>,
+    by_value_components: Vec<DurableIndexComponent>,
+) -> ImageDraft {
     let mut draft = ImageDraft::new();
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
@@ -1246,9 +1263,7 @@ fn indexed_draft(by_label_components: Vec<DurableIndexComponent>) -> ImageDraft 
                 DurableIndexShape {
                     id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
                     unique: true,
-                    components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-                        VALUE_FIELD_ID,
-                    ))],
+                    components: by_value_components,
                 },
             ],
         },
@@ -1298,6 +1313,64 @@ fn an_index_component_naming_no_leaf_of_its_root_rejects() {
         code_of(&indexed_draft(forged).encode().unwrap().bytes),
         "image.table",
     );
+}
+
+#[test]
+fn a_nonunique_index_missing_its_identity_suffix_rejects() {
+    // A non-unique index distinguishes rows by ending with the complete identity suffix
+    // in declaration order. A forged `byLabel` projection that drops the trailing
+    // identity key resolves every component to a real leaf, yet its ordering is
+    // malformed — a hostile image the runtime must never trust to disambiguate rows.
+    // The verifier re-enforces the suffix rule the compiler owns, so the image rejects.
+    let no_suffix = vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+        LABEL_FIELD_ID,
+    ))];
+    assert_eq!(
+        code_of(&indexed_draft(no_suffix).encode().unwrap().bytes),
+        "image.table",
+    );
+}
+
+#[test]
+fn a_nonunique_index_with_a_leading_identity_key_rejects() {
+    // A non-unique index carries no identity key before its trailing suffix. Because the
+    // suffix must already hold every identity key, a leading identity key necessarily
+    // duplicates a suffix key, so the verifier's distinctness rule refuses this forged
+    // `byLabel` projection — the no-leading-key rule is enforced by distinctness + suffix.
+    let leading_key = vec![
+        DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+        DurableIndexComponent::Field(LedgerIdBytes::from_bytes(LABEL_FIELD_ID)),
+        DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+    ];
+    assert_eq!(
+        code_of(&indexed_draft(leading_key).encode().unwrap().bytes),
+        "image.table",
+    );
+}
+
+#[test]
+fn a_durable_index_repeating_a_component_rejects() {
+    // Each projection component appears at most once. A forged `byLabel` projection that
+    // repeats the `label` field keeps a valid trailing identity suffix, so only the
+    // distinctness rule is violated — which the verifier re-enforces at decode.
+    let repeated = vec![
+        DurableIndexComponent::Field(LedgerIdBytes::from_bytes(LABEL_FIELD_ID)),
+        DurableIndexComponent::Field(LedgerIdBytes::from_bytes(LABEL_FIELD_ID)),
+        DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+    ];
+    assert_eq!(
+        code_of(&indexed_draft(repeated).encode().unwrap().bytes),
+        "image.table",
+    );
+}
+
+#[test]
+fn a_unique_index_with_an_empty_projection_rejects() {
+    // A unique index may omit the identity suffix, but it must still project at least one
+    // leaf: an empty projection has no key to look up and is meaningless. A forged image
+    // that carries one is refused at decode.
+    let draft = indexed_draft_full(by_label_projection(), Vec::new());
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
 /// A `Counter` root whose `owner` field is a widened dense struct, with a unique index
