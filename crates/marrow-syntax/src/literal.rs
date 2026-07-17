@@ -94,19 +94,31 @@ pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> 
             decoded.push(ch);
             continue;
         }
-        let bad = StringLiteralError::BadEscape { offset };
-        let (_, escaped) = chars.next().ok_or(bad)?;
-        decoded.push(match escaped {
-            '\\' => '\\',
-            '"' => '"',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'u' => decode_unicode_escape(&mut chars, offset)?,
-            _ => return Err(bad),
-        });
+        decoded.push(decode_backslash_escape(&mut chars, offset)?);
     }
     Ok(decoded)
+}
+
+/// Decode one backslash escape, `chars` positioned just past the backslash at
+/// byte `offset`. Consumes the escaped character (and, for `\u{...}`, through its
+/// closing brace). This is the single per-escape classifier shared by plain
+/// string text and interpolation text; a bad or unterminated escape is a
+/// `BadEscape` at `offset`.
+fn decode_backslash_escape(
+    chars: &mut std::str::CharIndices,
+    offset: usize,
+) -> Result<char, StringLiteralError> {
+    let bad = StringLiteralError::BadEscape { offset };
+    let (_, escaped) = chars.next().ok_or(bad)?;
+    Ok(match escaped {
+        '\\' => '\\',
+        '"' => '"',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        'u' => decode_unicode_escape(chars, offset)?,
+        _ => return Err(bad),
+    })
 }
 
 /// Decode one literal text segment of an interpolation string. The doubled-brace
@@ -128,17 +140,7 @@ pub fn decode_interpolation_text(inner: &str) -> Result<String, StringLiteralErr
             decoded.push(ch);
             continue;
         }
-        let bad = StringLiteralError::BadEscape { offset };
-        let (_, escaped) = chars.next().ok_or(bad)?;
-        decoded.push(match escaped {
-            '\\' => '\\',
-            '"' => '"',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'u' => decode_unicode_escape(&mut chars, offset)?,
-            _ => return Err(bad),
-        });
+        decoded.push(decode_backslash_escape(&mut chars, offset)?);
     }
     Ok(decoded)
 }

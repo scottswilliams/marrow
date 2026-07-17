@@ -4012,9 +4012,9 @@ fn apply(
                 }
                 _ => {}
             }
-            frame
-                .stack
-                .push(VType::from_image(*ty).expect("vacant-load operand is optional"));
+            frame.stack.push(
+                VType::from_image(*ty).expect("vacant-load operand is a value type, not unit"),
+            );
             return Ok(Control::Fallthrough);
         }
         SealedInstr::BranchPresent(target) => {
