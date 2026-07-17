@@ -1,6 +1,6 @@
 //! The durable store handle and its read/transaction sessions (design §G).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1496,26 +1496,48 @@ fn op_read_entry<V: ReadView>(
 /// marker/payload mismatch ([`KernelFault::Corruption`]) — while an absent sparse leaf
 /// reads vacant. The shared owner of top-level-field and group-leaf materialization, so
 /// both decode and enforce required-completeness identically.
+///
+/// Engine work is proportional to the *present* leaf count, not the declared field
+/// width: a structural-tag-bounded range scan over the node's own contiguous field-leaf
+/// cells ([`physical::field_leaf_range`]) visits only present leaves (`O(populated + 1)`
+/// reads), where a per-declared-field probe would read a vacant cell per absent field. A
+/// declared-field-to-position map resolves each scanned leaf in constant time and carries
+/// the required-completeness check; building it touches the declared fields but performs
+/// no engine work.
 fn read_record_leaves<V: ReadView>(
     cells: &V,
     stem: &[u8],
     fields: &[FieldSchema],
 ) -> Result<Vec<Option<ValueDomain>>, KernelFault> {
-    let mut values = Vec::with_capacity(fields.len());
-    for field in fields {
-        let leaf = physical::stem_field_leaf(stem, &field.name);
-        match read_raw(cells, &leaf)? {
-            None => {
-                if field.required {
-                    return Err(KernelFault::Corruption);
-                }
-                values.push(None);
-            }
-            Some(bytes) => {
-                values.push(Some(
-                    decode_domain(&bytes, &field.shape).ok_or(KernelFault::Corruption)?,
-                ));
-            }
+    let mut position: HashMap<Vec<u8>, usize> = HashMap::with_capacity(fields.len());
+    for (index, field) in fields.iter().enumerate() {
+        position.insert(physical::stem_field_leaf(stem, &field.name), index);
+    }
+    let mut values: Vec<Option<ValueDomain>> = (0..fields.len()).map(|_| None).collect();
+
+    let range = physical::field_leaf_range(stem);
+    let mut cursor = range.clone();
+    loop {
+        let page = cells.scan_after(&range, &cursor).map_err(KernelFault::Engine)?;
+        let Some(last_key) = page.last().map(|(key, _)| key.clone()) else {
+            break;
+        };
+        for (key, bytes) in &page {
+            // A present own-field leaf under this node that resolves to no declared
+            // field is a forged or orphaned cell: fail closed as corruption rather than
+            // silently dropping it.
+            let index = *position.get(key).ok_or(KernelFault::Corruption)?;
+            values[index] =
+                Some(decode_domain(bytes, &fields[index].shape).ok_or(KernelFault::Corruption)?);
+        }
+        cursor = last_key;
+    }
+
+    // A present container missing a required field leaf is the same marker/payload
+    // mismatch a missing required top-level field is.
+    for (index, field) in fields.iter().enumerate() {
+        if field.required && values[index].is_none() {
+            return Err(KernelFault::Corruption);
         }
     }
     Ok(values)

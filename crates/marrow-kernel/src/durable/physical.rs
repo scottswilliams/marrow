@@ -132,6 +132,19 @@ pub(super) fn stem_field_leaf(stem: &[u8], field: &str) -> Vec<u8> {
     out
 }
 
+/// The byte prefix shared by every own field leaf of the node whose marker `stem` is
+/// given: the stem and the field tag. A `scan_after` bounded by this prefix yields
+/// exactly the node's own field-leaf cells (`stem 0x10 …`) in field-name order and
+/// stops at the group tag (`0x28`), the branch tag (`0x30`), or the next node — so a
+/// whole-node read visits only *present* field leaves, never a cell per declared
+/// field. The single owner of the own-field-leaf range bound, paired with
+/// [`stem_field_leaf`], which extends it with one escaped field name.
+pub(super) fn field_leaf_range(stem: &[u8]) -> Vec<u8> {
+    let mut out = stem.to_vec();
+    out.push(FIELD_TAG);
+    out
+}
+
 /// The iteration/subtree cursor of the entry whose marker `stem` is given: the stem
 /// with its trailing marker terminator replaced by the cursor sentinel. It sorts
 /// after every cell the entry owns — its field leaves and its whole branch subtree —
