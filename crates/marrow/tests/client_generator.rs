@@ -275,6 +275,7 @@ fn reconstruct_interface_id() -> String {
                     RetShape::Collection { idx, optional } => {
                         ImageType::Collection { idx, optional }
                     }
+                    RetShape::Identity { root, optional } => ImageType::Identity { root, optional },
                 },
                 demand_id: export.demand_id(),
             }

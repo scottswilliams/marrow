@@ -8,14 +8,29 @@ use crate::sealed::RetShape;
 /// values, so a `T?` can never reach a bare-`T` consumer on any path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VType {
-    Scalar { scalar: Scalar, optional: bool },
-    Record { idx: u16, optional: bool },
-    Enum { idx: u16, optional: bool },
-    Collection { idx: u16, optional: bool },
+    Scalar {
+        scalar: Scalar,
+        optional: bool,
+    },
+    Record {
+        idx: u16,
+        optional: bool,
+    },
+    Enum {
+        idx: u16,
+        optional: bool,
+    },
+    Collection {
+        idx: u16,
+        optional: bool,
+    },
     /// An entry identity `Id(^root)`, by ROOTS-table index. Tracked distinctly so an
     /// identity of one root never satisfies a consumer expecting another root or a
     /// key scalar.
-    Identity { root: u16, optional: bool },
+    Identity {
+        root: u16,
+        optional: bool,
+    },
 }
 
 impl VType {

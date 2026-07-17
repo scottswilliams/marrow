@@ -144,14 +144,8 @@ pub fn value_equality(a: &ValueDomain, b: &ValueDomain) -> bool {
             },
         ) => ia == ib && entries_equal(ea, eb),
         (
-            ValueDomain::Identity {
-                root: ra,
-                keys: ka,
-            },
-            ValueDomain::Identity {
-                root: rb,
-                keys: kb,
-            },
+            ValueDomain::Identity { root: ra, keys: ka },
+            ValueDomain::Identity { root: rb, keys: kb },
         ) => ra == rb && ka == kb,
         _ => false,
     }
@@ -237,7 +231,10 @@ mod tests {
             ty: 0,
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(5)))],
         };
-        assert!(!value_equality(&id(0, vec![KeyScalar::Int(5)]), &record_like));
+        assert!(!value_equality(
+            &id(0, vec![KeyScalar::Int(5)]),
+            &record_like
+        ));
         assert!(!value_equality(
             &id(0, vec![KeyScalar::Int(5)]),
             &ValueDomain::Scalar(RuntimeScalar::Int(5)),

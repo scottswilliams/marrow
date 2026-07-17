@@ -142,13 +142,26 @@ fn construct_dereference_reads_the_named_entry() {
     let image = compile_verify(SOURCE, IDS);
     let mut store = attach(&image);
 
-    run(&image, &mut store, "shelve", vec![Value::Int(1), Value::Text("dune".into())]);
-    run(&image, &mut store, "shelve", vec![Value::Int(2), Value::Text("hyperion".into())]);
+    run(
+        &image,
+        &mut store,
+        "shelve",
+        vec![Value::Int(1), Value::Text("dune".into())],
+    );
+    run(
+        &image,
+        &mut store,
+        "shelve",
+        vec![Value::Int(2), Value::Text("hyperion".into())],
+    );
 
     // `make` returns an `Id(^books)` value; `titleVia` dereferences it.
     let id = run(&image, &mut store, "make", vec![Value::Int(2)])
         .expect("make returns an identity value");
-    assert_eq!(run(&image, &mut store, "titleVia", vec![id]), some_text("hyperion"));
+    assert_eq!(
+        run(&image, &mut store, "titleVia", vec![id]),
+        some_text("hyperion")
+    );
 }
 
 #[test]
@@ -156,7 +169,10 @@ fn dereference_of_absent_entry_is_absent() {
     let image = compile_verify(SOURCE, IDS);
     let mut store = attach(&image);
     let id = run(&image, &mut store, "make", vec![Value::Int(99)]).expect("identity value");
-    assert_eq!(run(&image, &mut store, "titleVia", vec![id]), Some(Value::Optional(None)));
+    assert_eq!(
+        run(&image, &mut store, "titleVia", vec![id]),
+        Some(Value::Optional(None))
+    );
 }
 
 #[test]
@@ -184,7 +200,8 @@ fn identity_equality_is_key_tuple_equality() {
 
 // --- Adversarial rejections: the identity value's boundaries. ---
 
-const PREAMBLE: &str = "resource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book\n\n";
+const PREAMBLE: &str =
+    "resource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book\n\n";
 
 fn program(body: &str) -> String {
     format!("{PREAMBLE}{body}")
@@ -198,24 +215,27 @@ fn an_identity_type_over_an_undeclared_root_is_unsupported() {
 
 #[test]
 fn an_identity_constructor_over_an_undeclared_root_is_rejected() {
-    let diagnostics =
-        compile_errors(&program("pub fn f(): Id(^books) {\n    return Id(^nope, 1)\n}\n"));
+    let diagnostics = compile_errors(&program(
+        "pub fn f(): Id(^books) {\n    return Id(^nope, 1)\n}\n",
+    ));
     assert!(has_code(&diagnostics, "check.type"));
 }
 
 #[test]
 fn an_identity_constructor_with_the_wrong_key_arity_is_rejected() {
     // The root has one key column; supplying none is a key-arity error.
-    let diagnostics =
-        compile_errors(&program("pub fn f(): Id(^books) {\n    return Id(^books)\n}\n"));
+    let diagnostics = compile_errors(&program(
+        "pub fn f(): Id(^books) {\n    return Id(^books)\n}\n",
+    ));
     assert!(has_code(&diagnostics, "check.type"));
 }
 
 #[test]
 fn an_identity_constructor_with_the_wrong_key_type_is_rejected() {
     // The single key column is `int`; a string operand does not coerce.
-    let diagnostics =
-        compile_errors(&program("pub fn f(): Id(^books) {\n    return Id(^books, \"x\")\n}\n"));
+    let diagnostics = compile_errors(&program(
+        "pub fn f(): Id(^books) {\n    return Id(^books, \"x\")\n}\n",
+    ));
     assert!(has_code(&diagnostics, "check.type"));
 }
 

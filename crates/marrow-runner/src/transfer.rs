@@ -32,8 +32,9 @@ pub(crate) fn decode_arg(image: &VerifiedImage, ty: &ImageType, json: &Json) -> 
         ImageType::Enum { idx, optional } => {
             wrap_optional(*optional, json, |j| decode_enum(image, *idx, j))
         }
-        // Excluded from the served interface; unreachable for a launched runner.
-        ImageType::Collection { .. } => None,
+        // Excluded from the served interface; unreachable for a launched runner. An
+        // entry identity is excluded for the same reason.
+        ImageType::Collection { .. } | ImageType::Identity { .. } => None,
     }
 }
 
@@ -167,8 +168,9 @@ pub(crate) fn encode_value(image: &VerifiedImage, value: &Value) -> Option<Json>
                 ("payload".to_string(), Json::Array(items)),
             ])
         }
-        // Outside the G00a transfer graph; a served export never returns one.
-        Value::List(..) | Value::Map(..) => return None,
+        // Outside the G00a transfer graph; a served export never returns one. An
+        // entry identity is excluded from the wire interface for the same reason.
+        Value::List(..) | Value::Map(..) | Value::Id(..) => return None,
     })
 }
 

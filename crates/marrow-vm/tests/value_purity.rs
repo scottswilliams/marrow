@@ -62,7 +62,10 @@ fn every_value_variant_carries_only_runtime_data() {
             | Value::Optional(_)
             | Value::Enum(_, _, _)
             | Value::List(_, _, _)
-            | Value::Map(_, _, _) => {}
+            | Value::Map(_, _, _)
+            // An entry identity carries only a root index and a key tuple of scalars —
+            // no engine, store, session, binding, ceiling, or path handle.
+            | Value::Id(_, _) => {}
         }
     }
     assert_pure_data(&Value::Int(0));

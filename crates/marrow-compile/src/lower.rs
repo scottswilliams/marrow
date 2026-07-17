@@ -4063,8 +4063,8 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
     ) -> Option<LTy> {
         let bool_ty = LTy::bare_scalar(ScalarType::Bool);
-        let same_root =
-            left_ty.bare_identity().is_some() && left_ty.bare_identity() == right_ty.bare_identity();
+        let same_root = left_ty.bare_identity().is_some()
+            && left_ty.bare_identity() == right_ty.bare_identity();
         match op {
             BinaryOp::Equal if same_root => {
                 self.push(Instr::EqId, span);
@@ -6423,9 +6423,7 @@ impl<'a> FnLowerer<'a> {
                 _ => None,
             },
             Expression::Call { callee, .. } => match &**callee {
-                Expression::Name { segments, .. }
-                    if matches!(segments.as_slice(), [n] if n == "Id") =>
-                {
+                Expression::Name { segments, .. } if matches!(segments.as_slice(), [n] if n == "Id") => {
                     Some(0)
                 }
                 _ => None,
