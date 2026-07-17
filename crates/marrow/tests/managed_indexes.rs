@@ -11,8 +11,8 @@
 //! (runtime maintenance and traversal land at E05).
 
 use marrow_verify::{
-    DurableIndexComponent, LedgerIdBytes, SealedSite, SemanticNodeKind, SemanticStepKind,
-    SemanticTarget,
+    DurableIndexComponent, LedgerIdBytes, SealedIndexComponent, SealedSite, SemanticNodeKind,
+    SemanticStepKind, SemanticTarget,
 };
 
 fn rep(byte: u8) -> LedgerIdBytes {
@@ -114,6 +114,27 @@ fn a_keyed_root_with_a_nonunique_and_a_unique_index_verifies_with_complete_ident
     assert_eq!(
         by_isbn.components(),
         &[DurableIndexComponent::Field(rep(0x11))], // isbn (identity omitted)
+    );
+}
+
+#[test]
+fn the_verifier_resolves_each_index_projection_to_record_and_key_positions() {
+    // The path kernel maintains an index by position, not ledger id. The verifier
+    // resolves each ledger-id projection component to a record-field or key-column
+    // position against the same decoded root, in projection order. Record `Book` is
+    // {title:0, shelf:1, isbn:2}; the key tuple is [id] at column 0.
+    let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
+    let indexes = image.indexes();
+
+    // byShelf projects the `shelf` field then the identity key `id`.
+    assert_eq!(
+        indexes[0].projection(),
+        &[SealedIndexComponent::Field(1), SealedIndexComponent::Key(0)],
+    );
+    // byIsbn projects only the `isbn` field (a unique index omits the identity suffix).
+    assert_eq!(
+        indexes[1].projection(),
+        &[SealedIndexComponent::Field(2)],
     );
 }
 

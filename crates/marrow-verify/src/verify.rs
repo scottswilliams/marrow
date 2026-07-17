@@ -45,7 +45,8 @@ use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
     RetShape, SealedBranch, SealedCollectionType, SealedConst, SealedEnumType, SealedExport,
-    SealedField, SealedFunction, SealedIndex, SealedInstr, SealedRecordType, SealedRoot,
+    SealedField, SealedFunction, SealedIndex, SealedIndexComponent, SealedInstr, SealedRecordType,
+    SealedRoot,
     SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
@@ -1420,6 +1421,39 @@ fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> 
         .map(|index| index as u16)
 }
 
+/// Resolve an index's ledger-id projection to record/key positions the path kernel
+/// maintains, against the same decoded root the components were re-resolved against in
+/// `decode_indexes`. A field component names its position in the root's materialized
+/// record (tied to the durable member order); a key component names its column in the
+/// root's key tuple. Every component already resolved to a real leaf during decode, so a
+/// miss here is an internal inconsistency the verifier refuses rather than mis-addressing
+/// a maintained index cell.
+fn resolve_index_projection(
+    root: &DecodedRoot,
+    components: &[DurableIndexComponent],
+) -> Result<Vec<SealedIndexComponent>, VerifyRejection> {
+    components
+        .iter()
+        .map(|component| match component {
+            DurableIndexComponent::Field(id) => top_level_field_index(&root.members, *id)
+                .map(SealedIndexComponent::Field)
+                .ok_or(reject(
+                    VerifyPhase::Table,
+                    "durable index field component resolves to no record position",
+                )),
+            DurableIndexComponent::Key(id) => root
+                .keys
+                .iter()
+                .position(|(_, key_id)| key_id == id)
+                .map(|column| SealedIndexComponent::Key(column as u16))
+                .ok_or(reject(
+                    VerifyPhase::Table,
+                    "durable index key component resolves to no key column",
+                )),
+        })
+        .collect()
+}
+
 /// Walk a chain of branch placement steps through a member tree, accumulating the
 /// per-level branch index at each hop and descending into that branch's own members. The
 /// returned path indexes the recursive sealed branch tree level by level, and the returned
@@ -2592,20 +2626,22 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         .collect();
     // The managed indexes seal from the decoded roots, each carrying the index of the
     // root it belongs to. Their projections were re-resolved against the decoded graph
-    // in `decode_indexes`, so the sealed set trusts no image-side incidence summary.
-    let indexes: Vec<SealedIndex> = decoded
-        .roots
-        .iter()
-        .enumerate()
-        .flat_map(|(root_index, root)| {
-            root.indexes.iter().map(move |index| SealedIndex {
+    // in `decode_indexes`, so the sealed set trusts no image-side incidence summary. Each
+    // ledger-id projection component also resolves to a record/key position here — the
+    // form the path kernel maintains — against the same decoded root.
+    let mut indexes: Vec<SealedIndex> = Vec::new();
+    for (root_index, root) in decoded.roots.iter().enumerate() {
+        for index in &root.indexes {
+            let projection = resolve_index_projection(root, &index.components)?;
+            indexes.push(SealedIndex {
                 id: index.id,
                 root: root_index as u16,
                 unique: index.unique,
                 components: index.components.clone(),
-            })
-        })
-        .collect();
+                projection,
+            });
+        }
+    }
     let sites: Vec<SealedSite> = decoded.sites.clone();
     // Function signatures feed the per-function `Call` type check (phase 3).
     let signatures: Vec<FnSig> = decoded

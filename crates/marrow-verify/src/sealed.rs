@@ -396,18 +396,36 @@ impl SealedRoot {
     }
 }
 
+/// One resolved component of a managed index's ordered projection: an identity `key`
+/// column or a top-level `field` of the root, each named by its position rather than its
+/// ledger id. The position is what the path kernel needs to build a physical index cell
+/// key — a `Field` indexes the root's materialized record (matching
+/// [`SealedRecordType::fields`] order), and a `Key` indexes the root's key tuple. The
+/// verifier resolves it from the index's ledger-id [`DurableIndexComponent`] against the
+/// decoded root at seal, so the kernel never re-resolves a ledger id. The
+/// identity-projection view of the same component is [`SealedIndex::components`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealedIndexComponent {
+    /// An identity key column, by its index into the root's key tuple.
+    Key(u16),
+    /// A top-level field, by its index into the root's materialized record.
+    Field(u16),
+}
+
 /// A verified managed index of a durable root: its stable `Index` ledger id, the
-/// index of the root it belongs to, its `unique` flag, and its ordered projection of
-/// leaf references (each a top-level `field` or identity `key` of the same root). The
-/// verifier reconstructs it by re-resolving every projected leaf against the decoded
-/// root, so a projection over a non-existent leaf never seals. An index has no
-/// application write opcode; maintenance is compiler-owned and runs at E05.
+/// index of the root it belongs to, its `unique` flag, its ordered projection of
+/// leaf references (each a top-level `field` or identity `key` of the same root), and the
+/// same projection resolved to record/key positions the kernel maintains. The verifier
+/// reconstructs it by re-resolving every projected leaf against the decoded root, so a
+/// projection over a non-existent leaf never seals. An index has no application write
+/// opcode; maintenance is compiler-owned and runs at E05.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedIndex {
     pub(crate) id: LedgerIdBytes,
     pub(crate) root: u16,
     pub(crate) unique: bool,
     pub(crate) components: Vec<DurableIndexComponent>,
+    pub(crate) projection: Vec<SealedIndexComponent>,
 }
 
 impl SealedIndex {
@@ -428,10 +446,17 @@ impl SealedIndex {
         self.unique
     }
 
-    /// The ordered projection: each component references a top-level `field` or
-    /// identity `key` leaf of the root, by ledger id.
+    /// The ordered projection as leaf identity references (each a top-level `field` or
+    /// identity `key` of the root, by ledger id). This is the identity view; the path
+    /// kernel consumes [`Self::projection`] instead.
     pub fn components(&self) -> &[DurableIndexComponent] {
         &self.components
+    }
+
+    /// The ordered projection resolved to record/key positions — the form the path kernel
+    /// maintains, in the same order as [`Self::components`].
+    pub fn projection(&self) -> &[SealedIndexComponent] {
+        &self.projection
     }
 }
 
