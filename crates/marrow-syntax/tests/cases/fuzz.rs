@@ -25,45 +25,45 @@ use crate::common::oracle::{
 fn tracer_subset_programs() -> Vec<String> {
     [
         "module app\n",
-        "module shelf::books\nuse std::clock\nuse shelf::books\n",
+        "module shelf::books\n\nuse std::clock\nuse shelf::books\n",
         "module app\n\nconst Max: int = 5\n",
-        "module app\n\nalias Count = int\nalias MaybeCount = Count?\n\nfn f(n: Count): MaybeCount\n    return n\n",
-        "module app\n\ntype Age: int in 0..=150 supports add, subtract, step, scale\ntype Percent: int in 0..101\n\nfn f(a: Age): Age?\n    return Age.checked(a - Age(0))\n",
+        "module app\n\nalias Count = int\n\nalias MaybeCount = Count?\n\nfn f(n: Count): MaybeCount {\n    return n\n}\n",
+        "module app\n\ntype Age: int in 0..=150 supports add, subtract, step, scale\n\ntype Percent: int in 0..101\n\nfn f(a: Age): Age? {\n    return Age.checked(a - Age(0))\n}\n",
         "module app\n\nconst Greeting = $\"hello {name}: {{literal}}\"\n",
-        "module app\n\nresource Book\n    required title: string\n    tags(pos: int): string\n    notes(noteId: string)\n        text: string\nstore ^books(id: int): Book\n    index byShelf(shelf, id)\n    index uniq(id) unique\n",
-        "module app\n\nstruct Point\n    x: int\n    y: int\n\nfn origin(): int\n    const p = Point(x: 0, y: 0)\n    return p.x\n",
-        "module app\n\nenum Status\n    active\n    archived\n",
-        "module app\n\nenum Cat\n    category feline\n        tiger\n        lion\n",
-        "module app\n\nenum Shape\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n",
-        "module app\n\npub fn add(a: int, b: int): int\n    return a + b\n",
-        "module app\n\nfn classify(n: int)\n    if n < 0\n        return\n    else if n > 0\n        return\n    else\n        return\n",
-        "module app\n\nfn each()\n    for id in keys(^books)\n        delete ^books(id)\n",
-        "module app\n\nfn clear()\n    var b = Box(id: 1, note: \"x\")\n    b.note = \"y\"\n    unset b.note\n",
-        "module app\n\nfn ranged()\n    for i in 10..=1 by -2\n        print($\"{i}\")\n",
-        "module app\n\nfn scan()\n    for k in ^books at most 5\n        print($\"{k}\")\n    on more\n        print(\"more\")\n",
-        "module app\n\nfn scanBranch(lo: int)\n    for p in ^books(lo).notes at most 3 from lo\n        print($\"{p}\")\n    on more\n        print(\"more\")\n",
-        "module app\n\nfn loops()\n    while ready\n        break\n",
-        "module app\n\nfn label(s: Status)\n    match s\n        active\n            print(\"a\")\n        archived\n            print(\"b\")\n",
-        "module app\n\nfn area(s: Shape): int\n    match s\n        dot\n            return 0\n        circle(r)\n            return r\n        rect(w, h)\n            return w\n",
-        "module app\n\nfn commit(id: Id(^books))\n    transaction\n        ^books(id).title = title\n",
-        "module app\n\nfn edit(id: int)\n    transaction\n        place b = ^books(id)\n        b.title = \"x\"\n        b = Book(title: \"y\")\n        delete b\n",
-        "module app\n\nfn risky(): Result[int, string]\n    const x = try run()\n    return ok(x)\n",
-        "module app\n\nfn nested(o: Option[Option[int]]): int\n    match o\n        none\n            return 0\n        some(inner)\n            return depth(inner)\n",
-        "module app\n\nfn find(): Result[Option[int], string]\n    const x = try lookup()\n    return ok(some(x))\n",
-        "module app\n\nfn build(): List[int]\n    var xs: List[int] = List()\n    xs = append(xs, 1)\n    for x in xs\n        print($\"{x}\")\n    return xs\n",
-        "module app\n\nfn score(): Map[string, int]\n    var m: Map[string, List[int]] = Map()\n    m = insert(m, \"a\", List())\n    for k, v in m\n        print(k)\n    return get(m, \"a\")\n",
-        "module app\n\nfn amounts(): int?\n    return absent\n",
-        "module app\n\nfn identity[T](x: T): T\n    return x\n",
-        "module app\n\npub fn firstOf[T supports equality, U supports order](xs: List[T], k: U): T?\n    return first(xs)\n",
-        "module app\n\nstruct Pair[A, B]\n    first: A\n    second: B\n\nfn firstOf[A, B](p: Pair[A, B]): A\n    return p.first\n",
-        "module app\n\nenum Box[T]\n    empty\n    full(value: T)\n\npub enum Sorted[T supports order]\n    blank\n    span(lo: T, hi: T)\n",
-        "module app\n\nstruct Wrapper[T]\n    value: T\n\nfn wrap[T](x: T): Wrapper[T]\n    return Wrapper(value: x)\n",
-        "module app\n\nfn compound()\n    var total: int = 0\n    total += 1\n    total *= 2\n",
-        "module app\n\nfn strings()\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n",
-        "module app\n\nfn guard(a: int, b: int): int\n    const q: int = checked a / b\n        on out_of_range\n            return 0\n        on zero_divisor\n            return 0\n    return q\n",
-        "module app\n\nfn guardReturn(a: int, b: int): int\n    return checked a + b\n        on out_of_range\n            return 0\n",
-        "module app\n\ntest \"adds two numbers\"\n    const sum = 1 + 1\n    assert sum == 2\n",
-        "module app\n\ntest \"a plain assertion\"\n    assert true\n",
+        "module app\n\nresource Book {\n    required title: string\n    tags[pos: int]: string\n    notes[noteId: string] {\n        text: string\n    }\n}\n\nstore ^books[id: int]: Book {\n    index byShelf[shelf, id]\n    index uniq[id] unique\n}\n",
+        "module app\n\nstruct Point {\n    x: int\n    y: int\n}\n\nfn origin(): int {\n    const p = Point(x: 0, y: 0)\n    return p.x\n}\n",
+        "module app\n\nenum Status {\n    active\n    archived\n}\n",
+        "module app\n\nenum Cat {\n    category feline {\n        tiger\n        lion\n    }\n}\n",
+        "module app\n\nenum Shape {\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n}\n",
+        "module app\n\npub fn add(a: int, b: int): int {\n    return a + b\n}\n",
+        "module app\n\nfn classify(n: int) {\n    if n < 0 {\n        return\n    } else if n > 0 {\n        return\n    } else return\n}\n",
+        "module app\n\nfn each() {\n    for id in keys(^books) {\n        delete ^books[id]\n    }\n}\n",
+        "module app\n\nfn clear() {\n    var b = Box(id: 1, note: \"x\")\n    b.note = \"y\"\n    unset b.note\n}\n",
+        "module app\n\nfn ranged() {\n    for i in 10..=1 by -2 {\n        print($\"{i}\")\n    }\n}\n",
+        "module app\n\nfn scan() {\n    for k in ^books at most 5 {\n        print($\"{k}\")\n    } on more {\n        print(\"more\")\n    }\n}\n",
+        "module app\n\nfn scanBranch(lo: int) {\n    for p in ^books[lo].notes at most 3 from lo {\n        print($\"{p}\")\n    } on more {\n        print(\"more\")\n    }\n}\n",
+        "module app\n\nfn loops() {\n    while ready {\n        break\n    }\n}\n",
+        "module app\n\nfn label(s: Status) {\n    match s {\n        active => print(\"a\")\n        archived => print(\"b\")\n    }\n}\n",
+        "module app\n\nfn area(s: Shape): int {\n    match s {\n        dot => return 0\n        circle(r) => return r\n        rect(w, h) => return w\n    }\n}\n",
+        "module app\n\nfn commit(id: Id(^books)) {\n    transaction {\n        ^books[id].title = title\n    }\n}\n",
+        "module app\n\nfn edit(id: int) {\n    transaction {\n        place b = ^books[id]\n        b.title = \"x\"\n        b = Book(title: \"y\")\n        delete b\n    }\n}\n",
+        "module app\n\nfn risky(): Result<int, string> {\n    const x = try run()\n    return ok(x)\n}\n",
+        "module app\n\nfn nested(o: Option<Option<int>>): int {\n    match o {\n        none => return 0\n        some(inner) => return depth(inner)\n    }\n}\n",
+        "module app\n\nfn find(): Result<Option<int>, string> {\n    const x = try lookup()\n    return ok(some(x))\n}\n",
+        "module app\n\nfn build(): List<int> {\n    var xs: List<int> = List()\n    xs = append(xs, 1)\n    for x in xs {\n        print($\"{x}\")\n    }\n    return xs\n}\n",
+        "module app\n\nfn score(): Map<string, int> {\n    var m: Map<string, List<int>> = Map()\n    m = insert(m, \"a\", List())\n    for k, v in m {\n        print(k)\n    }\n    return get(m, \"a\")\n}\n",
+        "module app\n\nfn amounts(): int? {\n    return absent\n}\n",
+        "module app\n\nfn identity<T>(x: T): T {\n    return x\n}\n",
+        "module app\n\npub fn firstOf<T supports equality, U supports order>(xs: List<T>, k: U): T? {\n    return first(xs)\n}\n",
+        "module app\n\nstruct Pair<A, B> {\n    first: A\n    second: B\n}\n\nfn firstOf<A, B>(p: Pair<A, B>): A {\n    return p.first\n}\n",
+        "module app\n\nenum Box<T> {\n    empty\n    full(value: T)\n}\n\npub enum Sorted<T supports order> {\n    blank\n    span(lo: T, hi: T)\n}\n",
+        "module app\n\nstruct Wrapper<T> {\n    value: T\n}\n\nfn wrap<T>(x: T): Wrapper<T> {\n    return Wrapper(value: x)\n}\n",
+        "module app\n\nfn compound() {\n    var total: int = 0\n    total += 1\n    total *= 2\n}\n",
+        "module app\n\nfn strings() {\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n}\n",
+        "module app\n\nfn guard(a: int, b: int): int {\n    const q: int = checked a / b\n        on out_of_range {\n            return 0\n        } on zero_divisor return 0\n    return q\n}\n",
+        "module app\n\nfn guardReturn(a: int, b: int): int {\n    return checked a + b\n        on out_of_range return 0\n}\n",
+        "module app\n\ntest \"adds two numbers\" {\n    const sum = 1 + 1\n    assert sum == 2\n}\n",
+        "module app\n\ntest \"a plain assertion\" {\n    assert true\n}\n",
     ]
     .into_iter()
     .map(str::to_string)
@@ -85,19 +85,19 @@ fn pathological_inputs() -> Vec<String> {
         "const X = \"unterminated".to_string(),
         "const X = $\"a{unterminated".to_string(),
         "const X = $\"a{$\"b{$\"c{".to_string(),
-        "fn f()\n    return (((((((((1".to_string(),
-        "fn f()\n    return )))))))))\n".to_string(),
+        "fn f() {\n    return (((((((((1".to_string(),
+        "fn f() {\n    return )))))))))\n}\n".to_string(),
         "\\\\\\\\\\\n".to_string(),
-        "resource R\r\n    x: int\r\n".to_string(),
+        "resource R {\r\n    x: int\r\n}\r\n".to_string(),
         "const X = 999999999999999999999999999999.day\n".to_string(),
         "@#$%^&*~`|\n".to_string(),
         "module\nuse\nconst\nresource\nstore\nenum\nfn\n".to_string(),
         // A checked form with a malformed arm header and no body must recover.
-        "fn f(a: int)\n    const q = checked a + a\n        on nope\n".to_string(),
+        "fn f(a: int) {\n    const q = checked a + a\n        on nope\n}\n".to_string(),
     ];
     // Very long single line: a wide operand chain the expression parser bounds.
     inputs.push(format!("const X = {}\n", "1 + ".repeat(5_000)));
-    // Deep nesting past every limit — layout, expression, field access, members.
+    // Deep nesting past every limit — block braces, expression, field access, members.
     inputs.push(deep_ifs(OVER_DEEP));
     inputs.push(deep_parens(OVER_DEEP));
     inputs.push(deep_enum_members(OVER_DEEP));
@@ -106,49 +106,58 @@ fn pathological_inputs() -> Vec<String> {
 }
 
 fn deep_ifs(depth: usize) -> String {
-    let mut source = String::from("module app\n\npub fn main()\n");
+    let mut source = String::from("module app\n\npub fn main() {\n");
     for level in 0..depth {
         source.push_str(&"    ".repeat(level + 1));
-        source.push_str(&format!("if {level} < {}\n", level + 1));
+        source.push_str(&format!("if {level} < {} {{\n", level + 1));
     }
     source.push_str(&"    ".repeat(depth + 1));
     source.push_str("return\n");
+    for level in (0..depth).rev() {
+        source.push_str(&"    ".repeat(level + 1));
+        source.push_str("}\n");
+    }
+    source.push_str("}\n");
     source
 }
 
 fn deep_parens(depth: usize) -> String {
     format!(
-        "module app\n\npub fn main()\n    return {}1{}\n",
+        "module app\n\npub fn main() {{\n    return {}1{}\n}}\n",
         "(".repeat(depth),
         ")".repeat(depth)
     )
 }
 
 fn deep_enum_members(depth: usize) -> String {
-    let mut source = String::from("module app\n\nenum E\n");
+    let mut source = String::from("module app\n\nenum E {\n");
     for level in 0..depth {
-        source.push_str(&"    ".repeat(level + 1));
+        source.push_str(&"    ".repeat(1));
         source.push_str(&format!("m{level}\n"));
     }
+    source.push_str("}\n");
     source
 }
 
 fn deep_field_access(depth: usize) -> String {
     format!(
-        "module app\n\npub fn main()\n    return a{}\n",
+        "module app\n\npub fn main() {{\n    return a{}\n}}\n",
         ".f".repeat(depth)
     )
 }
 
 /// Minimized counterexamples whose contract is the lossless token tiling and the
-/// total invariants (not formatter faithfulness): a `;` inside a string-
-/// interpolation hole once lexed a comment token spanning to the physical line end,
-/// past the hole boundary, overlapping the interpolation-close tokens and breaking
-/// the tiling. A comment now stops at its lexical range end (the hole boundary).
-/// The hole comment is not carried through formatting (the documented
-/// interpolation limitation), so these assert only the total-invariant lens.
+/// total invariants (not formatter faithfulness). A comment leader inside a string-
+/// interpolation hole must stop at the hole boundary rather than run to the physical
+/// line end, past the hole, overlapping the interpolation-close tokens and breaking
+/// the tiling. `//` is the brace-surface comment leader (`;` is now ordinary
+/// punctuation), so both the `//`-in-hole forms and the bare-punctuation forms feed
+/// the total-invariant lens; the hole comment is not carried through formatting.
 fn tiling_regressions() -> Vec<String> {
     [
+        "const X = $\"a{g(1)//}b\"\n",
+        "const X = $\"{a//}\"\n",
+        "const X = $\"a{$\"b{//}\"}c\"\n",
         "const X = $\"a{g(1;)}b\"\n",
         "const X = $\"{a;}\"\n",
         "const X = $\"a{$\"b{;}\"}c\"\n",
@@ -162,30 +171,23 @@ fn tiling_regressions() -> Vec<String> {
 /// (idempotent, comment-preserving, structure-preserving) regressed and is now
 /// fixed. Each is asserted through the faithful lens so the fix stays pinned.
 fn formatter_faithful_regressions() -> Vec<String> {
+    // An empty-bodied compound statement or match arm left a dangling newline that
+    // the block-level blank accounting doubled, so a single source blank before the
+    // next statement rendered as two and, on the mixed shapes below, grew 1 -> 2
+    // across formats. Every body-bearing header now joins its body through one
+    // empty-body guard. (The former layout-column and `;`-comment regressions —
+    // an own-line comment misread as outdented, an empty body claiming a following
+    // sibling comment — were defect classes of indentation-as-structure and the `;`
+    // comment leader; braces make the block boundary explicit and comment ownership
+    // over braces is pinned by the `comment_ownership` suite, so those cases are
+    // structurally impossible rather than rewritten.)
     [
-        // An empty-bodied compound statement or match arm left a dangling newline
-        // that the block-level blank accounting doubled, so a single source blank
-        // before the next statement rendered as two and, on the mixed shape below,
-        // grew 1 -> 2 across formats. Every body-bearing header now joins its body
-        // through one empty-body guard.
-        "module app\n\nfn f()\n    match s\n        d\n\n    b\n",
-        "module app\n\nfn f()\n    if x\n\n    b\n",
-        "module app\n\nfn f()\n    while x\n\n    b\n",
-        "module app\n\nfn f()\n    for i in xs\n\n    b\n",
-        "module app\n\nfn f()\n    transaction\n\n    b\n",
-        "module app\n\nfn f(o: Option[int]): int\n    match o\n        some(v)\n            return v\n        none\n            return 0\n",
-        // An own-line comment sharing a non-canonical source indent with its sibling
-        // statements was misread as outdented and rendered at its source column
-        // while the statements canonicalized, so a reparse opened a spurious deeper
-        // block and dropped the following statement. Own-line block comments now
-        // render at the block's canonical indent.
-        "module app\n\nfn f()\n    match s\n        a\n         ; c\n         ab\n",
-        // An empty compound-statement body took the span of the next token, so the
-        // statement's span extended over a following sibling comment and mis-claimed
-        // it; formatting dropped that comment. An empty body now spans a zero-width
-        // point, so both sibling comments survive at body indent.
-        "module app\n\nfn f()\n    for i in xs\n    ; a\n            ; b\n",
-        "module app\n\nfn f()\n    if x\n    ; a\n            ; b\n",
+        "module app\n\nfn f() {\n    match s {\n        d => {}\n    }\n\n    b\n}\n",
+        "module app\n\nfn f() {\n    if x {}\n\n    b\n}\n",
+        "module app\n\nfn f() {\n    while x {}\n\n    b\n}\n",
+        "module app\n\nfn f() {\n    for i in xs {}\n\n    b\n}\n",
+        "module app\n\nfn f() {\n    transaction {}\n\n    b\n}\n",
+        "module app\n\nfn f(o: Option<int>): int {\n    match o {\n        some(v) => return v\n        none => return 0\n    }\n}\n",
     ]
     .into_iter()
     .map(str::to_string)
@@ -220,7 +222,6 @@ fn on_worker_stack(body: impl FnOnce() + Send + 'static) {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn deterministic_corpus_holds_the_oracle_invariants() {
     on_worker_stack(deterministic_corpus_body);
 }
@@ -277,7 +278,6 @@ fn deterministic_corpus_body() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn seeded_random_mutation_pass_holds_the_total_invariants() {
     on_worker_stack(seeded_random_mutation_body);
 }
