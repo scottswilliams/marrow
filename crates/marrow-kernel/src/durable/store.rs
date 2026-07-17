@@ -90,6 +90,20 @@ pub trait Durable {
         site: &AuthorizedSite,
         key: &[KeyScalar],
     ) -> Result<Option<Vec<KeyScalar>>, KernelFault>;
+    /// Whether the layer the whole-entry `site` names — the root's entry family (a root
+    /// site) or a keyed branch family beneath the parent entry `ancestor_keys` locates (a
+    /// branch site) — has at least one payload-bearing immediate child. One forward
+    /// [`layer_step`] from the layer's start: a present child yields `Present`, an empty
+    /// or purely descendant-only layer yields `Absent`. Descendant-only children (branch
+    /// children with no payload marker) are skipped by one prefix-successor seek each, so
+    /// the probe reads at most one payload child key and observes no values. Like the
+    /// bounded traversal it establishes no per-key presence fact; it answers only the
+    /// family-populated question.
+    fn family_populated(
+        &mut self,
+        site: &AuthorizedSite,
+        ancestor_keys: &[KeyScalar],
+    ) -> Result<Presence, KernelFault>;
     fn set_required(
         &mut self,
         site: &AuthorizedSite,
@@ -492,6 +506,13 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
         op_index_lookup(&self.view, site, key)
     }
+    fn family_populated(
+        &mut self,
+        site: &AuthorizedSite,
+        ancestor_keys: &[KeyScalar],
+    ) -> Result<Presence, KernelFault> {
+        op_family_populated(&self.view, site, ancestor_keys)
+    }
     fn set_required(
         &mut self,
         _site: &AuthorizedSite,
@@ -777,6 +798,13 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         key: &[KeyScalar],
     ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
         op_index_lookup(self.txn(), site, key)
+    }
+    fn family_populated(
+        &mut self,
+        site: &AuthorizedSite,
+        ancestor_keys: &[KeyScalar],
+    ) -> Result<Presence, KernelFault> {
+        op_family_populated(self.txn(), site, ancestor_keys)
     }
     fn set_required(
         &mut self,
@@ -1456,6 +1484,23 @@ fn op_iterate_bounded<V: ReadView>(
             }
         }
     }
+}
+
+/// Whether the layer the whole-entry `site` names has at least one payload-bearing
+/// immediate child: one forward [`layer_step`] from the layer's start. A present child
+/// yields `Present`; an empty or purely descendant-only layer yields `Absent`. Reads at
+/// most one payload child key (descendant-only children are skipped by one seek each) and
+/// establishes no per-key presence fact — the bounded family-populated probe.
+fn op_family_populated<V: ReadView>(
+    cells: &V,
+    site: &AuthorizedSite,
+    ancestor_keys: &[KeyScalar],
+) -> Result<Presence, KernelFault> {
+    let layer = layer_of(site, ancestor_keys)?;
+    Ok(match layer_step(cells, &layer, LayerSeek::Start)? {
+        NextKey::Next(_) => Presence::Present,
+        NextKey::End => Presence::Absent,
+    })
 }
 
 /// The resolved index-read target a site addresses: its cell-family identity, unique
@@ -2794,6 +2839,116 @@ mod tests {
                 keys: vec![],
                 more: false,
             }),
+        );
+    }
+
+    /// The family-populated probe over a keyed branch family (the `notes` layer under one
+    /// book): `Present` when the book has at least one note, `Absent` when it has none or
+    /// is itself absent — the E06 "does this asset have notes?" question. The probe reads
+    /// the branch layer scoped to the fixed parent key, so one book's notes never make a
+    /// sibling's family read populated.
+    #[test]
+    fn family_populated_answers_whether_a_branch_family_has_a_child() {
+        let (schema, sites) = branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let root = txn.site(0);
+            let branch = txn.site(1);
+            for book in ["a", "b"] {
+                let title = EntryValue {
+                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("T".into())))],
+                };
+                txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
+                    .expect("root create");
+            }
+            // Only book "a" gets a note; book "b" stays note-less.
+            let text = EntryValue {
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
+            };
+            txn.create_entry(
+                &branch,
+                &[KeyScalar::Str("a".into()), KeyScalar::Int(1)],
+                text,
+            )
+            .expect("note create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        let branch = read.site(1);
+        // The root family is populated (two books exist).
+        assert_eq!(read.family_populated(&root, &[]), Ok(Presence::Present));
+        // Book "a" has a note; book "b" and an absent book "c" have none.
+        assert_eq!(
+            read.family_populated(&branch, &[KeyScalar::Str("a".into())]),
+            Ok(Presence::Present),
+        );
+        assert_eq!(
+            read.family_populated(&branch, &[KeyScalar::Str("b".into())]),
+            Ok(Presence::Absent),
+        );
+        assert_eq!(
+            read.family_populated(&branch, &[KeyScalar::Str("c".into())]),
+            Ok(Presence::Absent),
+        );
+    }
+
+    /// A family whose only children are descendant-only (markerless — children below them
+    /// but no payload of their own) reads `Absent`: the probe skips each descendant-only
+    /// child by one seek exactly as the bounded traversal does, so a family with no
+    /// payload-bearing child is not populated. An empty root family likewise reads
+    /// `Absent`.
+    #[test]
+    fn family_populated_skips_descendant_only_children_and_empty_families() {
+        let (schema, sites) = branch_schema();
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+        // A fresh store: the root family is empty.
+        {
+            let mut read = store
+                .read_session(InvocationGrant::full_store(), read_demand())
+                .expect("read session");
+            let root = read.site(0);
+            assert_eq!(read.family_populated(&root, &[]), Ok(Presence::Absent));
+        }
+        // Give book "a" a note but never a payload marker of its own: "a" is a
+        // descendant-only child of the root family. The root family must still read
+        // `Absent` — it holds no payload-bearing book.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn session");
+            let branch = txn.site(1);
+            let text = EntryValue {
+                fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
+            };
+            txn.create_entry(
+                &branch,
+                &[KeyScalar::Str("a".into()), KeyScalar::Int(1)],
+                text,
+            )
+            .expect("note create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read session");
+        let root = read.site(0);
+        let branch = read.site(1);
+        // "a" has no own payload marker, only a note beneath it.
+        assert_eq!(
+            read.presence(&root, &[KeyScalar::Str("a".into())]),
+            Ok(Presence::Absent)
+        );
+        // So the root family is not populated, but "a"'s own notes family is.
+        assert_eq!(read.family_populated(&root, &[]), Ok(Presence::Absent));
+        assert_eq!(
+            read.family_populated(&branch, &[KeyScalar::Str("a".into())]),
+            Ok(Presence::Present),
         );
     }
 

@@ -457,6 +457,7 @@ fn encode_code(
                 push_u16(&mut out, *f)
             }
             Instr::DurExists(s)
+            | Instr::DurFamilyExists(s)
             | Instr::DurReadField(s)
             | Instr::DurReadEntry(s)
             | Instr::DurSetRequired(s)

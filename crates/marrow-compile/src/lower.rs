@@ -2573,6 +2573,47 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Whether an `exists` argument names a family (a store root, or a keyed branch family)
+    /// rather than a specific entry or field. A store root is always a family; a `.tail`
+    /// selection on an entry address is a family only when `tail` is a declared keyed
+    /// branch — a scalar-field selection is a specific-cell probe. Non-emitting: it
+    /// classifies the argument before a probe is chosen, since a branch family and a
+    /// scalar field share the `Field`-on-entry-address syntax.
+    fn arg_is_family(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::SavedRoot { .. } => true,
+            Expression::Field { base, name, .. } => self
+                .entry_address_node(base)
+                .is_some_and(|parent| parent.branch(name).is_some()),
+            _ => false,
+        }
+    }
+
+    /// The durable node an entry-address expression addresses, resolved against the single
+    /// durable root without emitting a diagnostic. `None` when `expr` is not a resolvable
+    /// entry address (a wrong root name, an unknown branch, or a non-address shape). Used
+    /// only to classify an `exists` tail; the real resolvers own diagnostics.
+    fn entry_address_node(&self, expr: &Expression) -> Option<DurNode<'a>> {
+        let root = self.durable.root()?;
+        let Expression::Keyed { base, .. } = expr else {
+            return None;
+        };
+        match &**base {
+            Expression::SavedRoot { name, .. } => {
+                (root.name == *name).then_some(DurNode::Root(root))
+            }
+            Expression::Field {
+                base: parent_base,
+                name: branch_name,
+                ..
+            } => {
+                let parent = self.entry_address_node(parent_base)?;
+                parent.branch(branch_name).map(DurNode::Branch)
+            }
+            _ => None,
+        }
+    }
+
     /// Resolve a durable traversal place into the traversed layer's entry site, its
     /// immediate key type, and the ancestor key-path locating its parent entry (empty for a
     /// root family, `[root_key]` for a single-level branch family, deeper for a nested
@@ -6204,7 +6245,12 @@ impl<'a> FnLowerer<'a> {
         })
     }
 
-    /// Lower `exists(place)`: the presence of the cell the place addresses.
+    /// Lower `exists(place)`: the presence of the cell the place addresses, or — when the
+    /// argument is a store root or a keyed branch family rather than one addressed cell —
+    /// whether that family has at least one payload-bearing child. A specific entry or
+    /// field address (`^root(key)`, `^root(key).field`, a named `place`) is a keyed
+    /// presence probe; a store root (`^root`) or a keyed branch family (`^root(key).notes`)
+    /// is the family-populated probe.
     fn lower_exists(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
@@ -6215,23 +6261,36 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        if self.durable_access(&arg.value).is_none() {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                arg.value.span(),
-                "`exists` takes a store place such as `^root(key)` or a named `place`".to_string(),
-            ));
-            return None;
+        // A family argument (a store root, or a keyed branch family whose tail names a
+        // declared branch) is the family-populated probe: it names no immediate child key,
+        // so it reuses the traversal place resolver and emits only the ancestor key-path.
+        // A scalar-field tail is not a family — it falls through to the keyed cell probe.
+        if self.arg_is_family(&arg.value) {
+            let target = self.resolve_traversal_place(&arg.value)?;
+            self.emit_key_path(&target.ancestor_keys, target.span)?;
+            self.push(Instr::DurFamilyExists(target.entry_site), span);
+            return Some(LTy::bare_scalar(ScalarType::Bool));
         }
-        let place = self.resolve_durable(&arg.value)?;
-        self.emit_key_path(&place.keys, place.span)?;
-        let site = match place.target {
-            DurTarget::Entry { entry_site, .. } => entry_site,
-            DurTarget::Field { site, .. } => site,
-        };
-        self.push(Instr::DurExists(site), place.span);
-        Some(LTy::bare_scalar(ScalarType::Bool))
+        // A specific addressed cell (an entry or a field) probes that one cell's presence.
+        if self.durable_access(&arg.value).is_some() {
+            let place = self.resolve_durable(&arg.value)?;
+            self.emit_key_path(&place.keys, place.span)?;
+            let site = match place.target {
+                DurTarget::Entry { entry_site, .. } => entry_site,
+                DurTarget::Field { site, .. } => site,
+            };
+            self.push(Instr::DurExists(site), place.span);
+            return Some(LTy::bare_scalar(ScalarType::Bool));
+        }
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            arg.value.span(),
+            "`exists` takes a store place such as `^root(key)`, a field, a store root, or a \
+             keyed branch family"
+                .to_string(),
+        ));
+        None
     }
 
     /// Lower a call in the closed pure text floor: `isEmpty(string): bool`,

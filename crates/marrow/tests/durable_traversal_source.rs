@@ -228,6 +228,21 @@ pub fn nestedInnerFault(): int {
     }
     return total
 }
+
+pub fn anyBooks(): bool {
+    return exists(^books)
+}
+
+pub fn bookHasNotes(id: int): bool {
+    return exists(^books[id].notes)
+}
+
+pub fn noteState(id: int): string {
+    if not exists(^books[id].notes) {
+        return "empty"
+    }
+    return "populated"
+}
 "#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -348,6 +363,55 @@ fn a_branch_traversal_scopes_to_its_parent_entry() {
     assert_eq!(
         run(&image, &mut attachment, "sumNotes", vec![Value::Int(2)]),
         Some(Value::Int(0))
+    );
+}
+
+#[test]
+fn family_populated_exists_answers_whether_a_family_has_a_child() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+
+    // An empty store: neither the root family nor any book's notes family is populated.
+    assert_eq!(
+        run(&image, &mut attachment, "anyBooks", vec![]),
+        Some(Value::Bool(false))
+    );
+
+    seed_books(&image, &mut attachment);
+    // The root family now holds books.
+    assert_eq!(
+        run(&image, &mut attachment, "anyBooks", vec![]),
+        Some(Value::Bool(true))
+    );
+    // No book has notes yet — the E06 "does this asset have notes?" question is false.
+    assert_eq!(
+        run(&image, &mut attachment, "bookHasNotes", vec![Value::Int(1)]),
+        Some(Value::Bool(false))
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteState", vec![Value::Int(1)]),
+        Some(Value::Text("empty".into()))
+    );
+
+    // Give book 1 a note. Its notes family is populated; book 2's is not, and the probe
+    // is scoped to the fixed parent so book 1's note never populates book 2's family.
+    run(
+        &image,
+        &mut attachment,
+        "putNote",
+        vec![Value::Int(1), Value::Int(10), Value::Text("n".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "bookHasNotes", vec![Value::Int(1)]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "noteState", vec![Value::Int(1)]),
+        Some(Value::Text("populated".into()))
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "bookHasNotes", vec![Value::Int(2)]),
+        Some(Value::Bool(false))
     );
 }
 

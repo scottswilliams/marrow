@@ -180,6 +180,10 @@ pub enum SealedInstr {
     Call(u16),
     /// `K → bool`: whether the cell site `_0` addresses is present.
     DurExists(u16),
+    /// `ancestor-keys → bool`: whether the family the whole-entry site `_0` names has at
+    /// least one payload-bearing immediate child. Pops the ancestor key-path (none for a
+    /// root site, `[root_key]` for a single-level branch site); names no child key.
+    DurFamilyExists(u16),
     /// `K → T?`: read field site `_0`.
     DurReadField(u16),
     /// `K → Rec?`: read the whole entry at site `_0`.

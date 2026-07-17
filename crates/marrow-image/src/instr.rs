@@ -84,6 +84,7 @@ pub const OP_DUR_CREATE_ENTRY: u8 = 0x35;
 pub const OP_DUR_REPLACE_ENTRY: u8 = 0x36;
 pub const OP_DUR_ERASE_FIELD: u8 = 0x37;
 pub const OP_DUR_ERASE_ENTRY: u8 = 0x38;
+pub const OP_DUR_FAMILY_EXISTS: u8 = 0x39;
 pub const OP_DUR_SET_SPARSE_PRESENT: u8 = 0x3A;
 pub const OP_DUR_ITERATE_BOUNDED: u8 = 0x3B;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
@@ -282,6 +283,13 @@ pub enum Instr {
     /// payload).
     EqEnum,
     DurExists(u16),
+    /// `[ancestor-keys] → bool`: whether the family the whole-entry `site` names (the
+    /// root's entry family, or a keyed branch family beneath the parent entry the
+    /// ancestor key-path locates) has at least one payload-bearing immediate child. Pops
+    /// the ancestor key-path (a root site pops none; a single-level branch site pops
+    /// `[root_key]`) and pushes the family-populated bool. Unlike [`DurExists`] it names
+    /// no immediate child key: it is the family-populated probe, not a keyed presence.
+    DurFamilyExists(u16),
     DurReadField(u16),
     DurReadEntry(u16),
     DurSetRequired(u16),
@@ -441,6 +449,7 @@ impl Instr {
             Instr::EnumPayloadGet { .. } => OP_ENUM_PAYLOAD_GET,
             Instr::EqEnum => OP_EQ_ENUM,
             Instr::DurExists(_) => OP_DUR_EXISTS,
+            Instr::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
             Instr::DurReadField(_) => OP_DUR_READ_FIELD,
             Instr::DurReadEntry(_) => OP_DUR_READ_ENTRY,
             Instr::DurSetRequired(_) => OP_DUR_SET_REQUIRED,
@@ -479,6 +488,7 @@ impl Instr {
             | Instr::FieldSet(_)
             | Instr::FieldUnset(_)
             | Instr::DurExists(_)
+            | Instr::DurFamilyExists(_)
             | Instr::DurReadField(_)
             | Instr::DurReadEntry(_)
             | Instr::DurSetRequired(_)

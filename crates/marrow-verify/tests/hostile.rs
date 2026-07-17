@@ -736,6 +736,36 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
 }
 
 #[test]
+fn a_family_populated_probe_over_a_field_leaf_site_rejects() {
+    // The family-populated probe names a whole-entry family; a field-leaf site names a
+    // scalar leaf, not a family, so an image aiming the probe at a field site is refused
+    // as `DurExists`/`DurIterateBounded` over a field site are.
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("probe");
+    let code = vec![
+        Instr::DurFamilyExists(value_site),
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::Unit,
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "probe"), func);
+    let rejection = verify(&draft.encode().unwrap().bytes)
+        .expect_err("a family probe over a field site is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(rejection.detail(), "operation requires an entry site");
+}
+
+#[test]
 fn a_bounded_traversal_after_commit_rejects() {
     // The commit consumes the session's engine transaction, so no durable operation may
     // follow it. A bounded traversal is a durable read; the flow lattice refuses it after

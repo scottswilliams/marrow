@@ -690,6 +690,21 @@ fn execute<'s>(
                 stack.push(Value::Bool(present == Presence::Present));
                 pc += 1;
             }
+            SealedInstr::DurFamilyExists(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                // The probe supplies only the ancestor key-path — one fewer than the
+                // whole-entry key arity, since it names the family rather than one
+                // immediate child.
+                let ancestor_keys = pop_key_path(&mut stack, authorized.key_arity() - 1);
+                let present = durable
+                    .family_populated(&authorized, &ancestor_keys)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                stack.push(Value::Bool(present == Presence::Present));
+                pc += 1;
+            }
             SealedInstr::DurReadField(site) => {
                 let durable = session
                     .as_deref_mut()
