@@ -1,5 +1,5 @@
 //! Forged-image hostiles for the entry-identity instructions and the managed-index
-//! reads (ID01). Each artifact carries a valid encoder-computed digest and violates
+//! reads. Each artifact carries a valid encoder-computed digest and violates
 //! exactly one phase-3 stack-effect invariant, so it must reject at the verifier stage
 //! that owns the invariant rather than at the digest gate. These make the verifier's
 //! identity/index rejections conspicuous enforcement artifacts, not merely reachable by

@@ -1,4 +1,4 @@
-//! Entry-identity runtime value (ID01, session 1 — the value-domain slice).
+//! Entry-identity runtime value.
 //!
 //! `Id(^root)` is a first-class runtime value wrapping a store root and a key tuple.
 //! These tests drive the whole production path — capture -> compile -> verify -> attach

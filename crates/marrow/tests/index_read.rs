@@ -1,4 +1,4 @@
-//! Managed-index reads at the source level (ID01 session 2).
+//! Managed-index reads at the source level.
 //!
 //! A nonunique index is scanned with a bounded `for` head that binds the source-root
 //! `Id(^root)`; a unique index is looked up with a bracket access that yields the
