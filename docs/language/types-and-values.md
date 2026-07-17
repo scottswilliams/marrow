@@ -701,14 +701,16 @@ accept `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration` keys.
 The `ErrorCode` spelling is also accepted, but current key compilation erases
 its refinement: the key behaves as `string` and is not grammar-validated.
 `decimal`, enums, entry identities, resources, collections, optionals, and
-`unknown` are not accepted in those key positions. Declared index components may
-also project enum and entry-identity fields; `decimal` remains unavailable.
+`unknown` are not accepted in those key positions. A declared index component
+projects that same closed orderable-key scalar set — `int`, `bool`, `string`,
+`bytes`, `date`, or `instant`, a nominal erasing to its base scalar — so an
+enum, an entry identity, `decimal`, and every non-scalar field are not
+index-eligible.
 
 Key order is part of observable traversal behavior. Numeric and temporal keys
 use their natural order, `false` precedes `true`, and strings and bytes use
 lexicographic order. Composite key tuples are ordered lexicographically by
-column. Enum-valued index components follow member declaration order; an
-identity-valued component follows the addressed root's key-tuple order.
+column.
 
 ## Entry Identity
 
