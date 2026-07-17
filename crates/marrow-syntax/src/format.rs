@@ -1051,6 +1051,11 @@ fn push_clause_keyword(out: &mut String, pad: &str, keyword: &str) {
 /// statement when it is eligible and fits the line; otherwise a braced block. A
 /// comment on the clause is owned by the block (the parser records it inside), so it
 /// flows through `format_block` and blocks the inline form by being present.
+///
+/// `allow_inline` is `false` for any clause a sibling clause follows in the same
+/// cuddled chain (`else if`, `else`, `on <fault>`): an inline body carries no `}` for
+/// the successor keyword to cuddle, so the successor would drop to a non-cuddled fresh
+/// line the parser cannot read. Only the final clause of a chain may render inline.
 fn append_clause_or_block(
     out: &mut String,
     source: &str,
@@ -1058,8 +1063,10 @@ fn append_clause_or_block(
     block: &Block,
     level: usize,
     require_diverging: bool,
+    allow_inline: bool,
 ) {
-    if let Some(rendered) = inline_clause_statement(source, block, require_diverging)
+    if allow_inline
+        && let Some(rendered) = inline_clause_statement(source, block, require_diverging)
         && current_line_width(out) + 1 + rendered.chars().count() <= MAX_LINE_WIDTH
     {
         out.push(' ');
@@ -1430,7 +1437,9 @@ fn format_let_else(
         format_expression_at(value, ctx.level)
     );
     out.push_str(" else");
-    append_clause_or_block(&mut out, ctx.source, &pad, else_block, ctx.level, true);
+    append_clause_or_block(
+        &mut out, ctx.source, &pad, else_block, ctx.level, true, true,
+    );
     out
 }
 
@@ -1444,14 +1453,25 @@ fn format_else_chain(
     else_block: Option<&Block>,
 ) {
     let pad = INDENT.repeat(ctx.level);
-    for else_if in else_ifs {
+    for (index, else_if) in else_ifs.iter().enumerate() {
         let condition = format_expression_at(&else_if.condition, ctx.level);
         push_clause_keyword(out, &pad, &format!("else if {condition}"));
-        append_clause_or_block(out, ctx.source, &pad, &else_if.block, ctx.level, true);
+        // An `else if` may inline only when it ends the chain: no later `else if`
+        // and no trailing `else` to cuddle a following keyword.
+        let is_final = index + 1 == else_ifs.len() && else_block.is_none();
+        append_clause_or_block(
+            out,
+            ctx.source,
+            &pad,
+            &else_if.block,
+            ctx.level,
+            true,
+            is_final,
+        );
     }
     if let Some(else_block) = else_block {
         push_clause_keyword(out, &pad, "else");
-        append_clause_or_block(out, ctx.source, &pad, else_block, ctx.level, true);
+        append_clause_or_block(out, ctx.source, &pad, else_block, ctx.level, true, true);
     }
 }
 
@@ -1516,7 +1536,8 @@ fn format_for(
         EmptyBody::Braces,
     );
     push_clause_keyword(&mut out, &pad, "on more");
-    append_clause_or_block(&mut out, ctx.source, &pad, on_more, ctx.level, true);
+    // `on more` is the sole trailing clause of a bounded loop; it may inline.
+    append_clause_or_block(&mut out, ctx.source, &pad, on_more, ctx.level, true, true);
     out
 }
 
@@ -1576,6 +1597,7 @@ fn format_match(
         out.push_str(&head);
         // T6: an arm whose body is a single statement that fits renders inline
         // (`circle(r) => return r * r`); otherwise a braced block cuddled after `=>`.
+        // Arms are newline-separated, not cuddled, so each may inline independently.
         append_clause_or_block(
             &mut out,
             ctx.source,
@@ -1583,6 +1605,7 @@ fn format_match(
             &arm.block,
             ctx.level + 1,
             false,
+            true,
         );
     }
     for comment in comments {
@@ -1632,15 +1655,28 @@ fn format_checked(
     let arm_pad = INDENT.repeat(ctx.level + 1);
     // Each `on <fault>` arm cuddles the previous arm's `}` (`} on zero_divisor {`) or,
     // after an inline arm or the header, opens on its own line; body is inline
-    // diverging or a braced block.
-    for (kind, block) in [
+    // diverging or a braced block. Only the last present arm may inline, so an
+    // earlier arm always leaves a `}` for the next `on` keyword to cuddle.
+    let present: Vec<(&str, &Block)> = [
         ("out_of_range", out_of_range),
         ("zero_divisor", zero_divisor),
-    ] {
-        if let Some(block) = block {
-            push_clause_keyword(&mut out, &arm_pad, &format!("on {kind}"));
-            append_clause_or_block(&mut out, ctx.source, &arm_pad, block, ctx.level + 1, true);
-        }
+    ]
+    .into_iter()
+    .filter_map(|(kind, block)| block.map(|block| (kind, block)))
+    .collect();
+    let last = present.len();
+    for (index, (kind, block)) in present.into_iter().enumerate() {
+        push_clause_keyword(&mut out, &arm_pad, &format!("on {kind}"));
+        let is_final = index + 1 == last;
+        append_clause_or_block(
+            &mut out,
+            ctx.source,
+            &arm_pad,
+            block,
+            ctx.level + 1,
+            true,
+            is_final,
+        );
     }
     out
 }

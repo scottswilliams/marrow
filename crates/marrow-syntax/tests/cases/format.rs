@@ -271,6 +271,54 @@ fn preserves_grouping_blank_between_match_arms() {
     );
 }
 
+// ---- inline-diverging cuddle integrity ----
+
+/// The inline-diverging form may render only the FINAL clause of a chain. A middle
+/// `else if` whose body would fit inline must still render braced: an inline body
+/// carries no `}` for the following `else`/`else if` to cuddle, so inlining a
+/// non-final clause produces a non-cuddled `else` on a fresh line that does not
+/// re-parse.
+#[test]
+fn a_middle_else_if_clause_never_inlines() {
+    let source = "module app\nfn run(a: int): int {\n    if a > 0 {\n        return 1\n    } else if a == 0 {\n        return 0\n    } else {\n        return -1\n    }\n}\n";
+    let once = format_source(source);
+    assert!(
+        once.contains("} else if a == 0 {"),
+        "the middle else-if keeps its braced body:\n{once}"
+    );
+    assert!(
+        !parse_source(&once).has_errors(),
+        "formatted if-chain must re-parse:\n{once}"
+    );
+    assert_eq!(
+        format_source(&once),
+        once,
+        "if-chain rendering is not idempotent:\n{once}"
+    );
+}
+
+/// The same cuddle rule governs `checked` arms: an `on out_of_range` arm followed by
+/// an `on zero_divisor` arm may not inline, or the second `on` keyword has no `}` to
+/// cuddle and the render does not re-parse.
+#[test]
+fn a_non_final_checked_arm_never_inlines() {
+    let source = "module app\nfn run(a: int, b: int): int {\n    return checked a / b\n    on out_of_range {\n        return 0\n    }\n    on zero_divisor {\n        return -1\n    }\n}\n";
+    let once = format_source(source);
+    assert!(
+        once.contains("on out_of_range {"),
+        "the non-final checked arm keeps its braced body:\n{once}"
+    );
+    assert!(
+        !parse_source(&once).has_errors(),
+        "formatted checked arms must re-parse:\n{once}"
+    );
+    assert_eq!(
+        format_source(&once),
+        once,
+        "checked-arm rendering is not idempotent:\n{once}"
+    );
+}
+
 // ---- empty-body rule ----
 
 /// A mandatory block renders `{}` when empty; a member-less `store` stays
