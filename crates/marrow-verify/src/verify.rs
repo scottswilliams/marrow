@@ -1045,38 +1045,16 @@ fn decode_durable(
         // dense struct, or a closed enum with sum/member ids).
         let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
         let members = decode_members(&mut reader, 1, &mut member_budget, &mut ledger_ids)?;
-        // The member tree's top-level fields are exactly the materialized record's
-        // stored fields, in order and value shape: this ties the durable identity to
-        // the executable record so a hostile image cannot claim one identity while
-        // executing over a different field shape. The value-shape match recurses
-        // through the record and enum tables, so a widened field (a nominal, struct,
-        // or enum) is checked as thoroughly as a plain scalar.
+        // The member tree's top-level fields and groups are exactly the materialized
+        // record's stored field slots followed by its trailing group slots, in order and
+        // value shape: this ties the durable identity to the executable record so a
+        // hostile image cannot claim one identity while executing over a different field
+        // or group shape. A field slot's value-shape match recurses through the record and
+        // enum tables, so a widened field (a nominal, struct, or enum) is checked as
+        // thoroughly as a plain scalar; each group slot is a group record whose own fields
+        // tie to its `Group` member's direct fields one level down.
         let record_fields = &types[record as usize].fields;
-        let mut top_fields = members.iter().filter_map(|member| match member {
-            DecodedMember::Field {
-                value, required, ..
-            } => Some((value, *required)),
-            _ => None,
-        });
-        for field in record_fields {
-            match top_fields.next() {
-                Some((value, member_required))
-                    if member_required == field.required
-                        && value_shape_matches(value, field.ty, types, enums) => {}
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "root member tree fields do not match the record fields",
-                    ));
-                }
-            }
-        }
-        if top_fields.next().is_some() {
-            return Err(reject(
-                VerifyPhase::Table,
-                "root member tree has more top-level fields than the record",
-            ));
-        }
+        tie_root_record(record_fields, &members, types, enums)?;
         // Every keyed `branch` nested in the tree ties its own materialized record to
         // its direct field members the same way, one level down, so a hostile image
         // cannot claim a branch identity while executing over a different record shape.
@@ -1568,6 +1546,123 @@ fn decode_key_tuple(
         keys.push((scalar, key_id));
     }
     Ok(keys)
+}
+
+/// Tie a root's group-inclusive materialized record to its durable member tree. The
+/// record's slots run in the member tree's own top-level order with keyed branches
+/// dropped: each `Field` member matches the next slot by value shape and required flag,
+/// and each `Group` member matches the next slot — a bare group record — by tying its own
+/// fields to the group's direct fields one level down. A slot count that disagrees, a
+/// group slot that is not a group record, or any field mismatch is refused, so a hostile
+/// image cannot claim one identity while executing over a different field or group shape.
+fn tie_root_record(
+    record_fields: &[DecodedField],
+    members: &[DecodedMember],
+    types: &[DecodedRecordType],
+    enums: &[DecodedEnum],
+) -> Result<(), VerifyRejection> {
+    let mut slots = record_fields.iter();
+    for member in members {
+        match member {
+            DecodedMember::Field {
+                value, required, ..
+            } => {
+                let Some(slot) = slots.next() else {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "root member tree has more top-level members than the record",
+                    ));
+                };
+                if *required != slot.required || !value_shape_matches(value, slot.ty, types, enums)
+                {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "root member tree fields do not match the record fields",
+                    ));
+                }
+            }
+            DecodedMember::Group {
+                members: group_members,
+                ..
+            } => {
+                let Some(slot) = slots.next() else {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "root member tree has more top-level members than the record",
+                    ));
+                };
+                tie_group_slot(slot, group_members, types, enums)?;
+            }
+            // A keyed branch is a distinct durable node, not a materialized record slot.
+            DecodedMember::Branch { .. } => {}
+        }
+    }
+    if slots.next().is_some() {
+        return Err(reject(
+            VerifyPhase::Table,
+            "root member tree has fewer top-level members than the record",
+        ));
+    }
+    Ok(())
+}
+
+/// Tie one trailing group slot of a root record to its `Group` member: the slot is a
+/// bare group record whose fields match the member's direct `Field` members by value
+/// shape and required flag, one level down — the same field tie the root and a branch
+/// apply. A group holds only leaf fields on the executable line, so a non-record slot,
+/// an optional record slot, an out-of-range record index, or a field/member mismatch is
+/// refused.
+fn tie_group_slot(
+    slot: &DecodedField,
+    group_members: &[DecodedMember],
+    types: &[DecodedRecordType],
+    enums: &[DecodedEnum],
+) -> Result<(), VerifyRejection> {
+    let ImageType::Record { idx, optional } = slot.ty else {
+        return Err(reject(
+            VerifyPhase::Table,
+            "a root group slot is not a group record",
+        ));
+    };
+    if optional {
+        return Err(reject(
+            VerifyPhase::Table,
+            "a root group slot must be a bare group record",
+        ));
+    }
+    if idx as usize >= types.len() {
+        return Err(reject(
+            VerifyPhase::Table,
+            "root group slot record index out of range",
+        ));
+    }
+    let group_fields = &types[idx as usize].fields;
+    let mut direct_fields = group_members.iter().filter_map(|member| match member {
+        DecodedMember::Field {
+            value, required, ..
+        } => Some((value, *required)),
+        _ => None,
+    });
+    for field in group_fields {
+        match direct_fields.next() {
+            Some((value, member_required))
+                if member_required == field.required
+                    && value_shape_matches(value, field.ty, types, enums) => {}
+            _ => {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "group member tree fields do not match its record fields",
+                ));
+            }
+        }
+    }
+    if direct_fields.next().is_some() {
+        return Err(reject(
+            VerifyPhase::Table,
+            "group member tree has more direct fields than its record",
+        ));
+    }
+    Ok(())
 }
 
 /// Validate every keyed `branch` in a decoded member tree: its surface name and

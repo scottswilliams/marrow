@@ -574,13 +574,37 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     let mut draft = ImageDraft::new();
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
+    // The group's own leaf record, referenced by the root record's trailing group slot.
+    let details_qualified = draft.intern_string("Book.details");
+    let details_pages = draft.intern_string("pages");
+    let details_record = draft.add_record_type(RecordTypeDef {
+        name: details_qualified,
+        fields: vec![FieldDef {
+            name: details_pages,
+            ty: ImageType::scalar(Scalar::Int),
+            required: false,
+        }],
+    });
+    // The group-inclusive root record: the `title` field slot followed by the `details`
+    // group record slot, tying to the member tree's field then group member.
+    let details = draft.intern_string("details");
     let record = draft.add_record_type(RecordTypeDef {
         name: book,
-        fields: vec![FieldDef {
-            name: title,
-            ty: ImageType::scalar(Scalar::Text),
-            required: true,
-        }],
+        fields: vec![
+            FieldDef {
+                name: title,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            },
+            FieldDef {
+                name: details,
+                ty: ImageType::Record {
+                    idx: details_record.index(),
+                    optional: false,
+                },
+                required: true,
+            },
+        ],
     });
     let root = draft.intern_string("books");
     let notes = draft.intern_string("notes");

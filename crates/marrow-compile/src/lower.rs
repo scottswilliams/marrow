@@ -5205,7 +5205,7 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
-        let value_type_id = self.records.by_name(name)?.value_type_id;
+        let record_type_id = self.records.by_name(name)?.type_id;
 
         // Resolve each named argument against a top-level field or a group before
         // emitting, so evaluation order is the declaration order (fields first, then
@@ -5320,9 +5320,9 @@ impl<'a> FnLowerer<'a> {
             }
             self.push(Instr::RecordNew(group_type.index()), span);
         }
-        self.push(Instr::RecordNew(value_type_id.index()), span);
+        self.push(Instr::RecordNew(record_type_id.index()), span);
         Some(LTy::Record {
-            ty: value_type_id,
+            ty: record_type_id,
             optional: false,
         })
     }

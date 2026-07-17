@@ -383,19 +383,14 @@ impl GroupInfo {
     }
 }
 
-/// The project's single record type. `type_id` is the durable-facing record: its
-/// fields are the flat top-level scalar/enum members, tied 1:1 to the durable
-/// member tree by the verifier. `value_type_id` is the materialized-value record
-/// used by the storeless value model — the same top-level fields followed by one
-/// slot per unkeyed group (a nested group sub-record). The two coincide when the
-/// resource declares no group. A durable read of a group-bearing resource is parked
-///, so no value ever carries the durable-facing `type_id` with groups
-/// omitted; the split keeps the durable graph and verifier byte-identical while the
-/// storeless value model gains group slots.
+/// The project's single record type. `type_id` is the group-inclusive materialized
+/// record: its top-level scalar/enum field slots followed by one slot per unkeyed group
+/// (a nested group sub-record). The verifier ties the field slots to the durable member
+/// tree's fields and each trailing group slot to a `Group` member, so one record type
+/// serves both the durable graph and the storeless value model.
 #[derive(Clone)]
 pub(crate) struct RecordInfo {
     pub(crate) type_id: TypeId,
-    pub(crate) value_type_id: TypeId,
     pub(crate) name: String,
     pub(crate) fields: Vec<FieldInfo>,
     pub(crate) groups: Vec<GroupInfo>,
@@ -406,9 +401,9 @@ impl RecordInfo {
         field_index(&self.fields, name)
     }
 
-    /// The materialized-value slot of the unkeyed group named `name`, if any. Group
-    /// slots follow the top-level fields in `value_type_id`, so the slot index is the
-    /// field count plus the group's declaration ordinal.
+    /// The materialized-record slot of the unkeyed group named `name`, if any. Group
+    /// slots follow the top-level fields in `type_id`, so the slot index is the field
+    /// count plus the group's declaration ordinal.
     pub(crate) fn group(&self, name: &str) -> Option<(u16, &GroupInfo)> {
         self.groups
             .iter()
@@ -1085,9 +1080,7 @@ impl TypeRegistry {
     }
 
     pub(crate) fn by_name_for_type(&self, ty: TypeId) -> Option<&RecordInfo> {
-        self.record
-            .as_ref()
-            .filter(|info| info.type_id == ty || info.value_type_id == ty)
+        self.record.as_ref().filter(|info| info.type_id == ty)
     }
 
     /// The unkeyed group whose materialized-value record type is `ty`, if any. Field
@@ -2252,7 +2245,6 @@ fn declare_record<'a>(
     });
     registry.record = Some(RecordInfo {
         type_id,
-        value_type_id: type_id,
         name: resource.name.clone(),
         fields: Vec::new(),
         groups: Vec::new(),
@@ -2353,25 +2345,16 @@ fn fill_record(
             }
         }
     }
-    // The durable-facing record carries the flat top-level fields only; the verifier
-    // ties them 1:1 to the durable member tree. The materialized-value record appends
-    // one slot per group, and coincides with the durable record when there is none.
-    let value_type_id = if group_slot_defs.is_empty() {
-        type_id
-    } else {
-        let mut value_defs = field_defs.clone();
-        value_defs.extend(group_slot_defs);
-        let name_id = draft.intern_string(&resource.name);
-        draft.add_record_type(RecordTypeDef {
-            name: name_id,
-            fields: value_defs,
-        })
-    };
+    // The record is group-inclusive: its top-level field slots followed by one
+    // group-record slot per unkeyed group, in declaration order. The verifier ties the
+    // field slots to the durable member tree's fields and each trailing group slot to a
+    // `Group` member, so this one record type serves both the durable graph and the
+    // storeless value model.
+    field_defs.extend(group_slot_defs);
     draft.set_record_fields(type_id, field_defs);
     if let Some(info) = registry.record.as_mut() {
         info.fields = fields;
         info.groups = groups;
-        info.value_type_id = value_type_id;
     }
 }
 
