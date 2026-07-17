@@ -46,8 +46,8 @@ use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
     RetShape, SealedBranch, SealedCollectionType, SealedConst, SealedEnumType, SealedExport,
     SealedField, SealedFunction, SealedIndex, SealedIndexComponent, SealedInstr, SealedRecordType,
-    SealedRoot,
-    SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, VerifiedImage,
+    SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow,
+    VerifiedImage,
 };
 use crate::vtype::VType;
 

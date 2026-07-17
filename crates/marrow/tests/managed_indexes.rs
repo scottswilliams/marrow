@@ -132,10 +132,7 @@ fn the_verifier_resolves_each_index_projection_to_record_and_key_positions() {
         &[SealedIndexComponent::Field(1), SealedIndexComponent::Key(0)],
     );
     // byIsbn projects only the `isbn` field (a unique index omits the identity suffix).
-    assert_eq!(
-        indexes[1].projection(),
-        &[SealedIndexComponent::Field(2)],
-    );
+    assert_eq!(indexes[1].projection(), &[SealedIndexComponent::Field(2)]);
 }
 
 #[test]
