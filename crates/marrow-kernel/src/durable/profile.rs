@@ -9,13 +9,20 @@
 
 use crate::codec::value::{ScalarKind, VALUE_CODEC_VERSION, ValueShape};
 
-use super::{BranchSchema, FieldSchema, StoreSchema};
+use super::{BranchSchema, FieldSchema, IndexComponent, IndexSchema, StoreSchema};
 
 /// The store profile version. The canonical value-shape descriptor gives every
 /// field shape a leading discriminant byte (`0x00` scalar / `0x01` product / `0x02` sum),
-/// so even a scalar-only descriptor's bytes differ from the pre-slice form and a pre-slice
-/// store is refused a reopen by this toolchain (pre-beta, no stored user data).
-const PROFILE_VERSION: u8 = 0x02;
+/// and the descriptor now records the root's managed indexes, so a store recorded under a
+/// different index set (or the pre-index form) is refused a reopen — index maintenance can
+/// never run against cells shaped by a different index projection (pre-beta, no stored
+/// user data).
+const PROFILE_VERSION: u8 = 0x03;
+
+/// The stable descriptor tag for an index component kind, disjoint from the shape and
+/// key-kind tags; a frozen wire byte for the profile only.
+const INDEX_KEY_COMPONENT: u8 = 0x00;
+const INDEX_FIELD_COMPONENT: u8 = 0x01;
 
 /// The stable descriptor tag for a scalar kind. Independent of the language type
 /// tags and of the key order tags; a frozen wire byte for the profile only.
@@ -131,10 +138,39 @@ fn push_branches(out: &mut Vec<u8>, branches: &[BranchSchema]) {
     }
 }
 
+/// Append a root's managed indexes to the descriptor: an index count then, for each index
+/// in stable declaration order, its 16-byte identity, its `unique` flag, and its ordered
+/// projection (a component count then, per component, a kind tag and the leaf's u16
+/// position). The projection order, each position, and the `unique` flag are covered, so a
+/// changed index set, projection, or uniqueness changes the descriptor and a store's
+/// recorded profile refuses a reopen under a different index shape.
+fn push_indexes(out: &mut Vec<u8>, indexes: &[IndexSchema]) {
+    out.extend_from_slice(&(indexes.len() as u16).to_be_bytes());
+    for IndexSchema {
+        id,
+        unique,
+        projection,
+    } in indexes
+    {
+        out.extend_from_slice(id);
+        out.push(u8::from(*unique));
+        out.extend_from_slice(&(projection.len() as u16).to_be_bytes());
+        for component in projection {
+            let (tag, position) = match component {
+                IndexComponent::Key(column) => (INDEX_KEY_COMPONENT, *column),
+                IndexComponent::Field(field) => (INDEX_FIELD_COMPONENT, *field),
+            };
+            out.push(tag);
+            out.extend_from_slice(&position.to_be_bytes());
+        }
+    }
+}
+
 /// The canonical profile descriptor bytes for `schema`: the root's name, key, and
-/// fields, then its whole nested branch shape in declaration order. A branch schema
-/// change at any depth therefore changes the descriptor, so a store's recorded profile
-/// refuses a reopen under a different branch shape.
+/// fields, its whole nested branch shape in declaration order, then its managed indexes. A
+/// branch schema change at any depth or an index-set change therefore changes the
+/// descriptor, so a store's recorded profile refuses a reopen under a different branch or
+/// index shape.
 pub(super) fn descriptor(schema: &StoreSchema) -> Vec<u8> {
     let mut out = vec![PROFILE_VERSION];
     out.extend_from_slice(&VALUE_CODEC_VERSION.to_be_bytes());
@@ -142,6 +178,7 @@ pub(super) fn descriptor(schema: &StoreSchema) -> Vec<u8> {
     push_key(&mut out, &schema.key);
     push_fields(&mut out, &schema.fields);
     push_branches(&mut out, &schema.branches);
+    push_indexes(&mut out, &schema.indexes);
     out
 }
 
@@ -159,6 +196,7 @@ mod tests {
                 FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
+            indexes: Vec::new(),
         };
         let same = descriptor(&base);
         assert_eq!(same, descriptor(&base), "descriptor is deterministic");
@@ -260,12 +298,13 @@ mod tests {
             key: vec![ScalarKind::Int],
             fields: vec![],
             branches: Vec::new(),
+            indexes: Vec::new(),
         };
         let bytes = descriptor(&schema);
         assert_eq!(bytes[0], PROFILE_VERSION);
         assert_eq!(
-            PROFILE_VERSION, 0x02,
-            "the §A7 descriptor bumps the profile version once"
+            PROFILE_VERSION, 0x03,
+            "recording the managed-index section bumps the profile version"
         );
     }
 
@@ -280,6 +319,7 @@ mod tests {
                 required: true,
             }],
             branches: Vec::new(),
+            indexes: Vec::new(),
         };
         let scalar = base(ValueShape::Scalar(ScalarKind::Int));
         let product = base(ValueShape::Product {
@@ -322,8 +362,101 @@ mod tests {
             out.push(SHAPE_SCALAR);
             out.push(kind_tag(ScalarKind::Int));
             out.push(1);
-            out.extend_from_slice(&0u16.to_be_bytes());
+            out.extend_from_slice(&0u16.to_be_bytes()); // no branches
+            out.extend_from_slice(&0u16.to_be_bytes()); // no indexes
             out
         });
+    }
+
+    #[test]
+    fn descriptor_distinguishes_index_sets() {
+        let base = StoreSchema {
+            root_name: "books".into(),
+            key: vec![ScalarKind::Int],
+            fields: vec![
+                FieldSchema::scalar("shelf", ScalarKind::Str, false),
+                FieldSchema::scalar("isbn", ScalarKind::Str, false),
+            ],
+            branches: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let by_shelf = IndexSchema {
+            id: [0x70; 16],
+            unique: false,
+            projection: vec![IndexComponent::Field(0), IndexComponent::Key(0)],
+        };
+        let by_isbn = IndexSchema {
+            id: [0x71; 16],
+            unique: true,
+            projection: vec![IndexComponent::Field(1)],
+        };
+
+        // Declaring an index changes the descriptor, so a store recorded with no index
+        // refuses a reopen whose schema grew one, and vice versa.
+        let mut with_shelf = base.clone();
+        with_shelf.indexes = vec![by_shelf.clone()];
+        assert_ne!(descriptor(&base), descriptor(&with_shelf));
+
+        // The projection, its order, the identity, and the unique flag are all covered.
+        let mut reordered = base.clone();
+        reordered.indexes = vec![IndexSchema {
+            id: [0x70; 16],
+            unique: false,
+            projection: vec![IndexComponent::Key(0), IndexComponent::Field(0)],
+        }];
+        assert_ne!(descriptor(&with_shelf), descriptor(&reordered));
+
+        let mut uniqued = base.clone();
+        uniqued.indexes = vec![IndexSchema {
+            unique: true,
+            ..by_shelf.clone()
+        }];
+        assert_ne!(descriptor(&with_shelf), descriptor(&uniqued));
+
+        let mut re_ided = base.clone();
+        re_ided.indexes = vec![IndexSchema {
+            id: [0x7f; 16],
+            ..by_shelf.clone()
+        }];
+        assert_ne!(descriptor(&with_shelf), descriptor(&re_ided));
+
+        // Adding a second index, and reordering two indexes, both differ.
+        let mut both = base.clone();
+        both.indexes = vec![by_shelf.clone(), by_isbn.clone()];
+        assert_ne!(descriptor(&with_shelf), descriptor(&both));
+        let mut swapped = base.clone();
+        swapped.indexes = vec![by_isbn, by_shelf];
+        assert_ne!(descriptor(&both), descriptor(&swapped));
+    }
+
+    #[test]
+    fn index_section_bytes_kat() {
+        // The frozen managed-index descriptor section: u16 count, then per index its
+        // 16-byte id, a unique byte, a u16 component count, and per component a kind tag
+        // (0x00 key / 0x01 field) and a u16 position.
+        let mut out = Vec::new();
+        push_indexes(
+            &mut out,
+            &[IndexSchema {
+                id: [0xAB; 16],
+                unique: true,
+                projection: vec![IndexComponent::Field(2), IndexComponent::Key(0)],
+            }],
+        );
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u16.to_be_bytes()); // one index
+        expected.extend_from_slice(&[0xAB; 16]); // id
+        expected.push(1); // unique
+        expected.extend_from_slice(&2u16.to_be_bytes()); // two components
+        expected.push(INDEX_FIELD_COMPONENT);
+        expected.extend_from_slice(&2u16.to_be_bytes()); // field 2
+        expected.push(INDEX_KEY_COMPONENT);
+        expected.extend_from_slice(&0u16.to_be_bytes()); // key column 0
+        assert_eq!(out, expected);
+
+        // The empty index section is exactly a zero count.
+        let mut empty = Vec::new();
+        push_indexes(&mut empty, &[]);
+        assert_eq!(empty, 0u16.to_be_bytes());
     }
 }

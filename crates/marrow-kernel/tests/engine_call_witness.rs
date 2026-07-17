@@ -49,6 +49,7 @@ fn schema() -> StoreSchema {
         key: vec![ScalarKind::Int],
         fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
         branches: Vec::new(),
+        indexes: Vec::new(),
     }
 }
 

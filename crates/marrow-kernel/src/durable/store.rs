@@ -1155,6 +1155,7 @@ mod tests {
                 FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 
@@ -1313,6 +1314,7 @@ mod tests {
                 fields: vec![FieldSchema::scalar("body", ScalarKind::Str, false)],
                 branches: Vec::new(),
             }],
+            indexes: Vec::new(),
         };
         let sites = vec![SiteSpec {
             target: branch_field(&[0], 0),
@@ -1418,6 +1420,7 @@ mod tests {
                 fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
                 branches: Vec::new(),
             }],
+            indexes: Vec::new(),
         };
         let sites = vec![
             SiteSpec {
@@ -1777,6 +1780,7 @@ mod tests {
                 fields: branch_fields,
                 branches: Vec::new(),
             }],
+            indexes: Vec::new(),
         };
         let sites = vec![
             SiteSpec {
@@ -2413,6 +2417,7 @@ mod tests {
             key: vec![ScalarKind::Str],
             fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
             branches: vec![notes],
+            indexes: Vec::new(),
         };
         let sites = vec![
             SiteSpec {
@@ -2963,6 +2968,7 @@ mod tests {
             key: vec![ScalarKind::Int, ScalarKind::Int],
             fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
             branches: Vec::new(),
+            indexes: Vec::new(),
         };
         let sites = vec![
             SiteSpec {
@@ -3026,6 +3032,7 @@ mod tests {
             key: vec![ScalarKind::Int, ScalarKind::Int],
             fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
             branches: Vec::new(),
+            indexes: Vec::new(),
         };
         let sites = vec![SiteSpec {
             target: SiteTarget::WholePayload,
@@ -3059,6 +3066,7 @@ mod tests {
                 fields: vec![FieldSchema::scalar("cval", ScalarKind::Int, true)],
                 branches: Vec::new(),
             }],
+            indexes: Vec::new(),
         };
         let sites = vec![
             SiteSpec {

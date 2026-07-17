@@ -291,7 +291,7 @@ fn seeded_attachment(image: &VerifiedImage) -> marrow_kernel::durable::Ephemeral
         DurableRun::Ran(Ok(_)) => {}
         other => panic!("seed did not run: {}", describe(&other)),
     }
-    attachment
+    *attachment
 }
 
 fn describe(run: &DurableRun) -> String {

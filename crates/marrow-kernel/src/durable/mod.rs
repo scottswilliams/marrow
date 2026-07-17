@@ -46,6 +46,41 @@ pub struct StoreSchema {
     pub key: Vec<ScalarKind>,
     pub fields: Vec<FieldSchema>,
     pub branches: Vec<BranchSchema>,
+    /// The root's compiler-maintained managed indexes, in stable declaration order — the
+    /// order every maintenance pass visits them so a whole-entry write's index writes are
+    /// deterministic. Empty for a root that declares none.
+    pub indexes: Vec<IndexSchema>,
+}
+
+/// One managed index the kernel maintains over a keyed root: its stable durable identity
+/// (the physical cell discriminator that separates one index's cells from another's under
+/// the same root, and survives a rename), its `unique` flag, and its ordered projection
+/// resolved to record/key positions. The kernel stores the identity as raw bytes and
+/// stays free of any image dependency; the executor derives it from a verified
+/// [`SealedIndex`](marrow_verify::SealedIndex). An index stores no data of its own and has
+/// no application write path — maintenance is a consequence of the source write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexSchema {
+    /// The index's stable 16-byte identity, the physical discriminator of its cell family.
+    pub id: [u8; 16],
+    /// Whether a complete-key lookup yields at most one source key (a unique index) rather
+    /// than an ordered non-unique index whose rows carry the identity suffix.
+    pub unique: bool,
+    /// The ordered projection: each component names a root key column or a top-level field
+    /// by position. A non-unique index's projection ends with the identity key columns (the
+    /// row-distinguishing suffix); a unique index's may omit them.
+    pub projection: Vec<IndexComponent>,
+}
+
+/// One component of a managed index's ordered projection, naming a durable-key leaf of the
+/// root by position: an identity key column or a top-level field. The physical projection
+/// of a verified [`SealedIndexComponent`](marrow_verify::SealedIndexComponent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexComponent {
+    /// An identity key column, by its index into the root's key tuple.
+    Key(u16),
+    /// A top-level field, by its index into the root's materialized record.
+    Field(u16),
 }
 
 /// One field of a node's record: its name, value shape, and required flag. A field's

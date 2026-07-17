@@ -139,7 +139,7 @@ fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
 
 fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
     match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => attachment,
+        Ephemeral::Ready(attachment) => *attachment,
         Ephemeral::Parked => panic!("a widened-field store is executable, not parked"),
         Ephemeral::Failed(code) => panic!("attach failed: {code}"),
     }

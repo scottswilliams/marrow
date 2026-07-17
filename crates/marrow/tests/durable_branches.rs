@@ -274,7 +274,7 @@ impl std::fmt::Debug for DebugRun<'_> {
 
 fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
     match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => attachment,
+        Ephemeral::Ready(attachment) => *attachment,
         Ephemeral::Parked => panic!("a flat root with a simple branch must be executable"),
         Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
     }

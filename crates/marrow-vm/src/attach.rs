@@ -17,11 +17,11 @@
 use marrow_kernel::codec::value::{ScalarKind, ValueShape};
 use marrow_kernel::durable::{
     BranchSchema, CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment,
-    FieldSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
+    FieldSchema, IndexComponent, IndexSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_verify::{
-    CeilingDescriptor, ExportDemand, ImageType, Scalar, SealedExport, SealedSite, SealedSiteTarget,
-    SealedTestEntry, VerifiedImage,
+    CeilingDescriptor, ExportDemand, ImageType, Scalar, SealedExport, SealedIndex,
+    SealedIndexComponent, SealedSite, SealedSiteTarget, SealedTestEntry, VerifiedImage,
 };
 
 use crate::fault::RuntimeFault;
@@ -100,8 +100,10 @@ fn deployment_ceiling(union: ExportDemand) -> DeploymentCeiling {
 /// Whether a persistent ephemeral attachment could be minted for a whole image.
 pub enum Ephemeral {
     /// A minted attachment over the image's flat executable durable shape. The caller
-    /// keeps it and drives several export invocations against the same store.
-    Ready(EphemeralAttachment),
+    /// keeps it and drives several export invocations against the same store. Boxed
+    /// because the attachment owns the whole store schema and is far larger than the
+    /// other variants.
+    Ready(Box<EphemeralAttachment>),
     /// The image's durable shape is not yet executable by the flat kernel (a
     /// singleton root, a group, or a nominal-typed field).
     Parked,
@@ -121,7 +123,7 @@ pub fn mint_ephemeral(image: &VerifiedImage) -> Ephemeral {
     };
     let ceiling = deployment_ceiling(image.demand_union());
     match EphemeralAttachment::mint(schema, sites, ceiling) {
-        Ok(attachment) => Ephemeral::Ready(attachment),
+        Ok(attachment) => Ephemeral::Ready(Box::new(attachment)),
         Err(_) => Ephemeral::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     }
 }
@@ -197,11 +199,22 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         branches.push(branch_schema(image, branch)?);
     }
 
+    // The executable root is root 0; its managed indexes seal with a position-resolved
+    // projection the kernel maintains. An index over a parked root never reaches here (a
+    // parked root returns `None` above).
+    let indexes = image
+        .indexes()
+        .iter()
+        .filter(|index| index.root() == 0)
+        .map(index_schema)
+        .collect();
+
     let schema = StoreSchema {
         root_name: root.name().to_string(),
         key,
         fields,
         branches,
+        indexes,
     };
 
     // The site table is index-aligned with the image's sites so `Durable::site`
@@ -246,6 +259,25 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         .collect();
 
     Some((schema, sites))
+}
+
+/// Derive one managed index's kernel [`IndexSchema`] from its sealed form: its stable
+/// identity (as raw bytes, keeping the kernel image-free), its `unique` flag, and its
+/// position-resolved projection. The verifier already resolved every projection component
+/// to a record/key position, so this is a direct structural projection.
+fn index_schema(index: &SealedIndex) -> IndexSchema {
+    IndexSchema {
+        id: *index.id().bytes(),
+        unique: index.unique(),
+        projection: index
+            .projection()
+            .iter()
+            .map(|component| match component {
+                SealedIndexComponent::Key(column) => IndexComponent::Key(*column),
+                SealedIndexComponent::Field(field) => IndexComponent::Field(*field),
+            })
+            .collect(),
+    }
 }
 
 /// Derive one branch's recursive [`BranchSchema`] from the image: its name, key columns,

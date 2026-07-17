@@ -218,7 +218,7 @@ fn run_fault(
 
 fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
     match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => attachment,
+        Ephemeral::Ready(attachment) => *attachment,
         Ephemeral::Parked => {
             panic!("a nested single-column scalar-field branch must be executable")
         }

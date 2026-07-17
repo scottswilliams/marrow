@@ -173,7 +173,7 @@ impl std::fmt::Debug for DebugRun<'_> {
 
 fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
     match mint_ephemeral(image) {
-        Ephemeral::Ready(attachment) => attachment,
+        Ephemeral::Ready(attachment) => *attachment,
         Ephemeral::Parked => panic!("the flat counter image must be executable, not parked"),
         Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
     }

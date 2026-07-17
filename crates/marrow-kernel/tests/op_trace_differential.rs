@@ -75,6 +75,7 @@ fn schema() -> StoreSchema {
             FieldSchema::scalar("label", ScalarKind::Str, false),
         ],
         branches: Vec::new(),
+        indexes: Vec::new(),
     }
 }
 
