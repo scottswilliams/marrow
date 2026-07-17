@@ -6,13 +6,13 @@ use common::{has_reason, parse_reason};
 use marrow_syntax::{ExpectedSyntax, ParseDiagnosticReason, parse_source};
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_split_store_declaration() {
     let parsed = parse_source(
         "module app\n\
-         resource Book\n\
+         resource Book {\n\
          \x20   required title: string\n\
-         store ^books(id: int): Book\n",
+         }\n\
+         store ^books[id: int]: Book\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -26,23 +26,13 @@ fn parses_split_store_declaration() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn malformed_resource_header_reports_the_resource_rule() {
     for source in [
-        "module app\nresource Book extra\n    title: string\n",
-        concat!("module app\nresource Book ", "^\n    title: string\n",),
-        concat!(
-            "module app\nresource Book ",
-            "^books()\n    title: string\n",
-        ),
-        concat!(
-            "module app\nresource Book ",
-            "^books(id:)\n    title: string\n",
-        ),
-        concat!(
-            "module app\nresource Book ",
-            "^books extra\n    title: string\n",
-        ),
+        "module app\nresource Book extra {\n    title: string\n}\n",
+        "module app\nresource Book ^ {\n    title: string\n}\n",
+        "module app\nresource Book ^books() {\n    title: string\n}\n",
+        "module app\nresource Book ^books(id:) {\n    title: string\n}\n",
+        "module app\nresource Book ^books extra {\n    title: string\n}\n",
     ] {
         let parsed = parse_source(source);
         assert!(
@@ -59,17 +49,18 @@ fn malformed_resource_header_reports_the_resource_rule() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
     // A store-body line beginning with a keyed-layer clause keyword such as
     // `unique` is not a member; it gets the same member-shape rule a non-keyword
     // junk word gets, not the bare "expected resource member name".
     let parsed = parse_source(
         "module app\n\
-         resource User\n\
+         resource User {\n\
          \x20   required email: string\n\
-         store ^users(id: int): User\n\
-         \x20   unique index byEmail(email)\n",
+         }\n\
+         store ^users[id: int]: User {\n\
+         \x20   unique index byEmail[email]\n\
+         }\n",
     );
 
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
@@ -94,14 +85,14 @@ fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn trailing_keyed_layer_clause_after_a_type_names_the_stray_token() {
     for clause in ["retain", "counted", "unique"] {
         let source = format!(
             "module app\n\
-             resource User\n\
-             \x20   tags(pos: int): string {clause}\n\
-             store ^users(id: int): User\n"
+             resource User {{\n\
+             \x20   tags[pos: int]: string {clause}\n\
+             }}\n\
+             store ^users[id: int]: User\n"
         );
         let parsed = parse_source(&source);
 
@@ -124,13 +115,13 @@ fn trailing_keyed_layer_clause_after_a_type_names_the_stray_token() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_genuinely_missing_field_type_still_reports_the_missing_type() {
     let parsed = parse_source(
         "module app\n\
-         resource User\n\
-         \x20   tags(pos: int):\n\
-         store ^users(id: int): User\n",
+         resource User {\n\
+         \x20   tags[pos: int]:\n\
+         }\n\
+         store ^users[id: int]: User\n",
     );
 
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
@@ -145,14 +136,14 @@ fn a_genuinely_missing_field_type_still_reports_the_missing_type() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn split_resource_body_rejects_index_members() {
     let parsed = parse_source(
         "module app\n\
-         resource Book\n\
+         resource Book {\n\
          \x20   title: string\n\
-         \x20   index byTitle(title)\n\
-         store ^books(id: int): Book\n",
+         \x20   index byTitle[title]\n\
+         }\n\
+         store ^books[id: int]: Book\n",
     );
 
     assert!(parsed.has_errors(), "expected parse rejection");
@@ -167,13 +158,12 @@ fn split_resource_body_rejects_index_members() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_tilde_prefixed_saved_roots() {
     for source in [
-        "module app\ncache ~books(id: int): Book\n",
-        "module app\nensure ~books(id: int): Book\n",
-        "module app\nresource Book\n    author: Id(~authors)\n",
-        "module app\n~scratch(id: int): Book\n",
+        "module app\ncache ~books[id: int]: Book\n",
+        "module app\nensure ~books[id: int]: Book\n",
+        "module app\nresource Book {\n    author: Id(~authors)\n}\n",
+        "module app\n~scratch[id: int]: Book\n",
     ] {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected rejection for:\n{source}");
@@ -189,13 +179,16 @@ fn rejects_tilde_prefixed_saved_roots() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_resource_members_nested_under_fields() {
+    // A scalar field cannot introduce nested members: only a group opens a `{ … }`
+    // child block. A field followed by a block is the unexpected-block fault.
     let parsed = parse_source(
         r#"module app
-resource Book
-    title: string
+resource Book {
+    title: string {
         nested: string
+    }
+}
 "#,
     );
 
@@ -209,13 +202,13 @@ resource Book
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_empty_saved_root_key_lists() {
     let parsed = parse_source(
         r#"module app
-resource Book
+resource Book {
     title: string
-store ^books(): Book
+}
+store ^books[]: Book
 "#,
     );
 
@@ -232,14 +225,15 @@ store ^books(): Book
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_empty_index_argument_lists() {
     let parsed = parse_source(
         r#"module app
-resource Book
+resource Book {
     title: string
-store ^books(id: int): Book
-    index empty()
+}
+store ^books[id: int]: Book {
+    index empty[]
+}
 "#,
     );
 
@@ -253,31 +247,27 @@ store ^books(id: int): Book
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn header_helper_errors_report_specific_expected_parts() {
     for (source, expected) in [
-        ("module app\nenum 123\n    One\n", ExpectedSyntax::EnumName),
+        ("module app\nenum 123 {\n    One\n}\n", ExpectedSyntax::EnumName),
         (
-            "module app\nenum Status extra\n    One\n",
+            "module app\nenum Status extra {\n    One\n}\n",
             ExpectedSyntax::EnumHeader,
         ),
         (
-            "module app\nresource 123\n    title: string\n",
+            "module app\nresource 123 {\n    title: string\n}\n",
             ExpectedSyntax::ResourceName,
         ),
         (
-            "module app\nresource Book where ^books\n    title: string\n",
+            "module app\nresource Book where ^books {\n    title: string\n}\n",
             ExpectedSyntax::ResourceHeader,
         ),
         (
-            concat!(
-                "module app\nresource Book ",
-                "extra books\n    title: string\n",
-            ),
+            "module app\nresource Book extra books {\n    title: string\n}\n",
             ExpectedSyntax::ResourceHeader,
         ),
         (
-            concat!("module app\nresource Book ", "^\n    title: string\n",),
+            "module app\nresource Book ^ {\n    title: string\n}\n",
             ExpectedSyntax::ResourceHeader,
         ),
         ("module app\nstore books: Book\n", ExpectedSyntax::StoreRoot),
@@ -287,11 +277,11 @@ fn header_helper_errors_report_specific_expected_parts() {
             ExpectedSyntax::StoreResourceName,
         ),
         (
-            "module app\nstore ^books: Book\n    index (title)\n",
+            "module app\nstore ^books: Book {\n    index [title]\n}\n",
             ExpectedSyntax::IndexName,
         ),
         (
-            "module app\nstore ^books: Book\n    index byTitle(title) sparse\n",
+            "module app\nstore ^books: Book {\n    index byTitle[title] sparse\n}\n",
             ExpectedSyntax::IndexTail,
         ),
     ] {
@@ -310,10 +300,10 @@ fn header_helper_errors_report_specific_expected_parts() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
-        let resource = parse_source(&format!("module app\nresource {word}\n    title: string\n"));
+        let resource =
+            parse_source(&format!("module app\nresource {word} {{\n    title: string\n}}\n"));
         assert!(
             has_reason(
                 &resource.diagnostics,
@@ -325,7 +315,7 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
             resource.diagnostics
         );
 
-        let enum_source = parse_source(&format!("module app\nenum {word}\n    active\n"));
+        let enum_source = parse_source(&format!("module app\nenum {word} {{\n    active\n}}\n"));
         assert!(
             has_reason(
                 &enum_source.diagnostics,
@@ -336,7 +326,7 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
         );
 
         let root = parse_source(&format!(
-            "module app\nresource Book\n    title: string\nstore ^{word}: Book\n"
+            "module app\nresource Book {{\n    title: string\n}}\nstore ^{word}: Book\n"
         ));
         assert!(
             has_reason(
@@ -352,12 +342,11 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_malformed_index_field_paths() {
     for source in [
-        "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(title.)\n",
-        "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(.title)\n",
-        "module app\nresource Book\n    title: string\nstore ^books(id: int): Book\n    index bad(title.*)\n",
+        "module app\nresource Book {\n    title: string\n}\nstore ^books[id: int]: Book {\n    index bad[title.]\n}\n",
+        "module app\nresource Book {\n    title: string\n}\nstore ^books[id: int]: Book {\n    index bad[.title]\n}\n",
+        "module app\nresource Book {\n    title: string\n}\nstore ^books[id: int]: Book {\n    index bad[title.*]\n}\n",
     ] {
         let parsed = parse_source(source);
 
@@ -374,9 +363,8 @@ fn rejects_malformed_index_field_paths() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_resource_member_name_is_rejected() {
-    let parsed = parse_source("resource R\n    while: int\n");
+    let parsed = parse_source("resource R {\n    while: int\n}\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
     assert!(
         parsed.diagnostics[0].reason
@@ -389,10 +377,9 @@ fn reserved_word_as_resource_member_name_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_resource_member_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
-        let parsed = parse_source(&format!("resource R\n    {word}: int\n"));
+        let parsed = parse_source(&format!("resource R {{\n    {word}: int\n}}\n"));
         assert!(
             parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
                 == parse_reason(ParseDiagnosticReason::Expected(
@@ -405,9 +392,8 @@ fn future_surface_words_as_resource_member_names_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_key_parameter_name_is_rejected() {
-    let parsed = parse_source("resource R\n    e(while: string): int\n");
+    let parsed = parse_source("resource R {\n    e[while: string]: int\n}\n");
     assert!(
         has_reason(
             &parsed.diagnostics,
@@ -419,17 +405,17 @@ fn reserved_word_as_key_parameter_name_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
     let parsed = parse_source(
         "module app\n\
-         resource Book\n\
+         resource Book {\n\
          \x20   required title: string\n\
-         store ^books(\n\
-         \x20   id: int, ; the identity\n\
-         \x20   ; the shelf this book lives on\n\
+         }\n\
+         store ^books[\n\
+         \x20   id: int, // the identity\n\
+         \x20   // the shelf this book lives on\n\
          \x20   shelf: string,\n\
-         ): Book\n",
+         ]: Book\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let store = parsed.file.store("books").expect("books store");
@@ -448,18 +434,19 @@ fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
     let parsed = parse_source(
         "module app\n\
-         resource Book\n\
+         resource Book {\n\
          \x20   required title: string\n\
          \x20   shelf: int\n\
-         store ^books(id: int): Book\n\
-         \x20   index byShelf(\n\
-         \x20       shelf, ; primary order\n\
-         \x20       ; the identity breaks ties\n\
-         \x20       id)\n",
+         }\n\
+         store ^books[id: int]: Book {\n\
+         \x20   index byShelf[\n\
+         \x20       shelf, // primary order\n\
+         \x20       // the identity breaks ties\n\
+         \x20       id]\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let store = parsed.file.store("books").expect("books store");
@@ -474,16 +461,16 @@ fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_genuinely_missing_key_name_still_reports_a_key_name_error() {
     let parsed = parse_source(
         "module app\n\
-         resource Book\n\
+         resource Book {\n\
          \x20   required title: string\n\
-         store ^books(\n\
+         }\n\
+         store ^books[\n\
          \x20   id: int,\n\
          \x20   : string,\n\
-         ): Book\n",
+         ]: Book\n",
     );
     assert!(
         has_reason(
