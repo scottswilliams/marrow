@@ -3601,6 +3601,16 @@ fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejecti
                 optional: true,
             })
         }
+        TAG_RECORD => {
+            let idx = reader.u16().ok_or(reject(
+                VerifyPhase::Function,
+                "short vacant-load record index",
+            ))?;
+            Ok(ImageType::Record {
+                idx,
+                optional: true,
+            })
+        }
         TAG_ENUM => {
             let idx = reader.u16().ok_or(reject(
                 VerifyPhase::Function,
@@ -3623,7 +3633,7 @@ fn decode_vacant_operand(reader: &mut Reader) -> Result<ImageType, VerifyRejecti
         }
         _ => Err(reject(
             VerifyPhase::Function,
-            "vacant-load operand must be an optional scalar, enum, or collection",
+            "vacant-load operand must be an optional scalar, record, enum, or collection",
         )),
     }
 }
@@ -3980,6 +3990,12 @@ fn apply(
         SealedInstr::VacantLoad(ty) => {
             // A record/enum/collection operand names a value type; bounds-check it.
             match ty {
+                ImageType::Record { idx, .. } if ctx.types.get(*idx as usize).is_none() => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "vacant-load record index out of range",
+                    ));
+                }
                 ImageType::Enum { idx, .. } if ctx.enums.get(*idx as usize).is_none() => {
                     return Err(reject(
                         VerifyPhase::Function,

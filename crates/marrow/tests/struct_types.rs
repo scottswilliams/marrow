@@ -120,6 +120,74 @@ pub fn originX(): int {
     assert!(stdout.contains(r#""data":3"#), "{stdout}");
 }
 
+/// A record-typed optional is a valid `VacantLoad` operand end to end: the
+/// verifier admits an optional record just as it admits an optional scalar, enum,
+/// or collection. Two lowerings reach it — an explicit `absent` bound to a
+/// struct-typed optional local, and a sparse struct-typed resource field omitted
+/// at construction — and both must compile, verify, and run.
+#[test]
+fn a_record_typed_optional_vacant_load_verifies_and_runs() {
+    // D1: an explicit `absent` in a struct-typed optional local.
+    let temp = TempDir::new("record-optional-absent");
+    project(
+        &temp,
+        r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn pick(hit: bool): int {
+    var p: Point? = absent
+    if hit {
+        p = Point(x: 1, y: 2)
+    }
+    if const q = p {
+        return q.x
+    }
+    return -1
+}
+"#,
+    );
+    let absent = run_in(&temp, &["run", "pick", "--format", "jsonl", "--", "false"]);
+    let absent_out = String::from_utf8_lossy(&absent.stdout);
+    assert!(absent.status.success(), "{absent_out}");
+    assert!(absent_out.contains(r#""data":-1"#), "{absent_out}");
+    let present = run_in(&temp, &["run", "pick", "--format", "jsonl", "--", "true"]);
+    let present_out = String::from_utf8_lossy(&present.stdout);
+    assert!(present.status.success(), "{present_out}");
+    assert!(present_out.contains(r#""data":1"#), "{present_out}");
+
+    // The twin: a sparse struct-typed resource field omitted at construction
+    // defaults to a vacant optional record.
+    let twin = TempDir::new("record-optional-omitted");
+    project(
+        &twin,
+        r#"struct Addr {
+    city: string
+}
+
+resource Person {
+    required name: string
+    addr: Addr
+}
+
+store ^people[id: int]: Person
+
+pub fn hasAddr(): int {
+    const o = Person(name: "x")
+    if const a = o.addr {
+        return 1
+    }
+    return -1
+}
+"#,
+    );
+    let output = run_in(&twin, &["run", "hasAddr", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":-1"#), "{stdout}");
+}
+
 /// A malformed construction — an unknown field, a missing field, a duplicated
 /// field, a positional (unnamed) argument, or a wrong-typed field — is a typed
 /// `check.type` at the literal.

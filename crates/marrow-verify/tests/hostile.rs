@@ -2607,6 +2607,22 @@ fn set_sparse_on_a_required_field_rejects_at_function() {
 }
 
 #[test]
+fn vacant_load_of_an_out_of_range_record_rejects_at_function() {
+    // A record-typed optional is an admitted `VacantLoad` operand, but its index
+    // is bounds-checked against the RECORD-TYPES table in phase 3. An index past
+    // the table is a function-phase rejection, not an out-of-bounds panic.
+    let draft = put_export(vec![
+        Instr::VacantLoad(ImageType::Record {
+            idx: 9_999,
+            optional: true,
+        }),
+        Instr::Pop,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
+}
+
+#[test]
 fn create_on_a_field_site_rejects_at_function() {
     // `create` requires an entry site; a field-target site is a phase-3 error.
     let value_site = 1;
