@@ -2,11 +2,11 @@
 //!
 //! Every source byte is covered exactly once, in order, by either a token's own
 //! span or an inter-token gap (whitespace, blank lines, and the content the
-//! layout limit drops from the stream but not from the file). So walking the
+//! nesting limit drops from the stream but not from the file). So walking the
 //! tokens in order, emitting each gap and then each token's text, reconstructs
 //! the source byte-for-byte. This is what makes trivia recoverable without a
-//! separate side table: comments, doc comments, indentation, and newlines are
-//! already tokens, and the remaining whitespace is exactly the gaps.
+//! separate side table: comments, doc comments, braces, and newlines are already
+//! tokens, and the remaining whitespace is exactly the gaps.
 //!
 //! The reconstruction slices from the source, so equality alone would be
 //! satisfied by any tiling; the load-bearing guard is the span well-formedness
@@ -66,51 +66,52 @@ fn assert_round_trips(label: &str, source: &str) {
 
 /// Every documented `.mw` example reconstructs exactly from its tokens.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
+#[ignore = "BS01: reads docs/language fences (layout); un-ignore when flip 5 converts them"]
 fn documented_examples_round_trip() {
     for block in mw_blocks() {
         assert_round_trips(&format!("{}#{}", block.path, block.index), &block.source);
     }
 }
 
-/// Whitespace, comments, layout, and the lexer's trickiest constructs — nested
-/// and escaped-quote interpolation, durations, CRLF endings, over-indentation,
-/// and content past the layout nesting limit — all reconstruct exactly.
+/// Whitespace, comments, braces, and the lexer's trickiest constructs — nested
+/// and escaped-quote interpolation, durations, CRLF endings, trailing whitespace,
+/// `//`/`///` comments, and a stray unbalanced brace — all reconstruct exactly.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn adversarial_inputs_round_trip() {
     let cases = [
-        "resource Book\n    title: string   \n",
-        "fn f()\n\n\n    return\n",
+        "resource Book {\n    title: string   \n}\n",
+        "fn f() {\n\n\n    return\n}\n",
         "const X = $\"a{f(\\\"x\\\")}b\"\n",
         "const X = $\"a{1}b\"\n",
         "const X = $\"outer{$\"inner{1}\"}\"\n",
         "const X = 1.day\n",
-        "fn f()\n    g(\n        a: 1,\n    )\n",
+        "fn f() {\n    g(\n        a: 1,\n    )\n}\n",
         "  indented\n",
-        ";; docs\nresource R\n    x: int\n",
-        "resource R\n    x: int ; trailing\n",
+        "/// docs\nresource R {\n    x: int\n}\n",
+        "resource R {\n    x: int // trailing\n}\n",
         "\t\n",
         "",
         "\n\n\n",
-        "resource R\r\n    x: int\r\n",
+        "resource R {\r\n    x: int\r\n}\r\n",
+        // A stray unbalanced `}` and a bare `{` are still tiled losslessly.
+        "fn f() {\n    return\n",
+        "}\n{\n",
     ];
     for (index, source) in cases.iter().enumerate() {
         assert_round_trips(&format!("adversarial #{index}"), source);
     }
 }
 
-/// A nest far past the 256-level layout limit is the one place the lexer bounds
-/// the token stream by dropping over-deep content; that content still lives in
-/// an inter-token gap, so the file reconstructs exactly even though the stream
-/// stays bounded.
+/// A brace nest far past the nesting limit is the one place the lexer bounds the
+/// token stream by dropping over-deep content; that content still lives in an
+/// inter-token gap, so the file reconstructs exactly even though the stream stays
+/// bounded.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn over_deep_nesting_round_trips() {
-    let mut source = String::from("enum E\n");
+    let mut source = String::from("enum E {\n");
     for level in 0..400 {
         source.push_str(&"    ".repeat(level + 1));
-        source.push_str(&format!("m{level}\n"));
+        source.push_str(&format!("m{level} {{\n"));
     }
     assert_round_trips("over-deep nest", &source);
 }
