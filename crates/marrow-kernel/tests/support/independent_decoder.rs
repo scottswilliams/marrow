@@ -33,8 +33,9 @@
 
 /// value-shape nesting depth cap (`MAX_DURABLE_VALUE_DEPTH`, brief §4).
 pub const MAX_DURABLE_VALUE_DEPTH: usize = 32;
-/// struct leaf count cap (`MAX_FIELDS`, brief §4).
-pub const MAX_FIELDS: usize = 64;
+/// struct leaf count cap (`MAX_STRUCT_LEAVES`, brief §4). The dense-composite leaf
+/// count stays narrow and independent of the record field width.
+pub const MAX_STRUCT_LEAVES: usize = 64;
 /// enum variant count cap (`MAX_VARIANTS`, brief §4).
 pub const MAX_VARIANTS: usize = 256;
 /// enum per-variant payload leaf cap (`MAX_PAYLOAD_FIELDS`, brief §4).
@@ -280,8 +281,8 @@ pub fn validate_shape(shape: &Shape) -> Result<(), DecodeError> {
                         "depth exceeds MAX_DURABLE_VALUE_DEPTH",
                     ));
                 }
-                if leaves.len() > MAX_FIELDS {
-                    return Err(DecodeError::ShapeInvalid("leaf count exceeds MAX_FIELDS"));
+                if leaves.len() > MAX_STRUCT_LEAVES {
+                    return Err(DecodeError::ShapeInvalid("leaf count exceeds MAX_STRUCT_LEAVES"));
                 }
                 for l in leaves {
                     go(l, depth + 1)?;

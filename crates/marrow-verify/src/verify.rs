@@ -459,7 +459,7 @@ fn decode_types(
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short field count"))?
             as usize;
-        if field_count > marrow_image::bounds::MAX_FIELDS {
+        if field_count > marrow_image::bounds::MAX_RECORD_FIELDS {
             return Err(reject(VerifyPhase::Table, "too many fields"));
         }
         let mut fields = Vec::with_capacity(field_count);
@@ -2134,7 +2134,7 @@ fn decode_value_shape(
                 VerifyPhase::Table,
                 "short durable struct leaf count",
             ))? as usize;
-            if count > marrow_image::bounds::MAX_FIELDS {
+            if count > marrow_image::bounds::MAX_STRUCT_LEAVES {
                 return Err(reject(VerifyPhase::Table, "too many durable struct leaves"));
             }
             let mut leaves = Vec::with_capacity(count);

@@ -338,6 +338,7 @@ pub enum ImageBuildError {
     TooManyConsts,
     TooManyTypes,
     TooManyFields,
+    TooManyStructLeaves,
     TooManyEnums,
     TooManyVariants,
     TooManyPayloadFields,

@@ -88,7 +88,7 @@ impl ImageDraft {
             return Err(ImageBuildError::TooManyTypes);
         }
         for record in self.types() {
-            if record.fields.len() > bounds::MAX_FIELDS {
+            if record.fields.len() > bounds::MAX_RECORD_FIELDS {
                 return Err(ImageBuildError::TooManyFields);
             }
         }
@@ -762,8 +762,8 @@ fn validate_value_shape(value: &DurableValueShape, depth: usize) -> Result<(), I
     match value {
         DurableValueShape::Scalar(_) => {}
         DurableValueShape::Struct(leaves) => {
-            if leaves.len() > bounds::MAX_FIELDS {
-                return Err(ImageBuildError::TooManyFields);
+            if leaves.len() > bounds::MAX_STRUCT_LEAVES {
+                return Err(ImageBuildError::TooManyStructLeaves);
             }
             for leaf in leaves {
                 validate_value_shape(leaf, depth + 1)?;
