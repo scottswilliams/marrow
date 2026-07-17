@@ -1,15 +1,15 @@
 //! The structural type node the parser owns. Every type spelling is classified
-//! once here — a generic application `Head[..]`, `Id(^root)`, the `?` suffix, and
+//! once here — a generic application `Head<..>`, `Id(^root)`, the `?` suffix, and
 //! otherwise a name —
 //! and downstream crates match on the node rather than re-reading the spelling.
-//! These tests pin the node shape and the whitespace-free render that the
-//! formatter and the durable digest depend on.
+//! These tests pin the node shape and the canonical render that the formatter and
+//! the durable digest depend on.
 
 use marrow_syntax::{Declaration, IdentityTypeExpr, TypeExpr, parse_source};
 
 /// Parse a field spelling into its structural node through the production parser.
 fn field_type(spelling: &str) -> TypeExpr {
-    let source = format!("resource R\n    value: {spelling}\n");
+    let source = format!("resource R {{\n    value: {spelling}\n}}\n");
     let parsed = parse_source(&source);
     assert!(
         !parsed.has_errors(),
@@ -26,7 +26,6 @@ fn field_type(spelling: &str) -> TypeExpr {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_scalar_or_named_spelling_is_a_name() {
     assert!(matches!(field_type("int"), TypeExpr::Name { text, .. } if text == "int"));
     assert!(matches!(field_type("Book"), TypeExpr::Name { text, .. } if text == "Book"));
@@ -37,15 +36,14 @@ fn a_scalar_or_named_spelling_is_a_name() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn a_bracket_bearing_name_is_a_generic_application() {
-    // Any identifier head carrying a `[...]` group is a generic type application
-    // (`Option[T]`, `List[T]`, or a user `struct`/`enum` template); the semantic
+fn an_angle_bearing_name_is_a_generic_application() {
+    // Any identifier head carrying a `<...>` group is a generic type application
+    // (`Option<T>`, `List<T>`, or a user `struct`/`enum` template); the semantic
     // owner resolves the head, so the parser accepts an arbitrary one. A
     // paren-bearing name is not an application: it stays an unresolvable name the
     // checker reports.
-    let TypeExpr::Apply { head, args, .. } = field_type("Foo[bar]") else {
-        panic!("expected a generic application for `Foo[bar]`");
+    let TypeExpr::Apply { head, args, .. } = field_type("Foo<bar>") else {
+        panic!("expected a generic application for `Foo<bar>`");
     };
     assert_eq!(head, "Foo");
     assert!(matches!(args.as_slice(), [TypeExpr::Name { text, .. }] if text == "bar"));
@@ -53,9 +51,8 @@ fn a_bracket_bearing_name_is_a_generic_application() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_generic_application_recurses_on_its_arguments() {
-    let TypeExpr::Apply { head, args, .. } = field_type("Map[string, List[int]]") else {
+    let TypeExpr::Apply { head, args, .. } = field_type("Map<string, List<int>>") else {
         panic!("expected a generic application");
     };
     assert_eq!(head, "Map");
@@ -67,9 +64,8 @@ fn a_generic_application_recurses_on_its_arguments() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn identity_records_the_root_and_its_spans() {
-    let source = "resource R\n    value: Id(^books)\n";
+    let source = "resource R {\n    value: Id(^books)\n}\n";
     let parsed = parse_source(source);
     let Declaration::Resource(resource) = &parsed.file.declarations[0] else {
         panic!("expected a resource");
@@ -100,7 +96,6 @@ fn identity_records_the_root_and_its_spans() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_trailing_question_wraps_the_base_as_optional() {
     let TypeExpr::Optional { inner, .. } = field_type("string?") else {
         panic!("expected an optional");
@@ -114,33 +109,33 @@ fn a_trailing_question_wraps_the_base_as_optional() {
     assert!(matches!(*inner, TypeExpr::Identity(_)));
 
     // A `?` inside a generic argument rides with the argument.
-    let TypeExpr::Apply { args, .. } = field_type("List[int?]") else {
+    let TypeExpr::Apply { args, .. } = field_type("List<int?>") else {
         panic!("expected a generic application of optionals");
     };
     assert!(matches!(args.as_slice(), [TypeExpr::Optional { .. }]));
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn display_round_trips_the_whitespace_free_spelling() {
+fn display_round_trips_the_canonical_spelling() {
     // The formatter re-emits and the durable digest hashes this render, so a
-    // parsed spelling renders back byte-identically, dropping only whitespace.
+    // parsed spelling renders back to its canonical form, dropping only interior
+    // whitespace.
     for spelling in [
         "int",
-        "List[int]",
-        "List[List[int]]",
+        "List<int>",
+        "List<List<int>>",
         "Id(^books)",
         "string?",
         "Id(^books)?",
-        "List[int?]",
-        "List[Id(^books)]",
-        "Foo[bar]",
+        "List<int?>",
+        "List<Id(^books)>",
+        "Foo<bar>",
         "shelf::Book",
     ] {
         assert_eq!(field_type(spelling).to_string(), spelling);
     }
-    // Whitespace inside a spelling is dropped in the stored render.
-    assert_eq!(field_type("List[ int ]").to_string(), "List[int]");
+    // Interior whitespace inside a spelling is dropped in the stored render.
+    assert_eq!(field_type("List< int >").to_string(), "List<int>");
 }
 
 /// The structurally malformed spellings the parser now rejects, each paired with
@@ -169,16 +164,15 @@ const MALFORMED: &[(&str, &str)] = &[
 /// Every type-annotation position, each routing through `parse_type` with its own
 /// context. `%` marks where the spelling is placed.
 const POSITIONS: &[(&str, &str)] = &[
-    ("resource field", "resource R\n    value: %\n"),
-    ("keyed key", "resource R\n    value(k: %): int\n"),
-    ("function parameter", "fn f(x: %)\n    return\n"),
-    ("function return", "fn f(): %\n    return\n"),
+    ("resource field", "resource R {\n    value: %\n}\n"),
+    ("keyed key", "resource R {\n    value[k: %]: int\n}\n"),
+    ("function parameter", "fn f(x: %) {\n    return\n}\n"),
+    ("function return", "fn f(): % {\n    return\n}\n"),
     ("const", "const c: % = 0\n"),
-    ("local var", "fn f()\n    var x: % = 0\n    return\n"),
+    ("local var", "fn f() {\n    var x: % = 0\n    return\n}\n"),
 ];
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_type_is_a_parse_error_in_every_position() {
     for (spelling, message) in MALFORMED {
         for (position, template) in POSITIONS {
@@ -198,12 +192,11 @@ fn a_malformed_type_is_a_parse_error_in_every_position() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_identity_leaves_no_identity_node_for_tooling_to_read() {
     // The field fails to parse, so no `Identity` node reaches the AST — the
     // saved-root cursor scan walks the parsed type nodes and finds nothing, so no
     // spurious `^a` root fact survives a malformed `Id(^a.b)`.
-    let parsed = parse_source("resource R\n    ref: Id(^a.b)\n");
+    let parsed = parse_source("resource R {\n    ref: Id(^a.b)\n}\n");
     let identities = parsed
         .file
         .declarations
@@ -223,7 +216,6 @@ fn a_malformed_identity_leaves_no_identity_node_for_tooling_to_read() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_type_span_points_at_the_offending_token() {
     for (spelling, offending) in [
         ("Id(^a.b)", "."),
@@ -233,7 +225,7 @@ fn a_malformed_type_span_points_at_the_offending_token() {
         ("?", "?"),
         ("int??", "??"),
     ] {
-        let source = format!("resource R\n    value: {spelling}\n");
+        let source = format!("resource R {{\n    value: {spelling}\n}}\n");
         let parsed = parse_source(&source);
         let diagnostic = parsed
             .diagnostics
