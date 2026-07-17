@@ -2844,7 +2844,7 @@ mod tests {
 
     /// The family-populated probe over a keyed branch family (the `notes` layer under one
     /// book): `Present` when the book has at least one note, `Absent` when it has none or
-    /// is itself absent — the E06 "does this asset have notes?" question. The probe reads
+    /// is itself absent — the "does this asset have notes?" question. The probe reads
     /// the branch layer scoped to the fixed parent key, so one book's notes never make a
     /// sibling's family read populated.
     #[test]
@@ -3746,7 +3746,7 @@ mod tests {
         );
     }
 
-    // --- managed-index maintenance differential (E05) ---
+    // --- managed-index maintenance differential  ---
 
     const BY_LABEL: [u8; 16] = [0x70; 16];
     const BY_VALUE: [u8; 16] = [0x71; 16];

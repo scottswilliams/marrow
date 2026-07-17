@@ -422,7 +422,7 @@ pub enum SealedIndexComponent {
 /// same projection resolved to record/key positions the kernel maintains. The verifier
 /// reconstructs it by re-resolving every projected leaf against the decoded root, so a
 /// projection over a non-existent leaf never seals. An index has no application write
-/// opcode; maintenance is compiler-owned and runs at E05.
+/// opcode; maintenance is kernel-owned at the write path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedIndex {
     pub(crate) id: LedgerIdBytes,
@@ -772,7 +772,7 @@ impl VerifiedImage {
     /// The verifier-derived `FieldId → [IndexId]` incidence: the stable ids of every
     /// managed index whose projection includes the stored field `field`. This is the
     /// maintenance consequence of mutating that field — the set of indexes a later
-    /// exact-field write must keep coherent (E05). Identity-key projection components
+    /// exact-field write must keep coherent. Identity-key projection components
     /// are excluded: a key is immutable, so it triggers no field maintenance. Derived
     /// from the sealed indexes, never trusted from the image.
     pub fn field_incidence(&self, field: LedgerIdBytes) -> Vec<LedgerIdBytes> {
@@ -790,7 +790,7 @@ impl VerifiedImage {
     /// The verifier-derived `RootId → [IndexId]` incidence: the stable ids of every
     /// managed index of the root at index `root`. This is the maintenance consequence
     /// of a whole-entry create/replace/erase on that root — every index must be kept
-    /// coherent (E05). Derived from the sealed indexes, never trusted from the image.
+    /// coherent. Derived from the sealed indexes, never trusted from the image.
     pub fn root_incidence(&self, root: u16) -> Vec<LedgerIdBytes> {
         self.indexes
             .iter()

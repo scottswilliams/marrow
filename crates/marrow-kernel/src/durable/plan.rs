@@ -130,7 +130,7 @@ impl Planner {
     /// it; an unchanged row emits nothing, and a changed row emits a remove of the old key
     /// then a put of the new. A unique index's put is a [`IndexOp::UniquePut`] the session
     /// enforces. This is the single owner of the source-write-to-index-cell decomposition —
-    /// the pure widening of the consequence planner for E05, matching how E03/E04 widened it
+    /// the pure widening of the consequence planner
     /// rather than a second maintenance path. A non-scalar or non-key-eligible projected
     /// value is [`KernelFault::Corruption`] (the verifier's eligibility rule already
     /// excludes it).
