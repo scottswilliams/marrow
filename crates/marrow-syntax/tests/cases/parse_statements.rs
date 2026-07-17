@@ -10,16 +10,9 @@ use marrow_syntax::{
 };
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_simple_statements_in_function_bodies() {
     let parsed = parse_source(
-        "module app\n\
-         fn main()\n\
-         \x20   const title: string = \"Small Gods\"\n\
-         \x20   var count: int = 0\n\
-         \x20   count = count + 1\n\
-         \x20   print(title)\n\
-         \x20   return count\n",
+        "module app\nfn main() {\n    const title: string = \"Small Gods\"\n    var count: int = 0\n    count = count + 1\n    print(title)\n    return count\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
@@ -76,15 +69,10 @@ fn parses_simple_statements_in_function_bodies() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_return_absent_as_a_return_of_the_absent_value() {
     // `absent` is an ordinary primary expression, so `return absent` is a `Return`
     // carrying the `Absent` value rather than a special return form.
-    let parsed = parse_source(
-        "module app\n\
-         fn f(): int?\n\
-         \x20   return absent\n",
-    );
+    let parsed = parse_source("module app\nfn f(): int? {\n    return absent\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
     assert!(
@@ -101,15 +89,11 @@ fn parses_return_absent_as_a_return_of_the_absent_value() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn if_const_accepts_a_type_annotation() {
     // `if const name: T = place` accepts the annotation the same way `const`/`var`
     // do, rather than dead-ending in a generic "expected an expression" error.
     let parsed = parse_source(
-        "module app\n\
-         fn title(id: Id(^books))\n\
-         \x20   if const pages: int = ^books(id).pages\n\
-         \x20       print(pages)\n",
+        "module app\nfn title(id: Id(^books)) {\n    if const pages: int = ^books[id].pages {\n        print(pages)\n    }\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let title = parsed.file.function("title").expect("title function");
@@ -134,11 +118,10 @@ fn if_const_accepts_a_type_annotation() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn absent_is_a_primary_expression() {
     // The empty optional `absent` is a first-class primary value, usable wherever
     // an expression is, such as a `const` initializer.
-    let parsed = parse_source("module app\nfn f()\n    const x = absent\n");
+    let parsed = parse_source("module app\nfn f() {\n    const x = absent\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
     assert!(
@@ -155,14 +138,9 @@ fn absent_is_a_primary_expression() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_type_keyword_as_a_path_segment() {
     // `bytes` is a type keyword but must be valid mid-path, as in `std::bytes::length`.
-    let parsed = parse_source(
-        "module app\n\
-         fn main()\n\
-         \x20   return std::bytes::length(data)\n",
-    );
+    let parsed = parse_source("module app\nfn main() {\n    return std::bytes::length(data)\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
     assert!(
@@ -178,16 +156,12 @@ fn parses_a_type_keyword_as_a_path_segment() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_type_keyword_as_a_leading_path_segment() {
     // A short-form std call leads its path with a type keyword, as in `bytes::length`
     // after `use std::bytes`. The keyword must begin a path when followed by `::`,
     // exactly as it is valid mid-path — otherwise short-form `std::bytes` is unusable.
     let parsed = parse_source(
-        "module app\n\
-         use std::bytes\n\
-         fn main()\n\
-         \x20   return bytes::length(data)\n",
+        "module app\nuse std::bytes\nfn main() {\n    return bytes::length(data)\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
@@ -204,13 +178,8 @@ fn parses_a_type_keyword_as_a_leading_path_segment() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_keyed_var_declaration() {
-    let parsed = parse_source(
-        "module app\n\
-         fn tally()\n\
-         \x20   var counts(name: string): int\n",
-    );
+    let parsed = parse_source("module app\nfn tally() {\n    var counts[name: string]: int\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let tally = parsed.file.function("tally").expect("tally function");
     let Statement::Var {
@@ -232,13 +201,8 @@ fn parses_keyed_var_declaration() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
-    let parsed = parse_source(
-        "module app\n\
-         fn tally()\n\
-         \x20   var counts(name: 1): int\n",
-    );
+    let parsed = parse_source("module app\nfn tally() {\n    var counts[name: 1]: int\n}\n");
     assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let tally = parsed.file.function("tally").expect("tally function");
     let Statement::Var { keys, ty, .. } = &tally.body.statements[0] else {
@@ -251,16 +215,9 @@ fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
     let parsed = parse_source(
-        "module app\n\
-         fn tally()\n\
-         \x20   var scores(\n\
-         \x20       player: string, ; who is scoring\n\
-         \x20       ; the round being recorded\n\
-         \x20       round: int,\n\
-         \x20   ): int\n",
+        "module app\nfn tally() {\n    var scores[\n        player: string, // who is scoring\n        // the round being recorded\n        round: int,\n    ]: int\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let tally = parsed.file.function("tally").expect("tally function");
@@ -281,9 +238,8 @@ fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_var_key_list_errors_keep_key_specific_reasons() {
-    let source = "fn f()\n    var counts(): int\n";
+    let source = "fn f() {\n    var counts[]: int\n}\n";
     let parsed = parse_source(source);
 
     assert!(parsed.has_errors(), "expected error for:\n{source}");
@@ -306,9 +262,8 @@ fn keyed_var_key_list_errors_keep_key_specific_reasons() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
-    let source = "fn f()\n    var counts(name: int = 1): string\n";
+    let source = "fn f() {\n    var counts[name: int = 1]: string\n}\n";
     let parsed = parse_source(source);
 
     assert!(parsed.has_errors(), "expected error for:\n{source}");
@@ -331,13 +286,8 @@ fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_statement() {
-    let source = "module app\n\
-         fn main()\n\
-         \x20   print(two_num([1,2,3], 3))\n\
-         fn two_num(nums: List[int], target: int): List[int]\n\
-         \x20   return nums\n";
+    let source = "module app\nfn main() {\n    print(two_num([1,2,3], 3))\n}\nfn two_num(nums: List<int>, target: int): List<int> {\n    return nums\n}\n";
     let parsed = parse_source(source);
 
     assert!(parsed.has_errors(), "expected error for:\n{source}");
@@ -368,16 +318,19 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn local_bindings_reject_structural_equal_inside_type_annotations() {
+    // A `= v` value separator is valid on both bindings, so the rejected `=` is the
+    // one nested inside the type `List<a = b>`, which has no valid completion: the
+    // angle type parser reports the expression it could not find rather than falling
+    // back to statement recovery.
     let cases = [
         (
-            "fn f()\n    var x: List[a = b] = 1\n",
-            ExpectedSyntax::ParameterType,
+            "fn f() {\n    var x: List<a = b> = 1\n}\n",
+            ExpectedSyntax::Expression,
         ),
         (
-            "fn f()\n    const x: List[a = b] = 1\n",
-            ExpectedSyntax::ConstType,
+            "fn f() {\n    const x: List<a = b> = 1\n}\n",
+            ExpectedSyntax::Expression,
         ),
     ];
 
@@ -405,13 +358,8 @@ fn local_bindings_reject_structural_equal_inside_type_annotations() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
-    let parsed = parse_source(
-        "module app\n\
-         fn grid()\n\
-         \x20   var cells(x: int, y: int,): bool\n",
-    );
+    let parsed = parse_source("module app\nfn grid() {\n    var cells[x: int, y: int,]: bool\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let grid = parsed.file.function("grid").expect("grid function");
     let Statement::Var { keys, ty, .. } = &grid.body.statements[0] else {
@@ -424,14 +372,9 @@ fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_saved_writes_and_var_without_value() {
     let parsed = parse_source(
-        "module app\n\
-         fn save()\n\
-         \x20   var book: Book\n\
-         \x20   ^books(id).title = title\n\
-         \x20   delete ^books(id).subtitle\n",
+        "module app\nfn save() {\n    var book: Book\n    ^books[id].title = title\n    delete ^books[id].subtitle\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let save = parsed.file.function("save").expect("save function");
@@ -458,14 +401,9 @@ fn parses_saved_writes_and_var_without_value() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
     let parsed = parse_source(
-        "module app\n\
-         fn commit(id: Id(^books))\n\
-         \x20   lock ^books(id)\n\
-         \x20       transaction\n\
-         \x20           ^books(id).title = title\n",
+        "module app\nfn commit(id: Id(^books)) {\n    lock ^books[id] {\n        transaction {\n            ^books[id].title = title\n        }\n    }\n}\n",
     );
     assert!(parsed.has_errors(), "expected lock rejection");
     assert!(
@@ -485,17 +423,15 @@ fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
         parsed.diagnostics
     );
     let commit = parsed.file.function("commit").expect("commit function");
+    // The reserved `lock` statement and its brace block are consumed by recovery,
+    // so no statement survives into the function body.
     assert!(commit.body.statements.is_empty(), "{commit:#?}");
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_merge_as_reserved_statement() {
     let parsed = parse_source(
-        "module app\n\
-         fn commit(id: Id(^books))\n\
-         \x20   merge ^books(id) = ^books(id)\n\
-         \x20   print(\"after\")\n",
+        "module app\nfn commit(id: Id(^books)) {\n    merge ^books[id] = ^books[id]\n    print(\"after\")\n}\n",
     );
     assert!(parsed.has_errors(), "expected merge rejection");
     assert!(
@@ -525,15 +461,9 @@ fn rejects_merge_as_reserved_statement() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn statement_spanning_open_delimiters_stays_one_statement() {
     let parsed = parse_source(
-        "module app\n\
-         fn make()\n\
-         \x20   log(\n\
-         \x20       code: \"book.absent\",\n\
-         \x20       message: \"missing\",\n\
-         \x20   )\n",
+        "module app\nfn make() {\n    log(\n        code: \"book.absent\",\n        message: \"missing\",\n    )\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let make = parsed.file.function("make").expect("make function");
@@ -553,13 +483,12 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reports_malformed_body_statements_with_a_diagnostic() {
     // A statement the body parser cannot structure must surface a parse error
     // rather than becoming a silent `Statement::Unparsed` no-op.
     let cases = [
-        "module app\nfn main()\n    foo +\n",
-        "module app\nfn main()\n    const x: int\n",
+        "module app\nfn main() {\n    foo +\n}\n",
+        "module app\nfn main() {\n    const x: int\n}\n",
     ];
     for source in cases {
         let parsed = parse_source(source);
@@ -578,24 +507,24 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_doc_comment_in_statement_position_is_a_parse_error() {
-    // A `;;` doc comment attaches only to a declaration, member, or parameter.
+    // A `///` doc comment attaches only to a declaration, member, or parameter.
     // In a statement position it has no target, so the parser must reject it
     // rather than silently swallow it — a program that passes check and runs must
     // be formattable, and a swallowed doc comment breaks that round trip.
+    // (The former layout-only over-indented-block case is deleted: over-indentation
+    // is not representable under the brace grammar.)
     let cases = [
         // own line, before a statement
-        ("module app\nfn main()\n    ;; orphan doc\n    return\n", 3),
-        // trailing a statement
-        ("module app\nfn main()\n    return ;; orphan doc\n", 3),
-        // end of body
-        ("module app\nfn main()\n    return\n    ;; orphan doc\n", 4),
-        // inside an unexpected over-indented block, where the only content is the
-        // doc comment, so the block carries no statement token to anchor the
-        // unexpected-indentation error
         (
-            "module app\nfn main()\n    print(\"a\")\n        ;; orphan doc\n",
+            "module app\nfn main() {\n    /// orphan doc\n    return\n}\n",
+            3,
+        ),
+        // trailing a statement
+        ("module app\nfn main() {\n    return /// orphan doc\n}\n", 3),
+        // end of body
+        (
+            "module app\nfn main() {\n    return\n    /// orphan doc\n}\n",
             4,
         ),
     ];
@@ -619,27 +548,26 @@ fn a_doc_comment_in_statement_position_is_a_parse_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
-    // A `;;` doc comment attaches to the next declaration, member, or parameter.
+    // A `///` doc comment attaches to the next declaration, member, or parameter.
     // With nothing to attach to — at end of file, at the end of a resource or
     // store body, or separated from the next declaration by a blank line — it has
     // no target and must be rejected everywhere, just like the statement-position
     // case, so it can never pass check and then brick the formatter.
     let cases = [
         // top-level, dangling at end of file
-        ("module app\n;; just docs\n", 2),
+        ("module app\n/// just docs\n", 2),
         // top-level, separated from the next declaration by a blank line
-        ("module app\n;; orphan\n\nfn main()\n    return\n", 2),
+        ("module app\n/// orphan\n\nfn main() {\n    return\n}\n", 2),
         // end of a resource body, after the last member
         (
-            "module app\nresource Book\n    required title: string\n    ;; orphan\n",
+            "module app\nresource Book {\n    required title: string\n    /// orphan\n}\n",
             4,
         ),
         // end of a store body, after the last index
         (
-            "module app\nresource Book\n    required title: string\nstore ^books(id: int): Book\n    index byTitle(title, id)\n    ;; orphan\n",
-            6,
+            "module app\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book {\n    index byTitle[title, id]\n    /// orphan\n}\n",
+            7,
         ),
     ];
     for (source, line) in cases {
@@ -662,16 +590,15 @@ fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_doc_comment_that_precedes_a_declaration_or_member_attaches_cleanly() {
     // The attachment cases must stay clean: a doc comment immediately before a
     // declaration, a resource member, a store index, or a parameter documents it
     // and is not a dangling error.
     for source in [
-        "module app\n;; documents the const\nconst Limit: int = 10\n",
-        "module app\nresource Book\n    ;; the title\n    required title: string\n",
-        "module app\nresource Book\n    required title: string\nstore ^books(id: int): Book\n    ;; lookup by title\n    index byTitle(title, id)\n",
-        "module app\n;; documents main\nfn main()\n    return\n",
+        "module app\n/// documents the const\nconst Limit: int = 10\n",
+        "module app\nresource Book {\n    /// the title\n    required title: string\n}\n",
+        "module app\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book {\n    /// lookup by title\n    index byTitle[title, id]\n}\n",
+        "module app\n/// documents main\nfn main() {\n    return\n}\n",
     ] {
         let parsed = parse_source(source);
         assert!(
@@ -683,14 +610,13 @@ fn a_doc_comment_that_precedes_a_declaration_or_member_attaches_cleanly() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_ordinary_comment_in_statement_position_parses_cleanly() {
-    // A single-`;` line comment in statement position is fine; only `;;` doc
+    // A single-`//` line comment in statement position is fine; only `///` doc
     // comments require an attachment target.
     for source in [
-        "module app\nfn main()\n    ; ordinary\n    return\n",
-        "module app\nfn main()\n    return ; ordinary\n",
-        "module app\nfn main()\n    return\n    ; ordinary\n",
+        "module app\nfn main() {\n    // ordinary\n    return\n}\n",
+        "module app\nfn main() {\n    return // ordinary\n}\n",
+        "module app\nfn main() {\n    return\n    // ordinary\n}\n",
     ] {
         let parsed = parse_source(source);
         assert!(
@@ -702,11 +628,11 @@ fn an_ordinary_comment_in_statement_position_parses_cleanly() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_doc_comment_on_a_declaration_still_attaches() {
-    // The doc-comment rejection is scoped to statement position; a `;;` doc
+    // The doc-comment rejection is scoped to statement position; a `///` doc
     // comment on a declaration attaches as before.
-    let parsed = parse_source("module app\n;; documents the function\nfn main()\n    return\n");
+    let parsed =
+        parse_source("module app\n/// documents the function\nfn main() {\n    return\n}\n");
     assert!(
         !parsed.has_errors(),
         "a doc comment on a declaration must still attach: {:#?}",
@@ -715,39 +641,12 @@ fn a_doc_comment_on_a_declaration_still_attaches() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn reports_unexpected_indentation_after_simple_statements() {
-    let parsed = parse_source(
-        "module app\n\
-         fn main()\n\
-         \x20   print(\"kept\")\n\
-         \x20       print(\"over-indented\")\n",
-    );
-
-    assert!(
-        parsed.has_errors(),
-        "an unexpected nested line must not parse cleanly: {:#?}",
-        parsed.diagnostics
-    );
-    assert!(
-        parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.span.line == 4
-                && diagnostic.reason == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
-        "expected a line-4 indentation diagnostic: {:#?}",
-        parsed.diagnostics
-    );
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_final_block_statement_without_trailing_newline() {
-    let parsed = parse_source("module app\nfn main()\n    if ready\n        return");
+    let parsed = parse_source("module app\nfn main() {\n    if ready {\n        return\n    }\n}");
 
     assert!(
         parsed.diagnostics.is_empty(),
-        "EOF should close the final newline/dedent sequence: {:#?}",
+        "EOF should close the final block sequence: {:#?}",
         parsed.diagnostics
     );
     let main = parsed.file.function("main").expect("main function");
@@ -755,9 +654,8 @@ fn parses_final_block_statement_without_trailing_newline() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn surfaces_lexer_diagnostics_for_function_body_tokens() {
-    let parsed = parse_source("module app\nfn main()\n    return a && b\n");
+    let parsed = parse_source("module app\nfn main() {\n    return a && b\n}\n");
 
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let obsolete = parsed
@@ -782,36 +680,40 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn out_is_an_ordinary_variable_name() {
-    let parsed = parse_source("module app\nfn f(): int\n    var out: int = 0\n    return out\n");
+    let parsed =
+        parse_source("module app\nfn f(): int {\n    var out: int = 0\n    return out\n}\n");
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn finally_is_an_ordinary_variable_name() {
     let parsed = parse_source(
-        "module app\nfn f(): string\n    var finally: string = \"done\"\n    return finally\n",
+        "module app\nfn f(): string {\n    var finally: string = \"done\"\n    return finally\n}\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_compound_assignment_from_single_operator_token() {
     for (source, expected_op) in [
-        ("module app\nfn f()\n    i+=3\n", CompoundAssignOp::Add),
+        ("module app\nfn f() {\n    i+=3\n}\n", CompoundAssignOp::Add),
         (
-            "module app\nfn f()\n    i -= 3\n",
+            "module app\nfn f() {\n    i -= 3\n}\n",
             CompoundAssignOp::Subtract,
         ),
-        ("module app\nfn f()\n    i*=3\n", CompoundAssignOp::Multiply),
-        ("module app\nfn f()\n    i /= 3\n", CompoundAssignOp::Divide),
         (
-            "module app\nfn f()\n    i%=3\n",
+            "module app\nfn f() {\n    i*=3\n}\n",
+            CompoundAssignOp::Multiply,
+        ),
+        (
+            "module app\nfn f() {\n    i /= 3\n}\n",
+            CompoundAssignOp::Divide,
+        ),
+        (
+            "module app\nfn f() {\n    i%=3\n}\n",
             CompoundAssignOp::Remainder,
         ),
     ] {
@@ -835,12 +737,11 @@ fn parses_compound_assignment_from_single_operator_token() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn split_compound_assignment_is_rejected_with_a_recovery_node() {
     // Each compound operator is a single token, so a space before the `=`
     // (`i * = 3`) is not a compound assignment: it reports and leaves an error
     // node so the body still parses.
-    let parsed = parse_source("module app\nfn f()\n    i * = 3\n");
+    let parsed = parse_source("module app\nfn f() {\n    i * = 3\n}\n");
     assert!(
         parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
             == parse_reason(ParseDiagnosticReason::SplitCompoundAssign)),
@@ -856,9 +757,8 @@ fn split_compound_assignment_is_rejected_with_a_recovery_node() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
-    let parsed = parse_source("module app\nfn f()\n    i <= 3\n");
+    let parsed = parse_source("module app\nfn f() {\n    i <= 3\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
     assert!(
@@ -867,27 +767,16 @@ fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
         f.body.statements[0]
     );
 
-    let spaced = parse_source("module app\nfn f()\n    i < = 3\n");
+    let spaced = parse_source("module app\nfn f() {\n    i < = 3\n}\n");
     assert!(spaced.has_errors(), "{:#?}", spaced.diagnostics);
 }
 
 /// The checked-arithmetic form parses in all three binding positions with both
 /// diverging arms, captured by fault kind regardless of source order.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_checked_arithmetic_forms() {
     let parsed = parse_source(
-        "module app\n\
-         fn main(a: int, b: int)\n\
-         \x20   const q: int = checked a / b\n\
-         \x20       on out_of_range\n\
-         \x20           return\n\
-         \x20       on zero_divisor\n\
-         \x20           return\n\
-         \x20   var r = checked a + b\n\
-         \x20       on out_of_range\n\
-         \x20           r = 0\n\
-         \x20   return\n",
+        "module app\nfn main(a: int, b: int) {\n    const q: int = checked a / b\n        on out_of_range {\n            return\n        }\n        on zero_divisor {\n            return\n        }\n    var r = checked a + b\n        on out_of_range {\n            r = 0\n        }\n    return\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
@@ -927,14 +816,9 @@ fn parses_checked_arithmetic_forms() {
 
 /// `return checked ...` binds through a return.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_checked_return() {
     let parsed = parse_source(
-        "module app\n\
-         fn main(a: int, b: int): int\n\
-         \x20   return checked a * b\n\
-         \x20       on out_of_range\n\
-         \x20           return 0\n",
+        "module app\nfn main(a: int, b: int): int {\n    return checked a * b\n        on out_of_range {\n            return 0\n        }\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
@@ -947,16 +831,12 @@ fn parses_checked_return() {
     ));
 }
 
-/// A checked form with no indented arms reports one `CheckedBody` diagnostic and
+/// A checked form with no arms reports one `CheckedBody` diagnostic and
 /// still yields a `Statement::Checked` node (total parsing).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_missing_arms_reports_checked_body() {
     let parsed = parse_source(
-        "module app\n\
-         fn main(a: int, b: int)\n\
-         \x20   const q = checked a + b\n\
-         \x20   return\n",
+        "module app\nfn main(a: int, b: int) {\n    const q = checked a + b\n    return\n}\n",
     );
     assert!(has_reason(
         &parsed.diagnostics,
@@ -972,15 +852,9 @@ fn checked_form_missing_arms_reports_checked_body() {
 /// A malformed arm header reports one `CheckedArm` diagnostic and its block does
 /// not leak into the surrounding form.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_bad_arm_reports_checked_arm() {
     let parsed = parse_source(
-        "module app\n\
-         fn main(a: int, b: int)\n\
-         \x20   const q = checked a + b\n\
-         \x20       on wat\n\
-         \x20           return\n\
-         \x20   return\n",
+        "module app\nfn main(a: int, b: int) {\n    const q = checked a + b\n        on wat {\n            return\n        }\n    return\n}\n",
     );
     assert!(has_reason(
         &parsed.diagnostics,
@@ -991,16 +865,8 @@ fn checked_form_bad_arm_reports_checked_arm() {
 /// The checked form formats idempotently: arms render `on out_of_range` before
 /// `on zero_divisor`, and formatting a formatted form is a fixed point.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn checked_form_formats_idempotently() {
-    let source = "module app\n\
-         fn main(a: int, b: int): int\n\
-         \x20   const q: int = checked a / b\n\
-         \x20       on zero_divisor\n\
-         \x20           return 0\n\
-         \x20       on out_of_range\n\
-         \x20           return 1\n\
-         \x20   return q\n";
+    let source = "module app\nfn main(a: int, b: int): int {\n    const q: int = checked a / b\n        on zero_divisor {\n            return 0\n        }\n        on out_of_range {\n            return 1\n        }\n    return q\n}\n";
     let once = format_source(source);
     let twice = format_source(&once);
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
@@ -1015,23 +881,19 @@ fn checked_form_formats_idempotently() {
     assert!(parse_source(&once).diagnostics.is_empty());
 }
 
-/// `place name = ^root(key)` parses to a `PlaceBinding` naming the entry-address
+/// `place name = ^root[key]` parses to a `PlaceBinding` naming the entry-address
 /// expression; the compiler owns the durable checks, the parser only structures it.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_place_binding() {
     let parsed = parse_source(
-        "module app\n\
-         fn main(id: int)\n\
-         \x20   place book = ^books(id)\n\
-         \x20   book.title = \"x\"\n",
+        "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
     assert!(
         matches!(
             &main.body.statements[0],
-            Statement::PlaceBinding { name, place: Expression::Call { .. }, .. }
+            Statement::PlaceBinding { name, place: Expression::Keyed { .. }, .. }
                 if name == "book"
         ),
         "stmt 0: {:?}",
@@ -1042,35 +904,22 @@ fn parses_a_place_binding() {
 /// `place` in name position is a keyword, so a missing name or missing `=` is a
 /// single bounded parse error rather than a dropped or cascading line.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_place_binding_is_one_parse_error() {
-    let missing_name = parse_source(
-        "module app\n\
-         fn main()\n\
-         \x20   place = 1\n",
-    );
+    let missing_name = parse_source("module app\nfn main() {\n    place = 1\n}\n");
     assert!(!missing_name.diagnostics.is_empty());
 
-    let missing_equals = parse_source(
-        "module app\n\
-         fn main(id: int)\n\
-         \x20   place book ^books(id)\n",
-    );
+    let missing_equals =
+        parse_source("module app\nfn main(id: int) {\n    place book ^books[id]\n}\n");
     assert!(!missing_equals.diagnostics.is_empty());
 }
 
 /// A `place` binding formats idempotently and re-parses cleanly.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn place_binding_formats_idempotently() {
-    let source = "module app\n\
-         fn main(id: int)\n\
-         \x20   place book = ^books(id)\n\
-         \x20   book.title = \"x\"\n\
-         \x20   delete book\n";
+    let source = "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n    delete book\n}\n";
     let once = format_source(source);
     let twice = format_source(&once);
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
-    assert!(once.contains("place book = ^books(id)"), "{once}");
+    assert!(once.contains("place book = ^books[id]"), "{once}");
     assert!(parse_source(&once).diagnostics.is_empty());
 }
