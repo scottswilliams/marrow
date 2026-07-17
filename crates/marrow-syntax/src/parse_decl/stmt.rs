@@ -1163,7 +1163,7 @@ impl<'a> StmtParser<'a> {
         };
         self.error_span_reason(
             span,
-            ParseDiagnosticReason::UnexpectedIndentation,
+            ParseDiagnosticReason::UnexpectedBlock,
             "unexpected `{`; only compound statements introduce blocks",
         );
     }

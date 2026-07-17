@@ -14,7 +14,7 @@ fn first<T>(xs: List<T>): T? {
     return absent
 }
 
-// Two `T` parameters and a `List[T]` local and return: a swap-style constructor.
+// Two `T` parameters and a `List<T>` local and return: a swap-style constructor.
 fn swapped<T>(a: T, b: T): List<T> {
     var xs: List<T> = List()
     xs = append(xs, b)

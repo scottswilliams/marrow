@@ -83,7 +83,9 @@ pub enum ParseDiagnosticReason {
     PositionalArgumentAfterNamed,
     Reserved(ReservedSyntax),
     ResourceMemberInStoreBody,
-    UnexpectedIndentation,
+    /// A `{ … }` block appears where the grammar admits none — only compound
+    /// statements and body-bearing declarations introduce blocks.
+    UnexpectedBlock,
     Unsupported(UnsupportedSyntax),
 }
 
@@ -108,6 +110,7 @@ pub enum ExpectedSyntax {
     CloseBrace,
     CloseBracket,
     CloseParen,
+    CloseTypeArguments,
     Comma,
     CheckedBody,
     ConstName,

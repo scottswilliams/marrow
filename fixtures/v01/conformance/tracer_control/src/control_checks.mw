@@ -1,6 +1,5 @@
 // Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)
 // Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/control_test.mw
-// Replaces: the T01 manifest-indirected `marrow run` comparison
 module control_checks
 
 test "cSumTo" {

@@ -326,7 +326,7 @@ fn char_boundaries(source: &str) -> Vec<usize> {
         .collect()
 }
 
-/// The brace-grammar fuzz corpus (BS01): declarations with `{ … }` bodies —
+/// The brace-grammar fuzz corpus: declarations with `{ … }` bodies —
 /// resource, store, enum, and function — plus `=>` match arms, `//` and `///`
 /// comments, `\u{}` escapes, bracket key groups, and angle generics, including the
 /// unclosed and stray-brace forms that a member loop must survive. It is written

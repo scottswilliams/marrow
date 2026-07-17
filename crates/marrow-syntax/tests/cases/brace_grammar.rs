@@ -1,16 +1,14 @@
-//! The brace block grammar (BS01): `{ … }` blocks, `NEWLINE`-or-`}` statement
+//! The brace block grammar: `{ … }` blocks, `NEWLINE`-or-`}` statement
 //! termination, cuddled and inline trailing clauses, `=>` match arms, newline enum
-//! members, header continuation, and the parse-only B5/B6 forms. These are the
-//! load-bearing behavioral invariants of the block-syntax migration, written fresh
-//! against the brace grammar (the layout corpus is allowlisted until the converter
-//! flip rewrites it).
+//! members, and header continuation. These are the load-bearing behavioral
+//! invariants of the block grammar.
 
 use std::sync::mpsc;
 use std::time::Duration;
 
 use marrow_syntax::{
-    Declaration, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ParsedSource,
-    ResourceMember, Statement, parse_source,
+    Declaration, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason, ParseDiagnosticReason,
+    ParsedSource, ResourceMember, Statement, parse_source,
 };
 
 /// Parse `source` on a worker thread and fail if it does not return promptly. A
@@ -312,8 +310,7 @@ fn a_bare_block_in_statement_position_is_rejected() {
         parsed
             .diagnostics
             .iter()
-            .any(|d| d.reason
-                == DiagnosticReason::Parser(ParseDiagnosticReason::UnexpectedIndentation)),
+            .any(|d| d.reason == DiagnosticReason::Parser(ParseDiagnosticReason::UnexpectedBlock)),
         "a bare block has no statement form: {:#?}",
         parsed.diagnostics
     );
@@ -361,11 +358,12 @@ fn a_let_else_parses_to_the_let_else_node() {
 
 #[test]
 fn a_semicolon_comment_is_no_longer_a_comment() {
-    // `;` is not a comment leader; it is an unexpected character now.
+    // `;` is not a comment leader; the lexer reports it as an unexpected character.
     let parsed = parse_source("module app\n; not a comment\n");
     assert!(
-        !parsed.diagnostics.is_empty(),
-        "a leading `;` is no longer comment trivia: {:#?}",
+        parsed.diagnostics.iter().any(|d| d.reason
+            == DiagnosticReason::Lexer(LexerDiagnosticReason::UnexpectedCharacter(';'))),
+        "a leading `;` is an unexpected character, not comment trivia: {:#?}",
         parsed.diagnostics
     );
 }

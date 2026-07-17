@@ -543,8 +543,11 @@ fn block_try_catch_is_rejected_as_removed_syntax() {
         run.body.statements
     );
     assert!(
-        !parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
+        !parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::UnexpectedBlock)),
         "{:#?}",
         parsed.diagnostics
     );

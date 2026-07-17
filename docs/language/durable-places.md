@@ -49,7 +49,7 @@ A stored field holds a value from the closed acyclic durable value set:
 | a nominal scalar | stored as its base scalar |
 | a dense `struct` | its leaves stored inline; the struct's leaves are structure, not separately named durable declarations |
 | a closed `enum` | a user `enum`, `Option`, or `Result`; each variant is a member |
-| an `Option` of any of the above | `Option[T]` where `T` is itself an admitted value |
+| an `Option` of any of the above | `Option<T>` where `T` is itself an admitted value |
 
 The value graph must be acyclic (a struct or enum may not contain itself,
 directly or transitively). A collection is not stored directly in a field — a

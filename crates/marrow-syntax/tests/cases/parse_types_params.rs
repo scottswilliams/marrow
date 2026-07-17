@@ -111,10 +111,9 @@ fn out_and_inout_parse_as_ordinary_parameter_names() {
     );
 }
 
-// BS01: `rejects_user_defined_generics_on_functions` deleted — user-defined
-// generics are now supported via angle brackets (`fn f<T>` parses clean), so the
-// old rejection no longer holds. flip2_bracket_angle.rs covers both the `<T>`
-// acceptance and the migrated rejection of the old `[T]` spelling.
+// User-defined generics are written with angle brackets (`fn f<T>` parses clean);
+// the `[T]` spelling is rejected. flip2_bracket_angle.rs covers both the `<T>`
+// acceptance and the rejection of the `[T]` spelling.
 
 #[test]
 fn parses_angle_generic_type_parameters() {
@@ -171,13 +170,68 @@ fn rejects_malformed_type_parameter_lists() {
     ] {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "{source:?}: {:#?}", parsed.diagnostics);
-        assert!(
-            parsed
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains(expected_message)),
-            "missing {expected_message:?} for {source:?}: {:#?}",
-            parsed.diagnostics
+        // Each malformed list reports the typed `FunctionParameterList` expectation
+        // at the header line; the guidance message discriminates the three shapes.
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::FunctionParameterList,
+                    ))
+                    && d.message.contains(expected_message)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a FunctionParameterList diagnostic carrying {expected_message:?} \
+                     for {source:?}: {:#?}",
+                    parsed.diagnostics
+                )
+            });
+        assert_eq!(diagnostic.code, "parse.syntax");
+        assert_eq!(
+            diagnostic.span.line, 2,
+            "points at the header line for {source:?}"
+        );
+    }
+}
+
+#[test]
+fn unclosed_generic_type_argument_reports_the_missing_close() {
+    // An identifier head opening `<` in type position that never reaches a matching
+    // `>` is a targeted `expected `>` to close the type arguments` error, not a name
+    // silently absorbing the open group. Parsing stays total across every position.
+    for source in [
+        // Function parameter type.
+        "module app\nfn f(x: Map<string, int) {\n    return\n}\n",
+        // Const type annotation.
+        "module app\nconst c: List<int\n",
+        // Alias right-hand side.
+        "module app\nalias A = Map<string, int\n",
+        // Nested: the inner group closes but the outer never does.
+        "module app\nconst c: List<Map<int, string>\n",
+    ] {
+        let parsed = parse_source(source);
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::CloseTypeArguments,
+                    ))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a CloseTypeArguments diagnostic for {source:?}: {:#?}",
+                    parsed.diagnostics
+                )
+            });
+        assert_eq!(diagnostic.code, "parse.syntax");
+        assert_eq!(
+            diagnostic.span.line, 2,
+            "anchored on the type line for {source:?}"
         );
     }
 }

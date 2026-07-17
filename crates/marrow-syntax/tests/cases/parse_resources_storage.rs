@@ -194,8 +194,11 @@ resource Book {
 
     assert!(parsed.has_errors());
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::UnexpectedIndentation)),
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::UnexpectedBlock)),
         "{:#?}",
         parsed.diagnostics
     );

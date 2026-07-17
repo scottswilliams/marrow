@@ -20,8 +20,12 @@ mandatory for every block, including a single-statement body; there is no
 brace-free block and no statement separator.
 
 ```ebnf
-block           = "{", NEWLINE, statement+, "}" ;
+block           = "{", [ NEWLINE ], { statement, NEWLINE }, [ statement ], "}" ;
 ```
+
+An empty body (`{}`) and an inline single-statement body (`{ statement }`) are
+both admitted: the opening `{` is followed by an optional `NEWLINE`, any number
+of `NEWLINE`-terminated statements, and an optional final statement before `}`.
 
 A statement terminates at a `NEWLINE` or the block's closing `}`; there is no
 `;` separator. A header line may continue across a physical line break after a

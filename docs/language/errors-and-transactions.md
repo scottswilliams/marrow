@@ -4,7 +4,7 @@ Marrow keeps failure kinds distinct and groups durable changes under one
 transaction that commits or rolls back as a unit. The current language has no
 throwable error value and no exception channel: a runtime fault stops the
 operation and is reported with a typed code and a source span. A recoverable
-failure a program handles is an ordinary `Result[T, E]` value (see
+failure a program handles is an ordinary `Result<T, E>` value (see
 [Types and values](types-and-values.md)), returned explicitly and propagated
 with prefix `try`; the language `Result` is none of the four failure kinds
 below.

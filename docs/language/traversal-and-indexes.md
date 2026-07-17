@@ -9,13 +9,14 @@ when more remain.
 
 A durable `for` head names a store root or a single-level keyed branch, an
 `at most N` bound, an optional inclusive `from` key, and a mandatory `on more`
-block dedented like an `else`:
+clause cuddled after the loop body like an `else`:
 
 ```text
-for k in <place> at most N [from f]
+for k in <place> at most N [from f] {
     statements
-on more
+} on more {
     statements
+}
 ```
 
 `<place>` is a store root such as `^books` (the root entry family) or a keyed
@@ -87,7 +88,7 @@ access.
 The walk costs work proportional to `N` regardless of how many descendants sit
 beneath skipped siblings: a child that carries branch descendants but no payload
 of its own is passed in one seek, and its own fan-out is never read. The frozen
-keys materialize as one ordinary `List[K]` value and are therefore subject to the
+keys materialize as one ordinary `List<K>` value and are therefore subject to the
 same aggregate-byte ceiling every collection obeys; a traversal over wide keys can
 reach that ceiling — a `run.collection_limit` fault — at fewer than `N` keys.
 There is one collection ceiling, not a separate traversal-specific one.

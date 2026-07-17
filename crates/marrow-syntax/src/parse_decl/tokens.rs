@@ -550,12 +550,22 @@ fn build_apply(
     let Some(last) = tokens.len().checked_sub(1) else {
         return Ok(None);
     };
+    // An identifier followed by `<` in type position opens a generic application;
+    // `<` has no other meaning here. Anything not opening this way is a plain name.
     if tokens.first().map(|token| token.kind) != Some(TokenKind::Identifier)
         || tokens.get(open).map(|token| token.kind) != Some(TokenKind::Less)
-        || tokens[last].kind != TokenKind::Greater
-        || balanced_group_end(tokens, open) != Some(last)
     {
         return Ok(None);
+    }
+    // The opened group must close with a matching `>` at the end of the production.
+    // An unclosed or short group is a targeted parse error, not a name absorbing the
+    // stray `<` — reported at the opening `<` so the missing close is unambiguous.
+    if tokens[last].kind != TokenKind::Greater || balanced_group_end(tokens, open) != Some(last) {
+        return Err(ParseError::at(
+            tokens[open].span,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::CloseTypeArguments),
+            "expected `>` to close the type arguments",
+        ));
     }
     // Any identifier head introduces a generic type application: the reserved
     // `Option`/`Result`/`List`/`Map` or a user-declared generic `struct`/`enum`.

@@ -42,7 +42,7 @@ impl<'a> DeclParser<'a> {
         let open = self.open_brace_block(); // `{`
 
         let stray = ParseError::new(
-            ParseDiagnosticReason::UnexpectedIndentation,
+            ParseDiagnosticReason::UnexpectedBlock,
             "unexpected block in resource body; only groups introduce nested resource members",
         );
         loop {

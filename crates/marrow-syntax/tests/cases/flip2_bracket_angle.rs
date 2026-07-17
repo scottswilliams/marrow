@@ -1,11 +1,9 @@
-//! FLIP 2 (BS01): the T3 `[]`-for-keys surface and the T2 angle-bracket generic
-//! rule. Keyed access moves to square brackets (`^books[id]`,
-//! `^patients[pid].visits[vid]`), key declarations mirror access with `[name: Type]`
-//! columns, and generics move to angles (`Result<T, E>`, `fn identity<T>`) under the
-//! T2 disambiguation rule: expression `<`/`>` are always comparison, and the one
-//! `>=` token-split closes a generic that glues onto an assignment. Written fresh
-//! against the new grammar (the layout corpus is allowlisted until the converter
-//! flip rewrites it).
+//! Bracket keys and angle generics. Keyed access uses square brackets
+//! (`^books[id]`, `^patients[pid].visits[vid]`), key declarations mirror access
+//! with `[name: Type]` columns, and generics use angles (`Result<T, E>`,
+//! `fn identity<T>`) under the disambiguation rule: expression `<`/`>` are always
+//! comparison, and the one `>=` token-split closes a generic that glues onto an
+//! assignment.
 
 use marrow_syntax::{
     Declaration, DiagnosticReason, ExpectedSyntax, Expression, ParseDiagnosticReason,
@@ -141,9 +139,13 @@ fn a_named_key_argument_is_a_parse_level_rejection() {
 
 #[test]
 fn an_empty_keyed_group_is_rejected() {
-    let parsed = parse_source("module app\nfn run() {\n    ^books[] = b\n}\n");
+    // `base[]` names no key column; the keyed-access parser reports a missing key
+    // expression rather than merely producing some error.
     assert!(
-        !parsed.diagnostics.is_empty(),
+        has_reason(
+            "module app\nfn run() {\n    ^books[] = b\n}\n",
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+        ),
         "a keyed access selects at least one key column"
     );
 }
@@ -228,12 +230,14 @@ fn index_declarations_are_bracketed() {
 
 #[test]
 fn an_index_still_written_with_parens_is_rejected() {
-    let parsed = parse_source(
-        "module app\nresource Book {\n    required shelf: int\n}\nstore ^books[id: int]: Book {\n    index byShelf(shelf)\n}\n",
-    );
+    // The `[` argument list is mandatory; a paren-spelled index reports the
+    // expected argument list rather than merely producing some error.
     assert!(
-        !parsed.diagnostics.is_empty(),
-        "the old paren index spelling no longer parses"
+        has_reason(
+            "module app\nresource Book {\n    required shelf: int\n}\nstore ^books[id: int]: Book {\n    index byShelf(shelf)\n}\n",
+            ParseDiagnosticReason::Expected(ExpectedSyntax::IndexArgumentList),
+        ),
+        "the old paren index spelling reports the expected `[` argument list"
     );
 }
 
@@ -344,28 +348,41 @@ fn a_multi_argument_generic_enum_payload_field_does_not_split_the_payload() {
 #[test]
 fn an_unterminated_generic_parameter_does_not_split_into_a_clean_extra_parameter() {
     // With the angle-tracking splitter, the comma inside an unterminated
-    // `Map<int, …` stays inside the parameter: the list is one (malformed)
-    // parameter, never two clean ones. The malformed type resolves downstream.
+    // `Map<int, …` stays inside the one parameter rather than splitting off a
+    // second clean `x: int`. The unterminated generic is reported, not absorbed.
     let source = "module app\nfn f(r: Map<int, x: int): int {\n    return x\n}\n";
     let parsed = parse_source(source);
-    let function = parsed.file.function("f").expect("f");
-    assert_eq!(
-        function.params.len(),
-        1,
-        "the unterminated generic keeps the parameter list from splitting: {:#?}",
-        function.params
+    assert!(
+        has_reason(
+            source,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::CloseTypeArguments),
+        ),
+        "the unterminated generic is reported: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed
+            .file
+            .function("f")
+            .is_none_or(|function| function.params.len() <= 1),
+        "the unterminated generic must not split into two parameters: {:#?}",
+        parsed
+            .file
+            .function("f")
+            .map(|function| function.params.len())
     );
 }
 
 #[test]
 fn a_doubled_generic_close_in_a_parameter_is_rejected() {
-    // `Map<int, string>>` has an unbalanced trailing `>`; the type parser reports
-    // it rather than accepting a stray token after a complete type.
-    let source = "module app\nfn f(r: Map<int, string>>, x: int): int {\n    return x\n}\n";
-    let parsed = parse_source(source);
+    // `Map<int, string>` is a complete type; the trailing `>` is a stray token the
+    // type parser reports in the parameter-type position rather than absorbing.
     assert!(
-        !parsed.diagnostics.is_empty(),
-        "a doubled generic close is a parse error: {source:?}"
+        has_reason(
+            "module app\nfn f(r: Map<int, string>>, x: int): int {\n    return x\n}\n",
+            ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
+        ),
+        "a doubled generic close is an unexpected trailing token after the type"
     );
 }
 

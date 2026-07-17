@@ -40,8 +40,8 @@ decoding failure.
 
 | Form | Result |
 |---|---|
-| `keys(local)` | `List[K]` of present keys |
-| `values(local)` | `List[V]` of present values |
+| `keys(local)` | `List<K>` of present keys |
+| `values(local)` | `List<V>` of present values |
 | `count(place)` | Number of immediate present children, or scalar presence |
 
 `keys` and `values` accept local lists and maps. They do not accept a durable
@@ -62,11 +62,11 @@ whole text floor; there is no general string library.
 | `isEmpty(text): bool` | Whether `text` is the empty string |
 | `contains(haystack, needle): bool` | Whether `haystack` contains `needle` as a substring |
 | `trim(text): string` | `text` with leading and trailing Unicode whitespace removed |
-| `split(text, separator): List[string]` | The substrings of `text` separated by each non-overlapping occurrence of `separator`, in order; an empty separator yields the single-element list `[text]` |
-| `lines(text): List[string]` | The lines of `text`, split on line feeds with a carriage return before a line feed removed; a final line terminator adds no trailing empty line |
-| `join(parts: List[string], separator): string` | The `parts` concatenated in order with `separator` between adjacent elements |
+| `split(text, separator): List<string>` | The substrings of `text` separated by each non-overlapping occurrence of `separator`, in order; an empty separator yields the single-element list `[text]` |
+| `lines(text): List<string>` | The lines of `text`, split on line feeds with a carriage return before a line feed removed; a final line terminator adds no trailing empty line |
+| `join(parts: List<string>, separator): string` | The `parts` concatenated in order with `separator` between adjacent elements |
 
-`split` and `lines` return a `List[string]`; the result honors the same length and
+`split` and `lines` return a `List<string>`; the result honors the same length and
 aggregate-size bounds as any list (see [Execution limits](execution-limits.md)). `join`
 honors the string concatenation ceiling.
 
@@ -88,7 +88,7 @@ pub fn rejoin(row: string): string {
 
 ## Collections
 
-The finite collection types `List[T]` and `Map[K, V]` are built and read through a
+The finite collection types `List<T>` and `Map<K, V>` are built and read through a
 closed set of procedural built-ins — there is no method syntax. `List()`/`Map()`
 construct an empty collection of the expected type; `append`/`insert` add elements
 and yield the updated collection (collections are values); `get` looks a key up;
@@ -209,7 +209,7 @@ current day or instant is passed in as an argument. See
 
 ## Errors
 
-A recoverable failure a program handles is an ordinary `Result[T, E]` value (see
+A recoverable failure a program handles is an ordinary `Result<T, E>` value (see
 [Types and values](types-and-values.md)), returned with `err(...)` and propagated
 with prefix `try`. There is no throwable error value and no `throw`/`catch`
 channel; the distinct failure kinds are described in

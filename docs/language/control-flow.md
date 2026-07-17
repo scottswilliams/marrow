@@ -8,12 +8,13 @@ assignment and branching are not expressions.
 `if` selects a branch:
 
 ```text
-if condition
+if condition {
     statements
-else if other
+} else if other {
     statements
-else
+} else {
     statements
+}
 ```
 
 `if const` evaluates an optional expression once. The then branch receives a
@@ -53,8 +54,9 @@ raise an error.
 ## `while`
 
 ```text
-while condition
+while condition {
     statements
+}
 ```
 
 The condition is evaluated before every iteration. `while` has no iteration
@@ -66,8 +68,9 @@ limit and may run indefinitely when the program does not make progress.
 root or branch family:
 
 ```text
-for name [, name ...] in [reversed] iterable [by step]
+for name [, name ...] in [reversed] iterable [by step] {
     statements
+}
 ```
 
 A durable traversal is always bounded and takes a different head — `for k in
@@ -234,12 +237,12 @@ On the current line every member is a selectable leaf and the checker rejects a
 
 ## Prefix `try` And `transaction`
 
-Prefix `try <expr>` propagates a `Result[T, E]` failure. It is written as the
+Prefix `try <expr>` propagates a `Result<T, E>` failure. It is written as the
 top-level right-hand side of a statement — `const x = try f()`, `var x = try
 f()`, `return try f()`, or a bare `try f()` — never nested inside a larger
-expression. It evaluates `expr` to a `Result[T, E]`: an `ok(v)` yields the value
+expression. It evaluates `expr` to a `Result<T, E>`: an `ok(v)` yields the value
 `v`, and an `err(e)` returns `err(e)` immediately from the enclosing function. The
-enclosing function must return `Result[U, E]` with the same error type `E`; there
+enclosing function must return `Result<U, E>` with the same error type `E`; there
 is no implicit error conversion.
 
 ```mw
@@ -257,7 +260,7 @@ pub fn openTwice(a: int, b: int): Result<int, string> {
 }
 ```
 
-`Result[T, E]` and `Option[T]` are ordinary value types; see
+`Result<T, E>` and `Option<T>` are ordinary value types; see
 [Types and values](types-and-values.md). `transaction` groups durable effects;
 its exit rules are defined in
 [Errors and transactions](errors-and-transactions.md).

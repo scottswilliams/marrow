@@ -355,6 +355,34 @@ fn empty_bodies_follow_the_mandatory_block_rule() {
     assert!(!format_source(store).contains("store ^b: B {"));
 }
 
+/// A resource group mandates a `{ … }` body, so an empty group renders `{}` and
+/// re-parses. Regression for the formatter fuzz oracle counterexample minimized
+/// from seed 999, where an empty group had rendered header-alone and the output
+/// no longer parsed. Both the plain and the keyed group form are pinned.
+#[test]
+fn empty_resource_group_renders_braces_and_reparses() {
+    let cases = [
+        ("module app\nresource R {\n    g {}\n}\n", "    g {}"),
+        (
+            "module app\nresource R {\n    notes[n: string] {}\n}\n",
+            "    notes[n: string] {}",
+        ),
+    ];
+    for (source, fragment) in cases {
+        let once = format_source(source);
+        assert!(once.contains(fragment), "expected `{fragment}` in:\n{once}");
+        assert_eq!(
+            format_source(&once),
+            once,
+            "empty-group render is not idempotent:\n{once}"
+        );
+        assert!(
+            !parse_source(&once).has_errors(),
+            "empty-group render must re-parse:\n{once}"
+        );
+    }
+}
+
 // ---- declarations ----
 
 #[test]
@@ -852,10 +880,10 @@ fn comment_preservation_guard_rejects_unstable_rewrites() {
     assert!(!format_preserves_comments(source, unstable_rewrite));
 }
 
-// ---- corpus-dependent goldens (stay ignored until the doc corpus is converted) ----
+// ---- corpus-dependent goldens ----
 
-/// The canonical runnable sample is the conformance oracle. `sample.md` is still
-/// layout-form until the flip-5 doc conversion, so this un-ignores then.
+/// The canonical runnable sample is the conformance oracle; the documented
+/// `sample.md` is in fmt-canonical form and formatting it is a fixed point.
 #[test]
 fn canonical_sample_is_already_fmt_canonical() {
     let source = common::reference_sample();
@@ -868,7 +896,7 @@ fn canonical_sample_is_already_fmt_canonical() {
 
 /// Corpus contract for the whole formatter over every documented module file:
 /// `format_source` is a fixed point, re-parses cleanly, and preserves the declaration
-/// tree. The doc corpus is layout-form until flip 5, so this un-ignores then.
+/// tree.
 #[test]
 fn format_source_preserves_structure_and_reparses_cleanly() {
     let blocks = common::documented_module_blocks();

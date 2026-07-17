@@ -1,7 +1,7 @@
 // Local sparse product read/assign/unset. A `resource` value held in a local
 // carries required and sparse fields; reading a sparse field yields `T?`,
 // assigning it sets it present, and `unset` clears it back to absent. A field
-// typed `Option[string]` keeps absent distinct from a present `Option` none.
+// typed `Option<string>` keeps absent distinct from a present `Option` none.
 module boxes
 
 resource Box {
@@ -46,7 +46,7 @@ pub fn copyIsIndependent(): string {
     return a.note ?? "original-absent"
 }
 
-// A sparse `Option[string]` field distinguishes three states: absent (the field
+// A sparse `Option<string>` field distinguishes three states: absent (the field
 // is unset), a present `Option` none, and a present `Option` some. `mode` picks
 // which state to build, and the classifier reports it — absent is not the same
 // value as a present none.

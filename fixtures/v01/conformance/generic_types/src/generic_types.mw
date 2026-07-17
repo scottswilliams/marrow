@@ -1,6 +1,6 @@
 module generic_types
 
-// A rank-1 generic struct: each `Name[Args]` use monomorphizes a distinct value
+// A rank-1 generic struct: each `Name<Args>` use monomorphizes a distinct value
 // type, and the field types come from the substituted parameters.
 struct Pair<A, B> {
     first: A
@@ -26,7 +26,7 @@ struct Ordered<T supports order> {
 }
 
 // A generic function whose parameter is itself a generic type: inference unifies
-// `Pair[A, B]` against the argument's instantiation.
+// `Pair<A, B>` against the argument's instantiation.
 fn firstOf<A, B>(p: Pair<A, B>): A {
     return p.first
 }

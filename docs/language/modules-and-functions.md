@@ -84,7 +84,7 @@ built-in throughout that module (see [Built-ins](builtins.md#collections)).
 
 A function may declare rank-1 generic type parameters in a bracket list after its
 name, written with the same bracket convention type applications use
-(`List[T]`). Each parameter names a type usable in the parameter, return, and
+(`List<T>`). Each parameter names a type usable in the parameter, return, and
 local annotations of the body.
 
 ```mw

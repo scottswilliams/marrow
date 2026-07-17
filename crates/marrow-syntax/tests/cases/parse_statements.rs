@@ -319,18 +319,18 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
 
 #[test]
 fn local_bindings_reject_structural_equal_inside_type_annotations() {
-    // A `= v` value separator is valid on both bindings, so the rejected `=` is the
-    // one nested inside the type `List<a = b>`, which has no valid completion: the
-    // angle type parser reports the expression it could not find rather than falling
-    // back to statement recovery.
+    // The first top-level `=` is the value separator (a generic's `<`/`>` never wrap
+    // the assignment), so `List<a = b> = 1` splits the type at the inner `=`, leaving
+    // the unterminated `List<a`. The angle type parser reports the missing `>` rather
+    // than falling back to statement recovery.
     let cases = [
         (
             "fn f() {\n    var x: List<a = b> = 1\n}\n",
-            ExpectedSyntax::Expression,
+            ExpectedSyntax::CloseTypeArguments,
         ),
         (
             "fn f() {\n    const x: List<a = b> = 1\n}\n",
-            ExpectedSyntax::Expression,
+            ExpectedSyntax::CloseTypeArguments,
         ),
     ];
 

@@ -531,7 +531,7 @@ impl Sha256 {
 //
 // The comparison is test-vs-test (P00b): both stacks run their own `marrow test
 // --format jsonl` over their own project. The two projects are in different
-// surfaces on purpose (the BS01 A3 custody note): the frozen prototype parses
+// surfaces on purpose: the frozen prototype parses
 // only the layout surface, so its project pairs the layout `tests/*.mw`
 // `std::assert` wrappers with a layout twin of the shared module
 // (`oracle/*.mw`, swapped in by `assemble_oracle_project`); the beta parses the
@@ -783,16 +783,15 @@ fn generate_wrappers(fixture: &Fixture) -> String {
 /// The committed `src/*_checks.mw` must be byte-identical; each test's title is
 /// the oracle wrapper's name, pairing the two stacks' report streams.
 ///
-/// The beta reads the brace surface (BS01), so this renders `//` comment leaders
+/// The beta reads the brace surface, so this renders `//` comment leaders
 /// and `test "…" { … }` blocks — the counterpart to [`generate_wrappers`], which
 /// stays in the layout surface the frozen prototype parses. The two stacks' test
-/// files are therefore in different surfaces on purpose (the A3 custody note on
-/// [`compared_test`]); only the shared in-language expectation is single-sourced.
+/// files are therefore in different surfaces on purpose (see [`compared_test`]);
+/// only the shared in-language expectation is single-sourced.
 fn generate_beta_checks(fixture: &Fixture) -> String {
     let mut out = format!(
         "// Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)\n\
          // Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/{}\n\
-         // Replaces: the T01 manifest-indirected `marrow run` comparison\n\
          module {}_checks\n",
         fixture.test_file, fixture.module
     );
@@ -829,7 +828,7 @@ fn run_beta_tests(fixture: &Fixture) -> Vec<Record> {
 ///
 /// The committed fixture is the beta's brace project (`src/<module>.mw` and
 /// `src/<module>_checks.mw`). The frozen prototype predates both the brace
-/// surface (BS01) and the `test` grammar, so its project instead pairs the
+/// surface and the `test` grammar, so its project instead pairs the
 /// layout `tests/<module>_test.mw` `std::assert` wrappers with a layout twin of
 /// the shared module, committed beside the brace one at `oracle/<module>.mw`.
 /// The two module surfaces are held semantically equal by the differential

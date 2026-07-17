@@ -1,6 +1,5 @@
 // Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)
 // Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/arith_test.mw
-// Replaces: the T01 manifest-indirected `marrow run` comparison
 module arith_checks
 
 test "aSub" {

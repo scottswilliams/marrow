@@ -6,7 +6,7 @@ such as `std::text::trim(value)` are not resolved by the current checker; a
 
 The current pure floor is the set of built-ins available without `use`:
 presence checks, the text floor (`isEmpty`, `contains`, `trim`, `split`,
-`lines`, `join`), the finite collections `List[T]` and `Map[K, V]` with their
+`lines`, `join`), the finite collections `List<T>` and `Map<K, V>` with their
 operations, and the error constructors. See [Built-ins](builtins.md) for the
 complete current set, and [Types and values](types-and-values.md#lists-and-maps)
 for collection value semantics.

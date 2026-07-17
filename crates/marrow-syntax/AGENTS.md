@@ -28,8 +28,9 @@ moves together in the feature's lane; a feature is not done while any is missing
    (`total_parser_architecture` guards this). Spans stay in bounds and 1-based.
 4. **Formatter**: render the construct canonically and idempotently. A body-bearing
    header joins its body through `append_braced_body`; a mandatory block renders `{}`
-   when empty, an optional body (a member-less `store`, an enum leaf/category, a
-   childless group) leaves the header alone. A comment trailing a header is owned by
+   when empty (a `fn`, `test`, `resource`, `struct`, a group, and the compound
+   statements), an optional body (a member-less `store`, an enum leaf/category)
+   leaves the header alone. A comment trailing a header is owned by
    the block (the parser records it as the block's first own-line comment), not
    cuddled after `{`. Own-line comments render at their block's canonical indent; a
    statement's span covers only its own content, never a following sibling.

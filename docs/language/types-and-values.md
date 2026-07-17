@@ -204,7 +204,7 @@ pub fn reminderAt(deadline: instant, lead: duration): instant {
 Each temporal type is orderable: `date` and `instant` by their instant on the
 timeline, `duration` by signed length. The order is total and agrees with the
 order-preserving durable key encoding, so a temporal type is a key type — a
-`Map[date, V]` is admitted and iterates in ascending date order (see
+`Map<date, V>` is admitted and iterates in ascending date order (see
 [Key Types](#key-types)).
 
 A clock is not part of the language. Reading the current instant or day is a
@@ -323,7 +323,7 @@ implementation limitation, not a separate persisted scalar representation.
 
 `T?` contains either a present `T` or `absent`. Optional types do not nest.
 Fields, key columns, and keyed leaf declarations cannot themselves be optional;
-`List[T]?` is valid because the optionality applies to the collection value.
+`List<T>?` is valid because the optionality applies to the collection value.
 
 Optional values arise from sparse reads, lookup operations, optional returns,
 and optional standard-library functions. Four constructs consume them:
@@ -398,12 +398,12 @@ after invalidation.
 
 ## Option And Result
 
-`Option[T]` and `Result[T, E]` are ordinary generic enums the toolchain defines
+`Option<T>` and `Result<T, E>` are ordinary generic enums the toolchain defines
 (see [Generic types](#generic-types)); they are not a built-in special case. Each is
 monomorphized by its type arguments through the same machinery a user generic enum
 uses — constructed, matched, and compared by value — and their type arguments may be
-any value type, including nested `Option` and `Result`. `Option[T]` has the members
-`none` and `some(v)`; `Result[T, E]` has `ok(v)` and `err(e)`. `Option` and `Result`
+any value type, including nested `Option` and `Result`. `Option<T>` has the members
+`none` and `some(v)`; `Result<T, E>` has `ok(v)` and `err(e)`. `Option` and `Result`
 are reserved type names that cannot be redeclared. Their constructors `some`,
 `none`, `ok`, and `err` are reserved value names that resolve to those enums'
 variants: a function, constant, parameter, or local binding that reuses one is a
@@ -411,7 +411,7 @@ variants: a function, constant, parameter, or local binding that reuses one is a
 shadowed.
 
 A value is constructed with its member: `some(v)`, `none`, `ok(v)`, or `err(e)`.
-`some(v)` infers its `Option[T]` from `v`; `none`, `ok(v)`, and `err(e)` cannot
+`some(v)` infers its `Option<T>` from `v`; `none`, `ok(v)`, and `err(e)` cannot
 infer the whole type argument set, so they need an expected type — an annotation, a
 call argument, a return type, or the other side of a coercion. A `match` covers the
 members exactly, binding the payload positionally:
@@ -434,21 +434,21 @@ pub fn describe(o: Option<int>): string {
 ```
 
 Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are three
-different values of `Option[Option[int]]`. `==` and `!=` are exact equality — the
+different values of `Option<Option<int>>`. `==` and `!=` are exact equality — the
 same member with equal payload, compared over the same instantiation.
 
-`Result[T, E]` models a recoverable failure. Prefix `try <expr>` propagates it (see
+`Result<T, E>` models a recoverable failure. Prefix `try <expr>` propagates it (see
 [Control flow](control-flow.md#prefix-try-and-transaction)): on `ok(v)` it yields
-`v`, and on `err(e)` it returns `err(e)` from the enclosing `Result[U, E]`-returning
+`v`, and on `err(e)` it returns `err(e)` from the enclosing `Result<U, E>`-returning
 function, with the same error type `E`.
 
-`Option[T]` is distinct from the presence primitive `T?`. A `T?` place is absent or
+`Option<T>` is distinct from the presence primitive `T?`. A `T?` place is absent or
 present and is produced by sparse reads, lookups, and optional returns; `??`,
-`if const`, `exists`, and `?.` consume it. An `Option[T]` is an ordinary value you
+`if const`, `exists`, and `?.` consume it. An `Option<T>` is an ordinary value you
 build with `some`/`none`, pass, return, and `match`. Use `T?` for the presence of a
-place, and `Option[T]` when absence is a value the program passes around or stores
-in a structure. A sparse field whose type is `Option[string]` reads as
-`Option[string]?` — absent (the field is unset) versus a present `Option` that is
+place, and `Option<T>` when absence is a value the program passes around or stores
+in a structure. A sparse field whose type is `Option<string>` reads as
+`Option<string>?` — absent (the field is unset) versus a present `Option` that is
 itself `none` or `some`.
 
 ## Resources
@@ -469,7 +469,7 @@ Assigning a field, required or sparse, sets it present to the assigned value.
 access on a local product (`r.note`); a required field cannot be unset, and a
 durable place is erased with `delete`, not `unset`. Because a sparse field is
 absent or a present value — never a stored empty — a sparse field typed
-`Option[string]` keeps its three states distinct: absent (unset), a present
+`Option<string>` keeps its three states distinct: absent (unset), a present
 `Option` `none`, and a present `Option` `some(v)`.
 
 ```mw
@@ -550,7 +550,7 @@ diagnostics; a struct name that collides with another declared type is a
 ## Generic Types
 
 A `struct` or `enum` may declare rank-1 type parameters in brackets after its name,
-making it a generic value type. Each distinct application `Name[Args]` is a separate
+making it a generic value type. Each distinct application `Name<Args>` is a separate
 monomorphized value type; the type arguments substitute for the parameters in the
 fields (a struct) or variant payloads (an enum).
 
@@ -575,39 +575,39 @@ argument that does not is a `check.type`. An unconstrained parameter admits neit
 operator over its values.
 
 A generic value is constructed with the ordinary literal spelling; there is no
-explicit `Name[Args]` construction form. The type arguments are inferred from the
+explicit `Name<Args>` construction form. The type arguments are inferred from the
 field or payload values, so every parameter must appear in a value the construction
 supplies:
 
 ```mw
-const p = Pair(first: 7, second: "hello") // Pair[int, string]
+const p = Pair(first: 7, second: "hello") // Pair<int, string>
 
-const b = Box::full(value: 9) // Box[int]
+const b = Box::full(value: 9) // Box<int>
 ```
 
 A parameter that no value determines cannot be inferred at the construction site and
 is a `check.type`. A generic type is also written in a type annotation
-(`Pair[int, string]`, `Box[int]`), which drives the same monomorphization; a field,
+(`Pair<int, string>`, `Box<int>`), which drives the same monomorphization; a field,
 parameter, return, or local may name one.
 
-`Option[T]`, `Result[T, E]`, `List[T]`, and `Map[K, V]` are the toolchain's own
+`Option<T>`, `Result<T, E>`, `List<T>`, and `Map<K, V>` are the toolchain's own
 generic types over this one mechanism: `Option` and `Result` are generic enums (see
 [Option and Result](#option-and-result)), and `List`/`Map` are the compiler
 collections. Their names are reserved and cannot be redeclared.
 
 A monomorphized instantiation is a private, image-local value type with no stable
 identity; two applications with the same arguments are the same type, and
-`Pair[int, string]` and `Pair[string, int]` are distinct. Acyclicity applies per
-instantiation: a generic type whose instantiation contains itself — `struct Tree[T]`
-with a `child: Tree[T]` field — is an infinite value and a `check.recursion` at the
-template, while a self-reference broken by a collection (`kids: List[Tree[T]]`) is
+`Pair<int, string>` and `Pair<string, int>` are distinct. Acyclicity applies per
+instantiation: a generic type whose instantiation contains itself — `struct Tree<T>`
+with a `child: Tree<T>` field — is an infinite value and a `check.recursion` at the
+template, while a self-reference broken by a collection (`kids: List<Tree<T>>`) is
 finite and admitted. A program monomorphizes finitely many instantiations; a
 divergent generic that nests inside itself over an ever-growing argument exceeds the
 fixed instantiation bound and is a `check.instantiation_limit`.
 
 ## Lists And Maps
 
-`List[T]` is a finite ordered collection of values of type `T`, and `Map[K, V]`
+`List<T>` is a finite ordered collection of values of type `T`, and `Map<K, V>`
 is a finite ordered map from keys of type `K` to values of type `V`. Both are
 ordinary copied values with the same value semantics as every other type: passing,
 returning, or reassigning one copies it, and there is no aliasing or shared

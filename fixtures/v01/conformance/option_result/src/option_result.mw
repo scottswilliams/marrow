@@ -1,9 +1,9 @@
 module option_result
 
-// `Option[T]` and `Result[T, E]` are built-in closed enum value types that ride
+// `Option<T>` and `Result<T, E>` are built-in closed enum value types that ride
 // the same machinery as a user `enum`: constructed, matched, and compared by
 // value. They are ordinary values, not the presence primitive — a `T?` place is
-// still absent-or-present, while an `Option[T]` value is `none` or `some(v)`.
+// still absent-or-present, while an `Option<T>` value is `none` or `some(v)`.
 
 pub fn firstEven(a: int, b: int): Option<int> {
     if a % 2 == 0 { return some(a) }
@@ -19,7 +19,7 @@ pub fn describe(o: Option<int>): string {
 }
 
 // Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are
-// three different values of `Option[Option[int]]`.
+// three different values of `Option<Option<int>>`.
 pub fn depth(o: Option<Option<int>>): int {
     match o {
         none => return 0

@@ -501,7 +501,7 @@ fn format_body_lines(
 /// emitted only between two pushed lines.
 ///
 /// The gap is measured from each line's own start byte rather than the previous
-/// line's end byte: a block-bearing statement's span runs to its closing dedent,
+/// line's end byte: a block-bearing statement's span runs to its closing brace,
 /// which already swallows the very blank line we want to preserve, so the
 /// reliable signal is whether the source immediately preceding the next line is
 /// an empty line.
@@ -629,7 +629,10 @@ fn format_resource_member(source: &str, member: &ResourceMember, level: usize) -
                 format_key_params(&group.keys)
             ));
             let body = format_resource_body(source, &group.members, &group.comments, level + 1);
-            append_braced_body(&mut out, &pad, &body, EmptyBody::HeaderAlone);
+            // A group mandates a `{ … }` body (the parser errors on a bodyless
+            // group), so an empty group renders `{}` and re-parses, rather than a
+            // bare header the parser would reject.
+            append_braced_body(&mut out, &pad, &body, EmptyBody::Braces);
             out
         }
     }
@@ -938,7 +941,7 @@ enum EmptyBody {
     /// `resource`, `struct`, the compound statements, and their clause blocks).
     Braces,
     /// The body is optional — a member-less `store`, an enum leaf or category with no
-    /// sub-members, a childless group — so an empty body leaves the header alone.
+    /// sub-members — so an empty body leaves the header alone.
     HeaderAlone,
 }
 
