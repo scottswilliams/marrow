@@ -280,14 +280,12 @@ conversions (see [Temporal Types](#temporal-types)).
 ```mw
 module docs::conversion
 
-pub fn normalized(raw: string): string {
-    const amount: int = int(raw)
-    const rendered: string = string(amount)
-    return rendered
+pub fn render(amount: int): string {
+    return string(amount)
 }
 
-pub fn checkedCode(raw: string): ErrorCode {
-    return ErrorCode(raw)
+pub fn renderFlag(active: bool): string {
+    return string(active)
 }
 ```
 
@@ -301,16 +299,17 @@ pub fn checkedCode(raw: string): ErrorCode {
 | `ErrorCode` | validated `string` text |
 
 On the current beta line the implemented conversions are `string(int)`,
-`string(bool)`, and `bytes(string)`; the remaining rows are direction and report
-`check.unsupported` until their scalar types land. Temporal values are built with
-the literal constructors in [Temporal Types](#temporal-types), not these
-conversions.
+`string(bool)`, and `bytes(string)`; every other row above — including parsing an
+`int` or `decimal` from text — is documented direction that is not yet
+implemented and reports `check.unsupported`. Temporal values are built with the
+literal constructors in [Temporal Types](#temporal-types), not these conversions.
 
-`ErrorCode` is represented as a string value. `ErrorCode(text)` requires two or
-more nonempty dot-separated segments containing lowercase ASCII letters,
-digits, or `_`. Explicit initialization of a non-optional annotated local and
-construction or assignment of a declared resource `ErrorCode` member apply the
-same validation.
+`ErrorCode` is represented as a string value. Its documented direction is that
+`ErrorCode(text)` requires two or more nonempty dot-separated segments containing
+lowercase ASCII letters, digits, or `_`, and that the same validation applies to
+explicit initialization of a non-optional annotated local and to construction or
+assignment of a declared resource `ErrorCode` member. The `ErrorCode` conversion
+is not yet implemented on the beta line and reports `check.unsupported`.
 
 The current checker does not preserve this refinement through function
 parameters and returns, later reassignment of a bare local, local collection
@@ -453,6 +452,32 @@ place, and `Option<T>` when absence is a value the program passes around or stor
 in a structure. A sparse field whose type is `Option<string>` reads as
 `Option<string>?` — absent (the field is unset) versus a present `Option` that is
 itself `none` or `some`.
+
+A sparse field already models absence: an unset field reads `absent`. Declare a
+field `Option<T>` only when a stored `none` must be distinguishable from the field
+being unset — the three-state case. Such a field is read by proving presence and
+then matching the stored `Option`:
+
+```mw
+module docs::three_state
+
+resource Reading {
+    measured: Option<int>
+}
+
+store ^readings[id: int]: Reading
+
+pub fn describe(): string {
+    const r = Reading(measured: some(7))
+    if const stored = r.measured {
+        match stored {
+            some(v) => return "measured"
+            none => return "recorded as unmeasurable"
+        }
+    }
+    return "not recorded"
+}
+```
 
 ## Resources
 

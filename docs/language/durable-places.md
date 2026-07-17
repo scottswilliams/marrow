@@ -326,8 +326,7 @@ pub fn setSubtitle(id: int, subtitle: string) {
 
 pub fn clearSubtitle(id: int) {
     transaction {
-        const cleared: string? = absent
-        ^books[id].subtitle = cleared
+        ^books[id].subtitle = absent
     }
 }
 ```
@@ -356,6 +355,15 @@ binding it with `if const x = place`, or by a preceding whole-entry write
 set, which reads the place's one pre-evaluated key and updates the field of the
 entry already there. Clearing the entry with `delete place` withdraws the
 knowledge, so a set after it is unguarded again.
+
+A presence fact is tracked per binding, not per entry. Two `place` bindings to the
+same entry hold independent facts, so a `delete` through one binding does not
+withdraw the proof held by another binding to the same entry. A strict set through
+the now-stale binding does not corrupt data: it fails closed at the store's marker
+check with a `run.corruption` fault rather than writing. Avoid the corner by
+routing an entry's presence test, erase, and subsequent writes through a single
+`place` binding. A check-time rule that recognized aliasing bindings is possible
+but not yet implemented.
 
 ```mw
 module docs::durable_guarded

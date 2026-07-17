@@ -40,6 +40,12 @@ A scalar member has `name: Type` form. Fields are sparse by default: the member
 may be absent. `required` makes the containing resource invalid while that
 member is absent.
 
+Because a sparse field already models absence — an unset field reads `absent` —
+declare a field `Option<T>` only when a stored `none` must be distinguishable from
+the field being unset. That three-state field (`absent`, present `none`, present
+`some`) is read by proving presence and then matching the stored `Option`; see
+[Option and Result](types-and-values.md#option-and-result).
+
 The `details` block is an unkeyed group. Its members extend the containing
 resource hierarchy. A required descendant of an unkeyed group is a required
 member of the containing resource. The read of that descendant is nevertheless
@@ -137,11 +143,28 @@ materialize its fields and unkeyed groups as `Book`; it cannot package
 `^books(id).tags` or `^books(id).notes` into that value. Traverse keyed children
 at their paths.
 
+A keyed family is navigated, never materialized as a whole: the language spells no
+construct that reads, replaces, merges, or clears a whole `branch` family in one
+operation. Change a family by updating each entry at its own key-path in place, or,
+when a local working copy is needed, by a bounded traversal that copies the entries
+and an explicit per-key write-back that reconciles each one. There is no
+family-level merge or subtree-replace.
+
 Whole assignment replaces the entry's own payload — its marker and stored fields —
 and leaves its keyed children in place. Assigning a materialized resource back to the
 same entry therefore rewrites the fields exactly (dropping any omitted sparse field)
 without disturbing the entry's keyed `branch` descendants. See
 [Durable places](durable-places.md#whole-resource-assignment).
+
+This exact-replacement rule is a footgun for the read-modify-write habit:
+assigning a *partially* constructed value — one built from only a few of the
+entry's fields — erases every sparse field the constructed value omits, not only
+the fields being changed. To change a subset of fields without disturbing the
+rest, assign each field at its own path (`^books(id).subtitle = …`) rather than
+whole-assigning a partial value. The round trip is safe only when the value
+written back carries every field that must survive, which a whole-entry read
+into a local guarantees. There is no checker lint: a partial constructor in
+whole-assignment position is indistinguishable from a deliberate replacement.
 
 ## Resource Names
 

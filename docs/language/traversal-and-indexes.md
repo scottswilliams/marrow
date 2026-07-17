@@ -32,6 +32,12 @@ and takes one inclusive `from`. A `for` head over a composite-keyed root or bran
 is the typed `check.unsupported` rejection, since the language spells no composite-key
 iteration.
 
+This shapes the data model: model each level you iterate as its own
+single-column keyed branch, nesting one branch per level, so every level is
+traversable. Reserve a composite key for a tuple that is one indivisible identity
+— one whose components are never enumerated on their own — since a composite-keyed
+layer is addressed by a full key but is not iterated.
+
 ```mw
 module docs::traversal
 
