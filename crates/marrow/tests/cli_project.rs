@@ -122,18 +122,15 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn fmt_project_checks_and_writes_every_module() {
     let temp = TempDir::new("fmt-project");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
-    // A deliberately misformatted module (extra blank lines the formatter removes).
+    // A deliberately misformatted module (over-indented body the formatter normalizes
+    // back to the canonical single indent).
     write(
         &project.join("src").join("main.mw"),
-        r#"pub fn main() {
-    return
-}
-"#,
+        "pub fn main() {\n        return\n}\n",
     );
     write(
         &project.join("src").join("util").join("helper.mw"),
