@@ -1082,6 +1082,31 @@ fn append_clause_or_block(
     );
 }
 
+/// Append an `else if` then-branch after its already-emitted keyword. Unlike a bare
+/// clause keyword (`else`, `on more`, `on <fault>`), whose diverging body may render
+/// braceless, an `if`/`else if` then-branch keeps its braces even inline: the
+/// braceless spelling `else if c return` is not legal grammar — the parser expects a
+/// block — so it would not re-parse. An eligible comment-free diverging single
+/// statement renders inline as `{ stmt }` when it fits (B4), otherwise a braced block.
+/// The closing `}` always follows, so a later clause cuddles it with no final-clause
+/// gate.
+fn append_then_branch(out: &mut String, source: &str, pad: &str, block: &Block, level: usize) {
+    if let Some(rendered) = inline_clause_statement(source, block, true)
+        && current_line_width(out) + " {  }".len() + rendered.chars().count() <= MAX_LINE_WIDTH
+    {
+        out.push_str(" { ");
+        out.push_str(&rendered);
+        out.push_str(" }");
+        return;
+    }
+    append_braced_body(
+        out,
+        pad,
+        &format_block(source, block, level + 1),
+        EmptyBody::Braces,
+    );
+}
+
 #[derive(Clone, Copy)]
 struct StatementFormatContext<'source, 'comments> {
     source: &'source str,
@@ -1454,21 +1479,10 @@ fn format_else_chain(
     else_block: Option<&Block>,
 ) {
     let pad = INDENT.repeat(ctx.level);
-    for (index, else_if) in else_ifs.iter().enumerate() {
+    for else_if in else_ifs {
         let condition = format_expression_at(&else_if.condition, ctx.level);
         push_clause_keyword(out, &pad, &format!("else if {condition}"));
-        // An `else if` may inline only when it ends the chain: no later `else if`
-        // and no trailing `else` to cuddle a following keyword.
-        let is_final = index + 1 == else_ifs.len() && else_block.is_none();
-        append_clause_or_block(
-            out,
-            ctx.source,
-            &pad,
-            &else_if.block,
-            ctx.level,
-            true,
-            is_final,
-        );
+        append_then_branch(out, ctx.source, &pad, &else_if.block, ctx.level);
     }
     if let Some(else_block) = else_block {
         push_clause_keyword(out, &pad, "else");
@@ -1771,7 +1785,7 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
         }
         // A keyed address `base[key, ...]`: the base is a postfix atom and the keys
         // are positional expressions needing no parentheses inside the brackets.
-        // Rendered inline; the full multiline key layout is the flip-3 formatter's.
+        // Keys render inline; there is no multiline key layout.
         Expression::Keyed { base, keys, .. } => {
             let base = format_child_at(base, PREC_ATOM, level, layout);
             let rendered: Vec<String> = keys

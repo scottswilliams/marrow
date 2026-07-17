@@ -188,6 +188,10 @@ fn formatter_faithful_regressions() -> Vec<String> {
         "module app\n\nfn f() {\n    for i in xs {}\n\n    b\n}\n",
         "module app\n\nfn f() {\n    transaction {}\n\n    b\n}\n",
         "module app\n\nfn f(o: Option<int>): int {\n    match o {\n        some(v) => return v\n        none => return 0\n    }\n}\n",
+        // A terminal `else if` (no trailing `else`) rendered its diverging
+        // then-branch braceless (`} else if n > 0 return`), which does not re-parse:
+        // a then-branch keeps its braces even inline. Braced-inline (B4) now.
+        "module app\n\nfn f(n: int) {\n    if n < 0 {\n        return\n    } else if n > 0 {\n        return\n    }\n}\n",
     ]
     .into_iter()
     .map(str::to_string)
@@ -283,16 +287,30 @@ fn seeded_random_mutation_pass_holds_the_total_invariants() {
 }
 
 fn seeded_random_mutation_body() {
-    // A fixed default seed and iteration budget keep this reproducible and
-    // CI-bounded: a failure reproduces exactly from the seed, and no unbounded
-    // campaign runs. MARROW_FUZZ_SEED widens the search without editing code.
-    const DEFAULT_SEED: u64 = 0x5241_4d5f_4655_5a5a; // "RAM_FUZZ"
-    let seed: u64 = std::env::var("MARROW_FUZZ_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_SEED);
-    const ITERATIONS: usize = 4_000;
+    // A fixed panel of diverse seeds runs by default, so CI is not green by the luck
+    // of a single seed: a defect a particular seed reaches (the terminal-`else if`
+    // braceless-then-branch regression surfaced at seed 13) is caught by the standing
+    // suite, not only under an override. The panel is bounded and reproducible — fixed
+    // seeds, a fixed per-seed budget, and a bounded total kept under a couple of
+    // seconds. MARROW_FUZZ_SEED replaces the panel with one seed at a wider budget to
+    // extend a search without editing code; a failure reproduces exactly from its seed.
+    const PANEL_SEEDS: [u64; 4] = [
+        0x5241_4d5f_4655_5a5a, // "RAM_FUZZ"
+        13,                    // minimized the terminal-`else if` braceless then-branch
+        0x9E37_79B9_7F4A_7C15, // the SplitMix64 golden-ratio increment
+        0xD1B5_4A32_D192_ED03,
+    ];
+    const PANEL_ITERATIONS: usize = 1_500;
+    const OVERRIDE_ITERATIONS: usize = 4_000;
     const MAX_MUTATIONS: usize = 24;
+
+    let (panel, iterations): (Vec<u64>, usize) = match std::env::var("MARROW_FUZZ_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+    {
+        Some(seed) => (vec![seed], OVERRIDE_ITERATIONS),
+        None => (PANEL_SEEDS.to_vec(), PANEL_ITERATIONS),
+    };
 
     let seeds: Vec<Vec<u8>> = tracer_subset_programs()
         .into_iter()
@@ -300,19 +318,21 @@ fn seeded_random_mutation_body() {
         .map(String::into_bytes)
         .collect();
 
-    let mut rng = SplitMix64::new(seed);
     let mut mutated_error = false;
-    for _ in 0..ITERATIONS {
-        let mut bytes = seeds[rng.below(seeds.len() as u64) as usize].clone();
-        let rounds = 1 + rng.below(MAX_MUTATIONS as u64) as usize;
-        for _ in 0..rounds {
-            mutate(&mut bytes, &mut rng);
+    for panel_seed in panel {
+        let mut rng = SplitMix64::new(panel_seed);
+        for _ in 0..iterations {
+            let mut bytes = seeds[rng.below(seeds.len() as u64) as usize].clone();
+            let rounds = 1 + rng.below(MAX_MUTATIONS as u64) as usize;
+            for _ in 0..rounds {
+                mutate(&mut bytes, &mut rng);
+            }
+            // The file boundary decodes bytes to text losslessly-or-lossy; feed the
+            // parser exactly that, so invalid UTF-8 and NUL bytes are covered.
+            let source = String::from_utf8_lossy(&bytes);
+            assert_total_invariants(&source);
+            mutated_error |= has_error_diagnostic(&source);
         }
-        // The file boundary decodes bytes to text losslessly-or-lossy; feed the
-        // parser exactly that, so invalid UTF-8 and NUL bytes are covered.
-        let source = String::from_utf8_lossy(&bytes);
-        assert_total_invariants(&source);
-        mutated_error |= has_error_diagnostic(&source);
     }
     assert!(
         mutated_error,

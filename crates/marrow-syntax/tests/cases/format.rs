@@ -273,18 +273,23 @@ fn preserves_grouping_blank_between_match_arms() {
 
 // ---- inline-diverging cuddle integrity ----
 
-/// The inline-diverging form may render only the FINAL clause of a chain. A middle
-/// `else if` whose body would fit inline must still render braced: an inline body
-/// carries no `}` for the following `else`/`else if` to cuddle, so inlining a
-/// non-final clause produces a non-cuddled `else` on a fresh line that does not
-/// re-parse.
+/// An `if`/`else if` then-branch always keeps its braces, even inline: the braceless
+/// spelling `else if c return` is not legal grammar and would not re-parse. An
+/// eligible diverging single statement renders braced-inline (`{ return }`), never
+/// braceless; a bare `else` keeps its braceless-inline form. Because the braced-inline
+/// form still carries a closing `}`, every clause — including a terminal `else if`
+/// with no trailing `else` — cuddles a following keyword and re-parses.
 #[test]
-fn a_middle_else_if_clause_never_inlines() {
-    let source = "module app\nfn run(a: int): int {\n    if a > 0 {\n        return 1\n    } else if a == 0 {\n        return 0\n    } else {\n        return -1\n    }\n}\n";
+fn an_else_if_then_branch_keeps_its_braces() {
+    let source = "module app\nfn run(a: int): int {\n    if a > 0 {\n        return 1\n    } else if a == 0 {\n        return 0\n    } else if a == 1 {\n        return 2\n    }\n}\n";
     let once = format_source(source);
     assert!(
-        once.contains("} else if a == 0 {"),
-        "the middle else-if keeps its braced body:\n{once}"
+        once.contains("} else if a == 0 { return 0 }"),
+        "a middle else-if renders braced-inline:\n{once}"
+    );
+    assert!(
+        once.contains("} else if a == 1 { return 2 }"),
+        "a terminal else-if keeps its braces rather than going braceless:\n{once}"
     );
     assert!(
         !parse_source(&once).has_errors(),
