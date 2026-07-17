@@ -2334,6 +2334,45 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
     assert_eq!(code_of(&bytes), "image.flow");
 }
 
+/// A presence fact established on a key slot is dead once that slot is rebound — the exact
+/// interaction a two-binding traversal relies on. The traversal rebinds its key slot each
+/// iteration (`ListGet; LocalSet(key_slot)`), so a fact an `exists` guard proved in
+/// iteration N must not dominate a strict present-entry set in iteration N+1. Model the
+/// rebind directly: `exists` proves slot 0 present, a `LocalSet` rebinds slot 0, and a
+/// strict set relying on the stale fact is refused at the flow phase.
+#[test]
+fn a_strict_sparse_set_after_a_key_rebind_rejects() {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let text = draft.intern_text("x");
+    // Instruction-index layout:
+    //   0 TxnBegin
+    //   1 LocalGet(0); 2 DurExists(0); 3 JumpIfFalse(9) — present edge proves slot 0.
+    //   4 LocalGet(1); 5 LocalSet(0) — rebind slot 0 to the next iteration's key.
+    //   6 ConstLoad; 7 SomeWrap; 8 strict set on slot 0 (rejected: killed by the rebind).
+    //   9 TxnCommit; 10 Return.
+    let bytes = finish_two_key(
+        draft,
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(0),
+            Instr::JumpIfFalse(9),
+            Instr::LocalGet(1),
+            Instr::LocalSet(0),
+            Instr::ConstLoad(text.index()),
+            Instr::SomeWrap,
+            Instr::DurSetSparsePresent {
+                site: 2,
+                key_slots: vec![0],
+            },
+            Instr::TxnCommit,
+            Instr::Return,
+        ],
+    );
+    assert_eq!(code_of(&bytes), "image.flow");
+}
+
 /// The tracer schema plus a string-keyed `notes(noteId:string)` branch of one required
 /// `text` field. The branch key is `string` to match the root key type, so a strict
 /// root-field set naming the branch key slot type-checks — isolating the presence

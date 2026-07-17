@@ -158,11 +158,13 @@ fn a_reversed_durable_traversal_is_rejected() {
 }
 
 #[test]
-fn a_durable_for_binding_an_entry_value_is_rejected() {
+fn a_durable_for_with_more_than_a_key_and_an_address_is_rejected() {
+    // A durable traversal binds the immediate key and, optionally, a per-iteration address
+    // pin; a third binding has no durable meaning.
     assert_rejected(
         r#"pub fn f(): int {
     var t = 0
-    for k, v in ^books at most 5 {
+    for k, visit, extra in ^books at most 5 {
         t += k
     } on more {
         t = -1

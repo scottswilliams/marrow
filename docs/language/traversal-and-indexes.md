@@ -12,7 +12,7 @@ A durable `for` head names a store root or a single-level keyed branch, an
 clause cuddled after the loop body like an `else`:
 
 ```text
-for k in <place> at most N [from f] {
+for k[, p] in <place> at most N [from f] {
     statements
 } on more {
     statements
@@ -21,11 +21,18 @@ for k in <place> at most N [from f] {
 
 `<place>` is a store root such as `^books` (the root entry family) or a keyed
 branch such as `^books(id).notes` (the branch family beneath one fixed parent
-entry, at any nesting depth). The single loop variable `k` binds each immediate key
+entry, at any nesting depth). The first loop variable `k` binds each immediate key
 in ascending [typed key order](types-and-values.md#key-types); the value at that key
 is read separately inside the body. `N` is a positive integer literal no larger
 than the traversal ceiling (65536). An inclusive `from f` starts the walk at or
 after the key `f`.
+
+An optional second variable `p` binds a per-iteration address pin: a
+[`place`](durable-places.md#named-places) over the entry at the current key,
+scoped to the loop body. It reads nothing on its own and establishes no presence
+fact — the frozen key names an entry an earlier iteration may already have erased —
+so a read or write through `p` is an ordinary durable access whose presence must be
+established the usual way (an `if exists(p)` test dominates a present-entry write).
 
 The traversed layer must be keyed by a single column: the loop binds one immediate key
 and takes one inclusive `from`. A `for` head over a composite-keyed root or branch layer

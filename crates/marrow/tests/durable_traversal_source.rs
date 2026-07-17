@@ -15,6 +15,7 @@ const IDS: &str = "marrow ids v0\n\
      id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
      id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
      id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.shelf 33333333333333333333333333333333\n\
      id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
      id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
      id root Book.notes 30303030303030303030303030303030\n\
@@ -29,6 +30,7 @@ const IDS: &str = "marrow ids v0\n\
 /// sum, in order) and whether `on more` ran.
 const SOURCE: &str = r#"resource Book {
     required title: string
+    shelf: string
 
     notes[pos: int] {
         required text: string
@@ -243,6 +245,34 @@ pub fn noteState(id: int): string {
     }
     return "populated"
 }
+
+pub fn shelveAll(s: string) {
+    transaction {
+        for vid, visit in ^books at most 100 {
+            visit.shelf = s
+        } on more {}
+    }
+}
+
+pub fn shelveIfPresent(s: string) {
+    transaction {
+        for vid, visit in ^books at most 100 {
+            if exists(visit) {
+                visit.shelf = s
+            }
+        } on more {}
+    }
+}
+
+pub fn shelfOf(id: int): string {
+    if const b = ^books[id] {
+        if const s = b.shelf {
+            return s
+        }
+        return "unshelved"
+    }
+    return "absent"
+}
 "#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -413,6 +443,58 @@ fn family_populated_exists_answers_whether_a_family_has_a_child() {
         run(&image, &mut attachment, "bookHasNotes", vec![Value::Int(2)]),
         Some(Value::Bool(false))
     );
+}
+
+#[test]
+fn a_two_binding_traversal_pins_each_entry_as_a_writable_address() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books(&image, &mut attachment);
+
+    // Before shelving, every book is unshelved.
+    assert_eq!(
+        run(&image, &mut attachment, "shelfOf", vec![Value::Int(1)]),
+        Some(Value::Text("unshelved".into()))
+    );
+
+    // `for vid, visit in ^books { visit.shelf = s }`: the second binding pins each frozen
+    // entry as a place, and the write lands on that entry's field.
+    run(
+        &image,
+        &mut attachment,
+        "shelveAll",
+        vec![Value::Text("A".into())],
+    );
+    for id in [1i64, 2, 3] {
+        assert_eq!(
+            run(&image, &mut attachment, "shelfOf", vec![Value::Int(id)]),
+            Some(Value::Text("A".into())),
+            "book {id} was shelved through its per-iteration address pin",
+        );
+    }
+}
+
+#[test]
+fn an_exists_guarded_write_through_the_pin_is_admitted_and_scoped() {
+    // `if exists(visit) { visit.shelf = s }`: the guard proves the pinned entry present,
+    // dominating a strict present-entry set through the place. The guard is scoped to the
+    // iteration — the key rebind at the next iteration kills the fact — so the loop
+    // compiles, verifies, and runs.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_books(&image, &mut attachment);
+    run(
+        &image,
+        &mut attachment,
+        "shelveIfPresent",
+        vec![Value::Text("B".into())],
+    );
+    for id in [1i64, 2, 3] {
+        assert_eq!(
+            run(&image, &mut attachment, "shelfOf", vec![Value::Int(id)]),
+            Some(Value::Text("B".into())),
+        );
+    }
 }
 
 /// Run a read-only export and return the dotted code of the runtime fault it raises.

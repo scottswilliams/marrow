@@ -219,7 +219,13 @@ function; see [Errors and transactions](errors-and-transactions.md).
 ## Presence And Reads
 
 `exists(path)` reports whether the addressed entry is present. Reading a place
-that may not exist yields `T?`, because the entry at that key may be absent:
+that may not exist yields `T?`, because the entry at that key may be absent.
+
+Given a store root or a keyed branch family rather than one addressed entry —
+`exists(^books)` or `exists(^books[id].notes)` — `exists` instead reports whether
+that family has at least one payload-bearing child. It reads at most one child
+key and establishes no per-entry presence fact; it answers only the
+family-populated question, at a cost bounded like an `at most 1` traversal.
 
 ```mw
 module docs::durable_presence

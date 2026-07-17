@@ -753,6 +753,9 @@ impl<'a> DurNode<'a> {
 struct TraversalTarget<'e> {
     entry_site: u16,
     key_ty: ScalarType,
+    /// The materialized record of the traversed family's entry — the shape a two-binding
+    /// traversal's per-iteration address pin (`for k, p in …`) binds `p` over.
+    record: TypeId,
     ancestor_keys: Vec<DurKey<'e>>,
     span: SourceSpan,
 }
@@ -2635,11 +2638,13 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let entry_site = root.entry_site;
+                let record = root.record;
                 self.check_root_name(root, name, *span)?;
                 let key_ty = self.single_traversal_column(&root.key, *span)?;
                 Some(TraversalTarget {
                     entry_site,
                     key_ty,
+                    record,
                     ancestor_keys: Vec::new(),
                     span: *span,
                 })
@@ -2673,10 +2678,12 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let entry_site = layer.entry_site;
+                let record = layer.record;
                 let key_ty = self.single_traversal_column(&layer.key, *span)?;
                 Some(TraversalTarget {
                     entry_site,
                     key_ty,
+                    record,
                     ancestor_keys,
                     span: *span,
                 })
@@ -2731,13 +2738,20 @@ impl<'a> FnLowerer<'a> {
             ));
             return Flow::Fallthrough;
         };
-        let [var] = binding.names.as_slice() else {
-            self.fail(unsupported(
-                self.file,
-                span,
-                "binding an entry value in a bounded traversal (`for k, v`)",
-            ));
-            return Flow::Fallthrough;
+        // A durable traversal binds the immediate key, and optionally a second name: a
+        // per-iteration address pin (`place` semantics) over the entry at that key. More
+        // than two names has no durable meaning.
+        let (var, place_var) = match binding.names.as_slice() {
+            [key] => (key, None),
+            [key, address] => (key, Some(address)),
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    "binding more than a key and a per-iteration address in a traversal",
+                ));
+                return Flow::Fallthrough;
+            }
         };
         let Some(on_more) = &bound.on_more else {
             self.fail(SourceDiagnostic::at(
@@ -2759,13 +2773,44 @@ impl<'a> FnLowerer<'a> {
 
         // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
         // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
-        // before any body runs.
-        if self
-            .emit_key_path(&target.ancestor_keys, target.span)
-            .is_none()
-        {
-            return Flow::Fallthrough;
-        }
+        // before any body runs. A two-binding traversal captures the ancestor keys into
+        // slots first — its per-iteration address pin reads them alongside the loop key —
+        // then pushes the same slots as the opcode operands; a single-binding traversal
+        // pushes the ancestor keys straight.
+        let ancestor_slots: Vec<(u16, ScalarType)> = if place_var.is_some() {
+            let mut slots = Vec::with_capacity(target.ancestor_keys.len());
+            for column in &target.ancestor_keys {
+                let PlaceKey::Expr(key_expr) = column.key else {
+                    self.fail(unsupported(
+                        self.file,
+                        target.span,
+                        "a per-iteration address over this traversal",
+                    ));
+                    return Flow::Fallthrough;
+                };
+                let slot = self.alloc_slot();
+                if self
+                    .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
+                    .is_none()
+                {
+                    return Flow::Fallthrough;
+                }
+                self.push(Instr::LocalSet(slot), target.span);
+                slots.push((slot, column.key_ty));
+            }
+            for (slot, _) in &slots {
+                self.push(Instr::LocalGet(*slot), target.span);
+            }
+            slots
+        } else {
+            if self
+                .emit_key_path(&target.ancestor_keys, target.span)
+                .is_none()
+            {
+                return Flow::Fallthrough;
+            }
+            Vec::new()
+        };
         let has_from = bound.from.is_some();
         if let Some(from_expr) = &bound.from
             && self.lower_as(from_expr, LTy::bare_scalar(key_ty)).is_none()
@@ -2790,26 +2835,49 @@ impl<'a> FnLowerer<'a> {
         // A positional walk over the frozen `List[K]` binds `k` per position.
         // `continue` advances to the loop top; a body `break`/`return` skips past
         // the `on more` block.
+        let entry_site = target.entry_site;
+        let record = target.record;
+        let key_name = var.name.clone();
+        let place_name = place_var.map(|name| name.name.clone());
         let break_jumps = self.lower_positional_walk(
             coll_slot,
             Instr::ListLen,
             body,
             span,
-            |lower, index_slot| {
+            move |lower, index_slot| {
                 let key_slot = lower.alloc_slot();
                 lower.push(Instr::LocalGet(coll_slot), span);
                 lower.push(Instr::LocalGet(index_slot), span);
                 lower.push(Instr::ListGet, span);
+                // Rebinding the key slot each iteration kills, through the verifier's
+                // LocalSet presence-lattice rule, any presence fact an earlier iteration
+                // established on this key: a fact proven in iteration N cannot survive into
+                // N+1.
                 lower.push(Instr::LocalSet(key_slot), span);
                 // Traversal establishes no presence fact for the body: `k` names a
                 // frozen key whose entry an earlier body iteration may already have
                 // erased.
                 lower.locals.push(Local {
-                    name: var.name.clone(),
+                    name: key_name,
                     ty: LTy::bare_scalar(key_ty),
                     mutable: false,
                     slot: key_slot,
                 });
+                // The optional second binding is a per-iteration address pin: a `place`
+                // over the entry at the current key. Its key-path is the captured ancestor
+                // slots followed by this iteration's key slot; it reads nothing and
+                // establishes no presence fact, so a write through it is an ordinary
+                // sparse set unless a dominating `exists` proves the entry present.
+                if let Some(place_name) = place_name {
+                    let mut key_slots = ancestor_slots;
+                    key_slots.push((key_slot, key_ty));
+                    lower.places.push(PlaceLocal {
+                        name: place_name,
+                        key_slots,
+                        entry_site,
+                        record,
+                    });
+                }
             },
         );
 
@@ -3018,6 +3086,7 @@ impl<'a> FnLowerer<'a> {
         let exit = self.push_jif(span);
 
         let mark = self.locals.len();
+        let place_mark = self.places.len();
         bind(self, index_slot);
         self.loops.push(LoopCtx {
             continue_target: top,
@@ -3029,6 +3098,9 @@ impl<'a> FnLowerer<'a> {
         }
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
+        // A two-binding durable traversal binds a per-iteration address pin as a place;
+        // drop it with the loop-variable locals so it does not escape the body.
+        self.places.truncate(place_mark);
 
         let after_loop = self.here();
         self.patch(exit, after_loop);
