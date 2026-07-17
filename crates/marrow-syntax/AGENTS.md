@@ -27,8 +27,11 @@ moves together in the feature's lane; a feature is not done while any is missing
    typed `DiagnosticReason`; it does not resurrect a second cascading diagnostic
    (`total_parser_architecture` guards this). Spans stay in bounds and 1-based.
 4. **Formatter**: render the construct canonically and idempotently. A body-bearing
-   header joins its body through `append_body_block` (empty bodies render as the
-   header alone); own-line comments render at their block's canonical indent; a
+   header joins its body through `append_braced_body`; a mandatory block renders `{}`
+   when empty, an optional body (a member-less `store`, an enum leaf/category, a
+   childless group) leaves the header alone. A comment trailing a header is owned by
+   the block (the parser records it as the block's first own-line comment), not
+   cuddled after `{`. Own-line comments render at their block's canonical indent; a
    statement's span covers only its own content, never a following sibling.
 5. **Examples/tests**: add source-driven cases; documented `docs/language/` module
    blocks must parse, reconstruct, and format cleanly (the shared corpus tests).
@@ -36,18 +39,17 @@ moves together in the feature's lane; a feature is not done while any is missing
    and its `tests/cases/fuzz.rs` driver with the new construct — a deterministic
    corpus entry plus, for any minimized counterexample, a permanent regression
    fixture. The oracle asserts, over arbitrary bytes: no panic, deterministic
-   parse, lossless token tiling, a bounded diagnostic count, and — for a
-   comment-free clean parse — formatter idempotence. The faithful lens
+   parse, lossless token tiling, a bounded diagnostic count, and — for any clean
+   parse, comment-bearing or not — formatter idempotence. The faithful lens
    (comment- and structure-preserving formatting) runs over the curated valid
    corpus. Keep both bounded: a fixed deterministic corpus plus a seeded,
    fixed-iteration random pass, no external fuzz dependency.
 
-**Known limitation (tracked for a follow-up lane).** An own-line comment at an
-irregular indentation *inside* a `match` or compound-statement body has no owner in
-the AST — `Match` and the compound bodies do not model inter-arm/inter-statement
-own-line comments, so such a comment is attributed by byte span and can shift or be
-dropped when formatting normalizes indentation. Formatter idempotence is therefore
-asserted unconditionally only for comment-free clean parses; giving these nodes a
-comment-owning structure is the fix.
+**Comment ownership.** A comment trailing a body-bearing header attaches to one
+deterministic owner — the block — so the `{`-cuddled, next-line-`{`, and own-line
+spellings all parse to one tree and format to one fixed point. The parser routes such
+a comment into the block (compound statements and declarations) or the first leading
+arm (`match`); own-line body comments render at the block's canonical indent. The
+formatter oracle asserts idempotence unconditionally over comments as a result.
 
 Map: [docs/implementation/syntax.md](../../docs/implementation/syntax.md).
