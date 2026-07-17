@@ -162,6 +162,15 @@ pub enum SiteTarget {
         branch: Box<[u16]>,
         field: u16,
     },
+    /// A managed index's nonunique progressive-prefix scan read, named by its position
+    /// in [`StoreSchema::indexes`]. The read is bounded and yields the next distinct
+    /// projected component; it observes only the index cell family and never a source
+    /// entry.
+    IndexScan(u16),
+    /// A managed index's unique complete-key lookup read, named by its position in
+    /// [`StoreSchema::indexes`]. The read is a single exact probe yielding the one
+    /// matching source key tuple or absent.
+    IndexLookup(u16),
 }
 
 /// The read/write coverage of a durable demand: whether it observes or mutates the
@@ -393,6 +402,17 @@ enum AuthTarget {
         /// marker and required fields, node-parametrically, one level down for a branch.
         record: Vec<FieldSchema>,
     },
+    /// A managed-index read target: the index's cell-family identity, whether it is a
+    /// unique complete-key lookup or a nonunique progressive-prefix scan, and the scalar
+    /// kind of each ordered projected component (resolved once from the root's key
+    /// columns and top-level fields). An index read never addresses a source node, so it
+    /// carries no record or branch path; it validates its operand components against this
+    /// projection and reads only the `0x02` index cell family.
+    Index {
+        id: [u8; 16],
+        unique: bool,
+        projection: Vec<ScalarKind>,
+    },
 }
 
 impl AuthTarget {
@@ -403,6 +423,16 @@ impl AuthTarget {
             shape: field.shape.clone(),
             required: field.required,
             record: record.to_vec(),
+        }
+    }
+
+    /// A managed-index read target from its cell-family identity, read kind, and
+    /// resolved projection component kinds.
+    fn index(id: [u8; 16], unique: bool, projection: Vec<ScalarKind>) -> Self {
+        Self::Index {
+            id,
+            unique,
+            projection,
         }
     }
 }
@@ -419,10 +449,35 @@ impl AuthorizedSite {
         }
     }
 
+    /// A root-level managed-index read site: no branch path, an [`AuthTarget::Index`]
+    /// target. The store's site resolver is the sole constructor.
+    fn index(root: String, key: Vec<ScalarKind>, target: AuthTarget) -> Self {
+        Self {
+            root,
+            key,
+            branch: Vec::new(),
+            target,
+        }
+    }
+
     /// The number of key columns the whole key-path this site addresses carries: the
     /// root's key columns plus every branch hop's key columns, to any depth. The VM pops
     /// exactly this many key operands and assembles them root-first before calling an op.
     pub fn key_arity(&self) -> usize {
         self.key.len() + self.branch.iter().map(|hop| hop.key.len()).sum::<usize>()
+    }
+
+    /// The index-read shape this site addresses — its cell-family identity, unique flag,
+    /// and ordered projection component kinds — or `None` for a source-node site. The
+    /// index ops read this to bound and validate a read without the schema.
+    fn index_read(&self) -> Option<(&[u8; 16], bool, &[ScalarKind])> {
+        match &self.target {
+            AuthTarget::Index {
+                id,
+                unique,
+                projection,
+            } => Some((id, *unique, projection)),
+            AuthTarget::Entry(_) | AuthTarget::Field { .. } => None,
+        }
     }
 }

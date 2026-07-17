@@ -203,6 +203,22 @@ pub(super) fn index_cell_value(source_key: &[KeyScalar]) -> Vec<u8> {
     encode_key_tuple(source_key)
 }
 
+/// Decode the source key tuple stored at an index cell — the `arity` root key columns an
+/// index read yields. The inverse of [`index_cell_value`] paired with it as the index
+/// cell-value owner. `None` when the bytes do not decode as exactly `arity` leading key
+/// values with no trailing bytes: a truncated, over-long, or undecodable value is a
+/// corrupt cell, never a partial or extended source key.
+pub(super) fn decode_index_source_key(bytes: &[u8], arity: usize) -> Option<Vec<KeyScalar>> {
+    let mut out = Vec::with_capacity(arity);
+    let mut rest = bytes;
+    for _ in 0..arity {
+        let (key, used) = decode_key_value(rest)?;
+        out.push(key);
+        rest = rest.get(used..)?;
+    }
+    rest.is_empty().then_some(out)
+}
+
 /// The structural role of the byte immediately after a node's marker terminator: one
 /// of the node's own field leaves, one of its branch descendants, or an unrecognized
 /// tag. This is the single owner of post-marker tag meaning, consulted by both the
@@ -359,6 +375,75 @@ impl Layer {
     /// (see [`classify_under_prefix`]).
     pub(super) fn classify(&self, cell_key: &[u8]) -> CellKind {
         classify_under_prefix(&self.prefix, cell_key)
+    }
+}
+
+/// One managed index's cell family narrowed to a fixed leading projection prefix: the
+/// `0x02 esc(root) index_id enc(fixed)` byte range a progressive-prefix scan traverses.
+/// A cell of this index whose first `fixed.len()` projected components equal `fixed`
+/// begins with this prefix and continues with the encoding of the next component
+/// (an incomplete prefix) or nothing (the complete projection); a differently-prefixed
+/// cell, another index's cell, or an entry/meta cell is foreign to it. The single owner
+/// of index-scan cursor and next-component decoding, mirroring [`Layer`] for the index
+/// family: the nonunique bounded scan steps forward through it exactly as the entry
+/// traversal steps through a `Layer`.
+pub(super) struct IndexLayer {
+    prefix: Vec<u8>,
+}
+
+impl IndexLayer {
+    /// The scan range of `index_id` under `root` with the leading components `fixed`
+    /// held. `fixed` is a strict prefix of the index's ordered projection (fewer columns
+    /// than the whole projection), so no full cell equals this prefix — every matching
+    /// cell strictly extends it with at least the next component's encoding.
+    pub(super) fn new(root: &str, index_id: &[u8; 16], fixed: &[KeyScalar]) -> Self {
+        Self {
+            prefix: index_cell_key(root, index_id, fixed),
+        }
+    }
+
+    /// The byte prefix bounding the scan: every cell of this index sharing the fixed
+    /// leading components starts with it, and a `scan_after` bounded by it stays inside
+    /// the range.
+    pub(super) fn prefix(&self) -> &[u8] {
+        &self.prefix
+    }
+
+    /// The inclusive-`from` seek start over the next component: `prefix ++ enc(from)`.
+    /// At an incomplete prefix the matching cell continues with a following column tag
+    /// (`>= 0x01`), so this cursor sorts strictly below it and a forward scan yields it;
+    /// the complete-projection case (where a cell equals `prefix ++ enc(from)` exactly)
+    /// is handled by the scan's own equality probe, since a bare `scan_after` excludes an
+    /// equal cursor.
+    pub(super) fn seek_from(&self, from: &KeyScalar) -> Vec<u8> {
+        let mut out = self.prefix.clone();
+        out.extend_from_slice(&encode_key_value(from));
+        out
+    }
+
+    /// The cursor that resumes a forward scan strictly past every cell whose next
+    /// component equals `component`: the component row key raised by the cursor
+    /// sentinel. Because every real index cell that extends `prefix ++ enc(component)`
+    /// continues with a key type tag (`0x01..=0x08`) — never `0xFF` — this sentinel
+    /// sorts above every such cell and below the next distinct component's cells, and is
+    /// never itself a real cell. One seek past it therefore skips a whole distinct
+    /// component's rows regardless of how many share it, so a scan of `d` distinct
+    /// component values costs `O(d + 1)` seeks independent of total row fan-out.
+    pub(super) fn skip_cursor(&self, component: &KeyScalar) -> Vec<u8> {
+        let mut out = self.prefix.clone();
+        out.extend_from_slice(&encode_key_value(component));
+        out.push(CURSOR_SENTINEL);
+        out
+    }
+
+    /// Decode the next projected component of a cell scanned under this prefix: the one
+    /// key value immediately following the fixed leading prefix. `None` when the cell is
+    /// not under the prefix (foreign — the scan is done) or the following bytes do not
+    /// decode as a leading key value (corruption).
+    pub(super) fn next_component(&self, cell_key: &[u8]) -> Option<KeyScalar> {
+        let rest = cell_key.strip_prefix(self.prefix.as_slice())?;
+        let (component, _used) = decode_key_value(rest)?;
+        Some(component)
     }
 }
 
@@ -773,5 +858,87 @@ mod tests {
     fn index_cell_value_is_the_encoded_source_key() {
         let source = [KeyScalar::Int(42)];
         assert_eq!(index_cell_value(&source), encode_key_tuple(&source));
+    }
+
+    /// The index scan's skip cursor for a distinct component value sorts strictly above
+    /// every cell that shares that component — whether the cell is the complete
+    /// projection (the component is the last column, so the cell equals the component
+    /// row key) or an incomplete prefix (the cell continues with a further column) — and
+    /// strictly below the next distinct component's cells, and is never itself a real
+    /// cell. This is the O(distinct + 1) traversal-skip law for the index family: one
+    /// seek past the cursor passes a whole component's rows regardless of fan-out.
+    #[test]
+    fn index_skip_cursor_passes_one_component_and_stops_before_the_next() {
+        // `byShelf[shelf, id]` held at `shelf = "a"`: enumerate the `id` component. The
+        // `id` column is the last projected column, so a cell equals its component row key.
+        let layer = IndexLayer::new("books", &IDX_A, &[KeyScalar::Str("a".into())]);
+        let cell_a1 = index_cell_key(
+            "books",
+            &IDX_A,
+            &[KeyScalar::Str("a".into()), KeyScalar::Int(1)],
+        );
+        let cell_a2 = index_cell_key(
+            "books",
+            &IDX_A,
+            &[KeyScalar::Str("a".into()), KeyScalar::Int(2)],
+        );
+        let cursor = layer.skip_cursor(&KeyScalar::Int(1));
+        assert!(
+            cell_a1 < cursor,
+            "the component's own cell precedes its skip cursor"
+        );
+        assert!(
+            cursor < cell_a2,
+            "the skip cursor precedes the next distinct component"
+        );
+        assert_ne!(cursor, cell_a1, "the skip cursor is never a real cell");
+        assert_eq!(
+            layer.next_component(&cell_a1),
+            Some(KeyScalar::Int(1)),
+            "the next component decodes from the scanned cell",
+        );
+
+        // An incomplete prefix (a further column follows the enumerated component) obeys
+        // the same law: the skip cursor still sits between the component's rows and the
+        // next component. `byRegionShelfId[region, shelf, id]` held at `region = "west"`,
+        // enumerating `shelf`, with two rows sharing `shelf = "a"`.
+        let wide = IndexLayer::new("stock", &IDX_B, &[KeyScalar::Str("west".into())]);
+        let west_a_1 = index_cell_key(
+            "stock",
+            &IDX_B,
+            &[
+                KeyScalar::Str("west".into()),
+                KeyScalar::Str("a".into()),
+                KeyScalar::Int(1),
+            ],
+        );
+        let west_a_2 = index_cell_key(
+            "stock",
+            &IDX_B,
+            &[
+                KeyScalar::Str("west".into()),
+                KeyScalar::Str("a".into()),
+                KeyScalar::Int(2),
+            ],
+        );
+        let west_b_1 = index_cell_key(
+            "stock",
+            &IDX_B,
+            &[
+                KeyScalar::Str("west".into()),
+                KeyScalar::Str("b".into()),
+                KeyScalar::Int(1),
+            ],
+        );
+        let cursor_a = wide.skip_cursor(&KeyScalar::Str("a".into()));
+        assert!(
+            west_a_1 < cursor_a && west_a_2 < cursor_a,
+            "both a-rows precede the cursor"
+        );
+        assert!(cursor_a < west_b_1, "the cursor precedes the next shelf");
+        assert_eq!(
+            wide.next_component(&west_a_1),
+            Some(KeyScalar::Str("a".into()))
+        );
     }
 }

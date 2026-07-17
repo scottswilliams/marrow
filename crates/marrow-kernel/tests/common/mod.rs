@@ -18,11 +18,13 @@ use marrow_store::{
     ByteEngine, Cell as StoreCell, CommitOutcome, MemoryEngine, ReadView, StoreError, WriteTxn,
 };
 
-/// The two shared counters: store opens and transaction writes.
+/// The shared counters: store opens, transaction writes, and transaction reads
+/// (`get`/`scan_after` — the engine seeks a bounded traversal or index scan performs).
 #[derive(Clone, Default)]
 pub struct Counters {
     pub opens: Rc<Cell<usize>>,
     pub writes: Rc<Cell<usize>>,
+    pub reads: Rc<Cell<usize>>,
 }
 
 impl Counters {
@@ -36,6 +38,10 @@ impl Counters {
 
     pub fn writes(&self) -> usize {
         self.writes.get()
+    }
+
+    pub fn reads(&self) -> usize {
+        self.reads.get()
     }
 }
 
@@ -63,13 +69,16 @@ impl CountingEngine {
 pub struct CountingTxn<'a> {
     inner: <MemoryEngine as ByteEngine>::Txn<'a>,
     writes: Rc<Cell<usize>>,
+    reads: Rc<Cell<usize>>,
 }
 
 impl ReadView for CountingTxn<'_> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.reads.set(self.reads.get() + 1);
         self.inner.get(key)
     }
     fn scan_after(&self, prefix: &[u8], cursor: &[u8]) -> Result<Vec<StoreCell>, StoreError> {
+        self.reads.set(self.reads.get() + 1);
         self.inner.scan_after(prefix, cursor)
     }
 }
@@ -102,6 +111,7 @@ impl ByteEngine for CountingEngine {
         Ok(CountingTxn {
             inner: self.inner.begin()?,
             writes: self.counters.writes.clone(),
+            reads: self.counters.reads.clone(),
         })
     }
 

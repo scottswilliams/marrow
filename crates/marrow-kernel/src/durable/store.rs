@@ -16,7 +16,7 @@ use super::{
     SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use crate::codec::key::KeyScalar;
-use crate::codec::value::{ScalarKind, decode_domain, encode_domain};
+use crate::codec::value::{ScalarKind, ValueShape, decode_domain, encode_domain};
 use crate::equality::ValueDomain;
 
 /// The durable operations the VM drives. Object-safe so the VM holds a
@@ -65,6 +65,31 @@ pub trait Durable {
         from: Option<KeyScalar>,
         limit: BoundedLimit,
     ) -> Result<BoundedKeys, KernelFault>;
+    /// Freeze the first `limit` distinct values of a nonunique managed index's next
+    /// projected component, holding the leading components `prefix` (a strict prefix of
+    /// the index's ordered projection), starting at an inclusive `from` component when
+    /// given, and report whether a further distinct value existed. Like
+    /// [`Self::iterate_bounded`] this is a bounded progressive refinement: it acquires at
+    /// most `limit + 1` distinct component values through the index cell family, costs
+    /// `O(limit + 1)` seeks regardless of how many rows share each value (one
+    /// prefix-successor seek passes a whole value's rows), and establishes no presence
+    /// fact — an index scan observes only the derived index, never a source entry.
+    fn index_scan(
+        &mut self,
+        site: &AuthorizedSite,
+        prefix: &[KeyScalar],
+        from: Option<KeyScalar>,
+        limit: BoundedLimit,
+    ) -> Result<BoundedKeys, KernelFault>;
+    /// Look up the single source key tuple a unique managed index maps the complete
+    /// projection `key` to, or [`None`] when no row matches. One exact probe of the index
+    /// cell family; it yields exactly the matching source key or absent, never a sibling,
+    /// and observes no source entry.
+    fn index_lookup(
+        &mut self,
+        site: &AuthorizedSite,
+        key: &[KeyScalar],
+    ) -> Result<Option<Vec<KeyScalar>>, KernelFault>;
     fn set_required(
         &mut self,
         site: &AuthorizedSite,
@@ -273,6 +298,23 @@ fn resolve_authority(
 /// walks its branch path through the recursive schema so the addressed node carries the
 /// key kind and record of the branch the path descends to, at any depth.
 fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
+    // A managed-index read addresses no source node: it resolves to the index's cell
+    // family identity, its read kind, and the scalar kind of each projected component
+    // (root key columns and top-level fields, by position), and carries an empty branch
+    // path since every index is root-level.
+    if let SiteTarget::IndexScan(position) | SiteTarget::IndexLookup(position) = target {
+        let index = &schema.indexes[*position as usize];
+        let projection = index
+            .projection
+            .iter()
+            .map(|component| index_component_kind(schema, *component))
+            .collect();
+        return AuthorizedSite::index(
+            schema.root_name.clone(),
+            schema.key.clone(),
+            AuthTarget::index(index.id, index.unique, projection),
+        );
+    }
     // The container node the site addresses: its branch path (one hop per branch-path
     // element) and own record fields. A root target's container is the root; a branch
     // target's (whole entry or field) is the branch node the path descends to.
@@ -280,6 +322,9 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
         SiteTarget::WholePayload | SiteTarget::FieldLeaf(_) => (Vec::new(), &schema.fields),
         SiteTarget::BranchEntry(path) | SiteTarget::BranchField { branch: path, .. } => {
             resolve_branch_path(schema, path)
+        }
+        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) => {
+            unreachable!("index targets resolved above")
         }
     };
     // A whole-entry site enumerates the container's footprint, so it carries the
@@ -292,8 +337,27 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
         SiteTarget::FieldLeaf(index) | SiteTarget::BranchField { field: index, .. } => {
             AuthTarget::field(&container_fields[*index as usize], container_fields)
         }
+        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) => {
+            unreachable!("index targets resolved above")
+        }
     };
     AuthorizedSite::new(schema.root_name.clone(), schema.key.clone(), branch, target)
+}
+
+/// The scalar kind of one managed-index projection component, resolved by position
+/// against the root schema: an identity key column reads its column kind; a top-level
+/// field reads its scalar shape. The verifier proves every projected leaf is a stored
+/// orderable-key scalar, so a non-scalar field shape here is a forged image reaching an
+/// index-ineligible projection — faulted as a kernel invariant breach rather than
+/// silently mis-encoded.
+fn index_component_kind(schema: &StoreSchema, component: IndexComponent) -> ScalarKind {
+    match component {
+        IndexComponent::Key(column) => schema.key[column as usize],
+        IndexComponent::Field(field) => match &schema.fields[field as usize].shape {
+            ValueShape::Scalar(kind) => *kind,
+            _ => unreachable!("the verifier proves an index component is a stored scalar"),
+        },
+    }
 }
 
 /// Walk a branch path through the recursive branch schema, one hop per element: the hops
@@ -411,6 +475,22 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         limit: BoundedLimit,
     ) -> Result<BoundedKeys, KernelFault> {
         op_iterate_bounded(&self.view, site, ancestor_keys, from, limit)
+    }
+    fn index_scan(
+        &mut self,
+        site: &AuthorizedSite,
+        prefix: &[KeyScalar],
+        from: Option<KeyScalar>,
+        limit: BoundedLimit,
+    ) -> Result<BoundedKeys, KernelFault> {
+        op_index_scan(&self.view, site, prefix, from, limit)
+    }
+    fn index_lookup(
+        &mut self,
+        site: &AuthorizedSite,
+        key: &[KeyScalar],
+    ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
+        op_index_lookup(&self.view, site, key)
     }
     fn set_required(
         &mut self,
@@ -681,6 +761,22 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         limit: BoundedLimit,
     ) -> Result<BoundedKeys, KernelFault> {
         op_iterate_bounded(self.txn(), site, ancestor_keys, from, limit)
+    }
+    fn index_scan(
+        &mut self,
+        site: &AuthorizedSite,
+        prefix: &[KeyScalar],
+        from: Option<KeyScalar>,
+        limit: BoundedLimit,
+    ) -> Result<BoundedKeys, KernelFault> {
+        op_index_scan(self.txn(), site, prefix, from, limit)
+    }
+    fn index_lookup(
+        &mut self,
+        site: &AuthorizedSite,
+        key: &[KeyScalar],
+    ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
+        op_index_lookup(self.txn(), site, key)
     }
     fn set_required(
         &mut self,
@@ -1052,6 +1148,7 @@ fn site_record(site: &AuthorizedSite) -> &[FieldSchema] {
     match &site.target {
         AuthTarget::Entry(fields) => fields,
         AuthTarget::Field { record, .. } => record,
+        AuthTarget::Index { .. } => unreachable!("verifier proved a node op targets a node site"),
     }
 }
 
@@ -1079,7 +1176,9 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
             );
             name
         }
-        AuthTarget::Entry(_) => unreachable!("verifier proved a field-target site"),
+        AuthTarget::Entry(_) | AuthTarget::Index { .. } => {
+            unreachable!("verifier proved a field-target site")
+        }
     }
 }
 
@@ -1088,7 +1187,7 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
 fn node_fields(site: &AuthorizedSite) -> &[FieldSchema] {
     match &site.target {
         AuthTarget::Entry(fields) => fields,
-        AuthTarget::Field { .. } => {
+        AuthTarget::Field { .. } | AuthTarget::Index { .. } => {
             unreachable!("verifier proved a whole-entry op targets an entry site")
         }
     }
@@ -1150,6 +1249,9 @@ fn op_presence<V: ReadView>(
     let physical_key = match &site.target {
         AuthTarget::Entry(_) => stem,
         AuthTarget::Field { name, .. } => physical::stem_field_leaf(&stem, name),
+        AuthTarget::Index { .. } => {
+            unreachable!("verifier proved a presence op targets a node site")
+        }
     };
     Ok(match read_raw(cells, &physical_key)? {
         Some(_) => Presence::Present,
@@ -1354,6 +1456,132 @@ fn op_iterate_bounded<V: ReadView>(
             }
         }
     }
+}
+
+/// The resolved index-read target a site addresses: its cell-family identity, unique
+/// flag, and ordered projection component kinds. A non-index site reaching an index op
+/// is a forged image routing a read to the wrong site kind — faulted rather than trusted.
+fn index_target(site: &AuthorizedSite) -> Result<(&[u8; 16], bool, &[ScalarKind]), KernelFault> {
+    match site.index_read() {
+        Some(parts) => Ok(parts),
+        None => Err(KernelFault::Corruption),
+    }
+}
+
+/// Freeze the first `limit` distinct values of a nonunique index's next projected
+/// component, holding the leading `prefix`, and report whether a further distinct value
+/// existed. Acquires at most `limit + 1` distinct component values through the index cell
+/// family, costing `O(limit + 1)` seeks: one prefix-successor seek past each yielded
+/// value passes its whole run of rows regardless of fan-out (the index traversal-skip
+/// law). An index scan reads only the derived index and establishes no source presence.
+fn op_index_scan<V: ReadView>(
+    cells: &V,
+    site: &AuthorizedSite,
+    prefix: &[KeyScalar],
+    from: Option<KeyScalar>,
+    limit: BoundedLimit,
+) -> Result<BoundedKeys, KernelFault> {
+    let (id, unique, projection) = index_target(site)?;
+    // A scan is the nonunique read; a unique index admits only the complete-key lookup.
+    // The verifier proves the read kind matches the index, so a mismatch here is a forged
+    // image.
+    if unique {
+        return Err(KernelFault::Corruption);
+    }
+    // The held prefix must be a strict prefix of the projection — at least one component
+    // remains to enumerate — and each held column must match its projected kind.
+    let held = prefix.len();
+    if held >= projection.len() {
+        return Err(KernelFault::Corruption);
+    }
+    check_kinds(prefix, &projection[..held])?;
+    let next_kind = projection[held];
+    if let Some(from) = &from
+        && from.scalar_kind() != next_kind
+    {
+        return Err(KernelFault::Corruption);
+    }
+
+    let layer = physical::IndexLayer::new(&site.root, id, prefix);
+    let mut keys: Vec<KeyScalar> = Vec::with_capacity(limit.get().min(1024));
+    // An inclusive `from` seeks to `prefix ++ enc(from)`; a bare forward scan then
+    // excludes an equal cursor, which misses the `from` row only when `from` completes
+    // the projection (its cell equals that key exactly). One probe of that exact key
+    // resolves the boundary without a second seek per value.
+    let mut cursor = match &from {
+        Some(from) => {
+            let seek = layer.seek_from(from);
+            if cells.get(&seek).map_err(KernelFault::Engine)?.is_some() {
+                keys.push(from.clone());
+            }
+            seek
+        }
+        None => layer.prefix().to_vec(),
+    };
+    loop {
+        let page = cells
+            .scan_after(layer.prefix(), &cursor)
+            .map_err(KernelFault::Engine)?;
+        let Some((cell_key, _)) = page.into_iter().next() else {
+            return Ok(BoundedKeys { keys, more: false });
+        };
+        let Some(component) = layer.next_component(&cell_key) else {
+            return Err(KernelFault::Corruption);
+        };
+        // The decoded component's kind must match the projection: an index cell whose
+        // next column decodes as a different scalar kind is a corrupt or forged cell.
+        if component.scalar_kind() != next_kind {
+            return Err(KernelFault::Corruption);
+        }
+        if keys.len() == limit.get() {
+            // A further distinct value exists beyond the frozen `limit`: the `on more`
+            // bit. Its existence is recorded but the value itself is not frozen.
+            return Ok(BoundedKeys { keys, more: true });
+        }
+        cursor = layer.skip_cursor(&component);
+        keys.push(component);
+    }
+}
+
+/// Look up the single source key tuple a unique index maps the complete projection `key`
+/// to, or [`None`]. One exact probe of the index cell family; the stored value decodes as
+/// the root's key tuple (`site.key.len()` columns). An index cell whose value does not
+/// decode as exactly that many key columns is corruption.
+fn op_index_lookup<V: ReadView>(
+    cells: &V,
+    site: &AuthorizedSite,
+    key: &[KeyScalar],
+) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
+    let (id, unique, projection) = index_target(site)?;
+    // A complete-key lookup is the unique read; a nonunique index admits only the
+    // progressive scan. The verifier proves the match, so a mismatch is a forged image.
+    if !unique {
+        return Err(KernelFault::Corruption);
+    }
+    if key.len() != projection.len() {
+        return Err(KernelFault::Corruption);
+    }
+    check_kinds(key, projection)?;
+    let cell_key = physical::index_cell_key(&site.root, id, key);
+    match cells.get(&cell_key).map_err(KernelFault::Engine)? {
+        None => Ok(None),
+        Some(bytes) => match physical::decode_index_source_key(&bytes, site.key.len()) {
+            Some(source) => Ok(Some(source)),
+            None => Err(KernelFault::Corruption),
+        },
+    }
+}
+
+/// Check that each value's scalar kind matches the expected column kind. A per-column
+/// mismatch is the trust boundary the verifier's operand-kind proof stands on, defended
+/// in depth so a forged image can never read an index at the wrong component type.
+fn check_kinds(values: &[KeyScalar], kinds: &[ScalarKind]) -> Result<(), KernelFault> {
+    for (value, kind) in values.iter().zip(kinds) {
+        if value.scalar_kind() != *kind {
+            return Err(KernelFault::Corruption);
+        }
+    }
+    Ok(())
 }
 
 /// Mint a 16-byte witness token distinct within and across processes: the wall
@@ -3466,6 +3694,229 @@ mod tests {
                 Some(ValueDomain::Scalar(RuntimeScalar::Int(value))),
                 label.map(|l| ValueDomain::Scalar(RuntimeScalar::Str(l.into()))),
             ],
+        }
+    }
+
+    /// Managed-index read runtime: nonunique progressive-prefix scan and unique
+    /// complete-key lookup over the maintained `byLabel`/`byValue` index cells, driven
+    /// through the real maintenance write path, plus the forged-image hostiles the
+    /// verified image is the sole trust boundary against.
+    mod read {
+        use super::*;
+        use crate::durable::AuthorizedSite;
+        use crate::durable::store::{op_index_lookup, op_index_scan, resolve_site};
+
+        fn scan_site() -> AuthorizedSite {
+            resolve_site(&indexed_schema(), &SiteTarget::IndexScan(0))
+        }
+
+        fn lookup_site() -> AuthorizedSite {
+            resolve_site(&indexed_schema(), &SiteTarget::IndexLookup(1))
+        }
+
+        /// A store seeded through the real maintenance path: three entries whose `byLabel`
+        /// rows share label `"x"` for `a` and `b`, giving distinct labels `{x, y}` and,
+        /// under `"x"`, distinct names `{a, b}`.
+        fn seeded() -> DurableStore<MemoryEngine> {
+            let mut store =
+                DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let e = txn.site(0);
+            txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
+            txn.create_entry(&e, &[ks("b")], ent(2, Some("x"))).unwrap();
+            txn.create_entry(&e, &[ks("c")], ent(3, Some("y"))).unwrap();
+            assert_eq!(txn.commit(), CommitResult::Committed);
+            store
+        }
+
+        /// A store whose engine is seeded with raw index cells, bypassing maintenance — the
+        /// forged-image shape a hostile reference-valid image can carry.
+        fn forged(cells: &[(Vec<u8>, Vec<u8>)]) -> DurableStore<MemoryEngine> {
+            let mut engine = MemoryEngine::new();
+            let mut txn = engine.begin().unwrap();
+            for (key, value) in cells {
+                txn.put(key, value.clone()).unwrap();
+            }
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+            DurableStore::from_engine(engine, indexed_schema(), sites())
+        }
+
+        fn scan(
+            store: &DurableStore<MemoryEngine>,
+            prefix: &[KeyScalar],
+            from: Option<KeyScalar>,
+            limit: u32,
+        ) -> Result<BoundedKeys, KernelFault> {
+            let view = store.engine.read_view().unwrap();
+            op_index_scan(&view, &scan_site(), prefix, from, bound(limit))
+        }
+
+        fn lookup(
+            store: &DurableStore<MemoryEngine>,
+            key: &[KeyScalar],
+        ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
+            let view = store.engine.read_view().unwrap();
+            op_index_lookup(&view, &lookup_site(), key)
+        }
+
+        #[test]
+        fn scan_yields_distinct_next_component_bounded() {
+            let store = seeded();
+            // The empty prefix enumerates the first projected component: the distinct
+            // labels, in ascending order, with no further value beyond them.
+            assert_eq!(
+                scan(&store, &[], None, 10),
+                Ok(BoundedKeys {
+                    keys: vec![ks("x"), ks("y")],
+                    more: false,
+                })
+            );
+            // A bound below the population freezes the first `N` and flags the rest.
+            assert_eq!(
+                scan(&store, &[], None, 1),
+                Ok(BoundedKeys {
+                    keys: vec![ks("x")],
+                    more: true,
+                })
+            );
+        }
+
+        #[test]
+        fn scan_refines_under_a_held_prefix_to_the_source_keys() {
+            let store = seeded();
+            // Holding label `"x"` enumerates its distinct source names — the terminal
+            // (complete-projection) component, where each cell equals its component row key.
+            assert_eq!(
+                scan(&store, &[ks("x")], None, 10),
+                Ok(BoundedKeys {
+                    keys: vec![ks("a"), ks("b")],
+                    more: false,
+                })
+            );
+            // A label with a single row yields exactly that source name.
+            assert_eq!(
+                scan(&store, &[ks("y")], None, 10),
+                Ok(BoundedKeys {
+                    keys: vec![ks("c")],
+                    more: false,
+                })
+            );
+        }
+
+        #[test]
+        fn scan_from_is_an_inclusive_lower_bound_at_both_incomplete_and_complete_levels() {
+            let store = seeded();
+            // A non-terminal `from` (a label, which is not itself a whole cell): the walk
+            // starts at or after it.
+            assert_eq!(
+                scan(&store, &[], Some(ks("y")), 10),
+                Ok(BoundedKeys {
+                    keys: vec![ks("y")],
+                    more: false,
+                })
+            );
+            // A terminal `from` (a source name whose cell equals its row key exactly): the
+            // probe includes the equal row a bare forward scan would exclude.
+            assert_eq!(
+                scan(&store, &[ks("x")], Some(ks("b")), 10),
+                Ok(BoundedKeys {
+                    keys: vec![ks("b")],
+                    more: false,
+                })
+            );
+            // A `from` strictly above every source name under the prefix yields nothing.
+            assert_eq!(
+                scan(&store, &[ks("x")], Some(ks("z")), 10),
+                Ok(BoundedKeys {
+                    keys: vec![],
+                    more: false,
+                })
+            );
+        }
+
+        #[test]
+        fn lookup_yields_the_one_source_key_or_absent() {
+            let store = seeded();
+            assert_eq!(lookup(&store, &[ki(2)]), Ok(Some(vec![ks("b")])));
+            assert_eq!(lookup(&store, &[ki(1)]), Ok(Some(vec![ks("a")])));
+            assert_eq!(lookup(&store, &[ki(99)]), Ok(None));
+        }
+
+        #[test]
+        fn a_scan_over_a_unique_index_is_rejected() {
+            let store = seeded();
+            let view = store.engine.read_view().unwrap();
+            assert_eq!(
+                op_index_scan(&view, &lookup_site(), &[], None, bound(10)),
+                Err(KernelFault::Corruption),
+            );
+        }
+
+        #[test]
+        fn a_lookup_over_a_nonunique_index_is_rejected() {
+            let store = seeded();
+            let view = store.engine.read_view().unwrap();
+            assert_eq!(
+                op_index_lookup(&view, &scan_site(), &[ks("x"), ks("a")]),
+                Err(KernelFault::Corruption),
+            );
+        }
+
+        #[test]
+        fn a_scan_operand_of_the_wrong_kind_is_rejected() {
+            let store = seeded();
+            // `byLabel`'s first component is the string label; an int prefix is a forged
+            // operand.
+            assert_eq!(
+                scan(&store, &[ki(1)], None, 10),
+                Err(KernelFault::Corruption)
+            );
+        }
+
+        #[test]
+        fn a_scan_prefix_covering_the_whole_projection_is_rejected() {
+            let store = seeded();
+            // No component remains to enumerate: a complete projection is a lookup shape,
+            // not a scan.
+            assert_eq!(
+                scan(&store, &[ks("x"), ks("a")], None, 10),
+                Err(KernelFault::Corruption),
+            );
+        }
+
+        #[test]
+        fn a_lookup_of_the_wrong_arity_is_rejected() {
+            let store = seeded();
+            let view = store.engine.read_view().unwrap();
+            assert_eq!(
+                op_index_lookup(&view, &lookup_site(), &[ki(1), ki(2)]),
+                Err(KernelFault::Corruption),
+            );
+        }
+
+        #[test]
+        fn a_forged_cell_whose_component_decodes_at_the_wrong_kind_is_corruption() {
+            // A `byLabel` cell whose first projected column is an int, not the string
+            // label the projection declares: a reference-valid image the runtime must not
+            // read as a label.
+            let store = forged(&[(
+                physical::index_cell_key("counters", &BY_LABEL, &[ki(5), ks("a")]),
+                physical::index_cell_value(&[ks("a")]),
+            )]);
+            assert_eq!(scan(&store, &[], None, 10), Err(KernelFault::Corruption));
+        }
+
+        #[test]
+        fn a_forged_cell_whose_value_is_not_a_source_key_is_corruption() {
+            // A unique `byValue` cell whose value does not decode as the root's key tuple
+            // (an empty value cannot yield the one expected source key column).
+            let store = forged(&[(
+                physical::index_cell_key("counters", &BY_VALUE, &[ki(7)]),
+                Vec::new(),
+            )]);
+            assert_eq!(lookup(&store, &[ki(7)]), Err(KernelFault::Corruption));
         }
     }
 
