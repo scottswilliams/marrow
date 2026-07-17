@@ -329,6 +329,12 @@ fn garg_to_lty(arg: GArg) -> LTy {
             ty,
             optional: false,
         },
+        // A group value materializes as a nested record; its leaves resolve through
+        // the group owner (`group_by_type`), reached from the record field path.
+        GArg::Group(ty) => LTy::Record {
+            ty,
+            optional: false,
+        },
         GArg::Enum(ty) => LTy::Enum {
             ty,
             optional: false,
@@ -343,6 +349,14 @@ fn garg_to_lty(arg: GArg) -> LTy {
         },
     }
 }
+
+/// One constructor member plan entry: a field or group leaf's name, value type, and
+/// required flag, collected before emission so evaluation follows declaration order.
+type MemberPlan = (String, GArg, bool);
+
+/// One group slot's constructor plan: the group's name, its image record-type index,
+/// and the plan of its leaves.
+type GroupPlan = (String, u16, Vec<MemberPlan>);
 
 /// The source spelling of a built-in generic argument, recursing through nested
 /// `Option`/`Result` arguments.
@@ -1085,6 +1099,20 @@ struct Local {
     ty: LTy,
     mutable: bool,
     slot: u16,
+}
+
+/// A resolved nested place path rooted at a local. `indices` are the field slots
+/// descended from the local (empty for the bare local); `ty` is the value type at
+/// the end of that descent — the container a leaf field is then read or written in.
+/// Every descended field is a present composite, so the path supports a read-modify-
+/// write without a presence test.
+struct PlaceChain {
+    slot: u16,
+    mutable: bool,
+    root_span: SourceSpan,
+    root_name: String,
+    ty: LTy,
+    indices: Vec<u16>,
 }
 
 /// A loop's patch targets: where `continue` jumps, and the jumps `break` emits that
@@ -1904,10 +1932,12 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalSet(slot), value.span());
     }
 
-    /// Lower `local.field = value`: load the local product, coerce `value` to the
-    /// field's bare value type, store it into the field slot present, and write the
-    /// local back. A required or a sparse field alike becomes present; `unset`
-    /// clears a sparse field. The base must be a mutable local.
+    /// Lower `local.…field = value`: read-modify-write a field, possibly nested one
+    /// or more group levels deep. Every container on the path — the local and each
+    /// intervening group sub-record — is loaded, the leaf is coerced to its bare value
+    /// type and stored present, and each container is written back into its parent up
+    /// to the local. A required or a sparse leaf alike becomes present. The path root
+    /// must be a mutable local and every container above the leaf must be present.
     fn lower_local_field_assign(
         &mut self,
         base: &Expression,
@@ -1915,28 +1945,56 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
         value: &Expression,
     ) {
-        let Some((slot, base_ty, mutable, base_span, base_local)) = self.resolve_place(base) else {
+        let Some(chain) = self.resolve_place_chain(base) else {
             return;
         };
-        if !mutable {
+        if !chain.mutable {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
-                base_span,
-                format!("`{base_local}` is a `const` and cannot be reassigned"),
+                chain.root_span,
+                format!(
+                    "`{}` is a `const` and cannot be reassigned",
+                    chain.root_name
+                ),
             ));
             return;
         }
-        let Some((index, field_ty, _required)) =
-            self.resolve_product_field(base_ty, field_name, base_span, span)
+        let Some((leaf_index, leaf_ty, _required)) =
+            self.resolve_product_field(chain.ty, field_name, base.span(), span)
         else {
             return;
         };
-        self.push(Instr::LocalGet(slot), span);
-        if self.lower_as(value, garg_to_lty(field_ty)).is_none() {
+        self.push_place_containers(chain.slot, &chain.indices, span);
+        if self.lower_as(value, garg_to_lty(leaf_ty)).is_none() {
             return;
         }
-        self.push(Instr::FieldSet(index), span);
+        self.push(Instr::FieldSet(leaf_index), span);
+        self.writeback_place_containers(chain.slot, &chain.indices, span);
+    }
+
+    /// Push the container stack for a nested field mutation: the local at `slot` and
+    /// each ancestor container reached by descending `indices`, one per depth from the
+    /// local (depth 0) through the leaf's own container (depth `indices.len()`). Every
+    /// descended field is present (a required group slot), so each `FieldGet` yields a
+    /// bare record. Leaves the containers on the stack for the leaf `FieldSet`/
+    /// `FieldUnset` and a matching [`Self::writeback_place_containers`].
+    fn push_place_containers(&mut self, slot: u16, indices: &[u16], span: SourceSpan) {
+        for depth in 0..=indices.len() {
+            self.push(Instr::LocalGet(slot), span);
+            for index in &indices[..depth] {
+                self.push(Instr::FieldGet(*index), span);
+            }
+        }
+    }
+
+    /// Write each mutated container back into its parent (innermost first) and store
+    /// the updated local. Pairs with [`Self::push_place_containers`] after the leaf op
+    /// has left the innermost container's new value on the stack.
+    fn writeback_place_containers(&mut self, slot: u16, indices: &[u16], span: SourceSpan) {
+        for index in indices.iter().rev() {
+            self.push(Instr::FieldSet(*index), span);
+        }
         self.push(Instr::LocalSet(slot), span);
     }
 
@@ -1963,20 +2021,20 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "this `unset` target"));
             return;
         };
-        let Some((slot, base_ty, mutable, base_span, base_local)) = self.resolve_place(base) else {
+        let Some(chain) = self.resolve_place_chain(base) else {
             return;
         };
-        if !mutable {
+        if !chain.mutable {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
-                base_span,
-                format!("`{base_local}` is a `const` and cannot be modified"),
+                chain.root_span,
+                format!("`{}` is a `const` and cannot be modified", chain.root_name),
             ));
             return;
         }
-        let Some((index, _field_ty, required)) =
-            self.resolve_product_field(base_ty, name, base_span, *field_span)
+        let Some((leaf_index, _field_ty, required)) =
+            self.resolve_product_field(chain.ty, name, base.span(), *field_span)
         else {
             return;
         };
@@ -1989,9 +2047,9 @@ impl<'a> FnLowerer<'a> {
             ));
             return;
         }
-        self.push(Instr::LocalGet(slot), span);
-        self.push(Instr::FieldUnset(index), span);
-        self.push(Instr::LocalSet(slot), span);
+        self.push_place_containers(chain.slot, &chain.indices, span);
+        self.push(Instr::FieldUnset(leaf_index), span);
+        self.writeback_place_containers(chain.slot, &chain.indices, span);
     }
 
     fn lower_compound_assign(&mut self, target: &Expression, op: BinaryOp, value: &Expression) {
@@ -2058,6 +2116,64 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         Some((local.slot, local.ty, local.mutable, *span, name.clone()))
+    }
+
+    /// Resolve a place expression to its chain of present composite containers rooted
+    /// at a local: a bare local, or a local descended through one or more group
+    /// members. Each intervening member must be a present (required) composite so a
+    /// read-modify-write reaches it; a possibly-absent member is a `check.type`
+    /// rejection. Reports name and non-place errors like [`Self::resolve_place`].
+    fn resolve_place_chain(&mut self, target: &Expression) -> Option<PlaceChain> {
+        match target {
+            Expression::Name { segments, span, .. } => {
+                let [name] = segments.as_slice() else {
+                    self.fail(unsupported(self.file, *span, "this assignment target"));
+                    return None;
+                };
+                let Some(local) = self.lookup(name) else {
+                    self.fail(name_error(self.file, *span, name));
+                    return None;
+                };
+                Some(PlaceChain {
+                    slot: local.slot,
+                    mutable: local.mutable,
+                    root_span: *span,
+                    root_name: name.clone(),
+                    ty: local.ty,
+                    indices: Vec::new(),
+                })
+            }
+            Expression::Field {
+                base, name, span, ..
+            } => {
+                let mut chain = self.resolve_place_chain(base)?;
+                let (index, field_ty, required) =
+                    self.resolve_product_field(chain.ty, name, base.span(), *span)?;
+                if !required {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *span,
+                        format!(
+                            "cannot assign through the possibly-absent member `{name}`; assign it \
+                             a present value first"
+                        ),
+                    ));
+                    return None;
+                }
+                chain.indices.push(index);
+                chain.ty = garg_to_lty(field_ty);
+                Some(chain)
+            }
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    target.span(),
+                    "this assignment target",
+                ));
+                None
+            }
+        }
     }
 
     fn lower_return(&mut self, value: Option<&Expression>, span: SourceSpan) -> Flow {
@@ -5074,10 +5190,12 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
-        let type_id = self.records.by_name(name)?.type_id;
+        let value_type_id = self.records.by_name(name)?.value_type_id;
 
-        // Resolve each named argument against a field before emitting, so evaluation
-        // order is the field declaration order (f0 pushed first).
+        // Resolve each named argument against a top-level field before emitting, so
+        // evaluation order is the field declaration order (f0 pushed first). A group is
+        // not a constructor argument: its leaves are supplied by member assignment, so
+        // a group name here reports "has no field" like any unknown member.
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
@@ -5099,7 +5217,7 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        let field_plan: Vec<(String, GArg, bool)> = self
+        let field_plan: Vec<MemberPlan> = self
             .records
             .by_name(name)?
             .fields
@@ -5132,9 +5250,49 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        self.push(Instr::RecordNew(type_id.index()), span);
+        // Each unkeyed group slot follows the top-level fields, in group order. A group
+        // is always present with its sparse leaves vacant; there is no constructor
+        // surface for a group, so a `required` group descendant that cannot be supplied
+        // is the required-completeness rejection here rather than a silent incomplete
+        // value.
+        let group_plan: Vec<GroupPlan> = self
+            .records
+            .by_name(name)?
+            .groups
+            .iter()
+            .map(|group| {
+                (
+                    group.name.clone(),
+                    group.type_id.index(),
+                    group
+                        .fields
+                        .iter()
+                        .map(|leaf| (leaf.name.clone(), leaf.ty, leaf.required))
+                        .collect(),
+                )
+            })
+            .collect();
+        for (group_name, group_type, leaves) in group_plan {
+            for (leaf_name, leaf_ty, required) in leaves {
+                if required {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("missing required group member `{group_name}.{leaf_name}`"),
+                    ));
+                    return None;
+                }
+                self.push(
+                    Instr::VacantLoad(garg_to_lty(leaf_ty).to_optional().image()),
+                    span,
+                );
+            }
+            self.push(Instr::RecordNew(group_type), span);
+        }
+        self.push(Instr::RecordNew(value_type_id.index()), span);
         Some(LTy::Record {
-            ty: type_id,
+            ty: value_type_id,
             optional: false,
         })
     }
@@ -6068,12 +6226,31 @@ impl<'a> FnLowerer<'a> {
                 optional: false,
             } => {
                 if let Some(record) = self.records.by_name_for_type(ty) {
-                    let Some((index, field)) = record.field(name) else {
+                    if let Some((index, field)) = record.field(name) {
+                        return Some((index, field.ty, field.required));
+                    }
+                    // An unkeyed group member reads as its nested group sub-record
+                    // value (always present); its own leaves resolve one level down.
+                    if let Some((index, group)) = record.group(name) {
+                        return Some((index, GArg::Group(group.type_id), true));
+                    }
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        field_span,
+                        format!("record has no field `{name}`"),
+                    ));
+                    return None;
+                }
+                // A group sub-record value resolves its scalar/enum leaves against the
+                // group's field layout (a sparse leaf reads `T?`).
+                if let Some(group) = self.records.group_by_type(ty) {
+                    let Some((index, field)) = group.field(name) else {
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,
                             field_span,
-                            format!("record has no field `{name}`"),
+                            format!("group has no field `{name}`"),
                         ));
                         return None;
                     };

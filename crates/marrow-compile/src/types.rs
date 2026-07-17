@@ -24,7 +24,7 @@ use marrow_image::{
     TypeId, VariantDef,
 };
 use marrow_syntax::{
-    AliasDecl, EnumDecl, EnumMember, Expression, LiteralKind, NominalDecl, ResourceDecl,
+    AliasDecl, EnumDecl, EnumMember, Expression, GroupDecl, LiteralKind, NominalDecl, ResourceDecl,
     ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
 };
 
@@ -46,6 +46,13 @@ pub(crate) enum GArg {
     Scalar(ScalarType),
     Nominal(NominalId),
     Struct(TypeId),
+    /// An unkeyed `group` namespace materialized as a nested sub-record value by its
+    /// image record-type index. A group is a value unit — read, assigned, and copied
+    /// whole — whose leaves carry their own required/sparse flags; unlike a
+    /// [`Struct`](GArg::Struct) it is not a user-nameable value type and it admits
+    /// sparse leaves. It shares the image [`RecordTypeDef`] representation, so it
+    /// erases to [`ImageType::Record`] like a struct.
+    Group(TypeId),
     Enum(EnumId),
     /// A finite collection value (`List<T>` / `Map<K, V>`) by its image COLLTYPES
     /// index. The element/key/value source types live in the registry's collection
@@ -68,7 +75,7 @@ impl GArg {
         match self {
             GArg::Scalar(scalar) => ImageType::scalar(scalar.image()),
             GArg::Nominal(_) => ImageType::scalar(Scalar::Int),
-            GArg::Struct(ty) => ImageType::Record {
+            GArg::Struct(ty) | GArg::Group(ty) => ImageType::Record {
                 idx: ty.index(),
                 optional: false,
             },
@@ -95,7 +102,11 @@ impl GArg {
     pub(crate) fn is_key_type(self) -> bool {
         match self {
             GArg::Scalar(_) | GArg::Nominal(_) => true,
-            GArg::Struct(_) | GArg::Enum(_) | GArg::Collection(_) | GArg::Param(_) => false,
+            GArg::Struct(_)
+            | GArg::Group(_)
+            | GArg::Enum(_)
+            | GArg::Collection(_)
+            | GArg::Param(_) => false,
         }
     }
 
@@ -354,17 +365,56 @@ pub(crate) struct FieldInfo {
     pub(crate) required: bool,
 }
 
-/// The project's single record type.
+/// One unkeyed `group` namespace of the resource, materialized as a nested
+/// sub-record value. `type_id` is the group's image [`RecordTypeDef`] (a value
+/// record, not a durable root); `fields` are the group's direct scalar/enum leaves
+/// in declaration order, each carrying its own required/sparse flag. A group value
+/// occupies one required slot in the containing record's materialized value.
+#[derive(Clone)]
+pub(crate) struct GroupInfo {
+    pub(crate) name: String,
+    pub(crate) type_id: TypeId,
+    pub(crate) fields: Vec<FieldInfo>,
+}
+
+impl GroupInfo {
+    pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
+        field_index(&self.fields, name)
+    }
+}
+
+/// The project's single record type. `type_id` is the durable-facing record: its
+/// fields are the flat top-level scalar/enum members, tied 1:1 to the durable
+/// member tree by the verifier. `value_type_id` is the materialized-value record
+/// used by the storeless value model — the same top-level fields followed by one
+/// slot per unkeyed group (a nested group sub-record). The two coincide when the
+/// resource declares no group. A durable read of a group-bearing resource is parked
+/// (GR01), so no value ever carries the durable-facing `type_id` with groups
+/// omitted; the split keeps the durable graph and verifier byte-identical while the
+/// storeless value model gains group slots.
 #[derive(Clone)]
 pub(crate) struct RecordInfo {
     pub(crate) type_id: TypeId,
+    pub(crate) value_type_id: TypeId,
     pub(crate) name: String,
     pub(crate) fields: Vec<FieldInfo>,
+    pub(crate) groups: Vec<GroupInfo>,
 }
 
 impl RecordInfo {
     pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
         field_index(&self.fields, name)
+    }
+
+    /// The materialized-value slot of the unkeyed group named `name`, if any. Group
+    /// slots follow the top-level fields in `value_type_id`, so the slot index is the
+    /// field count plus the group's declaration ordinal.
+    pub(crate) fn group(&self, name: &str) -> Option<(u16, &GroupInfo)> {
+        self.groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| group.name == name)
+            .map(|(ordinal, group)| ((self.fields.len() + ordinal) as u16, group))
     }
 }
 
@@ -1035,7 +1085,20 @@ impl TypeRegistry {
     }
 
     pub(crate) fn by_name_for_type(&self, ty: TypeId) -> Option<&RecordInfo> {
-        self.record.as_ref().filter(|info| info.type_id == ty)
+        self.record
+            .as_ref()
+            .filter(|info| info.type_id == ty || info.value_type_id == ty)
+    }
+
+    /// The unkeyed group whose materialized-value record type is `ty`, if any. Field
+    /// resolution of a group sub-record value (`entry.group.field`) resolves its
+    /// leaves through this owner.
+    pub(crate) fn group_by_type(&self, ty: TypeId) -> Option<&GroupInfo> {
+        self.record
+            .as_ref()?
+            .groups
+            .iter()
+            .find(|group| group.type_id == ty)
     }
 
     /// The alias-free form of a type annotation: every name that is an alias is
@@ -2189,8 +2252,10 @@ fn declare_record<'a>(
     });
     registry.record = Some(RecordInfo {
         type_id,
+        value_type_id: type_id,
         name: resource.name.clone(),
         fields: Vec::new(),
+        groups: Vec::new(),
     });
     Some((file.clone(), resource))
 }
@@ -2217,32 +2282,134 @@ fn fill_record(
         .type_id;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
+    let mut groups = Vec::new();
+    let mut group_slot_defs = Vec::new();
     for member in &resource.members {
-        let ResourceMember::Field(field) = member else {
-            // A `group` (unkeyed namespace) or a keyed `branch` (a `group` with key
-            // parameters) is a durable-graph member, not a materialized top-level
-            // field. The durable-graph owner (`durable.rs`) resolves its identity and
-            // records it in the DURABLE table; the materialized record carries only
-            // the resource's flat top-level scalar fields, so it is skipped here.
-            continue;
+        match member {
+            ResourceMember::Field(field) => {
+                if !field.keys.is_empty() {
+                    // A keyed scalar leaf (`tags(pos: int): string`) is a keyed
+                    // positional layer, not yet part of the beta durable graph. It is
+                    // reported so the shape is a precise rejection, not a silent drop.
+                    diagnostics.push(unsupported(file, field.span, "a keyed field"));
+                    continue;
+                }
+                // A resource field is a value drawn from the closed acyclic durable
+                // value set: a scalar, a nominal scalar, a dense struct, or a closed
+                // enum (`Option`/`Result`/a user `enum`). A collection is not a durable
+                // field value; an abstract parameter never reaches a concrete record.
+                let field_ty = match registry.resolve_garg(draft, &field.ty) {
+                    Some(
+                        ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_)),
+                    ) => ty,
+                    _ => {
+                        diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
+                        continue;
+                    }
+                };
+                let field_name_id = draft.intern_string(&field.name);
+                field_defs.push(FieldDef {
+                    name: field_name_id,
+                    ty: field_ty.image(),
+                    required: field.required,
+                });
+                fields.push(FieldInfo {
+                    name: field.name.clone(),
+                    ty: field_ty,
+                    required: field.required,
+                });
+            }
+            ResourceMember::Group(group) if group.keys.is_empty() => {
+                // An unkeyed `group` is a nested sub-record value: its scalar/enum
+                // leaves become a group record type, and the containing value gains one
+                // required slot holding that record. Its durable identity is owned
+                // separately by `durable.rs`; this is the materialized-value side only.
+                let (leaf_fields, leaf_defs) =
+                    build_group_leaves(draft, registry, group, file, diagnostics);
+                let anchor = format!("{}.{}", resource.name, group.name);
+                let group_name_id = draft.intern_string(&anchor);
+                let group_type_id = draft.add_record_type(RecordTypeDef {
+                    name: group_name_id,
+                    fields: leaf_defs,
+                });
+                group_slot_defs.push(FieldDef {
+                    name: draft.intern_string(&group.name),
+                    ty: ImageType::Record {
+                        idx: group_type_id.index(),
+                        optional: false,
+                    },
+                    required: true,
+                });
+                groups.push(GroupInfo {
+                    name: group.name.clone(),
+                    type_id: group_type_id,
+                    fields: leaf_fields,
+                });
+            }
+            ResourceMember::Group(_) => {
+                // A keyed `branch` (a `group` with key parameters) is a durable-graph
+                // member, resolved by `durable.rs`; it is an addressed collection, not
+                // part of the materialized value.
+            }
+        }
+    }
+    // The durable-facing record carries the flat top-level fields only; the verifier
+    // ties them 1:1 to the durable member tree. The materialized-value record appends
+    // one slot per group, and coincides with the durable record when there is none.
+    let value_type_id = if group_slot_defs.is_empty() {
+        type_id
+    } else {
+        let mut value_defs = field_defs.clone();
+        value_defs.extend(group_slot_defs);
+        let name_id = draft.intern_string(&resource.name);
+        draft.add_record_type(RecordTypeDef {
+            name: name_id,
+            fields: value_defs,
+        })
+    };
+    draft.set_record_fields(type_id, field_defs);
+    if let Some(info) = registry.record.as_mut() {
+        info.fields = fields;
+        info.groups = groups;
+        info.value_type_id = value_type_id;
+    }
+}
+
+/// The direct scalar/enum leaves of an unkeyed group, in declaration order,
+/// returning both the registry field infos and the image field defs. A keyed leaf,
+/// a nested group or keyed branch inside the group, or a non-value leaf type is a
+/// precise `check.unsupported` that skips only that leaf. Nested groups and
+/// group-scoped branches are deferred; reporting keeps them from silently dropping.
+fn build_group_leaves(
+    draft: &mut ImageDraft,
+    registry: &TypeRegistry,
+    group: &GroupDecl,
+    file: &str,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> (Vec<FieldInfo>, Vec<FieldDef>) {
+    let mut fields = Vec::new();
+    let mut field_defs = Vec::new();
+    for member in &group.members {
+        let field = match member {
+            ResourceMember::Field(field) => field,
+            ResourceMember::Group(inner) => {
+                let what = if inner.keys.is_empty() {
+                    "a nested group"
+                } else {
+                    "a keyed branch inside a group"
+                };
+                diagnostics.push(unsupported(file, inner.span, what));
+                continue;
+            }
         };
         if !field.keys.is_empty() {
-            // A keyed scalar leaf (`tags(pos: int): string`) is a keyed positional
-            // layer, not yet part of the beta durable graph. It is reported here so
-            // the shape is a precise rejection rather than a silent drop.
             diagnostics.push(unsupported(file, field.span, "a keyed field"));
             continue;
         }
-        // A resource field is a value drawn from the closed acyclic durable value
-        // set: a scalar, a nominal scalar, a dense struct, or a closed enum
-        // (`Option`/`Result`/a user `enum`). A collection is not a durable field
-        // value (a large collection belongs under a keyed branch); an abstract
-        // parameter never reaches a concrete record. The durable-graph owner decides
-        // which of these shapes the kernel can yet execute.
         let field_ty = match registry.resolve_garg(draft, &field.ty) {
             Some(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
             _ => {
-                diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
+                diagnostics.push(unsupported(file, field.ty.span(), "this group field type"));
                 continue;
             }
         };
@@ -2258,10 +2425,7 @@ fn fill_record(
             required: field.required,
         });
     }
-    draft.set_record_fields(type_id, field_defs);
-    if let Some(info) = registry.record.as_mut() {
-        info.fields = fields;
-    }
+    (fields, field_defs)
 }
 
 /// Reject a cycle in the value-containment graph at check time: a struct, record,
@@ -2386,7 +2550,7 @@ impl ValueGraph {
         }
         let index_of = |target: ValueNode| nodes.iter().position(|node| *node == target);
         let arg_target = |arg: GArg| match arg {
-            GArg::Struct(ty) => Some(ValueNode::Record(ty)),
+            GArg::Struct(ty) | GArg::Group(ty) => Some(ValueNode::Record(ty)),
             GArg::Enum(id) => Some(ValueNode::Enum(id)),
             // A collection is a finite value (an empty list/map terminates), so a
             // field reached only through one is not an infinite value: it adds no
@@ -2427,6 +2591,11 @@ impl ValueGraph {
                     .or_else(|| {
                         registry
                             .struct_by_type(*ty)
+                            .map(|info| info.fields.iter().map(|field| field.ty).collect())
+                    })
+                    .or_else(|| {
+                        registry
+                            .group_by_type(*ty)
                             .map(|info| info.fields.iter().map(|field| field.ty).collect())
                     })
                     .or_else(|| inst_targets(*node))
@@ -2505,6 +2674,10 @@ pub(crate) fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
                     .map(|record| record.name.clone())
             })
             .unwrap_or_else(|| "struct".to_string()),
+        GArg::Group(ty) => registry
+            .group_by_type(ty)
+            .map(|group| group.name.clone())
+            .unwrap_or_else(|| "group".to_string()),
         GArg::Enum(id) => registry
             .inst_spelling(TypeInstId::Enum(id))
             .or_else(|| registry.enum_by_id(id).map(|info| info.name.clone()))

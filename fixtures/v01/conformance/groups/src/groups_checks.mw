@@ -1,0 +1,23 @@
+// Layer: check+runtime (group materialized-value read/assign/copy/unset). These
+// exercise the storeless group value model through the verified image.
+module groups_checks
+
+test "a fresh group leaf reads absent" {
+    assert groups::freshPagesOr(9) == 9
+}
+
+test "assigning a group leaf sets it present" {
+    assert groups::setPages() == 42
+}
+
+test "a group copies as a value unit" {
+    assert groups::copyGroup() == 7
+}
+
+test "a copied group is independent of its source" {
+    assert groups::copyIsIndependent() == 7
+}
+
+test "unset clears a group leaf" {
+    assert groups::setThenUnset() == -1
+}

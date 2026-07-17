@@ -682,6 +682,13 @@ impl<'a> IdentityResolver<'a> {
                 );
                 DurableValueShape::Scalar(ScalarType::Int.image())
             }
+            GArg::Group(_) => {
+                // A group is a materialized-value namespace, never a durable top-level
+                // field value (a durable group is its own member-tree node, resolved by
+                // `build_extras`). It cannot reach here through `record.fields`.
+                self.reject_value("a group stored directly as a durable field value");
+                DurableValueShape::Scalar(ScalarType::Int.image())
+            }
             GArg::Param(_) => {
                 self.reject_value("this value type");
                 DurableValueShape::Scalar(ScalarType::Int.image())

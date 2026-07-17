@@ -1,0 +1,56 @@
+// Group materialized-value model. An unkeyed `group` block is a nested sub-record
+// value inside the containing resource: its scalar leaves participate in the
+// materialized value, `entry.group.field` reads and assigns, the whole group reads
+// and copies as a value unit, and a fresh construction leaves each sparse leaf
+// vacant. A required group descendant is a required member of the containing
+// resource.
+module groups
+
+resource Book {
+    required title: string
+    details {
+        pages: int
+        language: string
+    }
+}
+
+// A freshly constructed book leaves its group leaves vacant; a read yields absent.
+pub fn freshPagesOr(d: int): int {
+    const b = Book(title: "x")
+    return b.details.pages ?? d
+}
+
+// Assigning a group leaf sets it present; the later read observes the value.
+pub fn setPages(): int {
+    var b = Book(title: "x")
+    b.details.pages = 42
+    return b.details.pages ?? 0
+}
+
+// The group is a value unit: reading the whole group and assigning it into another
+// book carries its leaves and copies by value.
+pub fn copyGroup(): int {
+    var a = Book(title: "a")
+    a.details.pages = 7
+    var b = Book(title: "b")
+    b.details = a.details
+    return b.details.pages ?? 0
+}
+
+// A copied group is independent of its source (value semantics).
+pub fn copyIsIndependent(): int {
+    var a = Book(title: "a")
+    a.details.pages = 7
+    var b = Book(title: "b")
+    b.details = a.details
+    a.details.pages = 99
+    return b.details.pages ?? 0
+}
+
+// `unset` clears a present group leaf back to absent.
+pub fn setThenUnset(): int {
+    var b = Book(title: "x")
+    b.details.pages = 5
+    unset b.details.pages
+    return b.details.pages ?? -1
+}
