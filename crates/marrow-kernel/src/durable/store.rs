@@ -509,11 +509,12 @@ struct PendingNode {
     key: KeyScalar,
 }
 
-/// The pre-write state a root field write captures for index maintenance: the entry's
-/// projected field values before the write and the written field's record position. The
-/// new projected state is the old with that one position replaced, so a field write moves
-/// only the indexes projecting it.
+/// The pre-write state a root field write captures for index maintenance: the exact indexes
+/// projecting the written field, their projected field values before the write, and the
+/// written field's record position. The new projected state is the old with that one
+/// position replaced, so a field write reads and moves only the indexes projecting it.
 struct FieldMaintenance {
+    indexes: Vec<IndexSchema>,
     old: Vec<Option<ValueDomain>>,
     position: usize,
 }
@@ -761,7 +762,11 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
             SlotClass::DescendantOnly | SlotClass::Absent | SlotClass::Orphan => {
                 let maintains = self.maintains_root(site);
                 let old = if maintains {
-                    self.read_projected(&stem, fields)?
+                    self.read_projected(
+                        &stem,
+                        fields,
+                        &Self::projected_positions_of(&self.indexes),
+                    )?
                 } else {
                     Vec::new()
                 };
@@ -792,7 +797,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         }
         let maintains = self.maintains_root(site);
         let old = if maintains {
-            self.read_projected(&stem, fields)?
+            self.read_projected(&stem, fields, &Self::projected_positions_of(&self.indexes))?
         } else {
             Vec::new()
         };
@@ -835,7 +840,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         let existed = read_raw(self.txn(), &stem)?.is_some();
         let maintains = self.maintains_root(site);
         let old = if maintains {
-            self.read_projected(&stem, fields)?
+            self.read_projected(&stem, fields, &Self::projected_positions_of(&self.indexes))?
         } else {
             Vec::new()
         };
@@ -887,11 +892,11 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         !self.indexes.is_empty() && site.branch.is_empty()
     }
 
-    /// The distinct root field positions the managed indexes project, so maintenance reads
-    /// exactly the projected leaves a write's indexes need — never the whole record.
-    fn projected_positions(&self) -> Vec<usize> {
-        let mut positions: Vec<usize> = self
-            .indexes
+    /// The distinct root field positions `indexes` project, so maintenance reads exactly the
+    /// projected leaves those indexes need — never the whole record, and for a field write
+    /// never a leaf of an index the write does not touch.
+    fn projected_positions_of(indexes: &[IndexSchema]) -> Vec<usize> {
+        let mut positions: Vec<usize> = indexes
             .iter()
             .flat_map(|index| {
                 index
@@ -908,17 +913,32 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         positions
     }
 
-    /// The current stored values of the projected fields of the root entry with marker
-    /// `stem`, aligned to `record` positions (an unprojected position stays `None` and is
-    /// never read). Reads observe this transaction's staged writes, so an in-flight change
-    /// is captured; a projected leaf that will not decode is corruption.
+    /// The managed indexes that project the root field at `position` — the exact indexes a
+    /// write to that field must maintain, and the only ones it reads sibling leaves for.
+    fn indexes_projecting(&self, position: usize) -> Vec<IndexSchema> {
+        self.indexes
+            .iter()
+            .filter(|index| {
+                index.projection.iter().any(|component| {
+                    matches!(component, IndexComponent::Field(field) if *field as usize == position)
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The current stored values at `positions` of the root entry with marker `stem`, aligned
+    /// to `record` (a position not read stays `None`). Reads observe this transaction's
+    /// staged writes, so an in-flight change is captured; a projected leaf that will not
+    /// decode is corruption.
     fn read_projected(
         &self,
         stem: &[u8],
         record: &[FieldSchema],
+        positions: &[usize],
     ) -> Result<Vec<Option<ValueDomain>>, KernelFault> {
         let mut fields = vec![None; record.len()];
-        for position in self.projected_positions() {
+        for &position in positions {
             let field = &record[position];
             let leaf = physical::stem_field_leaf(stem, &field.name);
             if let Some(bytes) = read_raw(self.txn(), &leaf)? {
@@ -930,8 +950,10 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     }
 
     /// Capture the pre-write state a root field write needs for index maintenance, before
-    /// the write overwrites the field leaf. `None` when the write maintains no index (an
-    /// unindexed store or a branch field), so the field ops pay nothing on the common path.
+    /// the write overwrites the field leaf: the exact indexes projecting the written field,
+    /// those indexes' projected field values, and the written position. `None` when the write
+    /// maintains no index (an unindexed store, a branch field, or a field no index projects),
+    /// so the field ops read and stage nothing on the common path.
     fn field_maintenance_before(
         &self,
         site: &AuthorizedSite,
@@ -941,14 +963,22 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             return Ok(None);
         }
         let record = site_record(site);
-        let old = self.read_projected(stem, record)?;
         let position = field_index_in_record(site, record);
-        Ok(Some(FieldMaintenance { old, position }))
+        let indexes = self.indexes_projecting(position);
+        if indexes.is_empty() {
+            return Ok(None);
+        }
+        let old = self.read_projected(stem, record, &Self::projected_positions_of(&indexes))?;
+        Ok(Some(FieldMaintenance {
+            indexes,
+            old,
+            position,
+        }))
     }
 
-    /// Maintain the indexes for a root field write from its captured pre-write state and
-    /// the field's new value (`None` for a clear/erase). The new projected state is the old
-    /// with the written position replaced, so only the indexes projecting the field move.
+    /// Maintain the field write's indexes from its captured state and the field's new value
+    /// (`None` for a clear/erase). The new projected state is the old with the written
+    /// position replaced, so only the indexes projecting the field move.
     fn maintain_field_write(
         &mut self,
         site: &AuthorizedSite,
@@ -956,23 +986,23 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         maintenance: Option<FieldMaintenance>,
         new_value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
-        let Some(FieldMaintenance { old, position }) = maintenance else {
+        let Some(FieldMaintenance {
+            indexes,
+            old,
+            position,
+        }) = maintenance
+        else {
             return Ok(());
         };
         let mut new = old.clone();
         new[position] = new_value;
-        self.maintain_indexes(site, keys, &old, &new)
+        let ops = Planner::new().index_writes(&site.root, &indexes, keys, &old, &new)?;
+        self.apply_index_ops(ops)
     }
 
-    /// Maintain every managed index for a root entry write, given the entry's projected
-    /// field values before (`old`) and after (`new`) the write. An index row exists exactly
-    /// when every projected component is present, so a field absent in a state contributes
-    /// no row for that state. For each index in stable declaration order, an unchanged row
-    /// is left alone, a changed row is removed at its old key and staged at its new key, and
-    /// a unique index whose new key already holds a *different* source identity faults
-    /// [`KernelFault::UniqueIndexViolation`] — the whole transaction then rolls back without
-    /// poisoning the store. The removes and puts ride this session's transaction, so index
-    /// and source changes commit or roll back as one unit.
+    /// Maintain every managed index for a whole root entry write, given the entry's projected
+    /// field values before (`old`) and after (`new`). An index row exists exactly when every
+    /// projected component is present, so a field absent in a state contributes no row.
     fn maintain_indexes(
         &mut self,
         site: &AuthorizedSite,
@@ -981,6 +1011,16 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         new: &[Option<ValueDomain>],
     ) -> Result<(), KernelFault> {
         let ops = Planner::new().index_writes(&site.root, &self.indexes, keys, old, new)?;
+        self.apply_index_ops(ops)
+    }
+
+    /// Apply the planner's index-cell operations on this session's transaction, in stable
+    /// order. A remove clears a row that left an index; a put writes a non-unique row; a
+    /// unique put faults [`KernelFault::UniqueIndexViolation`] when the cell already holds a
+    /// *different* source identity — a coherent re-put of the same identity is written
+    /// through. A collision rolls the whole transaction back without poisoning the store, so
+    /// index and source changes commit or roll back as one unit.
+    fn apply_index_ops(&mut self, ops: Vec<IndexOp>) -> Result<(), KernelFault> {
         for op in ops {
             match op {
                 IndexOp::Remove(cell) => {
@@ -992,10 +1032,6 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
                         .map_err(KernelFault::Engine)?;
                 }
                 IndexOp::UniquePut(cell, value) => {
-                    // A unique index rejects a second, differently-owned row at one key: the
-                    // collision faults and the transaction rolls back. A cell already
-                    // holding this same source key is a coherent re-put (the row did not
-                    // move), so it is written through.
                     if read_raw(self.txn(), &cell)?.is_some_and(|existing| existing != value) {
                         return Err(KernelFault::UniqueIndexViolation);
                     }
@@ -3624,6 +3660,37 @@ mod tests {
         assert_eq!(
             index_cells(&store),
             sorted(vec![label_cell("a", "x"), value_cell("a", 1)]),
+        );
+    }
+
+    /// An index row staged for an entry that fails commit rolls back with the entry: setting
+    /// only the projected sparse `label` of an entry whose required `value` is unset stages a
+    /// `byLabel` row, but the commit reconcile faults `RequiredMissing` and the whole
+    /// transaction — index row included — rolls back, leaving no index cell behind.
+    #[test]
+    fn a_required_missing_rollback_leaves_no_index_row() {
+        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        let result = {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .unwrap();
+            let label = txn.site(2);
+            // Set the projected sparse label without ever setting the required value.
+            txn.set_sparse(
+                &label,
+                &[ks("a")],
+                Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into()))),
+            )
+            .unwrap();
+            txn.commit()
+        };
+        assert!(
+            matches!(result, CommitResult::RequiredMissing { field, .. } if field == "value"),
+            "the commit rolls back on the unset required field",
+        );
+        assert!(
+            index_cells(&store).is_empty(),
+            "the staged byLabel row rolled back with the transaction",
         );
     }
 
