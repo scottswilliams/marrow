@@ -282,7 +282,9 @@ pub fn validate_shape(shape: &Shape) -> Result<(), DecodeError> {
                     ));
                 }
                 if leaves.len() > MAX_STRUCT_LEAVES {
-                    return Err(DecodeError::ShapeInvalid("leaf count exceeds MAX_STRUCT_LEAVES"));
+                    return Err(DecodeError::ShapeInvalid(
+                        "leaf count exceeds MAX_STRUCT_LEAVES",
+                    ));
                 }
                 for l in leaves {
                     go(l, depth + 1)?;

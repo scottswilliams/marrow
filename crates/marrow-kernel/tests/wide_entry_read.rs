@@ -109,7 +109,10 @@ fn reads_for_whole_entry(declared: usize, populated: usize) -> usize {
         .expect("read")
         .expect("entry present");
     let present = value.fields.iter().filter(|slot| slot.is_some()).count();
-    assert_eq!(present, populated, "the read materialized every present field");
+    assert_eq!(
+        present, populated,
+        "the read materialized every present field"
+    );
     counters.reads() - before
 }
 

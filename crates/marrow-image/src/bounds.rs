@@ -155,68 +155,61 @@ pub const MAX_TRAVERSAL_BOUND: u32 = 65_536;
 /// exceeds this with a typed error rather than materializing an exponential tree.
 pub const MAX_INTERFACE_TRANSFER_NODES: usize = 4096;
 
+// WR01 width-bound decoupling invariants, enforced at compile time: a future edit
+// that re-couples the narrow bounds to the widened record field width — or drops a
+// graph-scaled bound below it — fails the build here, not silently at runtime. The
+// dense inline-composite leaf count and the index projection width must NOT scale
+// with the record field width; the member-tree, site-table, and string-pool bounds
+// must admit at least a wide resource's field set.
+const _: () = {
+    assert!(
+        MAX_RECORD_FIELDS >= 2000,
+        "record field width must admit the M-shaped declared width",
+    );
+    assert!(
+        MAX_RECORD_FIELDS <= u16::MAX as usize,
+        "the field count is u16-encoded in every table",
+    );
+    assert!(
+        MAX_STRUCT_LEAVES < MAX_RECORD_FIELDS,
+        "a dense composite leaf count must not scale with the record field width",
+    );
+    assert!(
+        MAX_INDEX_COMPONENTS < MAX_RECORD_FIELDS,
+        "an index projection must not scale with the record field width",
+    );
+    assert!(
+        MAX_INDEX_COMPONENTS >= MAX_KEY_COLUMNS,
+        "an index projection may still combine a full composite key tuple",
+    );
+    assert!(
+        MAX_DURABLE_MEMBERS >= MAX_RECORD_FIELDS,
+        "every top-level field is a member; the member tree must admit a wide field set",
+    );
+    assert!(
+        MAX_SITES >= MAX_RECORD_FIELDS,
+        "every stored field mints a site; the site table must admit a wide field set",
+    );
+    assert!(
+        MAX_STRINGS > MAX_RECORD_FIELDS,
+        "each field interns a name; the string pool must admit a wide field set",
+    );
+};
+
 #[cfg(test)]
 mod tests {
-    //! Width-bound known-answer tests (WR01). These pin each width constant to its
-    //! chosen value and, critically, pin the *decoupling*: widening the top-level
-    //! record field width must never drag the dense inline-composite leaf count or
-    //! the index projection width up with it. A future edit that re-couples them (or
-    //! silently bumps the narrow bounds) fails here.
+    //! Width-bound known-answer tests (WR01): the chosen value of each widened or
+    //! re-derived width constant. The *decoupling* relationships are enforced at
+    //! compile time by the `const _` block above.
     use super::*;
 
-    /// The M-shaped record field width admits thousands of declared fields with
-    /// headroom, and stays inside the u16 field-count encoding every table uses.
     #[test]
-    fn record_field_width_admits_thousands_within_the_u16_encoding() {
-        assert_eq!(MAX_RECORD_FIELDS, 4096);
-        assert!(MAX_RECORD_FIELDS >= 2000, "admits the M-shaped declared width");
-        assert!(
-            MAX_RECORD_FIELDS <= u16::MAX as usize,
-            "the field count is u16-encoded in every table",
-        );
-    }
-
-    /// The dense inline-composite (`struct` value) leaf count stays narrow and did
-    /// NOT widen with the record field width: it is a value shape, not a resource's
-    /// declared field set.
-    #[test]
-    fn struct_leaf_count_stayed_narrow_and_decoupled() {
-        assert_eq!(MAX_STRUCT_LEAVES, 64);
-        assert!(
-            MAX_STRUCT_LEAVES < MAX_RECORD_FIELDS,
-            "a dense composite leaf count must not scale with the record field width",
-        );
-    }
-
-    /// The index projection width is deliberately fixed and did NOT widen with the
-    /// record field width: an index projects a small ordered leaf set, never
-    /// thousands of components.
-    #[test]
-    fn index_component_width_stayed_narrow_and_decoupled() {
-        assert_eq!(MAX_INDEX_COMPONENTS, 72);
-        assert!(
-            MAX_INDEX_COMPONENTS < MAX_RECORD_FIELDS,
-            "an index projection must not scale with the record field width",
-        );
-        assert!(
-            MAX_INDEX_COMPONENTS >= MAX_KEY_COLUMNS,
-            "a projection may still combine a full composite key tuple",
-        );
-    }
-
-    /// The durable member-tree total and the operation-site table both scale with the
-    /// graph, so both must admit at least a wide resource's field set (every top-level
-    /// field is one member and one field-leaf site).
-    #[test]
-    fn member_tree_and_site_table_admit_a_wide_field_set() {
-        assert!(MAX_DURABLE_MEMBERS >= MAX_RECORD_FIELDS);
-        assert!(MAX_SITES >= MAX_RECORD_FIELDS);
-    }
-
-    /// The string pool admits one interned name per declared field of a wide
-    /// resource, plus headroom for type, function, and module names.
-    #[test]
-    fn string_pool_admits_a_wide_resources_field_names() {
-        assert!(MAX_STRINGS > MAX_RECORD_FIELDS);
+    fn width_constants_hold_their_chosen_values() {
+        assert_eq!(MAX_RECORD_FIELDS, 4096, "top-level record field width");
+        assert_eq!(MAX_STRUCT_LEAVES, 64, "dense inline-composite leaf count");
+        assert_eq!(MAX_INDEX_COMPONENTS, 72, "index projection width");
+        assert_eq!(MAX_DURABLE_MEMBERS, 8192, "durable member-tree total");
+        assert_eq!(MAX_SITES, 8192, "operation-site table");
+        assert_eq!(MAX_STRINGS, 8192, "string-pool entries");
     }
 }

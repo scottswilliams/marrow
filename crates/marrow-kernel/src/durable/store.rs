@@ -1518,7 +1518,9 @@ fn read_record_leaves<V: ReadView>(
     let range = physical::field_leaf_range(stem);
     let mut cursor = range.clone();
     loop {
-        let page = cells.scan_after(&range, &cursor).map_err(KernelFault::Engine)?;
+        let page = cells
+            .scan_after(&range, &cursor)
+            .map_err(KernelFault::Engine)?;
         let Some(last_key) = page.last().map(|(key, _)| key.clone()) else {
             break;
         };
