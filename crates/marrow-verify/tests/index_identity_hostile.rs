@@ -8,7 +8,8 @@
 use marrow_image::{
     DurableIndexComponent, DurableIndexShape, DurableMemberDef, DurableValueShape, ExportId,
     FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    SpanEntry,
 };
 use marrow_verify::verify;
 

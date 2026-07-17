@@ -171,9 +171,24 @@ fn s(v: &str) -> Value {
 
 fn seed(image: &VerifiedImage, store: &mut EphemeralAttachment) {
     // Two books on shelf "A", one on "B"; distinct isbns.
-    run(image, store, "shelve", vec![Value::Int(1), s("dune"), s("A"), s("i1")]);
-    run(image, store, "shelve", vec![Value::Int(2), s("hyperion"), s("A"), s("i2")]);
-    run(image, store, "shelve", vec![Value::Int(3), s("neuromancer"), s("B"), s("i3")]);
+    run(
+        image,
+        store,
+        "shelve",
+        vec![Value::Int(1), s("dune"), s("A"), s("i1")],
+    );
+    run(
+        image,
+        store,
+        "shelve",
+        vec![Value::Int(2), s("hyperion"), s("A"), s("i2")],
+    );
+    run(
+        image,
+        store,
+        "shelve",
+        vec![Value::Int(3), s("neuromancer"), s("B"), s("i3")],
+    );
 }
 
 #[test]
@@ -182,9 +197,18 @@ fn a_nonunique_scan_binds_the_identity_and_dereferences_it() {
     let mut store = attach(&image);
     seed(&image, &mut store);
 
-    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("A")]), Some(Value::Int(2)));
-    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("B")]), Some(Value::Int(1)));
-    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("Z")]), Some(Value::Int(0)));
+    assert_eq!(
+        run(&image, &mut store, "countOnShelf", vec![s("A")]),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(&image, &mut store, "countOnShelf", vec![s("B")]),
+        Some(Value::Int(1))
+    );
+    assert_eq!(
+        run(&image, &mut store, "countOnShelf", vec![s("Z")]),
+        Some(Value::Int(0))
+    );
 }
 
 #[test]
@@ -197,17 +221,49 @@ fn a_bounded_scan_is_exact_and_fan_out_independent() {
     let mut store = attach(&image);
     // Shelf "A" holds three books, shelf "B" one — `at most 2` on "A" hits the bound and
     // runs `on more`; on "B" it does not.
-    run(&image, &mut store, "shelve", vec![Value::Int(1), s("a"), s("A"), s("i1")]);
-    run(&image, &mut store, "shelve", vec![Value::Int(2), s("b"), s("A"), s("i2")]);
-    run(&image, &mut store, "shelve", vec![Value::Int(3), s("c"), s("A"), s("i3")]);
-    run(&image, &mut store, "shelve", vec![Value::Int(4), s("d"), s("B"), s("i4")]);
+    run(
+        &image,
+        &mut store,
+        "shelve",
+        vec![Value::Int(1), s("a"), s("A"), s("i1")],
+    );
+    run(
+        &image,
+        &mut store,
+        "shelve",
+        vec![Value::Int(2), s("b"), s("A"), s("i2")],
+    );
+    run(
+        &image,
+        &mut store,
+        "shelve",
+        vec![Value::Int(3), s("c"), s("A"), s("i3")],
+    );
+    run(
+        &image,
+        &mut store,
+        "shelve",
+        vec![Value::Int(4), s("d"), s("B"), s("i4")],
+    );
 
-    assert_eq!(run(&image, &mut store, "countOnShelfBounded", vec![s("A")]), Some(Value::Int(-1)));
-    assert_eq!(run(&image, &mut store, "countOnShelfBounded", vec![s("B")]), Some(Value::Int(1)));
+    assert_eq!(
+        run(&image, &mut store, "countOnShelfBounded", vec![s("A")]),
+        Some(Value::Int(-1))
+    );
+    assert_eq!(
+        run(&image, &mut store, "countOnShelfBounded", vec![s("B")]),
+        Some(Value::Int(1))
+    );
     // Isolation: the full (unbounded) scan of each shelf sees only that shelf's rows,
     // independent of the other shelf's fan-out.
-    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("A")]), Some(Value::Int(3)));
-    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("B")]), Some(Value::Int(1)));
+    assert_eq!(
+        run(&image, &mut store, "countOnShelf", vec![s("A")]),
+        Some(Value::Int(3))
+    );
+    assert_eq!(
+        run(&image, &mut store, "countOnShelf", vec![s("B")]),
+        Some(Value::Int(1))
+    );
 }
 
 #[test]
@@ -216,8 +272,14 @@ fn a_unique_lookup_is_present_or_absent() {
     let mut store = attach(&image);
     seed(&image, &mut store);
 
-    assert_eq!(run(&image, &mut store, "isbnPresent", vec![s("i2")]), Some(Value::Bool(true)));
-    assert_eq!(run(&image, &mut store, "isbnPresent", vec![s("missing")]), Some(Value::Bool(false)));
+    assert_eq!(
+        run(&image, &mut store, "isbnPresent", vec![s("i2")]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&image, &mut store, "isbnPresent", vec![s("missing")]),
+        Some(Value::Bool(false))
+    );
 }
 
 #[test]

@@ -3005,13 +3005,18 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         };
         if bound.from.is_some() {
-            self.fail(unsupported(self.file, span, "a `from` cursor on an index scan"));
+            self.fail(unsupported(
+                self.file,
+                span,
+                "a `from` cursor on an index scan",
+            ));
             return Flow::Fallthrough;
         }
         // The scan yields a whole source identity, so the root's identity is a single key
         // column; the scanned (trailing) projection component is that key.
         let Some(root) = self.durable.root() else {
-            let diagnostic = self.no_executable_root_diagnostic(span, "an index scan without a store");
+            let diagnostic =
+                self.no_executable_root_diagnostic(span, "an index scan without a store");
             self.fail(diagnostic);
             return Flow::Fallthrough;
         };

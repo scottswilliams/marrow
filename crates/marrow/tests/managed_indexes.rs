@@ -7,12 +7,13 @@
 //! that may omit it. Each projects only the root's identity keys and top-level
 //! orderable-key fields. Each index carries its own `Index` ledger identity, and the
 //! verifier independently reconstructs the index set and derives the field/root
-//! incidence — the maintenance consequence a later exact write must keep coherent
-//! (runtime maintenance and traversal land at E05).
+//! incidence — the maintenance consequence an exact write keeps coherent. Index reads
+//! execute (a bounded nonunique scan and a unique lookup); their runtime behavior is
+//! exercised in the VM `index_read` fixtures.
 
 use marrow_verify::{
-    DurableIndexComponent, LedgerIdBytes, SealedIndexComponent, SealedSite, SemanticNodeKind,
-    SemanticStepKind, SemanticTarget,
+    DurableIndexComponent, LedgerIdBytes, SealedIndexComponent, SealedSite, SealedSiteTarget,
+    SemanticNodeKind, SemanticStepKind, SemanticTarget,
 };
 
 fn rep(byte: u8) -> LedgerIdBytes {
@@ -179,31 +180,27 @@ fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
 }
 
 #[test]
-fn index_read_sites_seal_parked_as_reads_only() {
+fn index_read_sites_seal_flat_executable_reads() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
-    let index_sites: Vec<SemanticTarget> = image
+    let index_sites: Vec<&'static str> = image
         .sites()
         .iter()
         .filter_map(|site| match site {
-            // Every index site is parked (runtime traversal/lookup lands at E05) and is
-            // a read target — there is no index-write site kind.
-            SealedSite::Parked { target, .. }
-                if matches!(
-                    target,
-                    SemanticTarget::IndexScan | SemanticTarget::IndexLookup
-                ) =>
-            {
-                Some(*target)
-            }
+            // Every index site seals flat-executable and is a read target — there is no
+            // index-write site kind. The nonunique byShelf is a progressive-prefix scan;
+            // the unique byIsbn an exact lookup.
+            SealedSite::Flat {
+                target: SealedSiteTarget::IndexScan(_),
+                ..
+            } => Some("scan"),
+            SealedSite::Flat {
+                target: SealedSiteTarget::IndexLookup(_),
+                ..
+            } => Some("lookup"),
             _ => None,
         })
         .collect();
-    // The nonunique byShelf is a progressive-prefix scan; the unique byIsbn an exact
-    // lookup.
-    assert_eq!(
-        index_sites,
-        vec![SemanticTarget::IndexScan, SemanticTarget::IndexLookup],
-    );
+    assert_eq!(index_sites, vec!["scan", "lookup"]);
 }
 
 #[test]
@@ -224,9 +221,10 @@ fn no_application_opcode_maintains_a_managed_index() {
     // index-maintenance opcode, and the operation-target set names no index *write*
     // target.
 
-    // (1) No `OP_DUR_*` opcode names an index. Scanning the frozen opcode constants of
+    // (1) The only `OP_DUR_*INDEX*` opcodes are the two reads (`SCAN`, `LOOKUP`); no
+    // opcode maintains (writes) an index. Scanning the frozen opcode constants of
     // `marrow-image`'s `instr.rs` by source text — as the workspace's other tidy gates
-    // scan source — keeps the law honest against a future `OP_DUR_INDEX_*` byte.
+    // scan source — keeps the law honest against a future index-maintenance byte.
     let instr_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../marrow-image/src/instr.rs"
@@ -239,10 +237,14 @@ fn no_application_opcode_maintains_a_managed_index() {
             .split(|c: char| c == ':' || c.is_whitespace())
             .next()
             .unwrap_or(rest);
+        if !name.contains("INDEX") {
+            continue;
+        }
         assert!(
-            !name.contains("INDEX"),
-            "durable opcode `OP_DUR_{name}` names an index; managed-index maintenance \
-             must remain compiler-owned with no application opcode",
+            name == "INDEX_SCAN" || name == "INDEX_LOOKUP",
+            "durable opcode `OP_DUR_{name}` names an index but is not one of the two \
+             reads; managed-index maintenance must remain compiler-owned with no \
+             application write opcode",
         );
     }
 
@@ -435,23 +437,35 @@ pub fn label(): string {
 }
 
 #[test]
-fn a_source_index_read_is_a_precise_not_yet_executable_diagnostic() {
-    // Runtime index traversal/lookup lands at E05. Until then a source read through a
-    // managed index is the honest capability-trough diagnostic — a precise
-    // `check.unsupported` at the read — not a confusing "no such field" error and
-    // never a lowered operation.
+fn a_source_index_read_compiles() {
+    // The managed-index read runtime has landed: a bounded scan of a nonunique index
+    // (binding the source `Id(^books)`) and a bracket lookup of a unique index compile
+    // cleanly through the production pipeline. Runtime behavior is exercised end to end
+    // in the VM `index_read` fixtures; this asserts the source forms are admitted.
     let source = r#"resource Book {
     required title: string
     shelf: string
+    isbn: string
 }
 
 store ^books[id: int]: Book {
     index byShelf[shelf, id]
+    index byIsbn[isbn] unique
+}
+
+pub fn countOnShelf(s: string): int {
+    var n = 0
+    for id in ^books.byShelf[s] at most 100 {
+        n += 1
+    } on more {
+        n = -1
+    }
+    return n
 }
 
 pub fn find(s: string): Id(^books)? {
-    for id in ^books.byShelf[s] {
-        return id
+    if const found = ^books.byIsbn[s] {
+        return found
     }
     return absent
 }
@@ -462,10 +476,12 @@ pub fn find(s: string): Id(^books)? {
          id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
          id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
          id field Book.shelf 10101010101010101010101010101010\n\
+         id field Book.isbn 20202020202020202020202020202020\n\
          id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
          id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
          id index books.byShelf 70707070707070707070707070707070\n\
+         id index books.byIsbn 80808080808080808080808080808080\n\
          high-water 0\n\
          end\n";
-    assert_eq!(compile_codes(source, ids), vec!["check.unsupported"]);
+    assert!(compile_codes(source, ids).is_empty());
 }
