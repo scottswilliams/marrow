@@ -669,6 +669,68 @@ pub fn f(a: int): int {
     assert!(stdout.contains("check.type"), "{stdout}");
 }
 
+/// A let-else binding is out of scope inside its own `else` — the absent edge,
+/// where the binding is never established. A reference to it there is a scoped
+/// unknown-name `check.type`, never an uninitialized-slot image rejection, and it
+/// does not shadow an outer binding of the same name that the `else` should see.
+#[test]
+fn let_else_binding_is_out_of_scope_in_its_own_else() {
+    // (a) referencing the binding in its own else is a clean check.type unknown
+    // name (a checker rejection), not an image.function artifact rejection.
+    let scoped = TempDir::new("let-else-scope");
+    project(
+        &scoped,
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    const x = maybe(a) else {
+        return x
+    }
+    return x
+}
+"#,
+    );
+    let output = run_in(&scoped, &["run", "f", "--format", "jsonl", "--", "5"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("check.type"), "{stdout}");
+    assert!(!stdout.contains("image.function"), "{stdout}");
+    assert!(!stdout.contains("artifact_rejected"), "{stdout}");
+
+    // (b) the else sees the outer binding, not the not-yet-established inner one of
+    // the same name.
+    let shadow = TempDir::new("let-else-shadow");
+    project(
+        &shadow,
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    const n = 7
+    const n = maybe(a) else {
+        return n
+    }
+    return n
+}
+"#,
+    );
+    // absent: the else returns the outer n (7).
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&shadow, &["run", "f", "--", "0"]).stdout),
+        "7\n"
+    );
+    // present: the inner binding is in scope for the continuation (5).
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&shadow, &["run", "f", "--", "5"]).stdout),
+        "5\n"
+    );
+}
+
 /// `string` comparisons order lexicographically through the full path.
 #[test]
 fn string_comparison_orders_lexicographically() {

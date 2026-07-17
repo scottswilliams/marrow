@@ -2295,13 +2295,25 @@ impl<'a> FnLowerer<'a> {
         value: &Expression,
         else_block: &Block,
     ) -> Flow {
+        let mark = self.locals.len();
+        let present_mark = self.present_places.len();
         let Some(fail_jumps) = self.lower_if_const_head(&[(name, annotation, value)], None) else {
+            self.locals.truncate(mark);
+            self.present_places.truncate(present_mark);
             return Flow::Fallthrough;
         };
-        // The head binds `x` immutable; a `var` let-else makes it assignable. The
-        // binding persists into the enclosing block, so it is not truncated here.
-        if is_var && let Some(local) = self.locals.last_mut() {
-            local.mutable = true;
+        // The head bound `x` (and, for a durable entry read, a presence fact) on the
+        // present edge. They belong to the continuation after the statement, not to
+        // the `else` — the absent edge, where `x` is not established. Lift them out so
+        // the `else` cannot see the binding (a reference there is a scoped unknown
+        // name, not an uninitialized-slot image rejection) and restore them for the
+        // continuation. A `var` let-else binds mutably.
+        let mut bound_locals = self.locals.split_off(mark);
+        let bound_present = self.present_places.split_off(present_mark);
+        if is_var {
+            for local in &mut bound_locals {
+                local.mutable = true;
+            }
         }
 
         // The present path continues past the `else`; the absent edge runs the
@@ -2323,6 +2335,11 @@ impl<'a> FnLowerer<'a> {
         }
         let after = self.here();
         self.patch(to_after, after);
+
+        // Restore the binding and presence fact for the continuation: past the
+        // statement `x` is always present, because the absent edge diverged.
+        self.locals.extend(bound_locals);
+        self.present_places.extend(bound_present);
         Flow::Fallthrough
     }
 
