@@ -201,7 +201,10 @@ fn redeclaring_a_builtin_generic_name_is_reported() {
 "#,
     ] {
         let temp = TempDir::new("reserved");
-        project(&temp, &format!("{decl}\npub fn f(): int {{\n    return 0\n}}\n"));
+        project(
+            &temp,
+            &format!("{decl}\npub fn f(): int {{\n    return 0\n}}\n"),
+        );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{decl}\n{stdout}");
@@ -280,11 +283,15 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
     for name in NAMES {
         let sources = [
             // module function
-            format!("pub fn {name}(): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"),
+            format!(
+                "pub fn {name}(): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"
+            ),
             // module constant
             format!("const {name}: int = 1\n\npub fn f(): int {{\n    return 0\n}}\n"),
             // parameter
-            format!("pub fn g({name}: int): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"),
+            format!(
+                "pub fn g({name}: int): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"
+            ),
             // local constant
             format!("pub fn f(): int {{\n    const {name} = 1\n    return 0\n}}\n"),
             // local variable
