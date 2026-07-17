@@ -28,241 +28,8 @@ fn texts(source: &str) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn lexes_indentation_tokens_for_blocks() {
-    let source =
-        "module shelf::books\nfn main()\n    const title = \"Small Gods\"\n    print(title)\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Module),
-            TokenKind::Identifier,
-            TokenKind::DoubleColon,
-            TokenKind::Identifier,
-            TokenKind::Newline,
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::String,
-            TokenKind::Newline,
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::Identifier,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-
-    let lexed = lex_source(source);
-    let title = lexed
-        .tokens
-        .iter()
-        .find(|token| token.text(source) == "title")
-        .expect("title token");
-    assert_eq!(title.span.line, 3);
-    assert_eq!(title.span.column, 11);
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn blank_lines_and_comments_do_not_close_blocks() {
-    let source = "fn main()\n    const title = \"Small Gods\"\n\n    ; keep the block open\n    return title\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::String,
-            TokenKind::Newline,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Keyword(Keyword::Return),
-            TokenKind::Identifier,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn column_zero_comment_continuing_a_body_stays_inside_the_block() {
-    // The comment outdents to column zero but the body continues with an
-    // indented line below it, so it is trailing trivia of the open block, not a
-    // top-level comment: no DEDENT precedes it.
-    let source = "fn main()\n    const a = 1\n\n; still in main\n    const b = 2\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn consecutive_column_zero_comments_continuing_a_body_stay_inside_the_block() {
-    // A run of two column-zero comments inside a body, followed by an indented
-    // body line, is classified by the next NON-COMMENT significant line: it
-    // continues the block, so neither comment emits a DEDENT.
-    let source = "fn main()\n    const a = 1\n\n; one\n; two\n    const b = 2\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn consecutive_column_zero_comments_before_a_top_level_decl_close_the_block() {
-    // A run of two column-zero comments whose next non-comment significant line
-    // is a top-level declaration closes the open block before the run.
-    let source = "fn one()\n    const a = 1\n\n; one\n; two\nfn two()\n    const b = 2\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn column_zero_comment_between_top_level_decls_closes_the_block() {
-    // The comment outdents to column zero and the next significant line is also
-    // at the top level, so the open block closes before the comment and the
-    // comment docks at the file's top level, attaching to the declaration below.
-    let source = "fn one()\n    const a = 1\n\n; about two\nfn two()\n    const b = 2\n";
-
-    assert_eq!(
-        kinds(source),
-        vec![
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Comment,
-            TokenKind::Newline,
-            TokenKind::Keyword(Keyword::Fn),
-            TokenKind::Identifier,
-            TokenKind::LeftParen,
-            TokenKind::RightParen,
-            TokenKind::Newline,
-            TokenKind::Indent,
-            TokenKind::Keyword(Keyword::Const),
-            TokenKind::Identifier,
-            TokenKind::Equal,
-            TokenKind::Integer,
-            TokenKind::Newline,
-            TokenKind::Dedent,
-            TokenKind::Eof,
-        ]
-    );
-}
-
-#[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_optional_return_type_and_absent_value() {
-    let source = "fn f(): int?\n    return absent\n";
+    let source = "fn f(): int? {\n    return absent\n}\n";
 
     assert_eq!(
         kinds(source),
@@ -274,19 +41,19 @@ fn lexes_optional_return_type_and_absent_value() {
             TokenKind::Colon,
             TokenKind::Keyword(Keyword::Int),
             TokenKind::Question,
+            TokenKind::LeftBrace,
             TokenKind::Newline,
-            TokenKind::Indent,
             TokenKind::Keyword(Keyword::Return),
             TokenKind::Keyword(Keyword::Absent),
             TokenKind::Newline,
-            TokenKind::Dedent,
+            TokenKind::RightBrace,
+            TokenKind::Newline,
             TokenKind::Eof,
         ]
     );
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_future_data_keywords_as_keywords() {
     let source = "journal sensitive declassify Id";
 
@@ -303,9 +70,8 @@ fn lexes_future_data_keywords_as_keywords() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn preserves_doc_comments_as_tokens() {
-    let source = ";; Books saved by id.\nresource Book\n    required title: string\nstore ^books(id: int): Book\n";
+    let source = "/// Books saved by id.\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book\n";
 
     assert_eq!(
         kinds(source),
@@ -314,22 +80,23 @@ fn preserves_doc_comments_as_tokens() {
             TokenKind::Newline,
             TokenKind::Keyword(Keyword::Resource),
             TokenKind::Identifier,
+            TokenKind::LeftBrace,
             TokenKind::Newline,
-            TokenKind::Indent,
             TokenKind::Keyword(Keyword::Required),
             TokenKind::Identifier,
             TokenKind::Colon,
             TokenKind::Keyword(Keyword::String),
             TokenKind::Newline,
-            TokenKind::Dedent,
+            TokenKind::RightBrace,
+            TokenKind::Newline,
             TokenKind::Keyword(Keyword::Store),
             TokenKind::Caret,
             TokenKind::Identifier,
-            TokenKind::LeftParen,
+            TokenKind::LeftBracket,
             TokenKind::Identifier,
             TokenKind::Colon,
             TokenKind::Keyword(Keyword::Int),
-            TokenKind::RightParen,
+            TokenKind::RightBracket,
             TokenKind::Colon,
             TokenKind::Identifier,
             TokenKind::Newline,
@@ -339,33 +106,32 @@ fn preserves_doc_comments_as_tokens() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
-fn indented_doc_comments_follow_block_layout() {
-    let source =
-        "resource Book\n    ;; Display title.\n    title: string\nstore ^books(id: int): Book\n";
+fn indented_doc_comments_inside_a_braced_block() {
+    let source = "resource Book {\n    /// Display title.\n    title: string\n}\nstore ^books[id: int]: Book\n";
 
     assert_eq!(
         kinds(source),
         vec![
             TokenKind::Keyword(Keyword::Resource),
             TokenKind::Identifier,
+            TokenKind::LeftBrace,
             TokenKind::Newline,
-            TokenKind::Indent,
             TokenKind::DocComment,
             TokenKind::Newline,
             TokenKind::Identifier,
             TokenKind::Colon,
             TokenKind::Keyword(Keyword::String),
             TokenKind::Newline,
-            TokenKind::Dedent,
+            TokenKind::RightBrace,
+            TokenKind::Newline,
             TokenKind::Keyword(Keyword::Store),
             TokenKind::Caret,
             TokenKind::Identifier,
-            TokenKind::LeftParen,
+            TokenKind::LeftBracket,
             TokenKind::Identifier,
             TokenKind::Colon,
             TokenKind::Keyword(Keyword::Int),
-            TokenKind::RightParen,
+            TokenKind::RightBracket,
             TokenKind::Colon,
             TokenKind::Identifier,
             TokenKind::Newline,
@@ -375,9 +141,8 @@ fn indented_doc_comments_follow_block_layout() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_literals_operators_and_punctuation_boundaries() {
-    let source = "const row = ^books(id).\"old-title\" != b\"gone\" and note + \"ok\"\n";
+    let source = "const row = ^books[id].\"old-title\" != b\"gone\" and note + \"ok\"\n";
 
     assert_eq!(
         texts(source),
@@ -387,9 +152,9 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
             "=",
             "^",
             "books",
-            "(",
+            "[",
             "id",
-            ")",
+            "]",
             ".",
             "\"old-title\"",
             "!=",
@@ -411,9 +176,9 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
             TokenKind::Equal,
             TokenKind::Caret,
             TokenKind::Identifier,
-            TokenKind::LeftParen,
+            TokenKind::LeftBracket,
             TokenKind::Identifier,
-            TokenKind::RightParen,
+            TokenKind::RightBracket,
             TokenKind::Dot,
             TokenKind::String,
             TokenKind::BangEqual,
@@ -429,7 +194,6 @@ fn lexes_literals_operators_and_punctuation_boundaries() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_duration_literals_for_known_units() {
     // A number followed by a dot and a known fixed-span unit is one duration
     // token; singular and plural spellings are both accepted.
@@ -453,7 +217,6 @@ fn lexes_duration_literals_for_known_units() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn duration_lexing_does_not_disturb_decimals_fields_or_unknown_units() {
     // `1.5` is still a decimal; `x.field` is still field access; an unknown unit
     // such as `month` or `year` leaves the number, dot, and word untouched.
@@ -479,7 +242,6 @@ fn duration_lexing_does_not_disturb_decimals_fields_or_unknown_units() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_interpolation_with_expression_boundaries() {
     let source = "print($\"book {id}: {{ready}}\")\n";
 
@@ -520,7 +282,6 @@ fn lexes_interpolation_with_expression_boundaries() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn interpolation_recognizes_unicode_escape_before_hole() {
     // `\u{41}` is a unicode escape in the text part, recognized before hole
     // detection, so its `{` does not open an interpolation hole; only `{x}` does.
@@ -547,7 +308,6 @@ fn interpolation_recognizes_unicode_escape_before_hole() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_utf8_strings_bytes_and_interpolation_boundaries() {
     let source = "print(\"café\", b\"naïve\", $\"olá {name}: €\")\n";
     let lexed = lex_source(source);
@@ -606,7 +366,6 @@ fn lexes_utf8_strings_bytes_and_interpolation_boundaries() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn suppresses_layout_inside_open_delimiters() {
     let source = "return Error(\n    code: \"book.absent\",\n    message: \"missing\",\n)\n";
 
@@ -632,9 +391,8 @@ fn suppresses_layout_inside_open_delimiters() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn comment_lines_inside_open_delimiters_do_not_emit_newlines() {
-    let source = "return Error(\n    ; generated message\n    code: \"book.absent\",\n)\n";
+    let source = "return Error(\n    // generated message\n    code: \"book.absent\",\n)\n";
 
     assert_eq!(
         kinds(source),
@@ -655,7 +413,6 @@ fn comment_lines_inside_open_delimiters_do_not_emit_newlines() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reports_lexical_errors_with_parse_syntax_diagnostics() {
     let source = "fn main()\n\treturn \"unterminated\n    ~\n";
     let lexed = lex_source(source);
@@ -684,7 +441,6 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserves_tilde_for_ephemeral_roots() {
     let lexed = lex_source("fn main()\n    return ~cache\n");
 
@@ -701,7 +457,6 @@ fn reserves_tilde_for_ephemeral_roots() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_obsolete_operators_with_marrow_guidance() {
     let cases: &[(&str, ObsoleteOperator, &str, usize)] = &[
         ("a && b", ObsoleteOperator::AndAnd, "`and`", 2),
@@ -710,7 +465,7 @@ fn rejects_obsolete_operators_with_marrow_guidance() {
         (
             "count # 1",
             ObsoleteOperator::Hash,
-            "Marrow uses `;` for comments",
+            "Marrow uses `//` for comments",
             1,
         ),
     ];
@@ -751,7 +506,6 @@ fn rejects_obsolete_operators_with_marrow_guidance() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keeps_valid_operators_after_obsolete_check() {
     let source = "if a != b\n    print(\"ne\")\n";
     let lexed = lex_source(source);
@@ -771,7 +525,6 @@ fn keeps_valid_operators_after_obsolete_check() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_equality_operator() {
     let source = "if a == b\n    print(\"eq\")\n";
     let lexed = lex_source(source);
@@ -791,7 +544,6 @@ fn lexes_equality_operator() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_is_as_a_keyword() {
     // `is` is a reserved word operator, lexed as a keyword like `and`/`or`/`not`.
     let kinds = kinds("print(pet is Cat::tiger)\n");
@@ -802,7 +554,6 @@ fn lexes_is_as_a_keyword() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_absence_operators() {
     // `?.` and `??` each lex as a single multi-character punctuation token.
     let lexed = lex_source("print(a?.b ?? c)\n");
@@ -828,7 +579,6 @@ fn lexes_absence_operators() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_optional_suffix_with_longest_match() {
     // One trailing `?` is the optional type suffix and lexes as `Question`. The
     // multi-character table runs first, so `??` stays a single `QuestionQuestion`
@@ -864,7 +614,6 @@ fn lexes_optional_suffix_with_longest_match() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_an_at_sign_at_its_own_column() {
     // `@` is not part of any operator or grammar production, so it is an
     // unexpected character reported at its own column, exactly like `?`/`#`/`!`,
@@ -894,7 +643,6 @@ fn rejects_an_at_sign_at_its_own_column() {
 /// examples as a whole; the per-token and per-error lexer contracts are owned by
 /// the focused tests above.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn lexes_all_language_reference_mw_blocks_without_errors() {
     for block in common::mw_blocks() {
         let lexed = lex_source(&block.source);
