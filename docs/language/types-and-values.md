@@ -364,7 +364,7 @@ user-defined function.
 
 A durable resource read is optional until the path is known present. A required
 member is guaranteed only after its containing resource is present. For
-example, `^books(id).title` has type `string?` if `^books(id)` might be absent,
+example, `^books[id].title` has type `string?` if `^books[id]` might be absent,
 even when `title` is declared `required`.
 
 ```mw

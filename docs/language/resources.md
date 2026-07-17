@@ -100,7 +100,7 @@ identity](durable-places.md#durable-identity) exactly as roots do.
 A `branch` keyed by one or more columns and holding only scalar fields is part of the
 executable durable graph, and such branches may nest to any depth: their whole entries
 are created, read, replaced, and erased through the key-path address
-`^root(key…).branch(bkey…)…` (see [Durable places](durable-places.md#keyed-branches)).
+`^root[key…].branch[bkey…]…` (see [Durable places](durable-places.md#keyed-branches)).
 A top-level field may also hold a widened value — a dense `struct`/record, a closed
 `enum`, or an `Option`/`Result` — stored inline in its field cell and read whole or by
 field; `branch` fields stay scalar-only.
@@ -178,9 +178,11 @@ Unkeyed fields and groups are part of a materialized resource value. Keyed
 children are addressed collections and are not included when a resource is read
 into a local binding, passed to a function, returned, or constructed.
 
-This distinction applies to durable entries as well. Reading `^books(id)` can
-materialize its fields and unkeyed groups as `Book`; it cannot package
-`^books(id).tags` or `^books(id).notes` into that value. Traverse keyed children
+This distinction applies to durable entries as well. Reading `^books[id]`
+materializes its top-level fields as `Book` (a stored group-bearing entry is not
+yet readable — a group-bearing root's operations report not-yet-executable until
+durable group materialization lands); it can never package `^books[id].tags` or
+`^books[id].notes` into that value. Traverse keyed children
 at their paths.
 
 A keyed family is navigated, never materialized as a whole: the language spells no

@@ -389,7 +389,7 @@ impl GroupInfo {
 /// used by the storeless value model — the same top-level fields followed by one
 /// slot per unkeyed group (a nested group sub-record). The two coincide when the
 /// resource declares no group. A durable read of a group-bearing resource is parked
-/// (GR01), so no value ever carries the durable-facing `type_id` with groups
+///, so no value ever carries the durable-facing `type_id` with groups
 /// omitted; the split keeps the durable graph and verifier byte-identical while the
 /// storeless value model gains group slots.
 #[derive(Clone)]

@@ -20,7 +20,7 @@ for k[, p] in <place> at most N [from f] {
 ```
 
 `<place>` is a store root such as `^books` (the root entry family) or a keyed
-branch such as `^books(id).notes` (the branch family beneath one fixed parent
+branch such as `^books[id].notes` (the branch family beneath one fixed parent
 entry, at any nesting depth). The first loop variable `k` binds each immediate key
 in ascending [typed key order](types-and-values.md#key-types); the value at that key
 is read separately inside the body. `N` is a positive integer literal no larger

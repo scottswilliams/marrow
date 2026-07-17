@@ -93,7 +93,7 @@ pub fn gradeOf(student: string, course: string): int? {
 ```
 
 A composite key addresses each entry by its whole tuple in column order, so
-`^enrollments(student, course)` and `^enrollments(course, student)` are distinct
+`^enrollments[student, course]` and `^enrollments[course, student]` are distinct
 entries. Every whole-entry and field operation supplies one key operand per column, in
 declaration order; a `branch` may likewise declare more than one key column. Bounded
 traversal, however, iterates a single key column, so a `for` head over a composite-keyed
@@ -288,7 +288,7 @@ pub fn subtitleOf(id: int): string? {
 }
 ```
 
-The right-hand side is a whole durable entry address `^root(key...)`. The key
+The right-hand side is a whole durable entry address `^root[key...]`. The key
 tuple is evaluated **exactly once**, at the binding. Every later operation through
 the name — a field read `book.subtitle`, a field assignment `book.subtitle = v`, a
 whole-entry replacement `book = Book(...)`, an `exists(book)` test, a
@@ -303,9 +303,9 @@ addresses; it does not rebind the place to a different address. A place names a
 durable designation rather than a fetched value, so its bare name is not itself a
 value: read a field with `place.field`, bind the whole entry with `if const`, or
 test presence with `exists`. Binding a place to a non-durable value, to a field
-address (`^books(id).title`), or to another place is rejected.
+address (`^books[id].title`), or to another place is rejected.
 
-A place binds an address the same way an inline `^root(key...)` operation does, so a
+A place binds an address the same way an inline `^root[key...]` operation does, so a
 place over a store shape whose operations are not yet lowered (a singleton,
 group-bearing, or nominal-field root) reports the same not-yet-executable result as the
 inline form.
@@ -346,7 +346,7 @@ A required field does not accept an optional or absent assignment.
 A sparse-field set takes one of two forms depending on what the compiler knows
 about the containing entry.
 
-An **unguarded** set — a set on an inline `^root(key).field` address, or on a
+An **unguarded** set — a set on an inline `^root[key].field` address, or on a
 named place whose entry has not been shown to exist — makes no assumption that the
 entry is present. The field value is staged, and when the transaction commits the
 entry is created if all its required fields are present, or the transaction rolls
@@ -429,8 +429,8 @@ column and stored fields (see [Resources](resources.md#groups-and-branches)). A
 `branch` keyed by one column and holding only scalar fields is executable, and its own
 members may include further such branches, so a chain of single-column scalar-field
 branches is executable to any depth. Each level's entries are addressed by extending the
-parent's key-path with the branch key — `^root(key).branch(bkey)`,
-`^root(key).branch(bkey).sub(skey)` — and the same operations apply at every level:
+parent's key-path with the branch key — `^root[key].branch[bkey]`,
+`^root[key].branch[bkey].sub[skey]` — and the same operations apply at every level:
 
 ```mw
 module docs::durable_branch
@@ -494,10 +494,10 @@ may not shadow it in that position. As for the root, a branch create supplies ev
 required field, and `exists`, whole-entry read, whole replacement, and `delete` all
 address the branch entry through its full key-path.
 
-A field operation may address a branch field directly — `^root(key).branch(bkey).text`
-or the deeper `^root(key).notes(nid).tags(tid).weight` — to read, set, or `delete` one
+A field operation may address a branch field directly — `^root[key].branch[bkey].text`
+or the deeper `^root[key].notes[nid].tags[tid].weight` — to read, set, or `delete` one
 leaf without materializing the whole entry. Reading a whole branch entry with
-`if const note = ^root(key).branch(bkey)` instead materializes the branch's record,
+`if const note = ^root[key].branch[bkey]` instead materializes the branch's record,
 whose fields — such as `note.text` — read locally through the binding.
 
 A branch entry is a distinct durable node from its ancestors. Creating a branch entry

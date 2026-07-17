@@ -108,5 +108,5 @@ the durable write is what makes that key present.
 
 The example also shows required and sparse fields, keyed resource children,
 1-based positional append, explicit history entries, exact path deletion, and
-ordered traversal through `^books.byShelf(...)`. Each write that changes
+ordered traversal through `^books.byShelf[...]`. Each write that changes
 `shelf` updates the declared index as part of the same durable operation.

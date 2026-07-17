@@ -43,7 +43,7 @@ fn parses_all_documented_module_files() {
 fn the_repo_readme_example_is_gated_by_the_corpus() {
     let gated = common::documented_module_blocks()
         .into_iter()
-        .any(|block| block.path == "README.md" && block.source.contains("enum Status"));
+        .any(|block| block.path == "README.md" && block.source.contains("module app::tasks"));
     assert!(
         gated,
         "the repository root README.md mw example must be part of the documented corpus"
