@@ -1,9 +1,11 @@
 //! Positional-after-named is rejected the same way in every call position the
 //! grammar allows. Resource constructors, conversion calls, std-qualified calls,
-//! and saved-path key lookups each parse their argument list through one shared
+//! and dotted construction calls each parse their argument list through one shared
 //! rule, so the typed reason and the diagnostic count must not vary by call
 //! shape. The bare-identifier-call form is already covered elsewhere; this pins
 //! the *other* parsed callee shapes to that same rule so they cannot diverge.
+//! (Keyed access is the bracket form `^books[k]`, whose named-key rejection is a
+//! separate rule; a paren argument list is what this consistency law covers.)
 
 use crate::common;
 use common::{parse_reason, reason_count};
@@ -34,11 +36,11 @@ const CALL_SHAPES: &[CallShape] = &[
         reject: "const Made = std::math::clamp(low: 0, 9)\n",
         accept: "const Made = std::math::clamp(0, high: 9)\n",
     },
-    // Saved-path key lookup shaped as a call on a saved root.
+    // Dotted construction call: a field-path callee reaching the same argument list.
     CallShape {
-        label: "saved-root key lookup",
-        reject: "const Made = ^books(id: 1, 2)\n",
-        accept: "const Made = ^books(1, hint: 2)\n",
+        label: "dotted construction call",
+        reject: "const Made = Cart.items.add(qty: 1, 2)\n",
+        accept: "const Made = Cart.items.add(1, note: 2)\n",
     },
 ];
 
@@ -53,7 +55,6 @@ struct CallShape {
 /// bare-identifier call but not for a constructor or conversion call would let a
 /// silent positional back-fill through one syntactic door.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_after_named_is_rejected_in_every_call_shape() {
     for shape in CALL_SHAPES {
         let parsed = parse_source(shape.reject);
@@ -74,7 +75,6 @@ fn positional_after_named_is_rejected_in_every_call_shape() {
 /// every one of those same call shapes, so the rule rejects only the disallowed
 /// ordering rather than any mix of positional and named arguments.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn positional_before_named_is_accepted_in_every_call_shape() {
     for shape in CALL_SHAPES {
         let parsed = parse_source(shape.accept);
