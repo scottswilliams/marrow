@@ -55,6 +55,18 @@ pub fn countOnShelf(shelf: string): int {
     return count
 }
 
+pub fn countOnShelfBounded(shelf: string): int {
+    var count = 0
+    for bookId in ^books.byShelf[shelf] at most 2 {
+        if const b = ^books[bookId] {
+            count += 1
+        }
+    } on more {
+        return -1
+    }
+    return count
+}
+
 pub fn isbnPresent(isbn: string): bool {
     if const found = ^books.byIsbn[isbn] {
         return true
@@ -147,6 +159,29 @@ fn a_nonunique_scan_binds_the_identity_and_dereferences_it() {
     assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("A")]), Some(Value::Int(2)));
     assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("B")]), Some(Value::Int(1)));
     assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("Z")]), Some(Value::Int(0)));
+}
+
+#[test]
+fn a_bounded_scan_is_exact_and_fan_out_independent() {
+    // The precise O(distinct + 1) seek cost is owned by the kernel `index_read` fixtures;
+    // these assert the source-observable consequences the compiler's lowering delivers: a
+    // bounded scan freezes exactly `at most N` identities and reports `on more`, and one
+    // shelf's scan is isolated from another shelf's fan-out.
+    let image = compile_verify(SOURCE, IDS);
+    let mut store = attach(&image);
+    // Shelf "A" holds three books, shelf "B" one — `at most 2` on "A" hits the bound and
+    // runs `on more`; on "B" it does not.
+    run(&image, &mut store, "shelve", vec![Value::Int(1), s("a"), s("A"), s("i1")]);
+    run(&image, &mut store, "shelve", vec![Value::Int(2), s("b"), s("A"), s("i2")]);
+    run(&image, &mut store, "shelve", vec![Value::Int(3), s("c"), s("A"), s("i3")]);
+    run(&image, &mut store, "shelve", vec![Value::Int(4), s("d"), s("B"), s("i4")]);
+
+    assert_eq!(run(&image, &mut store, "countOnShelfBounded", vec![s("A")]), Some(Value::Int(-1)));
+    assert_eq!(run(&image, &mut store, "countOnShelfBounded", vec![s("B")]), Some(Value::Int(1)));
+    // Isolation: the full (unbounded) scan of each shelf sees only that shelf's rows,
+    // independent of the other shelf's fan-out.
+    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("A")]), Some(Value::Int(3)));
+    assert_eq!(run(&image, &mut store, "countOnShelf", vec![s("B")]), Some(Value::Int(1)));
 }
 
 #[test]
