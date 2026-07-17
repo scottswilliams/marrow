@@ -21,3 +21,15 @@ test "a copied group is independent of its source" {
 test "unset clears a group leaf" {
     assert groups::setThenUnset() == -1
 }
+
+test "a group constructs with the qualified constructor as an argument" {
+    assert groups::constructedGroup() == 8
+}
+
+test "a qualified group value assigns whole into a group slot" {
+    assert groups::assignedGroup() == 9
+}
+
+test "whole-value assignment erases an omitted group leaf" {
+    assert groups::wholeAssignErasesGroupLeaf() == -1
+}

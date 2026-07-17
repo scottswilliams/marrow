@@ -354,9 +354,10 @@ fn garg_to_lty(arg: GArg) -> LTy {
 /// required flag, collected before emission so evaluation follows declaration order.
 type MemberPlan = (String, GArg, bool);
 
-/// One group slot's constructor plan: the group's name, its image record-type index,
-/// and the plan of its leaves.
-type GroupPlan = (String, u16, Vec<MemberPlan>);
+/// One group slot's constructor plan: the group's name, its materialized-value
+/// record type, whether it has a required leaf (so an omitted argument cannot be
+/// auto-completed), and the plan of its leaves.
+type GroupPlan = (String, TypeId, bool, Vec<MemberPlan>);
 
 /// The source spelling of a built-in generic argument, recursing through nested
 /// `Option`/`Result` arguments.
@@ -4635,6 +4636,20 @@ impl<'a> FnLowerer<'a> {
                             )
                             .map(CallResult::Value);
                     }
+                    // `Resource.group(field: value, …)`: a group value constructor,
+                    // symmetric with the branch entry constructor one level down. A
+                    // group is an unkeyed single-level namespace, so its qualified head
+                    // is the resource then the group name.
+                    if let [group_name] = path.as_slice()
+                        && self
+                            .records
+                            .by_name(resource)
+                            .is_some_and(|record| record.group(group_name).is_some())
+                    {
+                        return self
+                            .lower_group_constructor(resource, group_name, head_span, args, span)
+                            .map(CallResult::Value);
+                    }
                 }
             }
             self.fail(unsupported(self.file, span, "this call"));
@@ -5192,10 +5207,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<LTy> {
         let value_type_id = self.records.by_name(name)?.value_type_id;
 
-        // Resolve each named argument against a top-level field before emitting, so
-        // evaluation order is the field declaration order (f0 pushed first). A group is
-        // not a constructor argument: its leaves are supplied by member assignment, so
-        // a group name here reports "has no field" like any unknown member.
+        // Resolve each named argument against a top-level field or a group before
+        // emitting, so evaluation order is the declaration order (fields first, then
+        // groups; f0 pushed first). A group argument is the group's value, built with
+        // the qualified group constructor `Resource.group(…)`.
         for argument in args {
             let Some(arg_name) = &argument.name else {
                 self.fail(SourceDiagnostic::at(
@@ -5206,7 +5221,8 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return None;
             };
-            if self.records.by_name(name)?.field(arg_name).is_none() {
+            let record = self.records.by_name(name)?;
+            if record.field(arg_name).is_none() && record.group(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -5250,11 +5266,11 @@ impl<'a> FnLowerer<'a> {
                 }
             }
         }
-        // Each unkeyed group slot follows the top-level fields, in group order. A group
-        // is always present with its sparse leaves vacant; there is no constructor
-        // surface for a group, so a `required` group descendant that cannot be supplied
-        // is the required-completeness rejection here rather than a silent incomplete
-        // value.
+        // Each unkeyed group slot follows the top-level fields, in group order. A
+        // supplied `group: Resource.group(…)` argument carries the group value; an
+        // omitted all-sparse group defaults to present with vacant leaves; an omitted
+        // group with a required leaf cannot be auto-completed, so it is the
+        // required-completeness rejection here rather than a silent incomplete value.
         let group_plan: Vec<GroupPlan> = self
             .records
             .by_name(name)?
@@ -5263,7 +5279,8 @@ impl<'a> FnLowerer<'a> {
             .map(|group| {
                 (
                     group.name.clone(),
-                    group.type_id.index(),
+                    group.type_id,
+                    group.fields.iter().any(|leaf| leaf.required),
                     group
                         .fields
                         .iter()
@@ -5272,23 +5289,36 @@ impl<'a> FnLowerer<'a> {
                 )
             })
             .collect();
-        for (group_name, group_type, leaves) in group_plan {
-            for (leaf_name, leaf_ty, required) in leaves {
-                if required {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        span,
-                        format!("missing required group member `{group_name}.{leaf_name}`"),
-                    ));
-                    return None;
-                }
+        for (group_name, group_type, has_required, leaves) in group_plan {
+            let arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(group_name.as_str()));
+            if let Some(argument) = arg {
+                self.lower_as(
+                    &argument.value,
+                    LTy::Record {
+                        ty: group_type,
+                        optional: false,
+                    },
+                )?;
+                continue;
+            }
+            if has_required {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("missing required field `{group_name}`"),
+                ));
+                return None;
+            }
+            for (_leaf_name, leaf_ty, _required) in leaves {
                 self.push(
                     Instr::VacantLoad(garg_to_lty(leaf_ty).to_optional().image()),
                     span,
                 );
             }
-            self.push(Instr::RecordNew(group_type), span);
+            self.push(Instr::RecordNew(group_type.index()), span);
         }
         self.push(Instr::RecordNew(value_type_id.index()), span);
         Some(LTy::Record {
@@ -5409,6 +5439,93 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::RecordNew(record.index()), span);
         Some(LTy::Record {
             ty: record,
+            optional: false,
+        })
+    }
+
+    /// Lower a qualified group value constructor `Resource.group(field: value, …)`.
+    /// The group's materialized record is built from its declared leaves in
+    /// declaration order (f0 pushed first), each required leaf supplied and each
+    /// sparse leaf defaulting to vacant — symmetric with the root and branch
+    /// constructors. The shadowing rule holds: a value binding may not shadow the
+    /// resource type name in dotted-constructor head position.
+    fn lower_group_constructor(
+        &mut self,
+        resource: &str,
+        group_name: &str,
+        head_span: SourceSpan,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        if self.lookup(resource).is_some() || self.lookup_place(resource).is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                head_span,
+                format!(
+                    "`{resource}` is a resource type here (the head of a group constructor \
+                     `{resource}.{group_name}(…)`); a value binding may not shadow it"
+                ),
+            ));
+            return None;
+        }
+        let display = format!("{resource}.{group_name}");
+        let (_, group) = self.records.by_name(resource)?.group(group_name)?;
+        let group_type_id = group.type_id;
+        let leaf_plan: Vec<MemberPlan> = group
+            .fields
+            .iter()
+            .map(|leaf| (leaf.name.clone(), leaf.ty, leaf.required))
+            .collect();
+
+        for argument in args {
+            let Some(arg_name) = &argument.name else {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    "constructor arguments must be named".to_string(),
+                ));
+                return None;
+            };
+            if !leaf_plan.iter().any(|(name, _, _)| name == arg_name) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    argument.value.span(),
+                    format!("`{display}` has no field `{arg_name}`"),
+                ));
+                return None;
+            }
+        }
+
+        for (leaf_name, leaf_ty, required) in leaf_plan {
+            let arg = args
+                .iter()
+                .find(|a| a.name.as_deref() == Some(leaf_name.as_str()));
+            let bare = garg_to_lty(leaf_ty);
+            let expected = if required { bare } else { bare.to_optional() };
+            match arg {
+                Some(argument) => {
+                    self.lower_as(&argument.value, expected)?;
+                }
+                None if required => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("missing required field `{leaf_name}`"),
+                    ));
+                    return None;
+                }
+                None => {
+                    self.push(Instr::VacantLoad(bare.to_optional().image()), span);
+                }
+            }
+        }
+        self.push(Instr::RecordNew(group_type_id.index()), span);
+        Some(LTy::Record {
+            ty: group_type_id,
             optional: false,
         })
     }

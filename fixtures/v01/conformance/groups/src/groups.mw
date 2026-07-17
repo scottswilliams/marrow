@@ -54,3 +54,27 @@ pub fn setThenUnset(): int {
     unset b.details.pages
     return b.details.pages ?? -1
 }
+
+// A group value constructs with the qualified constructor `Resource.group(...)` and
+// passes into the resource constructor as a named argument, symmetric with the
+// branch entry constructor.
+pub fn constructedGroup(): int {
+    const b = Book(title: "x", details: Book.details(pages: 8))
+    return b.details.pages ?? 0
+}
+
+// A qualified group value assigns whole into a group slot, carrying its leaves.
+pub fn assignedGroup(): int {
+    var b = Book(title: "x")
+    b.details = Book.details(pages: 9, language: "en")
+    return b.details.pages ?? 0
+}
+
+// Whole-value assignment replaces the entry's payload: assigning a value that omits
+// a group leaf erases the previously present leaf (replace, not merge).
+pub fn wholeAssignErasesGroupLeaf(): int {
+    var b = Book(title: "x")
+    b.details.pages = 7
+    b = Book(title: "x")
+    return b.details.pages ?? -1
+}

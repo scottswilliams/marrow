@@ -132,6 +132,46 @@ containing local resource is valid and present.
 Resource values are copied by value. Assigning one local resource to another
 does not create a reference to the first binding.
 
+## Group Values
+
+An unkeyed group is part of the materialized resource value as a nested value.
+Its leaves are read and assigned through the group name:
+
+```text
+var book = Book(title: "Small Gods", author: "Terry Pratchett")
+book.details.pages = 384
+const pages = book.details.pages    // pages: int?
+```
+
+A group leaf follows the same presence rule as a top-level member: a sparse leaf
+reads `T?` and a `required` leaf is bare once the containing resource is valid and
+present. Assigning a leaf sets it present; `unset book.details.pages` clears a
+sparse leaf back to absent. A group leaf assignment reads its containing group,
+updates the leaf, and writes the group back, so the group is not aliased.
+
+A group is a value unit: it is read, assigned, and copied whole. The qualified
+constructor `Resource.group(field: value, …)` builds a group value, symmetric with
+the branch entry constructor, and it is supplied to the resource constructor as a
+named argument:
+
+```text
+const book = Book(
+    title: "Small Gods",
+    details: Book.details(pages: 384, language: "en"),
+)
+const detail = book.details          // a group value, copied by value
+```
+
+An omitted group whose leaves are all sparse defaults to present with vacant
+leaves. A group with a `required` leaf must be supplied, because a required
+descendant of an unkeyed group is a required member of the containing resource;
+omitting it is the same completeness rejection as an omitted required field.
+
+A group value has no type annotation of its own: it is the round-trip unit produced
+and consumed at construction, assignment, and member access, not a named type a
+binding or parameter may declare. A group nested inside another group is not yet
+part of the materialized value.
+
 ## Materialization Boundary
 
 Unkeyed fields and groups are part of a materialized resource value. Keyed
@@ -159,9 +199,12 @@ without disturbing the entry's keyed `branch` descendants. See
 This exact-replacement rule is a footgun for the read-modify-write habit:
 assigning a *partially* constructed value — one built from only a few of the
 entry's fields — erases every sparse field the constructed value omits, not only
-the fields being changed. To change a subset of fields without disturbing the
-rest, assign each field at its own path (`^books(id).subtitle = …`) rather than
-whole-assigning a partial value. The round trip is safe only when the value
+the fields being changed. This applies to group leaves as well: a whole value that
+supplies a group with fewer leaves, or defaults an omitted all-sparse group to its
+vacant form, replaces the group and drops every leaf the assigned value omits. To
+change a subset of members without disturbing the rest, assign each at its own path
+(`book.subtitle = …`, `book.details.pages = …`) rather than whole-assigning a
+partial value. The round trip is safe only when the value
 written back carries every field that must survive, which a whole-entry read
 into a local guarantees. There is no checker lint: a partial constructor in
 whole-assignment position is indistinguishable from a deliberate replacement.
