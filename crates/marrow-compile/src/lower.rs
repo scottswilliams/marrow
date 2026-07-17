@@ -868,20 +868,126 @@ pub(crate) struct Lowered {
 /// Whether an instruction stages a durable mutation (a write, replacement, or
 /// erase). The requires-ambient-transaction check treats these as the sites that
 /// demand a transaction; it mirrors the verifier's mutation classification over the
-/// same opcode set.
+/// same opcode set. The match is exhaustive over `Instr` — the closed complement is
+/// listed rather than elided — so a new opcode fails to compile until it is
+/// classified here, welding this owner to the instruction set.
 fn is_mutation_instr(instr: &Instr) -> bool {
-    matches!(
-        instr,
+    match instr {
         Instr::DurSetRequired(_)
-            | Instr::DurSetSparse(_)
-            | Instr::DurSetSparsePresent { .. }
-            | Instr::DurCreateEntry(_)
-            | Instr::DurReplaceEntry(_)
-            | Instr::DurReplaceGroup(_)
-            | Instr::DurEraseField(_)
-            | Instr::DurEraseEntry(_)
-            | Instr::DurEraseGroup(_)
-    )
+        | Instr::DurSetSparse(_)
+        | Instr::DurSetSparsePresent { .. }
+        | Instr::DurCreateEntry(_)
+        | Instr::DurReplaceEntry(_)
+        | Instr::DurReplaceGroup(_)
+        | Instr::DurEraseField(_)
+        | Instr::DurEraseEntry(_)
+        | Instr::DurEraseGroup(_) => true,
+        Instr::ConstLoad(_)
+        | Instr::LocalGet(_)
+        | Instr::LocalSet(_)
+        | Instr::Pop
+        | Instr::Return
+        | Instr::Call(_)
+        | Instr::Jump(_)
+        | Instr::JumpIfFalse(_)
+        | Instr::BranchPresent(_)
+        | Instr::Unreachable(_)
+        | Instr::Assert
+        | Instr::IntAdd
+        | Instr::IntSub
+        | Instr::IntMul
+        | Instr::IntRem
+        | Instr::IntDiv
+        | Instr::IntNeg
+        | Instr::BoolNot
+        | Instr::IntLt
+        | Instr::IntLe
+        | Instr::IntGt
+        | Instr::IntGe
+        | Instr::EqInt
+        | Instr::EqBool
+        | Instr::EqText
+        | Instr::TextConcat
+        | Instr::TextLt
+        | Instr::TextLe
+        | Instr::TextGt
+        | Instr::TextGe
+        | Instr::EqBytes
+        | Instr::BytesLt
+        | Instr::BytesLe
+        | Instr::BytesGt
+        | Instr::BytesGe
+        | Instr::ConvStringInt
+        | Instr::ConvStringBool
+        | Instr::ConvBytesText
+        | Instr::TextIsEmpty
+        | Instr::TextContains
+        | Instr::TextTrim
+        | Instr::TextSplit(_)
+        | Instr::TextLines(_)
+        | Instr::TextJoin
+        | Instr::EqDate
+        | Instr::DateLt
+        | Instr::DateLe
+        | Instr::DateGt
+        | Instr::DateGe
+        | Instr::EqInstant
+        | Instr::InstantLt
+        | Instr::InstantLe
+        | Instr::InstantGt
+        | Instr::InstantGe
+        | Instr::EqDuration
+        | Instr::DurationLt
+        | Instr::DurationLe
+        | Instr::DurationGt
+        | Instr::DurationGe
+        | Instr::DateAddDays
+        | Instr::DateDaysBetween
+        | Instr::DurationAdd
+        | Instr::DurationSub
+        | Instr::InstantAddDuration
+        | Instr::InstantSubDuration
+        | Instr::IntAddChecked(_)
+        | Instr::IntSubChecked(_)
+        | Instr::IntMulChecked(_)
+        | Instr::IntNegChecked(_)
+        | Instr::IntDivChecked(_)
+        | Instr::IntRemChecked(_)
+        | Instr::RangeGuard { .. }
+        | Instr::RecordNew(_)
+        | Instr::FieldGet(_)
+        | Instr::FieldSet(_)
+        | Instr::FieldUnset(_)
+        | Instr::SomeWrap
+        | Instr::VacantLoad(_)
+        | Instr::EnumConstruct { .. }
+        | Instr::EnumTag
+        | Instr::EnumPayloadGet { .. }
+        | Instr::EqEnum
+        | Instr::EqId
+        | Instr::MakeIdentity { .. }
+        | Instr::IdentityKeyPath(_)
+        | Instr::DurExists(_)
+        | Instr::DurFamilyExists(_)
+        | Instr::DurReadField(_)
+        | Instr::DurReadEntry(_)
+        | Instr::DurReadGroup(_)
+        | Instr::DurIterateBounded { .. }
+        | Instr::TxnBegin
+        | Instr::TxnCommit
+        | Instr::DurIndexScan { .. }
+        | Instr::DurIndexLookup(_)
+        | Instr::ListNew(_)
+        | Instr::ListAppend
+        | Instr::ListLen
+        | Instr::ListGet
+        | Instr::MapNew(_)
+        | Instr::MapInsert
+        | Instr::MapGet
+        | Instr::MapLen
+        | Instr::MapKeyAt
+        | Instr::MapValueAt => false,
+    }
 }
 
 /// The outcome of resolving a call target against module scope.

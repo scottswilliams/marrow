@@ -2432,6 +2432,169 @@ fn flow_durable_read_after_commit_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
+/// A durable mutation after the commit is refused, the write sibling of
+/// [`flow_durable_read_after_commit_rejects`]: the commit consumes the session's
+/// engine transaction, so a second write sits outside any live region and the flow
+/// lattice rejects it.
+#[test]
+fn flow_mutation_after_commit_rejects() {
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
+/// Encode a mutating helper `writer(k:string, v:int)` that sets the required field
+/// with no transaction markers of its own, plus an exported caller `put(k:string,
+/// v:int)` whose body `caller_body` receives the field-leaf site index and the
+/// helper's function index. Only the caller is an export entry; the helper is an
+/// ordinary mutating helper. The two-function shape is what proves the verifier
+/// reconstructs the mutation closure across the call graph rather than trusting a
+/// per-function summary.
+fn mutating_helper_and_caller(caller_body: impl FnOnce(u16, u16) -> Vec<Instr>) -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let two_keys = || {
+        vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ]
+    };
+    let helper_name = draft.intern_string("writer");
+    let helper_code = vec![
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::Return,
+    ];
+    let helper = draft.add_function(FunctionDef {
+        name: helper_name,
+        source: src,
+        params: two_keys(),
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&helper_code),
+        code: helper_code,
+    });
+    let caller_code = caller_body(value_site, helper.index());
+    let caller_name = draft.intern_string("put");
+    let caller = draft.add_function(FunctionDef {
+        name: caller_name,
+        source: src,
+        params: two_keys(),
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&caller_code),
+        code: caller_code,
+    });
+    draft.add_export(ExportId::of_local("", "e"), caller);
+    draft.encode().unwrap().bytes
+}
+
+/// A mutating helper called from an export with no ambient transaction rejects at
+/// verify: the export's mutation closure includes the helper's write, so the flow
+/// lattice sees a mutating call outside any region. This is the artifact half of the
+/// requires-ambient-transaction invariant the checker enforces at check time — the
+/// verifier re-derives the same closure from the opcodes and call graph, so a
+/// tampered image that reached verify without the checker's refusal is still refused.
+#[test]
+fn flow_mutating_helper_called_outside_transaction_rejects() {
+    let bytes = mutating_helper_and_caller(|_value_site, helper| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::Call(helper),
+            Instr::Return,
+        ]
+    });
+    assert_eq!(code_of(&bytes), "image.flow");
+}
+
+/// The positive control: the same helper call wrapped in the caller's own
+/// `transaction` region verifies. Rejection above is owed to the missing region, not
+/// to the cross-function call itself.
+#[test]
+fn flow_mutating_helper_inside_transaction_verifies() {
+    let bytes = mutating_helper_and_caller(|_value_site, helper| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::Call(helper),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
+    assert_eq!(code_of(&bytes), "VERIFIED");
+}
+
+/// A transaction owner may not be called, isolated to the call rule. Unlike
+/// [`flow_transaction_owner_may_not_be_called_rejects`], whose owner is a non-export
+/// (so the marker-outside-owning-export rule could also fire), here both functions
+/// are exports and `owner` is a fully valid owner — its own region opens once and
+/// commits on every path. The only violation is that `caller` invokes it, so the
+/// rejection pins the call rule alone: a mutating export owns exactly one region and
+/// is never re-entered through a call.
+#[test]
+fn flow_calling_a_valid_owner_export_rejects() {
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let two_keys = || {
+        vec![
+            ImageType::scalar(Scalar::Text),
+            ImageType::scalar(Scalar::Int),
+        ]
+    };
+    let owner_name = draft.intern_string("owner");
+    let owner_code = vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ];
+    let owner = draft.add_function(FunctionDef {
+        name: owner_name,
+        source: src,
+        params: two_keys(),
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&owner_code),
+        code: owner_code,
+    });
+    let caller_name = draft.intern_string("caller");
+    let caller_code = vec![
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::Call(owner.index()),
+        Instr::Return,
+    ];
+    let caller = draft.add_function(FunctionDef {
+        name: caller_name,
+        source: src,
+        params: two_keys(),
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&caller_code),
+        code: caller_code,
+    });
+    draft.add_export(ExportId::of_local("", "owner"), owner);
+    draft.add_export(ExportId::of_local("", "caller"), caller);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
+}
+
 /// Add a single mutating export with two `string` key params (slots 0 and 1) over
 /// the tracer schema in `draft`, whose body is `code`, and encode it. Used by the
 /// presence-lattice hostiles, where the guard proves one slot and the strict set
