@@ -27,6 +27,31 @@ the workspace DAG gate). The conformance suite keeps the memory and redb
 implementations aligned on the same byte-level laws, including the documented
 filesystem envelope (fsync-based durability; see the crate docs).
 
+## Whole-entry materialization law
+
+Materializing a whole entry or group (`marrow-kernel`'s `read_record_leaves`, the
+single owner shared by the root entry and every group) obeys a bounded-work law: its
+engine work is proportional to the entry's *populated* field count, never its
+*declared* field width. The read is a structural-tag-bounded range scan over the
+node's own contiguous field-leaf cells (`physical::field_leaf_range` — the marker stem
+followed by the field tag), so it visits only present leaves and stops at the group,
+branch, or next-node boundary. The counted unit is engine scan calls: `O(populated /
+page + 1)` — one page per `SCAN_MAX_RECORDS` present leaves plus one boundary read —
+flat across declared widths at a fixed present count. A regression to a
+per-declared-field probe (one read per declared field, `O(declared)`) is a
+release-veto defect for wide sparse resources: it is pinned red-to-green by a
+counting-engine law test.
+
+The *value size* of the materialized result is an accepted, measured `O(declared)`:
+`EntryValue.fields` is a dense schema-aligned `Vec<Option<_>>` with one slot per
+declared field, so its length tracks the declared width, not the present count (also
+pinned by a law test). This is a named, deferred representation seam — sparse sorted
+`(field-index, value)` slots, which the field-leaf scan already yields in order,
+versus an `Rc`-COW record backing — carried at kernel↔VM boundary width because the
+dense positional shape is woven through the create/read/replace and index-maintenance
+contract; the durable engine-work law above is the release-veto-critical property and
+is already `O(populated)`.
+
 ## What was deleted at B00
 
 The prototype's logical tree facade (`TreeStore`/`SealedStore`), admission

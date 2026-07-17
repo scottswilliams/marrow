@@ -58,9 +58,18 @@ fn write() -> DemandCoverage {
     }
 }
 
-/// The number of engine reads a whole-entry read stages against a resource declaring
-/// `declared` fields whose entry has the leading `populated` fields present.
-fn reads_for_whole_entry(declared: usize, populated: usize) -> usize {
+/// One whole-entry read measured two ways at the "exact-field work vs declaration
+/// width and present count" tier: `reads` is the deterministic counting-engine read
+/// count (engine scan calls); `value_len` is the materialized value size (the length
+/// of the dense schema-aligned `EntryValue.fields`).
+struct Measured {
+    reads: usize,
+    value_len: usize,
+}
+
+/// A whole-entry read against a resource declaring `declared` fields whose entry has
+/// the leading `populated` fields present.
+fn measure_whole_entry(declared: usize, populated: usize) -> Measured {
     assert!(populated <= declared);
     let counters = Counters::new();
     let mut store = DurableStore::from_engine_with_ceiling(
@@ -108,18 +117,22 @@ fn reads_for_whole_entry(declared: usize, populated: usize) -> usize {
         .read_entry(&entry, &[KeyScalar::Int(1)])
         .expect("read")
         .expect("entry present");
+    let reads = counters.reads() - before;
     let present = value.fields.iter().filter(|slot| slot.is_some()).count();
     assert_eq!(
         present, populated,
         "the read materialized every present field"
     );
-    counters.reads() - before
+    Measured {
+        reads,
+        value_len: value.fields.len(),
+    }
 }
 
 #[test]
 fn whole_entry_read_engine_work_is_flat_across_declared_widths() {
-    let narrow = reads_for_whole_entry(100, 20);
-    let wide = reads_for_whole_entry(2000, 20);
+    let narrow = measure_whole_entry(100, 20).reads;
+    let wide = measure_whole_entry(2000, 20).reads;
     assert_eq!(
         narrow, wide,
         "declared width must not change the engine work of reading a fixed present set \
@@ -139,10 +152,33 @@ fn whole_entry_read_engine_work_is_flat_across_declared_widths() {
 /// O(populated) scan from one that ignores the data entirely.
 #[test]
 fn whole_entry_read_engine_work_grows_with_the_populated_count() {
-    let sparse = reads_for_whole_entry(2000, 20);
-    let dense = reads_for_whole_entry(2000, 200);
+    let sparse = measure_whole_entry(2000, 20).reads;
+    let dense = measure_whole_entry(2000, 200).reads;
     assert!(
         dense > sparse,
         "more present fields must stage more range-scan reads (sparse={sparse}, dense={dense})",
+    );
+}
+
+/// The materialized value size is O(declared): the whole-entry read yields a dense
+/// schema-aligned `EntryValue.fields` with one slot per *declared* field, so its
+/// length tracks the declared width and is independent of the present count. This is
+/// the accepted, measured O(declared) value-size seam WR01 records and defers: the
+/// engine work is already O(populated+1) (above), but the value shape stays dense.
+/// The named seam a later lane can take to make value size O(populated) is sparse
+/// sorted (field-index, value) slots (which the field-leaf scan already yields in
+/// order) versus an Rc-COW record backing. This law fails if a future change alters
+/// the value shape, so the seam is flipped deliberately, not by accident.
+#[test]
+fn whole_entry_read_value_size_is_the_declared_width() {
+    // Value size tracks the declared width, not the present count.
+    assert_eq!(measure_whole_entry(100, 20).value_len, 100);
+    assert_eq!(measure_whole_entry(2000, 20).value_len, 2000);
+    // Fixed declared width, different present counts: identical value size (O(declared),
+    // independent of populated) — the complement of the O(populated) engine-work law.
+    assert_eq!(
+        measure_whole_entry(2000, 20).value_len,
+        measure_whole_entry(2000, 200).value_len,
+        "value size is set by the declared width, not the present count",
     );
 }
