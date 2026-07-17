@@ -22,7 +22,8 @@ use marrow_image::{
     OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
     OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
     OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_FAMILY_EXISTS,
-    OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY,
+    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY,
     OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD,
     OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB,
     OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE,
@@ -1254,22 +1255,24 @@ fn resolve_site(
         SemanticTarget::IndexScan | SemanticTarget::IndexLookup
     ) {
         let placement = steps[1].id;
-        let root = roots
+        let root_pos = roots
             .iter()
-            .find(|root| root.placement == placement)
+            .position(|root| root.placement == placement)
             .ok_or(reject(
                 VerifyPhase::Table,
                 "durable index site path is not rooted at a durable root",
             ))?;
+        let root = &roots[root_pos];
         let index_id = steps.last().expect("an index path has an index step").id;
-        let index = root
+        let local = root
             .indexes
             .iter()
-            .find(|index| index.id == index_id)
+            .position(|index| index.id == index_id)
             .ok_or(reject(
                 VerifyPhase::Table,
                 "durable index site names no managed index of its root",
             ))?;
+        let index = &root.indexes[local];
         let agrees = match target {
             SemanticTarget::IndexScan => !index.unique,
             SemanticTarget::IndexLookup => index.unique,
@@ -1281,9 +1284,23 @@ fn resolve_site(
                 "durable index site read kind disagrees with the index's unique flag",
             ));
         }
-        return Ok(SealedSite::Parked {
-            path: SemanticPath::from_steps(steps.to_vec()),
-            target,
+        // The index's position in the image-wide index table, assembled by iterating the
+        // roots in order and each root's indexes in order (the same order used when the
+        // sealed index list is built), so this position indexes that list directly.
+        let global: usize = roots[..root_pos]
+            .iter()
+            .map(|root| root.indexes.len())
+            .sum::<usize>()
+            + local;
+        let global = global as u16;
+        let sealed_target = match target {
+            SemanticTarget::IndexScan => SealedSiteTarget::IndexScan(global),
+            SemanticTarget::IndexLookup => SealedSiteTarget::IndexLookup(global),
+            _ => unreachable!("guarded to index targets"),
+        };
+        return Ok(SealedSite::Flat {
+            root: root_pos as u16,
+            target: sealed_target,
         });
     }
     // Every node carries its enclosing root's placement as its second step, so the
@@ -2696,6 +2713,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         collections: &collections,
         roots: &roots,
         sites: &sites,
+        indexes: &indexes,
         signatures: &signatures,
     };
     let mut functions = Vec::with_capacity(decoded.functions.len());
@@ -2864,6 +2882,7 @@ struct Ctx<'a> {
     collections: &'a [SealedCollectionType],
     roots: &'a [SealedRoot],
     sites: &'a [SealedSite],
+    indexes: &'a [SealedIndex],
     signatures: &'a [FnSig],
 }
 
@@ -3374,7 +3393,10 @@ fn entry_site(ctx: &Ctx, site: u16) -> Option<(Vec<u16>, usize)> {
             let extra = branch_key_columns(root, path).ok()?;
             Some((path.to_vec(), root.keys.len() + extra.len()))
         }
-        SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. } => None,
+        SealedSiteTarget::FieldLeaf(_)
+        | SealedSiteTarget::BranchField { .. }
+        | SealedSiteTarget::IndexScan(_)
+        | SealedSiteTarget::IndexLookup(_) => None,
     }
 }
 
@@ -3666,6 +3688,13 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
                 from: operand_bool(&mut reader)?,
                 list_ty: operand_u16(&mut reader)?,
             },
+            OP_DUR_INDEX_SCAN => SealedInstr::DurIndexScan {
+                site: operand_u16(&mut reader)?,
+                limit: operand_u32(&mut reader)?,
+                from: operand_bool(&mut reader)?,
+                list_ty: operand_u16(&mut reader)?,
+            },
+            OP_DUR_INDEX_LOOKUP => SealedInstr::DurIndexLookup(operand_u16(&mut reader)?),
             OP_TXN_BEGIN => SealedInstr::TxnBegin,
             OP_TXN_COMMIT => SealedInstr::TxnCommit,
             OP_LIST_NEW => SealedInstr::ListNew(operand_u16(&mut reader)?),
@@ -4748,6 +4777,8 @@ fn apply(
         | SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurIterateBounded { .. }
+        | SealedInstr::DurIndexScan { .. }
+        | SealedInstr::DurIndexLookup(_)
         | SealedInstr::TxnBegin
         | SealedInstr::TxnCommit
         | SealedInstr::ListNew(_)
@@ -4848,7 +4879,9 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurReplaceEntry(site)
         | SealedInstr::DurEraseField(site)
         | SealedInstr::DurEraseEntry(site)
-        | SealedInstr::DurIterateBounded { site, .. } => Some(*site),
+        | SealedInstr::DurIterateBounded { site, .. }
+        | SealedInstr::DurIndexScan { site, .. }
+        | SealedInstr::DurIndexLookup(site) => Some(*site),
         _ => None,
     }
 }
@@ -4878,7 +4911,9 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         SealedInstr::DurEraseField(_) | SealedInstr::DurEraseEntry(_) => {
             Some(OperationClass::Erase)
         }
-        SealedInstr::DurIterateBounded { .. } => Some(OperationClass::IndexRead),
+        SealedInstr::DurIterateBounded { .. }
+        | SealedInstr::DurIndexScan { .. }
+        | SealedInstr::DurIndexLookup(_) => Some(OperationClass::IndexRead),
         // Region markers open and close the transaction but stage no access.
         SealedInstr::TxnBegin | SealedInstr::TxnCommit => None,
         // The closed complement: every pure opcode stages no durable access.
@@ -5039,6 +5074,13 @@ fn apply_durable(
         VerifyPhase::Function,
         "durable site root out of range",
     ))?;
+    // A managed-index read touches only the index cell family, not the entry tree, so it
+    // is handled before the whole-entry key-path logic (and is admitted over a root whose
+    // entry tree is not flat). Its projection is read from the sealed index the site names.
+    if let SealedSiteTarget::IndexScan(index) | SealedSiteTarget::IndexLookup(index) = site_target
+    {
+        return apply_index_read(ctx, instr, frame, site_root, root, *index);
+    }
     // Defense in depth: a flat site's root is free of groups and composite/nested
     // branches by construction (field-only branches with composite keys are executable;
     // a widened field is inline-framed and executable), but recheck at the opcode.
@@ -5077,6 +5119,9 @@ fn apply_durable(
         }
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
             (root.record, root.keys.len())
+        }
+        SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
+            unreachable!("index read targets are handled before the entry key-path logic")
         }
     };
     // Stack-pop order is the root-first column sequence reversed (deepest last column on
@@ -5298,6 +5343,158 @@ fn apply_durable(
     Ok(Control::Fallthrough)
 }
 
+/// The base scalar an index projection component holds: an identity key reads the
+/// root's key-column scalar; a top-level field reads its own bare scalar type. A
+/// component that resolves out of range or to a non-scalar is a forged image.
+fn index_component_scalar(
+    ctx: &Ctx,
+    root: &SealedRoot,
+    component: &SealedIndexComponent,
+) -> Result<Scalar, VerifyRejection> {
+    match component {
+        SealedIndexComponent::Key(position) => root.keys.get(*position as usize).copied().ok_or(
+            reject(VerifyPhase::Function, "index key component out of range"),
+        ),
+        SealedIndexComponent::Field(position) => {
+            let record = ctx.types.get(root.record as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "index root record out of range",
+            ))?;
+            let field = record.fields().get(*position as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "index field component out of range",
+            ))?;
+            match field.ty {
+                ImageType::Scalar {
+                    scalar,
+                    optional: false,
+                } => Ok(scalar),
+                _ => Err(reject(
+                    VerifyPhase::Function,
+                    "index field component is not a bare scalar",
+                )),
+            }
+        }
+    }
+}
+
+/// Phase-3 stack effect for the two managed-index reads. The projection scalar types
+/// come from the sealed index the site names, re-resolved here against the root rather
+/// than trusted from the instruction. A scan holds the index's leading field components
+/// as a prefix and freezes the trailing identity component as `List[K]`; a lookup pops
+/// the whole projection and yields the optional source identity. The read kind is
+/// rechecked against the index's `unique` flag (defense in depth over the seal-time
+/// check), so a scan over a unique index or a lookup over a nonunique one is refused.
+fn apply_index_read(
+    ctx: &Ctx,
+    instr: &SealedInstr,
+    frame: &mut Frame,
+    site_root: u16,
+    root: &SealedRoot,
+    index_position: u16,
+) -> Result<Control, VerifyRejection> {
+    let index = ctx.indexes.get(index_position as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "index read site names no sealed index",
+    ))?;
+    if index.root != site_root {
+        return Err(reject(
+            VerifyPhase::Function,
+            "index read site names an index of a different root",
+        ));
+    }
+    let projection: Vec<Scalar> = index
+        .projection
+        .iter()
+        .map(|component| index_component_scalar(ctx, root, component))
+        .collect::<Result<_, _>>()?;
+    let stack = &mut frame.stack;
+    match instr {
+        SealedInstr::DurIndexScan {
+            limit,
+            from,
+            list_ty,
+            ..
+        } => {
+            if index.unique {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "progressive scan of a unique index",
+                ));
+            }
+            if *limit == 0 || *limit > marrow_image::bounds::MAX_TRAVERSAL_BOUND {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "index scan bound is out of range",
+                ));
+            }
+            // The scan yields the source identity, so the root's identity is a single key
+            // column: the scanned (trailing) projection component is that one key. A
+            // composite-identity root has no single-column identity to yield here.
+            if root.keys.len() != 1 {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "index scan over a composite-identity root is not yet executable",
+                ));
+            }
+            let (scanned, prefix) = projection.split_last().ok_or(reject(
+                VerifyPhase::Function,
+                "index scan projection is empty",
+            ))?;
+            // The nonunique projection ends with the identity suffix; with a single-column
+            // identity the trailing component is exactly the root key.
+            if *scanned != root.keys[0] {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "index scan trailing component is not the source identity key",
+                ));
+            }
+            // The held prefix (the leading field components) sits under the inclusive
+            // `from` key; pop `from` (the scanned key type) then the prefix in reverse.
+            if *from {
+                expect(pop(stack)?, VType::bare_scalar(*scanned))?;
+            }
+            for scalar in prefix.iter().rev() {
+                expect(pop(stack)?, VType::bare_scalar(*scalar))?;
+            }
+            // `list_ty` names exactly `List[K]` of the scanned identity key: the frozen
+            // raw keys materialize into this one list before the loop wraps each as an
+            // identity, so a hostile image naming a wrong-element list is refused here.
+            match ctx.collections.get(*list_ty as usize) {
+                Some(SealedCollectionType::List { elem })
+                    if *elem == ImageType::scalar(*scanned) => {}
+                _ => {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "index scan list type does not name a list of the identity key",
+                    ));
+                }
+            }
+            stack.push(VType::bare_collection(*list_ty));
+            stack.push(VType::bare_scalar(Scalar::Bool));
+        }
+        SealedInstr::DurIndexLookup(_) => {
+            if !index.unique {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "exact lookup of a nonunique index",
+                ));
+            }
+            // Pop the whole projection (one key per component, projection order reversed),
+            // then push the optional source identity of the root the index belongs to.
+            for scalar in projection.iter().rev() {
+                expect(pop(stack)?, VType::bare_scalar(*scalar))?;
+            }
+            stack.push(VType::Identity {
+                root: site_root,
+                optional: true,
+            });
+        }
+        _ => unreachable!("apply_index_read only handles the two index reads"),
+    }
+    Ok(Control::Fallthrough)
+}
+
 /// Pop and type-check a durable operation's key-path against `key_path` (the key
 /// types in stack-pop order — the branch key then the root key for a branch entry
 /// site, the single root key otherwise).
@@ -5321,7 +5518,10 @@ fn field_of<'a>(
         SealedSiteTarget::BranchField { branch, field } => {
             (resolve_sealed_branch(root, branch)?.record, *field)
         }
-        SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => {
+        SealedSiteTarget::WholePayload
+        | SealedSiteTarget::BranchEntry(_)
+        | SealedSiteTarget::IndexScan(_)
+        | SealedSiteTarget::IndexLookup(_) => {
             return Err(reject(
                 VerifyPhase::Function,
                 "operation requires a field site",
@@ -5349,7 +5549,10 @@ fn durable_field_vtype(field: &SealedField) -> VType {
 fn require_entry(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
     match target {
         SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => Ok(()),
-        SealedSiteTarget::FieldLeaf(_) | SealedSiteTarget::BranchField { .. } => Err(reject(
+        SealedSiteTarget::FieldLeaf(_)
+        | SealedSiteTarget::BranchField { .. }
+        | SealedSiteTarget::IndexScan(_)
+        | SealedSiteTarget::IndexLookup(_) => Err(reject(
             VerifyPhase::Function,
             "operation requires an entry site",
         )),

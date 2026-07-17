@@ -2572,6 +2572,28 @@ impl<'a> FnLowerer<'a> {
         body: &Block,
         span: SourceSpan,
     ) -> Flow {
+        // A `for` head over a managed index scans it. Only a nonunique index is scanned
+        // (progressive-prefix); a unique index is an exact lookup, not an iteration.
+        if let Some((index, keys)) = self.resolve_index_read(iterable) {
+            if index.unique {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "unique index `{}` is an exact lookup, not a scan; read it with \
+                         `if const x = ^root.{}[keys]`",
+                        index.name, index.name
+                    ),
+                ));
+                return Flow::Fallthrough;
+            }
+            if order != marrow_syntax::LoopOrder::Forward {
+                self.fail(unsupported(self.file, span, "reversed index scan"));
+                return Flow::Fallthrough;
+            }
+            return self.lower_index_scan(binding, index, keys, bound, body, span);
+        }
         // A durable traversal place iterates the store; it is always bounded.
         if Self::is_traversal_place(iterable) {
             if order != marrow_syntax::LoopOrder::Forward {
@@ -2932,6 +2954,163 @@ impl<'a> FnLowerer<'a> {
         let end = self.here();
         self.patch(skip_on_more, end);
         // A body break jumps past the whole loop, skipping the `on more` decision.
+        self.patch_all(break_jumps, end);
+        Flow::Fallthrough
+    }
+
+    /// Lower a bounded scan of a nonunique managed index `^root.index[prefix…]`. The scan
+    /// holds the index's leading field components as a prefix and yields the trailing
+    /// identity component as the source `Id(^root)`, so the loop variable binds an
+    /// identity: the frozen raw identity keys materialize as one `List[K]`, and each is
+    /// wrapped into an `Id(^root)` at the binding. The scan requires a single-column
+    /// identity root (so the yielded component is a whole identity) and does not admit a
+    /// `from` cursor or a per-iteration address pin on this line.
+    fn lower_index_scan(
+        &mut self,
+        binding: &ForBinding,
+        index: &crate::durable::DurableIndex,
+        keys: &[Expression],
+        bound: Option<&TraversalBound>,
+        body: &Block,
+        span: SourceSpan,
+    ) -> Flow {
+        let var = match binding.names.as_slice() {
+            [key] => key,
+            _ => {
+                self.fail(unsupported(
+                    self.file,
+                    span,
+                    "binding a per-iteration address in an index scan",
+                ));
+                return Flow::Fallthrough;
+            }
+        };
+        let Some(bound) = bound else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "an index scan must be bounded: write `at most N` and an `on more` block"
+                    .to_string(),
+            ));
+            return Flow::Fallthrough;
+        };
+        let Some(on_more) = &bound.on_more else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a bounded scan requires a trailing `on more` block".to_string(),
+            ));
+            return Flow::Fallthrough;
+        };
+        if bound.from.is_some() {
+            self.fail(unsupported(self.file, span, "a `from` cursor on an index scan"));
+            return Flow::Fallthrough;
+        }
+        // The scan yields a whole source identity, so the root's identity is a single key
+        // column; the scanned (trailing) projection component is that key.
+        let Some(root) = self.durable.root() else {
+            let diagnostic = self.no_executable_root_diagnostic(span, "an index scan without a store");
+            self.fail(diagnostic);
+            return Flow::Fallthrough;
+        };
+        if root.key.len() != 1 {
+            self.fail(unsupported(
+                self.file,
+                span,
+                "an index scan over a composite-identity root",
+            ));
+            return Flow::Fallthrough;
+        }
+        let id_scalar = root.key[0];
+        let site = index.site;
+        // The held prefix is every projection component except the trailing identity key.
+        let projection: Vec<ScalarType> = index.projection.clone();
+        let Some((scanned, prefix_types)) = projection.split_last() else {
+            self.fail(unsupported(self.file, span, "a scan over an empty index"));
+            return Flow::Fallthrough;
+        };
+        if *scanned != id_scalar {
+            self.fail(unsupported(
+                self.file,
+                span,
+                "an index scan whose trailing component is not the source identity",
+            ));
+            return Flow::Fallthrough;
+        }
+        if keys.len() != prefix_types.len() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "index scan of `{}` holds its {} leading field component(s) as a prefix",
+                    index.name,
+                    prefix_types.len()
+                ),
+            ));
+            return Flow::Fallthrough;
+        }
+        let Some(limit) = self.traversal_limit(&bound.limit) else {
+            return Flow::Fallthrough;
+        };
+        // The frozen keys are the raw identity scalars; they materialize as `List[K]`.
+        let list_ty = self
+            .records
+            .instantiate_list(self.draft, GArg::Scalar(id_scalar));
+        // Emit the held prefix (leading field components, in projection order), then scan.
+        for (key, key_ty) in keys.iter().zip(prefix_types) {
+            if self.lower_as(key, LTy::bare_scalar(*key_ty)).is_none() {
+                return Flow::Fallthrough;
+            }
+        }
+        self.push(
+            Instr::DurIndexScan {
+                site,
+                limit,
+                from: false,
+                list_ty,
+            },
+            span,
+        );
+        let more_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(more_slot), span);
+        let coll_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(coll_slot), span);
+
+        // A positional walk over the frozen `List[K]`: each raw identity key is wrapped
+        // into the source `Id(^root)` the loop variable binds.
+        let key_name = var.name.clone();
+        let break_jumps = self.lower_positional_walk(
+            coll_slot,
+            Instr::ListLen,
+            body,
+            span,
+            move |lower, index_slot| {
+                let id_slot = lower.alloc_slot();
+                lower.push(Instr::LocalGet(coll_slot), span);
+                lower.push(Instr::LocalGet(index_slot), span);
+                lower.push(Instr::ListGet, span);
+                lower.push(Instr::MakeIdentity { root: 0, cols: 1 }, span);
+                lower.push(Instr::LocalSet(id_slot), span);
+                lower.locals.push(Local {
+                    name: key_name,
+                    ty: LTy::Identity {
+                        root: 0,
+                        optional: false,
+                    },
+                    mutable: false,
+                    slot: id_slot,
+                });
+            },
+        );
+
+        self.push(Instr::LocalGet(more_slot), span);
+        let skip_on_more = self.push_jif(span);
+        self.lower_block(on_more);
+        let end = self.here();
+        self.patch(skip_on_more, end);
         self.patch_all(break_jumps, end);
         Flow::Fallthrough
     }
@@ -3501,6 +3680,25 @@ impl<'a> FnLowerer<'a> {
 
     /// Lower `expr`, emitting code that pushes its value and returning its type.
     fn lower_expr(&mut self, expr: &Expression) -> Option<LTy> {
+        // A read through a managed index `^root.index[keys]`: a unique index is an exact
+        // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
+        // by scanning it with a `for` head, so naming one in value position is rejected.
+        if let Some((index, keys)) = self.resolve_index_read(expr) {
+            if index.unique {
+                return self.lower_index_lookup(index, keys, expr.span());
+            }
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                expr.span(),
+                format!(
+                    "read the non-unique index `{}` by scanning it with a `for` head, \
+                     not as a value",
+                    index.name
+                ),
+            ));
+            return None;
+        }
         // Inline `^root(key)` addresses and a field projected off a named `place`
         // read here; a bare place name is a durable designation, handled below.
         if Self::durable_shape(expr).is_some() {
@@ -6026,6 +6224,78 @@ impl<'a> FnLowerer<'a> {
     /// The durable shape of a place expression, extending [`Self::durable_shape`]
     /// with source-local `place` bindings: a bare place name is a whole-entry
     /// address, and a field access on a place name is a field address.
+    /// Resolve a source managed-index read `^root.index[keys]` to its index and the
+    /// bracket key operands, or `None` when the expression is not an index read (a
+    /// `Keyed` whose base is a field of the store root naming a declared index). The
+    /// index reference lives as long as the durable registry, so it may be held across a
+    /// mutable lowering call.
+    fn resolve_index_read<'e>(
+        &self,
+        expr: &'e Expression,
+    ) -> Option<(&'a crate::durable::DurableIndex, &'e [Expression])> {
+        let Expression::Keyed { base, keys, .. } = expr else {
+            return None;
+        };
+        let Expression::Field {
+            base: field_base,
+            name,
+            ..
+        } = base.as_ref()
+        else {
+            return None;
+        };
+        let Expression::SavedRoot {
+            name: root_name, ..
+        } = field_base.as_ref()
+        else {
+            return None;
+        };
+        let durable: &'a DurableRegistry = self.durable;
+        let root = durable.root()?;
+        if root.name != *root_name {
+            return None;
+        }
+        let index = root.index(name)?;
+        Some((index, keys.as_slice()))
+    }
+
+    /// Lower a unique index's exact lookup `^root.index[keys]`: check the operands against
+    /// the whole projection, then emit `DurIndexLookup`. The result is the optional source
+    /// identity `Id(^root)?` — present with the matching entry's identity, or absent — which
+    /// an `if const` head unwraps to a bare `Id(^root)`.
+    fn lower_index_lookup(
+        &mut self,
+        index: &crate::durable::DurableIndex,
+        keys: &[Expression],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        if keys.len() != index.projection.len() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "unique index `{}` is looked up by its whole projection of {} key(s)",
+                    index.name,
+                    index.projection.len()
+                ),
+            ));
+            return None;
+        }
+        let site = index.site;
+        // The projection scalar types are copied out first so the operand lowering (a
+        // mutable borrow of `self`) does not overlap the index borrow.
+        let projection: Vec<ScalarType> = index.projection.clone();
+        for (key, key_ty) in keys.iter().zip(&projection) {
+            self.lower_as(key, LTy::bare_scalar(*key_ty))?;
+        }
+        self.push(Instr::DurIndexLookup(site), span);
+        Some(LTy::Identity {
+            root: 0,
+            optional: true,
+        })
+    }
+
     fn durable_access(&self, expr: &Expression) -> Option<DurShape> {
         if let Some(shape) = Self::durable_shape(expr) {
             return Some(shape);

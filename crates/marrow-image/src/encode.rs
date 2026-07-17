@@ -517,6 +517,18 @@ fn encode_code(
                 push_u16(&mut out, *cols);
             }
             Instr::IdentityKeyPath(cols) => push_u16(&mut out, *cols),
+            Instr::DurIndexScan {
+                site,
+                limit,
+                from,
+                list_ty,
+            } => {
+                push_u16(&mut out, *site);
+                push_u32(&mut out, *limit);
+                out.push(u8::from(*from));
+                push_u16(&mut out, *list_ty);
+            }
+            Instr::DurIndexLookup(site) => push_u16(&mut out, *site),
             _ => {}
         }
     }

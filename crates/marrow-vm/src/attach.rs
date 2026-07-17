@@ -252,6 +252,21 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
                     field: *field,
                 },
             },
+            // An index-read site names its index by position in the image-wide index
+            // table; a single-root store's index table aligns with the kernel schema's
+            // root-0 index list, so the position carries through unchanged.
+            SealedSite::Flat {
+                target: SealedSiteTarget::IndexScan(index),
+                ..
+            } => SiteSpec {
+                target: SiteTarget::IndexScan(*index),
+            },
+            SealedSite::Flat {
+                target: SealedSiteTarget::IndexLookup(index),
+                ..
+            } => SiteSpec {
+                target: SiteTarget::IndexLookup(*index),
+            },
             SealedSite::Parked { .. } => SiteSpec {
                 target: SiteTarget::WholePayload,
             },

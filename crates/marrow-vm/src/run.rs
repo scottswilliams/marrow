@@ -993,6 +993,60 @@ fn execute<'s>(
                 stack.push(Value::Bool(bounded.more));
                 pc += 1;
             }
+            SealedInstr::DurIndexScan {
+                site,
+                limit,
+                from,
+                list_ty,
+            } => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                // The stack holds the held prefix (the index's leading field components,
+                // root-first) with the inclusive `from` key of the scanned component on top
+                // when present. The prefix is one fewer than the whole projection — the
+                // trailing component is what the scan enumerates.
+                let prefix_arity = authorized
+                    .index_projection_len()
+                    .expect("verifier proved an index scan site")
+                    - 1;
+                let from = from.then(|| pop_key(&mut stack));
+                let prefix = pop_key_path(&mut stack, prefix_arity);
+                let bound =
+                    BoundedLimit::new(*limit).expect("verifier proved a positive scan bound");
+                let bounded = durable
+                    .index_scan(&authorized, &prefix, from, bound)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                // The frozen scanned keys are the raw identity key scalars; they materialize
+                // into one bounded `List[K]` (the compiler wraps each into `Id(^root)` at the
+                // loop binding), obeying the single collection aggregate ceiling.
+                let items: Vec<Value> = bounded.keys.into_iter().map(key_to_value).collect();
+                let items = bounded_list(items)
+                    .ok_or_else(|| fault(function, pc, Code::RunCollectionLimit.as_str()))?;
+                stack.push(Value::list(*list_ty, Rc::new(items)));
+                stack.push(Value::Bool(bounded.more));
+                pc += 1;
+            }
+            SealedInstr::DurIndexLookup(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let arity = authorized
+                    .index_projection_len()
+                    .expect("verifier proved an index lookup site");
+                let key = pop_key_path(&mut stack, arity);
+                let found = durable
+                    .index_lookup(&authorized, &key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                // The lookup yields the source key tuple of the matching entry, wrapped as
+                // the optional source identity `Id(^root)` — present with the found key
+                // tuple, or vacant.
+                let value = found.map(|keys| Box::new(Value::Id(0, Rc::from(keys.as_slice()))));
+                stack.push(Value::Optional(value));
+                pc += 1;
+            }
         }
     }
 }
@@ -1349,6 +1403,11 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
         SealedSiteTarget::WholePayload
         | SealedSiteTarget::FieldLeaf(_)
         | SealedSiteTarget::BranchField { .. } => root.record(),
+        // An index-read site names no source entry record; a whole-entry read never
+        // resolves to one.
+        SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
+            unreachable!("a whole-entry read never targets an index site")
+        }
     }
 }
 

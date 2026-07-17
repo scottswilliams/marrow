@@ -145,6 +145,11 @@ pub const OP_DURATION_ADD: u8 = 0xB2;
 pub const OP_DURATION_SUB: u8 = 0xB3;
 pub const OP_INSTANT_ADD_DURATION: u8 = 0xB4;
 pub const OP_INSTANT_SUB_DURATION: u8 = 0xB5;
+// Managed-index reads. A nonunique index is scanned progressively (a `DurIterateBounded`
+// mirror over the index family, holding a leading-component prefix); a unique index is an
+// exact complete-projection lookup yielding the optional source identity.
+pub const OP_DUR_INDEX_SCAN: u8 = 0xB6;
+pub const OP_DUR_INDEX_LOOKUP: u8 = 0xB7;
 
 /// A draft instruction. Jump targets are instruction indices into the function's
 /// own instruction list; the encoder rewrites them to container byte offsets.
@@ -363,6 +368,29 @@ pub enum Instr {
     },
     TxnBegin,
     TxnCommit,
+    /// The bounded progressive scan of a nonunique managed index — the `DurIterateBounded`
+    /// mirror over an index family. Freeze the first `limit` distinct values of the index's
+    /// trailing identity component that hold the leading-field prefix on the stack, then push
+    /// the frozen source identities as one `List[K]` and whether a further distinct value
+    /// existed (the `on more` bit).
+    ///
+    /// Stack effect `[prefix-keys, from?] → List[K], Bool`: pop the held prefix (the index's
+    /// leading field components, in projection order) then the inclusive `from` key of the
+    /// scanned component when `from` is set; push `List[K]` then `Bool`. `site` names the
+    /// index scan site, `limit` the positive compile-time `N`, and `list_ty` the frozen
+    /// `List[K]` COLLTYPES index. The frozen list holds the scanned component's raw key
+    /// scalars; the compiler wraps each into the source `Id(^root)` at the loop binding.
+    DurIndexScan {
+        site: u16,
+        limit: u32,
+        from: bool,
+        list_ty: u16,
+    },
+    /// The exact complete-key lookup of a unique managed index. Pop the index's whole
+    /// projection (one key per component, in projection order) and push the matching source
+    /// identity as an optional `Id(^root)` — present with the source key tuple, or vacant.
+    /// `site` names the index lookup site. Stack effect `[projection-keys] → Id(^root)?`.
+    DurIndexLookup(u16),
     /// Push an empty `List` of the COLLTYPES index `_0`.
     ListNew(u16),
     /// `[list, value] → [list']`: append the bare value after the last element,
@@ -493,6 +521,8 @@ impl Instr {
             Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
             Instr::TxnBegin => OP_TXN_BEGIN,
             Instr::TxnCommit => OP_TXN_COMMIT,
+            Instr::DurIndexScan { .. } => OP_DUR_INDEX_SCAN,
+            Instr::DurIndexLookup(_) => OP_DUR_INDEX_LOOKUP,
             Instr::ListNew(_) => OP_LIST_NEW,
             Instr::ListAppend => OP_LIST_APPEND,
             Instr::ListLen => OP_LIST_LEN,
@@ -533,7 +563,9 @@ impl Instr {
             | Instr::TextSplit(_)
             | Instr::TextLines(_)
             // A big-endian `u16` root key-column count.
-            | Instr::IdentityKeyPath(_) => 2,
+            | Instr::IdentityKeyPath(_)
+            // A big-endian `u16` index lookup site.
+            | Instr::DurIndexLookup(_) => 2,
             // Two big-endian `u16` operands: the store-root index and the key-column count.
             Instr::MakeIdentity { .. } => 4,
             Instr::Jump(_)
@@ -559,7 +591,7 @@ impl Instr {
             // A big-endian `u16` site, a big-endian `u32` bound, a one-byte
             // `from`-present flag, and a big-endian `u16` frozen-`List[K]` COLLTYPES
             // index.
-            Instr::DurIterateBounded { .. } => 9,
+            Instr::DurIterateBounded { .. } | Instr::DurIndexScan { .. } => 9,
             _ => 0,
         }
     }

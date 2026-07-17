@@ -239,6 +239,22 @@ pub enum SealedInstr {
         from: bool,
         list_ty: u16,
     },
+    /// The bounded progressive scan of a nonunique managed index (a `DurIterateBounded`
+    /// mirror). Stack effect `[prefix-keys, from?] → List[K], Bool`: pop the index's
+    /// leading field components (in projection order) then the inclusive `from` key of the
+    /// scanned component when set; push the frozen `List[K]` of scanned identity keys then
+    /// `Bool`. `site` names the index scan site; the projection is read from the sealed
+    /// index the site names.
+    DurIndexScan {
+        site: u16,
+        limit: u32,
+        from: bool,
+        list_ty: u16,
+    },
+    /// The exact complete-key lookup of a unique managed index. Stack effect
+    /// `[projection-keys] → Id(^root)?`: pop the whole projection (one key per component,
+    /// projection order) and push the optional source identity.
+    DurIndexLookup(u16),
     /// Open the export's single transaction region.
     TxnBegin,
     /// Close the export's single transaction region.
@@ -295,6 +311,14 @@ pub enum SealedSiteTarget {
         branch: Box<[u16]>,
         field: u16,
     },
+    /// A progressive scan of a nonunique managed index, by the index's position in the
+    /// image-wide index table. Its `DurIndexScan` holds the index's leading field
+    /// components as a stack prefix and yields the trailing identity component.
+    IndexScan(u16),
+    /// An exact lookup of a unique managed index, by the index's position in the
+    /// image-wide index table. Its `DurIndexLookup` pops the whole projection and yields
+    /// the optional source identity.
+    IndexLookup(u16),
 }
 
 /// A verified durable operation site. The verifier reconstructs it by resolving the

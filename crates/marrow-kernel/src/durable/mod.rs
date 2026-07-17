@@ -467,6 +467,13 @@ impl AuthorizedSite {
         self.key.len() + self.branch.iter().map(|hop| hop.key.len()).sum::<usize>()
     }
 
+    /// The number of ordered projection components an index-read site addresses, or
+    /// `None` for a source-node site. A unique lookup pops this many key operands; a
+    /// progressive scan pops one fewer (the held prefix) and yields the trailing one.
+    pub fn index_projection_len(&self) -> Option<usize> {
+        self.index_read().map(|(_, _, projection)| projection.len())
+    }
+
     /// The index-read shape this site addresses — its cell-family identity, unique flag,
     /// and ordered projection component kinds — or `None` for a source-node site. The
     /// index ops read this to bound and validate a read without the schema.

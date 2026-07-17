@@ -58,6 +58,31 @@ struct IndexFieldLeaf {
     name: String,
     id: LedgerIdBytes,
     orderable_key: bool,
+    /// The field's base key scalar when it is orderable — the projected component's
+    /// type the lowerer checks a source index-read operand against. `None` for a
+    /// non-orderable field (which is never an admitted component).
+    scalar: Option<ScalarType>,
+}
+
+/// A resolved managed index: its image shape (for the durable identity), its source
+/// name, and its projected components' scalar types in order. The projection lets the
+/// lowerer type-check a source index-read operand list; the site is attached later.
+struct BuiltIndex {
+    shape: DurableIndexShape,
+    name: String,
+    projection: Vec<ScalarType>,
+}
+
+/// A managed index as the lowerer reads it: its source name, unique flag, its read
+/// site (a scan site for a nonunique index, a lookup site for a unique one), and its
+/// projected components' scalar types in projection order. A nonunique projection ends
+/// with the root's identity keys; the scan holds the leading field components as a
+/// prefix and yields the identity suffix as the source-root `Id(^root)`.
+pub(crate) struct DurableIndex {
+    pub(crate) name: String,
+    pub(crate) unique: bool,
+    pub(crate) site: u16,
+    pub(crate) projection: Vec<ScalarType>,
 }
 
 /// Whether a durable field's stored value shape is an orderable durable-key scalar —
@@ -155,6 +180,7 @@ pub(crate) struct DurableRoot {
     pub(crate) entry_site: u16,
     pub(crate) fields: Vec<DurableField>,
     pub(crate) branches: Vec<DurableBranch>,
+    pub(crate) indexes: Vec<DurableIndex>,
 }
 
 impl DurableRoot {
@@ -165,6 +191,12 @@ impl DurableRoot {
     /// The executable branch declared with the simple name `name`, if any.
     pub(crate) fn branch(&self, name: &str) -> Option<&DurableBranch> {
         self.branches.iter().find(|branch| branch.name == name)
+    }
+
+    /// The managed index declared with the simple name `name`, if any — the owner a
+    /// source index read (`^root.name[…]`) resolves against.
+    pub(crate) fn index(&self, name: &str) -> Option<&DurableIndex> {
+        self.indexes.iter().find(|index| index.name == name)
     }
 }
 
@@ -356,12 +388,17 @@ impl DurableRegistry {
                     name: field.name.clone(),
                     id,
                     orderable_key: is_orderable_key_value(value),
+                    scalar: match field.ty {
+                        GArg::Scalar(scalar) => Some(scalar),
+                        _ => None,
+                    },
                 }
             })
             .collect();
-        let indexes = resolver.build_indexes(
+        let built_indexes = resolver.build_indexes(
             &store.root.root,
             &key_entries,
+            &key_scalars,
             &field_entries,
             &store.indexes,
         );
@@ -412,17 +449,26 @@ impl DurableRegistry {
         // index-write site — maintenance is compiler-owned. Every index site seals as
         // parked (an index node is never a flat-executable node); runtime traversal and
         // lookup land at E05.
-        for index in &indexes {
+        let mut lowered_indexes: Vec<DurableIndex> = Vec::with_capacity(built_indexes.len());
+        for built in &built_indexes {
             let mut steps = root_steps.clone();
-            steps.push(SemanticStep::new(SemanticStepKind::Index, index.id));
+            steps.push(SemanticStep::new(SemanticStepKind::Index, built.shape.id));
             let path = SemanticPath::from_steps(steps);
-            let site = if index.unique {
+            let site = if built.shape.unique {
                 SiteDef::index_lookup(path)
             } else {
                 SiteDef::index_scan(path)
             };
-            draft.add_site(site);
+            let site_index = draft.add_site(site).index();
+            lowered_indexes.push(DurableIndex {
+                name: built.name.clone(),
+                unique: built.shape.unique,
+                site: site_index,
+                projection: built.projection.clone(),
+            });
         }
+        let indexes: Vec<DurableIndexShape> =
+            built_indexes.into_iter().map(|built| built.shape).collect();
 
         // Decide executability and capture the executable branch descriptors while the
         // member tree (which carries each branch's materialized record type) is still in
@@ -495,6 +541,7 @@ impl DurableRegistry {
                 entry_site,
                 fields,
                 branches,
+                indexes: lowered_indexes,
             }),
             declared_root: Some(store.root.root.clone()),
         }
@@ -903,9 +950,10 @@ impl<'a> IdentityResolver<'a> {
         &mut self,
         root: &str,
         keys: &[(String, LedgerIdBytes)],
+        key_scalars: &[ScalarType],
         fields: &[IndexFieldLeaf],
         indexes: &[IndexDecl],
-    ) -> Vec<DurableIndexShape> {
+    ) -> Vec<BuiltIndex> {
         // The checker caps the per-root index count well below the image's structural
         // decode bound (`marrow_image::bounds::MAX_INDEXES`): each declared index is
         // compiler-maintained on every write to the root, so the cap bounds a root's write
@@ -959,11 +1007,33 @@ impl<'a> IdentityResolver<'a> {
             let Some(components) = self.resolve_index_components(index, keys, fields) else {
                 continue;
             };
+            // The projected components' scalar types, in order: a `Key` reads the root's
+            // key-column scalar at that key's declaration position, a `Field` its own base
+            // key scalar. The lowerer checks each source index-read operand against these.
+            let projection: Vec<ScalarType> = components
+                .iter()
+                .map(|component| match component {
+                    DurableIndexComponent::Key(id) => keys
+                        .iter()
+                        .position(|(_, key_id)| key_id == id)
+                        .map(|pos| key_scalars[pos])
+                        .expect("a resolved key component names a declared key"),
+                    DurableIndexComponent::Field(id) => fields
+                        .iter()
+                        .find(|leaf| leaf.id == *id)
+                        .and_then(|leaf| leaf.scalar)
+                        .expect("a resolved field component is an orderable scalar field"),
+                })
+                .collect();
             let id = self.resolve(IdentityKind::Index, &format!("{root}.{}", index.name));
-            shapes.push(DurableIndexShape {
-                id,
-                unique: index.unique,
-                components,
+            shapes.push(BuiltIndex {
+                shape: DurableIndexShape {
+                    id,
+                    unique: index.unique,
+                    components,
+                },
+                name: index.name.clone(),
+                projection,
             });
         }
         shapes
