@@ -3848,7 +3848,7 @@ impl<'a> FnLowerer<'a> {
         }
         // Inline `^root(key)` addresses and a field projected off a named `place`
         // read here; a bare place name is a durable designation, handled below.
-        if Self::durable_shape(expr).is_some() {
+        if self.durable_shape_here(expr).is_some() {
             let place = self.resolve_durable(expr)?;
             return self.lower_durable_read(place);
         }
@@ -6485,6 +6485,48 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// The inline durable ^-address shape of `expr`, confirming a group-leaf address
+    /// against the resolved durable model. [`Self::durable_shape`] recognizes a group-leaf
+    /// address `<entry>.mid.leaf` syntactically; here `mid` must actually name a root-level
+    /// group. A `mid` that is a stored field (or an unknown name) leaves the expression an
+    /// ordinary field projection on a durable field value, lowered and diagnosed by the
+    /// ordinary field path rather than compiling to a codeless durable body.
+    fn durable_shape_here(&self, expr: &Expression) -> Option<DurShape> {
+        if is_group_leaf_address(expr) {
+            return self.middle_names_a_group(expr).then_some(DurShape::Field);
+        }
+        Self::durable_shape(expr)
+    }
+
+    /// Whether the middle selector of a group-leaf address `<entry>.mid.leaf` names a
+    /// root-level `group`: the entry is the root itself (`^root[k]`, not a nested branch,
+    /// which offers no executable group) and the root declares a group named `mid`.
+    fn middle_names_a_group(&self, expr: &Expression) -> bool {
+        let Expression::Field { base, .. } = expr else {
+            return false;
+        };
+        let Expression::Field {
+            base: entry,
+            name: mid,
+            ..
+        } = base.as_ref()
+        else {
+            return false;
+        };
+        let Expression::Keyed {
+            base: root_base, ..
+        } = entry.as_ref()
+        else {
+            return false;
+        };
+        if !matches!(root_base.as_ref(), Expression::SavedRoot { .. }) {
+            return false;
+        }
+        self.durable
+            .root()
+            .is_some_and(|root| root.group(mid).is_some())
+    }
+
     /// The most recent in-scope `place` binding named `name`, if any.
     fn lookup_place(&self, name: &str) -> Option<&PlaceLocal> {
         self.places.iter().rev().find(|place| place.name == name)
@@ -6624,7 +6666,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn durable_access(&self, expr: &Expression) -> Option<DurShape> {
-        if let Some(shape) = Self::durable_shape(expr) {
+        if let Some(shape) = self.durable_shape_here(expr) {
             return Some(shape);
         }
         match expr {

@@ -13,6 +13,7 @@
 //! VM — against one persistent ephemeral attachment, with a composite root key so the
 //! group ops are exercised over a multi-column key-path.
 
+use marrow_compile::SourceDiagnostic;
 use marrow_verify::VerifiedImage;
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
 
@@ -485,5 +486,110 @@ fn a_group_leaf_over_an_absent_entry_reads_absent_and_writes_are_no_ops() {
         as_str(run(&image, &mut store, "readTitle", vec![i(9), i(9)])),
         None,
         "the entry remains absent after a group-leaf write"
+    );
+}
+
+// The `Book` schema alone (resource and store), without functions, so a single bad
+// function body can be appended and compiled against the shared identity ledger.
+const SCHEMA: &str = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+        language: string
+    }
+
+    notes[noteId: string] {
+        required text: string
+    }
+}
+
+store ^books[shelf: int, id: int]: Book
+"#;
+
+/// Compile `SCHEMA` plus `body` and return the diagnostics; the caller asserts the
+/// expected rejection. `body` is expected to fail to compile.
+fn compile_diagnostics(body: &str) -> Vec<SourceDiagnostic> {
+    let source = format!("{SCHEMA}\n{body}");
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    marrow_compile::compile(&project)
+        .expect_err("a group-leaf-shaped projection over a stored field must be rejected")
+}
+
+/// A selector chained off a stored durable field — `^books[shelf, id].title.sub` — is
+/// group-leaf-shaped but `title` is a field, not a root group. It is an ordinary field
+/// projection into a durable field value, so reading it is a located `check.type` error at
+/// the projection rather than a codeless body only the verifier later refuses.
+#[test]
+fn a_read_projecting_off_a_stored_durable_field_is_a_located_type_error() {
+    let diagnostics = compile_diagnostics(
+        "pub fn readSub(shelf: int, id: int): int? {\n    \
+         return ^books[shelf, id].title.sub\n}\n",
+    );
+    let hit = diagnostics
+        .iter()
+        .find(|d| d.code == marrow_codes::Code::CheckType.as_str())
+        .unwrap_or_else(|| panic!("a check.type diagnostic for the projection: {diagnostics:?}"));
+    assert!(
+        hit.line >= 1 && hit.column >= 1,
+        "the rejection carries a located span",
+    );
+}
+
+/// The write sibling: assigning through the same group-leaf-shaped field projection is
+/// refused with a located diagnostic rather than compiling to a codeless body.
+#[test]
+fn a_write_through_a_stored_durable_field_projection_is_located() {
+    let diagnostics = compile_diagnostics(
+        "pub fn writeSub(shelf: int, id: int, v: int) {\n    transaction {\n        \
+         ^books[shelf, id].title.sub = v\n    }\n}\n",
+    );
+    assert!(
+        diagnostics.iter().any(|d| d.line >= 1 && d.column >= 1),
+        "the write is refused with a located diagnostic: {diagnostics:?}",
+    );
+}
+
+/// The delete sibling: deleting through the same group-leaf-shaped field projection is
+/// refused with a located diagnostic rather than compiling to a codeless body.
+#[test]
+fn a_delete_through_a_stored_durable_field_projection_is_located() {
+    let diagnostics = compile_diagnostics(
+        "pub fn deleteSub(shelf: int, id: int) {\n    transaction {\n        \
+         delete ^books[shelf, id].title.sub\n    }\n}\n",
+    );
+    assert!(
+        diagnostics.iter().any(|d| d.line >= 1 && d.column >= 1),
+        "the delete is refused with a located diagnostic: {diagnostics:?}",
+    );
+}
+
+/// A genuine group-leaf typo is unaffected: `^books[shelf, id].details.missing` still
+/// resolves the `details` group and reports its own located `check.type` diagnostic, so
+/// narrowing the group-leaf claim did not swallow real group-leaf diagnostics.
+#[test]
+fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
+    let diagnostics = compile_diagnostics(
+        "pub fn readMissing(shelf: int, id: int): int? {\n    \
+         return ^books[shelf, id].details.missing\n}\n",
+    );
+    let hit = diagnostics
+        .iter()
+        .find(|d| d.code == marrow_codes::Code::CheckType.as_str())
+        .unwrap_or_else(|| panic!("a check.type diagnostic for the group leaf: {diagnostics:?}"));
+    assert!(
+        hit.line >= 1 && hit.column >= 1,
+        "the rejection carries a located span",
     );
 }
