@@ -18,19 +18,20 @@ fn member_name(member: &ResourceMember) -> &str {
 /// any line would change this sequence, so the assertion pins order, not just
 /// presence.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn resource_members_keep_source_declaration_order() {
     let parsed = parse_source(
         "module app\n\
-         resource Patient\n\
+         resource Patient {\n\
          \x20   required mrn: string\n\
          \x20   required lastName: string\n\
          \x20   firstName: string\n\
-         \x20   name\n\
+         \x20   name {\n\
          \x20       required first: string\n\
          \x20       required last: string\n\
+         \x20   }\n\
          \x20   note: string\n\
-         store ^patients(id: string): Patient\n",
+         }\n\
+         store ^patients[id: string]: Patient\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -58,15 +59,16 @@ fn resource_members_keep_source_declaration_order() {
 /// group still follows it. This guards against a parser that batches fields and
 /// groups into separate passes, which would silently reorder the body.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_field_after_a_group_keeps_its_trailing_position() {
     let parsed = parse_source(
         "module app\n\
-         resource Order\n\
-         \x20   lines(pos: int)\n\
+         resource Order {\n\
+         \x20   lines[pos: int] {\n\
          \x20       sku: string\n\
+         \x20   }\n\
          \x20   total: int\n\
-         store ^orders(id: int): Order\n",
+         }\n\
+         store ^orders[id: int]: Order\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);

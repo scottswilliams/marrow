@@ -76,7 +76,6 @@ fn scan(pattern: &str) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_type_ref_string_carrier_is_gone() {
     let offenders = scan("TypeRef");
     assert!(
@@ -89,7 +88,6 @@ fn the_type_ref_string_carrier_is_gone() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn type_structure_is_never_recovered_by_string_parsing() {
     let mut offenders = Vec::new();
     for pattern in ["strip_prefix(\"sequence[", "strip_prefix(\"Id(^"] {
