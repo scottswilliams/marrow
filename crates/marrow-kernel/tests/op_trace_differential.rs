@@ -11,8 +11,8 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     AuthorizedSite, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, Durable,
-    DurableStore, EntryValue, FieldSchema, InvocationGrant, Presence, Reopen, ReplaceOutcome,
-    SiteSpec, SiteTarget, StoreSchema,
+    DurableStore, EntryValue, EraseOutcome, FieldSchema, GroupSchema, InvocationGrant, Presence,
+    Reopen, ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
@@ -512,5 +512,174 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
     assert_eq!(
         probe(DurableStore::from_engine(native, schema(), sites())),
         None
+    );
+}
+
+// --- group-bearing differential ---
+
+/// A group-bearing root: `books`(Str) with a required `title` and one root-level group
+/// `details {pages, language}` (both sparse). Sites: 0 whole payload, 1 group `details`.
+fn group_schema() -> StoreSchema {
+    StoreSchema {
+        root_name: "books".into(),
+        key: vec![ScalarKind::Str],
+        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
+        groups: vec![GroupSchema {
+            name: "details".into(),
+            fields: vec![
+                FieldSchema::scalar("pages", ScalarKind::Int, false),
+                FieldSchema::scalar("language", ScalarKind::Str, false),
+            ],
+        }],
+        branches: Vec::new(),
+        indexes: Vec::new(),
+    }
+}
+
+fn group_sites() -> Vec<SiteSpec> {
+    vec![
+        SiteSpec {
+            target: SiteTarget::WholePayload,
+        },
+        SiteSpec {
+            target: SiteTarget::GroupEntry(0),
+        },
+    ]
+}
+
+/// The materialized group leaves of book `k` (pages, language), or `None` when the entry
+/// (and so the group) is absent.
+type GroupDump = Option<(Option<i64>, Option<String>)>;
+
+fn book_entry(title: &str, pages: Option<i64>, language: Option<&str>) -> EntryValue {
+    EntryValue {
+        fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str(title.into())))],
+        groups: vec![EntryValue {
+            fields: vec![
+                pages.map(|p| ValueDomain::Scalar(RuntimeScalar::Int(p))),
+                language.map(|l| ValueDomain::Scalar(RuntimeScalar::Str(l.into()))),
+            ],
+            groups: Vec::new(),
+        }],
+    }
+}
+
+/// A group value carrying only the leaves it lists, for a whole-group replace.
+fn details(pages: Option<i64>, language: Option<&str>) -> EntryValue {
+    EntryValue {
+        fields: vec![
+            pages.map(|p| ValueDomain::Scalar(RuntimeScalar::Int(p))),
+            language.map(|l| ValueDomain::Scalar(RuntimeScalar::Str(l.into()))),
+        ],
+        groups: Vec::new(),
+    }
+}
+
+/// Replay a group-op trace on `store`: create a book with a full group, read the group,
+/// replace it with only `pages` (dropping `language`), read again, erase the group, read a
+/// third time. Returns the per-op transcript and the three group reads, which must agree
+/// across the two engines byte for byte through their identical logical projection.
+fn replay_groups<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Vec<GroupDump>) {
+    fn dump(value: Option<EntryValue>) -> GroupDump {
+        value.map(|group| {
+            let pages = match &group.fields[0] {
+                Some(ValueDomain::Scalar(RuntimeScalar::Int(p))) => Some(*p),
+                None => None,
+                other => panic!("unexpected pages {other:?}"),
+            };
+            let language = match &group.fields[1] {
+                Some(ValueDomain::Scalar(RuntimeScalar::Str(l))) => Some(l.to_string()),
+                None => None,
+                other => panic!("unexpected language {other:?}"),
+            };
+            (pages, language)
+        })
+    }
+
+    let mut transcript = Vec::new();
+    let mut reads = Vec::new();
+    {
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write())
+            .expect("txn");
+        let root = txn.site(0);
+        let details_site = txn.site(1);
+        transcript.push(format!(
+            "create = {:?}",
+            txn.create_entry(&root, &[key("b")], book_entry("T", Some(384), Some("en")))
+                .unwrap()
+        ));
+        reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
+        transcript.push(format!(
+            "replace group = {:?}",
+            txn.replace_group(&details_site, &[key("b")], details(Some(512), None))
+                .unwrap()
+        ));
+        reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
+        // A group replace over an absent entry is Missing and touches nothing.
+        transcript.push(format!(
+            "replace ghost group = {:?}",
+            txn.replace_group(&details_site, &[key("ghost")], details(Some(1), None))
+                .unwrap()
+        ));
+        transcript.push(format!(
+            "erase group = {:?}",
+            txn.erase_group(&details_site, &[key("b")]).unwrap()
+        ));
+        reads.push(dump(txn.read_group(&details_site, &[key("b")]).unwrap()));
+        transcript.push(format!("commit = {:?}", txn.commit()));
+    }
+    (transcript, reads)
+}
+
+/// The two engine stacks compute the same group algebra: a group create/read/replace/erase
+/// trace yields identical outcomes and identical materialized group reads on the in-memory
+/// and redb-backed engines. The group cells (physical tag `0x28`) round-trip the same way on
+/// both.
+#[test]
+fn memory_and_redb_agree_on_the_group_operation_trace() {
+    let (mem_transcript, mem_reads) = replay_groups(DurableStore::from_engine(
+        MemoryEngine::new(),
+        group_schema(),
+        group_sites(),
+    ));
+
+    let temp = TempDir::new("optrace-groups");
+    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let (redb_transcript, redb_reads) = replay_groups(DurableStore::from_engine(
+        native,
+        group_schema(),
+        group_sites(),
+    ));
+
+    assert_eq!(
+        mem_transcript, redb_transcript,
+        "the two backends disagree on group outcomes"
+    );
+    assert_eq!(
+        mem_reads, redb_reads,
+        "the two backends disagree on materialized group reads"
+    );
+
+    // The algebra is frozen: create present, replace present, replace-ghost missing, erase
+    // present, and the three reads (full group, pages-only after the exact replace that
+    // dropped `language`, absent after the erase).
+    assert_eq!(
+        mem_transcript,
+        vec![
+            format!("create = {:?}", CreateOutcome::Created),
+            format!("replace group = {:?}", ReplaceOutcome::Replaced),
+            format!("replace ghost group = {:?}", ReplaceOutcome::Missing),
+            format!("erase group = {:?}", EraseOutcome::Erased),
+            format!("commit = {:?}", CommitResult::Committed),
+        ]
+    );
+    assert_eq!(
+        mem_reads,
+        vec![
+            Some((Some(384), Some("en".to_string()))),
+            Some((Some(512), None)),
+            Some((None, None)),
+        ]
     );
 }

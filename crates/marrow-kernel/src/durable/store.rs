@@ -4997,6 +4997,111 @@ mod tests {
         );
     }
 
+    /// The whole-entry read is the group-inclusive materialization owner, so it enforces
+    /// group-leaf required-completeness too: a present entry missing a `required` group leaf
+    /// faults corruption on the whole-entry read, exactly as the group-scoped read does and
+    /// exactly as a missing required top-level field does. Defense in depth over the trust
+    /// boundary — the ops never write this state.
+    #[test]
+    fn a_whole_entry_read_faults_on_a_present_entry_missing_a_required_group_leaf() {
+        use crate::codec::value::encode_domain;
+
+        let schema = StoreSchema {
+            root_name: "books".into(),
+            key: vec![ScalarKind::Str],
+            fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
+            groups: vec![GroupSchema {
+                name: "meta".into(),
+                fields: vec![FieldSchema::scalar("isbn", ScalarKind::Str, true)],
+            }],
+            branches: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::GroupEntry(0),
+            },
+        ];
+
+        // Seed a present entry (marker + required title) with the required group leaf
+        // `isbn` absent — a state the ops never write.
+        let book_stem = physical::marker_key("books", &[ks("a")]);
+        let title_bytes = encode_domain(&ValueDomain::Scalar(RuntimeScalar::Str("t".into())))
+            .expect("encode title");
+        let mut engine = MemoryEngine::new();
+        {
+            let mut txn = engine.begin().expect("begin");
+            txn.put(&book_stem, physical::MARKER_VALUE.to_vec())
+                .expect("seed marker");
+            txn.put(&physical::stem_field_leaf(&book_stem, "title"), title_bytes)
+                .expect("seed title");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let mut store = DurableStore::from_engine(engine, schema, sites);
+
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read");
+        let root = read.site(0);
+        assert!(
+            matches!(
+                read.read_entry(&root, &[ks("a")]),
+                Err(KernelFault::Corruption)
+            ),
+            "a whole-entry read of a present entry missing a required group leaf is corruption",
+        );
+    }
+
+    /// A forged cell impersonating a group leaf (the `0x28` group tag) under an entry stem
+    /// that carries no payload marker is a marker/payload mismatch, not a present group: the
+    /// group tag never conjures a marker into being. A committed whole-entry read and a
+    /// committed group read both fail closed with corruption, so a hostile store that seeds a
+    /// `0x28` cell without its owning marker cannot forge a phantom entry or group.
+    #[test]
+    fn a_forged_markerless_group_leaf_cell_reads_as_corruption() {
+        use crate::codec::value::encode_domain;
+
+        let (schema, sites) = group_schema();
+        // Seed only a `details.pages` group leaf (tag `0x28`) under book "a" — no marker,
+        // no other cell. A group leaf is the entry's own payload, so a markerless one is an
+        // orphan, never a descendant-only node.
+        let book_stem = physical::marker_key("books", &[ks("a")]);
+        let group_stem = physical::group_stem(&book_stem, "details");
+        let leaf = physical::stem_field_leaf(&group_stem, "pages");
+        let pages_bytes =
+            encode_domain(&ValueDomain::Scalar(RuntimeScalar::Int(384))).expect("encode pages");
+        let mut engine = MemoryEngine::new();
+        {
+            let mut txn = engine.begin().expect("begin");
+            txn.put(&leaf, pages_bytes).expect("seed forged group leaf");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let mut store = DurableStore::from_engine(engine, schema, sites);
+
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read");
+        let root = read.site(0);
+        assert!(
+            matches!(
+                read.read_entry(&root, &[ks("a")]),
+                Err(KernelFault::Corruption)
+            ),
+            "a whole-entry read over a forged markerless group leaf is corruption",
+        );
+        let details = read.site(1);
+        assert!(
+            matches!(
+                read.read_group(&details, &[ks("a")]),
+                Err(KernelFault::Corruption)
+            ),
+            "a group read over a forged markerless group leaf is corruption",
+        );
+    }
+
     /// A whole-entry value carries its groups. A create that supplies the group
     /// sub-records writes their leaves as the entry's own payload, and a whole-entry read
     /// materializes them back aligned to the schema's groups — the round-trip that unparks
