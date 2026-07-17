@@ -360,10 +360,20 @@ mod driver {
             .expect("canonicalize repo root")
     }
 
+    /// Collect the beta-corpus `.mw` fixtures under `dir`, skipping any `tests/`
+    /// directory. A conformance project's `tests/*.mw` is a frozen-prototype oracle
+    /// wrapper (`std::assert::equal`, which the beta reserves `assert` against), read
+    /// only by the archived-binary differential and regenerated from the Rust
+    /// `FIXTURES` table; the beta half of each assertion already lives in
+    /// `src/*_checks.mw`. Those wrappers are prototype corpus, not beta-layout corpus,
+    /// so the brace converter never touches them.
     fn mw_files(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).expect("read dir") {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) == Some("tests") {
+                    continue;
+                }
                 mw_files(&path, out);
             } else if path.extension().and_then(|e| e.to_str()) == Some("mw") {
                 out.push(path);
