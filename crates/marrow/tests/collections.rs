@@ -184,13 +184,12 @@ fn exceeding_the_join_text_ceiling_faults() {
 /// A bare `List()`/`Map()` with no expected type cannot infer its instantiation and
 /// is a typed `check.type`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_bare_constructor_without_expected_type_is_a_check_type() {
     for body in ["const xs = List()", "const m = Map()"] {
         let temp = TempDir::new("bare-ctor");
         project(
             &temp,
-            &format!("module main\n\npub fn f(): int\n\x20   {body}\n\x20   return 0\n"),
+            &format!("module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -265,14 +264,13 @@ pub fn f(): int {
 /// `List` and `Map` are reserved type names; redeclaring one is a
 /// `check.name_conflict`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_reserved_collection_name_is_a_conflict() {
     for name in ["List", "Map"] {
         let temp = TempDir::new("reserved");
         project(
             &temp,
             &format!(
-                "module main\n\nstruct {name}\n\x20   x: int\n\npub fn f(): int\n\x20   return 0\n"
+                "module main\n\nstruct {name} {{\n\x20   x: int\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
             ),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
@@ -289,14 +287,13 @@ fn redeclaring_a_reserved_collection_name_is_a_conflict() {
 /// value-level names, so a colliding value declaration is a `check.name_conflict`
 /// (the same closed-floor discipline as `isEmpty`/`contains`/`trim`).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_text_floor_builtin_is_a_conflict() {
     for name in ["split", "lines", "join"] {
         let temp = TempDir::new("reserved-floor");
         project(
             &temp,
             &format!(
-                "module main\n\nfn {name}(): int\n\x20   return 0\n\npub fn f(): int\n\x20   return 0\n"
+                "module main\n\nfn {name}(): int {{\n\x20   return 0\n}}\n\npub fn f(): int {{\n\x20   return 0\n}}\n"
             ),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);

@@ -189,7 +189,6 @@ fn a_try_in_the_wrong_context_is_reported() {
 /// `Option` and `Result` are reserved built-in type names; redeclaring either as a
 /// user type is a `check.name_conflict`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_builtin_generic_name_is_reported() {
     for decl in [
         r#"enum Option {
@@ -202,7 +201,7 @@ fn redeclaring_a_builtin_generic_name_is_reported() {
 "#,
     ] {
         let temp = TempDir::new("reserved");
-        project(&temp, &format!("{decl}\npub fn f(): int\n    return 0\n"));
+        project(&temp, &format!("{decl}\npub fn f(): int {{\n    return 0\n}}\n"));
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{decl}\n{stdout}");
@@ -238,13 +237,12 @@ fn the_removed_throw_catch_channel_is_reported() {
 /// A bare constructor whose full type argument set cannot be inferred — `none`,
 /// `ok(v)`, or `err(e)` with no expected type — is a typed `check.type`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_uninferable_bare_constructor_is_reported() {
     for value in ["none", "ok(5)", "err(\"x\")"] {
         let temp = TempDir::new("infer");
         project(
             &temp,
-            &format!("pub fn f(): int\n    const x = {value}\n    return 0\n"),
+            &format!("pub fn f(): int {{\n    const x = {value}\n    return 0\n}}\n"),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -265,7 +263,6 @@ fn an_uninferable_bare_constructor_is_reported() {
 /// declaration, not a declaration that is admitted and then silently shadowed at
 /// its use site (surfacing later as a confusing `check.type`).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn redeclaring_a_reserved_builtin_value_name_is_reported() {
     const NAMES: [&str; 11] = [
         "none",
@@ -283,19 +280,19 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
     for name in NAMES {
         let sources = [
             // module function
-            format!("pub fn {name}(): int\n    return 0\n\npub fn f(): int\n    return 0\n"),
+            format!("pub fn {name}(): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"),
             // module constant
-            format!("const {name}: int = 1\n\npub fn f(): int\n    return 0\n"),
+            format!("const {name}: int = 1\n\npub fn f(): int {{\n    return 0\n}}\n"),
             // parameter
-            format!("pub fn g({name}: int): int\n    return 0\n\npub fn f(): int\n    return 0\n"),
+            format!("pub fn g({name}: int): int {{\n    return 0\n}}\n\npub fn f(): int {{\n    return 0\n}}\n"),
             // local constant
-            format!("pub fn f(): int\n    const {name} = 1\n    return 0\n"),
+            format!("pub fn f(): int {{\n    const {name} = 1\n    return 0\n}}\n"),
             // local variable
-            format!("pub fn f(): int\n    var {name} = 1\n    return 0\n"),
+            format!("pub fn f(): int {{\n    var {name} = 1\n    return 0\n}}\n"),
             // if-const binding
             format!(
-                "pub fn maybe(): Option[int]\n    return some(1)\n\n\
-                 pub fn f(): int\n    if const {name} = maybe()\n        return 0\n    return 0\n"
+                "pub fn maybe(): Option<int> {{\n    return some(1)\n}}\n\n\
+                 pub fn f(): int {{\n    if const {name} = maybe() {{\n        return 0\n    }}\n    return 0\n}}\n"
             ),
         ];
         for source in sources {

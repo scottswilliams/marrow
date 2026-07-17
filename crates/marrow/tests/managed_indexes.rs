@@ -282,45 +282,43 @@ const BASE_IDS: &str = "marrow ids v0\n\
 
 fn base_source(store_body: &str) -> String {
     format!(
-        "resource Book\n\
+        "resource Book {{\n\
          \x20   required title: string\n\
          \x20   shelf: string\n\
          \x20   author: string\n\
+         }}\n\
          \n\
-         store ^books(id: int): Book\n{store_body}\
+         store ^books[id: int]: Book {{\n{store_body}}}\n\
          \n\
-         pub fn label(): string\n\
-         \x20   return \"books\"\n"
+         pub fn label(): string {{\n\
+         \x20   return \"books\"\n\
+         }}\n"
     )
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_argument_naming_no_member_is_rejected() {
-    let source = base_source("    index byMissing(missing, id)\n");
+    let source = base_source("    index byMissing[missing, id]\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nonunique_index_omitting_the_identity_key_is_rejected() {
-    let source = base_source("    index byShelf(shelf)\n");
+    let source = base_source("    index byShelf[shelf]\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_nonunique_index_with_the_identity_key_not_last_is_rejected() {
-    let source = base_source("    index byShelf(id, shelf)\n");
+    let source = base_source("    index byShelf[id, shelf]\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_repeating_a_projection_component_is_rejected() {
     // A repeated component adds no ordering distinction and would double-maintain one
     // cell; each projection component appears at most once.
-    let source = base_source("    index byShelf(shelf, shelf, id)\n");
+    let source = base_source("    index byShelf[shelf, shelf, id]\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
 }
 
@@ -359,14 +357,12 @@ pub fn label(): string {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_index_name_colliding_with_a_field_is_rejected() {
-    let source = base_source("    index shelf(author, id)\n");
+    let source = base_source("    index shelf[author, id]\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_duplicate_index_name_is_rejected() {
     // The first `byShelf` is well-formed (so it resolves its `Index` anchor); the
     // second collides on the name. Its anchor is present so the collision is the sole
@@ -375,7 +371,7 @@ fn a_duplicate_index_name_is_rejected() {
         "high-water 0\n",
         "id index books.byShelf 70707070707070707070707070707070\nhigh-water 0\n",
     );
-    let source = base_source("    index byShelf(shelf, id)\n    index byShelf(title, id)\n");
+    let source = base_source("    index byShelf[shelf, id]\n    index byShelf[title, id]\n");
     assert_eq!(compile_codes(&source, &ids), vec!["check.type"]);
 }
 

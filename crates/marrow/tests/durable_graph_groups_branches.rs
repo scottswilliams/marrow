@@ -99,12 +99,12 @@ fn a_group_and_branch_resource_completes_its_identity_and_verifies() {
 /// id — from drifting. This is the id-stability-under-unrelated-edits property
 /// across the widened graph's kinds.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unrelated_source_edits_do_not_drift_the_contract_id() {
     let base = contract_of(LIBRARY_SOURCE, LIBRARY_IDS);
 
     // Append an unrelated storeless function: the durable graph is untouched.
-    let appended = format!("{LIBRARY_SOURCE}\npub fn unrelated(n: int): int\n    return n + 1\n");
+    let appended =
+        format!("{LIBRARY_SOURCE}\npub fn unrelated(n: int): int {{\n    return n + 1\n}}\n");
     assert_eq!(
         base,
         contract_of(&appended, LIBRARY_IDS),
@@ -113,7 +113,8 @@ fn unrelated_source_edits_do_not_drift_the_contract_id() {
 
     // Declare the same unrelated function ahead of the resource: declaration order
     // is not part of the identity either.
-    let reordered = format!("pub fn unrelated(n: int): int\n    return n + 1\n\n{LIBRARY_SOURCE}");
+    let reordered =
+        format!("pub fn unrelated(n: int): int {{\n    return n + 1\n}}\n\n{LIBRARY_SOURCE}");
     assert_eq!(
         base,
         contract_of(&reordered, LIBRARY_IDS),
@@ -122,7 +123,6 @@ fn unrelated_source_edits_do_not_drift_the_contract_id() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
     // A resource declaring a static `group` is off the flat-executable path: the group's
     // scalar fields are part of the containing entry's materialized resource value and its
@@ -131,7 +131,7 @@ fn an_operation_over_a_group_bearing_root_is_not_yet_executable() {
     // rejection rather than a silent drop or a guessed partial-group semantics. (A keyed
     // `branch` on the same resource is executable; the group is what parks the root.)
     let source = format!(
-        "{LIBRARY_SOURCE}\npub fn firstTitle(id: int): string?\n    return ^books(id).title\n"
+        "{LIBRARY_SOURCE}\npub fn firstTitle(id: int): string? {{\n    return ^books[id].title\n}}\n"
     );
     let diagnostics = compile(&source, LIBRARY_IDS).expect_err("a group-bearing root parks");
     assert!(
