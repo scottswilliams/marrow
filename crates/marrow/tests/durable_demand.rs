@@ -34,6 +34,7 @@ store ^counters[id: int]: Counter
 
 const VALUE_FIELD: [u8; 16] = [0x0e; 16];
 const LABEL_FIELD: [u8; 16] = [0x0f; 16];
+const ROOT_NODE: [u8; 16] = [0x0b; 16];
 
 /// Compile one `src/main.mw` through the production path, returning its canonical
 /// image bytes and `ImageId`.
@@ -155,6 +156,20 @@ fn a_body_only_change_keeps_export_and_demand_ids_but_moves_the_image_id() {
         base_read.demand_id(),
         export_named(&again, "readValue").demand_id()
     );
+}
+
+#[test]
+fn a_family_populated_probe_demands_presence_on_the_family_node() {
+    // `exists(^counters)` is the family-populated probe: a read-only presence demand on
+    // the family node itself (the root placement), not on any child key or field.
+    let (image, _) = compile_verify(&format!(
+        "{HEADER}pub fn any(): bool {{\n    return exists(^counters)\n}}\n"
+    ));
+    let any = export_named(&image, "any");
+    assert_eq!(atom_shape(any), vec![(ROOT_NODE, OperationClass::Presence)]);
+    assert!(any.demand().reads());
+    assert!(!any.demand().writes());
+    assert!(!any.is_mutating());
 }
 
 #[test]
