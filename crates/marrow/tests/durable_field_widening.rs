@@ -106,18 +106,19 @@ fn a_widened_field_resource_completes_its_identity_and_verifies() {
 /// edit: adding unrelated storeless code and reordering declarations leaves the
 /// widened graph's contract id — computed over the sum/member tree — unchanged.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn unrelated_source_edits_do_not_drift_the_widened_contract_id() {
     let base = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
 
-    let appended = format!("{ACCOUNT_SOURCE}\npub fn unrelated(n: int): int\n    return n + 1\n");
+    let appended =
+        format!("{ACCOUNT_SOURCE}\npub fn unrelated(n: int): int {{\n    return n + 1\n}}\n");
     assert_eq!(
         base,
         contract_of(&appended, ACCOUNT_IDS),
         "unrelated storeless code does not drift the enum sum/member identity"
     );
 
-    let reordered = format!("pub fn unrelated(n: int): int\n    return n + 1\n\n{ACCOUNT_SOURCE}");
+    let reordered =
+        format!("pub fn unrelated(n: int): int {{\n    return n + 1\n}}\n\n{ACCOUNT_SOURCE}");
     assert_eq!(
         base,
         contract_of(&reordered, ACCOUNT_IDS),

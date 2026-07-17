@@ -95,7 +95,6 @@ fn alias_conformance_fixture_passes_on_the_production_path() {
 /// A cyclic alias chain is a typed `check.recursion` diagnostic, reported once
 /// per alias on the cycle, at check time.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_cyclic_alias_chain_is_a_check_recursion_diagnostic() {
     let temp = TempDir::new("alias-cycle");
     project(
@@ -119,7 +118,7 @@ pub fn f(): int {
         .collect();
     assert_eq!(recursion_lines.len(), 2, "{stdout}");
     assert!(recursion_lines[0].contains(r#""line":1"#), "{stdout}");
-    assert!(recursion_lines[1].contains(r#""line":2"#), "{stdout}");
+    assert!(recursion_lines[1].contains(r#""line":3"#), "{stdout}");
 }
 
 /// A self-referential alias is the one-element cycle.

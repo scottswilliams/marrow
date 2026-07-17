@@ -132,15 +132,14 @@ fn a_composite_key_root_missing_one_key_identity_fails_precisely() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn key_column_order_is_part_of_the_durable_identity() {
     let base = contract_of(ENROLLMENTS_SOURCE, ENROLLMENTS_IDS);
 
     // Swap the two key columns in source (and move each anchor with its name):
     // the identity depends on column order, so this is a different graph.
     let swapped_source = ENROLLMENTS_SOURCE.replace(
-        "(student: string, course: string)",
-        "(course: string, student: string)",
+        "[student: string, course: string]",
+        "[course: string, student: string]",
     );
     assert_ne!(
         base,

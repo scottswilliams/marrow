@@ -150,18 +150,17 @@ pub fn f(e: E): int {
 /// A malformed arm — an unknown member, a duplicate member, or a payload-arity
 /// mismatch — is a typed `check.match_arm`.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_arm_is_a_check_match_arm_diagnostic() {
     for body in [
         // unknown member
-        "match e\n        a\n            return 1\n        c\n            return 2\n        b\n            return 3\n",
+        "match e {\n        a => return 1\n        c => return 2\n        b => return 3\n    }",
         // duplicate member
-        "match e\n        a\n            return 1\n        a\n            return 2\n        b\n            return 3\n",
+        "match e {\n        a => return 1\n        a => return 2\n        b => return 3\n    }",
     ] {
         let temp = TempDir::new("arm");
         project(
             &temp,
-            &format!("enum E\n    a\n    b\n\npub fn f(e: E): int\n    {body}"),
+            &format!("enum E {{\n    a\n    b\n}}\n\npub fn f(e: E): int {{\n    {body}\n}}\n"),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);

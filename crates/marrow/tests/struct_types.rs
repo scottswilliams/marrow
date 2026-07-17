@@ -124,7 +124,6 @@ pub fn originX(): int {
 /// field, a positional (unnamed) argument, or a wrong-typed field — is a typed
 /// `check.type` at the literal.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_construction_is_a_check_type_diagnostic() {
     for body in [
         "const p = Point(x: 1, z: 2)",
@@ -137,13 +136,15 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
         project(
             &temp,
             &format!(
-                "struct Point\n\
+                "struct Point {{\n\
                  \x20   x: int\n\
                  \x20   y: int\n\
+                 }}\n\
                  \n\
-                 pub fn f(): int\n\
+                 pub fn f(): int {{\n\
                  \x20   {body}\n\
-                 \x20   return 0\n"
+                 \x20   return 0\n\
+                 }}\n"
             ),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);

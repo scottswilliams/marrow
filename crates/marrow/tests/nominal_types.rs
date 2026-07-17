@@ -182,7 +182,6 @@ pub fn scaled(n: int): int {
 /// orientation. The JSONL record (code + span) is the typed contract; the CLI
 /// run surface carries no diagnostic prose by design.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_missing_capability_is_a_check_type_diagnostic() {
     for body in [
         "Age(1) + 2",
@@ -197,9 +196,10 @@ fn a_missing_capability_is_a_check_type_diagnostic() {
             &format!(
                 "type Age: int in 0..=150\n\
                  \n\
-                 pub fn f(): int\n\
+                 pub fn f(): int {{\n\
                  \x20   const a = {body}\n\
-                 \x20   return 0\n"
+                 \x20   return 0\n\
+                 }}\n"
             ),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
@@ -313,7 +313,6 @@ pub fn f(): bool {
 /// An interval that admits no values, a stepped interval, and non-literal
 /// bounds are typed `check.type` diagnostics at the declaration.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_interval_is_a_check_type_diagnostic() {
     for interval in ["10..=1", "5..5", "0..10 by 2", "0..n"] {
         let temp = TempDir::new("nominal-interval");
@@ -322,8 +321,9 @@ fn a_malformed_interval_is_a_check_type_diagnostic() {
             &format!(
                 "type Age: int in {interval}\n\
                  \n\
-                 pub fn f(): int\n\
-                 \x20   return 1\n"
+                 pub fn f(): int {{\n\
+                 \x20   return 1\n\
+                 }}\n"
             ),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
@@ -455,7 +455,6 @@ fn checked_on_a_non_nominal_is_rejected() {
 /// A wrong-shaped construction — a named argument, the wrong arity, or a
 /// non-int argument — is a typed `check.type` at the call.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_construction_is_a_check_type_diagnostic() {
     for body in [
         "return Age() - Age(0)",
@@ -469,8 +468,9 @@ fn a_malformed_construction_is_a_check_type_diagnostic() {
             &format!(
                 "type Age: int in 0..=150 supports subtract\n\
                  \n\
-                 pub fn f(): int\n\
-                 \x20   {body}\n"
+                 pub fn f(): int {{\n\
+                 \x20   {body}\n\
+                 }}\n"
             ),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);

@@ -90,7 +90,6 @@ fn temporal_conformance_fixture_passes_on_the_production_path() {
 /// diagnostic, not a runtime fault: the literal is validated and folded at compile
 /// time.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_malformed_temporal_literal_is_a_check_type() {
     let bodies = [
         r#"const d: date = date("2026-13-01")"#, // impossible month
@@ -104,7 +103,7 @@ fn a_malformed_temporal_literal_is_a_check_type() {
         let temp = TempDir::new("bad-lit");
         project(
             &temp,
-            &format!("module main\n\npub fn f(): int\n\x20   {body}\n\x20   return 0\n"),
+            &format!("module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"),
         );
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
