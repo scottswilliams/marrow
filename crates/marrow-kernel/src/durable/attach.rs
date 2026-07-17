@@ -227,6 +227,7 @@ mod tests {
             key: vec![ScalarKind::Int],
             fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         }
     }

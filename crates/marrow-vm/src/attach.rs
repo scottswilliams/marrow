@@ -213,6 +213,10 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         root_name: root.name().to_string(),
         key,
         fields,
+        // The verifier does not yet emit durable group sites (GR01 session 2), so the
+        // image carries no group shape for the kernel to serve; groups stay empty until
+        // that admission lands.
+        groups: Vec::new(),
         branches,
         indexes,
     };

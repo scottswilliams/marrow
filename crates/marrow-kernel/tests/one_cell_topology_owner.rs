@@ -14,6 +14,11 @@
 //! branch key, a duplicate tag constant in any of those trees — would trip this gate.
 //! Consuming `physical.rs`'s own published `MARKER_VALUE` constant by name is not a
 //! second owner and is allowed.
+//!
+//! The `0x20` literal names two positionally-disjoint roles the layout owner spells —
+//! the root discriminator inside the entry-family prefix and the group tag that follows
+//! a marker terminator — so the existing `0x20` scan already forbids either leaking to a
+//! second owner; the group tag needs no new literal.
 
 use std::path::{Path, PathBuf};
 

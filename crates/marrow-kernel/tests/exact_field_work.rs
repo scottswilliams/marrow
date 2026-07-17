@@ -36,6 +36,7 @@ fn schema(extra: usize) -> StoreSchema {
         key: vec![ScalarKind::Int],
         fields,
         branches: Vec::new(),
+        groups: Vec::new(),
         indexes: Vec::new(),
     }
 }

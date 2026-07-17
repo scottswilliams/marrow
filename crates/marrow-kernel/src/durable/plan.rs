@@ -123,6 +123,58 @@ impl Planner {
             .collect()
     }
 
+    /// Every leaf cell key of the group whose group stem is `group_stem` over `fields`:
+    /// one leaf per field, in order, through the shared [`Self::node_field_leaf`] owner.
+    /// A group is part of its entry's payload and carries no marker (its presence is the
+    /// entry's), so — unlike [`Self::node_cells`] — a group's footprint is its field
+    /// leaves alone. Because every cell derives from `group_stem` (`<marker> 0x20
+    /// esc(group)`), the whole footprint is disjoint from the entry's top-level fields,
+    /// its sibling groups, and its branch descendants. The single owner of a group's
+    /// footprint enumeration.
+    pub(super) fn group_cells(&self, group_stem: &[u8], fields: &[FieldSchema]) -> Vec<Vec<u8>> {
+        fields
+            .iter()
+            .map(|field| self.node_field_leaf(group_stem, &field.name))
+            .collect()
+    }
+
+    /// The writes that establish the group whose group stem is `group_stem` from `value`
+    /// over `fields`: one leaf per present field, in order — and no marker. Confined to
+    /// the group's own leaves by construction, so a group write never touches the entry
+    /// marker, a top-level field leaf, a sibling group, or a branch descendant (the
+    /// group-scoped payload-only law). A value outside its codec range is a
+    /// [`KernelFault::ValueRange`] and no partial plan is returned.
+    pub(super) fn group_write(
+        &self,
+        group_stem: &[u8],
+        fields: &[FieldSchema],
+        value: &EntryValue,
+    ) -> Result<Vec<CellWrite>, KernelFault> {
+        let mut writes = Vec::with_capacity(value.fields.len());
+        for (index, slot) in value.fields.iter().enumerate() {
+            if let Some(value) = slot {
+                let bytes = encode_domain(value).map_err(|_| KernelFault::ValueRange)?;
+                writes.push(CellWrite::Put(
+                    self.node_field_leaf(group_stem, &fields[index].name),
+                    bytes,
+                ));
+            }
+        }
+        Ok(writes)
+    }
+
+    /// The removals that erase every one of the group's own leaf cells (present or not) —
+    /// and nothing else. A group carries no marker, so this removes only the field leaves
+    /// under `group_stem`; the entry marker, the entry's top-level fields, its sibling
+    /// groups, and its branch descendants are all preserved (the group-scoped
+    /// payload-only erase law).
+    pub(super) fn group_erase(&self, group_stem: &[u8], fields: &[FieldSchema]) -> Vec<CellWrite> {
+        self.group_cells(group_stem, fields)
+            .into_iter()
+            .map(CellWrite::Remove)
+            .collect()
+    }
+
     /// The ordered index-cell operations a root entry write implies, given the entry's key
     /// tuple and its projected field values before (`old`) and after (`new`) the write, for
     /// the root's `indexes` in stable declaration order. A row exists exactly when every
@@ -218,6 +270,7 @@ mod tests {
                 FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         }
     }
@@ -331,6 +384,82 @@ mod tests {
 
     fn keys_of(cells: &[Vec<u8>]) -> Vec<&[u8]> {
         cells.iter().map(Vec::as_slice).collect()
+    }
+
+    /// A group's footprint is its field leaves alone — no marker. `group_cells`
+    /// enumerates one leaf per field in order under the group stem, `group_write` plans
+    /// only present leaves, and `group_erase` removes exactly the group's own cells.
+    #[test]
+    fn group_cells_are_the_field_leaves_alone_with_no_marker() {
+        let schema = schema();
+        let planner = Planner::new();
+        let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(1)]);
+        let group_stem = physical::group_stem(&stem, "details");
+        let fields = vec![
+            FieldSchema::scalar("pages", ScalarKind::Int, false),
+            FieldSchema::scalar("language", ScalarKind::Str, false),
+        ];
+        // The footprint is exactly the two leaves — the marker cell is absent.
+        let cells = planner.group_cells(&group_stem, &fields);
+        assert_eq!(
+            keys_of(&cells),
+            vec![
+                planner.node_field_leaf(&group_stem, "pages").as_slice(),
+                planner.node_field_leaf(&group_stem, "language").as_slice(),
+            ]
+        );
+        assert!(
+            !cells.contains(&group_stem),
+            "a group footprint carries no marker cell"
+        );
+
+        // A write plans only the present leaf, and never a marker put.
+        let value = EntryValue {
+            fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(384))), None],
+        };
+        let writes = planner
+            .group_write(&group_stem, &fields, &value)
+            .expect("in range");
+        assert_eq!(
+            keys(&writes),
+            vec![planner.node_field_leaf(&group_stem, "pages").as_slice()],
+            "a group write touches only present leaves"
+        );
+
+        // An erase removes exactly the group's own cells, all removals.
+        let erases = planner.group_erase(&group_stem, &fields);
+        assert!(erases.iter().all(|op| matches!(op, CellWrite::Remove(_))));
+        assert_eq!(keys(&erases), keys_of(&cells));
+    }
+
+    /// The group-scoped payload-only law at the planner level: a group write's cell-key
+    /// set is disjoint from the entry marker, the entry's top-level field leaves, a
+    /// sibling group's leaves, and a branch descendant's cells — so a group replace or
+    /// erase provably disturbs none of them.
+    #[test]
+    fn a_group_write_is_disjoint_from_siblings() {
+        let schema = schema();
+        let planner = Planner::new();
+        let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(1)]);
+        let group_fields = vec![FieldSchema::scalar("pages", ScalarKind::Int, false)];
+        let details = physical::group_stem(&stem, "details");
+
+        let group_ops = planner.group_erase(&details, &group_fields);
+        let touched: Vec<&[u8]> = keys(&group_ops);
+
+        // Sibling cells the entry owns, none of which a group op may name.
+        let siblings = vec![
+            stem.clone(),                            // the entry marker
+            planner.node_field_leaf(&stem, "value"), // a top-level field leaf
+            planner.node_field_leaf(&physical::group_stem(&stem, "credits"), "pages"), // sibling group
+            physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]), // a branch cell
+        ];
+        for sibling in &siblings {
+            assert!(
+                !touched.contains(&sibling.as_slice()),
+                "a group op must not touch a sibling cell"
+            );
+        }
     }
 
     fn scalar(value: i64) -> Option<ValueDomain> {

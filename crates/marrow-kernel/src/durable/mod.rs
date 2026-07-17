@@ -45,6 +45,11 @@ pub struct StoreSchema {
     /// key. A single-column root is the one-element case.
     pub key: Vec<ScalarKind>,
     pub fields: Vec<FieldSchema>,
+    /// The root's unkeyed groups, in declaration (image) order. A group is a static
+    /// field-path namespace inside the entry's payload — not a keyed node — so it
+    /// contributes leaves to every root entry rather than a keyed child layer. Empty for a
+    /// root that declares none.
+    pub groups: Vec<GroupSchema>,
     pub branches: Vec<BranchSchema>,
     /// The root's compiler-maintained managed indexes, in stable declaration order — the
     /// order every maintenance pass visits them so a whole-entry write's index writes are
@@ -107,6 +112,19 @@ impl FieldSchema {
     }
 }
 
+/// One unkeyed group nested beneath a root entry: its name and its own record's fields.
+/// A group is part of the entry's materialized value (a nested sub-record), not a keyed
+/// durable node: it carries no marker and no key, and its presence is exactly its
+/// containing entry's presence. Its leaves are stored as the entry's own payload,
+/// namespaced under the group name (`<marker> 0x20 esc(group) 0x10 esc(field)`; see
+/// [`physical`](self)). A group holding nested groups or branches is not yet part of the
+/// executable graph, so this schema carries fields only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupSchema {
+    pub name: String,
+    pub fields: Vec<FieldSchema>,
+}
+
 /// One keyed branch nested beneath a parent entry: its name, its single key column's
 /// scalar kind, its own record's fields, and its own nested branches. A branch entry is
 /// addressed by extending the parent's key-path with the branch key and carries its own
@@ -154,6 +172,13 @@ pub enum SiteTarget {
     /// The whole payload of a keyed branch entry, named by its branch path (per-level
     /// branch indices from the root down).
     BranchEntry(Box<[u16]>),
+    /// The materialized record of one unkeyed group of the root entry, named by the
+    /// group's index into [`StoreSchema::groups`]. Its whole read/replace/erase confine
+    /// to the group's own leaves under the group prefix, disjoint from the entry's
+    /// top-level fields, its sibling groups, and its branches (the group-scoped
+    /// payload-only law). Emitted by the verifier's group-site admission; until then the
+    /// kernel's own tests are its only source.
+    GroupEntry(u16),
     /// One field leaf of a keyed branch entry: the branch node's branch path and the
     /// field's index into that branch's [`BranchSchema::fields`]. Its field-exact
     /// operations address the `(1 + path.len())`-element key-path
@@ -219,8 +244,9 @@ pub enum SessionError {
     Engine(StoreError),
 }
 
-/// The whole-entry value read, created, or replaced at an entry site: one slot per
-/// field in schema order, present or vacant.
+/// The record read, created, or replaced at an entry or group site: one slot per field
+/// in schema order, present or vacant. An entry site's record is the node's own top-level
+/// fields; a group site's record is that group's own field set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryValue {
     pub fields: Vec<Option<ValueDomain>>,
@@ -402,6 +428,15 @@ enum AuthTarget {
         /// marker and required fields, node-parametrically, one level down for a branch.
         record: Vec<FieldSchema>,
     },
+    /// A whole-group target: the group's name (which keys its physical leaf namespace
+    /// under the containing entry) and its own record fields. A group carries no marker
+    /// and no key — its presence is its containing entry's presence — so the whole-group
+    /// ops materialize, replace, or erase the group's leaves scoped to this field set,
+    /// leaving the entry's marker, top-level fields, sibling groups, and branches intact.
+    Group {
+        name: String,
+        fields: Vec<FieldSchema>,
+    },
     /// A managed-index read target: the index's cell-family identity, whether it is a
     /// unique complete-key lookup or a nonunique progressive-prefix scan, and the scalar
     /// kind of each ordered projected component (resolved once from the root's key
@@ -484,7 +519,7 @@ impl AuthorizedSite {
                 unique,
                 projection,
             } => Some((id, *unique, projection)),
-            AuthTarget::Entry(_) | AuthTarget::Field { .. } => None,
+            AuthTarget::Entry(_) | AuthTarget::Field { .. } | AuthTarget::Group { .. } => None,
         }
     }
 }

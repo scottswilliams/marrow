@@ -33,6 +33,7 @@ fn schema() -> StoreSchema {
             FieldSchema::scalar("isbn", ScalarKind::Str, true),
         ],
         branches: Vec::new(),
+        groups: Vec::new(),
         indexes: vec![
             IndexSchema {
                 id: BY_SHELF,

@@ -9,15 +9,17 @@
 
 use crate::codec::value::{ScalarKind, VALUE_CODEC_VERSION, ValueShape};
 
-use super::{BranchSchema, FieldSchema, IndexComponent, IndexSchema, StoreSchema};
+use super::{BranchSchema, FieldSchema, GroupSchema, IndexComponent, IndexSchema, StoreSchema};
 
 /// The store profile version. The canonical value-shape descriptor gives every
 /// field shape a leading discriminant byte (`0x00` scalar / `0x01` product / `0x02` sum),
 /// and the descriptor now records the root's managed indexes, so a store recorded under a
 /// different index set (or the pre-index form) is refused a reopen — index maintenance can
 /// never run against cells shaped by a different index projection (pre-beta, no stored
-/// user data).
-const PROFILE_VERSION: u8 = 0x03;
+/// user data). The descriptor now also records the root's unkeyed groups, so a store
+/// recorded under a different group set (or the pre-group form) is refused a reopen — a
+/// group's leaf cells can never be reinterpreted under a different group shape.
+const PROFILE_VERSION: u8 = 0x04;
 
 /// The stable descriptor tag for an index component kind, disjoint from the shape and
 /// key-kind tags; a frozen wire byte for the profile only.
@@ -117,6 +119,19 @@ fn push_key(out: &mut Vec<u8>, columns: &[ScalarKind]) {
     }
 }
 
+/// Append a root's unkeyed groups to the descriptor: a group count then, for each group
+/// in declaration order, its name and its own fields. A group has no key and no marker,
+/// so only its name and record shape are recorded; a changed group set, a renamed group,
+/// or a changed group field shape changes the descriptor, so a store's recorded profile
+/// refuses a reopen under a different group shape.
+fn push_groups(out: &mut Vec<u8>, groups: &[GroupSchema]) {
+    out.extend_from_slice(&(groups.len() as u16).to_be_bytes());
+    for GroupSchema { name, fields } in groups {
+        push_name(out, name);
+        push_fields(out, fields);
+    }
+}
+
 /// Append a node's keyed branches to the descriptor: a branch count then, for each
 /// branch in declaration order, its name, ordered key columns, own fields, and —
 /// recursively — its own nested branches. The recursion makes the descriptor cover a
@@ -166,17 +181,18 @@ fn push_indexes(out: &mut Vec<u8>, indexes: &[IndexSchema]) {
     }
 }
 
-/// The canonical profile descriptor bytes for `schema`: the root's name, key, and
-/// fields, its whole nested branch shape in declaration order, then its managed indexes. A
-/// branch schema change at any depth or an index-set change therefore changes the
-/// descriptor, so a store's recorded profile refuses a reopen under a different branch or
-/// index shape.
+/// The canonical profile descriptor bytes for `schema`: the root's name, key, top-level
+/// fields, its unkeyed groups, its whole nested branch shape in declaration order, then
+/// its managed indexes. A field, group, branch (at any depth), or index-set change
+/// therefore changes the descriptor, so a store's recorded profile refuses a reopen under
+/// a different field, group, branch, or index shape.
 pub(super) fn descriptor(schema: &StoreSchema) -> Vec<u8> {
     let mut out = vec![PROFILE_VERSION];
     out.extend_from_slice(&VALUE_CODEC_VERSION.to_be_bytes());
     push_name(&mut out, &schema.root_name);
     push_key(&mut out, &schema.key);
     push_fields(&mut out, &schema.fields);
+    push_groups(&mut out, &schema.groups);
     push_branches(&mut out, &schema.branches);
     push_indexes(&mut out, &schema.indexes);
     out
@@ -196,6 +212,7 @@ mod tests {
                 FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let same = descriptor(&base);
@@ -298,13 +315,14 @@ mod tests {
             key: vec![ScalarKind::Int],
             fields: vec![],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let bytes = descriptor(&schema);
         assert_eq!(bytes[0], PROFILE_VERSION);
         assert_eq!(
-            PROFILE_VERSION, 0x03,
-            "recording the managed-index section bumps the profile version"
+            PROFILE_VERSION, 0x04,
+            "recording the unkeyed-group section bumps the profile version"
         );
     }
 
@@ -319,6 +337,7 @@ mod tests {
                 required: true,
             }],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let scalar = base(ValueShape::Scalar(ScalarKind::Int));
@@ -362,10 +381,90 @@ mod tests {
             out.push(SHAPE_SCALAR);
             out.push(kind_tag(ScalarKind::Int));
             out.push(1);
+            out.extend_from_slice(&0u16.to_be_bytes()); // no groups
             out.extend_from_slice(&0u16.to_be_bytes()); // no branches
             out.extend_from_slice(&0u16.to_be_bytes()); // no indexes
             out
         });
+    }
+
+    #[test]
+    fn descriptor_distinguishes_group_sets() {
+        let base = StoreSchema {
+            root_name: "books".into(),
+            key: vec![ScalarKind::Int],
+            fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
+            groups: Vec::new(),
+            branches: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let details = GroupSchema {
+            name: "details".into(),
+            fields: vec![FieldSchema::scalar("pages", ScalarKind::Int, false)],
+        };
+
+        // Declaring a group changes the descriptor, so a store recorded with no group
+        // refuses a reopen whose schema grew one, and vice versa.
+        let mut with_group = base.clone();
+        with_group.groups = vec![details.clone()];
+        assert_ne!(descriptor(&base), descriptor(&with_group));
+        assert_eq!(descriptor(&with_group), descriptor(&with_group.clone()));
+
+        // A renamed group, a changed group field name/type, and a changed required flag
+        // all differ.
+        let mut renamed = base.clone();
+        renamed.groups = vec![GroupSchema {
+            name: "credits".into(),
+            ..details.clone()
+        }];
+        assert_ne!(descriptor(&with_group), descriptor(&renamed));
+
+        let mut field_typed = base.clone();
+        field_typed.groups = vec![GroupSchema {
+            name: "details".into(),
+            fields: vec![FieldSchema::scalar("pages", ScalarKind::Str, false)],
+        }];
+        assert_ne!(descriptor(&with_group), descriptor(&field_typed));
+
+        // A group section sorts before the branch section: a group and a same-named
+        // branch are distinct shapes, not aliases.
+        let mut as_branch = base.clone();
+        as_branch.branches = vec![BranchSchema {
+            name: "details".into(),
+            key: vec![ScalarKind::Int],
+            fields: vec![FieldSchema::scalar("pages", ScalarKind::Int, false)],
+            branches: Vec::new(),
+        }];
+        assert_ne!(descriptor(&with_group), descriptor(&as_branch));
+    }
+
+    #[test]
+    fn group_section_bytes_kat() {
+        // The frozen unkeyed-group descriptor section: a u16 group count, then per group
+        // its name and its own fields (a u16 field count then each field's name, shape,
+        // and required byte).
+        let mut out = Vec::new();
+        push_groups(
+            &mut out,
+            &[GroupSchema {
+                name: "details".into(),
+                fields: vec![FieldSchema::scalar("pages", ScalarKind::Int, false)],
+            }],
+        );
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u16.to_be_bytes()); // one group
+        push_name(&mut expected, "details");
+        expected.extend_from_slice(&1u16.to_be_bytes()); // one field
+        push_name(&mut expected, "pages");
+        expected.push(SHAPE_SCALAR);
+        expected.push(kind_tag(ScalarKind::Int));
+        expected.push(0); // not required
+        assert_eq!(out, expected);
+
+        // The empty group section is exactly a zero count.
+        let mut empty = Vec::new();
+        push_groups(&mut empty, &[]);
+        assert_eq!(empty, 0u16.to_be_bytes());
     }
 
     #[test]
@@ -378,6 +477,7 @@ mod tests {
                 FieldSchema::scalar("isbn", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let by_shelf = IndexSchema {

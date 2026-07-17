@@ -45,6 +45,39 @@ pub trait Durable {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<Option<EntryValue>, KernelFault>;
+    /// Materialize the record of one unkeyed group of the entry `keys` addresses: one
+    /// slot per group field, present or vacant. A group's presence is its containing
+    /// entry's presence, so this yields `None` exactly when the entry is payload-absent
+    /// and otherwise the group's leaves (a group with all-vacant leaves reads present
+    /// with every slot vacant). It reads only the group's own leaves — never the entry's
+    /// top-level fields, a sibling group, or a branch.
+    fn read_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<Option<EntryValue>, KernelFault>;
+    /// Exact replacement of one group of the entry `keys` addresses, scoped to the
+    /// group's own field set: remove every one of the group's leaves, then write the
+    /// leaf for each present field of `value`. Omitted sparse leaves do not survive
+    /// (replace, not merge). A group has no independent existence, so a replace over a
+    /// payload-absent entry is [`ReplaceOutcome::Missing`] and touches nothing; over a
+    /// present entry the entry marker, its top-level fields, its sibling groups, and its
+    /// branches are all left intact (the group-scoped payload-only law).
+    fn replace_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+        value: EntryValue,
+    ) -> Result<ReplaceOutcome, KernelFault>;
+    /// Erase one group of the entry `keys` addresses: remove every one of the group's own
+    /// leaves and nothing else. [`EraseOutcome::Erased`] when any leaf existed, else
+    /// [`EraseOutcome::Missing`]. The entry marker, its top-level fields, its sibling
+    /// groups, and its branches are preserved.
+    fn erase_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<EraseOutcome, KernelFault>;
     /// Freeze the first `limit` immediate keys of the layer the whole-entry `site`
     /// belongs to — the root's entry family (a `WholePayload` site) or a keyed branch
     /// family beneath a fixed parent (a branch site) — starting at an inclusive `from`
@@ -329,6 +362,21 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
             AuthTarget::index(index.id, index.unique, projection),
         );
     }
+    // A root-level group addresses the root entry (empty branch path); it carries the
+    // group's own record. Group-in-branch is durable-only future work, so a group site is
+    // root-level at T01.
+    if let SiteTarget::GroupEntry(position) = target {
+        let group = &schema.groups[*position as usize];
+        return AuthorizedSite::new(
+            schema.root_name.clone(),
+            schema.key.clone(),
+            Vec::new(),
+            AuthTarget::Group {
+                name: group.name.clone(),
+                fields: group.fields.clone(),
+            },
+        );
+    }
     // The container node the site addresses: its branch path (one hop per branch-path
     // element) and own record fields. A root target's container is the root; a branch
     // target's (whole entry or field) is the branch node the path descends to.
@@ -337,8 +385,8 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
         SiteTarget::BranchEntry(path) | SiteTarget::BranchField { branch: path, .. } => {
             resolve_branch_path(schema, path)
         }
-        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) => {
-            unreachable!("index targets resolved above")
+        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) | SiteTarget::GroupEntry(_) => {
+            unreachable!("index and group targets resolved above")
         }
     };
     // A whole-entry site enumerates the container's footprint, so it carries the
@@ -351,8 +399,8 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
         SiteTarget::FieldLeaf(index) | SiteTarget::BranchField { field: index, .. } => {
             AuthTarget::field(&container_fields[*index as usize], container_fields)
         }
-        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) => {
-            unreachable!("index targets resolved above")
+        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) | SiteTarget::GroupEntry(_) => {
+            unreachable!("index and group targets resolved above")
         }
     };
     AuthorizedSite::new(schema.root_name.clone(), schema.key.clone(), branch, target)
@@ -480,6 +528,28 @@ impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
         // A coherent read session observes committed state with no staging, so a
         // markerless own field leaf is a persisted orphan (corruption), not pending.
         op_read_entry(&self.view, site, keys, false)
+    }
+    fn read_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<Option<EntryValue>, KernelFault> {
+        op_read_group(&self.view, site, keys, false)
+    }
+    fn replace_group(
+        &mut self,
+        _site: &AuthorizedSite,
+        _keys: &[KeyScalar],
+        _value: EntryValue,
+    ) -> Result<ReplaceOutcome, KernelFault> {
+        unreachable!("verifier proved a read-only session performs no mutation")
+    }
+    fn erase_group(
+        &mut self,
+        _site: &AuthorizedSite,
+        _keys: &[KeyScalar],
+    ) -> Result<EraseOutcome, KernelFault> {
+        unreachable!("verifier proved a read-only session performs no mutation")
     }
     fn iterate_bounded(
         &mut self,
@@ -773,6 +843,64 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         // A transaction may hold sparse fields staged for reconcile at commit, so a
         // markerless own field leaf is tolerated as payload-absent, not corruption.
         op_read_entry(self.txn(), site, keys, true)
+    }
+    fn read_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<Option<EntryValue>, KernelFault> {
+        op_read_group(self.txn(), site, keys, true)
+    }
+    fn replace_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+        value: EntryValue,
+    ) -> Result<ReplaceOutcome, KernelFault> {
+        let stem = node_stem(site, keys)?;
+        let (name, fields) = group_target(site);
+        // A group has no independent existence: replacing a group of a payload-absent
+        // entry is Missing and touches nothing (symmetric with a whole-entry replace over
+        // a markerless node).
+        if read_raw(self.txn(), &stem)?.is_none() {
+            return Ok(ReplaceOutcome::Missing);
+        }
+        let group_stem = physical::group_stem(&stem, name);
+        let planner = Planner::new();
+        // Exact replacement scoped to the group's own leaves through the group-parametric
+        // planner: remove them all, then write the present ones. The entry marker, the
+        // entry's top-level fields, its sibling groups, and its branches are outside the
+        // group prefix and untouched. A group leaf is not index-projected, so no managed
+        // index maintenance runs.
+        let mut ops = planner.group_erase(&group_stem, fields);
+        ops.extend(planner.group_write(&group_stem, fields, &value)?);
+        self.apply(ops)?;
+        Ok(ReplaceOutcome::Replaced)
+    }
+    fn erase_group(
+        &mut self,
+        site: &AuthorizedSite,
+        keys: &[KeyScalar],
+    ) -> Result<EraseOutcome, KernelFault> {
+        let stem = node_stem(site, keys)?;
+        let (name, fields) = group_target(site);
+        let group_stem = physical::group_stem(&stem, name);
+        let planner = Planner::new();
+        // A group carries no marker, so erasing it removes only its own field leaves. It
+        // existed if any leaf was present; the removal is by exact key, so the entry
+        // marker, top-level fields, sibling groups, and branches are preserved.
+        let mut existed = false;
+        for cell in planner.group_cells(&group_stem, fields) {
+            if read_raw(self.txn(), &cell)?.is_some() {
+                existed = true;
+            }
+        }
+        self.apply(planner.group_erase(&group_stem, fields))?;
+        Ok(if existed {
+            EraseOutcome::Erased
+        } else {
+            EraseOutcome::Missing
+        })
     }
     fn iterate_bounded(
         &mut self,
@@ -1176,7 +1304,9 @@ fn site_record(site: &AuthorizedSite) -> &[FieldSchema] {
     match &site.target {
         AuthTarget::Entry(fields) => fields,
         AuthTarget::Field { record, .. } => record,
-        AuthTarget::Index { .. } => unreachable!("verifier proved a node op targets a node site"),
+        AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
+            unreachable!("verifier proved a node op targets a node site")
+        }
     }
 }
 
@@ -1204,7 +1334,7 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
             );
             name
         }
-        AuthTarget::Entry(_) | AuthTarget::Index { .. } => {
+        AuthTarget::Entry(_) | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a field-target site")
         }
     }
@@ -1215,7 +1345,7 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
 fn node_fields(site: &AuthorizedSite) -> &[FieldSchema] {
     match &site.target {
         AuthTarget::Entry(fields) => fields,
-        AuthTarget::Field { .. } | AuthTarget::Index { .. } => {
+        AuthTarget::Field { .. } | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a whole-entry op targets an entry site")
         }
     }
@@ -1258,7 +1388,9 @@ fn probe_slot<V: ReadView>(cells: &V, stem: &[u8]) -> Result<SlotClass, KernelFa
     Ok(match page.first() {
         None => SlotClass::Absent,
         Some((cell_key, _)) => match physical::below_marker(stem, cell_key) {
-            physical::BelowMarker::OwnField => SlotClass::Orphan,
+            // An own field leaf or a group leaf (both the node's own payload) below a
+            // markerless stem is a marker/payload mismatch — the orphan case.
+            physical::BelowMarker::OwnField | physical::BelowMarker::OwnGroup => SlotClass::Orphan,
             physical::BelowMarker::BranchDescendant => SlotClass::DescendantOnly,
             // An unrecognized structural tag is a shape the layout never writes: fail
             // closed with corruption in every session, never tolerated as staging.
@@ -1277,7 +1409,7 @@ fn op_presence<V: ReadView>(
     let physical_key = match &site.target {
         AuthTarget::Entry(_) => stem,
         AuthTarget::Field { name, .. } => physical::stem_field_leaf(&stem, name),
-        AuthTarget::Index { .. } => {
+        AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a presence op targets a node site")
         }
     };
@@ -1336,6 +1468,64 @@ fn op_read_entry<V: ReadView>(
             None => {
                 // A present marker with a missing required field is a marker/field
                 // mismatch: corruption, never implicit absence.
+                if field.required {
+                    return Err(KernelFault::Corruption);
+                }
+                values.push(None);
+            }
+            Some(bytes) => {
+                values.push(Some(
+                    decode_domain(&bytes, &field.shape).ok_or(KernelFault::Corruption)?,
+                ));
+            }
+        }
+    }
+    Ok(Some(EntryValue { fields: values }))
+}
+
+/// The group name and its own record fields a group site addresses. The verifier proves
+/// a whole-group op targets a group site, so any other target here is a forged image.
+fn group_target(site: &AuthorizedSite) -> (&str, &[FieldSchema]) {
+    match &site.target {
+        AuthTarget::Group { name, fields } => (name, fields),
+        AuthTarget::Entry(_) | AuthTarget::Field { .. } | AuthTarget::Index { .. } => {
+            unreachable!("verifier proved a whole-group op targets a group site")
+        }
+    }
+}
+
+/// Materialize one group's record from the entry `keys` addresses: one slot per group
+/// field, present or vacant. A group's presence is its containing entry's presence, so
+/// this probes the entry marker exactly as [`op_read_entry`] does — a markerless slot is
+/// payload-absent (or, for a persisted own-payload leaf with no marker, corruption in a
+/// committed read and pending inside a transaction). A present entry then reads the
+/// group's own leaves under the group prefix; a present entry missing a `required` group
+/// leaf is a marker/payload mismatch (corruption), and an absent sparse leaf reads vacant.
+fn op_read_group<V: ReadView>(
+    cells: &V,
+    site: &AuthorizedSite,
+    keys: &[KeyScalar],
+    tolerate_pending: bool,
+) -> Result<Option<EntryValue>, KernelFault> {
+    let stem = node_stem(site, keys)?;
+    let (name, fields) = group_target(site);
+    match probe_slot(cells, &stem)? {
+        SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
+        SlotClass::Orphan => {
+            return if tolerate_pending {
+                Ok(None)
+            } else {
+                Err(KernelFault::Corruption)
+            };
+        }
+        SlotClass::Present => {}
+    }
+    let group_stem = physical::group_stem(&stem, name);
+    let mut values = Vec::with_capacity(fields.len());
+    for field in fields {
+        let leaf = physical::stem_field_leaf(&group_stem, &field.name);
+        match read_raw(cells, &leaf)? {
+            None => {
                 if field.required {
                     return Err(KernelFault::Corruption);
                 }
@@ -1650,8 +1840,9 @@ mod tests {
     use super::super::physical;
     use super::super::{
         BoundedKeys, BoundedLimit, BranchSchema, CommitResult, CreateOutcome, DemandCoverage,
-        EntryValue, EraseOutcome, FieldSchema, IndexComponent, IndexSchema, InvocationGrant,
-        KernelFault, Presence, ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
+        EntryValue, EraseOutcome, FieldSchema, GroupSchema, IndexComponent, IndexSchema,
+        InvocationGrant, KernelFault, Presence, ReplaceOutcome, SessionError, SiteSpec, SiteTarget,
+        StoreSchema,
     };
     use super::{Durable, DurableStore};
     use crate::codec::key::KeyScalar;
@@ -1667,6 +1858,7 @@ mod tests {
                 FieldSchema::scalar("label", ScalarKind::Str, false),
             ],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         }
     }
@@ -1826,6 +2018,7 @@ mod tests {
                 fields: vec![FieldSchema::scalar("body", ScalarKind::Str, false)],
                 branches: Vec::new(),
             }],
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![SiteSpec {
@@ -1932,6 +2125,7 @@ mod tests {
                 fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
                 branches: Vec::new(),
             }],
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![
@@ -2292,6 +2486,7 @@ mod tests {
                 fields: branch_fields,
                 branches: Vec::new(),
             }],
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![
@@ -3039,6 +3234,7 @@ mod tests {
             key: vec![ScalarKind::Str],
             fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
             branches: vec![notes],
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![
@@ -3590,6 +3786,7 @@ mod tests {
             key: vec![ScalarKind::Int, ScalarKind::Int],
             fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![
@@ -3654,6 +3851,7 @@ mod tests {
             key: vec![ScalarKind::Int, ScalarKind::Int],
             fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
             branches: Vec::new(),
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![SiteSpec {
@@ -3688,6 +3886,7 @@ mod tests {
                 fields: vec![FieldSchema::scalar("cval", ScalarKind::Int, true)],
                 branches: Vec::new(),
             }],
+            groups: Vec::new(),
             indexes: Vec::new(),
         };
         let sites = vec![
@@ -4372,6 +4571,358 @@ mod tests {
         assert_eq!(
             index_cells(&mem),
             sorted(vec![label_cell("a", "z"), value_cell("a", 1)])
+        );
+    }
+
+    // ---- Durable groups (GR01 session 1): the group-scoped payload-only law ----
+    //
+    // These drive the kernel's group ops through directly-constructed group sites (the
+    // verifier emits them in session 2). A group is part of the entry's payload — no
+    // marker, no key — so its whole read follows the entry's presence and its whole
+    // replace/erase confine to the group's own leaves.
+
+    /// A group-bearing root: `books`(Str) with a required `title` and a sparse `summary`,
+    /// two unkeyed groups `details {pages, language}` and `credits {author}` (all sparse),
+    /// and a keyed branch `notes(Int){text}`. Sites: 0 whole payload, 1 group `details`,
+    /// 2 group `credits`, 3 branch `notes` entry.
+    fn group_schema() -> (StoreSchema, Vec<SiteSpec>) {
+        let schema = StoreSchema {
+            root_name: "books".into(),
+            key: vec![ScalarKind::Str],
+            fields: vec![
+                FieldSchema::scalar("title", ScalarKind::Str, true),
+                FieldSchema::scalar("summary", ScalarKind::Str, false),
+            ],
+            groups: vec![
+                GroupSchema {
+                    name: "details".into(),
+                    fields: vec![
+                        FieldSchema::scalar("pages", ScalarKind::Int, false),
+                        FieldSchema::scalar("language", ScalarKind::Str, false),
+                    ],
+                },
+                GroupSchema {
+                    name: "credits".into(),
+                    fields: vec![FieldSchema::scalar("author", ScalarKind::Str, false)],
+                },
+            ],
+            branches: vec![BranchSchema {
+                name: "notes".into(),
+                key: vec![ScalarKind::Int],
+                fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
+                branches: Vec::new(),
+            }],
+            indexes: Vec::new(),
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::GroupEntry(0),
+            },
+            SiteSpec {
+                target: SiteTarget::GroupEntry(1),
+            },
+            SiteSpec {
+                target: SiteTarget::BranchEntry(vec![0].into()),
+            },
+        ];
+        (schema, sites)
+    }
+
+    fn group_store() -> DurableStore<MemoryEngine> {
+        let (schema, sites) = group_schema();
+        DurableStore::from_engine(MemoryEngine::new(), schema, sites)
+    }
+
+    /// The physical prefix of book `book`'s `details` group — the byte range its leaves
+    /// occupy.
+    fn details_prefix(book: &str) -> Vec<u8> {
+        physical::group_stem(&physical::marker_key("books", &[ks(book)]), "details")
+    }
+
+    /// Book `book`'s own entry cells (its marker is a byte-prefix of its whole subtree)
+    /// excluding those under `exclude`: the sibling cells a group write must leave
+    /// byte-identical. Store-wide meta cells (the profile and the per-commit witness) are
+    /// outside the entry family, so they never enter this comparison.
+    fn entry_siblings(
+        store: &DurableStore<MemoryEngine>,
+        book: &str,
+        exclude: &[u8],
+    ) -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
+        let entry = physical::marker_key("books", &[ks(book)]);
+        all_cells(store)
+            .into_iter()
+            .filter(|(key, _)| key.starts_with(&entry) && !key.starts_with(exclude))
+            .collect()
+    }
+
+    /// The exit-gate proof: a whole-group write — replace or erase, through the production
+    /// transaction pipeline — provably disturbs no sibling cell. Every cell outside the
+    /// `details` group's own prefix (the entry marker, the entry's top-level fields, the
+    /// sibling `credits` group's leaves, and a branch note's cells) is byte-identical
+    /// before and after, while the group itself is exactly replaced (omitted leaves drop)
+    /// and then erased.
+    #[test]
+    fn a_group_write_never_disturbs_siblings() {
+        let mut store = group_store();
+        let book = [ks("a")];
+
+        // Seed the entry, populate both groups, and add a branch note.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            txn.create_entry(
+                &root,
+                &book,
+                EntryValue {
+                    fields: vec![vs("Small Gods"), vs("a novel")],
+                },
+            )
+            .expect("create root");
+            let details = txn.site(1);
+            txn.replace_group(
+                &details,
+                &book,
+                EntryValue {
+                    fields: vec![vi(384), vs("en")],
+                },
+            )
+            .expect("populate details");
+            let credits = txn.site(2);
+            txn.replace_group(
+                &credits,
+                &book,
+                EntryValue {
+                    fields: vec![vs("Pratchett")],
+                },
+            )
+            .expect("populate credits");
+            let notes = txn.site(3);
+            txn.create_entry(
+                &notes,
+                &[ks("a"), ki(1)],
+                EntryValue {
+                    fields: vec![vs("note one")],
+                },
+            )
+            .expect("create note");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        let prefix = details_prefix("a");
+        let siblings_before = entry_siblings(&store, "a", &prefix);
+        assert!(
+            all_cells(&store).keys().any(|k| k.starts_with(&prefix)),
+            "the details group has leaves before the write",
+        );
+
+        // Replace `details` with a partial value: `pages` changes, `language` omitted.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let details = txn.site(1);
+            assert_eq!(
+                txn.replace_group(
+                    &details,
+                    &book,
+                    EntryValue {
+                        fields: vec![vi(999), None],
+                    },
+                )
+                .expect("replace details"),
+                ReplaceOutcome::Replaced,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            entry_siblings(&store, "a", &prefix),
+            siblings_before,
+            "a group replace disturbs no sibling cell",
+        );
+
+        // The group now reads pages=999 with language dropped — exact replacement.
+        {
+            let mut read = store
+                .read_session(InvocationGrant::full_store(), read_demand())
+                .expect("read");
+            let details = read.site(1);
+            let value = read
+                .read_group(&details, &book)
+                .expect("read group")
+                .expect("present entry ⇒ present group");
+            assert_eq!(value.fields, vec![vi(999), None]);
+        }
+
+        // Erase `details`: its leaves go, siblings still byte-identical.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let details = txn.site(1);
+            assert_eq!(
+                txn.erase_group(&details, &book).expect("erase details"),
+                EraseOutcome::Erased,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert_eq!(
+            entry_siblings(&store, "a", &prefix),
+            siblings_before,
+            "a group erase disturbs no sibling cell",
+        );
+        assert!(
+            all_cells(&store).keys().all(|k| !k.starts_with(&prefix)),
+            "erase removed every one of the group's leaves",
+        );
+
+        // The entry is still present, so the erased group reads present with vacant leaves.
+        {
+            let mut read = store
+                .read_session(InvocationGrant::full_store(), read_demand())
+                .expect("read");
+            let details = read.site(1);
+            let value = read
+                .read_group(&details, &book)
+                .expect("read group")
+                .expect("present entry ⇒ present group");
+            assert_eq!(
+                value.fields,
+                vec![None, None],
+                "a present entry's erased group reads present with vacant leaves",
+            );
+        }
+    }
+
+    /// A group's whole read follows its containing entry's presence, and a group has no
+    /// independent existence: over a payload-absent entry the group reads absent and a
+    /// replace is `Missing` (writing nothing); once the entry is present but the group was
+    /// never populated, it reads present with vacant leaves.
+    #[test]
+    fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
+        let mut store = group_store();
+        let book = [ks("a")];
+
+        // No entry: the group reads absent, and a replace is Missing (touches nothing).
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let details = txn.site(1);
+            assert!(
+                txn.read_group(&details, &book).expect("read").is_none(),
+                "no entry ⇒ group absent",
+            );
+            assert_eq!(
+                txn.replace_group(
+                    &details,
+                    &book,
+                    EntryValue {
+                        fields: vec![vi(1), vs("en")],
+                    },
+                )
+                .expect("replace"),
+                ReplaceOutcome::Missing,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        let entry = physical::marker_key("books", &[ks("a")]);
+        assert!(
+            all_cells(&store).keys().all(|key| !key.starts_with(&entry)),
+            "a Missing group replace wrote no entry cell",
+        );
+
+        // Create the entry; the group now reads present with vacant leaves.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            txn.create_entry(
+                &root,
+                &book,
+                EntryValue {
+                    fields: vec![vs("t"), None],
+                },
+            )
+            .expect("create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        {
+            let mut read = store
+                .read_session(InvocationGrant::full_store(), read_demand())
+                .expect("read");
+            let details = read.site(1);
+            let value = read
+                .read_group(&details, &book)
+                .expect("read")
+                .expect("present entry ⇒ present group");
+            assert_eq!(
+                value.fields,
+                vec![None, None],
+                "an unpopulated group reads present with vacant leaves",
+            );
+        }
+    }
+
+    /// A present entry missing a `required` group leaf is a marker/payload mismatch — the
+    /// whole-group read faults corruption, exactly as a present entry missing a required
+    /// top-level field does. Defense in depth over the trust boundary: a committed store
+    /// should never hold this state.
+    #[test]
+    fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
+        use crate::codec::value::encode_domain;
+
+        let schema = StoreSchema {
+            root_name: "books".into(),
+            key: vec![ScalarKind::Str],
+            fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
+            groups: vec![GroupSchema {
+                name: "meta".into(),
+                fields: vec![FieldSchema::scalar("isbn", ScalarKind::Str, true)],
+            }],
+            branches: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let sites = vec![
+            SiteSpec {
+                target: SiteTarget::WholePayload,
+            },
+            SiteSpec {
+                target: SiteTarget::GroupEntry(0),
+            },
+        ];
+
+        // Inject a present entry (marker + required title) with the required group leaf
+        // `isbn` absent — a state the ops never write, so it is seeded raw.
+        let book_stem = physical::marker_key("books", &[ks("a")]);
+        let title_bytes = encode_domain(&ValueDomain::Scalar(RuntimeScalar::Str("t".into())))
+            .expect("encode title");
+        let mut engine = MemoryEngine::new();
+        {
+            let mut txn = engine.begin().expect("begin");
+            txn.put(&book_stem, physical::MARKER_VALUE.to_vec())
+                .expect("seed marker");
+            txn.put(&physical::stem_field_leaf(&book_stem, "title"), title_bytes)
+                .expect("seed title");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let mut store = DurableStore::from_engine(engine, schema, sites);
+
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read");
+        let meta = read.site(1);
+        assert!(
+            matches!(
+                read.read_group(&meta, &[ks("a")]),
+                Err(KernelFault::Corruption)
+            ),
+            "a present entry missing a required group leaf is corruption",
         );
     }
 }

@@ -11,11 +11,22 @@
 //! entry family prefix   0x01 0x20 esc(root_name)
 //! marker key            <family> enc(keytuple) 0x00                        value = 0x01
 //! field leaf key        <marker> 0x10 esc(field)                           value = codec bytes
+//! group leaf key        <marker> 0x20 esc(group) 0x10 esc(field)           value = codec bytes
 //! branch child marker   <marker> 0x30 esc(branch) enc(childTuple) 0x00     value = 0x01
 //! iteration cursor      <family> enc(keytuple) 0xFF
 //! index cell key        0x02 esc(root_name) index_id[16] enc(projValues)   value = enc(sourceKey)
 //! meta cell key         0x10 esc(name)
 //! ```
+//!
+//! An unkeyed *group* is a static field-path namespace inside the entry's payload — not a
+//! keyed node. It carries no marker and no key; its leaves are the entry's own payload
+//! namespaced under the group name (`<marker> 0x20 esc(group) 0x10 esc(field)`), and its
+//! presence is the entry's presence. The group tag `0x20` sorts between the field tag
+//! `0x10` and the branch tag `0x30`, so an entry's own field leaves precede its group
+//! leaves, which precede its branch descendants; every group leaf still nests inside the
+//! entry's `(marker, cursor]` range. A group's whole read/replace/erase confine to the
+//! group's own leaves under its `<marker> 0x20 esc(group)` prefix, disjoint from the
+//! entry's top-level fields, its sibling groups, and its branches.
 //!
 //! A managed index's cells form their own family (`0x02`), disjoint from the entry family
 //! (`0x01`) and the meta family (`0x10`). One index's cells are separated from another's
@@ -43,16 +54,16 @@
 //!
 //! Because `enc(keytuple)` is prefix-free (each column fixed width, or `0x00,0x00`-
 //! terminated with `0x00,0x01` escapes, and the columns self-delimit) and the structural
-//! tags ascend `0x00 < 0x10 < 0x30 < 0xFF`
-//! (marker terminator, field, branch, cursor), every cell of entry `k` — including
-//! every descendant in every branch — sorts inside `(marker(k), cursor(k)]`, and no
-//! cell of another entry does. Two consequences the kernel relies on: one
-//! prefix-successor seek past `cursor(k)` skips `k`'s whole subtree regardless of
-//! branch fan-out (the traversal-skip law), and `k`'s own field leaves (`0x10`) sort
-//! ahead of its branch descendants (`0x30`), so a scan of `k`'s cells meets an
-//! orphan own-leaf before any descendant — the precedence the bounded prefix probe
-//! uses to surface a marker/field corruption ahead of a legitimate descendant-only
-//! node.
+//! tags ascend `0x00 < 0x10 < 0x20 < 0x30 < 0xFF`
+//! (marker terminator, field, group, branch, cursor), every cell of entry `k` — including
+//! every group leaf and every descendant in every branch — sorts inside
+//! `(marker(k), cursor(k)]`, and no cell of another entry does. Two consequences the
+//! kernel relies on: one prefix-successor seek past `cursor(k)` skips `k`'s whole subtree
+//! regardless of branch fan-out (the traversal-skip law), and `k`'s own payload leaves —
+//! its field leaves (`0x10`) then its group leaves (`0x20`) — sort ahead of its branch
+//! descendants (`0x30`), so a scan of `k`'s cells meets an orphan own-payload leaf before
+//! any descendant — the precedence the bounded prefix probe uses to surface a
+//! marker/payload corruption ahead of a legitimate descendant-only node.
 
 use crate::codec::key::{
     KeyScalar, decode_key_value, encode_escaped_bytes, encode_key_tuple, encode_key_value,
@@ -71,6 +82,18 @@ const FIELD_TAG: u8 = 0x10;
 /// [`CURSOR_SENTINEL`], so every branch descendant stays inside the entry's
 /// `(marker, cursor]` range and one seek past the cursor skips the whole subtree.
 const BRANCH_TAG: u8 = 0x30;
+/// Separator introducing a group's own field namespace beneath an entry's marker stem.
+/// A group is part of its containing entry's payload, not a keyed node: it carries no
+/// marker and no key, and its presence is exactly its entry's presence. Sorts above
+/// [`FIELD_TAG`] and below [`BRANCH_TAG`], so within an entry the own field leaves
+/// (`0x10`) precede the group leaves (`0x20`), which precede the branch descendants
+/// (`0x30`) — the field < group < branch precedence the iteration classifier and the
+/// bounded prefix probe rely on. It shares the byte value of [`ROOT_TAG`], which is
+/// sound because the two never occupy the same structural position: `ROOT_TAG` sits at
+/// a fixed offset inside the entry-family prefix (immediately after [`ENTRY_FAMILY`]),
+/// while `GROUP_TAG` only ever follows a node's marker terminator, so no key range and
+/// no tag-classification site compares them.
+const GROUP_TAG: u8 = 0x20;
 /// Marker-stem terminator; sorts below [`FIELD_TAG`], so the marker precedes leaves.
 const MARKER_TERMINATOR: u8 = 0x00;
 /// Iteration-cursor sentinel; sorts above every cell of its entry.
@@ -140,6 +163,23 @@ pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: &str) -> Vec<u8> 
     let mut out = parent_stem.to_vec();
     out.push(BRANCH_TAG);
     encode_escaped_bytes(branch.as_bytes(), &mut out);
+    out
+}
+
+/// The byte prefix shared by every field leaf of the group `group` beneath the node
+/// whose marker `stem` is given: the node's marker stem, the group tag, and the escaped
+/// group name. Because `esc(group)` self-terminates, this prefix uniquely delimits one
+/// group's leaves — a leaf of a differently-named sibling group, or one of the node's
+/// own top-level field leaves, never shares it. A group carries no marker and no key
+/// (its presence is its containing entry's presence), so this stem is *not* a marker
+/// stem: its leaves derive from it through the shared [`stem_field_leaf`] owner exactly
+/// as a node's own fields derive from its marker stem, one namespace level down. The
+/// single owner of the group-namespace prefix bytes; both a group's leaf enumeration and
+/// its whole-group read/replace/erase derive every cell it touches from this prefix.
+pub(super) fn group_stem(stem: &[u8], group: &str) -> Vec<u8> {
+    let mut out = stem.to_vec();
+    out.push(GROUP_TAG);
+    encode_escaped_bytes(group.as_bytes(), &mut out);
     out
 }
 
@@ -228,6 +268,7 @@ pub(super) fn decode_index_source_key(bytes: &[u8], arity: usize) -> Option<Vec<
 /// (fail-closed) rather than one skipping it and the other treating it as absent.
 enum StemTag {
     Field,
+    Group,
     Branch,
     Unknown,
 }
@@ -235,6 +276,7 @@ enum StemTag {
 fn stem_tag(byte: u8) -> StemTag {
     match byte {
         FIELD_TAG => StemTag::Field,
+        GROUP_TAG => StemTag::Group,
         BRANCH_TAG => StemTag::Branch,
         _ => StemTag::Unknown,
     }
@@ -280,8 +322,10 @@ fn classify_under_prefix(prefix: &[u8], cell_key: &[u8]) -> CellKind {
         [MARKER_TERMINATOR, tag, ..] => match stem_tag(*tag) {
             // a branch tag: a branch descendant of a markerless entry.
             StemTag::Branch => CellKind::Descendant(key),
-            // a field tag or an unrecognized tag where a marker belongs — corruption.
-            StemTag::Field | StemTag::Unknown => CellKind::Orphan,
+            // an own field leaf or a group leaf (both the entry's own payload) where a
+            // marker belongs is a marker/payload mismatch; an unrecognized tag is a
+            // shape the layout never writes — all corruption.
+            StemTag::Field | StemTag::Group | StemTag::Unknown => CellKind::Orphan,
         },
         // no marker terminator after the key (a malformed cell): corruption.
         _ => CellKind::Orphan,
@@ -289,14 +333,17 @@ fn classify_under_prefix(prefix: &[u8], cell_key: &[u8]) -> CellKind {
 }
 
 /// What a cell sorting strictly after a node's marker `stem`, under the stem's own
-/// prefix, is: one of the node's own field leaves (`stem 0x10 …`), a cell of one of
-/// its branch descendants (`stem 0x30 …`), an unrecognized structural tag (a shape
-/// the layout never writes — corruption), or foreign (not under the stem — which the
-/// bounded probe's prefix bound already excludes). The probe reads the first such
-/// cell to tell a descendant-only node (a branch descendant with no marker) from an
-/// orphan (an own field leaf with no marker) and to fail closed on an unknown tag.
+/// prefix, is: one of the node's own field leaves (`stem 0x10 …`), one of its group
+/// leaves (`stem 0x20 …`), a cell of one of its branch descendants (`stem 0x30 …`), an
+/// unrecognized structural tag (a shape the layout never writes — corruption), or
+/// foreign (not under the stem — which the bounded probe's prefix bound already
+/// excludes). The probe reads the first such cell to tell a descendant-only node (a
+/// branch descendant with no marker) from an orphan (an own field or group leaf with no
+/// marker) and to fail closed on an unknown tag. A group leaf, like a field leaf, is the
+/// entry's own payload, so a markerless one is an orphan — not a descendant-only node.
 pub(super) enum BelowMarker {
     OwnField,
+    OwnGroup,
     BranchDescendant,
     Corrupt,
     Foreign,
@@ -309,6 +356,7 @@ pub(super) fn below_marker(stem: &[u8], cell_key: &[u8]) -> BelowMarker {
     match cell_key.strip_prefix(stem) {
         Some([tag, ..]) => match stem_tag(*tag) {
             StemTag::Field => BelowMarker::OwnField,
+            StemTag::Group => BelowMarker::OwnGroup,
             StemTag::Branch => BelowMarker::BranchDescendant,
             StemTag::Unknown => BelowMarker::Corrupt,
         },
@@ -610,6 +658,128 @@ mod tests {
             own_field.as_slice() < branch_child.as_slice(),
             "own field precedes branch descendants",
         );
+    }
+
+    /// A group leaf of `group` and field `field` of the entry keyed `key`: the
+    /// entry-marker-stem, the group prefix, then the field leaf, through the shared
+    /// [`stem_field_leaf`] owner one namespace level down.
+    fn group_leaf(root: &str, key: &KeyScalar, group: &str, field: &str) -> Vec<u8> {
+        stem_field_leaf(&group_stem(&mk(root, key), group), field)
+    }
+
+    /// The group tag sits between the field tag and the branch tag, so within one entry
+    /// the own field leaves precede the group leaves, which precede the branch
+    /// descendants — the field < group < branch precedence the bounded prefix probe and
+    /// iteration classifier rely on. Every group leaf still sorts after the marker and
+    /// before the cursor.
+    #[test]
+    fn group_leaves_sort_between_own_fields_and_branch_descendants() {
+        let root = "books";
+        let key = KeyScalar::Str("a".into());
+        let marker = mk(root, &key);
+        let cur = cursor(root, &key);
+        let own_field = stem_field_leaf(&marker, "title");
+        let group_leaf = group_leaf(root, &key, "details", "pages");
+        let branch_child = bcs(&marker, "notes", &KeyScalar::Int(1));
+        assert!(marker < own_field, "marker precedes own field");
+        assert!(
+            own_field < group_leaf,
+            "own field leaf precedes a group leaf"
+        );
+        assert!(
+            group_leaf < branch_child,
+            "group leaf precedes a branch descendant"
+        );
+        assert!(group_leaf < cur, "group leaf precedes the cursor");
+    }
+
+    /// Every cell a group can occupy — each of its leaves, over representative parent
+    /// keys — nests strictly inside the entry's `(marker, cursor)` range, so a group is
+    /// part of exactly one entry's subtree and one seek past the cursor skips it with the
+    /// rest of the entry.
+    #[test]
+    fn group_leaves_nest_inside_the_entry_range() {
+        let root = "books";
+        for key in representative_keys() {
+            let marker = mk(root, &key);
+            let cur = cursor(root, &key);
+            for field in ["pages", "language"] {
+                let leaf = group_leaf(root, &key, "details", field);
+                assert!(
+                    marker.as_slice() < leaf.as_slice(),
+                    "group leaf sorts after the marker for {key:?}",
+                );
+                assert!(
+                    leaf.as_slice() < cur.as_slice(),
+                    "group leaf sorts before the cursor for {key:?}",
+                );
+            }
+        }
+    }
+
+    /// A group's leaves occupy a byte range disjoint from the entry's top-level field
+    /// leaves, from a differently-named sibling group's leaves, and from the entry's
+    /// branches: a group write confined to `<marker> 0x20 esc(group)` never aliases any
+    /// of them. The `group_stem` prefix bounds one group's cells and no other's.
+    #[test]
+    fn group_leaves_are_disjoint_from_fields_sibling_groups_and_branches() {
+        let root = "books";
+        let key = KeyScalar::Str("a".into());
+        let marker = mk(root, &key);
+        let details = group_stem(&marker, "details");
+        let details_leaf = stem_field_leaf(&details, "pages");
+        // A top-level field named identically to a group leaf's field is a distinct cell.
+        let top_field = stem_field_leaf(&marker, "pages");
+        assert!(
+            !details_leaf.starts_with(&marker_field_prefix(&marker)),
+            "a group leaf is not under the top-level field tag"
+        );
+        assert_ne!(details_leaf, top_field, "group leaf ≠ top-level field leaf");
+        assert!(
+            !top_field.starts_with(&details),
+            "a top-level field leaf is outside the group prefix"
+        );
+        // A sibling group's leaves are outside this group's prefix, and vice versa.
+        let credits = group_stem(&marker, "credits");
+        let credits_leaf = stem_field_leaf(&credits, "pages");
+        assert!(
+            !credits_leaf.starts_with(&details),
+            "a sibling group's leaf is outside this group's prefix"
+        );
+        assert!(
+            !details_leaf.starts_with(&credits),
+            "this group's leaf is outside the sibling group's prefix"
+        );
+        // A branch cell is outside the group prefix (branch tag 0x30 ≠ group tag 0x20).
+        let branch_child = bcs(&marker, "notes", &KeyScalar::Int(1));
+        assert!(
+            !branch_child.starts_with(&details),
+            "a branch cell is outside the group prefix"
+        );
+    }
+
+    /// The field tag prefix of an entry's own field-leaf namespace: the marker followed
+    /// by the field tag. A group leaf must not fall under it (a group leaf's first
+    /// post-marker byte is the group tag, not the field tag).
+    fn marker_field_prefix(marker: &[u8]) -> Vec<u8> {
+        let mut out = marker.to_vec();
+        out.push(FIELD_TAG);
+        out
+    }
+
+    /// A group leaf sitting where a root entry marker would begin classifies as an orphan
+    /// (own payload with no marker — corruption), through the shared [`stem_tag`] owner
+    /// that also reports it as [`BelowMarker::OwnGroup`] on the probe path — so a
+    /// markerless group leaf can never slip through one path as a descendant-only node
+    /// while the other calls it corruption.
+    #[test]
+    fn a_markerless_group_leaf_is_an_orphan_on_both_paths() {
+        let root = "books";
+        let key = KeyScalar::Str("a".into());
+        let stem = mk(root, &key);
+        let leaf = group_leaf(root, &key, "details", "pages");
+        assert!(matches!(classify_cell(root, &leaf), CellKind::Orphan));
+        assert!(matches!(below_marker(&stem, &leaf), BelowMarker::OwnGroup));
     }
 
     /// The parent cursor sorts after the parent's whole subtree (own fields and every
