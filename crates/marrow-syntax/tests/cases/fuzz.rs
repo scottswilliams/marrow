@@ -444,11 +444,13 @@ fn brace_grammar_corpus_holds_the_oracle_invariants_without_hanging() {
 }
 
 /// Bytes chosen to stress the lexer and parser: string and interpolation
-/// delimiters, layout, comment and path punctuation, an invalid-UTF-8 lead byte,
-/// and NUL.
+/// delimiters, block and key brackets, the `//`/`///` comment and `=>` arm
+/// leaders, path and generic punctuation, an invalid-UTF-8 lead byte, and NUL.
+/// `/`, `[`, and `]` let the insert path synthesize comment leaders and key
+/// groups from any seed; `;` is retained as ordinary post-brace punctuation.
 const INTERESTING: &[u8] = &[
-    0x00, 0xff, b'"', b'\\', b'{', b'}', b'(', b')', b'\n', b'\t', b' ', b';', b':', b'^', b'.',
-    b'=', b'$', b'+', b'-', b'<', b'>', b'~', b'?', b'a', b'1',
+    0x00, 0xff, b'"', b'\\', b'{', b'}', b'(', b')', b'[', b']', b'\n', b'\t', b' ', b';', b':',
+    b'^', b'.', b'=', b'$', b'+', b'-', b'/', b'<', b'>', b'~', b'?', b'a', b'1',
 ];
 
 fn mutate(bytes: &mut Vec<u8>, rng: &mut SplitMix64) {

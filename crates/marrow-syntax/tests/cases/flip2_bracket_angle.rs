@@ -8,8 +8,8 @@
 //! flip rewrites it).
 
 use marrow_syntax::{
-    Declaration, DiagnosticReason, Expression, ParseDiagnosticReason, ResourceMember, Statement,
-    TypeExpr, parse_source,
+    Declaration, DiagnosticReason, ExpectedSyntax, Expression, ParseDiagnosticReason,
+    ResourceMember, Statement, TypeExpr, parse_source,
 };
 
 fn clean(source: &str) {
@@ -145,6 +145,17 @@ fn an_empty_keyed_group_is_rejected() {
     assert!(
         !parsed.diagnostics.is_empty(),
         "a keyed access selects at least one key column"
+    );
+}
+
+#[test]
+fn an_unclosed_keyed_group_recovers_at_the_close_bracket() {
+    assert!(
+        has_reason(
+            "module app\nfn run() {\n    const x = ^books[id\n}\n",
+            ParseDiagnosticReason::Expected(ExpectedSyntax::CloseBracket),
+        ),
+        "an unclosed key group reports the missing `]`"
     );
 }
 
