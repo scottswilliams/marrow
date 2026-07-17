@@ -32,7 +32,6 @@ fn parsed_return_expr(source: &str) -> Expression {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_const_values_into_expression_nodes() {
     let cases: &[(&str, Expectation<'_>)] = &[
         (
@@ -96,7 +95,6 @@ fn parses_const_values_into_expression_nodes() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_const_operator_expressions_with_precedence() {
     // 60 * 60 + 1 parses as (60 * 60) + 1.
     let parsed = parse_source("const Total: int = 60 * 60 + 1\n");
@@ -128,7 +126,6 @@ fn parses_const_operator_expressions_with_precedence() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_const_unary_and_grouping() {
     let parsed = parse_source("const Adjusted: int = -(1 + 2)\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -153,7 +150,6 @@ fn parses_const_unary_and_grouping() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bare_type_keyword_is_not_a_value() {
     // `int` alone is a type, not an expression, so it is a syntax error in
     // value position rather than a silently accepted value.
@@ -177,7 +173,6 @@ fn bare_type_keyword_is_not_a_value() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn const_chained_equality_is_not_associative() {
     // Equality, inequality, comparison, and `is` each sit on their own
     // non-associative level: a second same-class operator is a grammar error
@@ -230,7 +225,6 @@ fn const_chained_equality_is_not_associative() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn const_binary_expression_span_covers_whole_expression() {
     let source = "const Total: int = 60 * 60\n";
     let parsed = parse_source(source);
@@ -242,7 +236,6 @@ fn const_binary_expression_span_covers_whole_expression() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn const_expression_span_points_into_source() {
     let source = "const Max: int = 5\n";
     let parsed = parse_source(source);
@@ -256,7 +249,6 @@ fn const_expression_span_points_into_source() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn empty_const_value_reports_the_single_generic_diagnostic() {
     // With no inner diagnostic drained (the value is truly empty), the generic
     // fallback is the only diagnostic: a const with `=` and nothing after it
@@ -276,10 +268,9 @@ fn empty_const_value_reports_the_single_generic_diagnostic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn equality_and_inequality_parse_in_expression_position() {
     // `==` is equality and `!=` is inequality; both parse as binary operators.
-    let value = parsed_return_expr("fn f(a: int, b: int): bool\n    return a == b\n");
+    let value = parsed_return_expr("fn f(a: int, b: int): bool {\n    return a == b\n}\n");
     assert!(
         matches!(
             value,
@@ -291,7 +282,7 @@ fn equality_and_inequality_parse_in_expression_position() {
         "expected `==` to parse as equality: {value:?}"
     );
 
-    let value = parsed_return_expr("fn f(x: int, y: int): bool\n    return x != y\n");
+    let value = parsed_return_expr("fn f(x: int, y: int): bool {\n    return x != y\n}\n");
     assert!(
         matches!(
             value,
@@ -305,11 +296,10 @@ fn equality_and_inequality_parse_in_expression_position() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn absence_operators_parse_in_expression_position() {
     // `??` parses as the coalesce binary operator; `?.` parses as an optional
     // field read whose base is the preceding path.
-    let value = parsed_return_expr("fn f(a: int): int\n    return ^books(a)?.pages ?? 0\n");
+    let value = parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0\n}\n");
     // `??` binds looser than `?.`, so the whole `^books(a)?.pages` is the left
     // operand of one `??`.
     let Expression::Binary {
@@ -327,12 +317,11 @@ fn absence_operators_parse_in_expression_position() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn coalesce_binds_tighter_than_equality() {
     // `name ?? "anon" == "anon"` groups as `(name ?? "anon") == "anon"`: the `??`
     // sits one level tighter than `==`.
     let value = parsed_return_expr(
-        "fn f(a: string): bool\n    return ^names(a)?.value ?? \"anon\" == \"anon\"\n",
+        "fn f(a: string): bool {\n    return ^names[a]?.value ?? \"anon\" == \"anon\"\n}\n",
     );
     assert!(
         matches!(
@@ -348,9 +337,8 @@ fn coalesce_binds_tighter_than_equality() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
-    let value = parsed_return_expr("fn f(count: int): bool\n    return count ?? 0 < 5\n");
+    let value = parsed_return_expr("fn f(count: int): bool {\n    return count ?? 0 < 5\n}\n");
     assert!(
         matches!(
             value,
@@ -363,7 +351,7 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
         "expected `(count ?? 0) < 5`: {value:?}"
     );
 
-    let value = parsed_return_expr("fn f(start: int, n: int): int\n    return start ?? 1..n\n");
+    let value = parsed_return_expr("fn f(start: int, n: int): int {\n    return start ?? 1..n\n}\n");
     assert!(
         matches!(
             value,
@@ -376,7 +364,7 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
         "expected `(start ?? 1)..n`: {value:?}"
     );
 
-    let value = parsed_return_expr("fn f(x: int, y: int): int\n    return x ?? y + 1\n");
+    let value = parsed_return_expr("fn f(x: int, y: int): int {\n    return x ?? y + 1\n}\n");
     assert!(
         matches!(
             value,
@@ -391,12 +379,11 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn chained_coalesce_is_right_associative() {
     // `??` is right-associative, so `a ?? b ?? c` parses as `a ?? (b ?? c)`: the
     // top `??` keeps the inner chain as its right operand, and the chain types
     // under the coalesce rule.
-    let value = parsed_return_expr("fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n");
+    let value = parsed_return_expr("fn f(a: int): int {\n    return ^books[a]?.pages ?? 0 ?? 1\n}\n");
     let Expression::Binary {
         op: BinaryOp::Coalesce,
         left,
@@ -423,7 +410,6 @@ fn chained_coalesce_is_right_associative() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn underscore_no_longer_parses_as_string_concatenation() {
     let parsed = parse_source("const Bad = \"a\" _ \"b\"\n");
     assert!(
@@ -445,11 +431,10 @@ fn underscore_no_longer_parses_as_string_concatenation() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn bare_equals_in_expression_position_is_a_parse_error() {
     // `=` is assignment only; a `=` left over in expression position is reported
     // as the `=`-vs-`==` mistake at the `=` token, with a hint to use `==`.
-    let source = "fn f(a: int, b: int)\n    if a = 2\n        return\n";
+    let source = "fn f(a: int, b: int) {\n    if a = 2 {\n        return\n    }\n}\n";
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
@@ -478,7 +463,6 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn chained_compound_assignment_is_reported_at_the_second_operator() {
     // Assignment does not chain and is not an expression: a second compound-assign
     // operator reached in expression position is reported at that operator, the
@@ -489,7 +473,7 @@ fn chained_compound_assignment_is_reported_at_the_second_operator() {
         ("    a += b -= c\n", "-="),
         ("    a *= b /= c\n", "/="),
     ] {
-        let source = format!("module app\nfn f(a: int, b: int, c: int)\n{line}");
+        let source = format!("module app\nfn f(a: int, b: int, c: int) {{\n{line}}}\n");
         let parsed = parse_source(&source);
         let diagnostic = parsed
             .diagnostics
@@ -531,9 +515,8 @@ fn chained_compound_assignment_is_reported_at_the_second_operator() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_single_compound_assignment_still_parses_cleanly() {
-    let parsed = parse_source("module app\nfn f(a: int, b: int)\n    a += b\n");
+    let parsed = parse_source("module app\nfn f(a: int, b: int) {\n    a += b\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
     assert!(
@@ -544,10 +527,9 @@ fn a_single_compound_assignment_still_parses_cleanly() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_the_is_operator() {
     let value =
-        parsed_return_expr("module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger\n");
+        parsed_return_expr("module app\nfn f(pet: Cat): bool {\n    return pet is Cat::tiger\n}\n");
     let Expression::Binary { op, right, .. } = value else {
         panic!("expected a binary return, got {value:?}");
     };
@@ -560,18 +542,16 @@ fn parses_the_is_operator() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_a_chained_is() {
     let parsed = parse_source(
-        "module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger is Cat::housecat\n",
+        "module app\nfn f(pet: Cat): bool {\n    return pet is Cat::tiger is Cat::housecat\n}\n",
     );
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_three_segment_member_path_parses_as_one_name() {
-    let value = parsed_return_expr("module app\nfn f(): Cat\n    return Cat::tiger::bengal\n");
+    let value = parsed_return_expr("module app\nfn f(): Cat {\n    return Cat::tiger::bengal\n}\n");
     let Expression::Name { segments, .. } = value else {
         panic!("expected a name return, got {value:?}");
     };
