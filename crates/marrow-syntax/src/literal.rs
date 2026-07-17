@@ -109,6 +109,40 @@ pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> 
     Ok(decoded)
 }
 
+/// Decode one literal text segment of an interpolation string. The doubled-brace
+/// escapes `{{` and `}}` collapse to a single `{` or `}`, and the five string
+/// escapes plus `\u{H}` decode exactly as in a plain string literal. A lone
+/// unescaped `{` never reaches here — the lexer opens a hole at it — so only a
+/// doubled `{{` produces a literal brace; a lone `}` decodes to itself. A
+/// bad-escape offset is relative to `inner`.
+pub fn decode_interpolation_text(inner: &str) -> Result<String, StringLiteralError> {
+    let mut decoded = String::with_capacity(inner.len());
+    let mut chars = inner.char_indices();
+    while let Some((offset, ch)) = chars.next() {
+        if (ch == '{' || ch == '}') && chars.clone().next().map(|(_, next)| next) == Some(ch) {
+            chars.next();
+            decoded.push(ch);
+            continue;
+        }
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+        let bad = StringLiteralError::BadEscape { offset };
+        let (_, escaped) = chars.next().ok_or(bad)?;
+        decoded.push(match escaped {
+            '\\' => '\\',
+            '"' => '"',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'u' => decode_unicode_escape(&mut chars, offset)?,
+            _ => return Err(bad),
+        });
+    }
+    Ok(decoded)
+}
+
 /// Decode the tail of a `\u{H}` string escape, positioned just after the `u`. The
 /// braces enclose one to six hexadecimal digits naming a Unicode scalar value; the
 /// scalar must be at most `0x10FFFF` and not a UTF-16 surrogate. An empty group,
@@ -207,7 +241,8 @@ fn hex_digit(ch: char) -> Option<u8> {
 mod tests {
     use super::{
         BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
-        decode_string_escapes, decode_string_literal, encode_string_literal,
+        decode_interpolation_text, decode_string_escapes, decode_string_literal,
+        encode_string_literal,
     };
 
     #[test]
@@ -253,6 +288,21 @@ mod tests {
         assert_eq!(
             decode_string_escapes("plain text 123").unwrap(),
             "plain text 123"
+        );
+    }
+
+    #[test]
+    fn interpolation_text_collapses_braces_and_escapes() {
+        // `{{`/`}}` collapse to single braces; the five escapes and `\u{...}`
+        // decode; a lone `}` and plain text pass through.
+        assert_eq!(
+            decode_interpolation_text(r#"a {{ b }} c\n} \u{41}"#).unwrap(),
+            "a { b } c\n} A"
+        );
+        assert_eq!(decode_interpolation_text("").unwrap(), "");
+        assert_eq!(
+            decode_interpolation_text(r"bad \q"),
+            Err(StringLiteralError::BadEscape { offset: 4 })
         );
     }
 

@@ -16,8 +16,8 @@ use marrow_image::{
 };
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
-    LiteralKind, MatchArm, SourceSpan, Statement, TraversalBound, TypeExpr, UnaryOp,
-    decode_string_literal,
+    InterpolationPart, LiteralKind, MatchArm, SourceSpan, Statement, TraversalBound, TypeExpr,
+    UnaryOp, decode_interpolation_text, decode_string_literal,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -3301,6 +3301,7 @@ impl<'a> FnLowerer<'a> {
                 base, name, span, ..
             } => self.lower_field(base, name, *span),
             Expression::Try { inner, span } => self.lower_try(inner, *span),
+            Expression::Interpolation { parts, span } => self.lower_interpolation(parts, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this expression"));
                 None
@@ -3362,6 +3363,80 @@ impl<'a> FnLowerer<'a> {
         };
         self.push(Instr::ConstLoad(const_id.index()), span);
         Some(LTy::bare_scalar(scalar))
+    }
+
+    /// Lower an interpolated string `$"...{expr}..."` to a left-folded
+    /// [`Instr::TextConcat`] over its parts. A literal text segment loads its
+    /// decoded text; a hole renders its value through the same closed conversions
+    /// `string(int)`/`string(bool)` expose, so an interpolable hole is a `string`,
+    /// `int`, or `bool`. The whole expression is a `string`, and an empty
+    /// interpolation is the empty string.
+    fn lower_interpolation(
+        &mut self,
+        parts: &[InterpolationPart],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let mut pushed = false;
+        let mut ok = true;
+        for part in parts {
+            let part_ok = self.lower_interpolation_part(part);
+            ok &= part_ok;
+            if part_ok {
+                if pushed {
+                    self.push(Instr::TextConcat, span);
+                } else {
+                    pushed = true;
+                }
+            }
+        }
+        if !ok {
+            return None;
+        }
+        if !pushed {
+            let empty = self.draft.intern_text("");
+            self.push(Instr::ConstLoad(empty.index()), span);
+        }
+        Some(LTy::bare_scalar(ScalarType::Text))
+    }
+
+    /// Push one interpolation part as a `string` value; return whether it lowered
+    /// cleanly (a failed part has already reported its diagnostic).
+    fn lower_interpolation_part(&mut self, part: &InterpolationPart) -> bool {
+        match part {
+            InterpolationPart::Text { text, span } => {
+                let Ok(decoded) = decode_interpolation_text(text) else {
+                    self.fail(unsupported(self.file, *span, "this interpolation text"));
+                    return false;
+                };
+                let const_id = self.draft.intern_text(&decoded);
+                self.push(Instr::ConstLoad(const_id.index()), *span);
+                true
+            }
+            InterpolationPart::Expr(expr) => {
+                let Some(ty) = self.lower_expr(expr) else {
+                    return false;
+                };
+                match ty.bare_scalar_type() {
+                    Some(ScalarType::Text) => true,
+                    Some(ScalarType::Int) => {
+                        self.push(Instr::ConvStringInt, expr.span());
+                        true
+                    }
+                    Some(ScalarType::Bool) => {
+                        self.push(Instr::ConvStringBool, expr.span());
+                        true
+                    }
+                    _ => {
+                        self.fail(unsupported(
+                            self.file,
+                            expr.span(),
+                            &format!("interpolating a {} value", ty.spelling(self.records)),
+                        ));
+                        false
+                    }
+                }
+            }
+        }
     }
 
     fn lower_unary(&mut self, op: UnaryOp, operand: &Expression, span: SourceSpan) -> Option<LTy> {

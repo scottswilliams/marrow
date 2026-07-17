@@ -521,6 +521,62 @@ pub fn has(h: string, n: string): bool {
     );
 }
 
+/// Interpolated strings travel the full path: literal segments carry their
+/// decoded text and doubled-brace escapes, and `int`/`bool` holes render through
+/// the same conversions `string(int)`/`string(bool)` expose.
+#[test]
+fn interpolation_renders_holes_and_escapes() {
+    let temp = TempDir::new("interp");
+    project(
+        &temp,
+        r#"pub fn greet(id: int, on: bool): string {
+    return $"id: {id} ok={on}!"
+}
+
+pub fn braces(): string {
+    return $"a {{ b }}\tc"
+}
+
+pub fn empty(): string {
+    return $""
+}
+"#,
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "greet", "--", "7", "true"]).stdout),
+        "id: 7 ok=true!\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "braces"]).stdout),
+        "a { b }\tc\n"
+    );
+    // The text renderer suppresses an empty line, so an empty interpolation
+    // compiles and runs but prints nothing.
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "empty"]).stdout),
+        ""
+    );
+}
+
+/// A hole whose value is not a renderable scalar is a typed `check.unsupported`,
+/// matching the closed conversion floor (`string(int)`/`string(bool)` only).
+#[test]
+fn interpolation_rejects_an_unrenderable_hole() {
+    let temp = TempDir::new("interp-bad");
+    project(
+        &temp,
+        r#"pub fn bad(d: decimal): string {
+    return $"v: {d}"
+}
+"#,
+    );
+    let output = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "1.5"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
+    assert!(stdout.contains("check.unsupported"), "{output:?}");
+}
+
 /// `string` comparisons order lexicographically through the full path.
 #[test]
 fn string_comparison_orders_lexicographically() {
