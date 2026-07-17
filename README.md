@@ -8,7 +8,7 @@ calls.
 
 ```text
 task.status = Status::done
-^tasks(id).status = Status::done
+^tasks[id].status = Status::done
 ```
 
 The first assignment changes a local value. The second changes durable state.
@@ -34,37 +34,39 @@ refounded, so it does not yet check or run on the beta line.
 ```mw
 module app::tasks
 
-enum Status
+enum Status {
     open
     done
+}
 
-resource Task
+resource Task {
     required title: string
     required status: Status
+}
 
-store ^tasks(id: int): Task
+store ^tasks[id: int]: Task
 
-pub fn add(title: string): Id(^tasks)
+pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
     var task: Task
     task.title = title
     task.status = Status::open
 
-    const id: Id(^tasks) = nextId(^tasks)
-    ^tasks(id) = task
+    ^tasks[id] = task
     return id
+}
 
-pub fn complete(id: Id(^tasks)): bool
-    if not exists(^tasks(id))
-        return false
+pub fn complete(id: Id(^tasks)): bool {
+    if not exists(^tasks[id]) { return false }
 
-    ^tasks(id).status = Status::done
+    ^tasks[id].status = Status::done
     return true
+}
 ```
 
-`resource` declarations, `nextId`, writes outside explicit transactions, and
-managed indexes were prototype behavior; their prototype implementations were
-deleted at B00 and are being refounded under the narrowed beta design. They are
-not assumptions for the v0.1 beta. [Project status](docs/status.md) identifies
+`resource` declarations, writes outside explicit transactions, and managed
+indexes were prototype behavior; their prototype implementations were deleted at
+B00 and are being refounded under the narrowed beta design. They are not
+assumptions for the v0.1 beta. [Project status](docs/status.md) identifies
 current and future work precisely.
 
 ## Purpose

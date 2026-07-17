@@ -47,27 +47,21 @@ pub struct MwBlock {
     pub starts_with_module: bool,
 }
 
-/// Read every fenced ```mw``` block from `docs/language/*.md`, in file then
-/// block order.
+/// Read every fenced ```mw``` block from the language reference and the
+/// repository front door, in file then block order: first `docs/language/*.md`
+/// (sorted), then every top-level `*.md` at the repository root (sorted). The
+/// root sweep keeps front-door examples — the README's tour of the durable model
+/// — compiler-gated alongside the reference pages, so a `.md` outside
+/// `docs/language/` cannot ship a stale surface unnoticed.
 pub fn mw_blocks() -> Vec<MwBlock> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("docs")
-        .join("language");
-    let mut entries = std::fs::read_dir(&dir)
-        .expect("read docs/language")
-        .map(|entry| entry.expect("language doc entry").path())
-        .collect::<Vec<_>>();
-    entries.sort();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let mut files = markdown_files(&root.join("docs").join("language"));
+    files.extend(markdown_files(&root));
 
     let mut blocks = Vec::new();
-    for path in entries {
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
+    for path in files {
         let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path).expect("read language doc");
+        let text = std::fs::read_to_string(&path).expect("read markdown doc");
         let mut in_block = false;
         let mut index = 0usize;
         let mut source = String::new();
@@ -95,6 +89,17 @@ pub fn mw_blocks() -> Vec<MwBlock> {
         }
     }
     blocks
+}
+
+/// The `*.md` files directly in `dir` (not recursive), in sorted path order.
+fn markdown_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = std::fs::read_dir(dir)
+        .expect("read markdown directory")
+        .map(|entry| entry.expect("markdown entry").path())
+        .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("md"))
+        .collect::<Vec<_>>();
+    files.sort();
+    files
 }
 
 /// The blocks that open with a `module ` declaration: complete library files
