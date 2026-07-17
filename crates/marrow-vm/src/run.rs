@@ -607,6 +607,34 @@ fn execute<'s>(
                 stack.push(Value::Bool(a == b));
                 pc += 1;
             }
+            SealedInstr::EqId => {
+                let b = pop(&mut stack);
+                let a = pop(&mut stack);
+                stack.push(Value::Bool(a == b));
+                pc += 1;
+            }
+            SealedInstr::MakeIdentity { root, cols } => {
+                // k0 was pushed first, so the popped keys fill the tuple in reverse.
+                let mut keys: Vec<KeyScalar> = vec![KeyScalar::Bool(false); *cols as usize];
+                for slot in keys.iter_mut().rev() {
+                    *slot = value_to_key(pop(&mut stack));
+                }
+                stack.push(Value::Id(*root, Rc::from(keys.as_slice())));
+                pc += 1;
+            }
+            SealedInstr::IdentityKeyPath(cols) => {
+                let (_, keys) = as_identity(pop(&mut stack));
+                // The verifier proved the identity's root and pinned `cols` to that
+                // root's key-column count, and `MakeIdentity` builds the tuple from the
+                // same count, so the arity always agrees on a verified path.
+                debug_assert_eq!(keys.len(), *cols as usize);
+                // Spread root-first (k0 first) so the key-path sits exactly as an inline
+                // `^root[k…]` access would leave it for the following entry read.
+                for key in keys.iter() {
+                    stack.push(key_to_value(key.clone()));
+                }
+                pc += 1;
+            }
             SealedInstr::BranchPresent(target) => match as_optional(pop(&mut stack)) {
                 Some(inner) => {
                     stack.push(inner);
@@ -1076,6 +1104,13 @@ fn as_enum(value: Value) -> (u16, u16, Box<[Value]>) {
     }
 }
 
+fn as_identity(value: Value) -> (u16, Rc<[KeyScalar]>) {
+    match value {
+        Value::Id(root, keys) => (root, keys),
+        _ => unreachable!("verifier proved an entry-identity operand"),
+    }
+}
+
 fn as_list(value: Value) -> (u16, Rc<Vec<Value>>) {
     match value {
         Value::List(idx, _, items) => (idx, items),
@@ -1218,6 +1253,12 @@ fn value_to_domain(value: Value) -> ValueDomain {
                 .map(value_to_domain)
                 .collect(),
         },
+        // An entry identity is not a durable value on this line: the checker and
+        // verifier keep it out of every durable field, entry, and key position, so it
+        // never crosses the store-write boundary. Naming it explicitly keeps the
+        // no-identity-at-the-encoder contract visible rather than folding it into the
+        // scalar catch-all's panic.
+        Value::Id(..) => unreachable!("an entry identity is never a durable value"),
         scalar => ValueDomain::Scalar(value_to_scalar(scalar)),
     }
 }
@@ -1246,7 +1287,10 @@ fn domain_to_value(domain: ValueDomain) -> Value {
             variant,
             payload.into_iter().map(domain_to_value).collect(),
         ),
-        ValueDomain::Unit | ValueDomain::List { .. } | ValueDomain::Map { .. } => {
+        ValueDomain::Unit
+        | ValueDomain::List { .. }
+        | ValueDomain::Map { .. }
+        | ValueDomain::Identity { .. } => {
             unreachable!("a durable field value is a scalar, dense product, or sum")
         }
     }

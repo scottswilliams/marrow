@@ -269,7 +269,13 @@ pub fn encode_domain(value: &ValueDomain) -> Result<Vec<u8>, ValueError> {
             write_composite(value, &mut out)?;
             out
         }
-        ValueDomain::Unit | ValueDomain::List { .. } | ValueDomain::Map { .. } => {
+        // An entry identity is not a storable cell value on this slice — the durable
+        // codec of a stored identity is a separately reserved decision. Rejecting it here
+        // is the encoder half of the no-identity-at-the-store-boundary contract.
+        ValueDomain::Unit
+        | ValueDomain::List { .. }
+        | ValueDomain::Map { .. }
+        | ValueDomain::Identity { .. } => {
             return Err(ValueError::Unstorable);
         }
     };

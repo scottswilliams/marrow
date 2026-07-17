@@ -12,6 +12,10 @@ pub(crate) enum VType {
     Record { idx: u16, optional: bool },
     Enum { idx: u16, optional: bool },
     Collection { idx: u16, optional: bool },
+    /// An entry identity `Id(^root)`, by ROOTS-table index. Tracked distinctly so an
+    /// identity of one root never satisfies a consumer expecting another root or a
+    /// key scalar.
+    Identity { root: u16, optional: bool },
 }
 
 impl VType {
@@ -53,6 +57,7 @@ impl VType {
             ImageType::Record { idx, optional } => Some(VType::Record { idx, optional }),
             ImageType::Enum { idx, optional } => Some(VType::Enum { idx, optional }),
             ImageType::Collection { idx, optional } => Some(VType::Collection { idx, optional }),
+            ImageType::Identity { root, optional } => Some(VType::Identity { root, optional }),
         }
     }
 
@@ -61,7 +66,8 @@ impl VType {
             VType::Scalar { optional, .. }
             | VType::Record { optional, .. }
             | VType::Enum { optional, .. }
-            | VType::Collection { optional, .. } => optional,
+            | VType::Collection { optional, .. }
+            | VType::Identity { optional, .. } => optional,
         }
     }
 
@@ -84,6 +90,10 @@ impl VType {
                 idx,
                 optional: false,
             },
+            VType::Identity { root, .. } => VType::Identity {
+                root,
+                optional: false,
+            },
         }
     }
 
@@ -104,6 +114,10 @@ impl VType {
             },
             VType::Collection { idx, .. } => VType::Collection {
                 idx,
+                optional: true,
+            },
+            VType::Identity { root, .. } => VType::Identity {
+                root,
                 optional: true,
             },
         }
@@ -140,6 +154,13 @@ impl VType {
                     optional: want_opt,
                 },
             ) => idx == want && optional == want_opt,
+            (
+                VType::Identity { root, optional },
+                RetShape::Identity {
+                    root: want,
+                    optional: want_opt,
+                },
+            ) => root == want && optional == want_opt,
             _ => false,
         }
     }

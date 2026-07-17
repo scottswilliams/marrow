@@ -26,7 +26,8 @@ use marrow_image::{
     OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD,
     OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB,
     OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE,
-    OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET,
+    OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET,
+    OP_FIELD_SET, OP_IDENTITY_KEY_PATH, OP_MAKE_IDENTITY,
     OP_FIELD_UNSET, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE,
     OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV,
     OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED,
@@ -38,8 +39,8 @@ use marrow_image::{
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
-    TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_INSTANT, TAG_INT,
-    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY,
+    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -299,6 +300,7 @@ fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
         types.len(),
         enums.len(),
         collections.len(),
+        roots.len(),
     )?;
     let exports = decode_exports(sections[5].1, functions.len())?;
     decode_spans(sections[6].1, &mut functions)?;
@@ -2225,6 +2227,7 @@ fn decode_type_ref_ret(
     type_count: usize,
     enum_count: usize,
     collection_count: usize,
+    root_count: usize,
 ) -> Result<RetShape, VerifyRejection> {
     let optional = tag & OPTIONAL_FLAG != 0;
     let base = tag & !OPTIONAL_FLAG;
@@ -2276,6 +2279,19 @@ fn decode_type_ref_ret(
             }
             Ok(RetShape::Collection { idx, optional })
         }
+        TAG_IDENTITY => {
+            let root = reader.u16().ok_or(reject(
+                VerifyPhase::Table,
+                "short identity return type root index",
+            ))?;
+            if root as usize >= root_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "identity return type root index out of range",
+                ));
+            }
+            Ok(RetShape::Identity { root, optional })
+        }
         _ => Err(reject(VerifyPhase::Table, "unknown return type tag")),
     }
 }
@@ -2289,6 +2305,7 @@ fn decode_param_ref(
     type_count: usize,
     enum_count: usize,
     collection_count: usize,
+    root_count: usize,
 ) -> Result<ImageType, VerifyRejection> {
     if tag & OPTIONAL_FLAG != 0 {
         return Err(reject(
@@ -2346,6 +2363,22 @@ fn decode_param_ref(
                 optional: false,
             })
         }
+        TAG_IDENTITY => {
+            let root = reader.u16().ok_or(reject(
+                VerifyPhase::Table,
+                "short identity param type root index",
+            ))?;
+            if root as usize >= root_count {
+                return Err(reject(
+                    VerifyPhase::Table,
+                    "identity param type root index out of range",
+                ));
+            }
+            Ok(ImageType::Identity {
+                root,
+                optional: false,
+            })
+        }
         _ => Err(reject(
             VerifyPhase::Table,
             "param type must be a bare scalar, record, enum, or collection",
@@ -2359,6 +2392,7 @@ fn decode_functions(
     type_count: usize,
     enum_count: usize,
     collection_count: usize,
+    root_count: usize,
 ) -> Result<Vec<DecodedFunction>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
@@ -2399,6 +2433,7 @@ fn decode_functions(
                 type_count,
                 enum_count,
                 collection_count,
+                root_count,
             )?);
         }
         let ret_tag = reader
@@ -2410,6 +2445,7 @@ fn decode_functions(
             type_count,
             enum_count,
             collection_count,
+            root_count,
         )?;
         let local_count = reader
             .u16()
@@ -3581,6 +3617,12 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
                 field: operand_u16(&mut reader)?,
             },
             OP_EQ_ENUM => SealedInstr::EqEnum,
+            OP_EQ_ID => SealedInstr::EqId,
+            OP_MAKE_IDENTITY => SealedInstr::MakeIdentity {
+                root: operand_u16(&mut reader)?,
+                cols: operand_u16(&mut reader)?,
+            },
+            OP_IDENTITY_KEY_PATH => SealedInstr::IdentityKeyPath(operand_u16(&mut reader)?),
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
             OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(&mut reader)?),
             OP_ASSERT => SealedInstr::Assert,
@@ -3953,6 +3995,9 @@ fn apply(
             RetShape::Collection { idx, optional } => {
                 frame.stack.push(VType::Collection { idx, optional });
             }
+            RetShape::Identity { root, optional } => {
+                frame.stack.push(VType::Identity { root, optional });
+            }
         }
         return Ok(Control::Fallthrough);
     }
@@ -4224,6 +4269,90 @@ fn apply(
                 ));
             }
             frame.stack.push(VType::bare_scalar(Scalar::Bool));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::EqId => {
+            let right = pop(&mut frame.stack)?;
+            let left = pop(&mut frame.stack)?;
+            let (
+                VType::Identity {
+                    root: r,
+                    optional: false,
+                },
+                VType::Identity {
+                    root: l,
+                    optional: false,
+                },
+            ) = (right, left)
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "identity equality requires two bare entry identities",
+                ));
+            };
+            if l != r {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "identity equality operands name different store roots",
+                ));
+            }
+            frame.stack.push(VType::bare_scalar(Scalar::Bool));
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::MakeIdentity { root, cols } => {
+            let sealed_root = ctx.roots.get(*root as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "make-identity root index out of range",
+            ))?;
+            if sealed_root.keys.len() != *cols as usize {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "make-identity column count does not match the root's key columns",
+                ));
+            }
+            // k0 is pushed first, so pop the key columns in reverse declaration order,
+            // each matching the root's key-column scalar type.
+            for scalar in sealed_root.keys.iter().rev() {
+                let got = pop(&mut frame.stack)?;
+                if got != VType::bare_scalar(*scalar) {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "make-identity key operand type does not match the root's key column",
+                    ));
+                }
+            }
+            frame.stack.push(VType::Identity {
+                root: *root,
+                optional: false,
+            });
+            return Ok(Control::Fallthrough);
+        }
+        SealedInstr::IdentityKeyPath(cols) => {
+            let VType::Identity {
+                root,
+                optional: false,
+            } = pop(&mut frame.stack)?
+            else {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "identity key-path requires a bare entry identity",
+                ));
+            };
+            let sealed_root = ctx.roots.get(root as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "identity key-path root index out of range",
+            ))?;
+            if sealed_root.keys.len() != *cols as usize {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "identity key-path column count does not match the root's key columns",
+                ));
+            }
+            // Spread the key columns root-first (k0 pushed first) so the key-path sits
+            // exactly as an inline `^root[k…]` access would leave it for the entry read.
+            for scalar in &sealed_root.keys {
+                frame.stack.push(VType::bare_scalar(*scalar));
+            }
             return Ok(Control::Fallthrough);
         }
         SealedInstr::ListNew(idx) => {
@@ -4633,9 +4762,12 @@ fn apply(
         | SealedInstr::MapValueAt
         | SealedInstr::TextSplit(_)
         | SealedInstr::TextLines(_)
-        | SealedInstr::TextJoin => {
+        | SealedInstr::TextJoin
+        | SealedInstr::EqId
+        | SealedInstr::MakeIdentity { .. }
+        | SealedInstr::IdentityKeyPath(_) => {
             unreachable!(
-                "record, optional, call, durable, collection, and text-collection opcodes return from the earlier matches"
+                "record, optional, call, durable, collection, text-collection, and identity opcodes return from the earlier matches"
             )
         }
     }
@@ -4828,6 +4960,9 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         | SealedInstr::EnumTag
         | SealedInstr::EnumPayloadGet { .. }
         | SealedInstr::EqEnum
+        | SealedInstr::EqId
+        | SealedInstr::MakeIdentity { .. }
+        | SealedInstr::IdentityKeyPath(_)
         | SealedInstr::BranchPresent(_)
         | SealedInstr::Unreachable(_)
         | SealedInstr::Assert

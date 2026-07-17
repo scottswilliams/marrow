@@ -166,6 +166,17 @@ pub enum SealedInstr {
     },
     /// `E, E → bool`: exact equality of two values of the same enum.
     EqEnum,
+    /// `Id, Id → bool`: equality of two entry identities of the same store root.
+    EqId,
+    /// `[k0, …, k(cols-1)] → Id`: construct store root `root`'s entry identity from
+    /// `cols` bare key scalars popped in reverse (k0 pushed first, key-column order).
+    MakeIdentity {
+        root: u16,
+        cols: u16,
+    },
+    /// `Id → [k0, …, k(cols-1)]`: spread an identity into its `cols` key scalars,
+    /// root-first, so a `^root[id]` dereference reuses the ordinary keyed entry read.
+    IdentityKeyPath(u16),
     /// Pop an optional; if present, push its bare value and fall through, else jump
     /// to this tape index. The only way to obtain a bare value from an optional.
     BranchPresent(usize),
@@ -535,6 +546,7 @@ pub enum RetShape {
     Record { idx: u16, optional: bool },
     Enum { idx: u16, optional: bool },
     Collection { idx: u16, optional: bool },
+    Identity { root: u16, optional: bool },
 }
 
 /// A source-position row: the instruction it maps and its 1-based line/column.

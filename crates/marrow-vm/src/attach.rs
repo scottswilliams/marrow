@@ -352,7 +352,9 @@ fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
             }
             Some(ValueShape::Sum { ty: idx, variants })
         }
-        ImageType::Unit | ImageType::Collection { .. } => None,
+        // An entry identity is not an inline durable field value on this line, so it
+        // parks like a collection or unit.
+        ImageType::Unit | ImageType::Collection { .. } | ImageType::Identity { .. } => None,
     }
 }
 

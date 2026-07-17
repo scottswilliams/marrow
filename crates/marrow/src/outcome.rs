@@ -324,7 +324,24 @@ fn render_value_text(
             out.push(']');
             out
         }
+        // An entry identity renders `Id(k0, k1)` — the key tuple that addresses the
+        // entry, each column in canonical scalar text. A program declares one store
+        // root, so the key tuple identifies it without a root discriminator.
+        Value::Id(_, keys) => render_identity_text(keys),
     }
+}
+
+/// Render an entry identity as `Id(k0, k1)`, each key column in canonical scalar text.
+fn render_identity_text(keys: &[KeyScalar]) -> String {
+    let mut out = String::from("Id(");
+    for (position, key) in keys.iter().enumerate() {
+        if position > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&render_key_text(key));
+    }
+    out.push(')');
+    out
 }
 
 /// Render a `KeyScalar` map key in the canonical scalar text form.
@@ -454,6 +471,14 @@ fn render_data(
                 out.push_str(&render_data(Some(value), types, enums)?);
             }
             out.push('}');
+            if out.len() > MAX_DATA_BYTES {
+                return Err(());
+            }
+            out
+        }
+        // An entry identity renders as its `Id(k0, k1)` text in a JSON string.
+        Some(Value::Id(_, keys)) => {
+            let out = json_string(&render_identity_text(keys));
             if out.len() > MAX_DATA_BYTES {
                 return Err(());
             }

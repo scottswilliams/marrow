@@ -247,6 +247,9 @@ pub enum SignaturePosition {
 pub enum ExcludedKind {
     /// A finite `List`/`Map`. Collections join the transfer graph at G00b.
     Collection,
+    /// An entry identity `Id(^root)`. An identity references a store root and is a
+    /// runtime/lookup value, not a self-describing transferable value on this line.
+    Identity,
 }
 
 /// Why an interface could not be reconstructed from a signature set. Each is a typed
@@ -276,6 +279,15 @@ impl std::fmt::Display for InterfaceError {
             } => write!(
                 f,
                 "{} uses a collection, which cannot cross the wire yet",
+                position_word(*position)
+            ),
+            InterfaceError::TransferTypeExcluded {
+                position,
+                kind: ExcludedKind::Identity,
+                ..
+            } => write!(
+                f,
+                "{} uses an entry identity, which cannot cross the wire yet",
                 position_word(*position)
             ),
             InterfaceError::SignatureTooComplex { .. } => {
@@ -420,6 +432,11 @@ fn resolve(
             export,
             position,
             kind: ExcludedKind::Collection,
+        }),
+        ImageType::Identity { .. } => Err(InterfaceError::TransferTypeExcluded {
+            export,
+            position,
+            kind: ExcludedKind::Identity,
         }),
     }
 }

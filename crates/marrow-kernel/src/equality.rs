@@ -71,7 +71,26 @@ pub enum ValueDomain {
         idx: u16,
         entries: Vec<(KeyScalar, ValueDomain)>,
     },
+    /// An entry identity: its store root and the key tuple that addresses one entry.
+    /// A nominal leaf — not an aggregate — so it adds no fifth recursive-payload
+    /// family: its equality is root identity plus key-tuple equality, each column a
+    /// [`KeyScalar`], reusing scalar-key equality. [`RootId`] is a distinct newtype
+    /// from a product's/sum's `ty` type-table index, so an identity can never alias a
+    /// record or enum domain point. This case specifies value EQUALITY only; an entry
+    /// identity carries no codec, order, or index meaning here (a durably stored
+    /// identity is a separately reserved decision).
+    Identity {
+        root: RootId,
+        keys: Vec<KeyScalar>,
+    },
 }
+
+/// A store-root discriminator in the value domain, a distinct newtype from the
+/// `ty: u16` type-table index a [`ValueDomain::Product`] or [`ValueDomain::Sum`]
+/// carries. Keeping the namespaces separate makes an identity-vs-record domain
+/// collision unrepresentable rather than merely untested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootId(pub u16);
 
 /// A value in the collection-key-order domain: `unit`, or one admitted key scalar.
 /// Products and sums are not orderable durable keys, so they have no case here; C03
@@ -124,6 +143,16 @@ pub fn value_equality(a: &ValueDomain, b: &ValueDomain) -> bool {
                 entries: eb,
             },
         ) => ia == ib && entries_equal(ea, eb),
+        (
+            ValueDomain::Identity {
+                root: ra,
+                keys: ka,
+            },
+            ValueDomain::Identity {
+                root: rb,
+                keys: kb,
+            },
+        ) => ra == rb && ka == kb,
         _ => false,
     }
 }
@@ -171,10 +200,49 @@ pub fn collection_key_order(a: &KeyDomain, b: &KeyDomain) -> Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyDomain, ValueDomain, collection_key_order, value_equality};
+    use super::{KeyDomain, RootId, ValueDomain, collection_key_order, value_equality};
     use crate::codec::key::KeyScalar;
     use crate::codec::value::RuntimeScalar;
     use std::cmp::Ordering;
+
+    #[test]
+    fn identity_equality_is_root_and_key_tuple() {
+        let id = |root: u16, keys: Vec<KeyScalar>| ValueDomain::Identity {
+            root: RootId(root),
+            keys,
+        };
+        // Same root and equal key tuple are equal; a differing key breaks equality.
+        assert!(value_equality(
+            &id(0, vec![KeyScalar::Int(5)]),
+            &id(0, vec![KeyScalar::Int(5)]),
+        ));
+        assert!(!value_equality(
+            &id(0, vec![KeyScalar::Int(5)]),
+            &id(0, vec![KeyScalar::Int(6)]),
+        ));
+        // A differing key-tuple length is not equal.
+        assert!(!value_equality(
+            &id(0, vec![KeyScalar::Int(5)]),
+            &id(0, vec![KeyScalar::Int(5), KeyScalar::Str("x".into())]),
+        ));
+        // Distinct roots are never equal even with an equal key tuple — defense in depth
+        // (the checker forbids the comparison, but the spec must still separate roots).
+        assert!(!value_equality(
+            &id(0, vec![KeyScalar::Int(5)]),
+            &id(1, vec![KeyScalar::Int(5)]),
+        ));
+        // An identity never equals a non-identity domain point: the injectivity probe
+        // against a same-`ty`, same-fields product that Option A would have aliased.
+        let record_like = ValueDomain::Product {
+            ty: 0,
+            fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(5)))],
+        };
+        assert!(!value_equality(&id(0, vec![KeyScalar::Int(5)]), &record_like));
+        assert!(!value_equality(
+            &id(0, vec![KeyScalar::Int(5)]),
+            &ValueDomain::Scalar(RuntimeScalar::Int(5)),
+        ));
+    }
 
     #[test]
     fn value_equality_covers_unit_and_every_admitted_scalar() {

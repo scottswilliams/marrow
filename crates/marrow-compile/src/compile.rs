@@ -341,7 +341,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         &mut diagnostics,
     );
     let signatures =
-        FunctionRegistry::build(&records, &mut draft, &functions, module_names, imports);
+        FunctionRegistry::build(&records, &mut draft, &durable, &functions, module_names, imports);
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
     let generic_functions: Vec<(String, String, &FunctionDecl)> = parsed

@@ -51,6 +51,11 @@ pub enum Value {
     Enum(u16, u16, Box<[Value]>),
     List(u16, usize, Rc<Vec<Value>>),
     Map(u16, usize, Rc<Vec<(KeyScalar, Value)>>),
+    /// An entry identity `Id(^root)`: its ROOTS-table root index and the key tuple
+    /// (one [`KeyScalar`] per key column, in declaration order) that addresses one
+    /// entry. Equality is root plus key-tuple equality — the runtime half of the
+    /// kernel's `ValueDomain::Identity` specification. Not a durable cell value here.
+    Id(u16, Rc<[KeyScalar]>),
 }
 
 impl PartialEq for Value {
@@ -72,6 +77,7 @@ impl PartialEq for Value {
             (Value::Enum(ta, va, pa), Value::Enum(tb, vb, pb)) => ta == tb && va == vb && pa == pb,
             (Value::List(ia, _, a), Value::List(ib, _, b)) => ia == ib && a == b,
             (Value::Map(ia, _, a), Value::Map(ib, _, b)) => ia == ib && a == b,
+            (Value::Id(ra, a), Value::Id(rb, b)) => ra == rb && a == b,
             _ => false,
         }
     }
@@ -114,6 +120,7 @@ impl Value {
                 1 + payload.iter().map(Value::structural_bytes).sum::<usize>()
             }
             Value::List(_, bytes, _) | Value::Map(_, bytes, _) => 1 + bytes,
+            Value::Id(_, keys) => 1 + keys.iter().map(key_bytes).sum::<usize>(),
         }
     }
 }

@@ -182,6 +182,7 @@ fn ret_to_image(ret: RetShape) -> ImageType {
         RetShape::Record { idx, optional } => ImageType::Record { idx, optional },
         RetShape::Enum { idx, optional } => ImageType::Enum { idx, optional },
         RetShape::Collection { idx, optional } => ImageType::Collection { idx, optional },
+        RetShape::Identity { root, optional } => ImageType::Identity { root, optional },
     }
 }
 

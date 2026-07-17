@@ -34,6 +34,7 @@ pub const TAG_COLLECTION: u8 = 0x07;
 pub const TAG_DATE: u8 = 0x08;
 pub const TAG_INSTANT: u8 = 0x09;
 pub const TAG_DURATION: u8 = 0x0A;
+pub const TAG_IDENTITY: u8 = 0x0B;
 
 /// The optional-wrapper flag bit.
 pub const OPTIONAL_FLAG: u8 = 0x80;
@@ -80,6 +81,14 @@ pub enum ImageType {
         idx: u16,
         optional: bool,
     },
+    /// An entry identity `Id(^root)`, by ROOTS-table index. Mirrors `Record`/`Enum`: a
+    /// one-byte tag plus a big-endian `u16` root index. The value it stands for is a
+    /// store root plus a key tuple; the key column types live in the root's own
+    /// declaration, so they are not inlined here (keeping `ImageType` `Copy`).
+    Identity {
+        root: u16,
+        optional: bool,
+    },
 }
 
 impl ImageType {
@@ -103,7 +112,8 @@ impl ImageType {
             ImageType::Scalar { optional, .. }
             | ImageType::Record { optional, .. }
             | ImageType::Enum { optional, .. }
-            | ImageType::Collection { optional, .. } => optional,
+            | ImageType::Collection { optional, .. }
+            | ImageType::Identity { optional, .. } => optional,
         }
     }
 
@@ -112,7 +122,10 @@ impl ImageType {
     pub(crate) fn encoded_len(self) -> usize {
         match self {
             ImageType::Unit | ImageType::Scalar { .. } => 1,
-            ImageType::Record { .. } | ImageType::Enum { .. } | ImageType::Collection { .. } => 3,
+            ImageType::Record { .. }
+            | ImageType::Enum { .. }
+            | ImageType::Collection { .. }
+            | ImageType::Identity { .. } => 3,
         }
     }
 
@@ -135,6 +148,10 @@ impl ImageType {
             ImageType::Collection { idx, optional } => {
                 out.push(TAG_COLLECTION | if optional { OPTIONAL_FLAG } else { 0 });
                 out.extend_from_slice(&idx.to_be_bytes());
+            }
+            ImageType::Identity { root, optional } => {
+                out.push(TAG_IDENTITY | if optional { OPTIONAL_FLAG } else { 0 });
+                out.extend_from_slice(&root.to_be_bytes());
             }
         }
     }

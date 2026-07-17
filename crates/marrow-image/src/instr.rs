@@ -75,6 +75,9 @@ pub const OP_ENUM_PAYLOAD_GET: u8 = 0x26;
 pub const OP_EQ_ENUM: u8 = 0x27;
 pub const OP_FIELD_SET: u8 = 0x28;
 pub const OP_FIELD_UNSET: u8 = 0x29;
+// Entry-identity value ops. An identity is a store root plus a key tuple; it is a
+// runtime/lookup value only (not a durable cell value on this line).
+pub const OP_EQ_ID: u8 = 0x2A;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
 pub const OP_DUR_READ_ENTRY: u8 = 0x32;
@@ -89,6 +92,11 @@ pub const OP_DUR_SET_SPARSE_PRESENT: u8 = 0x3A;
 pub const OP_DUR_ITERATE_BOUNDED: u8 = 0x3B;
 pub const OP_TXN_BEGIN: u8 = 0x3C;
 pub const OP_TXN_COMMIT: u8 = 0x3D;
+// Construct an entry identity from `cols` bare key scalars on the stack (column order,
+// last column on top); spread an identity back into its `cols` key scalars for a keyed
+// entry read. Both name the store root by its ROOTS-table index.
+pub const OP_MAKE_IDENTITY: u8 = 0x3E;
+pub const OP_IDENTITY_KEY_PATH: u8 = 0x3F;
 // Finite collection values (design §D collections). Element/key/value shapes come
 // from the COLLTYPES entry the `*New` operand names; the runtime enforces the
 // length and aggregate-byte bounds as typed `run.collection_limit` faults.
@@ -282,6 +290,26 @@ pub enum Instr {
     /// `E, E → bool`: exact equality of two values of the same enum (variant and
     /// payload).
     EqEnum,
+    /// `Id, Id → bool`: equality of two entry identities of the same store root — the
+    /// same key tuple. The checker admits the comparison only for identities of one
+    /// root, so the operands always share a root and equality reduces to key-tuple
+    /// equality.
+    EqId,
+    /// `[k0, …, k(cols-1)] → Id`: construct the entry identity of store root `root`
+    /// from `cols` bare key scalars popped in reverse (k0 pushed first, in key-column
+    /// declaration order). The `Id(^root, keys…)` constructor. Operands:
+    /// `u16 root ‖ u16 cols`.
+    MakeIdentity {
+        root: u16,
+        cols: u16,
+    },
+    /// `Id → [k0, …, k(cols-1)]`: spread an entry identity into its `cols` key scalars,
+    /// pushed root-first in key-column order so the key-path sits exactly as an inline
+    /// `^root[k…]` access would leave it. The thin adapter that lets `^root[id]`
+    /// dereference reuse the ordinary keyed entry read. `cols` is the root's key-column
+    /// count; the VM faults `run.corruption` (defense in depth) if the identity's tuple
+    /// length disagrees.
+    IdentityKeyPath(u16),
     DurExists(u16),
     /// `[ancestor-keys] → bool`: whether the family the whole-entry `site` names (the
     /// root's entry family, or a keyed branch family beneath the parent entry the
@@ -448,6 +476,9 @@ impl Instr {
             Instr::EnumTag => OP_ENUM_TAG,
             Instr::EnumPayloadGet { .. } => OP_ENUM_PAYLOAD_GET,
             Instr::EqEnum => OP_EQ_ENUM,
+            Instr::EqId => OP_EQ_ID,
+            Instr::MakeIdentity { .. } => OP_MAKE_IDENTITY,
+            Instr::IdentityKeyPath(_) => OP_IDENTITY_KEY_PATH,
             Instr::DurExists(_) => OP_DUR_EXISTS,
             Instr::DurFamilyExists(_) => OP_DUR_FAMILY_EXISTS,
             Instr::DurReadField(_) => OP_DUR_READ_FIELD,
@@ -500,7 +531,11 @@ impl Instr {
             | Instr::ListNew(_)
             | Instr::MapNew(_)
             | Instr::TextSplit(_)
-            | Instr::TextLines(_) => 2,
+            | Instr::TextLines(_)
+            // A big-endian `u16` root key-column count.
+            | Instr::IdentityKeyPath(_) => 2,
+            // Two big-endian `u16` operands: the store-root index and the key-column count.
+            Instr::MakeIdentity { .. } => 4,
             Instr::Jump(_)
             | Instr::JumpIfFalse(_)
             | Instr::BranchPresent(_)

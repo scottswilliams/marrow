@@ -512,6 +512,11 @@ fn encode_code(
                 out.push(u8::from(*from));
                 push_u16(&mut out, *list_ty);
             }
+            Instr::MakeIdentity { root, cols } => {
+                push_u16(&mut out, *root);
+                push_u16(&mut out, *cols);
+            }
+            Instr::IdentityKeyPath(cols) => push_u16(&mut out, *cols),
             _ => {}
         }
     }

@@ -77,6 +77,13 @@ enum LTy {
         index: u16,
         optional: bool,
     },
+    /// An entry identity `Id(^root)`, image-`Identity`- and runtime-`Value::Id`-shaped.
+    /// `root` is the store root's ROOTS-table index (0 — a program has one root). A
+    /// distinct value type: a by-value runtime/lookup value, not a durable field or key.
+    Identity {
+        root: u16,
+        optional: bool,
+    },
 }
 
 impl LTy {
@@ -95,7 +102,8 @@ impl LTy {
             | LTy::Struct { optional, .. }
             | LTy::Enum { optional, .. }
             | LTy::Collection { optional, .. }
-            | LTy::Param { optional, .. } => optional,
+            | LTy::Param { optional, .. }
+            | LTy::Identity { optional, .. } => optional,
         }
     }
 
@@ -115,6 +123,10 @@ impl LTy {
             },
             LTy::Param { index, .. } => LTy::Param {
                 index,
+                optional: true,
+            },
+            LTy::Identity { root, .. } => LTy::Identity {
+                root,
                 optional: true,
             },
         }
@@ -145,6 +157,10 @@ impl LTy {
             },
             LTy::Param { index, .. } => LTy::Param {
                 index,
+                optional: false,
+            },
+            LTy::Identity { root, .. } => LTy::Identity {
+                root,
                 optional: false,
             },
         }
@@ -192,6 +208,9 @@ impl LTy {
             }
             LTy::Collection { idx, optional } => (records.collection_spelling(idx), optional),
             LTy::Param { index, optional } => (format!("type parameter #{index}"), optional),
+            // A program declares one store root, so the identity spelling needs no root
+            // discriminator to stay unambiguous in a diagnostic.
+            LTy::Identity { optional, .. } => ("Id(^root)".to_string(), optional),
         };
         if optional { format!("{base}?") } else { base }
     }
@@ -214,6 +233,17 @@ impl LTy {
                 ty,
                 optional: false,
             } => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// The bare entry-identity root, if this is one.
+    fn bare_identity(self) -> Option<u16> {
+        match self {
+            LTy::Identity {
+                root,
+                optional: false,
+            } => Some(root),
             _ => None,
         }
     }
@@ -281,6 +311,7 @@ impl LTy {
                 optional: false, ..
             } => ImageType::scalar(Scalar::Int),
             LTy::Param { optional: true, .. } => ImageType::opt_scalar(Scalar::Int),
+            LTy::Identity { root, optional } => ImageType::Identity { root, optional },
         }
     }
 }
@@ -389,6 +420,11 @@ enum Builtin {
     /// [`FnLowerer::lower_collection_fallback`]).
     List,
     Map,
+    /// The entry-identity constructor `Id(^root, keys…)`: a nominal value constructor
+    /// wrapping the explicit key tuple as an `Id(^root)`. Reserved so a colliding value
+    /// declaration is rejected; the leading `^root` argument is a saved-root reference,
+    /// not an ordinary value, so it is dispatched to its own lowering.
+    Id,
 }
 
 impl Builtin {
@@ -410,6 +446,7 @@ impl Builtin {
             "date_days_between" => Builtin::DateDaysBetween,
             "List" => Builtin::List,
             "Map" => Builtin::Map,
+            "Id" => Builtin::Id,
             _ => return None,
         })
     }
@@ -562,6 +599,11 @@ enum PlaceKey<'e> {
     /// reads the slot with `LocalGet`, so the operand runs exactly once at the
     /// binding no matter how many operations flow through the place.
     Bound(u16),
+    /// The whole root key-path supplied by one entry-identity operand (`^root[id]`):
+    /// the identity is lowered, then `IdentityKeyPath` spreads it into the root's key
+    /// columns. One `Identity` key stands for every root key column, so it is only the
+    /// root whole-key form and never mixes with per-column keys.
+    Identity(&'e Expression),
 }
 
 /// One column of a durable operation's key-path: how it reaches the stack and its
@@ -608,7 +650,7 @@ impl DurablePlace<'_> {
             .iter()
             .map(|column| match column.key {
                 PlaceKey::Bound(slot) => Some(slot),
-                PlaceKey::Expr(_) => None,
+                PlaceKey::Expr(_) | PlaceKey::Identity(_) => None,
             })
             .collect()
     }
@@ -809,6 +851,7 @@ impl FunctionRegistry {
     pub(crate) fn build(
         records: &TypeRegistry,
         draft: &mut ImageDraft,
+        durable: &DurableRegistry,
         functions: &[(String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
@@ -827,14 +870,14 @@ impl FunctionRegistry {
             }
             let mut params = Vec::with_capacity(function.params.len());
             for param in &function.params {
-                if let Some(ty) = param_type(records, draft, &param.ty, TypeEnv::EMPTY) {
+                if let Some(ty) = param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY) {
                     params.push(ty);
                 }
             }
             let ret = match &function.return_type {
                 None => RetType::Unit,
                 Some(annotation) => {
-                    match resolve_type(records, draft, annotation, TypeEnv::EMPTY) {
+                    match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY) {
                         Some(LTy::Record { .. }) | None => {
                             // A resource-record or unsupported return; the function's own
                             // lowering reports it. Record Unit here so indices stay aligned.
@@ -1291,7 +1334,7 @@ impl<'a> FnLowerer<'a> {
             let env = TypeEnv { params: &type_env };
             match &function.return_type {
                 None => RetType::Unit,
-                Some(annotation) => match resolve_type(records, draft, annotation, env) {
+                Some(annotation) => match resolve_type(records, draft, durable, annotation, env) {
                     Some(LTy::Record { .. }) => {
                         diagnostics.push(unsupported(
                             file,
@@ -3774,6 +3817,9 @@ impl<'a> FnLowerer<'a> {
         if left_ty.bare_enum().is_some() || right_ty.bare_enum().is_some() {
             return self.lower_enum_binary(op, left_ty, right_ty, span);
         }
+        if left_ty.bare_identity().is_some() || right_ty.bare_identity().is_some() {
+            return self.lower_identity_binary(op, left_ty, right_ty, span);
+        }
         let (Some(left), Some(right_scalar)) =
             (left_ty.bare_scalar_type(), right_ty.bare_scalar_type())
         else {
@@ -3988,6 +4034,44 @@ impl<'a> FnLowerer<'a> {
             }
             BinaryOp::NotEqual if same_enum => {
                 self.push(Instr::EqEnum, span);
+                self.push(Instr::BoolNot, span);
+                Some(bool_ty)
+            }
+            _ => {
+                self.fail(binary_error(
+                    self.records,
+                    self.file,
+                    span,
+                    op,
+                    left_ty,
+                    right_ty,
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lower `==`/`!=` between two entry identities of the same store root — the only
+    /// operators identities admit. Equality is key-tuple equality; a mismatched root
+    /// (impossible with one declared root, but kept as the general rule) or any other
+    /// operator is the standard binary error.
+    fn lower_identity_binary(
+        &mut self,
+        op: BinaryOp,
+        left_ty: LTy,
+        right_ty: LTy,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let bool_ty = LTy::bare_scalar(ScalarType::Bool);
+        let same_root =
+            left_ty.bare_identity().is_some() && left_ty.bare_identity() == right_ty.bare_identity();
+        match op {
+            BinaryOp::Equal if same_root => {
+                self.push(Instr::EqId, span);
+                Some(bool_ty)
+            }
+            BinaryOp::NotEqual if same_root => {
+                self.push(Instr::EqId, span);
                 self.push(Instr::BoolNot, span);
                 Some(bool_ty)
             }
@@ -4322,6 +4406,7 @@ impl<'a> FnLowerer<'a> {
                     ));
                     None
                 }
+                Builtin::Id => self.lower_identity_ctor(args, span).map(CallResult::Value),
                 // `none` is the payloadless Option constructor; it carries no
                 // arguments, so a call form has no meaning.
                 Builtin::None => {
@@ -4678,6 +4763,7 @@ impl<'a> FnLowerer<'a> {
         match resolve_type(
             self.records,
             self.draft,
+            self.durable,
             annotation,
             TypeEnv { params: &env },
         ) {
@@ -6042,6 +6128,21 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalGet(slot), span);
                 Some(())
             }
+            // Lower the identity, then spread it into the root's key columns. The one
+            // `Identity` key supplies the whole root key-path, so this pushes every root
+            // key column, matching the entry site's key arity.
+            PlaceKey::Identity(expr) => {
+                self.lower_as(
+                    expr,
+                    LTy::Identity {
+                        root: 0,
+                        optional: false,
+                    },
+                )?;
+                let cols = self.durable.root().map_or(0, |root| root.key.len()) as u16;
+                self.push(Instr::IdentityKeyPath(cols), span);
+                Some(())
+            }
         }
     }
 
@@ -6222,6 +6323,19 @@ impl<'a> FnLowerer<'a> {
                 span: root_span,
             } => {
                 self.check_root_name(root, name, *root_span)?;
+                // `^root[id]`: one entry-identity operand supplies the whole root key
+                // tuple. The identity is spread into the root's key columns at emit, so a
+                // single `Identity` key stands for every root column (including a composite
+                // key). A per-column key list keeps the ordinary scalar path.
+                if let [only] = keys.as_slice()
+                    && self.identity_operand_root(only) == Some(0)
+                {
+                    let columns = vec![DurKey {
+                        key: PlaceKey::Identity(only),
+                        key_ty: root.key[0],
+                    }];
+                    return Some((columns, DurNode::Root(root)));
+                }
                 let mut columns = Vec::new();
                 self.push_key_columns(&mut columns, keys, &root.key, *span)?;
                 Some((columns, DurNode::Root(root)))
@@ -6298,6 +6412,28 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// The store-root index a key operand names when it is statically an entry identity:
+    /// a binding of identity type (`^root[id]`), or an `Id(^root, …)` constructor call
+    /// (`^root[Id(^root, k)]`). `None` for any other operand — an ordinary scalar key.
+    /// Non-emitting: it only inspects the binding environment and the call spelling.
+    fn identity_operand_root(&self, expr: &Expression) -> Option<u16> {
+        match expr {
+            Expression::Name { segments, .. } => match segments.as_slice() {
+                [name] => self.lookup(name).and_then(|local| local.ty.bare_identity()),
+                _ => None,
+            },
+            Expression::Call { callee, .. } => match &**callee {
+                Expression::Name { segments, .. }
+                    if matches!(segments.as_slice(), [n] if n == "Id") =>
+                {
+                    Some(0)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Lower a durable read (`^r(k)` entry, `^r(k).branch(bk)` branch entry, `^r(k).f`
     /// field, or the place forms).
     fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
@@ -6363,6 +6499,83 @@ impl<'a> FnLowerer<'a> {
                 .to_string(),
         ));
         None
+    }
+
+    /// Lower `Id(^root, keys…)`: construct the entry identity of the declared store
+    /// root from its explicit key columns, without reading the store. The first
+    /// argument is the saved-root reference `^root`; the rest are one value per key
+    /// column in declaration order, each checked against that column's scalar type. The
+    /// key operands are pushed root-first, then `MakeIdentity` wraps them into the
+    /// `Id(^root)` value.
+    fn lower_identity_ctor(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        if args.iter().any(|arg| arg.name.is_some()) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`Id` takes positional arguments: a store root then one value per key column"
+                    .to_string(),
+            ));
+            return None;
+        }
+        let Some((root_arg, key_args)) = args.split_first() else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`Id` takes a store root `^root` then one value per key column".to_string(),
+            ));
+            return None;
+        };
+        let Expression::SavedRoot {
+            name: root_name,
+            span: root_span,
+        } = &root_arg.value
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                root_arg.value.span(),
+                "`Id`'s first argument is the store root `^root`".to_string(),
+            ));
+            return None;
+        };
+        let Some(root) = self.durable.root() else {
+            let diagnostic =
+                self.no_executable_root_diagnostic(*root_span, "an entry identity without a store");
+            self.fail(diagnostic);
+            return None;
+        };
+        self.check_root_name(root, root_name, *root_span)?;
+        let key_columns = root.key.clone();
+        if key_args.len() != key_columns.len() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "`Id(^{root_name}, …)` takes {} key column value(s), one per key column",
+                    key_columns.len()
+                ),
+            ));
+            return None;
+        }
+        // Push each key column root-first in declaration order, coerced to the column's
+        // scalar type, so `MakeIdentity` pops them into the tuple in column order.
+        for (arg, &key_ty) in key_args.iter().zip(&key_columns) {
+            self.lower_as(&arg.value, LTy::bare_scalar(key_ty))?;
+        }
+        self.push(
+            Instr::MakeIdentity {
+                root: 0,
+                cols: key_columns.len() as u16,
+            },
+            span,
+        );
+        Some(LTy::Identity {
+            root: 0,
+            optional: false,
+        })
     }
 
     /// Lower a call in the closed pure text floor: `isEmpty(string): bool`,
@@ -7020,6 +7233,19 @@ impl<'a> FnLowerer<'a> {
                     self.push(Instr::LocalSet(slot), span);
                     slot
                 }
+                // Writing a whole entry through an identity key is not part of the
+                // identity value slice (an identity is a read/lookup value here); a
+                // whole-entry write keys by explicit columns.
+                PlaceKey::Identity(_) => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckUnsupported.as_str(),
+                        self.file,
+                        span,
+                        "writing a whole entry through an identity key is not yet supported"
+                            .to_string(),
+                    ));
+                    return None;
+                }
             };
             key_slots.push(slot);
         }
@@ -7104,14 +7330,14 @@ impl<'a> FnLowerer<'a> {
         let env = TypeEnv {
             params: &self.type_env,
         };
-        resolve_type(self.records, self.draft, annotation, env)
+        resolve_type(self.records, self.draft, self.durable, annotation, env)
     }
 
     fn param_type(&mut self, ty: &TypeExpr) -> Option<LTy> {
         let env = TypeEnv {
             params: &self.type_env,
         };
-        match param_type(self.records, self.draft, ty, env) {
+        match param_type(self.records, self.draft, self.durable, ty, env) {
             Some(param) => Some(param),
             None => {
                 self.fail(unsupported(self.file, ty.span(), "this parameter type"));
@@ -7174,10 +7400,11 @@ impl TypeEnv<'_> {
 fn param_type(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
+    durable: &DurableRegistry,
     ty: &TypeExpr,
     env: TypeEnv,
 ) -> Option<LTy> {
-    match resolve_type(records, draft, ty, env) {
+    match resolve_type(records, draft, durable, ty, env) {
         Some(
             param @ (LTy::Scalar {
                 optional: false, ..
@@ -7200,6 +7427,10 @@ fn param_type(
             // element/value positions admit it through `resolve_generic`.
             | LTy::Param {
                 optional: false, ..
+            }
+            // An entry identity is a by-value value type, admitted as a parameter.
+            | LTy::Identity {
+                optional: false, ..
             }),
         ) => Some(param),
         _ => None,
@@ -7213,15 +7444,17 @@ fn param_type(
 fn resolve_type(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
+    durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
 ) -> Option<LTy> {
-    resolve_expanded(records, draft, &records.expand(annotation), env)
+    resolve_expanded(records, draft, durable, &records.expand(annotation), env)
 }
 
 fn resolve_expanded(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
+    durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
 ) -> Option<LTy> {
@@ -7263,15 +7496,31 @@ fn resolve_expanded(
             }
         }
         TypeExpr::Optional { inner, .. } => {
-            let inner = resolve_expanded(records, draft, inner, env)?;
+            let inner = resolve_expanded(records, draft, durable, inner, env)?;
             if inner.is_optional() {
                 None
             } else {
                 Some(inner.to_optional())
             }
         }
-        TypeExpr::Apply { head, args, .. } => resolve_generic(records, draft, head, args, env),
-        _ => None,
+        TypeExpr::Apply { head, args, .. } => {
+            resolve_generic(records, draft, durable, head, args, env)
+        }
+        // `Id(^root)`: the entry-identity value type of the one declared store root.
+        // The root name must match the declared root; a program has zero or one root,
+        // so the executable root is image ROOTS index 0. An identity over a root that
+        // is not declared, or over a not-yet-executable root, is an unsupported type
+        // (`None`), reported by the caller like any other unresolved annotation.
+        TypeExpr::Identity(identity) => {
+            let root = durable.root()?;
+            if root.name != identity.root {
+                return None;
+            }
+            Some(LTy::Identity {
+                root: 0,
+                optional: false,
+            })
+        }
     }
 }
 
@@ -7286,6 +7535,7 @@ fn resolve_expanded(
 fn resolve_generic(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
+    durable: &DurableRegistry,
     head: &str,
     args: &[TypeExpr],
     env: TypeEnv,
@@ -7293,7 +7543,7 @@ fn resolve_generic(
     match head {
         "List" => {
             let [elem] = args else { return None };
-            let elem = resolve_expanded(records, draft, elem, env)?.as_garg()?;
+            let elem = resolve_expanded(records, draft, durable, elem, env)?.as_garg()?;
             Some(LTy::Collection {
                 idx: records.instantiate_list(draft, elem),
                 optional: false,
@@ -7301,14 +7551,14 @@ fn resolve_generic(
         }
         "Map" => {
             let [key, value] = args else { return None };
-            let key = resolve_expanded(records, draft, key, env)?.as_garg()?;
+            let key = resolve_expanded(records, draft, durable, key, env)?.as_garg()?;
             // A type parameter is not admitted as a map key: keys are drawn from the
             // durable-key scalar family, and a generic key would need an order
             // constraint the collection contract does not model here.
             if !key.is_key_type() {
                 return None;
             }
-            let value = resolve_expanded(records, draft, value, env)?.as_garg()?;
+            let value = resolve_expanded(records, draft, durable, value, env)?.as_garg()?;
             Some(LTy::Collection {
                 idx: records.instantiate_map(draft, key, value),
                 optional: false,
@@ -7322,7 +7572,7 @@ fn resolve_generic(
             }
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expanded(records, draft, arg, env)?.as_garg()?);
+                resolved.push(resolve_expanded(records, draft, durable, arg, env)?.as_garg()?);
             }
             // Per-application constraint revalidation: a concrete argument must
             // support the constraint; an abstract parameter satisfies it when its own
