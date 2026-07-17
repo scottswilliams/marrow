@@ -1655,6 +1655,34 @@ impl<'a> FnLowerer<'a> {
                 else_ifs,
                 else_block.as_ref(),
             ),
+            Statement::IfConstChain {
+                bindings,
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                let bindings: Vec<(&str, Option<&TypeExpr>, &Expression)> = bindings
+                    .iter()
+                    .map(|b| (b.name.as_str(), b.ty.as_ref(), &b.value))
+                    .collect();
+                self.lower_if_const_bindings(
+                    &bindings,
+                    condition.as_ref(),
+                    then_block,
+                    else_ifs,
+                    else_block.as_ref(),
+                )
+            }
+            Statement::LetElse {
+                is_var,
+                name,
+                ty,
+                value,
+                else_block,
+                ..
+            } => self.lower_let_else(*is_var, name, ty.as_ref(), value, else_block),
             Statement::While {
                 condition, body, ..
             } => self.lower_while(condition, body),
@@ -2095,75 +2123,45 @@ impl<'a> FnLowerer<'a> {
         else_ifs: &[ElseIf],
         else_block: Option<&Block>,
     ) -> Flow {
-        if is_reserved_builtin_name(name) {
-            self.fail(reserved_builtin_name(self.file, value.span(), name));
-            return Flow::Fallthrough;
-        }
-        // A whole durable entry address (`if const book = ^books(id)` or the named
-        // `place` form) reads the entry here; a bare place name is otherwise not a
-        // value, so the entry guard is its whole-entry read form.
-        // A named-place entry read proves the entry present on the guarded edge: a
-        // sparse-field set through the same place in the then-block lowers strict.
-        let mut guard_path: Option<Vec<u16>> = None;
-        let optional = if matches!(self.durable_access(value), Some(DurShape::Entry)) {
-            let Some(place) = self.resolve_durable(value) else {
-                return Flow::Fallthrough;
-            };
-            // A fully-bound place read (root or branch) proves a strict-set-consumable
-            // presence fact over its whole key-path.
-            guard_path = place.bound_key_path();
-            match self.lower_durable_read(place) {
-                Some(ty) => ty,
-                None => return Flow::Fallthrough,
-            }
-        } else {
-            let Some(optional) = self.lower_expr(value) else {
-                return Flow::Fallthrough;
-            };
-            optional
-        };
-        if !optional.is_optional() {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                value.span(),
-                format!(
-                    "`if const` needs an optional, found {}",
-                    optional.spelling(self.records)
-                ),
-            ));
-            return Flow::Fallthrough;
-        }
-        let bound = optional.to_bare();
-        if let Some(annotation) = annotation
-            && let Some(declared) = self.resolve(annotation)
-            && declared != bound
-        {
-            self.fail(type_mismatch(
-                self.records,
-                self.file,
-                annotation.span(),
-                bound,
-                declared,
-            ));
-            return Flow::Fallthrough;
-        }
+        // The single `if const a = e` is the one-binding, no-condition case of the
+        // general chained form.
+        self.lower_if_const_bindings(
+            &[(name, annotation, value)],
+            None,
+            then_block,
+            else_ifs,
+            else_block,
+        )
+    }
 
-        // Present edge falls through with the unwrapped bare value; absent edge jumps.
-        let bp = self.push_branch_present(value.span());
+    /// Lower the general `if const` form (B5): a left-to-right chain of existence
+    /// bindings joined by `and` and an optional trailing bare condition, with the
+    /// then and `else if`/`else` tails. Each binding's value is proven present
+    /// before the next is evaluated (short-circuit), each binding scopes rightward
+    /// into later binding values, the condition, and the then block, and any absent
+    /// binding or false condition takes the else tail. This is the one owner of
+    /// `if const` lowering; the single form is one binding with no condition.
+    fn lower_if_const_bindings(
+        &mut self,
+        bindings: &[(&str, Option<&TypeExpr>, &Expression)],
+        condition: Option<&Expression>,
+        then_block: &Block,
+        else_ifs: &[ElseIf],
+        else_block: Option<&Block>,
+    ) -> Flow {
         let mark = self.locals.len();
-        let slot = self.alloc_slot();
-        self.push(Instr::LocalSet(slot), value.span());
-        self.locals.push(Local {
-            name: name.to_string(),
-            ty: bound,
-            mutable: false,
-            slot,
-        });
         let present_mark = self.present_places.len();
-        if let Some(path) = guard_path {
-            self.mark_present(path);
-        }
+
+        // The present path threads through every binding and the condition into the
+        // then block; every failure edge (an absent binding or a false condition)
+        // jumps to the shared absent tail. Each `BranchPresent`/`JumpIfFalse` pops its
+        // own operand, so all failure edges reach the tail with a balanced stack.
+        let Some(fail_jumps) = self.lower_if_const_head(bindings, condition) else {
+            self.present_places.truncate(present_mark);
+            self.locals.truncate(mark);
+            return Flow::Fallthrough;
+        };
+
         let then_flow = self.lower_block(then_block);
         self.present_places.truncate(present_mark);
         self.locals.truncate(mark);
@@ -2173,9 +2171,9 @@ impl<'a> FnLowerer<'a> {
             end_jumps.push(self.push_jump(then_block.span));
         }
 
-        // Absent tail: the `else if`/`else` chain.
+        // Absent/false tail: the `else if`/`else` chain.
         let absent = self.here();
-        self.patch(bp, absent);
+        self.patch_all(fail_jumps, absent);
         let branches: Vec<(&Expression, &Block)> = else_ifs
             .iter()
             .map(|else_if| (&else_if.condition, &else_if.block))
@@ -2190,6 +2188,142 @@ impl<'a> FnLowerer<'a> {
         } else {
             Flow::Fallthrough
         }
+    }
+
+    /// Emit the present-threading head of an `if const` chain: for each binding,
+    /// prove its value present and bind it to a fresh local scoped rightward; then
+    /// evaluate the optional trailing condition. Returns the failure jumps to patch
+    /// to the absent tail, leaving the bindings' locals in scope for the then block;
+    /// `None` on a hard type error (the caller restores the local stack).
+    fn lower_if_const_head(
+        &mut self,
+        bindings: &[(&str, Option<&TypeExpr>, &Expression)],
+        condition: Option<&Expression>,
+    ) -> Option<Vec<usize>> {
+        let mut fail_jumps: Vec<usize> = Vec::new();
+        for (name, annotation, value) in bindings.iter().copied() {
+            if is_reserved_builtin_name(name) {
+                self.fail(reserved_builtin_name(self.file, value.span(), name));
+                return None;
+            }
+            // A whole durable entry address (`if const book = ^books(id)` or the named
+            // `place` form) reads the entry here and proves it present on the guarded
+            // edge, so a sparse-field set through the same place in the then block
+            // lowers strict; a bare place name is otherwise not a value.
+            let mut guard_path: Option<Vec<u16>> = None;
+            let optional = if matches!(self.durable_access(value), Some(DurShape::Entry)) {
+                let place = self.resolve_durable(value)?;
+                guard_path = place.bound_key_path();
+                self.lower_durable_read(place)?
+            } else {
+                self.lower_expr(value)?
+            };
+            if !optional.is_optional() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    value.span(),
+                    format!(
+                        "`if const` needs an optional, found {}",
+                        optional.spelling(self.records)
+                    ),
+                ));
+                return None;
+            }
+            let bound = optional.to_bare();
+            if let Some(annotation) = annotation
+                && let Some(declared) = self.resolve(annotation)
+                && declared != bound
+            {
+                self.fail(type_mismatch(
+                    self.records,
+                    self.file,
+                    annotation.span(),
+                    bound,
+                    declared,
+                ));
+                return None;
+            }
+
+            // Present edge falls through with the unwrapped bare value; absent edge
+            // jumps to the shared tail.
+            fail_jumps.push(self.push_branch_present(value.span()));
+            let slot = self.alloc_slot();
+            self.push(Instr::LocalSet(slot), value.span());
+            self.locals.push(Local {
+                name: name.to_string(),
+                ty: bound,
+                mutable: false,
+                slot,
+            });
+            if let Some(path) = guard_path {
+                self.mark_present(path);
+            }
+        }
+
+        if let Some(cond) = condition {
+            let cond_ty = self.lower_expr(cond)?;
+            if cond_ty != LTy::bare_scalar(ScalarType::Bool) {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    cond.span(),
+                    format!(
+                        "an `if const` chain condition must be `bool`, found {}",
+                        cond_ty.spelling(self.records)
+                    ),
+                ));
+                return None;
+            }
+            fail_jumps.push(self.push_jif(cond.span()));
+        }
+
+        Some(fail_jumps)
+    }
+
+    /// Lower `const x = e else { … }` / `var x = e else { … }` (B6, let-else): bind
+    /// `x` from the present value of the optional `e` and continue with `x` in scope
+    /// for the rest of the enclosing block; when `e` is absent, run the `else` block,
+    /// which must diverge. Reuses the one-binding `if const` head for the present
+    /// path, and the existing `Flow::Terminates` divergence analysis proves the else
+    /// diverges — so let-else adds no new control-flow analysis.
+    fn lower_let_else(
+        &mut self,
+        is_var: bool,
+        name: &str,
+        annotation: Option<&TypeExpr>,
+        value: &Expression,
+        else_block: &Block,
+    ) -> Flow {
+        let Some(fail_jumps) = self.lower_if_const_head(&[(name, annotation, value)], None) else {
+            return Flow::Fallthrough;
+        };
+        // The head binds `x` immutable; a `var` let-else makes it assignable. The
+        // binding persists into the enclosing block, so it is not truncated here.
+        if is_var && let Some(local) = self.locals.last_mut() {
+            local.mutable = true;
+        }
+
+        // The present path continues past the `else`; the absent edge runs the
+        // diverging `else` block, so control only reaches past the statement with `x`
+        // bound.
+        let to_after = self.push_jump(value.span());
+        let absent = self.here();
+        self.patch_all(fail_jumps, absent);
+        let else_flow = self.lower_block(else_block);
+        if else_flow != Flow::Terminates {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                else_block.span,
+                "the `else` of a let-else binding must diverge, for example with \
+                 `return`, `throw`, or `unreachable`"
+                    .to_string(),
+            ));
+        }
+        let after = self.here();
+        self.patch(to_after, after);
+        Flow::Fallthrough
     }
 
     /// Lower a `match` over a flat enum scrutinee (design §B). The scrutinee is

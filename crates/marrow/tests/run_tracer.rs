@@ -577,6 +577,98 @@ fn interpolation_rejects_an_unrenderable_hole() {
     assert!(stdout.contains("check.unsupported"), "{output:?}");
 }
 
+/// A chained `if const` proves each subject present left to right (short-circuit),
+/// scopes each binding rightward and into the then block, and takes the else tail
+/// when any subject is absent or the trailing condition is false.
+#[test]
+fn if_const_chain_short_circuits_and_scopes_rightward() {
+    let temp = TempDir::new("ifconst-chain");
+    project(
+        &temp,
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    if const x = maybe(a) and const y = maybe(x + 1) and x > 2 {
+        return x * 100 + y
+    } else {
+        return -1
+    }
+}
+"#,
+    );
+    // present: x=5, y=maybe(6)=6, 5>2 true.
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "5"]).stdout),
+        "506\n"
+    );
+    // trailing condition false: x=2, 2>2 false.
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "2"]).stdout),
+        "-1\n"
+    );
+    // first subject absent short-circuits.
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "0"]).stdout),
+        "-1\n"
+    );
+}
+
+/// A let-else binding runs its diverging `else` when the subject is absent and
+/// otherwise binds the present value for the rest of the block; a `var` let-else
+/// binds mutably; a non-diverging `else` is a typed `check.type`.
+#[test]
+fn let_else_binds_present_and_requires_a_diverging_else() {
+    let temp = TempDir::new("let-else");
+    project(
+        &temp,
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    var x = maybe(a) else {
+        return -1
+    }
+    x += 100
+    return x
+}
+"#,
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "5"]).stdout),
+        "105\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run_in(&temp, &["run", "f", "--", "0"]).stdout),
+        "-1\n"
+    );
+
+    let bad = TempDir::new("let-else-bad");
+    project(
+        &bad,
+        r#"fn maybe(n: int): int? {
+    if n > 0 { return n }
+    return absent
+}
+
+pub fn f(a: int): int {
+    const x = maybe(a) else {
+        const y = 1
+    }
+    return x
+}
+"#,
+    );
+    let output = run_in(&bad, &["run", "f", "--format", "jsonl", "--", "5"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("check.type"), "{stdout}");
+}
+
 /// `string` comparisons order lexicographically through the full path.
 #[test]
 fn string_comparison_orders_lexicographically() {

@@ -41,6 +41,55 @@ The subject may be any `T?`, including a local optional, a local collection
 read, a durable read, a user-function result, or an optional standard-library
 result.
 
+An `if const` head may chain several bindings and an optional trailing condition
+with `and`. Each subject is evaluated left to right and only when every earlier
+subject was present, each binding is in scope for the later subjects and the
+then branch, and the else branch runs when any subject is absent or the trailing
+condition is false.
+
+```mw
+module docs::conditional_chain
+
+fn maybeName(id: int): string? {
+    if id > 0 { return "Marrow" }
+    return absent
+}
+
+fn maybeAge(id: int): int? {
+    if id > 0 { return 21 }
+    return absent
+}
+
+pub fn describe(id: int): string {
+    if const name = maybeName(id) and const age = maybeAge(id) and age >= 18 {
+        return name
+    }
+    return "unknown"
+}
+```
+
+## Let-else Bindings
+
+A `const` or `var` binding may take an `else` block that runs when the subject
+is absent. The else block must diverge — it cannot fall through — so past the
+binding the name is always in scope with the present value.
+
+```mw
+module docs::let_else
+
+fn maybeName(id: int): string? {
+    if id > 0 { return "Marrow" }
+    return absent
+}
+
+pub fn greet(id: int): string {
+    const name = maybeName(id) else {
+        return "unknown"
+    }
+    return name
+}
+```
+
 ## Boolean Evaluation
 
 Expressions evaluate operands and call arguments from left to right. `and`
