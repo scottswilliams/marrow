@@ -11,7 +11,7 @@
 //! entry family prefix   0x01 0x20 esc(root_name)
 //! marker key            <family> enc(keytuple) 0x00                        value = 0x01
 //! field leaf key        <marker> 0x10 esc(field)                           value = codec bytes
-//! group leaf key        <marker> 0x20 esc(group) 0x10 esc(field)           value = codec bytes
+//! group leaf key        <marker> 0x28 esc(group) 0x10 esc(field)           value = codec bytes
 //! branch child marker   <marker> 0x30 esc(branch) enc(childTuple) 0x00     value = 0x01
 //! iteration cursor      <family> enc(keytuple) 0xFF
 //! index cell key        0x02 esc(root_name) index_id[16] enc(projValues)   value = enc(sourceKey)
@@ -20,12 +20,12 @@
 //!
 //! An unkeyed *group* is a static field-path namespace inside the entry's payload — not a
 //! keyed node. It carries no marker and no key; its leaves are the entry's own payload
-//! namespaced under the group name (`<marker> 0x20 esc(group) 0x10 esc(field)`), and its
-//! presence is the entry's presence. The group tag `0x20` sorts between the field tag
+//! namespaced under the group name (`<marker> 0x28 esc(group) 0x10 esc(field)`), and its
+//! presence is the entry's presence. The group tag `0x28` sorts between the field tag
 //! `0x10` and the branch tag `0x30`, so an entry's own field leaves precede its group
 //! leaves, which precede its branch descendants; every group leaf still nests inside the
 //! entry's `(marker, cursor]` range. A group's whole read/replace/erase confine to the
-//! group's own leaves under its `<marker> 0x20 esc(group)` prefix, disjoint from the
+//! group's own leaves under its `<marker> 0x28 esc(group)` prefix, disjoint from the
 //! entry's top-level fields, its sibling groups, and its branches.
 //!
 //! A managed index's cells form their own family (`0x02`), disjoint from the entry family
@@ -54,13 +54,13 @@
 //!
 //! Because `enc(keytuple)` is prefix-free (each column fixed width, or `0x00,0x00`-
 //! terminated with `0x00,0x01` escapes, and the columns self-delimit) and the structural
-//! tags ascend `0x00 < 0x10 < 0x20 < 0x30 < 0xFF`
+//! tags ascend `0x00 < 0x10 < 0x28 < 0x30 < 0xFF`
 //! (marker terminator, field, group, branch, cursor), every cell of entry `k` — including
 //! every group leaf and every descendant in every branch — sorts inside
 //! `(marker(k), cursor(k)]`, and no cell of another entry does. Two consequences the
 //! kernel relies on: one prefix-successor seek past `cursor(k)` skips `k`'s whole subtree
 //! regardless of branch fan-out (the traversal-skip law), and `k`'s own payload leaves —
-//! its field leaves (`0x10`) then its group leaves (`0x20`) — sort ahead of its branch
+//! its field leaves (`0x10`) then its group leaves (`0x28`) — sort ahead of its branch
 //! descendants (`0x30`), so a scan of `k`'s cells meets an orphan own-payload leaf before
 //! any descendant — the precedence the bounded prefix probe uses to surface a
 //! marker/payload corruption ahead of a legitimate descendant-only node.
@@ -85,15 +85,13 @@ const BRANCH_TAG: u8 = 0x30;
 /// Separator introducing a group's own field namespace beneath an entry's marker stem.
 /// A group is part of its containing entry's payload, not a keyed node: it carries no
 /// marker and no key, and its presence is exactly its entry's presence. Sorts above
-/// [`FIELD_TAG`] and below [`BRANCH_TAG`], so within an entry the own field leaves
-/// (`0x10`) precede the group leaves (`0x20`), which precede the branch descendants
-/// (`0x30`) — the field < group < branch precedence the iteration classifier and the
-/// bounded prefix probe rely on. It shares the byte value of [`ROOT_TAG`], which is
-/// sound because the two never occupy the same structural position: `ROOT_TAG` sits at
-/// a fixed offset inside the entry-family prefix (immediately after [`ENTRY_FAMILY`]),
-/// while `GROUP_TAG` only ever follows a node's marker terminator, so no key range and
-/// no tag-classification site compares them.
-const GROUP_TAG: u8 = 0x20;
+/// [`FIELD_TAG`] and below [`BRANCH_TAG`] — a distinct byte in the open `(0x10, 0x30)`
+/// interval — so within an entry the own field leaves (`0x10`) precede the group leaves
+/// (`0x28`), which precede the branch descendants (`0x30`): the field < group < branch
+/// precedence the iteration classifier and the bounded prefix probe rely on. Its own
+/// structural byte, disjoint from every other tag, so a stray group-tag literal is caught
+/// by its own scan in the topology-owner gate.
+const GROUP_TAG: u8 = 0x28;
 /// Marker-stem terminator; sorts below [`FIELD_TAG`], so the marker precedes leaves.
 const MARKER_TERMINATOR: u8 = 0x00;
 /// Iteration-cursor sentinel; sorts above every cell of its entry.
@@ -334,7 +332,7 @@ fn classify_under_prefix(prefix: &[u8], cell_key: &[u8]) -> CellKind {
 
 /// What a cell sorting strictly after a node's marker `stem`, under the stem's own
 /// prefix, is: one of the node's own field leaves (`stem 0x10 …`), one of its group
-/// leaves (`stem 0x20 …`), a cell of one of its branch descendants (`stem 0x30 …`), an
+/// leaves (`stem 0x28 …`), a cell of one of its branch descendants (`stem 0x30 …`), an
 /// unrecognized structural tag (a shape the layout never writes — corruption), or
 /// foreign (not under the stem — which the bounded probe's prefix bound already
 /// excludes). The probe reads the first such cell to tell a descendant-only node (a
@@ -719,7 +717,7 @@ mod tests {
 
     /// A group's leaves occupy a byte range disjoint from the entry's top-level field
     /// leaves, from a differently-named sibling group's leaves, and from the entry's
-    /// branches: a group write confined to `<marker> 0x20 esc(group)` never aliases any
+    /// branches: a group write confined to `<marker> 0x28 esc(group)` never aliases any
     /// of them. The `group_stem` prefix bounds one group's cells and no other's.
     #[test]
     fn group_leaves_are_disjoint_from_fields_sibling_groups_and_branches() {
@@ -750,7 +748,7 @@ mod tests {
             !details_leaf.starts_with(&credits),
             "this group's leaf is outside the sibling group's prefix"
         );
-        // A branch cell is outside the group prefix (branch tag 0x30 ≠ group tag 0x20).
+        // A branch cell is outside the group prefix (branch tag 0x30 ≠ group tag 0x28).
         let branch_child = bcs(&marker, "notes", &KeyScalar::Int(1));
         assert!(
             !branch_child.starts_with(&details),

@@ -7,29 +7,25 @@
 //! consequence planner and its node-parametric primitives to serve branch entries one
 //! level down without introducing a second marker/leaf topology: no durable module
 //! other than `physical.rs` may call the escaped-name key encoder that builds a cell
-//! key. Second, a structural-tag byte literal (`0x20` root, `0x30` branch, `0xFF`
-//! cursor) must not leak beyond the layout owner into any module that consumes the
+//! key. Second, a structural-tag byte literal (`0x20` root, `0x28` group, `0x30` branch,
+//! `0xFF` cursor) must not leak beyond the layout owner into any module that consumes the
 //! store — not the other durable modules, and not the VM or compiler, which name typed
 //! effects and sites rather than physical cell tags. A second owner — a hand-rolled
 //! branch key, a duplicate tag constant in any of those trees — would trip this gate.
 //! Consuming `physical.rs`'s own published `MARKER_VALUE` constant by name is not a
 //! second owner and is allowed.
-//!
-//! The `0x20` literal names two positionally-disjoint roles the layout owner spells —
-//! the root discriminator inside the entry-family prefix and the group tag that follows
-//! a marker terminator — so the existing `0x20` scan already forbids either leaking to a
-//! second owner; the group tag needs no new literal.
 
 use std::path::{Path, PathBuf};
 
 /// The one durable-module file allowed to spell the cell layout.
 const LAYOUT_OWNER: &str = "physical.rs";
 
-/// The structural-tag byte literals only the layout owner may spell: the root, branch,
-/// and cursor discriminators. (`0x10` field and `0x00` marker terminator are omitted:
-/// those byte values are too common in unrelated code to scan for without noise; the
-/// branch and cursor tags are distinctive enough to make a second owner conspicuous.)
-const STRUCTURAL_TAG_LITERALS: &[&str] = &["0x20", "0x30", "0xFF", "0xff"];
+/// The structural-tag byte literals only the layout owner may spell: the root, group,
+/// branch, and cursor discriminators. (`0x10` field and `0x00` marker terminator are
+/// omitted: those byte values are too common in unrelated code to scan for without noise;
+/// the root, group, branch, and cursor tags are distinctive enough to make a second owner
+/// conspicuous.)
+const STRUCTURAL_TAG_LITERALS: &[&str] = &["0x20", "0x28", "0x30", "0xFF", "0xff"];
 
 /// The raw cell-key name encoder. It appears only where a durable cell key is spelled,
 /// so a call outside the layout owner is a second key-construction site.
