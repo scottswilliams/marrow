@@ -1,5 +1,5 @@
 //! Control-flow statements: conditionals, loops, error
-//! handling, and match arms, with the body and indentation rules each enforces.
+//! handling, and match arms, with the brace-block rules each enforces.
 
 use crate::common;
 use common::parse_reason;
@@ -8,13 +8,14 @@ use marrow_syntax::{
 };
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_range_for_by_step() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   for i in 1..10 by 2\n\
-         \x20       print($\"{i}\")\n",
+         fn run() {\n\
+         \x20   for i in 1..10 by 2 {\n\
+         \x20       print($\"{i}\")\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -38,13 +39,14 @@ fn parses_a_range_for_by_step() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn a_range_for_without_by_has_no_step() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   for i in 1..10\n\
-         \x20       print($\"{i}\")\n",
+         fn run() {\n\
+         \x20   for i in 1..10 {\n\
+         \x20       print($\"{i}\")\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -55,15 +57,16 @@ fn a_range_for_without_by_has_no_step() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_bounded_traversal_head_and_on_more_block() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   for k in ^books at most 2\n\
+         fn run() {\n\
+         \x20   for k in ^books at most 2 {\n\
          \x20       print($\"{k}\")\n\
-         \x20   on more\n\
-         \x20       print(\"more\")\n",
+         \x20   } on more {\n\
+         \x20       print(\"more\")\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -96,15 +99,16 @@ fn parses_a_bounded_traversal_head_and_on_more_block() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_branch_traversal_head_with_from() {
     let parsed = parse_source(
         "module app\n\
-         fn run(lo: int)\n\
-         \x20   for p in ^books(lo).notes at most 3 from lo\n\
+         fn run(lo: int) {\n\
+         \x20   for p in ^books[lo].notes at most 3 from lo {\n\
          \x20       print($\"{p}\")\n\
-         \x20   on more\n\
-         \x20       print(\"more\")\n",
+         \x20   } on more {\n\
+         \x20       print(\"more\")\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -126,17 +130,18 @@ fn parses_a_branch_traversal_head_with_from() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_if_else_if_else_chain() {
     let parsed = parse_source(
         "module app\n\
-         fn classify(n: int)\n\
-         \x20   if n < 0\n\
+         fn classify(n: int) {\n\
+         \x20   if n < 0 {\n\
          \x20       print(\"neg\")\n\
-         \x20   else if n == 0\n\
+         \x20   } else if n == 0 {\n\
          \x20       print(\"zero\")\n\
-         \x20   else\n\
-         \x20       print(\"pos\")\n",
+         \x20   } else {\n\
+         \x20       print(\"pos\")\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let classify = parsed.file.function("classify").expect("classify function");
@@ -182,15 +187,16 @@ fn parses_if_else_if_else_chain() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_if_const_binding_guard() {
     let parsed = parse_source(
         "module app\n\
-         fn title(id: Id(^books))\n\
-         \x20   if const title = ^books(id).title\n\
+         fn title(id: Id(^books)) {\n\
+         \x20   if const title = ^books[id].title {\n\
          \x20       print(title)\n\
-         \x20   else\n\
-         \x20       print(\"missing\")\n",
+         \x20   } else {\n\
+         \x20       print(\"missing\")\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let title = parsed.file.function("title").expect("title function");
@@ -214,15 +220,17 @@ fn parses_if_const_binding_guard() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_nested_if_inside_then_block() {
     let parsed = parse_source(
         "module app\n\
-         fn check(a: bool, b: bool)\n\
-         \x20   if a\n\
-         \x20       if b\n\
+         fn check(a: bool, b: bool) {\n\
+         \x20   if a {\n\
+         \x20       if b {\n\
          \x20           print(\"both\")\n\
-         \x20   return\n",
+         \x20       }\n\
+         \x20   }\n\
+         \x20   return\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let check = parsed.file.function("check").expect("check function");
@@ -252,17 +260,20 @@ fn parses_nested_if_inside_then_block() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_while_and_for_loops() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   while n < 10\n\
+         fn run() {\n\
+         \x20   while n < 10 {\n\
          \x20       n = n + 1\n\
-         \x20   for id in ^books\n\
+         \x20   }\n\
+         \x20   for id in ^books {\n\
          \x20       print(id)\n\
-         \x20   for shelf, id in ^books.byShelf\n\
-         \x20       print(id)\n",
+         \x20   }\n\
+         \x20   for shelf, id in ^books.byShelf {\n\
+         \x20       print(id)\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -306,13 +317,12 @@ fn parses_while_and_for_loops() {
 /// the iterable. This suite is the executable definition; a future head keyword
 /// (`distinct`) is added against the same baseline.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reversed_is_a_head_slot_keyword() {
     use marrow_syntax::LoopOrder;
 
     let head = |head: &str| -> marrow_syntax::ParsedSource {
         parse_source(&format!(
-            "module app\nfn run()\n\x20   for x in {head}\n\x20       print(x)\n"
+            "module app\nfn run() {{\n\x20   for x in {head} {{\n\x20       print(x)\n\x20   }}\n}}\n"
         ))
     };
     let for_stmt = |parsed: &marrow_syntax::ParsedSource| -> Option<(LoopOrder, Expression)> {
@@ -373,26 +383,28 @@ fn reversed_is_a_head_slot_keyword() {
 
 /// `reversed` in a non-head position is an ordinary identifier, unchanged.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reversed_outside_the_head_is_an_ordinary_name() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
+         fn run() {\n\
          \x20   const reversed = 1\n\
-         \x20   print(reversed)\n",
+         \x20   print(reversed)\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn loop_labels_are_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   outer: for id in keys(^books)\n\
-         \x20       inner: while ready\n\
-         \x20           break outer\n",
+         fn run() {\n\
+         \x20   outer: for id in keys(^books) {\n\
+         \x20       inner: while ready {\n\
+         \x20           break outer\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.has_errors(), "expected loop-label rejection");
     assert!(
@@ -406,11 +418,10 @@ fn loop_labels_are_rejected_as_removed_syntax() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
     for source in [
-        "module app\nfn run()\n    while ready\n        break outer\n",
-        "module app\nfn run()\n    while ready\n        continue outer\n",
+        "module app\nfn run() {\n    while ready {\n        break outer\n    }\n}\n",
+        "module app\nfn run() {\n    while ready {\n        continue outer\n    }\n}\n",
     ] {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected labeled jump rejection");
@@ -426,13 +437,13 @@ fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_prefix_try_in_a_binding() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
+         fn run() {\n\
          \x20   const x = try risky()\n\
-         \x20   return\n",
+         \x20   return\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -453,13 +464,13 @@ fn parses_prefix_try_in_a_binding() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_bare_prefix_try_statement() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
+         fn run() {\n\
          \x20   try risky()\n\
-         \x20   return\n",
+         \x20   return\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -473,13 +484,13 @@ fn parses_a_bare_prefix_try_statement() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn throw_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
+         fn run() {\n\
          \x20   throw bad()\n\
-         \x20   return\n",
+         \x20   return\n\
+         }\n",
     );
     assert!(parsed.has_errors(), "expected throw rejection");
     assert!(
@@ -501,16 +512,17 @@ fn throw_is_rejected_as_removed_syntax() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn block_try_catch_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   try\n\
+         fn run() {\n\
+         \x20   try {\n\
          \x20       risky()\n\
-         \x20   catch err\n\
+         \x20   } catch err {\n\
          \x20       cleanup()\n\
-         \x20   return\n",
+         \x20   }\n\
+         \x20   return\n\
+         }\n",
     );
     assert!(parsed.has_errors(), "expected block-try rejection");
     assert!(
@@ -523,7 +535,7 @@ fn block_try_catch_is_rejected_as_removed_syntax() {
         parsed.diagnostics
     );
     // The catch block is consumed by the recovery, so the sibling return still
-    // parses and no cascading indentation error is raised.
+    // parses and no cascading block error is raised.
     let run = parsed.file.function("run").expect("run function");
     assert!(
         matches!(run.body.statements.last(), Some(Statement::Return { .. })),
@@ -539,14 +551,15 @@ fn block_try_catch_is_rejected_as_removed_syntax() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn stray_catch_is_rejected_as_removed_syntax() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
-         \x20   catch err\n\
+         fn run() {\n\
+         \x20   catch err {\n\
          \x20       cleanup()\n\
-         \x20   return\n",
+         \x20   }\n\
+         \x20   return\n\
+         }\n",
     );
     assert!(parsed.has_errors(), "expected stray-catch rejection");
     assert!(
@@ -559,20 +572,23 @@ fn stray_catch_is_rejected_as_removed_syntax() {
     );
 }
 
-/// Panic guard for the DEDENT-out-of-slice edge: a body that ends in nested
-/// compound blocks closes every DEDENT past the body's token slice. The structure
-/// asserted below is the minimum that proves no recovery swallowed the nesting,
-/// not a fresh contract for `for`/`if` nesting (the focused tests above own that).
+/// Panic guard for the block-close-out-of-slice edge: a body that ends in nested
+/// compound blocks closes every trailing `}` past the body's token slice. The
+/// structure asserted below is the minimum that proves no recovery swallowed the
+/// nesting, not a fresh contract for `for`/`if` nesting (the focused tests above own
+/// that).
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn nested_compound_at_end_of_body_parses_without_panic() {
     let parsed = parse_source(
         "module app\n\
-         fn run()\n\
+         fn run() {\n\
          \x20   const ready = true\n\
-         \x20   for id in keys(^books)\n\
-         \x20       if ready\n\
-         \x20           print(id)\n",
+         \x20   for id in keys(^books) {\n\
+         \x20       if ready {\n\
+         \x20           print(id)\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let run = parsed.file.function("run").expect("run function");
@@ -594,11 +610,10 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn malformed_while_condition_reports_a_parse_error() {
     // A `while` header that does not parse as a complete expression is a parse
     // error: the grammar requires `while_stmt = "while" expression NEWLINE block`.
-    let parsed = parse_source("fn f()\n    while a == b == c\n        return\n");
+    let parsed = parse_source("fn f() {\n    while a == b == c {\n        return\n    }\n}\n");
     assert!(
         parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
         "expected a parse error for the malformed `while` condition: {:#?}",
@@ -607,13 +622,12 @@ fn malformed_while_condition_reports_a_parse_error() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_match_statement_with_bare_member_arms() {
     let parsed = parse_source(
         "module app\n\
-         fn f(s: Status)\n    \
-         match s\n        active\n            print(\"a\")\n        \
-         archived\n            print(\"b\")\n",
+         fn f(s: Status) {\n    \
+         match s {\n        active => print(\"a\")\n        \
+         archived => print(\"b\")\n    }\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("f");
@@ -634,15 +648,14 @@ fn parses_a_match_statement_with_bare_member_arms() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_a_match_arm_that_is_a_qualified_member_path() {
     // A qualified arm `tiger::bengal` and a category arm `lion` parse into their
     // relative `::`-separated segments; the scrutinee supplies the enum.
     let parsed = parse_source(
         "module app\n\
-         fn f(c: Cat)\n    \
-         match c\n        tiger::bengal\n            print(\"a\")\n        \
-         lion\n            print(\"b\")\n",
+         fn f(c: Cat) {\n    \
+         match c {\n        tiger::bengal => print(\"a\")\n        \
+         lion => print(\"b\")\n    }\n}\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("f");
@@ -657,12 +670,11 @@ fn parses_a_match_arm_that_is_a_qualified_member_path() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_a_match_arm_that_is_not_a_member_path() {
     let parsed = parse_source(
         "module app\n\
-         fn f(s: Status)\n    \
-         match s\n        active: int\n            print(\"a\")\n",
+         fn f(s: Status) {\n    \
+         match s {\n        active: int => print(\"a\")\n    }\n}\n",
     );
     assert!(parsed.has_errors());
     assert!(
