@@ -21,20 +21,21 @@ use marrow_image::{
     OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
     OP_CONV_BYTES_TEXT, OP_CONV_STRING_BOOL, OP_CONV_STRING_INT, OP_DATE_ADD_DAYS,
     OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
-    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_EXISTS, OP_DUR_FAMILY_EXISTS,
-    OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY,
-    OP_DUR_READ_FIELD, OP_DUR_REPLACE_ENTRY, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
-    OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
-    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
-    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT,
-    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_IDENTITY_KEY_PATH,
-    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
-    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
-    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
-    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
-    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
-    OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
-    OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP, OP_DUR_EXISTS,
+    OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED,
+    OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_READ_GROUP, OP_DUR_REPLACE_ENTRY,
+    OP_DUR_REPLACE_GROUP, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT,
+    OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT,
+    OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES,
+    OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT,
+    OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_IDENTITY_KEY_PATH, OP_INSTANT_ADD_DURATION,
+    OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION,
+    OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
+    OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
+    OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
+    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET,
+    OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
+    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
@@ -47,9 +48,9 @@ use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
     RetShape, SealedBranch, SealedCollectionType, SealedConst, SealedEnumType, SealedExport,
-    SealedField, SealedFunction, SealedIndex, SealedIndexComponent, SealedInstr, SealedRecordType,
-    SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow,
-    VerifiedImage,
+    SealedField, SealedFunction, SealedGroup, SealedIndex, SealedIndexComponent, SealedInstr,
+    SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant,
+    SpanRow, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -1175,6 +1176,7 @@ fn decode_site(
         0x01 => SemanticTarget::FieldLeaf,
         0x02 => SemanticTarget::IndexScan,
         0x03 => SemanticTarget::IndexLookup,
+        0x04 => SemanticTarget::GroupEntry,
         _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
     };
     let site = resolve_site(&steps, target, nodes, roots)?;
@@ -1212,6 +1214,7 @@ fn resolve_site(
     match (target, node.kind) {
         (SemanticTarget::WholePayload, SemanticNodeKind::Root | SemanticNodeKind::Branch) => {}
         (SemanticTarget::FieldLeaf, SemanticNodeKind::Field) => {}
+        (SemanticTarget::GroupEntry, SemanticNodeKind::Group) => {}
         (SemanticTarget::IndexScan | SemanticTarget::IndexLookup, SemanticNodeKind::Index) => {}
         _ => {
             return Err(reject(
@@ -1359,6 +1362,20 @@ fn resolve_site(
                 None => parked(),
             }
         }
+        // A root-level unkeyed group is addressed by exactly one group step below the
+        // root; the flat kernel serves only root-level groups, so a group nested in a
+        // branch or another group (more or fewer steps, or a non-root-level group id)
+        // parks.
+        SemanticTarget::GroupEntry => match below_root {
+            [group_step] => match root_group_index(&root.members, group_step.id) {
+                Some(group) => SealedSite::Flat {
+                    root: root_index,
+                    target: SealedSiteTarget::GroupEntry(group),
+                },
+                None => parked(),
+            },
+            _ => parked(),
+        },
         // Index scan/lookup targets returned parked above, before the flat/field logic.
         SemanticTarget::IndexScan | SemanticTarget::IndexLookup => {
             unreachable!("index read targets are sealed and returned before this point")
@@ -1373,7 +1390,35 @@ fn resolve_site(
 /// tuple, at the root and at every branch. Re-derived from the decoded graph, so the
 /// flat/parked classification never trusts a compiler summary.
 fn is_flat_executable_root(root: &DecodedRoot) -> bool {
-    !root.keys.is_empty() && root.members.iter().all(DecodedMember::keeps_root_flat)
+    !root.keys.is_empty() && root.members.iter().all(member_flat_at_root)
+}
+
+/// Whether a root's *direct* member keeps the root flat-executable. It admits one more
+/// shape than [`DecodedMember::keeps_root_flat`]: a root-level unkeyed `group` whose own
+/// members are all storable-value fields (a scalar or widened composite). A group is a
+/// value unit of the root entry, executable at the root level, but a group nested in a
+/// branch or in another group still parks — [`keeps_root_flat`] (used for branch
+/// members) keeps `Group => false`, so a group below the root's direct members never
+/// makes its enclosing branch flat.
+fn member_flat_at_root(member: &DecodedMember) -> bool {
+    match member {
+        DecodedMember::Field { .. } => true,
+        DecodedMember::Group { members, .. } => members
+            .iter()
+            .all(|m| matches!(m, DecodedMember::Field { .. })),
+        DecodedMember::Branch { .. } => member.is_simple_branch(),
+    }
+}
+
+/// The index of the root-level unkeyed group with ledger id `id` among a member tree's
+/// direct `Group` members, in declaration order. `None` when no direct group carries the
+/// id — a nested or in-branch group is not a root-level group node.
+fn root_group_index(members: &[DecodedMember], id: LedgerIdBytes) -> Option<u16> {
+    members
+        .iter()
+        .filter(|member| matches!(member, DecodedMember::Group { .. }))
+        .position(|member| matches!(member, DecodedMember::Group { id: gid, .. } if *gid == id))
+        .map(|position| position as u16)
 }
 
 /// Seal a member tree's keyed branches into the recursive [`SealedBranch`] tree, in
@@ -1398,6 +1443,39 @@ fn seal_branches(members: &[DecodedMember], strings: &[Rc<str>]) -> Vec<SealedBr
                 branches: seal_branches(members, strings),
             }),
             _ => None,
+        })
+        .collect()
+}
+
+/// Seal a flat-executable root's root-level unkeyed groups into [`SealedGroup`]s, in
+/// declaration order, so a [`SealedSiteTarget::GroupEntry`] group index selects one.
+/// Each group's name and materialized record come from the root's own record: the
+/// verifier's record↔member tie (validated in the table phase) places one trailing
+/// group slot per `Group` member, after the leading scalar/widened field slots, in
+/// declaration order — so the group slot at `field_count + ordinal` is exactly this
+/// group's slot. Called only for a flat-executable root, whose groups are all
+/// storable-value-field groups.
+fn seal_groups(root: &DecodedRoot, types: &[SealedRecordType]) -> Vec<SealedGroup> {
+    let record = &types[root.record as usize];
+    let field_count = root
+        .members
+        .iter()
+        .filter(|member| matches!(member, DecodedMember::Field { .. }))
+        .count();
+    root.members
+        .iter()
+        .filter(|member| matches!(member, DecodedMember::Group { .. }))
+        .enumerate()
+        .map(|(ordinal, _group)| {
+            let slot = &record.fields[field_count + ordinal];
+            let record = match slot.ty {
+                ImageType::Record { idx, .. } => idx,
+                _ => unreachable!("the record↔member tie places a Record slot per group member"),
+            };
+            SealedGroup {
+                name: slot.name.clone(),
+                record,
+            }
         })
         .collect()
 }
@@ -2759,16 +2837,25 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
             } else {
                 Vec::new()
             };
+            let groups = if flat {
+                seal_groups(root, &types)
+            } else {
+                Vec::new()
+            };
             SealedRoot {
                 name: decoded.strings[root.name as usize].clone(),
                 keys: root.keys.iter().map(|(scalar, _)| *scalar).collect(),
                 record: root.record,
-                // A root is flat-executable (no extras) when every member keeps it flat:
-                // a field (scalar or widened composite) or a simple branch. A static
-                // `group` or a nested/composite branch is an extra that parks the root's
-                // operations; a widened field no longer parks (it is framed inline).
-                has_extras: !root.members.iter().all(DecodedMember::keeps_root_flat),
+                // A root's members are extra-free when every direct member keeps it flat:
+                // a field (scalar or widened composite), a root-level unkeyed group of
+                // storable-value fields, or a simple branch. A nested/composite branch, or
+                // a group nested below the root, is an extra that parks the root's
+                // operations; a widened field no longer parks (it is framed inline). This
+                // is a member-shape predicate independent of keyed-ness — a keyless
+                // singleton parks separately.
+                has_extras: !root.members.iter().all(member_flat_at_root),
                 branches,
+                groups,
             }
         })
         .collect();
@@ -3489,6 +3576,7 @@ fn entry_site(ctx: &Ctx, site: u16) -> Option<(Vec<u16>, usize)> {
         }
         SealedSiteTarget::FieldLeaf(_)
         | SealedSiteTarget::BranchField { .. }
+        | SealedSiteTarget::GroupEntry(_)
         | SealedSiteTarget::IndexScan(_)
         | SealedSiteTarget::IndexLookup(_) => None,
     }
@@ -3776,6 +3864,9 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_DUR_REPLACE_ENTRY => SealedInstr::DurReplaceEntry(operand_u16(&mut reader)?),
             OP_DUR_ERASE_FIELD => SealedInstr::DurEraseField(operand_u16(&mut reader)?),
             OP_DUR_ERASE_ENTRY => SealedInstr::DurEraseEntry(operand_u16(&mut reader)?),
+            OP_DUR_READ_GROUP => SealedInstr::DurReadGroup(operand_u16(&mut reader)?),
+            OP_DUR_REPLACE_GROUP => SealedInstr::DurReplaceGroup(operand_u16(&mut reader)?),
+            OP_DUR_ERASE_GROUP => SealedInstr::DurEraseGroup(operand_u16(&mut reader)?),
             OP_DUR_ITERATE_BOUNDED => SealedInstr::DurIterateBounded {
                 site: operand_u16(&mut reader)?,
                 limit: operand_u32(&mut reader)?,
@@ -4870,6 +4961,9 @@ fn apply(
         | SealedInstr::DurReplaceEntry(_)
         | SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
+        | SealedInstr::DurReadGroup(_)
+        | SealedInstr::DurReplaceGroup(_)
+        | SealedInstr::DurEraseGroup(_)
         | SealedInstr::DurIterateBounded { .. }
         | SealedInstr::DurIndexScan { .. }
         | SealedInstr::DurIndexLookup(_)
@@ -4973,6 +5067,9 @@ fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurReplaceEntry(site)
         | SealedInstr::DurEraseField(site)
         | SealedInstr::DurEraseEntry(site)
+        | SealedInstr::DurReadGroup(site)
+        | SealedInstr::DurReplaceGroup(site)
+        | SealedInstr::DurEraseGroup(site)
         | SealedInstr::DurIterateBounded { site, .. }
         | SealedInstr::DurIndexScan { site, .. }
         | SealedInstr::DurIndexLookup(site) => Some(*site),
@@ -4996,15 +5093,18 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         SealedInstr::DurExists(_) | SealedInstr::DurFamilyExists(_) => {
             Some(OperationClass::Presence)
         }
-        SealedInstr::DurReadField(_) | SealedInstr::DurReadEntry(_) => Some(OperationClass::Read),
+        SealedInstr::DurReadField(_)
+        | SealedInstr::DurReadEntry(_)
+        | SealedInstr::DurReadGroup(_) => Some(OperationClass::Read),
         SealedInstr::DurSetRequired(_)
         | SealedInstr::DurSetSparse(_)
         | SealedInstr::DurSetSparsePresent { .. }
         | SealedInstr::DurCreateEntry(_)
-        | SealedInstr::DurReplaceEntry(_) => Some(OperationClass::Write),
-        SealedInstr::DurEraseField(_) | SealedInstr::DurEraseEntry(_) => {
-            Some(OperationClass::Erase)
-        }
+        | SealedInstr::DurReplaceEntry(_)
+        | SealedInstr::DurReplaceGroup(_) => Some(OperationClass::Write),
+        SealedInstr::DurEraseField(_)
+        | SealedInstr::DurEraseEntry(_)
+        | SealedInstr::DurEraseGroup(_) => Some(OperationClass::Erase),
         SealedInstr::DurIterateBounded { .. }
         | SealedInstr::DurIndexScan { .. }
         | SealedInstr::DurIndexLookup(_) => Some(OperationClass::IndexRead),
@@ -5213,6 +5313,16 @@ fn apply_durable(
         SealedSiteTarget::WholePayload | SealedSiteTarget::FieldLeaf(_) => {
             (root.record, root.keys.len())
         }
+        SealedSiteTarget::GroupEntry(group) => {
+            // A group is addressed by the root's own key-path (it is a value unit of the
+            // root entry, not a keyed child). Its whole-group op reads or writes the
+            // group's own materialized record.
+            let group = root.groups.get(*group as usize).ok_or(reject(
+                VerifyPhase::Function,
+                "durable group index out of range",
+            ))?;
+            (group.record, root.keys.len())
+        }
         SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {
             unreachable!("index read targets are handled before the entry key-path logic")
         }
@@ -5262,6 +5372,20 @@ fn apply_durable(
             require_entry(site_target)?;
             pop_key_path(stack, &key_path)?;
             stack.push(VType::bare_record(entry_record).to_optional());
+        }
+        SealedInstr::DurReadGroup(_) => {
+            require_group(site_target)?;
+            pop_key_path(stack, &key_path)?;
+            stack.push(VType::bare_record(entry_record).to_optional());
+        }
+        SealedInstr::DurReplaceGroup(_) => {
+            require_group(site_target)?;
+            expect(pop(stack)?, VType::bare_record(entry_record))?;
+            pop_key_path(stack, &key_path)?;
+        }
+        SealedInstr::DurEraseGroup(_) => {
+            require_group(site_target)?;
+            pop_key_path(stack, &key_path)?;
         }
         SealedInstr::DurSetRequired(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -5613,6 +5737,7 @@ fn field_of<'a>(
         }
         SealedSiteTarget::WholePayload
         | SealedSiteTarget::BranchEntry(_)
+        | SealedSiteTarget::GroupEntry(_)
         | SealedSiteTarget::IndexScan(_)
         | SealedSiteTarget::IndexLookup(_) => {
             return Err(reject(
@@ -5638,16 +5763,35 @@ fn durable_field_vtype(field: &SealedField) -> VType {
 }
 
 /// Require an entry-target site: the root's whole payload or a keyed branch entry. A
-/// field-leaf site (top-level or branch) is not an entry.
+/// field-leaf, group, or index site is not an entry.
 fn require_entry(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
     match target {
         SealedSiteTarget::WholePayload | SealedSiteTarget::BranchEntry(_) => Ok(()),
         SealedSiteTarget::FieldLeaf(_)
         | SealedSiteTarget::BranchField { .. }
+        | SealedSiteTarget::GroupEntry(_)
         | SealedSiteTarget::IndexScan(_)
         | SealedSiteTarget::IndexLookup(_) => Err(reject(
             VerifyPhase::Function,
             "operation requires an entry site",
+        )),
+    }
+}
+
+/// Require a group-target site: the whole materialized value of one unkeyed group. A
+/// whole-payload, field, branch, or index site is refused, so a group opcode can only
+/// address a `GroupEntry` site (the trust backstop over the compiler's own boundary).
+fn require_group(target: &SealedSiteTarget) -> Result<(), VerifyRejection> {
+    match target {
+        SealedSiteTarget::GroupEntry(_) => Ok(()),
+        SealedSiteTarget::WholePayload
+        | SealedSiteTarget::FieldLeaf(_)
+        | SealedSiteTarget::BranchEntry(_)
+        | SealedSiteTarget::BranchField { .. }
+        | SealedSiteTarget::IndexScan(_)
+        | SealedSiteTarget::IndexLookup(_) => Err(reject(
+            VerifyPhase::Function,
+            "operation requires a group site",
         )),
     }
 }

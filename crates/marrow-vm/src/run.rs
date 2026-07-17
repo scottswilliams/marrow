@@ -755,8 +755,9 @@ fn execute<'s>(
                     .read_entry(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 let ty = entry_record_type(image, *site);
+                let group_records = site_group_records(image, *site);
                 stack.push(Value::Optional(
-                    entry.map(|entry| Box::new(entry_to_record(ty, entry))),
+                    entry.map(|entry| Box::new(entry_to_record(ty, entry, &group_records))),
                 ));
                 pc += 1;
             }
@@ -813,7 +814,8 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let entry = record_to_entry(pop(&mut stack));
+                let entry =
+                    record_to_entry(pop(&mut stack), site_group_records(image, *site).len());
                 let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
                     .create_entry(&authorized, &keys, entry)
@@ -825,7 +827,8 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a durable opcode runs with a session");
                 let authorized = durable.site(*site);
-                let entry = record_to_entry(pop(&mut stack));
+                let entry =
+                    record_to_entry(pop(&mut stack), site_group_records(image, *site).len());
                 let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
                     .replace_entry(&authorized, &keys, entry)
@@ -851,6 +854,46 @@ fn execute<'s>(
                 let keys = pop_key_path(&mut stack, authorized.key_arity());
                 durable
                     .erase_entry(&authorized, &keys)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurReadGroup(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
+                let group = durable
+                    .read_group(&authorized, &keys)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                // A group value is a plain record of its own leaves (nested groups park),
+                // so it joins with no further group sub-records.
+                let ty = entry_record_type(image, *site);
+                stack.push(Value::Optional(
+                    group.map(|group| Box::new(entry_to_record(ty, group, &[]))),
+                ));
+                pc += 1;
+            }
+            SealedInstr::DurReplaceGroup(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let group = record_to_entry(pop(&mut stack), 0);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
+                durable
+                    .replace_group(&authorized, &keys, group)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                pc += 1;
+            }
+            SealedInstr::DurEraseGroup(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let keys = pop_key_path(&mut stack, authorized.key_arity());
+                durable
+                    .erase_group(&authorized, &keys)
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 pc += 1;
             }
@@ -1350,30 +1393,74 @@ fn domain_to_value(domain: ValueDomain) -> Value {
     }
 }
 
-/// Convert a record value into a whole-entry value: one slot per field in order. A
-/// group-less resource record carries no group slots, so its entry value has no groups;
-/// the durable group value bridge lands with the verifier's group-site admission.
-fn record_to_entry(value: Value) -> EntryValue {
+/// Convert a record value into a whole-entry value, splitting its trailing `group_count`
+/// Record slots into nested group [`EntryValue`]s. The unified materialized record is
+/// `[value fields..][one Record slot per root-level group..]`, in declaration order; the
+/// leading slots are the entry's flat fields and each trailing slot is a group's own
+/// record value (which has no further groups on this line — nested groups park). The
+/// verifier typed the value against this record, so the slot count and the present group
+/// slots are structurally guaranteed here.
+fn record_to_entry(value: Value, group_count: usize) -> EntryValue {
     let (_, slots) = as_record(value);
+    let mut slots = slots.into_vec();
+    let groups_start = slots
+        .len()
+        .checked_sub(group_count)
+        .expect("the verified record carries one slot per group after its fields");
+    let group_slots = slots.split_off(groups_start);
+    let groups = group_slots
+        .into_iter()
+        .map(|slot| {
+            let sub = slot.expect("a group is a present value unit of its containing entry");
+            record_to_entry(sub, 0)
+        })
+        .collect();
     EntryValue {
         fields: slots
-            .into_vec()
             .into_iter()
             .map(|slot| slot.map(value_to_domain))
             .collect(),
-        groups: Vec::new(),
+        groups,
     }
 }
 
-/// Convert a whole-entry value into a record value of type `ty`. A group-less entry value
-/// has no group sub-records, so its record is exactly its top-level field slots.
-fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
-    let slots: Vec<Option<Value>> = entry
+/// Convert a whole-entry value into a record value of type `ty`, joining its group
+/// sub-records back as the record's trailing slots. `group_records` names each group's
+/// materialized record type, in declaration order; it is empty for a group-less entry (or
+/// a branch entry, whose executable shape carries no group). The kernel builds
+/// `entry.groups` from the store schema, so its count matches `group_records`.
+fn entry_to_record(ty: u16, entry: EntryValue, group_records: &[u16]) -> Value {
+    let mut slots: Vec<Option<Value>> = entry
         .fields
         .into_iter()
         .map(|slot| slot.map(domain_to_value))
         .collect();
+    assert_eq!(
+        entry.groups.len(),
+        group_records.len(),
+        "the kernel builds one group value per schema group"
+    );
+    for (group, &record) in entry.groups.into_iter().zip(group_records) {
+        slots.push(Some(entry_to_record(record, group, &[])));
+    }
     Value::Record(ty, slots.into_boxed_slice())
+}
+
+/// The materialized record types of a root-entry site's root-level groups, in declaration
+/// order — the `group_records` a whole-entry [`entry_to_record`] joins. A branch-entry
+/// site (or any non-root-entry target) has no group on this line, so this is empty.
+fn site_group_records(image: &VerifiedImage, site: u16) -> Vec<u16> {
+    let SealedSite::Flat { root, target } = &image.sites()[site as usize] else {
+        unreachable!("the verifier admits a durable opcode only over a flat site")
+    };
+    match target {
+        SealedSiteTarget::WholePayload => image.roots()[*root as usize]
+            .groups()
+            .iter()
+            .map(marrow_verify::SealedGroup::record)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The record type index of the entry a site addresses: the branch's record for a
@@ -1407,6 +1494,9 @@ fn entry_record_type(image: &VerifiedImage, site: u16) -> u16 {
         SealedSiteTarget::WholePayload
         | SealedSiteTarget::FieldLeaf(_)
         | SealedSiteTarget::BranchField { .. } => root.record(),
+        // A whole-group op reads or writes the group's own materialized record, named by
+        // the group's index into the root's declaration-ordered groups.
+        SealedSiteTarget::GroupEntry(group) => root.groups()[*group as usize].record(),
         // An index-read site names no source entry record; a whole-entry read never
         // resolves to one.
         SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => {

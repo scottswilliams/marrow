@@ -76,17 +76,24 @@ impl SemanticStepKind {
 
 /// What an operation site does *at* the graph node its [`SemanticPath`] names: the
 /// closed operation-target set. `WholePayload` observes or writes a keyed placement's
-/// whole entry; `FieldLeaf` reads or writes one stored field leaf; `IndexScan` is the
-/// nonunique progressive typed-prefix read of a managed index; `IndexLookup` is the
-/// unique complete-key exact read of a managed index. The node the path resolves to
-/// fixes which is legal — a placement admits `WholePayload`, a field admits
-/// `FieldLeaf`, a nonunique index admits `IndexScan`, and a unique index admits
-/// `IndexLookup` — so the two together name a site. There is no index *write* target:
-/// managed-index maintenance is compiler-owned with no application opcode.
+/// whole entry; `FieldLeaf` reads or writes one stored field leaf; `GroupEntry`
+/// observes or writes the whole materialized value of one unkeyed `group` node;
+/// `IndexScan` is the nonunique progressive typed-prefix read of a managed index;
+/// `IndexLookup` is the unique complete-key exact read of a managed index. The node the
+/// path resolves to fixes which is legal — a placement admits `WholePayload`, a field
+/// admits `FieldLeaf`, a group admits `GroupEntry`, a nonunique index admits
+/// `IndexScan`, and a unique index admits `IndexLookup` — so the two together name a
+/// site. There is no index *write* target: managed-index maintenance is compiler-owned
+/// with no application opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticTarget {
     WholePayload,
     FieldLeaf,
+    /// The whole materialized record value of one unkeyed `group` node: read as a unit,
+    /// or replaced/erased under the group-scoped payload-only law. The group is
+    /// addressed by its containing entry's key-path, like a whole payload, but scopes to
+    /// the group's own field set.
+    GroupEntry,
     /// The nonunique progressive typed-prefix read of a managed index: an incomplete
     /// prefix yields the next distinct component; the complete projection yields the
     /// source-root key. Runtime traversal lands at E05.

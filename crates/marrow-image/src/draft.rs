@@ -247,6 +247,14 @@ impl SiteDef {
         }
     }
 
+    /// A whole-group site over the unkeyed `group` node `path` names.
+    pub fn group_entry(path: SemanticPath) -> Self {
+        Self {
+            path,
+            target: SemanticTarget::GroupEntry,
+        }
+    }
+
     /// A nonunique progressive-prefix read site over the managed index `path` names.
     pub fn index_scan(path: SemanticPath) -> Self {
         Self {

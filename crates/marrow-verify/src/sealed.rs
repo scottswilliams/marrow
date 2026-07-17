@@ -222,6 +222,15 @@ pub enum SealedInstr {
     DurEraseField(u16),
     /// `K →`: erase the entry at site `_0` (no-op on absent).
     DurEraseEntry(u16),
+    /// `K → Rec?`: read the whole materialized value of the group the `GroupEntry` site
+    /// `_0` names.
+    DurReadGroup(u16),
+    /// `K, Rec →`: replace the group the `GroupEntry` site `_0` names, group-scoped
+    /// payload-only (transaction-region only).
+    DurReplaceGroup(u16),
+    /// `K →`: erase the group the `GroupEntry` site `_0` names — clears only that
+    /// group's leaves (no-op on an absent entry).
+    DurEraseGroup(u16),
     /// The bounded nested traversal `for … at most N … on more`. Freeze the first
     /// `limit` immediate keys of the layer the whole-entry site `_ .site` belongs to —
     /// the root's entry family (a root site) or a keyed branch family under a fixed
@@ -311,6 +320,12 @@ pub enum SealedSiteTarget {
         branch: Box<[u16]>,
         field: u16,
     },
+    /// The whole materialized value of one unkeyed `group` node, named by the group's
+    /// index into its root's declaration-ordered [`SealedRoot::groups`]. Its operations
+    /// address the root's key-path (a group is a value unit of the root entry, not a
+    /// keyed child), and read/replace/erase scope to the group's own field set under the
+    /// group-scoped payload-only law.
+    GroupEntry(u16),
     /// A progressive scan of a nonunique managed index, by the index's position in the
     /// image-wide index table. Its `DurIndexScan` holds the index's leading field
     /// components as a stack prefix and yields the trailing identity component.
@@ -373,6 +388,32 @@ pub struct SealedRoot {
     /// root; empty otherwise, so a [`SealedSiteTarget::BranchEntry`] branch path into this
     /// tree is meaningful exactly when a branch site sealed executable.
     pub(crate) branches: Vec<SealedBranch>,
+    /// The root's unkeyed `group` nodes, in declaration order, each carrying its own
+    /// materialized record type. Populated only for a flat-executable root; empty
+    /// otherwise, so a [`SealedSiteTarget::GroupEntry`] group index into this list is
+    /// meaningful exactly when a group site sealed executable.
+    pub(crate) groups: Vec<SealedGroup>,
+}
+
+/// A verified unkeyed `group` of a flat-executable root: its physical name and its
+/// materialized record type index. Unlike a branch, a group is not a keyed child node:
+/// it is a value unit of the containing entry, addressed by the entry's key-path, and
+/// its record is the trailing group slot the root's own record ties to the group member.
+#[derive(Debug, Clone)]
+pub struct SealedGroup {
+    pub(crate) name: Rc<str>,
+    pub(crate) record: u16,
+}
+
+impl SealedGroup {
+    /// The group's simple name, which the physical layer scopes its leaves by.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// The group's materialized record type index.
+    pub fn record(&self) -> u16 {
+        self.record
+    }
 }
 
 /// A verified keyed branch of a flat-executable root: its physical name, its ordered key
@@ -432,6 +473,12 @@ impl SealedRoot {
     /// the root is flat-executable.
     pub fn branches(&self) -> &[SealedBranch] {
         &self.branches
+    }
+
+    /// The root's unkeyed groups, in declaration order. Empty unless the root is
+    /// flat-executable.
+    pub fn groups(&self) -> &[SealedGroup] {
+        &self.groups
     }
 }
 

@@ -43,6 +43,7 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
                     SealedSiteTarget::FieldLeaf(_) => "field",
                     SealedSiteTarget::BranchEntry(_) => "branch",
                     SealedSiteTarget::BranchField { .. } => "field",
+                    SealedSiteTarget::GroupEntry(_) => "group",
                     SealedSiteTarget::IndexScan(_) => "index_scan",
                     SealedSiteTarget::IndexLookup(_) => "index_lookup",
                 },
@@ -51,6 +52,7 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
                     SealedSiteTarget::FieldLeaf(_) => 3,
                     SealedSiteTarget::BranchEntry(_) => 3,
                     SealedSiteTarget::BranchField { .. } => 4,
+                    SealedSiteTarget::GroupEntry(_) => 3,
                     SealedSiteTarget::IndexScan(_) | SealedSiteTarget::IndexLookup(_) => 3,
                 },
             ),
@@ -59,6 +61,7 @@ fn site_shapes(image: &VerifiedImage) -> Vec<(bool, &'static str, usize)> {
                 match target {
                     SemanticTarget::WholePayload => "whole",
                     SemanticTarget::FieldLeaf => "field",
+                    SemanticTarget::GroupEntry => "group",
                     SemanticTarget::IndexScan => "index_scan",
                     SemanticTarget::IndexLookup => "index_lookup",
                 },
@@ -229,39 +232,44 @@ fn a_flat_root_with_a_simple_branch_seals_flat_branch_entry_and_branch_field_sit
 }
 
 #[test]
-fn every_keyed_placement_and_field_of_a_nested_graph_gets_a_sealed_parked_site() {
-    // The whole graph emits and seals sites: a whole-payload site over the root and
-    // over the `notes` branch, plus a field-leaf site for every stored field —
-    // top-level (`title`), group-scoped (`details.pages`), and branch-scoped
-    // (`notes.text`, `notes.createdAt`). A group is a namespace, not an addressable
-    // node, so it contributes no site. The root is non-flat, so every site is Parked.
+fn a_root_level_group_graph_seals_flat_except_its_group_leaf_field_site() {
+    // The whole graph emits and seals sites: a whole-payload site over the root and over
+    // the `notes` branch, plus a field-leaf site for every stored field — top-level
+    // (`title`), group-scoped (`details.pages`), and branch-scoped (`notes.text`,
+    // `notes.createdAt`). A root-level group does not park the root, so the root entry,
+    // its top-level field, and its scalar-field branch all seal Flat. The only parked site
+    // is the group-scoped field leaf: a group leaf is reached through a whole-group site
+    // (the compiler's group-site emission lands with lowering), never a direct field-leaf.
     let shapes = site_shapes(&image(NESTED_SOURCE, NESTED_IDS));
     assert_eq!(
         shapes,
         vec![
-            (false, "field", 3), // title:            app -> root -> field
-            (false, "field", 4), // details.pages:    app -> root -> group -> field
-            (false, "field", 4), // notes.text:       app -> root -> branch -> field
-            (false, "field", 4), // notes.createdAt:  app -> root -> branch -> field
-            (false, "whole", 2), // ^books entry:     app -> root
-            (false, "whole", 3), // notes branch:     app -> root -> branch
+            (false, "field", 4), // details.pages:    app -> root -> group -> field (parked)
+            (true, "branch", 3), // notes branch:     app -> root -> branch
+            (true, "field", 3),  // title:            app -> root -> field
+            (true, "field", 4),  // notes.text:       app -> root -> branch -> field
+            (true, "field", 4),  // notes.createdAt:  app -> root -> branch -> field
+            (true, "whole", 2),  // ^books entry:     app -> root
         ]
     );
-    // No site is executable over a non-flat root.
-    assert!(
+    // The group-scoped field leaf is the sole parked site; every other site executes.
+    assert_eq!(
         image(NESTED_SOURCE, NESTED_IDS)
             .sites()
             .iter()
-            .all(|site| matches!(site, SealedSite::Parked { .. })),
-        "a non-flat graph has no executable site"
+            .filter(|site| matches!(site, SealedSite::Parked { .. }))
+            .count(),
+        1,
+        "only the group-scoped field leaf parks",
     );
 }
 
 #[test]
 fn a_branch_field_site_seals_at_its_full_concrete_address() {
-    // The deepest concrete address here — a branch field `notes.text` — seals as a
-    // parked field site whose resolved path is the full chain
-    // application -> root placement -> branch placement -> field, four steps.
+    // The deepest parked concrete address here — the group-scoped field leaf
+    // `details.pages` — resolves to the full chain
+    // application -> root placement -> group -> field, four steps. (Branch field sites at
+    // the same depth now seal Flat; the group leaf is the deepest parked site.)
     let image = image(NESTED_SOURCE, NESTED_IDS);
     let deepest = image
         .sites()

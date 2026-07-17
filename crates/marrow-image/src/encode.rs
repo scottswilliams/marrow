@@ -295,6 +295,7 @@ impl ImageDraft {
                 SemanticTarget::FieldLeaf => 0x01,
                 SemanticTarget::IndexScan => 0x02,
                 SemanticTarget::IndexLookup => 0x03,
+                SemanticTarget::GroupEntry => 0x04,
             });
         }
         // The durable-contract identity closes the section: a 32-byte
@@ -465,7 +466,10 @@ fn encode_code(
             | Instr::DurCreateEntry(s)
             | Instr::DurReplaceEntry(s)
             | Instr::DurEraseField(s)
-            | Instr::DurEraseEntry(s) => push_u16(&mut out, *s),
+            | Instr::DurEraseEntry(s)
+            | Instr::DurReadGroup(s)
+            | Instr::DurReplaceGroup(s)
+            | Instr::DurEraseGroup(s) => push_u16(&mut out, *s),
             Instr::Jump(target)
             | Instr::JumpIfFalse(target)
             | Instr::BranchPresent(target)

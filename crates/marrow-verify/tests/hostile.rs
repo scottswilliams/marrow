@@ -1579,18 +1579,105 @@ fn rehashed_mutated_branch_placement_id_breaks_the_contract_id() {
 }
 
 #[test]
-fn executable_site_over_a_group_bearing_root_rejects() {
-    // A keyed root whose resource declares a static `group` is not yet executable — the
-    // group's fields are part of the containing entry's materialized value, a model the
-    // flat durable record does not yet carry — so every site over it parks. A forged image
-    // that adds an operation site (here over the root's own `title` field) and an opcode is
-    // refused independently during per-function typing (`image.function`), regardless of
-    // the compiler's own boundary. (A keyed `branch` alone does not park a root; the group
-    // does.)
+fn a_field_site_over_a_root_level_group_bearing_root_verifies() {
+    // A keyed root whose resource declares a root-level unkeyed `group` of storable-value
+    // fields is flat-executable: the group is a value unit of the root entry, framed in
+    // the entry payload. A site over the root's own `title` field seals executable and its
+    // read opcode verifies (a keyed branch and a root-level group no longer park the root).
     assert_eq!(
         code_of(&group_branch_draft(true).encode().unwrap().bytes),
-        "image.function"
+        "VERIFIED"
     );
+}
+
+/// The semantic path of the `details` group *node* (not its field leaf): application ->
+/// root placement -> group. A whole-group `GroupEntry` site addresses this node.
+fn group_entry_path() -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes([0x0a; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x0b; 16]),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Group,
+            LedgerIdBytes::from_bytes([0x20; 16]),
+        ),
+    ])
+}
+
+#[test]
+fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies() {
+    // A GroupEntry site over a root-level group node seals Flat and a DurReadGroup opcode
+    // over it types (`K -> Rec?`): the whole materialized group value is read as a unit
+    // through the root's key-path. The read record is popped so the export return type
+    // stays decoupled from the group record index.
+    let mut draft = group_branch_draft(false);
+    let site = draft.add_site(SiteDef::group_entry(group_entry_path()));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("readGroup");
+    let zero = draft.intern_int(0);
+    let code = vec![
+        Instr::LocalGet(0),
+        Instr::DurReadGroup(site.index()),
+        Instr::Pop,
+        Instr::ConstLoad(zero.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Int)],
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "readGroup"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
+#[test]
+fn a_whole_group_target_over_a_field_node_rejects() {
+    // A GroupEntry target must resolve to a `group` node. A forged site whose path names a
+    // group *field* leaf (`details.pages`) but claims the GroupEntry target disagrees with
+    // the resolved node kind and is refused at the table phase.
+    let mut draft = group_branch_draft(false);
+    draft.add_site(SiteDef::group_entry(group_field_path()));
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+}
+
+#[test]
+fn a_group_opcode_over_a_non_group_site_rejects() {
+    // A DurReadGroup opcode requires a GroupEntry site. A forged image pointing it at a
+    // field-leaf site (the root's own `title`) is refused during per-function typing
+    // (`image.function`), independently of the compiler's boundary.
+    let mut draft = group_branch_draft(false);
+    let site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("readGroup");
+    let zero = draft.intern_int(0);
+    let code = vec![
+        Instr::LocalGet(0),
+        Instr::DurReadGroup(site.index()),
+        Instr::Pop,
+        Instr::ConstLoad(zero.index()),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Int)],
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "readGroup"), func);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
 /// The semantic path of the group/branch graph's `details.pages` group field:
@@ -1619,9 +1706,10 @@ fn group_field_path() -> SemanticPath {
 
 #[test]
 fn a_group_scoped_field_site_seals_parked() {
-    // A site over a group-scoped field (`details.pages`) resolves against the
-    // reconstructed node set and seals *parked* — its identity is complete, its execution
-    // deferred until the group materialized-value model lands. No opcode references it, so
+    // A site over a group-scoped field leaf (`details.pages`) resolves against the
+    // reconstructed node set and seals *parked* — a group leaf is not directly executable
+    // as a field-leaf site; a group is read/written as a whole unit through a `GroupEntry`
+    // site (group-leaf assignment lowers to a whole-group RMW). No opcode references it, so
     // the image verifies.
     let mut draft = group_branch_draft(false);
     draft.add_site(SiteDef::field_leaf(group_field_path()));
@@ -1633,9 +1721,10 @@ fn a_group_scoped_field_site_seals_parked() {
 
 #[test]
 fn an_opcode_over_a_parked_group_field_site_rejects() {
-    // A durable opcode that references a parked group-scoped field site is refused during
-    // per-function typing (`image.function`), independently of the compiler's boundary — no
-    // group operation reaches the runtime while groups park.
+    // A durable opcode that references a parked group-scoped field-leaf site is refused
+    // during per-function typing (`image.function`), independently of the compiler's
+    // boundary — a group leaf is reached only through a whole-group `GroupEntry` site, never
+    // a direct field-leaf opcode.
     let mut draft = group_branch_draft(false);
     let site = draft.add_site(SiteDef::field_leaf(group_field_path()));
     let src = draft.intern_string("src/main.mw");
@@ -1683,16 +1772,16 @@ fn branch_field_path() -> SemanticPath {
 }
 
 #[test]
-fn a_deep_nested_branch_field_site_seals() {
-    // A whole-graph site over the deepest concrete address — a keyed branch's
-    // field — resolves against the reconstructed node set and seals (parked),
-    // rather than being refused as not-yet-emitted. No opcode references it, so
-    // the image verifies: its identity is complete, execution deferred.
+fn a_deep_nested_branch_field_site_seals_executable() {
+    // A site over a keyed branch's field resolves against the reconstructed node set and
+    // seals executable — a root-level unkeyed `group` (here `details`) does not park the
+    // root's sibling scalar-field branches. No opcode references the site, so the image
+    // verifies regardless.
     let mut draft = group_branch_draft(false);
     draft.add_site(SiteDef::field_leaf(branch_field_path()));
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
-        "a nested branch-field site seals"
+        "a nested branch-field site seals executable"
     );
 }
 
@@ -1711,32 +1800,10 @@ fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
     assert_eq!(code_of(&bytes), "image.table");
 }
 
-#[test]
-fn an_opcode_over_a_parked_branch_field_site_rejects() {
-    // The seal-but-park split: a nested branch-field site seals, but a durable opcode
-    // that references it is refused during per-function typing (`image.function`) — a
-    // parked site is not executable, independently of the compiler's own boundary.
-    let mut draft = group_branch_draft(false);
-    let site = draft.add_site(SiteDef::field_leaf(branch_field_path()));
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("read");
-    let code = vec![
-        Instr::LocalGet(0),
-        Instr::DurReadField(site.index()),
-        Instr::Return,
-    ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Text)],
-        ret: ImageType::opt_scalar(Scalar::Text),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
-    draft.add_export(ExportId::of_local("", "read"), func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
-}
+// The seal-but-park split for a parked site + opcode is covered by
+// `an_opcode_over_a_parked_group_field_site_rejects` (a group-leaf field site, which
+// remains parked). A nested branch-field site is now executable — a root-level group no
+// longer parks sibling branches — so the former branch-field park test is obsolete.
 
 /// Build a flat-executable `Book { title:string required }` root at `^books(id:int)`
 /// whose only extra is one single-level single-column-keyed scalar-field branch,

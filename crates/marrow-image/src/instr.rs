@@ -78,6 +78,12 @@ pub const OP_FIELD_UNSET: u8 = 0x29;
 // Entry-identity value ops. An identity is a store root plus a key tuple; it is a
 // runtime/lookup value only (not a durable cell value on this line).
 pub const OP_EQ_ID: u8 = 0x2A;
+// Whole-group durable ops: read/replace/erase the materialized value of one unkeyed
+// `group` node, addressed by its containing entry's key-path. The group-scoped
+// payload-only law scopes replace/erase to the group's own field set.
+pub const OP_DUR_READ_GROUP: u8 = 0x2B;
+pub const OP_DUR_REPLACE_GROUP: u8 = 0x2C;
+pub const OP_DUR_ERASE_GROUP: u8 = 0x2D;
 pub const OP_DUR_EXISTS: u8 = 0x30;
 pub const OP_DUR_READ_FIELD: u8 = 0x31;
 pub const OP_DUR_READ_ENTRY: u8 = 0x32;
@@ -345,6 +351,17 @@ pub enum Instr {
     DurReplaceEntry(u16),
     DurEraseField(u16),
     DurEraseEntry(u16),
+    /// `K → Rec?`: read the whole materialized value of the unkeyed `group` the
+    /// `GroupEntry` site `_0` names, as one record, or absent when the containing entry
+    /// is absent.
+    DurReadGroup(u16),
+    /// `K, Rec →`: replace the whole materialized value of the group the `GroupEntry`
+    /// site `_0` names, under the group-scoped payload-only law (the group's own field
+    /// set only; sibling groups, top-level fields, and branches untouched).
+    DurReplaceGroup(u16),
+    /// `K →`: erase the group the `GroupEntry` site `_0` names — clears only that
+    /// group's leaves (no-op on an absent entry).
+    DurEraseGroup(u16),
     /// The bounded nested traversal `for … at most N … on more`. Freeze the first
     /// `limit` immediate keys of the layer the whole-entry `site` belongs to — the
     /// root's entry family (a root site) or a keyed branch family under a fixed parent
@@ -518,6 +535,9 @@ impl Instr {
             Instr::DurReplaceEntry(_) => OP_DUR_REPLACE_ENTRY,
             Instr::DurEraseField(_) => OP_DUR_ERASE_FIELD,
             Instr::DurEraseEntry(_) => OP_DUR_ERASE_ENTRY,
+            Instr::DurReadGroup(_) => OP_DUR_READ_GROUP,
+            Instr::DurReplaceGroup(_) => OP_DUR_REPLACE_GROUP,
+            Instr::DurEraseGroup(_) => OP_DUR_ERASE_GROUP,
             Instr::DurIterateBounded { .. } => OP_DUR_ITERATE_BOUNDED,
             Instr::TxnBegin => OP_TXN_BEGIN,
             Instr::TxnCommit => OP_TXN_COMMIT,
@@ -558,6 +578,9 @@ impl Instr {
             | Instr::DurReplaceEntry(_)
             | Instr::DurEraseField(_)
             | Instr::DurEraseEntry(_)
+            | Instr::DurReadGroup(_)
+            | Instr::DurReplaceGroup(_)
+            | Instr::DurEraseGroup(_)
             | Instr::ListNew(_)
             | Instr::MapNew(_)
             | Instr::TextSplit(_)

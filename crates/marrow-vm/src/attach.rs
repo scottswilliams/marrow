@@ -17,7 +17,8 @@
 use marrow_kernel::codec::value::{ScalarKind, ValueShape};
 use marrow_kernel::durable::{
     BranchSchema, CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment,
-    FieldSchema, IndexComponent, IndexSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
+    FieldSchema, GroupSchema, IndexComponent, IndexSchema, InvocationGrant, SiteSpec, SiteTarget,
+    StoreSchema,
 };
 use marrow_verify::{
     CeilingDescriptor, ExportDemand, ImageType, Scalar, SealedExport, SealedIndex,
@@ -171,14 +172,16 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // one. A flat executable root is keyed (one or more columns) with no member tree.
     //
     // The executable layout is the keyed root (any key arity, its fields scalar or widened
-    // composite) plus field-only keyed branches nested to any depth, including composite-keyed
-    // branches. A group at any level parks the root; a singleton (keyless) root parks; bounded
+    // composite) plus root-level unkeyed groups of storable-value fields plus field-only keyed
+    // branches nested to any depth, including composite-keyed branches. A group nested in a
+    // branch or in another group parks the root; a singleton (keyless) root parks; bounded
     // traversal over a composite-keyed layer parks separately. A parked shape stays parked
     // until its owner lands it.
     let root = image.roots().first()?;
-    // A root with a group at any level (or a branch enclosing one) is not yet executable
-    // (`has_extras`); field-only branches nested to any depth, with composite keys, are
-    // executable and do not set that flag. A singleton root has no key columns and parks.
+    // A root with a group nested below its direct members (or a nested/composite-keyed shape
+    // the flat kernel cannot serve) is not yet executable (`has_extras`); a root-level group,
+    // and field-only branches nested to any depth with composite keys, are executable and do
+    // not set that flag. A singleton root has no key columns and parks.
     if root.has_extras() || root.keys().is_empty() {
         return None;
     }
@@ -188,7 +191,25 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         .map(|scalar| scalar_kind(*scalar))
         .collect();
 
-    let fields = field_schemas(image, root.record())?;
+    // The unified root record is `[leading value fields][one Record slot per root-level
+    // group]`, in declaration order. The kernel's flat field set is only the leading value
+    // fields; the trailing group slots become `groups` below. `field_schemas` derives every
+    // slot (a group slot is a product), so split off the trailing group slots by count.
+    let group_count = root.groups().len();
+    let all_fields = field_schemas(image, root.record())?;
+    let field_count = all_fields.len().checked_sub(group_count)?;
+    let fields = all_fields[..field_count].to_vec();
+
+    // Each root-level group derives its own materialized record from the image; a group is a
+    // value unit of the root entry, addressed by the root's key-path, so it carries a field
+    // set but no key.
+    let mut groups = Vec::with_capacity(group_count);
+    for group in root.groups() {
+        groups.push(GroupSchema {
+            name: group.name().to_string(),
+            fields: field_schemas(image, group.record())?,
+        });
+    }
 
     // Each executable branch derives its own record and nested branches from the image; the
     // sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes it
@@ -213,10 +234,7 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         root_name: root.name().to_string(),
         key,
         fields,
-        // The verifier does not yet emit durable group sites (GR01 session 2), so the
-        // image carries no group shape for the kernel to serve; groups stay empty until
-        // that admission lands.
-        groups: Vec::new(),
+        groups,
         branches,
         indexes,
     };
@@ -255,6 +273,12 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
                     branch: branch.clone(),
                     field: *field,
                 },
+            },
+            SealedSite::Flat {
+                target: SealedSiteTarget::GroupEntry(group),
+                ..
+            } => SiteSpec {
+                target: SiteTarget::GroupEntry(*group),
             },
             // An index-read site names its index by position in the image-wide index
             // table; a single-root store's index table aligns with the kernel schema's

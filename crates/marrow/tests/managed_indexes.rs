@@ -255,12 +255,14 @@ fn no_application_opcode_maintains_a_managed_index() {
     for target in [
         SemanticTarget::WholePayload,
         SemanticTarget::FieldLeaf,
+        SemanticTarget::GroupEntry,
         SemanticTarget::IndexScan,
         SemanticTarget::IndexLookup,
     ] {
         let is_index_write = match target {
             SemanticTarget::WholePayload
             | SemanticTarget::FieldLeaf
+            | SemanticTarget::GroupEntry
             | SemanticTarget::IndexScan
             | SemanticTarget::IndexLookup => false,
         };
