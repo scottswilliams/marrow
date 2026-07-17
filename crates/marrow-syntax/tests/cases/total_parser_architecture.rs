@@ -67,7 +67,6 @@ fn scan(pattern: &str) -> Vec<String> {
 /// guard that drove the generic fallback. Each is a distinct way to reintroduce a
 /// second, cascading diagnostic; a resurrection is caught here.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn the_recovery_zoo_is_gone() {
     let mut offenders = Vec::new();
     for pattern in [
@@ -243,7 +242,6 @@ fn file_has_error(file: &SourceFile) -> bool {
 /// The canonical library parses to a tree with no error nodes and no diagnostics:
 /// a well-formed program never yields the error placeholder.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn valid_programs_yield_no_error_nodes() {
     for block in common::documented_module_blocks() {
         let parsed = parse_source(&block.source);
@@ -266,7 +264,6 @@ fn valid_programs_yield_no_error_nodes() {
 /// foundation of the `has_errors` gate: an error node can never reach a downstream
 /// crate that trusts a clean `has_errors` to mean a fully structured tree.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn every_error_node_travels_with_a_diagnostic() {
     let mut malformed_seen = false;
     for block in common::documented_module_blocks() {
