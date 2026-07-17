@@ -401,8 +401,11 @@ struct ParamGroup<'a> {
 /// comma ends a parameter, and so does a line break in a multi-line list: a body
 /// token that opens on a later source line than the parameter in progress starts
 /// the next one. Newlines are suppressed inside the parentheses, so the line
-/// boundary is read from token spans rather than a separator token. A leading run
-/// of `;;` doc comments attaches to the parameter it precedes.
+/// boundary is read from token spans rather than a separator token. Depth counts
+/// `(`/`[`/`<` opens so a comma or wrap inside a nested type — a `(...)` identity,
+/// a `[...]` key list, or a `<...>` generic argument list — stays with its
+/// parameter. A leading run of `;;` doc comments attaches to the parameter it
+/// precedes.
 fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
     let mut groups = Vec::new();
     let mut docs: Vec<&Token> = Vec::new();
@@ -417,8 +420,14 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
         // the deeper level even though it drops the depth back afterwards.
         let depth_before = depth;
         match token.kind {
-            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
-            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            // A generic argument list (`Map<int, string>`) carries an internal
+            // comma; its `<`/`>` count toward depth exactly like `(`/`[` so that
+            // comma does not end the parameter. A parameter body is a type slice
+            // (defaults are rejected), so `<`/`>` here are never comparison.
+            TokenKind::LeftParen | TokenKind::LeftBracket | TokenKind::Less => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket | TokenKind::Greater => {
+                depth = depth.saturating_sub(1)
+            }
             _ => {}
         }
 

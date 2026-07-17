@@ -226,6 +226,138 @@ fn an_index_still_written_with_parens_is_rejected() {
     );
 }
 
+// ---- Multi-argument generics in every comma-delimited declaration position ----
+// A `<A, B>` type carries an internal comma. Every splitter that separates a
+// comma-delimited declaration list must track angle depth so the internal comma
+// does not split the enclosing list. `split_top_level_commas` does; the
+// parameter-group splitter must too.
+
+#[test]
+fn a_multi_argument_generic_parameter_is_one_parameter() {
+    let source = "module app\nfn f(r: Map<int, string>, x: int): int {\n    return x\n}\n";
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "expected a clean parse of {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+    let function = parsed.file.function("f").expect("f");
+    let names: Vec<&str> = function.params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["r", "x"],
+        "two parameters, not split by the generic comma"
+    );
+    assert!(
+        matches!(&function.params[0].ty, TypeExpr::Apply { head, args, .. } if head == "Map" && args.len() == 2),
+        "r is Map<int, string>: {:#?}",
+        function.params[0].ty
+    );
+}
+
+#[test]
+fn a_nested_multi_argument_generic_parameter_is_one_parameter() {
+    let source =
+        "module app\nfn f(r: Map<int, Map<string, List<int>>>, x: int): int {\n    return x\n}\n";
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "expected a clean parse of {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+    let names: Vec<&str> = parsed
+        .file
+        .function("f")
+        .expect("f")
+        .params
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, ["r", "x"]);
+}
+
+#[test]
+fn a_multi_line_parameter_wraps_inside_its_generic() {
+    // The generic argument list spans two physical lines. Angle depth keeps the
+    // wrap from ending the parameter, just as `(`/`[` depth does.
+    let source = "module app\nfn f(\n    r: Map<int,\n           string>,\n    x: int\n): int {\n    return x\n}\n";
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "expected a clean parse of {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+    let names: Vec<&str> = parsed
+        .file
+        .function("f")
+        .expect("f")
+        .params
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, ["r", "x"]);
+}
+
+#[test]
+fn a_keyed_parameter_value_generic_does_not_split_the_list() {
+    let source =
+        "module app\nfn f(scores[player: string]: Map<int, string>, x: int) {\n    return\n}\n";
+    let parsed = parse_source(source);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "expected a clean parse of {source:?}: {:#?}",
+        parsed.diagnostics
+    );
+    let names: Vec<&str> = parsed
+        .file
+        .function("f")
+        .expect("f")
+        .params
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(names, ["scores", "x"]);
+}
+
+#[test]
+fn a_multi_argument_generic_key_type_does_not_split_the_key_list() {
+    // Key columns are comma-separated; a generic key type carries its own comma.
+    clean("module app\nfn run(cache[k: Map<int, string>, region: int]: bool) {\n    return\n}\n");
+}
+
+#[test]
+fn a_multi_argument_generic_enum_payload_field_does_not_split_the_payload() {
+    clean("module app\nenum E {\n    pair(m: Map<int, string>, count: int)\n    none\n}\n");
+}
+
+#[test]
+fn an_unterminated_generic_parameter_does_not_split_into_a_clean_extra_parameter() {
+    // With the angle-tracking splitter, the comma inside an unterminated
+    // `Map<int, …` stays inside the parameter: the list is one (malformed)
+    // parameter, never two clean ones. The malformed type resolves downstream.
+    let source = "module app\nfn f(r: Map<int, x: int): int {\n    return x\n}\n";
+    let parsed = parse_source(source);
+    let function = parsed.file.function("f").expect("f");
+    assert_eq!(
+        function.params.len(),
+        1,
+        "the unterminated generic keeps the parameter list from splitting: {:#?}",
+        function.params
+    );
+}
+
+#[test]
+fn a_doubled_generic_close_in_a_parameter_is_rejected() {
+    // `Map<int, string>>` has an unbalanced trailing `>`; the type parser reports
+    // it rather than accepting a stray token after a complete type.
+    let source = "module app\nfn f(r: Map<int, string>>, x: int): int {\n    return x\n}\n";
+    let parsed = parse_source(source);
+    assert!(
+        !parsed.diagnostics.is_empty(),
+        "a doubled generic close is a parse error: {source:?}"
+    );
+}
+
 // ---- T2: angle-bracket generics in every type position ----
 
 fn const_type(source_type: &str) -> TypeExpr {
