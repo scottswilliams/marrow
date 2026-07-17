@@ -32,9 +32,6 @@ const SHA256SUMS: &str = "SHA256SUMS";
 const INVOCATION_TIMEOUT: Duration = Duration::from_secs(60);
 const OUTPUT_CAP_BYTES: usize = 8 * 1024 * 1024;
 
-/// The single preserved-semantics IN fixture the skeleton smoke-tests.
-const SMOKE_FIXTURE: &str = "fixtures/v01/conformance/enum_semantics";
-
 fn oracle_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os(ORACLE_DIR_ENV) {
         return PathBuf::from(dir);
@@ -71,9 +68,12 @@ fn oracle_runs_one_preserved_semantics_fixture() {
 
     verify_oracle_hash(&dir, &binary);
 
+    // The smoke test drives the oracle over one assembled layout project — the
+    // frozen prototype parses only the layout surface, so it runs the layout
+    // tracer twin rather than the brace conformance corpus.
+    let smoke = &FIXTURES[0];
     let scratch = ScratchDir::new().expect("create scratch dir");
-    let project = scratch.path().join("project");
-    copy_tree(&workspace_root().join(SMOKE_FIXTURE), &project).expect("copy fixture project");
+    let project = assemble_oracle_project(&scratch, smoke);
 
     let output = launch_oracle(
         &binary,
@@ -91,8 +91,7 @@ fn oracle_runs_one_preserved_semantics_fixture() {
         .find(|record| record.get_str("kind") == Some("summary"))
         .expect("oracle test output ends with a summary record");
     // The pipeline works when the frozen oracle checks, runs, and reports the
-    // fixture's tests as a typed selected/total count. The field-by-field
-    // beta-vs-oracle comparison is deferred to T01.
+    // fixture's tests as a typed selected/total count.
     assert!(
         summary.get_num("selected").is_some_and(|n| n > 0.0),
         "summary selected count should be positive: {summary:?}"
@@ -531,20 +530,24 @@ impl Sha256 {
 // Preserved-semantics differential over the storeless tracer subset.
 //
 // The comparison is test-vs-test (P00b): both stacks run their own `marrow test
-// --format jsonl` over the same fixture project — the frozen prototype through
-// its `tests/*.mw` `std::assert` wrappers, the beta through `test` declarations
-// in a beta-only `src/*_checks.mw` module (removed from the oracle's project
-// copy, whose parser predates the `test` grammar; the beta never captures
-// `tests/`). The table below is the single source: it regenerates both stacks'
-// test files from one call expression and one expected literal, so the asserted
+// --format jsonl` over their own project. The two projects are in different
+// surfaces on purpose (the BS01 A3 custody note): the frozen prototype parses
+// only the layout surface, so its project pairs the layout `tests/*.mw`
+// `std::assert` wrappers with a layout twin of the shared module
+// (`oracle/*.mw`, swapped in by `assemble_oracle_project`); the beta parses the
+// brace surface, so it runs the committed brace `src/*.mw` module and its
+// `test` declarations in a beta-only `src/*_checks.mw` module (which the frozen
+// parser predates). The table below is the single source of the *semantic*
+// content: it regenerates each stack's test file in that stack's own surface
+// from one call expression and one expected literal, so the asserted
 // expectation is shared in-language and cannot drift — the T01 expected-data
-// indirection is retired. The differential compares only the typed fields the
-// law names: per paired case the outcome and code, field by field; a fault span
-// would compare only when both stacks map it into the shared `src` module. File
-// paths, stack-specific declaration positions, diagnostic prose, and incidental
-// ordering are never compared. Durable round-trip behavior is not differential
-// (the store stacks are incomparable) and is owned by the §K gate tests and
-// kernel/engine evidence.
+// indirection is retired. Because the two surfaces delimit differently, a span
+// cannot compare across them (A3): the differential compares only the
+// surface-independent typed fields the law names — per paired case the outcome
+// and code, field by field. File paths, stack-specific declaration positions,
+// diagnostic prose, source spans, and incidental ordering are never compared.
+// Durable round-trip behavior is not differential (the store stacks are
+// incomparable) and is owned by the §K gate tests and kernel/engine evidence.
 // ---------------------------------------------------------------------------
 
 /// A typed expected value: the storeless subset returns scalars only.
@@ -730,11 +733,10 @@ const FIXTURES: &[Fixture] = &[
 
 /// The typed fields the differential compares per paired test record: the
 /// outcome and the dotted code, field by field. A test record's `span` names a
-/// stack-specific position (the declaration site in that stack's own test file,
-/// or a fault site), so it is compared only when both stacks map a fault into
-/// the shared `src` module — never for a pass, whose span is a declaration
-/// path-like fact the law excludes. File paths, names, prose, and key ordering
-/// are never fields.
+/// stack-specific position in that stack's own surface; the two stacks parse
+/// different surfaces (layout vs brace), so a span cannot compare across them
+/// (the A3 custody note) and is never a compared field. File paths, names,
+/// prose, spans, and key ordering are never fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ComparedTest {
     outcome: String,
@@ -780,18 +782,24 @@ fn generate_wrappers(fixture: &Fixture) -> String {
 /// Regenerate a fixture's beta `test`-declaration module from the same table.
 /// The committed `src/*_checks.mw` must be byte-identical; each test's title is
 /// the oracle wrapper's name, pairing the two stacks' report streams.
+///
+/// The beta reads the brace surface (BS01), so this renders `//` comment leaders
+/// and `test "…" { … }` blocks — the counterpart to [`generate_wrappers`], which
+/// stays in the layout surface the frozen prototype parses. The two stacks' test
+/// files are therefore in different surfaces on purpose (the A3 custody note on
+/// [`compared_test`]); only the shared in-language expectation is single-sourced.
 fn generate_beta_checks(fixture: &Fixture) -> String {
     let mut out = format!(
-        "; Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)\n\
-         ; Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/{}\n\
-         ; Replaces: the T01 manifest-indirected `marrow run` comparison\n\
+        "// Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)\n\
+         // Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/{}\n\
+         // Replaces: the T01 manifest-indirected `marrow run` comparison\n\
          module {}_checks\n",
         fixture.test_file, fixture.module
     );
     for case in fixture.cases {
         out.push('\n');
         out.push_str(&format!(
-            "test \"{}\"\n    assert {} == {}\n",
+            "test \"{}\" {{\n    assert {} == {}\n}}\n",
             case.wrapper,
             case.call,
             case.expected.literal()
@@ -816,15 +824,41 @@ fn run_beta_tests(fixture: &Fixture) -> Vec<Record> {
     parse_jsonl(&stdout)
 }
 
-/// Run the frozen oracle's `marrow test` over a fixture copy — minus the
-/// beta-only `test`-declaration module, which the frozen parser predates — and
+/// Assemble the frozen oracle's project copy for a fixture into `scratch`: the
+/// layout-surface source the prototype parses.
+///
+/// The committed fixture is the beta's brace project (`src/<module>.mw` and
+/// `src/<module>_checks.mw`). The frozen prototype predates both the brace
+/// surface (BS01) and the `test` grammar, so its project instead pairs the
+/// layout `tests/<module>_test.mw` `std::assert` wrappers with a layout twin of
+/// the shared module, committed beside the brace one at `oracle/<module>.mw`.
+/// The two module surfaces are held semantically equal by the differential
+/// itself (a divergence in either surface fails the comparison, never silently);
+/// the twin retires with the frozen oracle before Q00. This assembly: copies the
+/// tree, drops the beta-only checks module, swaps the brace module for its layout
+/// twin, and drops the twin's staging directory so the prototype sees one module.
+fn assemble_oracle_project(scratch: &ScratchDir, fixture: &Fixture) -> PathBuf {
+    let source = conformance_dir().join(fixture.dir);
+    let project = scratch.path().join("project");
+    copy_tree(&source, &project).expect("copy fixture project");
+    std::fs::remove_file(project.join("src").join(fixture.checks_file))
+        .expect("fixture carries its beta checks module");
+    let module_file = format!("{}.mw", fixture.module);
+    let layout_twin =
+        std::fs::read_to_string(source.join("oracle").join(&module_file)).unwrap_or_else(|error| {
+            panic!("fixture carries its layout module twin at oracle/{module_file}: {error}")
+        });
+    std::fs::write(project.join("src").join(&module_file), layout_twin)
+        .expect("swap in the layout module twin");
+    std::fs::remove_dir_all(project.join("oracle")).expect("drop the twin staging directory");
+    project
+}
+
+/// Run the frozen oracle's `marrow test` over its assembled layout project and
 /// parse its typed JSONL into records.
 fn run_oracle_fixture(binary: &Path, fixture: &Fixture) -> Vec<Record> {
     let scratch = ScratchDir::new().expect("create scratch dir");
-    let project = scratch.path().join("project");
-    copy_tree(&conformance_dir().join(fixture.dir), &project).expect("copy fixture project");
-    std::fs::remove_file(project.join("src").join(fixture.checks_file))
-        .expect("fixture carries its beta checks module");
+    let project = assemble_oracle_project(&scratch, fixture);
     let output = launch_oracle(
         binary,
         &scratch,
@@ -855,7 +889,6 @@ fn assert_single_sourced(path: &Path, generated: &str, what: &str) {
 /// committed oracle wrapper file and beta checks module matches what the table
 /// regenerates, so the two stacks always assert the same expectation.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn tracer_test_files_are_single_sourced_from_the_table() {
     for fixture in FIXTURES {
         let dir = conformance_dir().join(fixture.dir);
