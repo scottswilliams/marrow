@@ -27,7 +27,7 @@ pub const MAX_ENUMS: usize = 64;
 pub const MAX_VARIANTS: usize = 256;
 pub const MAX_PAYLOAD_FIELDS: usize = 64;
 
-/// Collection value types: distinct `List[T]` / `Map[K, V]` instantiations in the
+/// Collection value types: distinct `List<T>` / `Map<K, V>` instantiations in the
 /// COLLTYPES table. This bounds the number of *static* collection shapes an image
 /// declares (each concrete instantiation is one row), not a collection's runtime
 /// element count — the latter is a private VM bound (`MAX_COLLECTION_LEN`).

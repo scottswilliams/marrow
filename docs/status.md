@@ -26,6 +26,12 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
 
 - Native lexer, parser, and formatter for `.mw` source, with typed parse
   diagnostics.
+- The `.mw` block surface uses mandatory curly braces (statements terminate at a
+  line break or `}`), square-bracket keyed access and key declarations, and
+  angle-bracket generics; `//`/`///` are the comment leaders. This replaced the
+  earlier layout/indentation surface on 2026-07-16; the decision records are the
+  `2026-07-16-block-syntax-evaluation.md` and `2026-07-16-surface-coherence-evaluation.md`
+  memos.
 - One pure project-input owner: the closed `marrow.toml` manifest schema
   (required explicit `edition`), deterministic contained discovery over `src`,
   path-derived module identity, and an immutable project input. See

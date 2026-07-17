@@ -1,8 +1,9 @@
 # Source And Syntax
 
-Marrow source files are UTF-8 text with the `.mw` extension. Indentation forms
-blocks. A tab in indentation is an error; spaces must be used consistently
-within a block.
+Marrow source files are UTF-8 text with the `.mw` extension. Curly braces `{`
+and `}` delimit blocks and a line break terminates a statement. A tab in leading
+whitespace is an error; the formatter emits four-space indentation, which carries
+no meaning of its own.
 
 ## Files And Modules
 
@@ -28,7 +29,7 @@ pub fn main() {
 }
 ```
 
-A line beginning with `;` is a comment. `;;` begins a documentation comment for
+A line beginning with `//` is a comment. `///` begins a documentation comment for
 the following declaration. Comments continue to the end of the line.
 
 ## Identifiers And Keywords
@@ -55,24 +56,30 @@ identifiers.
 Standard-library path segments such as `std::text` are resolved as declared
 library names even when a segment resembles a type word.
 
-## Layout
+## Blocks
 
-A header ending at the line break introduces a block when the following line is
-more deeply indented. Sibling statements use the same indentation. Blank lines
-and comment-only lines do not close a block.
+A header line ends with `{`, and the block it opens closes with `}` (one-true-
+brace). Braces are mandatory for every block, including a single-statement body,
+and a statement terminates at a line break or the block's closing `}`. There is
+no statement separator.
 
 ```text
-if condition
+if condition {
     first()
-    if nested
+    if nested {
         second()
+    }
     third()
-else
+} else {
     fourth()
+}
 ```
 
-There are no braces or statement terminators. A trailing comma is allowed in
-multiline argument lists and constructors.
+A trailing clause cuddles the closing brace of the block before it — `} else {`,
+`} else if c {`, `} on more { ... }`. A header may continue across a line break
+after a trailing `and`, `or`, `,`, or `=`, and continuation is implicit inside an
+open `(` or `[`; the header ends at its `{`. A trailing comma is allowed in
+multiline argument lists, key groups, and constructors.
 
 ## Declarations
 
@@ -81,12 +88,14 @@ The top-level declaration forms are:
 ```text
 module path
 use path
-const name [: Type] = expression
-[pub] fn name(parameters) [: Type]
-resource Name
+const name = expression
+const name: Type = expression
+fn name(parameters): Type
+pub fn name(parameters): Type
+resource Name { ... }
 store ^name: Resource
-store ^name(keys): Resource
-[pub] enum Name
+store ^name[keys]: Resource
+enum Name { ... }
 ```
 
 See [Modules and functions](modules-and-functions.md),
@@ -225,19 +234,20 @@ Function declarations and call rules are defined in
 ## Paths
 
 Local paths begin with a binding. Durable paths begin with `^` and a store name.
-The same member and key syntax extends either form:
+The same member and key syntax extends either form; keyed access uses square
+brackets and member access uses `.`:
 
 ```text
 book.title
-booksByName("Marrow").author
-^books(id).title
-^books(id).notes(noteId).text
+booksByName["Marrow"].author
+^books[id].title
+^books[id].notes[noteId].text
 ```
 
-Key arguments on local collections, durable layers, and indexes are
-positional.
+Key arguments on local collections, durable layers, and indexes are positional:
+a bracket group holds an ordered tuple of key values and never a named argument.
 
-An `Id(^books)` may be placed directly in `^books(id)`; explicit raw key
+An `Id(^books)` may be placed directly in `^books[id]`; explicit raw key
 arguments are also accepted at the store boundary. Path presence and write
 behavior are defined in [Durable places](durable-places.md).
 
@@ -256,7 +266,7 @@ break and continue
 return
 delete
 transaction
-try, catch, and throw
+prefix try in bindings and return
 ```
 
 The control statements are described in [Control flow](control-flow.md) and

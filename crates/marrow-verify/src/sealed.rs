@@ -469,7 +469,7 @@ pub struct SealedVariant {
     pub payload: Vec<ImageType>,
 }
 
-/// A sealed collection value type: a finite `List[T]` or ordered `Map[K, V]`. The
+/// A sealed collection value type: a finite `List<T>` or ordered `Map<K, V>`. The
 /// element/key/value types are bare [`ImageType`]s (possibly `Collection` tags into
 /// an earlier row); the verifier proved every referenced index in range and that a
 /// `Map` key is a bare scalar key type.

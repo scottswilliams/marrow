@@ -133,7 +133,7 @@ pub struct EnumTypeDef {
     pub variants: Vec<VariantDef>,
 }
 
-/// One collection value type: a finite `List[T]` or ordered `Map[K, V]`. The
+/// One collection value type: a finite `List<T>` or ordered `Map<K, V>`. The
 /// element/key/value types are bare (non-optional) [`ImageType`]s and may
 /// themselves be `Collection` references, so a nested collection reaches its inner
 /// shape through the COLLTYPES table. A `Map` key is a bare scalar key type

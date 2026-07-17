@@ -455,9 +455,9 @@ pub struct StructDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub name_span: SourceSpan,
-    /// Declared generic type parameters, `[T, U supports order]`, empty for an
+    /// Declared generic type parameters, `<T, U supports order>`, empty for an
     /// ordinary monomorphic struct. A non-empty list makes the struct a template
-    /// monomorphized at each `Name[Args]` use.
+    /// monomorphized at each `Name<Args>` use.
     pub type_params: Vec<TypeParamDecl>,
     pub members: Vec<ResourceMember>,
     pub comments: Vec<Comment>,
@@ -536,7 +536,7 @@ pub struct FunctionDecl {
     pub docs: Vec<String>,
     pub public: bool,
     pub name: String,
-    /// Declared generic type parameters, `[T, U supports equality]`, empty for an
+    /// Declared generic type parameters, `<T, U supports equality>`, empty for an
     /// ordinary monomorphic function. Each parameter names a type usable in the
     /// parameter, return, and local annotations of the body.
     pub type_params: Vec<TypeParamDecl>,
@@ -576,9 +576,9 @@ pub struct EnumDecl {
     pub public: bool,
     pub name: String,
     pub name_span: SourceSpan,
-    /// Declared generic type parameters, `[T, U supports order]`, empty for an
+    /// Declared generic type parameters, `<T, U supports order>`, empty for an
     /// ordinary monomorphic enum. A non-empty list makes the enum a template
-    /// monomorphized at each `Name[Args]` use.
+    /// monomorphized at each `Name<Args>` use.
     pub type_params: Vec<TypeParamDecl>,
     pub members: Vec<EnumMember>,
     pub comments: Vec<Comment>,

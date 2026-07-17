@@ -4708,7 +4708,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Lower a generic struct construction `Pair(first: v, second: w)`: infer each
-    /// type parameter from the field values (there is no explicit `Pair[int, string]`
+    /// type parameter from the field values (there is no explicit `Pair<int, string>`
     /// construction syntax), monomorphize the instantiation, and construct the record.
     /// Field values are lowered in declaration order so evaluation order is stable.
     fn lower_generic_struct_literal(

@@ -239,7 +239,7 @@ enum TemplateBody {
 
 /// One generic value-type template: a `struct Name[T, ...]` or `enum Name[T, ...]`
 /// (or a reserved toolchain generic), held for lazy monomorphization. A template
-/// mints no image index of its own; each distinct `Name[Args]` application mints one
+/// mints no image index of its own; each distinct `Name<Args>` application mints one
 /// through the shared instantiation owner.
 #[derive(Clone)]
 struct TypeTemplate {
@@ -794,7 +794,7 @@ impl TypeRegistry {
 
     /// The template index and concrete arguments a minted type instantiation came
     /// from, if `id` names one. Used by generic-function inference to unify a
-    /// parameter type `Pair[T, U]` against an argument's instantiation.
+    /// parameter type `Pair<T, U>` against an argument's instantiation.
     pub(crate) fn instantiation_of(&self, id: TypeInstId) -> Option<(usize, Vec<GArg>)> {
         self.generics
             .borrow()
@@ -1224,7 +1224,7 @@ fn reserved_templates() -> Vec<TypeTemplate> {
 /// nominal, resource, or another declared type is a `check.name_conflict`, and a
 /// structurally unadmitted member (a group, key, `required` keyword, optional field,
 /// or category/nested enum member) is a `check.unsupported`; a defective template is
-/// dropped so no `Name[Args]` use resolves against it.
+/// dropped so no `Name<Args>` use resolves against it.
 fn register_type_templates(
     registry: &mut TypeRegistry,
     structs: &[(String, &StructDecl)],

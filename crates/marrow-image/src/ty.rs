@@ -71,7 +71,7 @@ pub enum ImageType {
         idx: u16,
         optional: bool,
     },
-    /// A finite collection value (a `List[T]` or ordered `Map[K, V]`), by
+    /// A finite collection value (a `List<T>` or ordered `Map<K, V>`), by
     /// COLLTYPES-table index. Mirrors `Record`/`Enum`: a one-byte tag plus a
     /// big-endian `u16` index. The element/key/value types are recorded once in
     /// the COLLTYPES entry, so a nested collection reaches its inner type through
