@@ -1,42 +1,57 @@
 module v01::library
 
-resource Author
+resource Author {
     required name: string
+}
 
-store ^authors(id: int): Author
+store ^authors[id: int]: Author
 
-resource Book
+resource Book {
     required title: string
     required author: Id(^authors)
-    tags(pos: int): string
+    tags[pos: int]: string
+}
 
-store ^books(id: int): Book
-    index byAuthor(author, id)
+store ^books[id: int]: Book {
+    index byAuthor[author, id]
+}
 
-pub fn seed()
+pub fn seed() {
     const author: Id(^authors) = nextId(^authors)
-    ^authors(author).name = "Ursula K. Le Guin"
-    transaction
-        ^books(10).title = "A Wizard of Earthsea"
-        ^books(10).author = author
-        ^books(10).tags(1) = "fantasy"
+    ^authors[author].name = "Ursula K. Le Guin"
+    transaction {
+        ^books[10].title = "A Wizard of Earthsea"
+        ^books[10].author = author
+        ^books[10].tags[1] = "fantasy"
+    }
+}
 
-pub fn seededTitle(): string
-    if const title = ^books(10).title
+pub fn seededTitle(): string {
+    if const title = ^books[10].title {
         return title
+    }
     return ""
+}
 
-pub fn seededAuthorName(): string
-    if const author = ^books(10).author
-        if const name = ^authors(author).name
+pub fn seededAuthorName(): string {
+    if const author = ^books[10].author {
+        if const name = ^authors[author].name {
             return name
+        }
+    }
     return ""
+}
 
-pub fn printSeededAuthorBooks()
-    if const author = ^books(10).author
-        for id in ^books.byAuthor(author)
-            if const title = ^books(id).title
+pub fn printSeededAuthorBooks() {
+    if const author = ^books[10].author {
+        for id in ^books.byAuthor[author] {
+            if const title = ^books[id].title {
                 print(title)
+            }
+        }
+    }
+}
 
-pub fn printSeededAuthor()
+pub fn printSeededAuthor() {
     print(seededAuthorName())
+}

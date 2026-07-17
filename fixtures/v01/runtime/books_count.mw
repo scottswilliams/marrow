@@ -1,22 +1,29 @@
-resource Book
+resource Book {
     required title: string
     subtitle: string
-    tags: sequence[string]
-store ^books(id: int): Book
+    tags: sequence<string>
+}
 
-pub fn seed()
-    ^books(1).title = "Mort"
-    const a: int = append(^books(1).tags, "fiction")
-    const b: int = append(^books(1).tags, "funny")
+store ^books[id: int]: Book
 
-pub fn countTitle(): int
-    return count(^books(1).title)
+pub fn seed() {
+    ^books[1].title = "Mort"
+    const a: int = append(^books[1].tags, "fiction")
+    const b: int = append(^books[1].tags, "funny")
+}
 
-pub fn countTags(): int
-    return count(^books(1).tags)
+pub fn countTitle(): int {
+    return count(^books[1].title)
+}
 
-pub fn countMissingField(): int
-    return count(^books(1).subtitle)
+pub fn countTags(): int {
+    return count(^books[1].tags)
+}
 
-pub fn countMissingTags(): int
-    return count(^books(2).tags)
+pub fn countMissingField(): int {
+    return count(^books[1].subtitle)
+}
+
+pub fn countMissingTags(): int {
+    return count(^books[2].tags)
+}

@@ -1,38 +1,49 @@
-; A durable counter CLI written with named `place` bindings: each export binds one
-; entry address once, then reads or writes that entry through the binding. The key
-; tuple is evaluated a single time at each `place`.
+// A durable counter CLI written with named `place` bindings: each export binds one
+// entry address once, then reads or writes that entry through the binding. The key
+// tuple is evaluated a single time at each `place`.
 
-resource Counter
+resource Counter {
     required value: int
     label: string
+}
 
-store ^counters(name: string): Counter
+store ^counters[name: string]: Counter
 
-pub fn set(name: string, v: int)
-    transaction
-        place p = ^counters(name)
+pub fn set(name: string, v: int) {
+    transaction {
+        place p = ^counters[name]
         p = Counter(value: v)
+    }
+}
 
-pub fn get(name: string): int?
-    place p = ^counters(name)
+pub fn get(name: string): int? {
+    place p = ^counters[name]
     return p.value
+}
 
-pub fn bump(name: string)
-    transaction
-        place p = ^counters(name)
+pub fn bump(name: string) {
+    transaction {
+        place p = ^counters[name]
         const current = p.value ?? 0
         p.value = current + 1
+    }
+}
 
-pub fn label(name: string, text: string)
-    transaction
-        place p = ^counters(name)
+pub fn label(name: string, text: string) {
+    transaction {
+        place p = ^counters[name]
         p.label = text
+    }
+}
 
-pub fn present(name: string): bool
-    place p = ^counters(name)
+pub fn present(name: string): bool {
+    place p = ^counters[name]
     return exists(p)
+}
 
-pub fn remove(name: string)
-    transaction
-        place p = ^counters(name)
+pub fn remove(name: string) {
+    transaction {
+        place p = ^counters[name]
         delete p
+    }
+}

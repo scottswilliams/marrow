@@ -16,13 +16,16 @@ module docs::source
 
 const greeting = "hello"
 
-fn label(value: int): string
+fn label(value: int): string {
     return $"{greeting} {value}"
+}
 
-pub fn main()
+pub fn main() {
     var count: int = 1
-    if count == 1
+    if count == 1 {
         print(label(count))
+    }
+}
 ```
 
 A line beginning with `;` is a comment. `;;` begins a documentation comment for
@@ -99,11 +102,12 @@ binding is evaluated when control reaches it.
 ```mw
 module docs::bindings
 
-pub fn total(base: int): int
+pub fn total(base: int): int {
     const increment = 2
     var result: int = base
     result += increment
     return result
+}
 ```
 
 Assignment is a statement, not an expression. The simple and compound forms are:
@@ -153,17 +157,19 @@ Resource constructors name the resource and use named members.
 ```mw
 module docs::literals
 
-resource Point
+resource Point {
     required x: int
     required y: int
     label: string
+}
 
-pub fn origin(): Point
-    var xs: List[int] = List()
+pub fn origin(): Point {
+    var xs: List<int> = List()
     xs = append(xs, 1)
     xs = append(xs, 2)
     xs = append(xs, 3)
     return Point(x: 0, y: 0)
+}
 ```
 
 Nested keyed layers are declared through resources, not with a deeper literal

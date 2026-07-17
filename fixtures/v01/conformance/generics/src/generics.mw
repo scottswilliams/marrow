@@ -1,89 +1,105 @@
 module generics
 
-; A rank-1 generic function: the type parameter `T` flows through the parameter
-; and the return type, and every call site monomorphizes a distinct instance.
-fn identity[T](x: T): T
+// A rank-1 generic function: the type parameter `T` flows through the parameter
+// and the return type, and every call site monomorphizes a distinct instance.
+fn identity<T>(x: T): T {
     return x
+}
 
-; `T` appears inside a collection parameter and an optional return.
-fn first[T](xs: List[T]): T?
-    for x in xs
+// `T` appears inside a collection parameter and an optional return.
+fn first<T>(xs: List<T>): T? {
+    for x in xs {
         return x
+    }
     return absent
+}
 
-; Two `T` parameters and a `List[T]` local and return: a swap-style constructor.
-fn swapped[T](a: T, b: T): List[T]
-    var xs: List[T] = List()
+// Two `T` parameters and a `List[T]` local and return: a swap-style constructor.
+fn swapped<T>(a: T, b: T): List<T> {
+    var xs: List<T> = List()
     xs = append(xs, b)
     xs = append(xs, a)
     return xs
+}
 
-; `supports equality` licenses `==` over the type parameter inside the body; a
-; call site revalidates that the concrete type actually supports equality.
-fn hasMember[T supports equality](xs: List[T], target: T): bool
-    for x in xs
-        if x == target
-            return true
+// `supports equality` licenses `==` over the type parameter inside the body; a
+// call site revalidates that the concrete type actually supports equality.
+fn hasMember<T supports equality>(xs: List<T>, target: T): bool {
+    for x in xs {
+        if x == target { return true }
+    }
     return false
+}
 
-; `supports order` licenses `<`/`>` over the type parameter.
-fn firstBigger[T supports order](xs: List[T], threshold: T): T?
-    for x in xs
-        if x > threshold
-            return x
+// `supports order` licenses `<`/`>` over the type parameter.
+fn firstBigger<T supports order>(xs: List<T>, threshold: T): T? {
+    for x in xs {
+        if x > threshold { return x }
+    }
     return absent
+}
 
-test "identity returns its argument at several concrete types"
+test "identity returns its argument at several concrete types" {
     assert identity(7) == 7
     assert identity("hi") == "hi"
     assert identity(true)
+}
 
-test "first returns the head element or absent"
-    var xs: List[int] = List()
+test "first returns the head element or absent" {
+    var xs: List<int> = List()
     xs = append(xs, 3)
     xs = append(xs, 4)
-    assert (first(xs) ?? 0) == 3
-    const empty: List[int] = List()
-    if const head = first(empty)
+    assert first(xs) ?? 0 == 3
+    const empty: List<int> = List()
+    if const head = first(empty) {
         assert false
-    else
+    } else {
         assert true
+    }
+}
 
-test "first works at a different element type"
-    var names: List[string] = List()
+test "first works at a different element type" {
+    var names: List<string> = List()
     names = append(names, "ada")
-    assert (first(names) ?? "none") == "ada"
+    assert first(names) ?? "none" == "ada"
+}
 
-test "swapped returns the two arguments in reverse order"
+test "swapped returns the two arguments in reverse order" {
     const pair = swapped(1, 2)
     assert length(pair) == 2
     var seen: int = 0
-    for x in pair
+    for x in pair {
         seen = seen * 10 + x
+    }
     assert seen == 21
+}
 
-test "hasMember uses equality over the type parameter"
-    var xs: List[int] = List()
+test "hasMember uses equality over the type parameter" {
+    var xs: List<int> = List()
     xs = append(xs, 5)
     xs = append(xs, 9)
     assert hasMember(xs, 9)
     assert not hasMember(xs, 7)
+}
 
-test "hasMember works over strings too"
-    var words: List[string] = List()
+test "hasMember works over strings too" {
+    var words: List<string> = List()
     words = append(words, "red")
     words = append(words, "green")
     assert hasMember(words, "green")
     assert not hasMember(words, "blue")
+}
 
-test "firstBigger uses order over the type parameter"
-    var xs: List[int] = List()
+test "firstBigger uses order over the type parameter" {
+    var xs: List<int> = List()
     xs = append(xs, 2)
     xs = append(xs, 8)
     xs = append(xs, 5)
-    assert (firstBigger(xs, 4) ?? 0) == 8
+    assert firstBigger(xs, 4) ?? 0 == 8
     const miss = firstBigger(xs, 100)
-    if const value = miss
+    if const value = miss {
         assert false
-    else
+    } else {
         assert true
+    }
+}

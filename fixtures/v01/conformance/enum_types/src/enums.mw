@@ -1,96 +1,105 @@
 module enums
 
-; Flat closed enums. `Color` has payloadless members; `Shape` mixes a
-; payloadless member with payload members. A payload field type resolves through
-; an alias like any other type annotation.
+// Flat closed enums. `Color` has payloadless members; `Shape` mixes a
+// payloadless member with payload members. A payload field type resolves through
+// an alias like any other type annotation.
 
 alias Radius = int
 
-enum Color
+enum Color {
     red
     green
     blue
+}
 
-enum Shape
+enum Shape {
     dot
     circle(radius: Radius)
     rect(width: int, height: int)
+}
 
-; `match` dispatches on the member. An arm binds a payload member's fields
-; positionally, or omits the bindings to ignore the payload. The match is
-; exhaustive and has no wildcard arm.
+// `match` dispatches on the member. An arm binds a payload member's fields
+// positionally, or omits the bindings to ignore the payload. The match is
+// exhaustive and has no wildcard arm.
 
-pub fn colorCode(c: Color): int
-    match c
-        red
-            return 1
-        green
-            return 2
-        blue
-            return 3
+pub fn colorCode(c: Color): int {
+    match c {
+        red => return 1
+        green => return 2
+        blue => return 3
+    }
+}
 
-pub fn area(s: Shape): int
-    match s
-        dot
-            return 0
-        circle(r)
-            return r * r
-        rect(w, h)
-            return w * h
+pub fn area(s: Shape): int {
+    match s {
+        dot => return 0
+        circle(r) => return r * r
+        rect(w, h) => return w * h
+    }
+}
 
-pub fn isRound(s: Shape): bool
-    match s
-        dot
-            return false
-        circle
-            return true
-        rect
-            return false
+pub fn isRound(s: Shape): bool {
+    match s {
+        dot => return false
+        circle => return true
+        rect => return false
+    }
+}
 
-; Construction is `Enum::member` for a payloadless member and
-; `Enum::member(field: value, ...)` for a payload member.
+// Construction is `Enum::member` for a payloadless member and
+// `Enum::member(field: value, ...)` for a payload member.
 
-pub fn makeRed(): Color
+pub fn makeRed(): Color {
     return Color::red
+}
 
-pub fn makeCircle(r: int): Shape
+pub fn makeCircle(r: int): Shape {
     return Shape::circle(radius: r)
+}
 
-; `==` and `!=` are exact enum equality: same member and equal payload.
+// `==` and `!=` are exact enum equality: same member and equal payload.
 
-pub fn sameColor(a: Color, b: Color): bool
+pub fn sameColor(a: Color, b: Color): bool {
     return a == b
+}
 
-pub fn differ(a: Color, b: Color): bool
+pub fn differ(a: Color, b: Color): bool {
     return a != b
+}
 
-test "payloadless member codes"
+test "payloadless member codes" {
     assert colorCode(Color::red) == 1
     assert colorCode(Color::green) == 2
     assert colorCode(Color::blue) == 3
+}
 
-test "payload members bind positionally"
+test "payload members bind positionally" {
     assert area(Shape::dot) == 0
     assert area(Shape::circle(radius: 4)) == 16
     assert area(Shape::rect(width: 3, height: 5)) == 15
+}
 
-test "a match arm may ignore the payload"
+test "a match arm may ignore the payload" {
     assert isRound(Shape::circle(radius: 9))
     assert not isRound(Shape::dot)
     assert not isRound(Shape::rect(width: 2, height: 2))
+}
 
-test "enum equality is exact"
+test "enum equality is exact" {
     assert Color::red == Color::red
     assert Color::red != Color::green
     assert sameColor(Color::blue, Color::blue)
     assert differ(Color::red, Color::green)
+}
 
-test "payload equality compares the payload"
+test "payload equality compares the payload" {
     assert Shape::circle(radius: 2) == Shape::circle(radius: 2)
     assert Shape::circle(radius: 2) != Shape::circle(radius: 3)
     assert Shape::dot == Shape::dot
     assert Shape::circle(radius: 1) != Shape::rect(width: 1, height: 1)
+}
 
-test "construction travels through a function"
+test "construction travels through a function" {
     assert area(makeCircle(6)) == 36
     assert colorCode(makeRed()) == 1
+}

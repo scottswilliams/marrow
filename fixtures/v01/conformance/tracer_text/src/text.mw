@@ -1,7 +1,9 @@
 module text
 
-pub fn join3(a: string, b: string, c: string): string
+pub fn join3(a: string, b: string, c: string): string {
     return a + b + c
+}
 
-pub fn eqText(a: string, b: string): bool
+pub fn eqText(a: string, b: string): bool {
     return a == b
+}

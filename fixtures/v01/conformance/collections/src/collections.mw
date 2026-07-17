@@ -1,183 +1,212 @@
 module collections
 
-struct Point
+struct Point {
     x: int
     y: int
+}
 
-enum Color
+enum Color {
     red
     green
+}
 
-test "an empty list has length zero and is empty"
-    const xs: List[int] = List()
+test "an empty list has length zero and is empty" {
+    const xs: List<int> = List()
     assert length(xs) == 0
     assert isEmpty(xs)
+}
 
-test "append grows a list and iteration sums its elements"
-    var xs: List[int] = List()
+test "append grows a list and iteration sums its elements" {
+    var xs: List<int> = List()
     xs = append(xs, 10)
     xs = append(xs, 20)
     xs = append(xs, 12)
     assert length(xs) == 3
     assert not isEmpty(xs)
     var total: int = 0
-    for x in xs
+    for x in xs {
         total = total + x
+    }
     assert total == 42
+}
 
-test "list iteration preserves insertion order"
-    var xs: List[string] = List()
+test "list iteration preserves insertion order" {
+    var xs: List<string> = List()
     xs = append(xs, "a")
     xs = append(xs, "b")
     xs = append(xs, "c")
     var joined: string = ""
-    for s in xs
+    for s in xs {
         joined = joined + s
+    }
     assert joined == "abc"
+}
 
-test "a list holds struct values"
-    var pts: List[Point] = List()
+test "a list holds struct values" {
+    var pts: List<Point> = List()
     pts = append(pts, Point(x: 1, y: 2))
     pts = append(pts, Point(x: 3, y: 4))
     var sum: int = 0
-    for p in pts
+    for p in pts {
         sum = sum + p.x + p.y
+    }
     assert sum == 10
+}
 
-test "an empty map has length zero and get returns absent"
-    const m: Map[string, int] = Map()
+test "an empty map has length zero and get returns absent" {
+    const m: Map<string, int> = Map()
     assert length(m) == 0
     assert isEmpty(m)
-    if const hit = get(m, "missing")
+    if const hit = get(m, "missing") {
         assert false
-    else
+    } else {
         assert true
+    }
+}
 
-test "insert then get returns the stored value"
-    var m: Map[string, int] = Map()
+test "insert then get returns the stored value" {
+    var m: Map<string, int> = Map()
     m = insert(m, "ada", 10)
     m = insert(m, "grace", 12)
     assert length(m) == 2
     const hit = get(m, "grace") ?? 0
     assert hit == 12
+}
 
-test "insert replaces the value at an existing key"
-    var m: Map[string, int] = Map()
+test "insert replaces the value at an existing key" {
+    var m: Map<string, int> = Map()
     m = insert(m, "k", 1)
     m = insert(m, "k", 9)
     assert length(m) == 1
-    assert (get(m, "k") ?? 0) == 9
+    assert get(m, "k") ?? 0 == 9
+}
 
-test "map iteration visits keys in ascending order"
-    var m: Map[int, int] = Map()
+test "map iteration visits keys in ascending order" {
+    var m: Map<int, int> = Map()
     m = insert(m, 3, 30)
     m = insert(m, 1, 10)
     m = insert(m, 2, 20)
     var keyOrder: int = 0
     var valueSum: int = 0
-    for k, v in m
+    for k, v in m {
         keyOrder = keyOrder * 10 + k
         valueSum = valueSum + v
+    }
     assert keyOrder == 123
     assert valueSum == 60
+}
 
-test "map key-only iteration binds keys in order"
-    var m: Map[int, string] = Map()
+test "map key-only iteration binds keys in order" {
+    var m: Map<int, string> = Map()
     m = insert(m, 2, "b")
     m = insert(m, 1, "a")
     var sum: int = 0
-    for k in m
+    for k in m {
         sum = sum + k
+    }
     assert sum == 3
+}
 
-test "a map value may itself be a list"
-    var m: Map[string, List[int]] = Map()
-    var xs: List[int] = List()
+test "a map value may itself be a list" {
+    var m: Map<string, List<int>> = Map()
+    var xs: List<int> = List()
     xs = append(xs, 5)
     xs = append(xs, 6)
     m = insert(m, "row", xs)
     const got = get(m, "row")
-    if const row = got
+    if const row = got {
         assert length(row) == 2
-    else
+    } else {
         assert false
+    }
+}
 
-test "split divides a string into a list of substrings"
+test "split divides a string into a list of substrings" {
     const parts = split("a,b,c", ",")
     assert length(parts) == 3
     assert join(parts, "|") == "a|b|c"
-    ; An empty separator yields the whole string as one element.
+    // An empty separator yields the whole string as one element.
     const whole = split("abc", "")
     assert length(whole) == 1
     assert join(whole, "|") == "abc"
+}
 
-test "lines splits a string on line feeds"
+test "lines splits a string on line feeds" {
     const ls = lines("one\ntwo\nthree")
     assert length(ls) == 3
     assert join(ls, "|") == "one|two|three"
-    ; A trailing line feed does not add an empty final line.
+    // A trailing line feed does not add an empty final line.
     const trailing = lines("a\nb\n")
     assert length(trailing) == 2
     assert join(trailing, "|") == "a|b"
+}
 
-test "join concatenates a list of string with a separator"
-    var xs: List[string] = List()
+test "join concatenates a list of string with a separator" {
+    var xs: List<string> = List()
     xs = append(xs, "a")
     xs = append(xs, "b")
     xs = append(xs, "c")
     assert join(xs, "-") == "a-b-c"
-    ; Joining the empty list is the empty string.
-    const empty: List[string] = List()
+    // Joining the empty list is the empty string.
+    const empty: List<string> = List()
     assert join(empty, ",") == ""
+}
 
-test "split then join round-trips through the separator"
+test "split then join round-trips through the separator" {
     assert join(split("x:y:z", ":"), ":") == "x:y:z"
+}
 
-; A runtime export driven by `marrow run` to exercise the law-9 aggregate-byte
-; bound: appending a 64 KiB string enough times pushes the list past the 1 MiB
-; aggregate limit and faults `run.collection_limit`.
-pub fn overflowAggregate(): int
+// A runtime export driven by `marrow run` to exercise the law-9 aggregate-byte
+// bound: appending a 64 KiB string enough times pushes the list past the 1 MiB
+// aggregate limit and faults `run.collection_limit`.
+pub fn overflowAggregate(): int {
     var big: string = "x"
     var doublings: int = 0
-    while doublings < 16
+    while doublings < 16 {
         big = big + big
         doublings = doublings + 1
-    var xs: List[string] = List()
+    }
+    var xs: List<string> = List()
     var appended: int = 0
-    while appended < 32
+    while appended < 32 {
         xs = append(xs, big)
         appended = appended + 1
+    }
     return length(xs)
+}
 
-; A runtime export driven by `marrow run` to exercise the `run.text_limit` ceiling
-; on `join`: a list within the collection bounds whose joined text exceeds the 64 KiB
-; concatenation ceiling faults rather than materializing an unbounded string.
-pub fn overflowJoin(): int
+// A runtime export driven by `marrow run` to exercise the `run.text_limit` ceiling
+// on `join`: a list within the collection bounds whose joined text exceeds the 64 KiB
+// concatenation ceiling faults rather than materializing an unbounded string.
+pub fn overflowJoin(): int {
     var big: string = "x"
     var doublings: int = 0
-    while doublings < 13
+    while doublings < 13 {
         big = big + big
         doublings = doublings + 1
-    var xs: List[string] = List()
+    }
+    var xs: List<string> = List()
     var appended: int = 0
-    while appended < 16
+    while appended < 16 {
         xs = append(xs, big)
         appended = appended + 1
+    }
     const whole = join(xs, "")
-    if isEmpty(whole)
-        return 0
+    if isEmpty(whole) { return 0 }
     return 1
+}
 
-test "a list of enum values iterates by value"
-    var cs: List[Color] = List()
+test "a list of enum values iterates by value" {
+    var cs: List<Color> = List()
     cs = append(cs, Color::red)
     cs = append(cs, Color::green)
     cs = append(cs, Color::red)
     var reds: int = 0
-    for c in cs
-        match c
-            red
-                reds = reds + 1
-            green
-                reds = reds + 0
+    for c in cs {
+        match c {
+            red => reds = reds + 1
+            green => reds = reds + 0
+        }
+    }
     assert reds == 2
+}

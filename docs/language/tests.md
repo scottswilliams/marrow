@@ -14,12 +14,14 @@ A test is the keyword `test`, a string-literal title, and an indented body:
 ```mw
 module app::math
 
-pub fn double(n: int): int
+pub fn double(n: int): int {
     return n + n
+}
 
-test "double doubles its argument"
+test "double doubles its argument" {
     const four = double(2)
     assert four == 4
+}
 ```
 
 The title is a human report label. It is unique within a project and is not an
@@ -37,12 +39,14 @@ in program code, use `unreachable("...")` instead.
 ```mw
 module app::text
 
-pub fn shout(word: string): string
+pub fn shout(word: string): string {
     return word + "!"
+}
 
-test "shout appends one mark"
+test "shout appends one mark" {
     assert shout("hi") == "hi!"
     assert not isEmpty(shout(""))
+}
 ```
 
 A test that runs to completion with every assertion holding passes. A false

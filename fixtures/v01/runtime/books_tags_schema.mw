@@ -1,5 +1,6 @@
-resource Book
+resource Book {
     required title: string
-    tags(pos: int): string
-store ^books(id: int): Book
+    tags[pos: int]: string
+}
 
+store ^books[id: int]: Book

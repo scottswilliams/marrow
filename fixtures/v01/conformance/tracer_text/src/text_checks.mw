@@ -1,10 +1,12 @@
-; Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)
-; Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/text_test.mw
-; Replaces: the T01 manifest-indirected `marrow run` comparison
+// Layer: runtime (storeless tracer subset; differential vs the frozen prototype binary)
+// Oracle: `marrow test` on both stacks; each asserted literal is shared with tests/text_test.mw
+// Replaces: the T01 manifest-indirected `marrow run` comparison
 module text_checks
 
-test "tJoin3"
+test "tJoin3" {
     assert text::join3("a", "b", "c") == "abc"
+}
 
-test "tEqText"
+test "tEqText" {
     assert text::eqText("x", "x") == true
+}

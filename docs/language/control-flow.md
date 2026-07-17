@@ -22,16 +22,18 @@ bare binding when the result is present; the else branch runs for `absent`.
 ```mw
 module docs::conditional
 
-fn maybeName(enabled: bool): string?
-    if enabled
-        return "Marrow"
+fn maybeName(enabled: bool): string? {
+    if enabled { return "Marrow" }
     return absent
+}
 
-pub fn display(enabled: bool)
-    if const name = maybeName(enabled)
+pub fn display(enabled: bool) {
+    if const name = maybeName(enabled) {
         print(name)
-    else
+    } else {
         print("(none)")
+    }
+}
 ```
 
 The subject may be any `T?`, including a local optional, a local collection
@@ -84,29 +86,32 @@ nested loops with a result.
 ```mw
 module docs::nested_exit
 
-resource Book
+resource Book {
     required title: string
 
-    notes(pos: int)
+    notes[pos: int] {
         required text: string
+    }
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-fn hasNote(wanted: string): bool
-    for id in ^books at most 100
-        for pos in ^books(id).notes at most 100
-            if const note = ^books(id).notes(pos)
-                if note.text == wanted
-                    return true
-        on more
-            return false
-    on more
-        return false
+fn hasNote(wanted: string): bool {
+    for id in ^books at most 100 {
+        for pos in ^books[id].notes at most 100 {
+            if const note = ^books[id].notes[pos] {
+                if note.text == wanted { return true }
+            }
+        } on more return false
+    } on more return false
     return false
+}
 
-pub fn show(wanted: string)
-    if hasNote(wanted)
+pub fn show(wanted: string) {
+    if hasNote(wanted) {
         print("found")
+    }
+}
 ```
 
 When these exits leave a transaction normally, the transaction commits before
@@ -127,14 +132,12 @@ every real case, without a spurious "not all paths return a value" error.
 ```mw
 module docs::invariant
 
-pub fn sign(n: int): int
-    if n > 0
-        return 1
-    if n < 0
-        return -1
-    if n == 0
-        return 0
+pub fn sign(n: int): int {
+    if n > 0 { return 1 }
+    if n < 0 { return -1 }
+    if n == 0 { return 0 }
     unreachable("every int is positive, negative, or zero")
+}
 ```
 
 It is a statement, not an expression: it cannot be used where a value is required.
@@ -150,18 +153,18 @@ binds the result of the non-faulting path to a `const`/`var` or returns it:
 ```mw
 module docs::checked_arithmetic
 
-pub fn safeDivide(a: int, b: int): int
+pub fn safeDivide(a: int, b: int): int {
     return checked a / b
-        on out_of_range
+        on out_of_range {
             return -1
-        on zero_divisor
-            return 0
+        } on zero_divisor return 0
+}
 
-pub fn product(a: int, b: int): int?
+pub fn product(a: int, b: int): int? {
     const p: int = checked a * b
-        on out_of_range
-            return absent
+        on out_of_range return absent
     return p
+}
 ```
 
 Each `on` arm runs when the operation faults that way and must diverge — every path
@@ -181,22 +184,23 @@ type is any scalar (through an alias if desired):
 ```mw
 module docs::matching
 
-enum Shape
+enum Shape {
     dot
     circle(radius: int)
     rect(width: int, height: int)
+}
 
-fn area(s: Shape): int
-    match s
-        dot
-            return 0
-        circle(r)
-            return r * r
-        rect(w, h)
-            return w * h
+fn area(s: Shape): int {
+    match s {
+        dot => return 0
+        circle(r) => return r * r
+        rect(w, h) => return w * h
+    }
+}
 
-pub fn describe(s: Shape): int
+pub fn describe(s: Shape): int {
     return area(s)
+}
 ```
 
 An enum value is constructed as `Enum::member` for a bare member and
@@ -212,12 +216,14 @@ is `check.match_nonexhaustive` and a malformed arm is `check.match_arm`.
 ```mw
 module docs::equality
 
-enum Color
+enum Color {
     red
     green
+}
 
-fn same(a: Color, b: Color): bool
+fn same(a: Color, b: Color): bool {
     return a == b
+}
 ```
 
 Hierarchical enums — `category` members that group descendants, qualified arms
@@ -239,15 +245,16 @@ is no implicit error conversion.
 ```mw
 module docs::propagation
 
-fn checkPort(n: int): Result[int, string]
-    if n < 0
-        return err("negative port")
+fn checkPort(n: int): Result<int, string> {
+    if n < 0 { return err("negative port") }
     return ok(n)
+}
 
-pub fn openTwice(a: int, b: int): Result[int, string]
+pub fn openTwice(a: int, b: int): Result<int, string> {
     const x = try checkPort(a)
     const y = try checkPort(b)
     return ok(x + y)
+}
 ```
 
 `Result[T, E]` and `Option[T]` are ordinary value types; see

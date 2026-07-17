@@ -1,7 +1,8 @@
-resource Book
+resource Book {
     required title: string
     shelf: string
-store ^books(id: int): Book
+}
 
-    index byShelf(shelf, id)
-
+store ^books[id: int]: Book {
+    index byShelf[shelf, id]
+}

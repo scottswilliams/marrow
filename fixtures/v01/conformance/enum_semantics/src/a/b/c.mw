@@ -1,12 +1,13 @@
 module a::b::c
 
-pub enum Status
+pub enum Status {
     active
     archived
+}
 
-pub fn marker(s: a::b::c::Status): int
-    match s
-        active
-            return 0
-        archived
-            return 9
+pub fn marker(s: a::b::c::Status): int {
+    match s {
+        active => return 0
+        archived => return 9
+    }
+}

@@ -1,18 +1,23 @@
-resource Book
+resource Book {
     required title: string
     shelf: string
-store ^books(id: int): Book
+}
 
-pub fn add(title: string, shelf: string): Id(^books)
+store ^books[id: int]: Book
+
+pub fn add(title: string, shelf: string): Id(^books) {
     const id = nextId(^books)
     var book: Book
     book.title = title
     book.shelf = shelf
-    ^books(id) = book
+    ^books[id] = book
     return id
+}
 
-pub fn title_of(id: int): string
-    return ^books(id).title ?? ""
+pub fn title_of(id: int): string {
+    return ^books[id].title ?? ""
+}
 
-pub fn shelf_of(id: int): string
-    return ^books(id).shelf ?? ""
+pub fn shelf_of(id: int): string {
+    return ^books[id].shelf ?? ""
+}

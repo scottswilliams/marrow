@@ -2,26 +2,34 @@ module nominal
 
 type Age: int in 0..=150 supports add, subtract, step, scale
 
-pub fn mk(n: int): Age
+pub fn mk(n: int): Age {
     return Age(n)
+}
 
-pub fn value(a: Age): int
+pub fn value(a: Age): int {
     return a - Age(0)
+}
 
-pub fn older(a: Age, years: int): Age
+pub fn older(a: Age, years: int): Age {
     return a + years
+}
 
-pub fn younger(a: Age, years: int): Age
+pub fn younger(a: Age, years: int): Age {
     return a - years
+}
 
-pub fn gap(a: Age, b: Age): int
+pub fn gap(a: Age, b: Age): int {
     return a - b
+}
 
-pub fn next(a: Age): Age
+pub fn next(a: Age): Age {
     return a + 1
+}
 
-pub fn double(a: Age): Age
+pub fn double(a: Age): Age {
     return a * 2
+}
 
-pub fn tryMk(n: int): Age?
+pub fn tryMk(n: int): Age? {
     return Age.checked(n)
+}

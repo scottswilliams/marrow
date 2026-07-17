@@ -1,44 +1,53 @@
-; Layer: check+runtime (nominal `type Name: int in lo..hi` with `supports`)
-; Oracle: `marrow test` typed outcomes on the beta stack. Nominal `type` is
-; beta-only syntax absent from the frozen tag, so this fixture is not in the
-; preserved-semantics manifest and has no oracle pairing.
+// Layer: check+runtime (nominal `type Name: int in lo..hi` with `supports`)
+// Oracle: `marrow test` typed outcomes on the beta stack. Nominal `type` is
+// beta-only syntax absent from the frozen tag, so this fixture is not in the
+// preserved-semantics manifest and has no oracle pairing.
 module nominal_checks
 
-test "construction admits the whole inclusive interval"
+test "construction admits the whole inclusive interval" {
     assert nominal::value(nominal::mk(0)) == 0
     assert nominal::value(nominal::mk(150)) == 150
     assert nominal::value(nominal::mk(42)) == 42
+}
 
-test "supported arithmetic stays nominal and revalidates the interval"
+test "supported arithmetic stays nominal and revalidates the interval" {
     const a = nominal::mk(40)
     assert nominal::value(nominal::older(a, 10)) == 50
     assert nominal::value(nominal::younger(a, 10)) == 30
     assert nominal::value(nominal::next(a)) == 41
     assert nominal::value(nominal::double(a)) == 80
+}
 
-test "a difference of two nominals is a plain int"
+test "a difference of two nominals is a plain int" {
     assert nominal::gap(nominal::mk(50), nominal::mk(8)) == 42
     assert nominal::gap(nominal::mk(8), nominal::mk(50)) == -42
+}
 
-test "checked construction is present exactly on the interval"
-    if const atLow = nominal::tryMk(0)
+test "checked construction is present exactly on the interval" {
+    if const atLow = nominal::tryMk(0) {
         assert nominal::value(atLow) == 0
-    else
+    } else {
         assert false
-    if const atHigh = nominal::tryMk(150)
+    }
+    if const atHigh = nominal::tryMk(150) {
         assert nominal::value(atHigh) == 150
-    else
+    } else {
         assert false
-    if const belowLow = nominal::tryMk(-1)
+    }
+    if const belowLow = nominal::tryMk(-1) {
         assert nominal::value(belowLow) == -999
-    else
+    } else {
         assert true
-    if const aboveHigh = nominal::tryMk(151)
+    }
+    if const aboveHigh = nominal::tryMk(151) {
         assert nominal::value(aboveHigh) == -999
-    else
+    } else {
         assert true
+    }
+}
 
-test "same-nominal comparisons are ordinary value comparisons"
+test "same-nominal comparisons are ordinary value comparisons" {
     assert nominal::mk(3) == nominal::mk(3)
     assert nominal::mk(3) != nominal::mk(4)
     assert nominal::mk(3) < nominal::mk(4)
+}

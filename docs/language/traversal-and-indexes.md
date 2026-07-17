@@ -34,29 +34,35 @@ iteration.
 ```mw
 module docs::traversal
 
-resource Book
+resource Book {
     required title: string
 
-    notes(pos: int)
+    notes[pos: int] {
         required text: string
+    }
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn sumFirstIds(): int
+pub fn sumFirstIds(): int {
     var sum = 0
-    for id in ^books at most 100
+    for id in ^books at most 100 {
         sum += id
-    on more
+    } on more {
         sum = -1
+    }
     return sum
+}
 
-pub fn sumNoteKeys(id: int): int
+pub fn sumNoteKeys(id: int): int {
     var sum = 0
-    for pos in ^books(id).notes at most 100 from 1
+    for pos in ^books[id].notes at most 100 from 1 {
         sum += pos
-    on more
+    } on more {
         sum = -1
+    }
     return sum
+}
 ```
 
 The traversal freezes the first `N` immediate keys — acquiring at most one key
@@ -93,11 +99,13 @@ Range loops use `..` for an excluded end and `..=` for an included end:
 ```mw
 module docs::ranges
 
-pub fn countEven(): int
+pub fn countEven(): int {
     var count = 0
-    for value in 0..10 by 2
+    for value in 0..10 by 2 {
         count += 1
+    }
     return count
+}
 ```
 
 Endpoints may be `int`, `date`, or `instant`. Integer ranges default to step
@@ -126,17 +134,20 @@ index distinguishes each row by ending with the complete store identity suffix; 
 ```mw
 module docs::indexes
 
-resource Book
+resource Book {
     required title: string
     shelf: string
     isbn: string
+}
 
-store ^books(id: int): Book
-    index byShelf(shelf, id)
-    index byIsbn(isbn) unique
+store ^books[id: int]: Book {
+    index byShelf[shelf, id]
+    index byIsbn[isbn] unique
+}
 
-pub fn label(): string
+pub fn label(): string {
     return "books"
+}
 ```
 
 Each index argument names either one store identity column or one plain top-level

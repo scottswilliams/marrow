@@ -1,82 +1,89 @@
 module option_result
 
-; `Option[T]` and `Result[T, E]` are built-in closed enum value types that ride
-; the same machinery as a user `enum`: constructed, matched, and compared by
-; value. They are ordinary values, not the presence primitive — a `T?` place is
-; still absent-or-present, while an `Option[T]` value is `none` or `some(v)`.
+// `Option[T]` and `Result[T, E]` are built-in closed enum value types that ride
+// the same machinery as a user `enum`: constructed, matched, and compared by
+// value. They are ordinary values, not the presence primitive — a `T?` place is
+// still absent-or-present, while an `Option[T]` value is `none` or `some(v)`.
 
-pub fn firstEven(a: int, b: int): Option[int]
-    if a % 2 == 0
-        return some(a)
-    if b % 2 == 0
-        return some(b)
+pub fn firstEven(a: int, b: int): Option<int> {
+    if a % 2 == 0 { return some(a) }
+    if b % 2 == 0 { return some(b) }
     return none
+}
 
-pub fn describe(o: Option[int]): string
-    match o
-        some(v)
-            return "some"
-        none
-            return "none"
+pub fn describe(o: Option<int>): string {
+    match o {
+        some(v) => return "some"
+        none => return "none"
+    }
+}
 
-; Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are
-; three different values of `Option[Option[int]]`.
-pub fn depth(o: Option[Option[int]]): int
-    match o
-        none
-            return 0
-        some(inner)
-            match inner
-                none
-                    return 1
-                some(v)
-                    return 2
+// Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are
+// three different values of `Option[Option[int]]`.
+pub fn depth(o: Option<Option<int>>): int {
+    match o {
+        none => return 0
+        some(inner) => {
+            match inner {
+                none => return 1
+                some(v) => return 2
+            }
+        }
+    }
+}
 
-pub fn checkPositive(n: int): Result[int, string]
-    if n <= 0
-        return err("not positive")
+pub fn checkPositive(n: int): Result<int, string> {
+    if n <= 0 { return err("not positive") }
     return ok(n)
+}
 
-; Prefix `try` propagates an `err` with the same `E`, yielding the `ok` value.
-pub fn addChecked(a: int, b: int): Result[int, string]
+// Prefix `try` propagates an `err` with the same `E`, yielding the `ok` value.
+pub fn addChecked(a: int, b: int): Result<int, string> {
     const x = try checkPositive(a)
     const y = try checkPositive(b)
     return ok(x + y)
+}
 
-pub fn okOr(r: Result[int, string], fallback: int): int
-    match r
-        ok(v)
-            return v
-        err(e)
-            return fallback
+pub fn okOr(r: Result<int, string>, fallback: int): int {
+    match r {
+        ok(v) => return v
+        err(e) => return fallback
+    }
+}
 
-test "option construction and match"
+test "option construction and match" {
     assert describe(some(5)) == "some"
     assert describe(none) == "none"
     assert describe(firstEven(3, 4)) == "some"
     assert describe(firstEven(1, 3)) == "none"
+}
 
-test "nested option is distinct"
-    const a: Option[Option[int]] = none
-    const b: Option[Option[int]] = some(none)
-    const c: Option[Option[int]] = some(some(7))
+test "nested option is distinct" {
+    const a: Option<Option<int>> = none
+    const b: Option<Option<int>> = some(none)
+    const c: Option<Option<int>> = some(some(7))
     assert depth(a) == 0
     assert depth(b) == 1
     assert depth(c) == 2
+}
 
-test "option equality is exact"
+test "option equality is exact" {
     assert some(5) == some(5)
     assert some(5) != some(6)
-    const n: Option[int] = none
-    const m: Option[int] = none
+    const n: Option<int> = none
+    const m: Option<int> = none
     assert n == m
+}
 
-test "result construction and match"
+test "result construction and match" {
     assert okOr(ok(9), 0) == 9
     assert okOr(err("bad"), -1) == -1
+}
 
-test "try yields the ok value on success"
+test "try yields the ok value on success" {
     assert okOr(addChecked(2, 3), 0) == 5
+}
 
-test "try propagates the err"
+test "try propagates the err" {
     assert okOr(addChecked(-1, 3), -1) == -1
+}

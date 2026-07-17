@@ -1,69 +1,80 @@
-; Local sparse product read/assign/unset. A `resource` value held in a local
-; carries required and sparse fields; reading a sparse field yields `T?`,
-; assigning it sets it present, and `unset` clears it back to absent. A field
-; typed `Option[string]` keeps absent distinct from a present `Option` none.
+// Local sparse product read/assign/unset. A `resource` value held in a local
+// carries required and sparse fields; reading a sparse field yields `T?`,
+// assigning it sets it present, and `unset` clears it back to absent. A field
+// typed `Option[string]` keeps absent distinct from a present `Option` none.
 module boxes
 
-resource Box
+resource Box {
     required id: int
     note: string
-    tag: Option[string]
+    tag: Option<string>
+}
 
-; A freshly constructed box leaves its sparse fields absent; reading one yields
-; absent, so `?? d` falls through to the default.
-pub fn freshNoteOr(d: string): string
+// A freshly constructed box leaves its sparse fields absent; reading one yields
+// absent, so `?? d` falls through to the default.
+pub fn freshNoteOr(d: string): string {
     const b = Box(id: 1)
     return b.note ?? d
+}
 
-; Assigning a sparse field sets it present; the later read observes the value.
-pub fn setNote(): string
+// Assigning a sparse field sets it present; the later read observes the value.
+pub fn setNote(): string {
     var b = Box(id: 1)
     b.note = "hello"
     return b.note ?? "absent"
+}
 
-; `unset` clears a present sparse field back to absent.
-pub fn setThenUnset(): string
+// `unset` clears a present sparse field back to absent.
+pub fn setThenUnset(): string {
     var b = Box(id: 1, note: "hello")
     unset b.note
     return b.note ?? "absent"
+}
 
-; A sparse field carried in the constructor is present.
-pub fn constructedPresent(): string
+// A sparse field carried in the constructor is present.
+pub fn constructedPresent(): string {
     const b = Box(id: 1, note: "carried")
     return b.note ?? "absent"
+}
 
-; Value/copy semantics: a bound copy is independent. Mutating the copy's field
-; leaves the original absent.
-pub fn copyIsIndependent(): string
+// Value/copy semantics: a bound copy is independent. Mutating the copy's field
+// leaves the original absent.
+pub fn copyIsIndependent(): string {
     const a = Box(id: 1)
     var b = a
     b.note = "changed"
     return a.note ?? "original-absent"
+}
 
-; A sparse `Option[string]` field distinguishes three states: absent (the field
-; is unset), a present `Option` none, and a present `Option` some. `mode` picks
-; which state to build, and the classifier reports it — absent is not the same
-; value as a present none.
-pub fn classifyTag(mode: int): string
+// A sparse `Option[string]` field distinguishes three states: absent (the field
+// is unset), a present `Option` none, and a present `Option` some. `mode` picks
+// which state to build, and the classifier reports it — absent is not the same
+// value as a present none.
+pub fn classifyTag(mode: int): string {
     var b = Box(id: 1)
-    if mode == 1
+    if mode == 1 {
         b.tag = none
-    if mode == 2
+    }
+    if mode == 2 {
         b.tag = some("carried")
-    if const t = b.tag
-        match t
-            none
-                return "present-none"
-            some(v)
-                return v
+    }
+    if const t = b.tag {
+        match t {
+            none => return "present-none"
+            some(v) => return v
+        }
+    }
     return "absent"
+}
 
-; Unsetting an `Option`-typed field returns it to absent even after it held a
-; present none — proving `unset` clears the outer presence, not the inner value.
-pub fn unsetPresentNone(): string
+// Unsetting an `Option`-typed field returns it to absent even after it held a
+// present none — proving `unset` clears the outer presence, not the inner value.
+pub fn unsetPresentNone(): string {
     var b = Box(id: 1)
     b.tag = none
     unset b.tag
-    if const t = b.tag
+    if const t = b.tag {
         return "present"
+    }
     return "absent"
+}

@@ -13,18 +13,22 @@ A keyed store attaches a resource type to one typed identity column:
 ```mw
 module docs::durable
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn put(id: int, title: string)
-    transaction
-        ^books(id) = Book(title: title)
+pub fn put(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
 
-pub fn title(id: int): string?
-    return ^books(id).title
+pub fn title(id: int): string? {
+    return ^books[id].title
+}
 ```
 
 Each identity column is drawn from the closed orderable durable-key scalar set:
@@ -58,8 +62,9 @@ omits the key list and holds a single entry:
 ```mw
 module docs::durable_singleton
 
-resource Settings
+resource Settings {
     required locale: string
+}
 
 store ^settings: Settings
 ```
@@ -70,17 +75,21 @@ identifies each entry by the whole tuple in column order:
 ```mw
 module docs::durable_composite
 
-resource Enrollment
+resource Enrollment {
     required grade: int
+}
 
-store ^enrollments(student: string, course: string): Enrollment
+store ^enrollments[student: string, course: string]: Enrollment
 
-pub fn enroll(student: string, course: string, grade: int)
-    transaction
-        ^enrollments(student, course) = Enrollment(grade: grade)
+pub fn enroll(student: string, course: string, grade: int) {
+    transaction {
+        ^enrollments[student, course] = Enrollment(grade: grade)
+    }
+}
 
-pub fn gradeOf(student: string, course: string): int?
-    return ^enrollments(student, course).grade
+pub fn gradeOf(student: string, course: string): int? {
+    return ^enrollments[student, course].grade
+}
 ```
 
 A composite key addresses each entry by its whole tuple in column order, so
@@ -215,22 +224,27 @@ that may not exist yields `T?`, because the entry at that key may be absent:
 ```mw
 module docs::durable_presence
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn present(id: int): bool
-    return exists(^books(id))
+pub fn present(id: int): bool {
+    return exists(^books[id])
+}
 
-pub fn subtitle(id: int): string?
-    return ^books(id).subtitle
+pub fn subtitle(id: int): string? {
+    return ^books[id].subtitle
+}
 
-pub fn titleOrNone(id: int): string
-    if const book = ^books(id)
+pub fn titleOrNone(id: int): string {
+    if const book = ^books[id] {
         return book.title
+    }
     return "none"
+}
 ```
 
 Binding a whole resource with `if const` proves the entry present, so its
@@ -247,21 +261,25 @@ A `place` binding names one concrete durable entry address inside a function:
 ```mw
 module docs::durable_place
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn retitle(id: int, title: string)
-    transaction
-        place book = ^books(id)
+pub fn retitle(id: int, title: string) {
+    transaction {
+        place book = ^books[id]
         book = Book(title: title)
         book.subtitle = "revised"
+    }
+}
 
-pub fn subtitleOf(id: int): string?
-    place book = ^books(id)
+pub fn subtitleOf(id: int): string? {
+    place book = ^books[id]
     return book.subtitle
+}
 ```
 
 The right-hand side is a whole durable entry address `^root(key...)`. The key
@@ -293,20 +311,25 @@ Assigning one field changes that field and preserves the entry's other fields:
 ```mw
 module docs::durable_field
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn setSubtitle(id: int, subtitle: string)
-    transaction
-        ^books(id).subtitle = subtitle
+pub fn setSubtitle(id: int, subtitle: string) {
+    transaction {
+        ^books[id].subtitle = subtitle
+    }
+}
 
-pub fn clearSubtitle(id: int)
-    transaction
+pub fn clearSubtitle(id: int) {
+    transaction {
         const cleared: string? = absent
-        ^books(id).subtitle = cleared
+        ^books[id].subtitle = cleared
+    }
+}
 ```
 
 A sparse field is a **present-or-clear** place: it accepts a value, an optional
@@ -337,17 +360,21 @@ knowledge, so a set after it is unguarded again.
 ```mw
 module docs::durable_guarded
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn setSubtitleIfPresent(id: int, subtitle: string)
-    transaction
-        place book = ^books(id)
-        if exists(book)
+pub fn setSubtitleIfPresent(id: int, subtitle: string) {
+    transaction {
+        place book = ^books[id]
+        if exists(book) {
             book.subtitle = subtitle
+        }
+    }
+}
 ```
 
 Both forms have the same observable result when the entry is present; the guarded
@@ -361,15 +388,18 @@ Assignment to the entry address is exact replacement:
 ```mw
 module docs::durable_replace
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn replace(id: int, title: string)
-    transaction
-        ^books(id) = Book(title: title)
+pub fn replace(id: int, title: string) {
+    transaction {
+        ^books[id] = Book(title: title)
+    }
+}
 ```
 
 The assignment stores every field named by the constructed value and removes any
@@ -391,41 +421,55 @@ parent's key-path with the branch key — `^root(key).branch(bkey)`,
 ```mw
 module docs::durable_branch
 
-resource Book
+resource Book {
     required title: string
 
-    notes(noteId: string)
+    notes[noteId: string] {
         required text: string
         pinned: bool
 
-        tags(tagId: int)
+        tags[tagId: int] {
             required weight: int
+        }
+    }
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn addNote(id: int, noteId: string, text: string)
-    transaction
-        ^books(id).notes(noteId) = Book.notes(text: text)
+pub fn addNote(id: int, noteId: string, text: string) {
+    transaction {
+        ^books[id].notes[noteId] = Book.notes(text: text)
+    }
+}
 
-pub fn addTag(id: int, noteId: string, tagId: int, weight: int)
-    transaction
-        ^books(id).notes(noteId).tags(tagId) = Book.notes.tags(weight: weight)
+pub fn addTag(id: int, noteId: string, tagId: int, weight: int) {
+    transaction {
+        ^books[id].notes[noteId].tags[tagId] = Book.notes.tags(weight: weight)
+    }
+}
 
-pub fn setPinned(id: int, noteId: string, pinned: bool)
-    transaction
-        ^books(id).notes(noteId).pinned = pinned
+pub fn setPinned(id: int, noteId: string, pinned: bool) {
+    transaction {
+        ^books[id].notes[noteId].pinned = pinned
+    }
+}
 
-pub fn tagWeight(id: int, noteId: string, tagId: int): int?
-    return ^books(id).notes(noteId).tags(tagId).weight
+pub fn tagWeight(id: int, noteId: string, tagId: int): int? {
+    return ^books[id].notes[noteId].tags[tagId].weight
+}
 
-pub fn noteText(id: int, noteId: string): string?
-    if const note = ^books(id).notes(noteId)
+pub fn noteText(id: int, noteId: string): string? {
+    if const note = ^books[id].notes[noteId] {
         return note.text
+    }
     return absent
+}
 
-pub fn removeNote(id: int, noteId: string)
-    transaction
-        delete ^books(id).notes(noteId)
+pub fn removeNote(id: int, noteId: string) {
+    transaction {
+        delete ^books[id].notes[noteId]
+    }
+}
 ```
 
 A whole branch entry is created or replaced with the qualified constructor
@@ -458,19 +502,24 @@ descendants at every level.
 ```mw
 module docs::durable_delete
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn removeSubtitle(id: int)
-    transaction
-        delete ^books(id).subtitle
+pub fn removeSubtitle(id: int) {
+    transaction {
+        delete ^books[id].subtitle
+    }
+}
 
-pub fn remove(id: int)
-    transaction
-        delete ^books(id)
+pub fn remove(id: int) {
+    transaction {
+        delete ^books[id]
+    }
+}
 ```
 
 Deleting a sparse field that is already absent is a no-op. Deleting a required

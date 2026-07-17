@@ -47,15 +47,18 @@ whole call.
 ```mw
 module docs::transactions
 
-resource Counter
+resource Counter {
     required value: int
+}
 
-store ^counters(name: string): Counter
+store ^counters[name: string]: Counter
 
-pub fn bump(name: string)
-    transaction
-        const current = ^counters(name).value ?? 0
-        ^counters(name).value = current + 1
+pub fn bump(name: string) {
+    transaction {
+        const current = ^counters[name].value ?? 0
+        ^counters[name].value = current + 1
+    }
+}
 ```
 
 The block stages durable writes; reads in the same transaction observe earlier
@@ -72,12 +75,14 @@ committed value, read it into a local inside the region and return that local af
 the block:
 
 ```mw
-pub fn setAndReport(name: string, v: int): int?
+pub fn setAndReport(name: string, v: int): int? {
     var reported: int? = absent
-    transaction
-        ^counters(name) = Counter(value: v)
-        reported = ^counters(name).value
+    transaction {
+        ^counters[name] = Counter(value: v)
+        reported = ^counters[name].value
+    }
     return reported
+}
 ```
 
 The transaction ownership law is checked when the program image is verified: a

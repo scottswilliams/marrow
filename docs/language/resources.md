@@ -8,27 +8,32 @@ is used for local resource values and for entries attached to a durable store.
 ```mw
 module docs::resources
 
-resource Book
+resource Book {
     required title: string
     required author: string
     subtitle: string
 
-    details
+    details {
         pages: int
         language: string
+    }
 
-    tags(pos: int): string
+    tags[pos: int]: string
 
-    notes(noteId: string)
+    notes[noteId: string] {
         required text: string
         createdAt: instant
+    }
+}
 
-fn draft(title: string, author: string): Book
+fn draft(title: string, author: string): Book {
     return Book(title: title, author: author)
+}
 
-pub fn display(): string
+pub fn display(): string {
     const book = draft("Small Gods", "Terry Pratchett")
     return book.subtitle ?? book.title
+}
 ```
 
 A scalar member has `name: Type` form. Fields are sparse by default: the member

@@ -17,15 +17,15 @@ resolve the same optional values:
 ```mw
 module docs::builtins_presence
 
-fn maybeNumber(enabled: bool): int?
-    if enabled
-        return 4
+fn maybeNumber(enabled: bool): int? {
+    if enabled { return 4 }
     return absent
+}
 
-pub fn number(enabled: bool): int
-    if exists(maybeNumber(enabled))
-        return maybeNumber(enabled) ?? 0
+pub fn number(enabled: bool): int {
+    if exists(maybeNumber(enabled)) { return maybeNumber(enabled) ?? 0 }
     return 0
+}
 ```
 
 A direct optional-producing call may have effects. When presence resolution
@@ -73,14 +73,17 @@ honors the string concatenation ceiling.
 ```mw
 module docs::text_floor
 
-pub fn isBlank(s: string): bool
+pub fn isBlank(s: string): bool {
     return isEmpty(trim(s))
+}
 
-pub fn fieldCount(row: string): int
+pub fn fieldCount(row: string): int {
     return length(split(row, ","))
+}
 
-pub fn rejoin(row: string): string
+pub fn rejoin(row: string): string {
     return join(split(row, ","), ";")
+}
 ```
 
 ## Collections
@@ -96,11 +99,12 @@ semantics.
 ```mw
 module docs::collection_builtins
 
-pub fn size(): int
-    var xs: List[int] = List()
+pub fn size(): int {
+    var xs: List<int> = List()
     xs = append(xs, 1)
     xs = append(xs, 2)
     return length(xs)
+}
 ```
 
 `isEmpty` also accepts a `string` (the text floor form above). `length` reports a
@@ -126,14 +130,16 @@ list.)
 ```mw
 module docs::builtins_append
 
-resource Book
+resource Book {
     required title: string
-    tags(pos: int): string
+    tags[pos: int]: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn addTag(id: Id(^books), tag: string): int
-    return append(^books(id).tags, tag)
+pub fn addTag(id: Id(^books), tag: string): int {
+    return append(^books[id].tags, tag)
+}
 ```
 
 `append` is a write even though it returns a value, so it is legal only in a

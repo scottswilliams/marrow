@@ -1,33 +1,40 @@
-; Layer: runtime (value equality over the C02 domain). Nominal, `Option`,
-; `Result`, and user-`enum` equality on the beta stack; nominal-`type` and the
-; built-in generics are beta-only, so this fixture is not in the
-; preserved-semantics manifest and has no oracle pairing. The VM's `Eq*` opcodes
-; agree with the kernel value-equality owner (pinned in
-; `crates/marrow-vm/tests/equality_agreement.rs`); these cases exercise the
-; language-level verdicts.
+// Layer: runtime (value equality over the C02 domain). Nominal, `Option`,
+// `Result`, and user-`enum` equality on the beta stack; nominal-`type` and the
+// built-in generics are beta-only, so this fixture is not in the
+// preserved-semantics manifest and has no oracle pairing. The VM's `Eq*` opcodes
+// agree with the kernel value-equality owner (pinned in
+// `crates/marrow-vm/tests/equality_agreement.rs`); these cases exercise the
+// language-level verdicts.
 module eq_checks
 
-test "a nominal compares by its base int"
+test "a nominal compares by its base int" {
     assert eq::nominalEqual(30, 30)
     assert not eq::nominalEqual(30, 31)
+}
 
-test "a user enum compares by variant"
+test "a user enum compares by variant" {
     assert eq::colorEqual()
     assert eq::colorDiffer()
+}
 
-test "Option none equals Option none"
+test "Option none equals Option none" {
     assert eq::optionNoneEqual()
+}
 
-test "Option some compares by payload"
+test "Option some compares by payload" {
     assert eq::optionSomeEqual()
     assert eq::optionSomeDiffer()
+}
 
-test "Option none and some are distinct"
+test "Option none and some are distinct" {
     assert eq::optionNoneVsSome()
+}
 
-test "nested Option distinguishes depth"
+test "nested Option distinguishes depth" {
     assert eq::nestedOption()
+}
 
-test "Result compares by variant and payload"
+test "Result compares by variant and payload" {
     assert eq::resultOkEqual()
     assert eq::resultOkVsErr()
+}

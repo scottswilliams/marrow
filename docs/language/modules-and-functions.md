@@ -57,13 +57,14 @@ path-derived name even though the script is not importable.
 ```mw
 module docs::functions
 
-fn maybeTitle(show: bool): string?
-    if show
-        return "Marrow"
+fn maybeTitle(show: bool): string? {
+    if show { return "Marrow" }
     return absent
+}
 
-pub fn title(show: bool): string
+pub fn title(show: bool): string {
     return maybeTitle(show) ?? "(hidden)"
+}
 ```
 
 Parameters are named and typed. An omitted return type means the function
@@ -89,13 +90,16 @@ local annotations of the body.
 ```mw
 module docs::generics
 
-fn identity[T](x: T): T
+fn identity<T>(x: T): T {
     return x
+}
 
-fn first[T](xs: List[T]): T?
-    for x in xs
+fn first<T>(xs: List<T>): T? {
+    for x in xs {
         return x
+    }
     return absent
+}
 ```
 
 Type arguments are inferred from the call's arguments; there is no explicit
@@ -117,17 +121,19 @@ carry one closed constraint that licenses a family of operators over it:
 ```mw
 module docs::constrained
 
-fn includes[T supports equality](xs: List[T], target: T): bool
-    for x in xs
-        if x == target
-            return true
+fn includes<T supports equality>(xs: List<T>, target: T): bool {
+    for x in xs {
+        if x == target { return true }
+    }
     return false
+}
 
-fn firstBigger[T supports order](xs: List[T], threshold: T): T?
-    for x in xs
-        if x > threshold
-            return x
+fn firstBigger<T supports order>(xs: List<T>, threshold: T): T? {
+    for x in xs {
+        if x > threshold { return x }
+    }
     return absent
+}
 ```
 
 A generic body is checked once against its parameters' constraints, so using an
@@ -155,14 +161,16 @@ the replacement value.
 ```mw
 module docs::parameters
 
-fn increment(count: int): int
+fn increment(count: int): int {
     return count + 1
+}
 
-pub fn example(): int
+pub fn example(): int {
     var count = 0
     count = increment(count)
     count = increment(count)
     return count
+}
 ```
 
 A durable root, durable child layer, or index branch is not a by-value

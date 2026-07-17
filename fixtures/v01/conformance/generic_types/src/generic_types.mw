@@ -1,121 +1,133 @@
 module generic_types
 
-; A rank-1 generic struct: each `Name[Args]` use monomorphizes a distinct value
-; type, and the field types come from the substituted parameters.
-struct Pair[A, B]
+// A rank-1 generic struct: each `Name[Args]` use monomorphizes a distinct value
+// type, and the field types come from the substituted parameters.
+struct Pair<A, B> {
     first: A
     second: B
+}
 
-; A single-parameter generic struct.
-struct Wrapper[T]
+// A single-parameter generic struct.
+struct Wrapper<T> {
     value: T
+}
 
-; A generic enum: variants may be payloadless or carry the type parameter.
-enum Box[T]
+// A generic enum: variants may be payloadless or carry the type parameter.
+enum Box<T> {
     empty
     full(value: T)
+}
 
-; A constrained generic struct: `supports order` licenses `<`/`>` over the
-; parameter, and every instantiation revalidates the concrete argument.
-struct Ordered[T supports order]
+// A constrained generic struct: `supports order` licenses `<`/`>` over the
+// parameter, and every instantiation revalidates the concrete argument.
+struct Ordered<T supports order> {
     lo: T
     hi: T
+}
 
-; A generic function whose parameter is itself a generic type: inference unifies
-; `Pair[A, B]` against the argument's instantiation.
-fn firstOf[A, B](p: Pair[A, B]): A
+// A generic function whose parameter is itself a generic type: inference unifies
+// `Pair[A, B]` against the argument's instantiation.
+fn firstOf<A, B>(p: Pair<A, B>): A {
     return p.first
+}
 
-; Generic types nest: a field or argument may itself be a generic instantiation.
-fn wrapPair[A, B](a: A, b: B): Wrapper[Pair[A, B]]
+// Generic types nest: a field or argument may itself be a generic instantiation.
+fn wrapPair<A, B>(a: A, b: B): Wrapper<Pair<A, B>> {
     return Wrapper(value: Pair(first: a, second: b))
+}
 
-test "a generic struct is constructed and its fields read"
+test "a generic struct is constructed and its fields read" {
     const p = Pair(first: 7, second: "hello")
     assert p.first == 7
     assert p.second == "hello"
+}
 
-test "the same generic struct at a different argument set is distinct"
+test "the same generic struct at a different argument set is distinct" {
     const q = Pair(first: true, second: 3)
     assert q.first
     assert q.second == 3
+}
 
-test "a single-parameter generic struct round-trips its value"
+test "a single-parameter generic struct round-trips its value" {
     const w = Wrapper(value: 42)
     assert w.value == 42
+}
 
-test "a generic enum constructs and matches its payload variant"
+test "a generic enum constructs and matches its payload variant" {
     const b = Box::full(value: 9)
     var out: int = 0
-    match b
-        empty
-            out = -1
-        full(v)
-            out = v
+    match b {
+        empty => out = -1
+        full(v) => out = v
+    }
     assert out == 9
+}
 
-test "a constrained generic struct instantiates at an ordering type"
+test "a constrained generic struct instantiates at an ordering type" {
     const o = Ordered(lo: 3, hi: 9)
     assert o.lo < o.hi
+}
 
-test "a generic function takes a generic-typed parameter"
+test "a generic function takes a generic-typed parameter" {
     const p = Pair(first: 100, second: "x")
     assert firstOf(p) == 100
+}
 
-test "generic types nest through construction and field access"
+test "generic types nest through construction and field access" {
     const w = wrapPair(1, "two")
     assert w.value.first == 1
     assert w.value.second == "two"
+}
 
-; Option and Result are ordinary generic enums the toolchain defines; the
-; reserved constructors, `match`, prefix `try`, and nesting are unchanged.
-fn firstDigit(text: string): Result[int, string]
-    if text == "1"
-        return ok(1)
+// Option and Result are ordinary generic enums the toolchain defines; the
+// reserved constructors, `match`, prefix `try`, and nesting are unchanged.
+fn firstDigit(text: string): Result<int, string> {
+    if text == "1" { return ok(1) }
     return err("not one")
+}
 
-fn useTry(text: string): Result[int, string]
+fn useTry(text: string): Result<int, string> {
     const n = try firstDigit(text)
     return ok(n + 100)
+}
 
-test "Option behaves as a generic enum"
-    const present: Option[int] = some(5)
-    const missing: Option[int] = none
+test "Option behaves as a generic enum" {
+    const present: Option<int> = some(5)
+    const missing: Option<int> = none
     var total: int = 0
-    match present
-        none
-            total = -1
-        some(v)
-            total = v
+    match present {
+        none => total = -1
+        some(v) => total = v
+    }
     assert total == 5
-    match missing
-        none
-            total = 0
-        some(v)
-            total = v
+    match missing {
+        none => total = 0
+        some(v) => total = v
+    }
     assert total == 0
+}
 
-test "Option nests and stays distinct across nesting depth"
-    const inner: Option[int] = some(1)
-    const outer: Option[Option[int]] = some(inner)
-    match outer
-        none
-            assert false
-        some(v)
-            match v
-                none
-                    assert false
-                some(k)
-                    assert k == 1
+test "Option nests and stays distinct across nesting depth" {
+    const inner: Option<int> = some(1)
+    const outer: Option<Option<int>> = some(inner)
+    match outer {
+        none => assert false
+        some(v) => {
+            match v {
+                none => assert false
+                some(k) => assert k == 1
+            }
+        }
+    }
+}
 
-test "Result and prefix try are unchanged"
-    match useTry("1")
-        ok(v)
-            assert v == 101
-        err(e)
-            assert false
-    match useTry("x")
-        ok(v)
-            assert false
-        err(e)
-            assert e == "not one"
+test "Result and prefix try are unchanged" {
+    match useTry("1") {
+        ok(v) => assert v == 101
+        err(e) => assert false
+    }
+    match useTry("x") {
+        ok(v) => assert false
+        err(e) => assert e == "not one"
+    }
+}

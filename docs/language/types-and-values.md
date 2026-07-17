@@ -34,17 +34,20 @@ the project alongside resource names.
 module docs::aliases
 
 alias Count = int
+
 alias MaybeCount = Count?
 
-fn maybe(present: bool): MaybeCount
-    if present
-        return 1
+fn maybe(present: bool): MaybeCount {
+    if present { return 1 }
     return absent
+}
 
-pub fn firstOr(present: bool, fallback: Count): Count
-    if const value = maybe(present)
+pub fn firstOr(present: bool, fallback: Count): Count {
+    if const value = maybe(present) {
         return value
+    }
     return fallback
+}
 ```
 
 Aliases may chain; a cyclic chain reports `check.recursion` at each alias on
@@ -108,14 +111,17 @@ module docs::nominal
 
 type Age: int in 0..=150 supports add, subtract
 
-pub fn older(a: Age, years: int): Age
+pub fn older(a: Age, years: int): Age {
     return a + years
+}
 
-pub fn gap(a: Age, b: Age): int
+pub fn gap(a: Age, b: Age): int {
     return a - b
+}
 
-pub fn tryAge(n: int): Age?
+pub fn tryAge(n: int): Age? {
     return Age.checked(n)
+}
 ```
 
 Nominal values are ordinary copied values with the same value semantics as
@@ -180,14 +186,17 @@ no scaling a `duration` by an `int`, and no calendar-month or calendar-year unit
 ```mw
 module docs::temporal
 
-pub fn dueDate(assigned: date, leadDays: int): date
+pub fn dueDate(assigned: date, leadDays: int): date {
     return date_add_days(assigned, leadDays)
+}
 
-pub fn isOverdue(due: date, onDay: date): bool
+pub fn isOverdue(due: date, onDay: date): bool {
     return due < onDay
+}
 
-pub fn reminderAt(deadline: instant, lead: duration): instant
+pub fn reminderAt(deadline: instant, lead: duration): instant {
     return deadline - lead
+}
 ```
 
 ### Order and keys
@@ -271,13 +280,15 @@ conversions (see [Temporal Types](#temporal-types)).
 ```mw
 module docs::conversion
 
-pub fn normalized(raw: string): string
+pub fn normalized(raw: string): string {
     const amount: int = int(raw)
     const rendered: string = string(amount)
     return rendered
+}
 
-pub fn checkedCode(raw: string): ErrorCode
+pub fn checkedCode(raw: string): ErrorCode {
     return ErrorCode(raw)
+}
 ```
 
 | Target | Accepted source values |
@@ -328,16 +339,18 @@ and optional standard-library functions. Four constructs consume them:
 ```mw
 module docs::optionals
 
-fn maybeLabel(enabled: bool): string?
-    if enabled
-        return "enabled"
+fn maybeLabel(enabled: bool): string? {
+    if enabled { return "enabled" }
     return absent
+}
 
-pub fn show(enabled: bool)
-    if const label = maybeLabel(enabled)
+pub fn show(enabled: bool) {
+    if const label = maybeLabel(enabled) {
         print(label)
-    else
+    } else {
         print("disabled")
+    }
+}
 ```
 
 The optional-producing call is evaluated once. An optional expression used as
@@ -355,19 +368,23 @@ even when `title` is declared `required`.
 ```mw
 module docs::presence
 
-resource Book
+resource Book {
     required title: string
     subtitle: string
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn display(id: int)
-    if exists(^books(id).subtitle)
-        print(^books(id).subtitle)
+pub fn display(id: int) {
+    if exists(^books[id].subtitle) {
+        print(^books[id].subtitle)
+    }
 
-    if const book = ^books(id)
+    if const book = ^books[id] {
         print(book.title)
         print(book.subtitle ?? "(no subtitle)")
+    }
+}
 ```
 
 Within the first branch, the exact guarded place is present. Within the second,
@@ -402,19 +419,18 @@ members exactly, binding the payload positionally:
 ```mw
 module docs::optionvalue
 
-fn firstEven(a: int, b: int): Option[int]
-    if a % 2 == 0
-        return some(a)
-    if b % 2 == 0
-        return some(b)
+fn firstEven(a: int, b: int): Option<int> {
+    if a % 2 == 0 { return some(a) }
+    if b % 2 == 0 { return some(b) }
     return none
+}
 
-pub fn describe(o: Option[int]): string
-    match o
-        some(v)
-            return "some"
-        none
-            return "none"
+pub fn describe(o: Option<int>): string {
+    match o {
+        some(v) => return "some"
+        none => return "none"
+    }
+}
 ```
 
 Nested `Option` is distinct: `none`, `some(none)`, and `some(some(v))` are three
@@ -459,15 +475,17 @@ absent or a present value — never a stored empty — a sparse field typed
 ```mw
 module docs::sparselocal
 
-resource Box
+resource Box {
     required id: int
     note: string
+}
 
-pub fn label(): string
+pub fn label(): string {
     var b = Box(id: 1)
     b.note = "draft"
     unset b.note
     return b.note ?? "unlabeled"
+}
 ```
 
 A field type is a scalar, a closed enum value type (a user `enum` or a built-in
@@ -487,9 +505,10 @@ inline, and named `name: Type` over any value type. Unlike a resource, a struct 
 not durable and has no keyed layers, groups, or sparse fields.
 
 ```mw
-struct Point
+struct Point {
     x: int
     y: int
+}
 ```
 
 A struct value is built with a named-only literal that provides every field
@@ -498,6 +517,7 @@ field declaration order:
 
 ```mw
 const p = Point(x: 3, y: 4)
+
 const q = Point(y: 4, x: 3)
 ```
 
@@ -535,13 +555,15 @@ monomorphized value type; the type arguments substitute for the parameters in th
 fields (a struct) or variant payloads (an enum).
 
 ```mw
-struct Pair[A, B]
+struct Pair<A, B> {
     first: A
     second: B
+}
 
-enum Box[T]
+enum Box<T> {
     empty
     full(value: T)
+}
 ```
 
 A type parameter is a bare name, optionally carrying one closed constraint —
@@ -558,8 +580,9 @@ field or payload values, so every parameter must appear in a value the construct
 supplies:
 
 ```mw
-const p = Pair(first: 7, second: "hello")   ; Pair[int, string]
-const b = Box::full(value: 9)               ; Box[int]
+const p = Pair(first: 7, second: "hello") // Pair[int, string]
+
+const b = Box::full(value: 9) // Box[int]
 ```
 
 A parameter that no value determines cannot be inferred at the construction site and
@@ -615,19 +638,22 @@ rather than mutating in place; a `var` binding is reassigned to keep it.
 ```mw
 module docs::collections
 
-pub fn total(): int
-    var xs: List[int] = List()
+pub fn total(): int {
+    var xs: List<int> = List()
     xs = append(xs, 10)
     xs = append(xs, 20)
     var sum: int = 0
-    for x in xs
+    for x in xs {
         sum = sum + x
+    }
     return sum
+}
 
-pub fn lookup(name: string): int
-    var scores: Map[string, int] = Map()
+pub fn lookup(name: string): int {
+    var scores: Map<string, int> = Map()
     scores = insert(scores, "ada", 10)
     return get(scores, name) ?? 0
+}
 ```
 
 A `List` iterates its elements in insertion order. A `Map` iterates in ascending

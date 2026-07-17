@@ -1,21 +1,27 @@
 module optional
 
-pub fn orDefaultAbsent(): int
+pub fn orDefaultAbsent(): int {
     const x: int? = absent
     return x ?? 5
+}
 
-pub fn orDefaultPresent(): int
+pub fn orDefaultPresent(): int {
     const x: int? = 7
     return x ?? 5
+}
 
-pub fn ifConstPresent(): int
+pub fn ifConstPresent(): int {
     const x: int? = 7
-    if const v = x
+    if const v = x {
         return v
+    }
     return 0
+}
 
-pub fn ifConstAbsent(): int
+pub fn ifConstAbsent(): int {
     const x: int? = absent
-    if const v = x
+    if const v = x {
         return v
+    }
     return 0
+}

@@ -1,24 +1,28 @@
 module accounts
 
-resource Account
+resource Account {
     required id: int
     required kind: Access
     balance: Money
     owner: Name
-    note: Option[string]
+    note: Option<string>
+}
 
-struct Name
+struct Name {
     first: string
     last: string
+}
 
-enum Access
+enum Access {
     reader
     writer
     admin
+}
 
 type Money: int in 0..=1000000
 
-store ^accounts(id: int): Account
+store ^accounts[id: int]: Account
 
-pub fn label(): string
+pub fn label(): string {
     return "accounts"
+}

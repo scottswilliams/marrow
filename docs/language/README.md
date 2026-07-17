@@ -18,22 +18,24 @@ functions that use it.
 ```mw
 module app::tasks
 
-resource Task
+resource Task {
     required title: string
     done: bool
+}
 
-store ^tasks(id: int): Task
+store ^tasks[id: int]: Task
 
-pub fn add(id: Id(^tasks), title: string): Id(^tasks)
-    ^tasks(id).title = title
+pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
+    ^tasks[id].title = title
     return id
+}
 
-pub fn complete(id: Id(^tasks)): bool
-    if not exists(^tasks(id))
-        return false
+pub fn complete(id: Id(^tasks)): bool {
+    if not exists(^tasks[id]) { return false }
 
-    ^tasks(id).done = true
+    ^tasks[id].done = true
     return true
+}
 ```
 
 `Task.title` is required. Creating an entry by field assignment therefore

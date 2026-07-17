@@ -1,7 +1,8 @@
-resource Book
+resource Book {
     required title: string
     isbn: string
-store ^books(id: int): Book
+}
 
-    index byIsbn(isbn) unique
-
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}

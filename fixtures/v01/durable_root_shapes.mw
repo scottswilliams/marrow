@@ -1,20 +1,25 @@
 module school
 
-resource Settings
+resource Settings {
     required locale: string
+}
 
-resource Counter
+resource Counter {
     required value: int
+}
 
-resource Enrollment
+resource Enrollment {
     required grade: int
+}
 
 store ^settings: Settings
 
-store ^counters(name: string): Counter
+store ^counters[name: string]: Counter
 
-store ^enrollments(student: string, course: string): Enrollment
+store ^enrollments[student: string, course: string]: Enrollment
 
-pub fn bump(name: string)
-    transaction
-        ^counters(name).value = 1
+pub fn bump(name: string) {
+    transaction {
+        ^counters[name].value = 1
+    }
+}

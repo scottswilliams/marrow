@@ -1,36 +1,46 @@
-; A durable counter CLI: the T01 end-to-end tracer app. Each export is a domain
-; operation over one keyed durable resource, with the single owned transaction.
+// A durable counter CLI: the T01 end-to-end tracer app. Each export is a domain
+// operation over one keyed durable resource, with the single owned transaction.
 
-resource Counter
+resource Counter {
     required value: int
     label: string
+}
 
-store ^counters(name: string): Counter
+store ^counters[name: string]: Counter
 
-pub fn set(name: string, v: int)
-    transaction
-        ^counters(name) = Counter(value: v)
+pub fn set(name: string, v: int) {
+    transaction {
+        ^counters[name] = Counter(value: v)
+    }
+}
 
-pub fn get(name: string): int?
-    return ^counters(name).value
+pub fn get(name: string): int? {
+    return ^counters[name].value
+}
 
-pub fn bump(name: string)
-    transaction
-        const current = ^counters(name).value ?? 0
-        ^counters(name).value = current + 1
+pub fn bump(name: string) {
+    transaction {
+        const current = ^counters[name].value ?? 0
+        ^counters[name].value = current + 1
+    }
+}
 
-pub fn label(name: string, text: string)
-    transaction
-        ^counters(name).label = text
+pub fn label(name: string, text: string) {
+    transaction {
+        ^counters[name].label = text
+    }
+}
 
-pub fn remove(name: string)
-    transaction
-        delete ^counters(name)
+pub fn remove(name: string) {
+    transaction {
+        delete ^counters[name]
+    }
+}
 
-pub fn total(): int
+pub fn total(): int {
     var sum = 0
-    for k in ^counters at most 1000
-        sum = sum + (^counters(k).value ?? 0)
-    on more
-        return -1
+    for k in ^counters at most 1000 {
+        sum = sum + (^counters[k].value ?? 0)
+    } on more return -1
     return sum
+}

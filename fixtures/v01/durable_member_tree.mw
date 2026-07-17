@@ -1,18 +1,22 @@
 module library
 
-resource Book
+resource Book {
     required title: string
     required author: string
 
-    details
+    details {
         pages: int
         language: string
+    }
 
-    notes(noteId: string)
+    notes[noteId: string] {
         required text: string
         createdAt: instant
+    }
+}
 
-store ^books(id: int): Book
+store ^books[id: int]: Book
 
-pub fn label(): string
+pub fn label(): string {
     return "books"
+}

@@ -1,28 +1,37 @@
 module arith
 
-pub fn sub(a: int, b: int): int
+pub fn sub(a: int, b: int): int {
     return a - b
+}
 
-pub fn mul(a: int, b: int): int
+pub fn mul(a: int, b: int): int {
     return a * b
+}
 
-pub fn remDividendNeg(): int
+pub fn remDividendNeg(): int {
     return -7 % 3
+}
 
-pub fn remDivisorNeg(): int
+pub fn remDivisorNeg(): int {
     return 7 % -3
+}
 
-pub fn bigInRange(): int
+pub fn bigInRange(): int {
     return 3000000000 * 3000000000
+}
 
-pub fn negMax(): int
+pub fn negMax(): int {
     return -9223372036854775807
+}
 
-pub fn eq(a: int, b: int): bool
+pub fn eq(a: int, b: int): bool {
     return a == b
+}
 
-pub fn le(a: int, b: int): bool
+pub fn le(a: int, b: int): bool {
     return a <= b
+}
 
-pub fn andOr(a: bool, b: bool): bool
+pub fn andOr(a: bool, b: bool): bool {
     return a and b or not a
+}

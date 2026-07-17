@@ -1,12 +1,13 @@
 module a::b
 
-pub enum Status
+pub enum Status {
     active
     archived
+}
 
-pub fn take(s: a::b::Status): int
-    match s
-        active
-            return 1
-        archived
-            return 2
+pub fn take(s: a::b::Status): int {
+    match s {
+        active => return 1
+        archived => return 2
+    }
+}

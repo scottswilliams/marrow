@@ -1,44 +1,63 @@
-resource Enrollment
+resource Enrollment {
     required status: string
     required student: string
     required course: string
-store ^enrollments(studentId: string, courseId: string): Enrollment
+}
 
-    index byStatus(status, studentId, courseId)
+store ^enrollments[studentId: string, courseId: string]: Enrollment {
+    index byStatus[status, studentId, courseId]
+}
 
-pub fn enroll(s: string, c: string, st: string)
+pub fn enroll(s: string, c: string, st: string) {
     var enrollment: Enrollment
     enrollment.status = st
     enrollment.student = s
     enrollment.course = c
-    ^enrollments(s, c) = enrollment
+    ^enrollments[s, c] = enrollment
+}
 
-pub fn activeStatuses()
-    for id in ^enrollments.byStatus("active")
-        if const status = ^enrollments(id).status
+pub fn activeStatuses() {
+    for id in ^enrollments.byStatus["active"] {
+        if const status = ^enrollments[id].status {
             print(status)
+        }
+    }
+}
 
-pub fn activeEnrollmentsDirect()
-    for id, enrollment in ^enrollments.byStatus("active")
+pub fn activeEnrollmentsDirect() {
+    for id, enrollment in ^enrollments.byStatus["active"] {
         print($"{enrollment.student}:{enrollment.course}")
+    }
+}
 
-pub fn activeCoursesForStudent(student: string)
-    for id, enrollment in ^enrollments.byStatus("active", student)
+pub fn activeCoursesForStudent(student: string) {
+    for id, enrollment in ^enrollments.byStatus["active", student] {
         print(enrollment.course)
+    }
+}
 
-pub fn activeCourseExact(student: string, course: string)
-    for id, enrollment in ^enrollments.byStatus("active", student, course)
+pub fn activeCourseExact(student: string, course: string) {
+    for id, enrollment in ^enrollments.byStatus["active", student, course] {
         print(enrollment.course)
+    }
+}
 
-pub fn activeCourseExactPair(student: string, course: string)
-    for id, enrollment in ^enrollments.byStatus("active", student, course)
-        if const savedCourse = ^enrollments(id).course
+pub fn activeCourseExactPair(student: string, course: string) {
+    for id, enrollment in ^enrollments.byStatus["active", student, course] {
+        if const savedCourse = ^enrollments[id].course {
             print($"{savedCourse}:{enrollment.course}")
+        }
+    }
+}
 
-pub fn activeCourseExactKeys(student: string, course: string)
-    for id in ^enrollments.byStatus("active", student, course)
-        if const savedCourse = ^enrollments(id).course
+pub fn activeCourseExactKeys(student: string, course: string) {
+    for id in ^enrollments.byStatus["active", student, course] {
+        if const savedCourse = ^enrollments[id].course {
             print(savedCourse)
+        }
+    }
+}
 
-pub fn activeCourseExactCount(student: string, course: string): int
-    return count(^enrollments.byStatus("active", student, course))
+pub fn activeCourseExactCount(student: string, course: string): int {
+    return count(^enrollments.byStatus["active", student, course])
+}

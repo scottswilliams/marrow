@@ -1,42 +1,47 @@
 module orders
 
-enum Status
+enum Status {
     active
     archived
     banned
+}
 
-resource Order
+resource Order {
     required state: Status
-store ^orders(id: int): Order
+}
 
-pub fn seed()
+store ^orders[id: int]: Order
+
+pub fn seed() {
     var o: Order
     o.state = Status::archived
-    transaction
-        ^orders(1) = o
+    transaction {
+        ^orders[1] = o
+    }
+}
 
-; A match whose scrutinee is bound from a saved enum-field read must type as
-; `Status`, so the runtime dispatches through the enum's traversal table
-; instead of faulting on an Unknown scrutinee.
-pub fn matchLabel(): string
+// A match whose scrutinee is bound from a saved enum-field read must type as
+// `Status`, so the runtime dispatches through the enum's traversal table
+// instead of faulting on an Unknown scrutinee.
+pub fn matchLabel(): string {
     seed()
-    if const state = ^orders(1).state
-        match state
-            active
-                return "A"
-            archived
-                return "R"
-            banned
-                return "B"
+    if const state = ^orders[1].state {
+        match state {
+            active => return "A"
+            archived => return "R"
+            banned => return "B"
+        }
+    }
     return "missing"
+}
 
-; Nominal equality against a saved enum-field read: true for the seeded
-; member, false for a different member.
-pub fn equalsSeededMember(): string
+// Nominal equality against a saved enum-field read: true for the seeded
+// member, false for a different member.
+pub fn equalsSeededMember(): string {
     seed()
-    if const state = ^orders(1).state
-        if state == Status::archived
-            return "yes"
-        if state == Status::active
-            return "no"
+    if const state = ^orders[1].state {
+        if state == Status::archived { return "yes" }
+        if state == Status::active { return "no" }
+    }
     return "missing"
+}

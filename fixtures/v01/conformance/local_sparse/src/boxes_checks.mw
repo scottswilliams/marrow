@@ -1,32 +1,41 @@
-; Layer: check+runtime (local sparse product read/assign/unset). `resource`
-; locals, field assignment, and `unset` are beta-only and absent from the frozen
-; tag, so this fixture is not in the preserved-semantics manifest and has no
-; oracle pairing.
+// Layer: check+runtime (local sparse product read/assign/unset). `resource`
+// locals, field assignment, and `unset` are beta-only and absent from the frozen
+// tag, so this fixture is not in the preserved-semantics manifest and has no
+// oracle pairing.
 module boxes_checks
 
-test "a fresh sparse field reads absent"
+test "a fresh sparse field reads absent" {
     assert boxes::freshNoteOr("d") == "d"
+}
 
-test "assigning a sparse field sets it present"
+test "assigning a sparse field sets it present" {
     assert boxes::setNote() == "hello"
+}
 
-test "unset clears a present sparse field"
+test "unset clears a present sparse field" {
     assert boxes::setThenUnset() == "absent"
+}
 
-test "a constructor-carried sparse field is present"
+test "a constructor-carried sparse field is present" {
     assert boxes::constructedPresent() == "carried"
+}
 
-test "a bound record copy mutates independently"
+test "a bound record copy mutates independently" {
     assert boxes::copyIsIndependent() == "original-absent"
+}
 
-test "an Option-typed sparse field is absent when unset"
+test "an Option-typed sparse field is absent when unset" {
     assert boxes::classifyTag(0) == "absent"
+}
 
-test "an Option-typed sparse field holds a present none distinct from absent"
+test "an Option-typed sparse field holds a present none distinct from absent" {
     assert boxes::classifyTag(1) == "present-none"
+}
 
-test "an Option-typed sparse field holds a present some"
+test "an Option-typed sparse field holds a present some" {
     assert boxes::classifyTag(2) == "carried"
+}
 
-test "unset returns a present-none Option field to absent"
+test "unset returns a present-none Option field to absent" {
     assert boxes::unsetPresentNone() == "absent"
+}

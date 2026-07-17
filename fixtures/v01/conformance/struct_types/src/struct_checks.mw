@@ -1,83 +1,98 @@
-; Layer: check+runtime (dense `struct` value type: named-only construction,
-; field reads, value/copy semantics, and struct/enum-typed nested fields behind the
-; value-graph acyclicity proof). Struct declarations are beta-only syntax
-; absent from the frozen tag, so this fixture is not in the preserved-semantics
-; manifest and has no oracle pairing. Type names are project-global, so a struct
-; is referenced by its bare name; only functions take a module qualifier.
+// Layer: check+runtime (dense `struct` value type: named-only construction,
+// field reads, value/copy semantics, and struct/enum-typed nested fields behind the
+// value-graph acyclicity proof). Struct declarations are beta-only syntax
+// absent from the frozen tag, so this fixture is not in the preserved-semantics
+// manifest and has no oracle pairing. Type names are project-global, so a struct
+// is referenced by its bare name; only functions take a module qualifier.
 module struct_checks
 
-test "a struct literal reads its fields back in declaration order"
+test "a struct literal reads its fields back in declaration order" {
     const p = Point(x: 3, y: 4)
     assert p.x == 3
     assert p.y == 4
+}
 
-test "field arguments are order-independent"
+test "field arguments are order-independent" {
     const p = Point(y: 4, x: 3)
     assert p.x == 3
     assert p.y == 4
+}
 
-test "a struct binds to a local and travels by value"
+test "a struct binds to a local and travels by value" {
     const a = Point(x: 1, y: 2)
     const b = a
     assert b.x == 1
     assert b.y == 2
+}
 
-test "a var rebinds to a fresh struct value"
+test "a var rebinds to a fresh struct value" {
     var p = Point(x: 1, y: 2)
     p = Point(x: 5, y: 6)
     assert p.x == 5
     assert p.y == 6
+}
 
-test "helper exports read struct fields through the production path"
+test "helper exports read struct fields through the production path" {
     assert structs::pointX(7, 9) == 7
     assert structs::pointY(7, 9) == 9
     assert structs::sum(7, 9) == 16
+}
 
-test "a struct holds fields of several scalar types"
+test "a struct holds fields of several scalar types" {
     const person = Person(name: "Ada", age: 36, active: true)
     assert person.name == "Ada"
     assert person.age == 36
     assert person.active
+}
 
-test "a struct field typed through an alias reads as the aliased scalar"
+test "a struct field typed through an alias reads as the aliased scalar" {
     assert structs::personAge("Ada", 36) == 36
     assert structs::personActive(1)
+}
 
-test "a struct passes into and returns from a function by value"
+test "a struct passes into and returns from a function by value" {
     const p = Point(x: 1, y: 2)
     const q = structs::shift(p, 10, 20)
     assert q.x == 11
     assert q.y == 22
     assert p.x == 1
+}
 
-test "a returned struct is read back through the production path"
+test "a returned struct is read back through the production path" {
     const p = structs::makePoint(3, 4)
     assert p.x == 3
     assert p.y == 4
+}
 
-test "a struct threads through a nested call"
+test "a struct threads through a nested call" {
     assert structs::translateX(5, 7) == 12
+}
 
-test "a struct field may be a struct and reads through two hops"
+test "a struct field may be a struct and reads through two hops" {
     const s = Segment(a: Point(x: 1, y: 2), b: Point(x: 3, y: 4))
     assert s.a.x == 1
     assert s.b.y == 4
     assert structs::segmentBX(1, 2, 3, 4) == 3
+}
 
-test "a nested struct returns whole and reads back"
+test "a nested struct returns whole and reads back" {
     const t = structs::makeTagged()
     assert t.where.a.x == 1
     assert t.where.b.y == 4
+}
 
-test "a match over a struct's enum field resolves the enum"
+test "a match over a struct's enum field resolves the enum" {
     const t = structs::makeTagged()
     assert structs::tintName(t) == "bright"
+}
 
-test "a struct field may name a struct declared later in the file"
+test "a struct field may name a struct declared later in the file" {
     const w = Wrap(leaf: Leaf(v: 7))
     assert w.leaf.v == 7
     assert structs::wrapValue(9) == 9
+}
 
-test "nested equality compares payload structs field-wise"
+test "nested equality compares payload structs field-wise" {
     assert structs::sameBoxedPoint(1, 2, 1, 2)
     assert not structs::sameBoxedPoint(1, 2, 1, 9)
+}
