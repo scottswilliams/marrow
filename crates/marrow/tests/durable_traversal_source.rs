@@ -273,6 +273,42 @@ pub fn shelfOf(id: int): string {
     }
     return "absent"
 }
+
+pub fn firstPageLast(): int {
+    var last = -1
+    for k in ^books at most 2 {
+        last = k
+    } on more {
+        return last
+    }
+    return last
+}
+
+pub fn sumInPages(): int {
+    var total = 0
+    var cursor = 0
+    var started = false
+    var done = false
+    while not done {
+        var pageLast = cursor
+        var pageMore = false
+        for k in ^books at most 2 from cursor {
+            if k > cursor or not started {
+                total = total + k
+            }
+            pageLast = k
+        } on more {
+            pageMore = true
+        }
+        started = true
+        if pageMore {
+            cursor = pageLast
+        } else {
+            done = true
+        }
+    }
+    return total
+}
 "#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -495,6 +531,42 @@ fn an_exists_guarded_write_through_the_pin_is_admitted_and_scoped() {
             Some(Value::Text("B".into())),
         );
     }
+}
+
+#[test]
+fn a_resumable_paged_traversal_composes_at_most_a_captured_key_and_from() {
+    // A resumable traversal needs no new surface: it composes `at most N`, an ordinary
+    // captured last key (a frozen orderable scalar — no cursor type, no value/key domain),
+    // and the inclusive `from` resume. Seed five books and walk them in pages of two,
+    // resuming each page from the previous page's last key and skipping the inclusive
+    // boundary re-visit, so every id is summed exactly once.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    for id in [1i64, 2, 3, 4, 5] {
+        run(
+            &image,
+            &mut attachment,
+            "put",
+            vec![Value::Int(id), Value::Text("t".into())],
+        );
+    }
+
+    // The captured resume cursor after the first `at most 2` page is that page's last key.
+    assert_eq!(
+        run(&image, &mut attachment, "firstPageLast", vec![]),
+        Some(Value::Int(2))
+    );
+    // Resuming inclusively from that key visits the rest (2..5), witnessing that a captured
+    // key fed to `from` resumes the walk there.
+    assert_eq!(
+        run(&image, &mut attachment, "sumFrom", vec![Value::Int(2)]),
+        Some(Value::Int(14))
+    );
+    // The full paged walk covers every id exactly once: 1+2+3+4+5 = 15.
+    assert_eq!(
+        run(&image, &mut attachment, "sumInPages", vec![]),
+        Some(Value::Int(15))
+    );
 }
 
 /// Run a read-only export and return the dotted code of the runtime fault it raises.
