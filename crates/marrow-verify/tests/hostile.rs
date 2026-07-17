@@ -1590,6 +1590,167 @@ fn a_field_site_over_a_root_level_group_bearing_root_verifies() {
     );
 }
 
+/// A keyed root whose member tree and record slots run `[Group, Field]` — a group before
+/// a top-level field — while `field_order` selects whether the record's own slots run
+/// group-first (matching the members) or field-first. Sealing computes a group's slot as
+/// `field_count + ordinal`, which is only correct when every field precedes every group;
+/// a group-first member tree therefore mis-indexes unless the verifier refuses it. The
+/// group holds one sparse `pages:int` leaf; the top-level field is a required `title:text`.
+fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let book = draft.intern_string("Book");
+    let title = draft.intern_string("title");
+    let details_qualified = draft.intern_string("Book.details");
+    let details_pages = draft.intern_string("pages");
+    let details_record = draft.add_record_type(RecordTypeDef {
+        name: details_qualified,
+        fields: vec![FieldDef {
+            name: details_pages,
+            ty: ImageType::scalar(Scalar::Int),
+            required: false,
+        }],
+    });
+    let details = draft.intern_string("details");
+    let title_slot = FieldDef {
+        name: title,
+        ty: ImageType::scalar(Scalar::Text),
+        required: true,
+    };
+    let group_slot = FieldDef {
+        name: details,
+        ty: ImageType::Record {
+            idx: details_record.index(),
+            optional: false,
+        },
+        required: true,
+    };
+    // The record slots either run group-first (matching the forged member order, so the
+    // record/member tie itself passes and only the fields-first invariant refuses it) or
+    // field-first (the ordinary shape, exercised for contrast).
+    let fields = if record_group_first {
+        vec![group_slot, title_slot]
+    } else {
+        vec![title_slot, group_slot]
+    };
+    let record = draft.add_record_type(RecordTypeDef { name: book, fields });
+    let root = draft.intern_string("books");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members: vec![
+                DurableMemberDef::Group {
+                    id: LedgerIdBytes::from_bytes([0x20; 16]),
+                    members: vec![DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes([0x21; 16]),
+                        required: false,
+                        value: DurableValueShape::Scalar(Scalar::Int),
+                    }],
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Text),
+                },
+            ],
+        },
+    });
+    draft
+}
+
+#[test]
+fn a_root_member_tree_with_a_field_after_a_group_rejects() {
+    // The record↔member tie walks the member tree in its own order, so a forged
+    // `[Group, Field]` member tree with matching group-first record slots ties cleanly.
+    // Sealing then reads a group's slot as `field_count + ordinal`, which lands on the
+    // trailing scalar slot — an out-of-place index that would panic the sealer. The
+    // fields-first invariant is enforced at the tie: a field after a group is refused at
+    // the table phase, so every byte string yields VERIFIED or a typed rejection.
+    let rejection = verify(&group_before_field_draft(true).encode().unwrap().bytes)
+        .expect_err("a field member after a group member is refused");
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "root member tree places a field after a group"
+    );
+}
+
+/// A keyed root whose top-level field members and record field slots disagree in count:
+/// `member_fields` scalar-text field members against `record_fields` scalar-text record
+/// slots. The record/member tie counts these against each other, so an image with more
+/// members than slots (or more slots than members) is a count forgery the verifier
+/// refuses independent of the fields-first order check.
+fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let rec = draft.intern_string("Rec");
+    let fields = (0..record_fields)
+        .map(|i| FieldDef {
+            name: draft.intern_string(&format!("f{i}")),
+            ty: ImageType::scalar(Scalar::Text),
+            required: true,
+        })
+        .collect();
+    let record = draft.add_record_type(RecordTypeDef { name: rec, fields });
+    let root = draft.intern_string("recs");
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    let members = (0..member_fields)
+        .map(|i| DurableMemberDef::Field {
+            id: LedgerIdBytes::from_bytes([0x40 + i as u8; 16]),
+            required: true,
+            value: DurableValueShape::Scalar(Scalar::Text),
+        })
+        .collect();
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Int,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            indexes: Vec::new(),
+            members,
+        },
+    });
+    draft
+}
+
+#[test]
+fn a_root_member_tree_with_more_members_than_record_slots_rejects() {
+    // Two field members against one record slot: the tie runs out of slots on the second
+    // member and refuses the short-record forgery at the table phase.
+    let rejection = verify(&field_count_mismatch_draft(2, 1).encode().unwrap().bytes)
+        .expect_err("more members than record slots is refused");
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "root member tree has more top-level members than the record"
+    );
+}
+
+#[test]
+fn a_root_member_tree_with_fewer_members_than_record_slots_rejects() {
+    // One field member against two record slots: a slot is left over after the members are
+    // consumed and the leftover-slot forgery is refused at the table phase.
+    let rejection = verify(&field_count_mismatch_draft(1, 2).encode().unwrap().bytes)
+        .expect_err("fewer members than record slots is refused");
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "root member tree has fewer top-level members than the record"
+    );
+}
+
 /// The semantic path of the `details` group *node* (not its field leaf): application ->
 /// root placement -> group. A whole-group `GroupEntry` site addresses this node.
 fn group_entry_path() -> SemanticPath {

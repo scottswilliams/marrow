@@ -1633,6 +1633,12 @@ fn decode_key_tuple(
 /// fields to the group's direct fields one level down. A slot count that disagrees, a
 /// group slot that is not a group record, or any field mismatch is refused, so a hostile
 /// image cannot claim one identity while executing over a different field or group shape.
+///
+/// Field slots precede group slots: a `Field` member after any `Group` member is refused,
+/// so the record's leading scalar/widened field slots and its trailing group slots occupy
+/// disjoint contiguous ranges. Sealing relies on this — a group's slot is `field_count +
+/// ordinal` — so the fields-first invariant is verifier-enforced here rather than trusted
+/// from the compiler.
 fn tie_root_record(
     record_fields: &[DecodedField],
     members: &[DecodedMember],
@@ -1640,11 +1646,18 @@ fn tie_root_record(
     enums: &[DecodedEnum],
 ) -> Result<(), VerifyRejection> {
     let mut slots = record_fields.iter();
+    let mut seen_group = false;
     for member in members {
         match member {
             DecodedMember::Field {
                 value, required, ..
             } => {
+                if seen_group {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "root member tree places a field after a group",
+                    ));
+                }
                 let Some(slot) = slots.next() else {
                     return Err(reject(
                         VerifyPhase::Table,
@@ -1663,6 +1676,7 @@ fn tie_root_record(
                 members: group_members,
                 ..
             } => {
+                seen_group = true;
                 let Some(slot) = slots.next() else {
                     return Err(reject(
                         VerifyPhase::Table,
