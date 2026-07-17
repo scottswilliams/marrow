@@ -542,7 +542,7 @@ impl Sha256 {
 // from one call expression and one expected literal, so the asserted
 // expectation is shared in-language and cannot drift — the T01 expected-data
 // indirection is retired. Because the two surfaces delimit differently, a span
-// cannot compare across them (A3): the differential compares only the
+// cannot compare across them: the differential compares only the
 // surface-independent typed fields the law names — per paired case the outcome
 // and code, field by field. File paths, stack-specific declaration positions,
 // diagnostic prose, source spans, and incidental ordering are never compared.
@@ -735,7 +735,7 @@ const FIXTURES: &[Fixture] = &[
 /// outcome and the dotted code, field by field. A test record's `span` names a
 /// stack-specific position in that stack's own surface; the two stacks parse
 /// different surfaces (layout vs brace), so a span cannot compare across them
-/// (the A3 custody note) and is never a compared field. File paths, names,
+/// and is never a compared field. File paths, names,
 /// prose, spans, and key ordering are never fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ComparedTest {
