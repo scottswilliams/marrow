@@ -22,7 +22,7 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, FieldSchema, IndexComponent, IndexSchema, KernelFault};
+use super::{EntryValue, FieldSchema, GroupSchema, IndexComponent, IndexSchema, KernelFault};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_domain;
 use crate::equality::ValueDomain;
@@ -69,30 +69,42 @@ impl Planner {
         physical::stem_field_leaf(stem, field)
     }
 
-    /// Every cell key of the node with marker `stem` over `fields`: its marker
-    /// followed by one leaf per field, in order. The single owner of a node's own
-    /// footprint enumeration — it enumerates the marker and own field leaves only,
-    /// never a branch tag, so a node's keyed descendants are outside the footprint it
-    /// returns.
-    pub(super) fn node_cells(&self, stem: &[u8], fields: &[FieldSchema]) -> Vec<Vec<u8>> {
+    /// Every cell key of the node with marker `stem` over `fields` and `groups`: its
+    /// marker, one leaf per top-level field, then one leaf per field of each group under
+    /// that group's namespace, all in order. The single owner of a node's own footprint
+    /// enumeration — it enumerates the marker, own field leaves, and its groups' payload
+    /// leaves only, never a branch tag, so a node's keyed descendants stay outside the
+    /// footprint it returns while its groups (its own payload) are inside it.
+    pub(super) fn node_cells(
+        &self,
+        stem: &[u8],
+        fields: &[FieldSchema],
+        groups: &[GroupSchema],
+    ) -> Vec<Vec<u8>> {
         let mut cells = Vec::with_capacity(1 + fields.len());
         cells.push(stem.to_vec());
         for field in fields {
             cells.push(self.node_field_leaf(stem, &field.name));
         }
+        for group in groups {
+            let group_stem = physical::group_stem(stem, &group.name);
+            cells.extend(self.group_cells(&group_stem, &group.fields));
+        }
         cells
     }
 
-    /// The writes that establish the node with marker `stem` from `entry` over
-    /// `fields`: its marker then one leaf per present field, in order. Descendant-only
-    /// by construction — it writes the marker and the node's own leaves and nothing
-    /// beneath a branch tag, so giving a descendant-only node a payload never touches
-    /// its descendants. A value outside its codec range is a
-    /// [`KernelFault::ValueRange`] and no partial plan is returned.
+    /// The writes that establish the node with marker `stem` from `entry` over `fields`
+    /// and `groups`: its marker, then one leaf per present top-level field, then each
+    /// group's present leaves, in order. Descendant-only by construction — it writes the
+    /// marker and the node's own leaves (its top-level fields and its groups) and nothing
+    /// beneath a branch tag, so giving a descendant-only node a payload never touches its
+    /// keyed descendants. `entry.groups` aligns to `groups`. A value outside its codec
+    /// range is a [`KernelFault::ValueRange`] and no partial plan is returned.
     pub(super) fn node_write(
         &self,
         stem: &[u8],
         fields: &[FieldSchema],
+        groups: &[GroupSchema],
         entry: &EntryValue,
     ) -> Result<Vec<CellWrite>, KernelFault> {
         let mut writes = Vec::with_capacity(1 + entry.fields.len());
@@ -109,15 +121,25 @@ impl Planner {
                 ));
             }
         }
+        for (group, sub) in groups.iter().zip(&entry.groups) {
+            let group_stem = physical::group_stem(stem, &group.name);
+            writes.extend(self.group_write(&group_stem, &group.fields, sub)?);
+        }
         Ok(writes)
     }
 
-    /// The removals that erase the payload of the node with marker `stem` over
-    /// `fields`: its marker and every own field-leaf cell. It enumerates only the
-    /// node's own cells — never a branch tag — so a payload erase preserves the node's
-    /// keyed descendants (the descendant-preserving erase law).
-    pub(super) fn node_erase(&self, stem: &[u8], fields: &[FieldSchema]) -> Vec<CellWrite> {
-        self.node_cells(stem, fields)
+    /// The removals that erase the payload of the node with marker `stem` over `fields`
+    /// and `groups`: its marker, every own field-leaf cell, and every group-leaf cell. It
+    /// enumerates only the node's own cells — never a branch tag — so a payload erase
+    /// preserves the node's keyed descendants (the descendant-preserving erase law) while
+    /// dropping its groups' leaves (its own payload, per the exact-replacement law).
+    pub(super) fn node_erase(
+        &self,
+        stem: &[u8],
+        fields: &[FieldSchema],
+        groups: &[GroupSchema],
+    ) -> Vec<CellWrite> {
+        self.node_cells(stem, fields, groups)
             .into_iter()
             .map(CellWrite::Remove)
             .collect()
@@ -127,7 +149,7 @@ impl Planner {
     /// one leaf per field, in order, through the shared [`Self::node_field_leaf`] owner.
     /// A group is part of its entry's payload and carries no marker (its presence is the
     /// entry's), so — unlike [`Self::node_cells`] — a group's footprint is its field
-    /// leaves alone. Because every cell derives from `group_stem` (`<marker> 0x20
+    /// leaves alone. Because every cell derives from `group_stem` (`<marker> 0x28
     /// esc(group)`), the whole footprint is disjoint from the entry's top-level fields,
     /// its sibling groups, and its branch descendants. The single owner of a group's
     /// footprint enumeration.
@@ -292,7 +314,7 @@ mod tests {
         let key = KeyScalar::Int(1);
         let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
         assert_eq!(
-            planner.node_cells(&stem, &schema.fields),
+            planner.node_cells(&stem, &schema.fields, &schema.groups),
             vec![
                 stem.clone(),
                 planner.node_field_leaf(&stem, "value"),
@@ -312,9 +334,10 @@ mod tests {
         // Required value present, sparse label absent.
         let entry = EntryValue {
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(5))), None],
+            groups: Vec::new(),
         };
         let ops = planner
-            .node_write(&stem, &schema.fields, &entry)
+            .node_write(&stem, &schema.fields, &schema.groups, &entry)
             .expect("in range");
         assert_eq!(
             keys(&ops),
@@ -338,11 +361,11 @@ mod tests {
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
         let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
-        let ops = planner.node_erase(&stem, &schema.fields);
+        let ops = planner.node_erase(&stem, &schema.fields, &schema.groups);
         assert!(ops.iter().all(|op| matches!(op, CellWrite::Remove(_))));
         assert_eq!(
             keys(&ops),
-            keys_of(&planner.node_cells(&stem, &schema.fields)),
+            keys_of(&planner.node_cells(&stem, &schema.fields, &schema.groups)),
         );
     }
 
@@ -361,14 +384,15 @@ mod tests {
         let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(7)]);
         let fields = vec![FieldSchema::scalar("text", ScalarKind::Str, true)];
         assert_eq!(
-            planner.node_cells(&stem, &fields),
+            planner.node_cells(&stem, &fields, &[]),
             vec![stem.clone(), planner.node_field_leaf(&stem, "text")],
         );
         let entry = EntryValue {
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
+            groups: Vec::new(),
         };
         let writes = planner
-            .node_write(&stem, &fields, &entry)
+            .node_write(&stem, &fields, &[], &entry)
             .expect("in range");
         assert_eq!(
             keys(&writes),
@@ -377,9 +401,12 @@ mod tests {
                 planner.node_field_leaf(&stem, "text").as_slice(),
             ],
         );
-        let erases = planner.node_erase(&stem, &fields);
+        let erases = planner.node_erase(&stem, &fields, &[]);
         assert!(erases.iter().all(|op| matches!(op, CellWrite::Remove(_))));
-        assert_eq!(keys(&erases), keys_of(&planner.node_cells(&stem, &fields)));
+        assert_eq!(
+            keys(&erases),
+            keys_of(&planner.node_cells(&stem, &fields, &[]))
+        );
     }
 
     fn keys_of(cells: &[Vec<u8>]) -> Vec<&[u8]> {
@@ -416,6 +443,7 @@ mod tests {
         // A write plans only the present leaf, and never a marker put.
         let value = EntryValue {
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(384))), None],
+            groups: Vec::new(),
         };
         let writes = planner
             .group_write(&group_stem, &fields, &value)

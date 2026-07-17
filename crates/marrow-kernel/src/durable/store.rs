@@ -11,9 +11,9 @@ use super::plan::{CellWrite, IndexOp, Planner};
 use super::profile;
 use super::{
     AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, BranchHop, BranchSchema, CommitResult,
-    CreateOutcome, DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, IndexComponent,
-    IndexSchema, InvocationGrant, KernelFault, NextKey, Presence, Reopen, ReplaceOutcome,
-    SessionError, SiteSpec, SiteTarget, StoreSchema,
+    CreateOutcome, DemandCoverage, Denied, EntryValue, EraseOutcome, FieldSchema, GroupSchema,
+    IndexComponent, IndexSchema, InvocationGrant, KernelFault, NextKey, Presence, Reopen,
+    ReplaceOutcome, SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, ValueShape, decode_domain, encode_domain};
@@ -390,12 +390,19 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
         }
     };
     // A whole-entry site enumerates the container's footprint, so it carries the
-    // container's record; a field-target site carries its field plus the container
-    // record so a staged set can reconcile the node at commit.
+    // container's record and its groups; a field-target site carries its field plus the
+    // container record so a staged set can reconcile the node at commit. A root entry's
+    // footprint includes its groups (its own payload); a branch entry carries none, since
+    // group-in-branch is not yet executable.
     let target = match target {
-        SiteTarget::WholePayload | SiteTarget::BranchEntry(_) => {
-            AuthTarget::Entry(container_fields.to_vec())
-        }
+        SiteTarget::WholePayload => AuthTarget::Entry {
+            fields: container_fields.to_vec(),
+            groups: schema.groups.clone(),
+        },
+        SiteTarget::BranchEntry(_) => AuthTarget::Entry {
+            fields: container_fields.to_vec(),
+            groups: Vec::new(),
+        },
         SiteTarget::FieldLeaf(index) | SiteTarget::BranchField { field: index, .. } => {
             AuthTarget::field(&container_fields[*index as usize], container_fields)
         }
@@ -999,7 +1006,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         entry: EntryValue,
     ) -> Result<CreateOutcome, KernelFault> {
         let stem = node_stem(site, keys)?;
-        let fields = node_fields(site);
+        let (fields, groups) = node_shape(site);
         let planner = Planner::new();
         // Marker-first precedence through the one bounded prefix probe: a create over
         // a present payload is a no-op, while a create over an absent or
@@ -1022,7 +1029,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
                 } else {
                     Vec::new()
                 };
-                let ops = planner.node_write(&stem, fields, &entry)?;
+                let ops = planner.node_write(&stem, fields, groups, &entry)?;
                 self.apply(ops)?;
                 if maintains {
                     self.maintain_indexes(site, keys, &old, &entry.fields)?;
@@ -1038,7 +1045,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         entry: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
         let stem = node_stem(site, keys)?;
-        let fields = node_fields(site);
+        let (fields, groups) = node_shape(site);
         let planner = Planner::new();
         // A markerless node (absent or descendant-only) has no payload to replace, so
         // it reports Missing without touching any descendants (the compiler lowers a
@@ -1056,8 +1063,8 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         // Exact replacement through the one node-parametric planner: remove the node's
         // own cells, then write the new payload, so unlisted sparse leaves do not
         // survive and keyed branch descendants are left intact.
-        let mut ops = planner.node_erase(&stem, fields);
-        ops.extend(planner.node_write(&stem, fields, &entry)?);
+        let mut ops = planner.node_erase(&stem, fields, groups);
+        ops.extend(planner.node_write(&stem, fields, groups, &entry)?);
         self.apply(ops)?;
         if maintains {
             self.maintain_indexes(site, keys, &old, &entry.fields)?;
@@ -1087,7 +1094,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
         let stem = node_stem(site, keys)?;
-        let fields = node_fields(site);
+        let (fields, groups) = node_shape(site);
         let planner = Planner::new();
         let existed = read_raw(self.txn(), &stem)?.is_some();
         let maintains = self.maintains_root(site);
@@ -1096,10 +1103,11 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         } else {
             Vec::new()
         };
-        // Whole-node removal through the node-parametric planner: marker plus every own
-        // field leaf, by exact key — a branch tag is never enumerated, so a node's
-        // keyed descendants survive an erase of its payload.
-        let ops = planner.node_erase(&stem, fields);
+        // Whole-node removal through the node-parametric planner: marker, every own field
+        // leaf, and every group leaf, by exact key — a branch tag is never enumerated, so a
+        // node's keyed descendants survive an erase of its payload while its groups (its own
+        // payload) are swept.
+        let ops = planner.node_erase(&stem, fields, groups);
         self.apply(ops)?;
         if maintains {
             let new = vec![None; fields.len()];
@@ -1302,7 +1310,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
 /// leaves from it.
 fn site_record(site: &AuthorizedSite) -> &[FieldSchema] {
     match &site.target {
-        AuthTarget::Entry(fields) => fields,
+        AuthTarget::Entry { fields, .. } => fields,
         AuthTarget::Field { record, .. } => record,
         AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a node op targets a node site")
@@ -1334,17 +1342,19 @@ fn field_name(site: &AuthorizedSite, want_required: bool) -> &str {
             );
             name
         }
-        AuthTarget::Entry(_) | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
+        AuthTarget::Entry { .. } | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a field-target site")
         }
     }
 }
 
-/// The addressed node's own record fields for a whole-entry op. The verifier proves a
-/// whole-entry opcode targets an entry site, so a field target here is unreachable.
-fn node_fields(site: &AuthorizedSite) -> &[FieldSchema] {
+/// The addressed node's own record fields and groups for a whole-entry op — the whole
+/// payload footprint the consequence planner enumerates. The verifier proves a whole-entry
+/// opcode targets an entry site, so a field target here is unreachable. A branch node
+/// carries no group, so its group slice is empty.
+fn node_shape(site: &AuthorizedSite) -> (&[FieldSchema], &[GroupSchema]) {
     match &site.target {
-        AuthTarget::Entry(fields) => fields,
+        AuthTarget::Entry { fields, groups } => (fields, groups),
         AuthTarget::Field { .. } | AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a whole-entry op targets an entry site")
         }
@@ -1407,7 +1417,7 @@ fn op_presence<V: ReadView>(
 ) -> Result<Presence, KernelFault> {
     let stem = node_stem(site, keys)?;
     let physical_key = match &site.target {
-        AuthTarget::Entry(_) => stem,
+        AuthTarget::Entry { .. } => stem,
         AuthTarget::Field { name, .. } => physical::stem_field_leaf(&stem, name),
         AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a presence op targets a node site")
@@ -1443,7 +1453,7 @@ fn op_read_entry<V: ReadView>(
     tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
     let stem = node_stem(site, keys)?;
-    let fields = node_fields(site);
+    let (fields, groups) = node_shape(site);
     // Marker-first precedence through the one bounded prefix probe. A node with no
     // payload marker reads as payload-absent whether it is empty or a descendant-only
     // node (branch children, no payload). A markerless slot carrying an own field
@@ -1461,13 +1471,41 @@ fn op_read_entry<V: ReadView>(
         }
         SlotClass::Present => {}
     }
+    let values = read_record_leaves(cells, &stem, fields)?;
+    // A present entry materializes each of its groups (its own payload) under the group
+    // prefix, in schema order — a group's presence is the entry's, so a present entry
+    // always yields every group sub-record. A present entry missing a required group leaf
+    // is the same marker/payload mismatch as a missing required top-level field.
+    let mut group_values = Vec::with_capacity(groups.len());
+    for group in groups {
+        let group_stem = physical::group_stem(&stem, &group.name);
+        group_values.push(EntryValue {
+            fields: read_record_leaves(cells, &group_stem, &group.fields)?,
+            groups: Vec::new(),
+        });
+    }
+    Ok(Some(EntryValue {
+        fields: values,
+        groups: group_values,
+    }))
+}
+
+/// Read the ordered field-leaf values of the record whose leaves namespace under `stem`
+/// (an entry marker stem or a group stem): one slot per field, decoded to its shape. A
+/// present required leaf is mandatory — its absence under a present container is a
+/// marker/payload mismatch ([`KernelFault::Corruption`]) — while an absent sparse leaf
+/// reads vacant. The shared owner of top-level-field and group-leaf materialization, so
+/// both decode and enforce required-completeness identically.
+fn read_record_leaves<V: ReadView>(
+    cells: &V,
+    stem: &[u8],
+    fields: &[FieldSchema],
+) -> Result<Vec<Option<ValueDomain>>, KernelFault> {
     let mut values = Vec::with_capacity(fields.len());
     for field in fields {
-        let leaf = physical::stem_field_leaf(&stem, &field.name);
+        let leaf = physical::stem_field_leaf(stem, &field.name);
         match read_raw(cells, &leaf)? {
             None => {
-                // A present marker with a missing required field is a marker/field
-                // mismatch: corruption, never implicit absence.
                 if field.required {
                     return Err(KernelFault::Corruption);
                 }
@@ -1480,7 +1518,7 @@ fn op_read_entry<V: ReadView>(
             }
         }
     }
-    Ok(Some(EntryValue { fields: values }))
+    Ok(values)
 }
 
 /// The group name and its own record fields a group site addresses. The verifier proves
@@ -1488,7 +1526,7 @@ fn op_read_entry<V: ReadView>(
 fn group_target(site: &AuthorizedSite) -> (&str, &[FieldSchema]) {
     match &site.target {
         AuthTarget::Group { name, fields } => (name, fields),
-        AuthTarget::Entry(_) | AuthTarget::Field { .. } | AuthTarget::Index { .. } => {
+        AuthTarget::Entry { .. } | AuthTarget::Field { .. } | AuthTarget::Index { .. } => {
             unreachable!("verifier proved a whole-group op targets a group site")
         }
     }
@@ -1521,24 +1559,10 @@ fn op_read_group<V: ReadView>(
         SlotClass::Present => {}
     }
     let group_stem = physical::group_stem(&stem, name);
-    let mut values = Vec::with_capacity(fields.len());
-    for field in fields {
-        let leaf = physical::stem_field_leaf(&group_stem, &field.name);
-        match read_raw(cells, &leaf)? {
-            None => {
-                if field.required {
-                    return Err(KernelFault::Corruption);
-                }
-                values.push(None);
-            }
-            Some(bytes) => {
-                values.push(Some(
-                    decode_domain(&bytes, &field.shape).ok_or(KernelFault::Corruption)?,
-                ));
-            }
-        }
-    }
-    Ok(Some(EntryValue { fields: values }))
+    Ok(Some(EntryValue {
+        fields: read_record_leaves(cells, &group_stem, fields)?,
+        groups: Vec::new(),
+    }))
 }
 
 /// Where a forward layer walk begins.
@@ -1893,6 +1917,7 @@ mod tests {
 
     fn value_entry(v: i64) -> EntryValue {
         EntryValue {
+            groups: Vec::new(),
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(v))), None],
         }
     }
@@ -2160,6 +2185,7 @@ mod tests {
                 .expect("txn session");
             let branch = txn.site(1);
             let entry = EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
             };
             assert_eq!(
@@ -2204,6 +2230,7 @@ mod tests {
                 .expect("txn session");
             let root = txn.site(0);
             let entry = EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("late".into())))],
             };
             assert_eq!(
@@ -2222,6 +2249,7 @@ mod tests {
                 .expect("txn session");
             let root = txn.site(0);
             let entry = EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str(
                     "Book A".into(),
                 )))],
@@ -2243,6 +2271,7 @@ mod tests {
             assert_eq!(
                 read.read_entry(&root, std::slice::from_ref(&book)),
                 Ok(Some(EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str(
                         "Book A".into()
                     )))],
@@ -2253,6 +2282,7 @@ mod tests {
             assert_eq!(
                 read.read_entry(&branch, &note),
                 Ok(Some(EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
                 })),
                 "the branch descendant survived the root create",
@@ -2325,6 +2355,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&branch, &note),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
             })),
         );
@@ -2547,8 +2578,15 @@ mod tests {
             let branch = txn.site(1);
             let mut fields = vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))];
             fields.extend(std::iter::repeat_n(None, 6));
-            txn.create_entry(&branch, &note, EntryValue { fields })
-                .expect("branch create");
+            txn.create_entry(
+                &branch,
+                &note,
+                EntryValue {
+                    groups: Vec::new(),
+                    fields,
+                },
+            )
+            .expect("branch create");
             assert_eq!(txn.commit(), CommitResult::Committed);
         }
         let before = all_cells(&store);
@@ -2895,6 +2933,7 @@ mod tests {
             let branch = txn.site(1);
             for book in ["a", "b"] {
                 let title = EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("T".into())))],
                 };
                 txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
@@ -2903,6 +2942,7 @@ mod tests {
             // A large branch fan-out under book "a" the root walk must skip wholesale.
             for note in 0..200i64 {
                 let text = EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
                 };
                 txn.create_entry(
@@ -2955,6 +2995,7 @@ mod tests {
             let branch = txn.site(1);
             for book in ["a", "b"] {
                 let title = EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("T".into())))],
                 };
                 txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
@@ -2963,6 +3004,7 @@ mod tests {
             // Notes 10,20,30 under "a"; a decoy note 5 under sibling root "b".
             for note in [10i64, 20, 30] {
                 let text = EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
                 };
                 txn.create_entry(
@@ -2973,6 +3015,7 @@ mod tests {
                 .expect("note create");
             }
             let decoy = EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into())))],
             };
             txn.create_entry(
@@ -3054,6 +3097,7 @@ mod tests {
             let branch = txn.site(1);
             for book in ["a", "b"] {
                 let title = EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("T".into())))],
                 };
                 txn.create_entry(&root, &[KeyScalar::Str(book.into())], title)
@@ -3061,6 +3105,7 @@ mod tests {
             }
             // Only book "a" gets a note; book "b" stays note-less.
             let text = EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
             };
             txn.create_entry(
@@ -3119,6 +3164,7 @@ mod tests {
                 .expect("txn session");
             let branch = txn.site(1);
             let text = EntryValue {
+                groups: Vec::new(),
                 fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("n".into())))],
             };
             txn.create_entry(
@@ -3335,8 +3381,15 @@ mod tests {
             .expect("txn session");
         let target = txn.site(site);
         assert_eq!(
-            txn.create_entry(&target, keys, EntryValue { fields })
-                .expect("create"),
+            txn.create_entry(
+                &target,
+                keys,
+                EntryValue {
+                    groups: Vec::new(),
+                    fields
+                }
+            )
+            .expect("create"),
             CreateOutcome::Created,
         );
         assert_eq!(txn.commit(), CommitResult::Committed);
@@ -3380,6 +3433,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&tags, &tag),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![vs("home"), None],
             })),
             "the level-2 entry reads back through its multi-hop site",
@@ -3471,6 +3525,7 @@ mod tests {
                     &notes,
                     &note,
                     EntryValue {
+                        groups: Vec::new(),
                         fields: vec![vs("bye"), None],
                     },
                 )
@@ -3500,6 +3555,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&notes, &note),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![vs("bye"), None],
             })),
         );
@@ -3507,6 +3563,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&tags, &tag),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![vs("home"), vi(5)],
             })),
             "the preserved sub-branch entry still reads its own record",
@@ -3568,6 +3625,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&tags, &tag),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![vs("home"), vi(5)],
             })),
         );
@@ -3618,6 +3676,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&notes, &note),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![vs("hi"), None],
             })),
             "the level-1 descendant survived",
@@ -3626,6 +3685,7 @@ mod tests {
         assert_eq!(
             read.read_entry(&tags, &tag),
             Ok(Some(EntryValue {
+                groups: Vec::new(),
                 fields: vec![vs("home"), None],
             })),
             "the level-2 descendant survived",
@@ -3807,6 +3867,7 @@ mod tests {
                 &entry,
                 &[ki(1), ki(2)],
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(42)))],
                 },
             )
@@ -3909,6 +3970,7 @@ mod tests {
                     &cell,
                     &[ki(1), ki(2), ki(c)],
                     EntryValue {
+                        groups: Vec::new(),
                         fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(0)))],
                     },
                 )
@@ -3919,6 +3981,7 @@ mod tests {
                 &cell,
                 &[ki(9), ki(9), ki(100)],
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(0)))],
                 },
             )
@@ -4044,6 +4107,7 @@ mod tests {
 
     fn ent(value: i64, label: Option<&str>) -> EntryValue {
         EntryValue {
+            groups: Vec::new(),
             fields: vec![
                 Some(ValueDomain::Scalar(RuntimeScalar::Int(value))),
                 label.map(|l| ValueDomain::Scalar(RuntimeScalar::Str(l.into()))),
@@ -4679,6 +4743,7 @@ mod tests {
                 &root,
                 &book,
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![vs("Small Gods"), vs("a novel")],
                 },
             )
@@ -4688,6 +4753,7 @@ mod tests {
                 &details,
                 &book,
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![vi(384), vs("en")],
                 },
             )
@@ -4697,6 +4763,7 @@ mod tests {
                 &credits,
                 &book,
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![vs("Pratchett")],
                 },
             )
@@ -4706,6 +4773,7 @@ mod tests {
                 &notes,
                 &[ks("a"), ki(1)],
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![vs("note one")],
                 },
             )
@@ -4731,6 +4799,7 @@ mod tests {
                     &details,
                     &book,
                     EntryValue {
+                        groups: Vec::new(),
                         fields: vec![vi(999), None],
                     },
                 )
@@ -4822,6 +4891,7 @@ mod tests {
                     &details,
                     &book,
                     EntryValue {
+                        groups: Vec::new(),
                         fields: vec![vi(1), vs("en")],
                     },
                 )
@@ -4846,6 +4916,7 @@ mod tests {
                 &root,
                 &book,
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![vs("t"), None],
                 },
             )
@@ -4923,6 +4994,241 @@ mod tests {
                 Err(KernelFault::Corruption)
             ),
             "a present entry missing a required group leaf is corruption",
+        );
+    }
+
+    /// A whole-entry value carries its groups. A create that supplies the group
+    /// sub-records writes their leaves as the entry's own payload, and a whole-entry read
+    /// materializes them back aligned to the schema's groups — the round-trip that unparks
+    /// durable group execution. It kills the corruption trap the handoff named: a
+    /// group-bearing entry now reads its group through the whole entry, not only the
+    /// group-scoped op, so `node_write`/`node_cells`/`op_read_entry` are group-inclusive.
+    #[test]
+    fn a_whole_entry_create_writes_and_reads_back_its_groups() {
+        let mut store = group_store();
+        let book = [ks("a")];
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            txn.create_entry(
+                &root,
+                &book,
+                EntryValue {
+                    fields: vec![vs("Small Gods"), vs("a novel")],
+                    groups: vec![
+                        EntryValue {
+                            fields: vec![vi(384), vs("en")],
+                            groups: Vec::new(),
+                        },
+                        EntryValue {
+                            fields: vec![vs("Pratchett")],
+                            groups: Vec::new(),
+                        },
+                    ],
+                },
+            )
+            .expect("create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read");
+        let root = read.site(0);
+        let value = read
+            .read_entry(&root, &book)
+            .expect("read entry")
+            .expect("present");
+        assert_eq!(value.fields, vec![vs("Small Gods"), vs("a novel")]);
+        assert_eq!(
+            value.groups,
+            vec![
+                EntryValue {
+                    fields: vec![vi(384), vs("en")],
+                    groups: Vec::new(),
+                },
+                EntryValue {
+                    fields: vec![vs("Pratchett")],
+                    groups: Vec::new(),
+                },
+            ],
+            "a whole-entry read materializes every group sub-record in schema order",
+        );
+        // The group-scoped read agrees with the whole-entry materialization.
+        let details = read.site(1);
+        assert_eq!(
+            read.read_group(&details, &book)
+                .expect("read group")
+                .expect("present")
+                .fields,
+            vec![vi(384), vs("en")],
+        );
+    }
+
+    /// A whole-entry erase sweeps the entry's group leaves along with its marker and
+    /// top-level fields — a group is the entry's own payload, so no group leaf orphans —
+    /// while a keyed branch descendant survives the erase (the descendant-preserving law).
+    #[test]
+    fn a_whole_entry_erase_sweeps_group_leaves_and_preserves_branches() {
+        let mut store = group_store();
+        let book = [ks("a")];
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            txn.create_entry(
+                &root,
+                &book,
+                EntryValue {
+                    fields: vec![vs("t"), None],
+                    groups: vec![
+                        EntryValue {
+                            fields: vec![vi(384), vs("en")],
+                            groups: Vec::new(),
+                        },
+                        EntryValue {
+                            fields: vec![vs("Pratchett")],
+                            groups: Vec::new(),
+                        },
+                    ],
+                },
+            )
+            .expect("create");
+            let notes = txn.site(3);
+            txn.create_entry(
+                &notes,
+                &[ks("a"), ki(1)],
+                EntryValue {
+                    fields: vec![vs("note one")],
+                    groups: Vec::new(),
+                },
+            )
+            .expect("create note");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+        assert!(
+            all_cells(&store)
+                .keys()
+                .any(|k| k.starts_with(&details_prefix("a"))),
+            "the group has leaves before the erase",
+        );
+
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            assert_eq!(
+                txn.erase_entry(&root, &book).expect("erase entry"),
+                EraseOutcome::Erased,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        let entry = physical::marker_key("books", &[ks("a")]);
+        let note_stem = physical::branch_child_stem(&entry, "notes", &[ki(1)]);
+        let cells = all_cells(&store);
+        assert!(
+            cells.keys().all(|k| !k.starts_with(&details_prefix("a"))),
+            "the whole-entry erase left no group leaf orphaned",
+        );
+        assert!(
+            !cells.contains_key(&entry),
+            "the whole-entry erase removed the marker",
+        );
+        assert!(
+            cells.contains_key(&note_stem),
+            "a keyed branch descendant survives the whole-entry erase",
+        );
+    }
+
+    /// A whole-entry replace is exact over the entry's groups too: an omitted sparse group
+    /// leaf does not survive the replacement, matching the top-level field
+    /// exact-replacement law, while keyed branch descendants are preserved.
+    #[test]
+    fn a_whole_entry_replace_drops_omitted_group_leaves() {
+        let mut store = group_store();
+        let book = [ks("a")];
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            txn.create_entry(
+                &root,
+                &book,
+                EntryValue {
+                    fields: vec![vs("t"), vs("full")],
+                    groups: vec![
+                        EntryValue {
+                            fields: vec![vi(384), vs("en")],
+                            groups: Vec::new(),
+                        },
+                        EntryValue {
+                            fields: vec![vs("Pratchett")],
+                            groups: Vec::new(),
+                        },
+                    ],
+                },
+            )
+            .expect("create");
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        // Replace the whole entry: `details.language` and `credits.author` omitted.
+        {
+            let mut txn = store
+                .txn_session(InvocationGrant::full_store(), write_demand())
+                .expect("txn");
+            let root = txn.site(0);
+            assert_eq!(
+                txn.replace_entry(
+                    &root,
+                    &book,
+                    EntryValue {
+                        fields: vec![vs("t"), None],
+                        groups: vec![
+                            EntryValue {
+                                fields: vec![vi(999), None],
+                                groups: Vec::new(),
+                            },
+                            EntryValue {
+                                fields: vec![None],
+                                groups: Vec::new(),
+                            },
+                        ],
+                    },
+                )
+                .expect("replace"),
+                ReplaceOutcome::Replaced,
+            );
+            assert_eq!(txn.commit(), CommitResult::Committed);
+        }
+
+        let mut read = store
+            .read_session(InvocationGrant::full_store(), read_demand())
+            .expect("read");
+        let root = read.site(0);
+        let value = read
+            .read_entry(&root, &book)
+            .expect("read")
+            .expect("present");
+        assert_eq!(
+            value.groups,
+            vec![
+                EntryValue {
+                    fields: vec![vi(999), None],
+                    groups: Vec::new(),
+                },
+                EntryValue {
+                    fields: vec![None],
+                    groups: Vec::new(),
+                },
+            ],
+            "an omitted group leaf does not survive a whole-entry replace",
         );
     }
 }

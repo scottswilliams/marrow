@@ -77,6 +77,7 @@ fn bound(n: u32) -> BoundedLimit {
 
 fn entry(shelf: &str, isbn: &str) -> EntryValue {
     EntryValue {
+        groups: Vec::new(),
         fields: vec![
             Some(ValueDomain::Scalar(RuntimeScalar::Str(shelf.into()))),
             Some(ValueDomain::Scalar(RuntimeScalar::Str(isbn.into()))),

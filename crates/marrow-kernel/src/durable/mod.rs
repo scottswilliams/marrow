@@ -116,7 +116,7 @@ impl FieldSchema {
 /// A group is part of the entry's materialized value (a nested sub-record), not a keyed
 /// durable node: it carries no marker and no key, and its presence is exactly its
 /// containing entry's presence. Its leaves are stored as the entry's own payload,
-/// namespaced under the group name (`<marker> 0x20 esc(group) 0x10 esc(field)`; see
+/// namespaced under the group name (`<marker> 0x28 esc(group) 0x10 esc(field)`; see
 /// [`physical`](self)). A group holding nested groups or branches is not yet part of the
 /// executable graph, so this schema carries fields only.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,11 +245,18 @@ pub enum SessionError {
 }
 
 /// The record read, created, or replaced at an entry or group site: one slot per field
-/// in schema order, present or vacant. An entry site's record is the node's own top-level
-/// fields; a group site's record is that group's own field set.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// in schema order, present or vacant, plus one nested sub-record per schema group. An
+/// entry site's record is the node's own top-level fields followed by its groups (aligned
+/// to [`StoreSchema::groups`], each a group-scoped [`EntryValue`] over that group's own
+/// field set); a group site's record is that group's own fields with no further groups.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntryValue {
     pub fields: Vec<Option<ValueDomain>>,
+    /// One materialized sub-record per schema group of the node, in [`StoreSchema::groups`]
+    /// order. Each sub-record's `fields` align to that group's [`GroupSchema::fields`] and
+    /// its own `groups` is empty (a group holding nested groups is not yet executable).
+    /// Empty for a node that declares no group.
+    pub groups: Vec<EntryValue>,
 }
 
 /// The presence of the cell a site addresses.
@@ -415,9 +422,15 @@ impl BranchHop {
 
 #[derive(Debug, Clone)]
 enum AuthTarget {
-    /// A whole-entry target: the addressed node's own record fields, resolved once at
-    /// session setup so the whole-entry ops enumerate its footprint without the schema.
-    Entry(Vec<FieldSchema>),
+    /// A whole-entry target: the addressed node's own record fields and its groups,
+    /// resolved once at session setup so the whole-entry ops enumerate its footprint —
+    /// marker, own field leaves, and every group's leaves — without the schema. A branch
+    /// node carries no group (group-in-branch is not yet executable), so its group list is
+    /// empty.
+    Entry {
+        fields: Vec<FieldSchema>,
+        groups: Vec<GroupSchema>,
+    },
     Field {
         name: String,
         shape: ValueShape,
@@ -519,7 +532,7 @@ impl AuthorizedSite {
                 unique,
                 projection,
             } => Some((id, *unique, projection)),
-            AuthTarget::Entry(_) | AuthTarget::Field { .. } | AuthTarget::Group { .. } => None,
+            AuthTarget::Entry { .. } | AuthTarget::Field { .. } | AuthTarget::Group { .. } => None,
         }
     }
 }

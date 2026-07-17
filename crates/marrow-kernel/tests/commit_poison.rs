@@ -228,6 +228,7 @@ fn write() -> DemandCoverage {
 
 fn entry(v: i64) -> EntryValue {
     EntryValue {
+        groups: Vec::new(),
         fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(v)))],
     }
 }

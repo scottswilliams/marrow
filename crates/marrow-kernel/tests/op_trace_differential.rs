@@ -104,6 +104,7 @@ fn key(name: &str) -> KeyScalar {
 
 fn entry(value: i64, label: Option<&str>) -> EntryValue {
     EntryValue {
+        groups: Vec::new(),
         fields: vec![
             Some(ValueDomain::Scalar(RuntimeScalar::Int(value))),
             label.map(|text| ValueDomain::Scalar(RuntimeScalar::Str(text.into()))),

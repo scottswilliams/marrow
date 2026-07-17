@@ -575,6 +575,7 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
                 &entry,
                 &[KeyScalar::Str(key)],
                 EntryValue {
+                    groups: Vec::new(),
                     fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(0)))],
                 },
             )

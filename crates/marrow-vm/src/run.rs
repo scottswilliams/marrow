@@ -1350,7 +1350,9 @@ fn domain_to_value(domain: ValueDomain) -> Value {
     }
 }
 
-/// Convert a record value into a whole-entry value: one slot per field in order.
+/// Convert a record value into a whole-entry value: one slot per field in order. A
+/// group-less resource record carries no group slots, so its entry value has no groups;
+/// the durable group value bridge lands with the verifier's group-site admission.
 fn record_to_entry(value: Value) -> EntryValue {
     let (_, slots) = as_record(value);
     EntryValue {
@@ -1359,10 +1361,12 @@ fn record_to_entry(value: Value) -> EntryValue {
             .into_iter()
             .map(|slot| slot.map(value_to_domain))
             .collect(),
+        groups: Vec::new(),
     }
 }
 
-/// Convert a whole-entry value into a record value of type `ty`.
+/// Convert a whole-entry value into a record value of type `ty`. A group-less entry value
+/// has no group sub-records, so its record is exactly its top-level field slots.
 fn entry_to_record(ty: u16, entry: EntryValue) -> Value {
     let slots: Vec<Option<Value>> = entry
         .fields

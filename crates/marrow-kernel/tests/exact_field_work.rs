@@ -103,8 +103,15 @@ fn writes_for_narrow_create(extra: usize) -> usize {
     fields.extend(std::iter::repeat_n(None, extra));
     let before = counters.writes();
     assert_eq!(
-        txn.create_entry(&entry, &[KeyScalar::Int(1)], EntryValue { fields })
-            .expect("create"),
+        txn.create_entry(
+            &entry,
+            &[KeyScalar::Int(1)],
+            EntryValue {
+                groups: Vec::new(),
+                fields
+            }
+        )
+        .expect("create"),
         CreateOutcome::Created
     );
     counters.writes() - before
