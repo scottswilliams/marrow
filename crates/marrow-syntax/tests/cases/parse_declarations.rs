@@ -15,7 +15,6 @@ use marrow_syntax::{
 /// examples are illustrative and excluded here; the lexer corpus covers all
 /// blocks.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_all_documented_module_files() {
     let blocks = common::documented_module_blocks();
     assert!(
@@ -42,7 +41,6 @@ fn parses_all_documented_module_files() {
 /// owned by the focused `parse_*` suites; this only guards that the reference
 /// sample keeps its overall shape.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_reference_sample_structure() {
     let parsed = parse_source(&common::reference_sample());
 
@@ -112,12 +110,12 @@ fn parses_reference_sample_structure() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_optional_function_return_type() {
     let parsed = parse_source(
         "module app\n\
-         fn f(): int?\n\
-         \x20   return absent\n",
+         fn f(): int? {\n\
+         \x20   return absent\n\
+         }\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -129,14 +127,14 @@ fn parses_optional_function_return_type() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_optional_parameter_type() {
     // `T?` is a first-class parameter type; the trailing `?` rides in the type
     // spelling exactly as a return or local annotation does.
     let parsed = parse_source(
         "module app\n\
-         fn f(value: int?): int\n\
-         \x20   return 1\n",
+         fn f(value: int?): int {\n\
+         \x20   return 1\n\
+         }\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -145,14 +143,14 @@ fn parses_optional_parameter_type() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_a_double_optional_type() {
     // Optionality does not nest, so the `??` spelling in type position is a parse
     // error pointing at the doubled marker.
     let parsed = parse_source(
         "module app\n\
-         fn f(): int??\n\
-         \x20   return absent\n",
+         fn f(): int?? {\n\
+         \x20   return absent\n\
+         }\n",
     );
 
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
@@ -167,15 +165,15 @@ fn rejects_a_double_optional_type() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn attaches_doc_comments_to_resource_members() {
     let parsed = parse_source(
         r#"module shelf::books
 
-resource Book
-    ;; Display title.
+resource Book {
+    /// Display title.
     required title: string
-store ^books(id: int): Book
+}
+store ^books[id: int]: Book
 "#,
     );
 
@@ -188,22 +186,26 @@ store ^books(id: int): Book
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn parses_trailing_comments_on_declaration_lines() {
     let parsed = parse_source(
-        "module app ; module comment\n\
-         use std::math ; use comment\n\
-         const Max: int = 5 ; const comment\n\
-         resource Book ; resource comment\n\
-         \x20   title: string ; field comment\n\
-         \x20   notes(noteId: string) ; group comment\n\
-         \x20       text: string ; nested field comment\n\
-         store ^books(id: int): Book ; store comment\n\
-         \x20   index byTitle(title) ; index comment\n\
-         enum Status ; enum comment\n\
-         \x20   active ; member comment\n\
-         fn main() ; function comment\n\
-         \x20   return ; statement comment\n",
+        "module app // module comment\n\
+         use std::math // use comment\n\
+         const Max: int = 5 // const comment\n\
+         resource Book { // resource comment\n\
+         \x20   title: string // field comment\n\
+         \x20   notes[noteId: string] { // group comment\n\
+         \x20       text: string // nested field comment\n\
+         \x20   }\n\
+         }\n\
+         store ^books[id: int]: Book { // store comment\n\
+         \x20   index byTitle[title] // index comment\n\
+         }\n\
+         enum Status { // enum comment\n\
+         \x20   active // member comment\n\
+         }\n\
+         fn main() { // function comment\n\
+         \x20   return // statement comment\n\
+         }\n",
     );
 
     assert!(
@@ -217,12 +219,12 @@ fn parses_trailing_comments_on_declaration_lines() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn merges_lexer_and_parser_diagnostics_in_source_order() {
     let parsed = parse_source(concat!(
-        "module ;-bad-name\n",
-        "fn main()\n",
+        "module 123\n",
+        "fn main() {\n",
         "    return ~~~\n",
+        "}\n",
     ));
 
     assert!(parsed.has_errors());
@@ -242,10 +244,11 @@ fn merges_lexer_and_parser_diagnostics_in_source_order() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_internal_and_private_visibility() {
     for visibility in ["internal", "private"] {
-        let parsed = parse_source(&format!("module app\n{visibility} fn main()\n    return\n"));
+        let parsed = parse_source(&format!(
+            "module app\n{visibility} fn main() {{\n    return\n}}\n"
+        ));
 
         assert!(parsed.has_errors(), "expected error for {visibility}");
         assert!(
@@ -258,15 +261,14 @@ fn rejects_internal_and_private_visibility() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_pub_on_resource_and_store_without_cascade() {
     // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is reported
     // once at the `pub` token with the remove-`pub` remedy in the message, then
     // recovered by parsing the rest of the declaration so its members do not raise
     // a cascade of follow-on errors.
     for (keyword, decl) in [
-        ("resource", "resource Book\n    title: string"),
-        ("store", "store ^books(id: int): Book"),
+        ("resource", "resource Book {\n    title: string\n}"),
+        ("store", "store ^books[id: int]: Book"),
     ] {
         let source = format!("module app\npub {decl}\n");
         let parsed = parse_source(&source);
@@ -316,12 +318,11 @@ fn rejects_pub_on_resource_and_store_without_cascade() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn requires_indented_resource_and_function_bodies() {
     let parsed = parse_source(
         r#"module app
 resource Book
-store ^books(id: int): Book
+store ^books[id: int]: Book
 pub fn main()
 "#,
     );
@@ -338,7 +339,6 @@ pub fn main()
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_const_without_value() {
     let parsed = parse_source(
         r#"module app
@@ -359,7 +359,6 @@ const MaxLoans: int
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_invalid_module_names() {
     let parsed = parse_source("module 123\n");
 
@@ -373,7 +372,6 @@ fn rejects_invalid_module_names() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_words_as_module_segments_are_rejected() {
     // A reserved word in a module path earns a precise reserved-word diagnostic at
     // the offending segment, not a generic "expected module name" at the keyword.
@@ -407,7 +405,6 @@ fn reserved_words_as_module_segments_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_invalid_import_names() {
     let parsed = parse_source(
         r#"module app
@@ -425,7 +422,6 @@ use *
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_words_as_import_segments_are_rejected() {
     // A reserved word in an import path earns a precise reserved-word diagnostic at
     // the offending segment, on line 2 (the `use` line).
@@ -467,7 +463,6 @@ fn reserved_words_as_import_segments_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_invalid_const_names() {
     let parsed = parse_source(
         r#"module app
@@ -485,7 +480,6 @@ const : int = 1
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn reserved_word_as_const_name_is_rejected() {
     // A const name, like a parameter, member, or key name, is an `identifier`,
     // so a reserved word (`while`) in any of those positions is a parse error.
@@ -499,7 +493,6 @@ fn reserved_word_as_const_name_is_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_const_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("module app\nconst {word} = 5\n"));
@@ -513,10 +506,9 @@ fn future_surface_words_as_const_names_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn future_surface_words_as_function_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
-        let parsed = parse_source(&format!("module app\nfn {word}()\n    return\n"));
+        let parsed = parse_source(&format!("module app\nfn {word}() {{\n    return\n}}\n"));
         assert!(
             parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
                 == parse_reason(ParseDiagnosticReason::Expected(
@@ -529,12 +521,12 @@ fn future_surface_words_as_function_names_are_rejected() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_late_or_duplicate_module_declarations() {
     let parsed = parse_source(
         r#"module app
-fn main()
+fn main() {
     return
+}
 module later
 "#,
     );
@@ -549,17 +541,18 @@ module later
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn keeps_top_level_declarations_in_source_order() {
     let parsed = parse_source(
         r#"module app
 alias Title = string
 const MaxLoans: int = 5
-resource Book
+resource Book {
     title: string
-store ^books(id: int): Book
-fn normalize(title: string): string
+}
+store ^books[id: int]: Book
+fn normalize(title: string): string {
     return title
+}
 "#,
     );
 
@@ -590,10 +583,9 @@ fn normalize(title: string): string
 /// enforcement artifact — it fails while any `EvolveDecl` grammar is
 /// representable, because that grammar parses the block cleanly.
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn evolve_is_not_a_representable_declaration() {
     let parsed = parse_source(
-        "module app\n\nevolve\n    rename Book.title -> Book.subtitle\n    retire ^books.byTitle\n",
+        "module app\n\nevolve {\n    rename Book.title -> Book.subtitle\n    retire ^books.byTitle\n}\n",
     );
 
     assert!(
@@ -616,7 +608,6 @@ fn evolve_is_not_a_representable_declaration() {
 }
 
 #[test]
-#[ignore = "BS01: layout corpus, rewritten in the converter flip"]
 fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     let parsed = parse_source("module app\n\tpub fn main()\n");
 
