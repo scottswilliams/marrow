@@ -859,6 +859,29 @@ pub(crate) struct FnSignature {
 pub(crate) struct Lowered {
     pub func: FuncId,
     pub callees: Vec<u16>,
+    /// Spans of durable mutations this body performs outside any `transaction` block.
+    pub unwrapped_mutations: Vec<SourceSpan>,
+    /// Calls this body performs outside any `transaction` block, with their spans.
+    pub unwrapped_calls: Vec<(u16, SourceSpan)>,
+}
+
+/// Whether an instruction stages a durable mutation (a write, replacement, or
+/// erase). The requires-ambient-transaction check treats these as the sites that
+/// demand a transaction; it mirrors the verifier's mutation classification over the
+/// same opcode set.
+fn is_mutation_instr(instr: &Instr) -> bool {
+    matches!(
+        instr,
+        Instr::DurSetRequired(_)
+            | Instr::DurSetSparse(_)
+            | Instr::DurSetSparsePresent { .. }
+            | Instr::DurCreateEntry(_)
+            | Instr::DurReplaceEntry(_)
+            | Instr::DurReplaceGroup(_)
+            | Instr::DurEraseField(_)
+            | Instr::DurEraseEntry(_)
+            | Instr::DurEraseGroup(_)
+    )
 }
 
 /// The outcome of resolving a call target against module scope.
@@ -1173,6 +1196,17 @@ pub(crate) struct FnLowerer<'a> {
     /// The image indices of every function this body calls directly, in emission
     /// order. The caller uses these to detect a recursive call cycle at check time.
     calls: Vec<u16>,
+    /// Lexical `transaction`-block nesting depth at the current emission point. A
+    /// durable mutation or a call emitted at depth zero is not covered by an ambient
+    /// transaction owned by this body; the requires-ambient-transaction check consumes
+    /// the sites recorded below.
+    txn_depth: u32,
+    /// Spans of durable mutations emitted outside any `transaction` block in this body.
+    unwrapped_mutations: Vec<SourceSpan>,
+    /// Calls emitted outside any `transaction` block in this body, paired with their
+    /// call-site span. A call to a callee that itself requires an ambient transaction
+    /// is refused here when this body is an export entry.
+    unwrapped_calls: Vec<(u16, SourceSpan)>,
     locals: Vec<Local>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal>,
@@ -1226,6 +1260,9 @@ impl<'a> FnLowerer<'a> {
             code: Vec::new(),
             spans: Vec::new(),
             calls: Vec::new(),
+            txn_depth: 0,
+            unwrapped_mutations: Vec::new(),
+            unwrapped_calls: Vec::new(),
             locals: Vec::new(),
             places: Vec::new(),
             present_places: Vec::new(),
@@ -1549,6 +1586,8 @@ impl<'a> FnLowerer<'a> {
         Some(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
+            unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
+            unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
         })
     }
 
@@ -1559,6 +1598,13 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn push(&mut self, instr: Instr, span: SourceSpan) {
+        if self.txn_depth == 0 {
+            match &instr {
+                Instr::Call(target) => self.unwrapped_calls.push((*target, span)),
+                _ if is_mutation_instr(&instr) => self.unwrapped_mutations.push(span),
+                _ => {}
+            }
+        }
         let index = self.code.len() as u32;
         self.code.push(instr);
         self.spans.push(SpanEntry {
@@ -1818,7 +1864,9 @@ impl<'a> FnLowerer<'a> {
             ),
             Statement::Transaction { body, .. } => {
                 self.push(Instr::TxnBegin, body.span);
+                self.txn_depth += 1;
                 self.lower_block(body);
+                self.txn_depth -= 1;
                 self.push(Instr::TxnCommit, body.span);
                 Flow::Fallthrough
             }

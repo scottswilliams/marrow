@@ -227,6 +227,13 @@ An optional-producing user call is still a valid subject for `if const` or
 `??`. Effect restrictions are applied where the expression is used; optionality
 alone does not make a call pure or impure.
 
+A function that mutates durable state carries a checked *requires an ambient
+transaction* effect: it is callable only inside a `transaction` block or from a
+function that carries the effect in turn. Calling such a function, or performing
+a durable mutation, in an export body with no enclosing `transaction` is a
+`check.requires_transaction` error. See
+[Errors and transactions](errors-and-transactions.md#transactions).
+
 ## Name Resolution
 
 Within a function, local declarations and parameters resolve before module

@@ -68,6 +68,13 @@ deployment ceiling and an invocation grant, before the first engine call),
 carries the durable operation algebra, and drives the ordered-byte engine over a
 versioned store profile with an in-transaction commit witness.
 
+A function that mutates durable state carries a checked requires-ambient-transaction
+effect: the compiler refuses a durable mutation, or a call to a mutating function,
+that reaches an export body outside a `transaction` block (`check.requires_transaction`,
+at the mutation or call site), and propagates the requirement transitively along the
+acyclic call graph. The verifier independently reconstructs the same mutation closure
+from the image and rejects a violating or tampered image at `image.flow`.
+
 `marrow run <export>` drives this path end to end for a storeless export. A
 durable program — a keyed resource, a store root, its transactions, reads, and
 bounded iteration — compiles, independently verifies, and completes its durable

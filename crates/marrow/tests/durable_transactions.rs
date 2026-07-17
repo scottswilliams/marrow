@@ -383,6 +383,118 @@ pub fn setAndGet(id: int, v: int): int? {
     );
 }
 
+/// The typed check-time diagnostic codes a source produces, or an empty vector when
+/// it compiles. A mutating helper called without an ambient transaction is refused
+/// here — at check time, with a call-site span — not only at verify.
+fn compile_error_codes(source: &str) -> Vec<String> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics.iter().map(|d| d.code.to_string()).collect(),
+    }
+}
+
+const HELPER_STORE: &str = r#"resource Counter {
+    required value: int
+}
+
+store ^counters[id: int]: Counter
+
+fn writeIt(id: int, v: int) {
+    ^counters[id] = Counter(value: v)
+}
+"#;
+
+/// A mutating helper called from an export with no ambient transaction is refused at
+/// check time, at the call-site span, before an image is minted.
+#[test]
+fn a_mutating_helper_called_without_a_transaction_is_a_check_error() {
+    let source =
+        format!("{HELPER_STORE}\npub fn plainCaller(id: int, v: int) {{\n    writeIt(id, v)\n}}\n");
+    assert_eq!(
+        compile_error_codes(&source),
+        vec!["check.requires_transaction".to_string()],
+    );
+}
+
+/// The same helper wrapped in an ambient `transaction` block checks, verifies, and
+/// commits its write.
+#[test]
+fn a_mutating_helper_inside_a_transaction_checks_and_runs() {
+    let source = format!(
+        "{HELPER_STORE}\n\
+         pub fn wrappedCaller(id: int, v: int) {{\n\
+         \x20   transaction {{\n\
+         \x20       writeIt(id, v)\n\
+         \x20   }}\n\
+         }}\n\
+         pub fn getValue(id: int): int? {{\n\
+         \x20   return ^counters[id].value\n\
+         }}\n"
+    );
+    assert!(
+        compile_error_codes(&source).is_empty(),
+        "the wrapped call checks"
+    );
+
+    let image = compile_verify(&source);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "wrappedCaller",
+        vec![Value::Int(1), Value::Int(9)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(9))))),
+    );
+}
+
+/// The requirement propagates transitively: a helper that calls a mutating helper
+/// itself requires an ambient transaction, so an export that calls it unwrapped is
+/// refused at the outer call site.
+#[test]
+fn the_transaction_requirement_propagates_transitively() {
+    let source = format!(
+        "{HELPER_STORE}\n\
+         fn writeOuter(id: int, v: int) {{\n\
+         \x20   writeIt(id, v)\n\
+         }}\n\
+         pub fn plainCaller(id: int, v: int) {{\n\
+         \x20   writeOuter(id, v)\n\
+         }}\n"
+    );
+    assert_eq!(
+        compile_error_codes(&source),
+        vec!["check.requires_transaction".to_string()],
+    );
+}
+
+/// A direct durable mutation in an export body with no ambient transaction is refused
+/// at check time at the mutation's span (not only at verify).
+#[test]
+fn a_direct_mutation_outside_a_transaction_is_a_check_error() {
+    let source = format!(
+        "{HELPER_STORE}\npub fn plainWrite(id: int, v: int) {{\n    ^counters[id] = Counter(value: v)\n}}\n"
+    );
+    assert_eq!(
+        compile_error_codes(&source),
+        vec!["check.requires_transaction".to_string()],
+    );
+}
+
 /// An `unreachable` fault reached conditionally inside a transaction rolls the
 /// region back, exactly like an arithmetic fault: the C01 divergence machinery and
 /// the transaction effects compose. The non-diverging path commits normally.

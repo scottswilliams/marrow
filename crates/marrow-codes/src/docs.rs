@@ -173,6 +173,7 @@ Static errors found while checking source.
             Code::CheckImport,
             Code::CheckVisibility,
             Code::CheckRecursion,
+            Code::CheckRequiresTransaction,
             Code::CheckAssertOutsideTest,
             Code::CheckMatchNonexhaustive,
             Code::CheckMatchArm,

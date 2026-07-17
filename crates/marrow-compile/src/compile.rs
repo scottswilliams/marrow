@@ -83,14 +83,25 @@ struct Module {
     parsed: ParsedSource,
 }
 
-/// A lowered function's identity for recursion detection: its image index, the
-/// functions it calls directly, and where to report a cycle.
+/// A lowered function's identity for recursion detection and the
+/// requires-ambient-transaction check: its image index, the functions it calls
+/// directly, where to report a cycle, and the durable-mutation and call sites it
+/// performs outside any `transaction` block.
 struct LoweredFn {
     index: u16,
     file: String,
     name: String,
     span: SourceSpan,
     callees: Vec<u16>,
+    /// Whether this function is a public export entry. An export that mutates owns its
+    /// transaction; a non-export helper or test entry receives an ambient transaction
+    /// from its caller or the test harness, so the requirement is reported only at
+    /// export entries.
+    is_export: bool,
+    /// Spans of durable mutations this body performs outside any `transaction` block.
+    unwrapped_mutations: Vec<SourceSpan>,
+    /// Calls this body performs outside any `transaction` block, with their spans.
+    unwrapped_calls: Vec<(u16, SourceSpan)>,
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
@@ -451,6 +462,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                         name: function.name.clone(),
                         span: function.span,
                         callees: result.callees,
+                        is_export: function.public,
+                        unwrapped_mutations: result.unwrapped_mutations,
+                        unwrapped_calls: result.unwrapped_calls,
                     });
                     if function.public {
                         // The injectivity owner's own guard: every dotted module
@@ -538,6 +552,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     name: test.name.clone(),
                     span: test.span,
                     callees: result.callees,
+                    is_export: false,
+                    unwrapped_mutations: result.unwrapped_mutations,
+                    unwrapped_calls: result.unwrapped_calls,
                 });
                 let name_id = draft.intern_string(&test.name);
                 draft.add_test_entry(name_id, result.func);
@@ -585,6 +602,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 name: template.name().to_string(),
                 span: template.span(),
                 callees: result.callees,
+                is_export: false,
+                unwrapped_mutations: result.unwrapped_mutations,
+                unwrapped_calls: result.unwrapped_calls,
             });
         }
     }
@@ -604,6 +624,16 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // every function, test, and generic instance lowered, so the indices are aligned.
     if diagnostics.is_empty() {
         reject_recursion(&lowered, &mut diagnostics);
+    }
+
+    // A function that mutates durable state carries a checked requires-ambient-
+    // transaction effect: it is callable only inside a `transaction` block or from
+    // another function carrying the effect. Reported at check time so the source, not
+    // the image, carries the diagnostic; the verifier reconstructs the same closure and
+    // rejects a tampered image (image.flow) as defense in depth. Run once the call
+    // graph is acyclic so the effect fixpoint terminates and indices are aligned.
+    if diagnostics.is_empty() {
+        reject_missing_transaction(&lowered, &mut diagnostics);
     }
 
     if !diagnostics.is_empty() {
@@ -710,6 +740,97 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
         }
     }
     false
+}
+
+/// Report `check.requires_transaction` for every durable mutation or mutating call an
+/// export entry performs outside a `transaction` block.
+///
+/// A function *requires an ambient transaction* when it performs a durable mutation
+/// not enclosed in its own `transaction` block — directly, or by calling a function
+/// that itself requires one at a site the block does not cover. That property is a
+/// monotone fixpoint over the acyclic call graph. A non-export helper that requires a
+/// transaction is legal: it runs inside its caller's region. The requirement is
+/// therefore reported only where a caller cannot satisfy it — at an export entry, at
+/// the specific unwrapped mutation or call-site span. A test entry receives its
+/// ambient transaction from the test harness and is likewise exempt.
+fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+    let count = lowered.len();
+    let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
+    for function in lowered {
+        if (function.index as usize) < count {
+            by_index[function.index as usize] = Some(function);
+        }
+    }
+
+    // `requires[i]`: function `i` mutates outside its own transaction block. The base
+    // case is a direct unwrapped mutation; the inductive case is an unwrapped call to a
+    // function that itself requires one. Recursion is already rejected, so the boolean
+    // fixpoint over the acyclic graph converges.
+    let mut requires: Vec<bool> = by_index
+        .iter()
+        .map(|entry| entry.is_some_and(|f| !f.unwrapped_mutations.is_empty()))
+        .collect();
+    loop {
+        let mut changed = false;
+        for (i, entry) in by_index.iter().enumerate() {
+            let Some(function) = entry else { continue };
+            if requires[i] {
+                continue;
+            }
+            if function
+                .unwrapped_calls
+                .iter()
+                .any(|(callee, _)| (*callee as usize) < count && requires[*callee as usize])
+            {
+                requires[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Report at export entries only. Deduplicate by source position so a single write
+    // that lowers to several instructions (an upsert's replace and create arms share
+    // one span) yields one diagnostic.
+    for function in lowered {
+        if !function.is_export {
+            continue;
+        }
+        let mut seen: BTreeSet<(u32, u32)> = BTreeSet::new();
+        for span in &function.unwrapped_mutations {
+            if seen.insert((span.line, span.column)) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckRequiresTransaction.as_str(),
+                    &function.file,
+                    *span,
+                    "a durable mutation here requires an ambient transaction; \
+                     wrap it in a `transaction` block"
+                        .to_string(),
+                ));
+            }
+        }
+        for (callee, span) in &function.unwrapped_calls {
+            if (*callee as usize) >= count || !requires[*callee as usize] {
+                continue;
+            }
+            if seen.insert((span.line, span.column)) {
+                let name = by_index[*callee as usize]
+                    .map(|f| f.name.as_str())
+                    .unwrap_or("a mutating function");
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckRequiresTransaction.as_str(),
+                    &function.file,
+                    *span,
+                    format!(
+                        "calling `{name}` requires an ambient transaction; \
+                         wrap the call in a `transaction` block"
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 /// Whether an export declaration path is valid to mint an [`ExportId`] over:

@@ -44,6 +44,16 @@ inside the owner's transaction but cannot open or finish one of its own. A
 read-only export needs no transaction and observes one coherent snapshot for its
 whole call.
 
+A function that mutates durable state carries a checked *requires an ambient
+transaction* requirement. A durable write, replacement, or erase — or a call to
+a function that itself mutates — is accepted only inside a `transaction` block,
+or in a function whose caller supplies one. Performing such a mutation, or
+calling such a helper, directly in an export body with no enclosing
+`transaction` is a `check.requires_transaction` error reported at the mutation
+or call-site span. The requirement propagates transitively along the call
+graph, so a helper that calls a mutating helper carries it in turn; a read-only
+function carries no such requirement.
+
 ```mw
 module docs::transactions
 
@@ -85,10 +95,12 @@ pub fn setAndReport(name: string, v: int): int? {
 }
 ```
 
-The transaction ownership law is checked when the program image is verified: a
-transaction is opened exactly once and committed on every path, every mutation
-sits inside the region, no durable read or write follows the commit, and a
-transaction owner is never called. An image that violates the law is rejected with
+The transaction ownership law is independently rechecked when the program image
+is verified: a transaction is opened exactly once and committed on every path,
+every mutation sits inside the region, no durable read or write follows the
+commit, and a transaction owner is never called. The verifier reconstructs the
+mutation closure from the image alone rather than trusting the compiler, so an
+image that violates the law — including a tampered one — is rejected with
 `image.flow` before it can run.
 
 ## Indeterminate Commit
