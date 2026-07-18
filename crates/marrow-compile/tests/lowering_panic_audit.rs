@@ -186,12 +186,13 @@ fn explicit_panic_sites(source: &str) -> Vec<ExplicitPanicSite<'_>> {
             cursor += 1;
         }
         let ident = &source[ident_start..cursor];
+        let token_start = identifier_token_start(&code, ident_start);
 
         let invocation = if PANIC_METHODS.contains(&ident) {
             let open = next_non_whitespace(&code, cursor);
             match open {
                 Some(open) if code[open] == b'(' => {
-                    method_invocation_start(&code, ident_start).map(|start| (start, open))
+                    method_invocation_start(&code, token_start).map(|start| (start, open))
                 }
                 _ => None,
             }
@@ -206,7 +207,7 @@ fn explicit_panic_sites(source: &str) -> Vec<ExplicitPanicSite<'_>> {
                 continue;
             };
             if matches!(code[open], b'(' | b'[' | b'{') {
-                Some((ident_start, open))
+                Some((token_start, open))
             } else {
                 None
             }
@@ -253,8 +254,23 @@ fn next_non_whitespace(code: &[u8], mut cursor: usize) -> Option<usize> {
     (cursor < code.len()).then_some(cursor)
 }
 
-fn method_invocation_start(code: &[u8], ident_start: usize) -> Option<usize> {
-    let before = previous_non_whitespace(code, ident_start)?;
+fn identifier_token_start(code: &[u8], ident_start: usize) -> usize {
+    let Some(raw_start) = ident_start.checked_sub(2) else {
+        return ident_start;
+    };
+    if &code[raw_start..ident_start] == b"r#"
+        && raw_start
+            .checked_sub(1)
+            .is_none_or(|before| !is_ident_continue(code[before]))
+    {
+        raw_start
+    } else {
+        ident_start
+    }
+}
+
+fn method_invocation_start(code: &[u8], token_start: usize) -> Option<usize> {
+    let before = previous_non_whitespace(code, token_start)?;
     if code[before] == b'.' {
         return Some(before);
     }
@@ -262,7 +278,7 @@ fn method_invocation_start(code: &[u8], ident_start: usize) -> Option<usize> {
         return None;
     }
     let first_colon = previous_non_whitespace(code, before)?;
-    (code[first_colon] == b':').then_some(ident_start)
+    (code[first_colon] == b':').then_some(token_start)
 }
 
 fn matching_delimiter(code: &[u8], open: usize) -> Option<usize> {
@@ -463,6 +479,16 @@ Option::expect(value, "qualified expect");
 Result::expect_err(value, "qualified expect_err");
 Option::unwrap(value);
 Result::unwrap_err(value);
+value.r#expect("raw dot expect");
+value.r#expect_err("raw dot expect_err");
+value.r#unwrap();
+value.r#unwrap_err();
+Option::r#expect(value, "raw qualified expect");
+Result::r#expect_err(value, "raw qualified expect_err");
+Option::r#unwrap(value);
+Result::r#unwrap_err(value);
+r#panic!("raw macro");
+r#debug_assert_matches!(live, Some(_));
 assert_eq!(')', ')');
 debug_assert_eq!(b'(', b'(');
 after_literals.expect("live after literals");
@@ -496,6 +522,16 @@ panic!("live after literals");
             "expect_err(value, \"qualified expect_err\")",
             "unwrap(value)",
             "unwrap_err(value)",
+            ".r#expect(\"raw dot expect\")",
+            ".r#expect_err(\"raw dot expect_err\")",
+            ".r#unwrap()",
+            ".r#unwrap_err()",
+            "r#expect(value, \"raw qualified expect\")",
+            "r#expect_err(value, \"raw qualified expect_err\")",
+            "r#unwrap(value)",
+            "r#unwrap_err(value)",
+            "r#panic!(\"raw macro\")",
+            "r#debug_assert_matches!(live, Some(_))",
             "assert_eq!(')', ')')",
             "debug_assert_eq!(b'(', b'(')",
             ".expect(\"live after literals\")",
