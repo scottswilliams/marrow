@@ -91,7 +91,7 @@ fn collection_conformance_fixture_passes_on_the_production_path() {
         .find(|line| line.contains(r#""kind":"summary""#))
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
-    assert!(summary.contains(r#""total":15"#), "{summary}");
+    assert!(summary.contains(r#""total":21"#), "{summary}");
 }
 
 /// A returned list renders as a JSON array (insertion order) under `--format jsonl`
@@ -132,8 +132,8 @@ fn a_returned_map_renders_in_ascending_key_order() {
 
 pub fn scores(): Map<string, int> {
     var m: Map<string, int> = Map()
-    m = insert(m, "grace", 12)
-    m = insert(m, "ada", 10)
+    m["grace"] = 12
+    m["ada"] = 10
     return m
 }
 "#,
@@ -201,12 +201,12 @@ fn a_bare_constructor_without_expected_type_is_a_check_type() {
     }
 }
 
-/// A non-key map key type (a struct), an `append` on a map, a `get` on a list, and a
-/// wrong-typed element are typed diagnostics, not silent acceptance.
+/// A non-key map key type (a struct), an `append` on a map, and a wrong-typed
+/// element are typed diagnostics, not silent acceptance.
 #[test]
 fn misused_collection_operations_are_typed_diagnostics() {
     // A struct key type is not admitted: `check.unsupported` at the annotation.
-    let cases: [(&str, &str); 4] = [
+    let cases: [(&str, &str); 3] = [
         (
             r#"struct P {
     x: int
@@ -223,15 +223,6 @@ pub fn f(): int {
             r#"pub fn f(): int {
     var m: Map<string, int> = Map()
     m = append(m, 1)
-    return 0
-}
-"#,
-            "check.unsupported",
-        ),
-        (
-            r#"pub fn f(): int {
-    var xs: List<int> = List()
-    const v = get(xs, 0)
     return 0
 }
 "#,

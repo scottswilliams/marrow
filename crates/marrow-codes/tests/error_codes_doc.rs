@@ -28,3 +28,19 @@ fn error_codes_doc_is_generated_from_registry() {
          MARROW_UPDATE_ERROR_CODES=1 and review the diff as a contract change."
     );
 }
+
+/// Marrow has no out-of-bounds fault class: a local bracket read yields the
+/// presence-typed optional (absent when out of range), never a fault. No registered
+/// `run.*` code is an out-of-bounds/collection-range fault. This absence is an
+/// enforcement artifact — reintroducing such a code fails this test.
+#[test]
+fn no_out_of_bounds_fault_code_is_registered() {
+    for code in marrow_codes::Code::ALL {
+        let name = code.as_str();
+        assert!(
+            !name.contains("collection_range") && !name.contains("out_of_bounds"),
+            "an out-of-bounds fault code `{name}` is registered; a bracket read \
+             yields the optional, so no such fault class exists"
+        );
+    }
+}

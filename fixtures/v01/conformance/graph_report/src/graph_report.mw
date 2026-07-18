@@ -36,7 +36,7 @@ enum Role {
 // Read a map value or a fallback when the key is absent. One helper serves the
 // degree maps (`int`) and the reachability/visited maps (`bool`).
 fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {
-    return get(m, key) ?? fallback
+    return m[key] ?? fallback
 }
 
 // Whether `s` begins with `prefix`. The text floor has no `startsWith`, so this
@@ -100,7 +100,7 @@ fn roleName(r: Role): string {
 // nothing stops. At most `nodeCount` passes add a node, so the loop terminates.
 fn reachableFrom(edges: List<Edge>, start: string, nodeCount: int): Map<string, bool> {
     var reached: Map<string, bool> = Map()
-    reached = insert(reached, start, true)
+    reached[start] = true
     var changed: bool = true
     var passes: int = 0
     while changed and passes <= nodeCount {
@@ -109,7 +109,7 @@ fn reachableFrom(edges: List<Edge>, start: string, nodeCount: int): Map<string, 
         for e in edges {
             if getOr(reached, e.src, false) {
                 if not getOr(reached, e.dst, false) {
-                    reached = insert(reached, e.dst, true)
+                    reached[e.dst] = true
                     changed = true
                 }
             }
@@ -134,7 +134,7 @@ fn topoOrder(edges: List<Edge>, nodes: Map<string, bool>, nodeCount: int): List<
         var remaining: Map<string, int> = Map()
         for e in edges {
             if not getOr(emitted, e.src, false) {
-                remaining = insert(remaining, e.dst, getOr(remaining, e.dst, 0) + 1)
+                remaining[e.dst] = getOr(remaining, e.dst, 0) + 1
             }
         }
         var ready: List<string> = List()
@@ -148,7 +148,7 @@ fn topoOrder(edges: List<Edge>, nodes: Map<string, bool>, nodeCount: int): List<
         } else {
             for n in ready {
                 order = append(order, n)
-                emitted = insert(emitted, n, true)
+                emitted[n] = true
                 count += 1
             }
         }
@@ -175,7 +175,7 @@ fn bulletLines(xs: List<string>): string {
 fn missingFrom(order: List<string>, nodes: Map<string, bool>): List<string> {
     var inOrder: Map<string, bool> = Map()
     for n in order {
-        inOrder = insert(inOrder, n, true)
+        inOrder[n] = true
     }
     var missing: List<string> = List()
     for n in nodes {
@@ -245,25 +245,25 @@ pub fn report(input: string): string {
                     } else if isEmpty(left) {
                         root = right
                         hasRoot = true
-                        nodes = insert(nodes, right, true)
+                        nodes[right] = true
                     } else if isEmpty(right) {
-                        nodes = insert(nodes, left, true)
+                        nodes[left] = true
                     } else {
                         const key = left + " -> " + right
                         if not getOr(seen, key, false) {
-                            seen = insert(seen, key, true)
+                            seen[key] = true
                             edges = append(edges, Edge(src: left, dst: right))
-                            nodes = insert(nodes, left, true)
-                            nodes = insert(nodes, right, true)
-                            outDeg = insert(outDeg, left, getOr(outDeg, left, 0) + 1)
-                            inDeg = insert(inDeg, right, getOr(inDeg, right, 0) + 1)
+                            nodes[left] = true
+                            nodes[right] = true
+                            outDeg[left] = getOr(outDeg, left, 0) + 1
+                            inDeg[right] = getOr(inDeg, right, 0) + 1
                         }
                     }
                 }
                 none => malformed += 1
             }
         } else {
-            nodes = insert(nodes, line, true)
+            nodes[line] = true
         }
     }
 
@@ -366,7 +366,7 @@ test "a self loop is a one-node cycle" {
 
 test "getOr falls back for an absent key" {
     var m: Map<string, int> = Map()
-    m = insert(m, "x", 5)
+    m["x"] = 5
     assert getOr(m, "x", 0) == 5
     assert getOr(m, "y", -1) == -1
 }

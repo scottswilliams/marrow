@@ -53,39 +53,114 @@ test "a list holds struct values" {
     assert sum == 10
 }
 
-test "an empty map has length zero and get returns absent" {
-    const m: Map<string, int> = Map()
-    assert length(m) == 0
-    assert isEmpty(m)
-    if const hit = get(m, "missing") {
+test "list positions are 1-based: first and last element identities" {
+    var xs: List<string> = List()
+    xs = append(xs, "a")
+    xs = append(xs, "b")
+    xs = append(xs, "c")
+    assert xs[1] ?? "" == "a"
+    assert xs[length(xs)] ?? "" == "c"
+}
+
+test "a computed out-of-range list index reads absent" {
+    var xs: List<int> = List()
+    xs = append(xs, 10)
+    xs = append(xs, 20)
+    var zero: int = 0
+    if const miss = xs[zero] {
+        assert false
+    } else {
+        assert true
+    }
+    const past = length(xs) + 1
+    if const missPast = xs[past] {
         assert false
     } else {
         assert true
     }
 }
 
-test "insert then get returns the stored value" {
+test "every position in 1..=length reads a present element" {
+    var xs: List<int> = List()
+    xs = append(xs, 5)
+    xs = append(xs, 7)
+    xs = append(xs, 9)
+    var sum: int = 0
+    var seen: int = 0
+    var i: int = 1
+    while i <= length(xs) {
+        if const e = xs[i] {
+            sum += e
+            seen += 1
+        }
+        i += 1
+    }
+    assert seen == length(xs)
+    assert sum == 21
+}
+
+test "an empty map has length zero and a missing key reads absent" {
+    const m: Map<string, int> = Map()
+    assert length(m) == 0
+    assert isEmpty(m)
+    if const hit = m["missing"] {
+        assert false
+    } else {
+        assert true
+    }
+}
+
+test "a bracket assignment then lookup returns the stored value" {
     var m: Map<string, int> = Map()
-    m = insert(m, "ada", 10)
-    m = insert(m, "grace", 12)
+    m["ada"] = 10
+    m["grace"] = 12
     assert length(m) == 2
-    const hit = get(m, "grace") ?? 0
+    const hit = m["grace"] ?? 0
     assert hit == 12
 }
 
-test "insert replaces the value at an existing key" {
+test "a bracket assignment replaces the value at an existing key" {
     var m: Map<string, int> = Map()
-    m = insert(m, "k", 1)
-    m = insert(m, "k", 9)
+    m["k"] = 1
+    m["k"] = 9
     assert length(m) == 1
-    assert get(m, "k") ?? 0 == 9
+    assert m["k"] ?? 0 == 9
+}
+
+test "a Map<int, V> admits the key zero" {
+    var m: Map<int, int> = Map()
+    m[0] = 100
+    assert m[0] ?? -1 == 100
+}
+
+test "a copied map does not alias its source" {
+    var a: Map<string, int> = Map()
+    a["k"] = 1
+    var b = a
+    b["k"] = 9
+    assert a["k"] ?? 0 == 1
+    assert b["k"] ?? 0 == 9
+}
+
+test "durable positions round-trip through a hole-preserving Map<int, string>" {
+    var byPos: Map<int, string> = Map()
+    byPos[1] = "ada"
+    byPos[3] = "grace"
+    assert byPos[1] ?? "" == "ada"
+    assert byPos[3] ?? "" == "grace"
+    if const hole = byPos[2] {
+        assert false
+    } else {
+        assert true
+    }
+    assert length(byPos) == 2
 }
 
 test "map iteration visits keys in ascending order" {
     var m: Map<int, int> = Map()
-    m = insert(m, 3, 30)
-    m = insert(m, 1, 10)
-    m = insert(m, 2, 20)
+    m[3] = 30
+    m[1] = 10
+    m[2] = 20
     var keyOrder: int = 0
     var valueSum: int = 0
     for k, v in m {
@@ -98,8 +173,8 @@ test "map iteration visits keys in ascending order" {
 
 test "map key-only iteration binds keys in order" {
     var m: Map<int, string> = Map()
-    m = insert(m, 2, "b")
-    m = insert(m, 1, "a")
+    m[2] = "b"
+    m[1] = "a"
     var sum: int = 0
     for k in m {
         sum += k
@@ -112,9 +187,8 @@ test "a map value may itself be a list" {
     var xs: List<int> = List()
     xs = append(xs, 5)
     xs = append(xs, 6)
-    m = insert(m, "row", xs)
-    const got = get(m, "row")
-    if const row = got {
+    m["row"] = xs
+    if const row = m["row"] {
         assert length(row) == 2
     } else {
         assert false

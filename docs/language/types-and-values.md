@@ -648,20 +648,43 @@ field or store key is not a `List` or `Map`.
 
 An empty collection is constructed with `List()` or `Map()`, whose element and
 key/value types come from the expected type (an annotation, argument, return type,
-or coercion). The closed set of collection operations is procedural — there is no
+or coercion). The closed set of procedural collection operations — there is no
 method syntax:
 
 | Form | Result |
 |---|---|
 | `List()` / `Map()` | an empty collection of the expected type |
 | `append(list, value)` | the list with `value` added after the last element |
-| `insert(map, key, value)` | the map with `value` stored at `key` (replacing any prior value) |
-| `get(map, key)` | `V?` — the value at `key`, or `absent` |
 | `length(collection)` | the element or entry count as an `int` |
 | `isEmpty(collection)` | whether the collection has no elements |
 
-Because collections are values, `append` and `insert` yield an updated collection
-rather than mutating in place; a `var` binding is reassigned to keep it.
+Because collections are values, `append` yields an updated collection rather than
+mutating in place; a `var` binding is reassigned to keep it.
+
+### Bracket lookup and assignment
+
+A collection is read and a map is written with bracket syntax, the same keyed
+spelling as a durable place — local and durable data obey one presence algebra,
+and the `^` alone marks which touches the store. A bracket read yields the
+presence-typed optional consumed by `??`, `if const`, let-else, and an `else`
+clause; there is no out-of-bounds fault class.
+
+- `xs[i]` is the element at list position `i`, typed `T?`. List positions are
+  1-based: `xs[1]` is the first element and `xs[length(xs)]` is the last. A
+  position outside `1..=length(xs)` reads `absent`. The literal dead indexes
+  `xs[0]` and `xs[-1]` are refused at check time with a `check.type` diagnostic,
+  because a literal `0` or negative names no position.
+- `m[k]` is the value stored at key `k`, typed `V?` — present when the key is in
+  the map, `absent` otherwise. A `Map<int, V>` key of `0` is an ordinary key, not a
+  dead index.
+- `m[k] = value` on a `var` map binding creates or replaces the value at `k`. It is
+  total except the `run.collection_limit` growth bound, and lowers as a
+  read-modify-write with value semantics. A `const` binding is not reassignable.
+  A list has no keyed write: `xs[i] = value` is a `check.type` diagnostic naming
+  `append(xs, value)` for growth and `Map<int, T>` for replacement at a position.
+
+Removing a map key (`unset m[k]`) and a nested bracket target (`outer[k1][k2] =
+value`) are not yet admitted.
 
 ```mw
 module docs::collections
@@ -677,10 +700,14 @@ pub fn total(): int {
     return sum
 }
 
+pub fn firstOr(xs: List<string>, fallback: string): string {
+    return xs[1] ?? fallback
+}
+
 pub fn lookup(name: string): int {
     var scores: Map<string, int> = Map()
-    scores = insert(scores, "ada", 10)
-    return get(scores, name) ?? 0
+    scores["ada"] = 10
+    return scores[name] ?? 0
 }
 ```
 
@@ -691,8 +718,8 @@ numeric keys ascend, `false` precedes `true`, and strings and bytes use
 lexicographic order.
 
 A collection has fixed representational bounds: at most 65536 elements and at most
-1 MiB of aggregate value size. An `append` or `insert` that would exceed either
-faults `run.collection_limit` rather than allocating unboundedly.
+1 MiB of aggregate value size. An `append` or a `m[k] = value` insert that would
+exceed either faults `run.collection_limit` rather than allocating unboundedly.
 
 ## Key Types
 

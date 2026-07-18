@@ -169,8 +169,8 @@ fn a_date_keyed_map_iterates_in_date_order() {
 
 pub fn schedule(): Map<date, int> {
     var m: Map<date, int> = Map()
-    m = insert(m, date("2026-07-25"), 2)
-    m = insert(m, date("2026-07-15"), 1)
+    m[date("2026-07-25")] = 2
+    m[date("2026-07-15")] = 1
     return m
 }
 "#,

@@ -88,13 +88,14 @@ pub fn rejoin(row: string): string {
 
 ## Collections
 
-The finite collection types `List<T>` and `Map<K, V>` are built and read through a
-closed set of procedural built-ins — there is no method syntax. `List()`/`Map()`
-construct an empty collection of the expected type; `append`/`insert` add elements
-and yield the updated collection (collections are values); `get` looks a key up;
-`length`/`isEmpty` report size. See
-[Lists and maps](types-and-values.md#lists-and-maps) for the full table and value
-semantics.
+The finite collection types `List<T>` and `Map<K, V>` are built through a closed
+set of procedural built-ins — there is no method syntax. `List()`/`Map()`
+construct an empty collection of the expected type; `append` adds an element and
+yields the updated list (collections are values); `length`/`isEmpty` report size.
+A collection is read with bracket lookup (`xs[i]`, `m[k]`, each yielding the
+presence-typed optional) and a map is written with bracket assignment (`m[k] =
+value`). See [Lists and maps](types-and-values.md#lists-and-maps) for the full
+table, the 1-based list positions, and value semantics.
 
 ```mw
 module docs::collection_builtins
@@ -114,10 +115,10 @@ The collection constructors `List` and `Map`, together with the text floor names
 `isEmpty`, `contains`, `trim`, `split`, `lines`, and `join`, are reserved: a
 `fn`, `const`, parameter, or local binding may not redeclare them, because a bare
 use of one of these names always resolves to the built-in. The collection
-operations `append`, `insert`, `get`, and `length` are deliberately *not*
-reserved — they are common verbs — so a same-module function of one of those
-names is admitted, wins at every call site in that module, and totally shadows
-the built-in collection operation there.
+operations `append` and `length` are deliberately *not* reserved — they are common
+verbs — so a same-module function of one of those names is admitted, wins at every
+call site in that module, and totally shadows the built-in collection operation
+there.
 
 ## Positional Append
 

@@ -277,6 +277,9 @@ pub enum SealedInstr {
     ListLen,
     /// `[list, int] → [element]`: the bare element at the 0-based index.
     ListGet,
+    /// `[list, int] → [element?]`: the 1-based local bracket read `xs[i]`, absent
+    /// outside `1..=length`. No out-of-bounds fault class.
+    ListIndex,
     /// Push an empty `Map` of COLLTYPES index `_0`.
     MapNew(u16),
     /// `[map, key, value] → [map]`: insert or replace by key in key order.

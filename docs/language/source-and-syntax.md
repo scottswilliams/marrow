@@ -162,8 +162,10 @@ and plural spellings. Months and years are not fixed durations.
 ## Collection And Resource Construction
 
 Lists and maps are introduced by `var` declarations, constructed with `List()`
-or `Map()`, and grown with `append` or `insert`; because collections are values,
-each operation yields an updated collection that the binding is reassigned to.
+or `Map()`, and grown with `append`; because collections are values, each `append`
+yields an updated collection that the binding is reassigned to. A map value is set
+with the bracket assignment `m[k] = value` and both are read with bracket lookup
+(`xs[i]`, `m[k]`).
 Resource constructors name the resource and use named members.
 
 ```mw

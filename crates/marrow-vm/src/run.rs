@@ -928,10 +928,25 @@ fn execute<'s>(
             SealedInstr::ListGet => {
                 let index = pop_int(&mut stack);
                 let (_, items) = as_list(pop(&mut stack));
-                match usize::try_from(index).ok().and_then(|i| items.get(i)) {
-                    Some(value) => stack.push(value.clone()),
-                    None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
-                }
+                // Emitted only by positional `for` lowering, which drives the index
+                // over `0..length`, so the element is always present.
+                let Some(value) = usize::try_from(index).ok().and_then(|i| items.get(i)) else {
+                    unreachable!("positional `for` lowering keeps the index in bounds");
+                };
+                stack.push(value.clone());
+                pc += 1;
+            }
+            SealedInstr::ListIndex => {
+                // The source-level `xs[i]` read: 1-based, yielding the optional element.
+                // An index outside `1..=length` is absent — no out-of-bounds fault.
+                let index = pop_int(&mut stack);
+                let (_, items) = as_list(pop(&mut stack));
+                let element = index
+                    .checked_sub(1)
+                    .and_then(|zero_based| usize::try_from(zero_based).ok())
+                    .and_then(|i| items.get(i))
+                    .map(|value| Box::new(value.clone()));
+                stack.push(Value::Optional(element));
                 pc += 1;
             }
             SealedInstr::MapNew(idx) => {
@@ -990,19 +1005,25 @@ fn execute<'s>(
             SealedInstr::MapKeyAt => {
                 let index = pop_int(&mut stack);
                 let (_, entries) = as_map(pop(&mut stack));
-                match usize::try_from(index).ok().and_then(|i| entries.get(i)) {
-                    Some((key, _)) => stack.push(key_to_value(key.clone())),
-                    None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
-                }
+                // Emitted only by positional map `for` lowering, which drives the index
+                // over `0..length`, so the entry is always present.
+                let Some((key, _)) = usize::try_from(index).ok().and_then(|i| entries.get(i))
+                else {
+                    unreachable!("positional `for` lowering keeps the index in bounds");
+                };
+                stack.push(key_to_value(key.clone()));
                 pc += 1;
             }
             SealedInstr::MapValueAt => {
                 let index = pop_int(&mut stack);
                 let (_, entries) = as_map(pop(&mut stack));
-                match usize::try_from(index).ok().and_then(|i| entries.get(i)) {
-                    Some((_, value)) => stack.push(value.clone()),
-                    None => return Err(fault(function, pc, Code::RunCollectionRange.as_str())),
-                }
+                // Emitted only by positional map `for` lowering, which drives the index
+                // over `0..length`, so the entry is always present.
+                let Some((_, value)) = usize::try_from(index).ok().and_then(|i| entries.get(i))
+                else {
+                    unreachable!("positional `for` lowering keeps the index in bounds");
+                };
+                stack.push(value.clone());
                 pc += 1;
             }
             SealedInstr::DurIterateBounded {

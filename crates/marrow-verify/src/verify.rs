@@ -33,9 +33,9 @@ use marrow_image::{
     OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT,
     OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED,
     OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE,
-    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET,
-    OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW,
-    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_LIST_APPEND, OP_LIST_GET, OP_LIST_INDEX, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET,
+    OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
+    OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
     OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
@@ -3900,6 +3900,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_LIST_APPEND => SealedInstr::ListAppend,
             OP_LIST_LEN => SealedInstr::ListLen,
             OP_LIST_GET => SealedInstr::ListGet,
+            OP_LIST_INDEX => SealedInstr::ListIndex,
             OP_MAP_NEW => SealedInstr::MapNew(operand_u16(&mut reader)?),
             OP_MAP_INSERT => SealedInstr::MapInsert,
             OP_MAP_GET => SealedInstr::MapGet,
@@ -4634,6 +4635,16 @@ fn apply(
                 .push(VType::from_image(elem).expect("a list element type is never unit"));
             return Ok(Control::Fallthrough);
         }
+        SealedInstr::ListIndex => {
+            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+            let (_, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
+            frame.stack.push(
+                VType::from_image(elem)
+                    .expect("a list element type is never unit")
+                    .to_optional(),
+            );
+            return Ok(Control::Fallthrough);
+        }
         SealedInstr::MapInsert => {
             let value = pop(&mut frame.stack)?;
             let key = pop(&mut frame.stack)?;
@@ -4987,6 +4998,7 @@ fn apply(
         | SealedInstr::ListAppend
         | SealedInstr::ListLen
         | SealedInstr::ListGet
+        | SealedInstr::ListIndex
         | SealedInstr::MapNew(_)
         | SealedInstr::MapInsert
         | SealedInstr::MapGet
@@ -5214,6 +5226,7 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         | SealedInstr::ListAppend
         | SealedInstr::ListLen
         | SealedInstr::ListGet
+        | SealedInstr::ListIndex
         | SealedInstr::MapNew(_)
         | SealedInstr::MapInsert
         | SealedInstr::MapGet

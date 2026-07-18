@@ -67,7 +67,7 @@ pub fn wardOf(pid: Id(^patients), wards: Map<string, string>): Result<string, st
     if not exists(^patients[pid]) { return err("unknown patient") }
     const name = ^patients[pid].name else return err("patient has no name")
     const code = ^patients[pid].wardCode else return err($"{name} has no ward")
-    const ward = get(wards, code) ?? "(unassigned)"
+    const ward = wards[code] ?? "(unassigned)"
     return ok(ward)
 }
 ```

@@ -76,9 +76,9 @@ given name. Recursion is not admitted: a function may not call itself, directly
 or through a cycle of other functions; the direct-call graph is acyclic.
 
 A function may not reuse a reserved built-in name (`List`, `Map`, the text floor,
-and the value constructors); the common collection verbs `append`, `insert`,
-`get`, and `length` are not reserved, so declaring one shadows the corresponding
-built-in throughout that module (see [Built-ins](builtins.md#collections)).
+and the value constructors); the common collection verbs `append` and `length`
+are not reserved, so declaring one shadows the corresponding built-in throughout
+that module (see [Built-ins](builtins.md#collections)).
 
 ## Generic Functions
 

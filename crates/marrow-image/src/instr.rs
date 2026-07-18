@@ -123,6 +123,10 @@ pub const OP_MAP_VALUE_AT: u8 = 0x99;
 pub const OP_TEXT_SPLIT: u8 = 0x9A;
 pub const OP_TEXT_LINES: u8 = 0x9B;
 pub const OP_TEXT_JOIN: u8 = 0x9C;
+// The source-level local list bracket read `xs[i]`: a 1-based keyed lookup yielding
+// the optional element. No out-of-bounds fault class exists; an index outside
+// `1..=length` yields absent.
+pub const OP_LIST_INDEX: u8 = 0x9D;
 // Temporal comparison and equality. Operands are two bare temporals of the named
 // type; the result is a bool. The order agrees with the kernel key-codec byte order
 // (pinned in `marrow-vm`'s `temporal_order_agreement` test).
@@ -417,9 +421,14 @@ pub enum Instr {
     /// `[list] → [int]`: the element count.
     ListLen,
     /// `[list, int] → [element]`: the bare element at the 0-based index. The
-    /// verifier proves the element type; the VM faults `run.collection_range` on an
-    /// out-of-range index (defense in depth — the compiler's loop stays in bounds).
+    /// verifier proves the element type. Emitted only by the compiler's positional
+    /// `for` lowering, which keeps every index in `0..length`, so the read is total.
     ListGet,
+    /// `[list, int] → [element?]`: the source-level local list bracket read `xs[i]`.
+    /// The index is 1-based (position `1` is the first element); an index outside
+    /// `1..=length` yields absent. Marrow has no out-of-bounds fault class, so this
+    /// read never faults.
+    ListIndex,
     /// Push an empty `Map` of the COLLTYPES index `_0`.
     MapNew(u16),
     /// `[map, key, value] → [map']`: insert or replace the value at `key`, keeping
@@ -547,6 +556,7 @@ impl Instr {
             Instr::ListAppend => OP_LIST_APPEND,
             Instr::ListLen => OP_LIST_LEN,
             Instr::ListGet => OP_LIST_GET,
+            Instr::ListIndex => OP_LIST_INDEX,
             Instr::MapNew(_) => OP_MAP_NEW,
             Instr::MapInsert => OP_MAP_INSERT,
             Instr::MapGet => OP_MAP_GET,

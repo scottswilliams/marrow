@@ -981,6 +981,7 @@ fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::ListAppend
         | Instr::ListLen
         | Instr::ListGet
+        | Instr::ListIndex
         | Instr::MapNew(_)
         | Instr::MapInsert
         | Instr::MapGet
@@ -2092,6 +2093,16 @@ impl<'a> FnLowerer<'a> {
         } = target
         {
             self.lower_local_field_assign(base, name, *span, value);
+            return;
+        }
+        // `m[k] = value`: a keyed write on a local map, create-or-replace at the key
+        // (the same sentence as a durable keyed write, differing only by the `^`). A
+        // list has no keyed write; `xs[i] = value` is refused with a teaching diagnostic.
+        if let Expression::Keyed {
+            base, keys, span, ..
+        } = target
+        {
+            self.lower_local_bracket_write(base, keys, *span, value);
             return;
         }
         let Some((slot, ty, mutable, span, name)) = self.resolve_place(target) else {
@@ -4138,6 +4149,11 @@ impl<'a> FnLowerer<'a> {
             } => self.lower_optional_field(base, name, *span),
             Expression::Try { inner, span } => self.lower_try(inner, *span),
             Expression::Interpolation { parts, span } => self.lower_interpolation(parts, *span),
+            // A `Keyed` on a durable base was handled above; here the base is a local
+            // collection, so `xs[i]` / `m[k]` is a local bracket read yielding the optional.
+            Expression::Keyed {
+                base, keys, span, ..
+            } => self.lower_local_bracket_read(base, keys, *span),
             other => {
                 self.fail(unsupported(self.file, other.span(), "this expression"));
                 None
@@ -5033,10 +5049,11 @@ impl<'a> FnLowerer<'a> {
         None
     }
 
-    /// Resolve `append`/`insert`/`get`/`length` as collection operations, or `None`
-    /// when `name` is not one of them (so the caller reports it as an unknown name).
-    /// These are non-reserved fallbacks: a same-module function of the same name is
-    /// resolved before this is reached.
+    /// Resolve `append`/`length` as collection operations, or `None` when `name` is not
+    /// one of them (so the caller reports it as an unknown name). These are non-reserved
+    /// fallbacks: a same-module function of the same name is resolved before this is
+    /// reached. A map is read and written with bracket syntax (`m[k]`, `m[k] = v`), not
+    /// a `get`/`insert` builtin.
     fn lower_collection_fallback(
         &mut self,
         name: &str,
@@ -5045,8 +5062,6 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<Option<CallResult>> {
         let value = match name {
             "append" => self.lower_append(args, span),
-            "insert" => self.lower_insert(args, span),
-            "get" => self.lower_map_get(args, span),
             "length" => self.lower_length(args, span),
             _ => return None,
         };
@@ -7714,6 +7729,179 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Lower `length(x): int` over a finite collection: the element or entry count.
+    /// Lower a local bracket read `xs[i]` / `m[k]`: the base is a local collection and
+    /// the read yields the presence-typed optional (`T?` for a list element, `V?` for a
+    /// map value), joining the same presence family as sparse durable reads. A list
+    /// position is a 1-based key; the literal dead indexes `xs[0]` and `xs[-1]` are
+    /// refused with a teaching diagnostic, while a computed out-of-range index yields
+    /// absent — Marrow has no out-of-bounds fault class. A `Map<int, V>` key `0` is a
+    /// legitimate key, not a dead index.
+    fn lower_local_bracket_read(
+        &mut self,
+        base: &Expression,
+        keys: &[Expression],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let base_ty = self.lower_expr(base)?;
+        let LTy::Collection {
+            idx,
+            optional: false,
+        } = base_ty
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                base.span(),
+                format!(
+                    "a bracket lookup needs a list or map, found {}",
+                    base_ty.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        let [key] = keys else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a local bracket lookup takes exactly one key".to_string(),
+            ));
+            return None;
+        };
+        match self.records.collection_spec(idx) {
+            CollSpec::List { elem } => {
+                if let Some(index_text) = dead_list_index_literal(key) {
+                    let label = simple_base_label(base);
+                    let message = match label {
+                        Some(name) => format!(
+                            "list positions count from 1, so `{name}[{index_text}]` names no \
+                             position; the first element is `{name}[1]`"
+                        ),
+                        None => format!(
+                            "list positions count from 1, so index `{index_text}` names no \
+                             position; the first element is at position 1"
+                        ),
+                    };
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        key.span(),
+                        message,
+                    ));
+                    return None;
+                }
+                self.lower_as(key, LTy::bare_scalar(ScalarType::Int))?;
+                self.push(Instr::ListIndex, span);
+                Some(garg_to_lty(elem).to_optional())
+            }
+            CollSpec::Map { key: key_ty, value } => {
+                self.lower_as(key, garg_to_lty(key_ty))?;
+                self.push(Instr::MapGet, span);
+                Some(garg_to_lty(value).to_optional())
+            }
+        }
+    }
+
+    /// Lower a local keyed write `m[k] = value`: on a `var` map binding, create or
+    /// replace the value at the key (total, except the `run.collection_limit` growth
+    /// fault), lowered as a read-modify-write with value semantics — the same shape as
+    /// a durable keyed write, differing only by the absent `^`. A `const` binding gets
+    /// the ordinary assignment-to-const rejection. A list has no keyed write: `xs[i] =
+    /// value` is refused with a teaching diagnostic naming `append` and `Map<int, T>`.
+    /// One bracket group on a bare local binding; a nested or compound base is deferred.
+    fn lower_local_bracket_write(
+        &mut self,
+        base: &Expression,
+        keys: &[Expression],
+        span: SourceSpan,
+        value: &Expression,
+    ) {
+        let Expression::Name {
+            segments,
+            span: base_span,
+            ..
+        } = base
+        else {
+            self.fail(unsupported(
+                self.file,
+                base.span(),
+                "this assignment target",
+            ));
+            return;
+        };
+        let [name] = segments.as_slice() else {
+            self.fail(unsupported(self.file, *base_span, "this assignment target"));
+            return;
+        };
+        let Some(local) = self.lookup(name) else {
+            self.fail(name_error(self.file, *base_span, name));
+            return;
+        };
+        let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
+        let LTy::Collection {
+            idx,
+            optional: false,
+        } = ty
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                *base_span,
+                format!(
+                    "a bracket assignment needs a list or map, found {}",
+                    ty.spelling(self.records)
+                ),
+            ));
+            return;
+        };
+        let [key] = keys else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a local bracket assignment takes exactly one key".to_string(),
+            ));
+            return;
+        };
+        match self.records.collection_spec(idx) {
+            CollSpec::Map {
+                key: key_ty,
+                value: value_ty,
+            } => {
+                if !mutable {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *base_span,
+                        format!("`{name}` is a `const` and cannot be reassigned"),
+                    ));
+                    return;
+                }
+                self.push(Instr::LocalGet(slot), span);
+                if self.lower_as(key, garg_to_lty(key_ty)).is_none() {
+                    return;
+                }
+                if self.lower_as(value, garg_to_lty(value_ty)).is_none() {
+                    return;
+                }
+                self.push(Instr::MapInsert, span);
+                self.push(Instr::LocalSet(slot), span);
+            }
+            CollSpec::List { elem } => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "a list has no keyed write; grow it with `append({name}, <value>)`, \
+                         or use a `Map<int, {}>` for replacement at a position",
+                        garg_to_lty(elem).spelling(self.records)
+                    ),
+                ));
+            }
+        }
+    }
+
     fn lower_length(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
         let [arg] = args else {
             self.fail(builtin_arity(self.file, span, "length", 1));
@@ -7759,61 +7947,6 @@ impl<'a> FnLowerer<'a> {
             idx,
             optional: false,
         })
-    }
-
-    /// Lower `insert(map, key, value): Map<K, V>`: insert or replace `value` at
-    /// `key`, yielding the updated map. A non-map first argument, or a key/value not
-    /// of the map's types, is a typed diagnostic.
-    fn lower_insert(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
-        let [map_arg, key_arg, value_arg] = args else {
-            self.fail(builtin_arity(self.file, span, "insert", 3));
-            return None;
-        };
-        if args.iter().any(|arg| arg.name.is_some()) {
-            self.fail(builtin_arity(self.file, span, "insert", 3));
-            return None;
-        }
-        let idx = self.collection_arg(&map_arg.value)?;
-        let CollSpec::Map { key, value } = self.records.collection_spec(idx) else {
-            self.fail(unsupported(
-                self.file,
-                map_arg.value.span(),
-                "`insert` on a list (a list is grown with `append`)",
-            ));
-            return None;
-        };
-        self.lower_as(&key_arg.value, garg_to_lty(key))?;
-        self.lower_as(&value_arg.value, garg_to_lty(value))?;
-        self.push(Instr::MapInsert, span);
-        Some(LTy::Collection {
-            idx,
-            optional: false,
-        })
-    }
-
-    /// Lower `get(map, key): V?`: the value at `key`, present when the key is in the
-    /// map and absent otherwise (presence-typed per the `T?` primitive).
-    fn lower_map_get(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
-        let [map_arg, key_arg] = args else {
-            self.fail(builtin_arity(self.file, span, "get", 2));
-            return None;
-        };
-        if args.iter().any(|arg| arg.name.is_some()) {
-            self.fail(builtin_arity(self.file, span, "get", 2));
-            return None;
-        }
-        let idx = self.collection_arg(&map_arg.value)?;
-        let CollSpec::Map { key, value } = self.records.collection_spec(idx) else {
-            self.fail(unsupported(
-                self.file,
-                map_arg.value.span(),
-                "`get` on a list (a list has no key lookup)",
-            ));
-            return None;
-        };
-        self.lower_as(&key_arg.value, garg_to_lty(key))?;
-        self.push(Instr::MapGet, span);
-        Some(garg_to_lty(value).to_optional())
     }
 
     /// Lower an expression that must be a bare collection, returning its COLLTYPES
@@ -8983,6 +9116,46 @@ fn operator_symbol(op: BinaryOp) -> &'static str {
 
 pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
+}
+
+/// The rendered index text of a statically dead list index literal — `0` or any
+/// negative literal — or `None` when the key is not a dead-index literal. List
+/// positions are 1-based, so a literal `0` or negative names no position and is
+/// refused at check time; a positive literal past the length is not statically dead
+/// (the length is a runtime fact) and reads absent instead.
+fn dead_list_index_literal(key: &Expression) -> Option<String> {
+    match key {
+        Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            ..
+        } if parse_int(text) == Some(0) => Some("0".to_string()),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => match operand.as_ref() {
+            Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                ..
+            } => Some(format!("-{}", text.replace('_', ""))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The bare local name of a bracket base for a teaching diagnostic (`xs` in `xs[0]`),
+/// or `None` when the base is a compound expression that has no single-name spelling.
+fn simple_base_label(base: &Expression) -> Option<&str> {
+    match base {
+        Expression::Name { segments, .. } => match segments.as_slice() {
+            [name] => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic {
