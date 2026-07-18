@@ -7,10 +7,12 @@ no meaning of its own.
 
 ## Files And Modules
 
-A module source begins with one `module` declaration. The module path uses
-`::`-separated ASCII identifiers and normally matches the source path beneath a
-configured source root. A moduleless source file is accepted as a script by
-commands that provide script execution.
+Project source lives beneath the fixed `src` root. Each `.mw` path derives its
+namespace: for example, `src/shelf/books.mw` derives `shelf::books`. A reusable
+module begins with one `module` declaration that exactly matches that derived
+path. A headerless file is a script. It is checked in its path-derived namespace
+and cannot be imported with `use`; its command-line exports remain addressable
+under the corresponding dot-separated name.
 
 ```mw
 module docs::source
@@ -145,7 +147,7 @@ member or collection places may appear on the left of assignment.
 | String | `"text"`, `"line\n"` | UTF-8 text with escapes |
 | Interpolated string | `$"id: {id}"` | Expressions occur inside `{...}` |
 | Bytes | `b"Marrow"`, `b"\x00\xff"` | Byte string |
-| Duration | `duration("PT600S")` | Canonical text constructor (see [temporal values](types-and-values.md#temporal-values)) |
+| Duration | `duration("PT600S")` | Canonical text constructor (see [temporal types](types-and-values.md#temporal-types)) |
 | Absence | `absent` | The missing case of an optional value |
 
 String escapes are `\\`, `\"`, `\n`, `\r`, `\t`, and `\u{H}`, where `H` is one to

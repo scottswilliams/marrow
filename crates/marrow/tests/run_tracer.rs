@@ -1198,43 +1198,6 @@ fn an_absent_optional_return_renders_absent() {
     assert_eq!(run_records("maybe"), "absent\n");
 }
 
-#[test]
-fn a_qualified_export_in_a_second_module_runs() {
-    // Two modules, each with its own public export. The export in `src/math.mw`
-    // (module `math`) is invoked by its qualified `module.item` path through the
-    // export directory, resolved to its `ExportId`, and looked up in the image by
-    // that verified id — never by a source-string dispatch on the name.
-    let temp = TempDir::new("qualified-export");
-    write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
-    write(
-        &temp.join("src").join("main.mw"),
-        r#"pub fn start(): int {
-    return 1
-}
-"#,
-    );
-    write(
-        &temp.join("src").join("math.mw"),
-        r#"pub fn two(): int {
-    return 2
-}
-"#,
-    );
-
-    let output = run_in(&temp, &["run", "math.two"]);
-    assert!(
-        output.status.success(),
-        "qualified run failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
-
-    // The other module's export resolves by its own qualified path too.
-    let start = run_in(&temp, &["run", "main.start"]);
-    assert!(start.status.success(), "{start:?}");
-    assert_eq!(String::from_utf8_lossy(&start.stdout), "1\n");
-}
-
 // --- Module constants (C00). ---
 
 #[test]
@@ -1363,7 +1326,7 @@ pub fn run(): int {
 
 // --- Module-scoped call resolution and `use` imports (C00). ---
 
-/// Write a `marrow.toml` and the named `(relative path, source)` modules under a
+/// Write a `marrow.toml` and the named `(relative path, source)` files under a
 /// fresh temp project, returning it.
 fn multi_module(name: &str, modules: &[(&str, &str)]) -> TempDir {
     let temp = TempDir::new(name);
@@ -1585,9 +1548,26 @@ pub fn run(): int {
 }
 
 #[test]
-fn a_headerless_path_derived_module_can_be_imported() {
+fn a_headerless_script_export_runs_by_its_path_derived_name() {
     let temp = multi_module(
-        "headerless-module-import",
+        "headerless-script-export",
+        &[(
+            "tools/math.mw",
+            r#"pub fn two(): int {
+    return 2
+}
+"#,
+        )],
+    );
+    let output = run_in(&temp, &["run", "tools.math.two"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+}
+
+#[test]
+fn a_headerless_script_is_not_importable_by_module_path() {
+    let temp = multi_module(
+        "script-not-importable",
         &[
             (
                 "lib.mw",
@@ -1609,12 +1589,7 @@ pub fn run(): int {
             ),
         ],
     );
-    let output = run_in(&temp, &["run", "main.run", "--format", "jsonl"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "{\"data\":1,\"kind\":\"run\",\"outcome\":\"value\"}\n"
-    );
+    assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
 }
 
 #[test]

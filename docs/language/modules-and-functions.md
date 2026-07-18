@@ -13,10 +13,11 @@ module shelf::books
 
 The module path is the source-root-relative file path with `/` replaced by
 `::` and `.mw` removed. The declaration in `shelf/books.mw` must therefore be
-`module shelf::books`. One file defines one module.
+`module shelf::books`. The matching header makes the file importable as that
+module.
 
 A file without a `module` declaration is a single-file script. It is checked in
-its own namespace and is not imported by module path.
+its path-derived namespace and is not imported by module path.
 
 ## Imports
 
