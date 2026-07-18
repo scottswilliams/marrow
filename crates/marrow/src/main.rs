@@ -27,8 +27,8 @@ Usage:
   marrow --help
 
 This is the beta line's thin CLI. `init` creates a new project (a manifest and a
-contained src tree). `fmt` formats a single Marrow source file, or every module
-of a project directory, through the retained formatter. `run` compiles the
+contained src tree). `fmt` formats every captured source file in a project
+directory, or one Marrow source file, through the retained formatter. `run` compiles the
 project at the working directory, verifies the program image, and runs an
 exported function. `test` discovers `test \"name\"` declarations, runs each
 storeless through the verified image, and reports pass/fail/error. `client

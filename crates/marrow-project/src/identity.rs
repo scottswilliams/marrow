@@ -4,9 +4,10 @@
 //! A project's source lives under one fixed root directory, [`SOURCE_ROOT`]. A
 //! captured file's identity is its canonical root-relative path — always
 //! forward-slash separated, under `src`, a `.mw` file, with no empty, `.`, or
-//! `..` segment. The module name a file declares is derived once from that path:
-//! `src/foo/bar.mw` names module `foo.bar`. There is no in-source module header
-//! and no single-file fallback; the path is the sole source of module identity.
+//! `..` segment. A file's module identity is derived once from that path:
+//! `src/foo/bar.mw` names module `foo.bar`. An importable source file carries a
+//! matching in-source header. A headerless script keeps its path-derived identity
+//! for export lookup but cannot be imported.
 
 /// The fixed directory every project's source lives under. A captured identity
 /// that does not begin here is outside the source root and cannot name a module.
@@ -87,8 +88,8 @@ impl FileIdentity {
     }
 }
 
-/// The dotted module name a file declares, such as `foo.bar`, derived from its
-/// path under the source root. Constructed only alongside a [`FileIdentity`].
+/// The path-derived dotted module name, such as `foo.bar`. Constructed only
+/// alongside a [`FileIdentity`].
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ModuleName(String);
 
@@ -99,7 +100,7 @@ impl ModuleName {
     }
 }
 
-/// Why a caller-supplied path cannot name a contained source module.
+/// Why a caller-supplied path cannot name a contained source file.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SourcePathReason {
     /// The path is absolute; identities are project-root-relative.

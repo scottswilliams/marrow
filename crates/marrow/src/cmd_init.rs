@@ -23,7 +23,7 @@ Usage:
 
 Create a new Marrow project directory. The target directory must not already
 exist. `marrow init` writes a `marrow.toml` manifest and a contained `src` tree
-with a starter module; it creates no store.
+with a headerless script; it creates no store.
 ";
 
 pub(crate) fn init(args: &[String]) -> ExitCode {
@@ -107,7 +107,7 @@ fn scaffold(root: &Path) -> io::Result<()> {
     }
     fs::create_dir(root.join("src"))?;
     write_new(root.join(MANIFEST_FILE), &manifest_source())?;
-    write_new(root.join("src").join("main.mw"), STARTER_MODULE)?;
+    write_new(root.join("src").join("main.mw"), STARTER_SCRIPT)?;
     Ok(())
 }
 
@@ -115,9 +115,9 @@ fn manifest_source() -> String {
     format!("edition = \"{}\"\n", Edition::CURRENT.as_str())
 }
 
-/// The starter module a fresh project contains. It parses cleanly and is already
+/// The headerless script a fresh project contains. It parses cleanly and is already
 /// formatted, so `marrow fmt --check` on a fresh project passes.
-const STARTER_MODULE: &str = "pub fn main() {\n    return\n}\n";
+const STARTER_SCRIPT: &str = "pub fn main() {\n    return\n}\n";
 
 fn write_new(path: PathBuf, contents: &str) -> io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;

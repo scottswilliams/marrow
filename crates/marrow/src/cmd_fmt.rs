@@ -36,8 +36,8 @@ pub(crate) fn fmt(args: &[String]) -> ExitCode {
 Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
 
-Format a Marrow source file or every module of a project directory. For a single
-file with no flag, print the formatted source to stdout. --check exits non-zero
+Format a Marrow source file or every captured source file of a project directory.
+For a single file with no flag, print the formatted source to stdout. --check exits non-zero
 if a file is not already formatted; --write rewrites it in place. For a project
 directory, no flag checks without writing. `marrow fmt` does not read from stdin.
 "
@@ -68,7 +68,7 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
         return ExitCode::from(2);
     };
     let target_path = Path::new(&target);
-    // A directory target formats every module of the project through the captured
+    // A directory target formats every captured source file through the
     // `ProjectInput`, so file discovery and identity have exactly one owner.
     if target_path.is_dir() {
         return fmt_project(target_path, mode);
@@ -90,10 +90,10 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
     }
 }
 
-/// Format every module of the project rooted at `dir` through the captured
+/// Format every captured source file of the project rooted at `dir` through the
 /// `ProjectInput`. Print mode has no single output stream for a whole project, so
 /// it degrades to the non-destructive `--check` behavior; `--write` rewrites each
-/// unformatted module in place. The command fails if any module does not parse or,
+/// unformatted source file in place. The command fails if any source does not parse or,
 /// under check, is not already formatted.
 fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
     let input = match crate::project::capture_project(dir) {

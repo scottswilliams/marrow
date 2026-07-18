@@ -64,11 +64,78 @@ fn init_creates_a_manifest_and_src_tree() {
 
     let manifest = fs::read_to_string(project.join("marrow.toml")).expect("manifest written");
     assert_eq!(manifest, "edition = \"2026\"\n");
-    assert!(project.join("src").join("main.mw").is_file());
+    assert_eq!(
+        fs::read(project.join("src").join("main.mw")).expect("starter script written"),
+        b"pub fn main() {\n    return\n}\n"
+    );
     assert!(
         !project.join("marrow.lock").exists(),
         "init creates no store artifacts"
     );
+}
+
+#[test]
+fn project_help_describes_captured_source_files_and_the_headerless_script() {
+    let root_help = run(&["--help"]);
+    assert!(root_help.status.success(), "{root_help:?}");
+    let root_stdout = String::from_utf8(root_help.stdout).expect("root help is UTF-8");
+    assert!(
+        root_stdout.contains("every captured source file"),
+        "{root_stdout}"
+    );
+
+    let init_help = run(&["init", "--help"]);
+    assert!(init_help.status.success(), "{init_help:?}");
+    let init_stdout = String::from_utf8(init_help.stdout).expect("init help is UTF-8");
+    assert!(init_stdout.contains("headerless script"), "{init_stdout}");
+
+    let fmt_help = run(&["fmt", "--help"]);
+    assert!(fmt_help.status.success(), "{fmt_help:?}");
+    let fmt_stdout = String::from_utf8(fmt_help.stdout).expect("fmt help is UTF-8");
+    assert!(
+        fmt_stdout.contains("every captured source file"),
+        "{fmt_stdout}"
+    );
+}
+
+#[test]
+fn source_owner_wording_does_not_restore_the_stale_module_script_law() {
+    const OWNER_SOURCES: &[(&str, &str)] = &[
+        (
+            "crates/marrow-project/src/identity.rs",
+            include_str!("../../marrow-project/src/identity.rs"),
+        ),
+        (
+            "crates/marrow-project/AGENTS.md",
+            include_str!("../../marrow-project/AGENTS.md"),
+        ),
+        ("crates/marrow/src/main.rs", include_str!("../src/main.rs")),
+        (
+            "crates/marrow/src/cmd_init.rs",
+            include_str!("../src/cmd_init.rs"),
+        ),
+        (
+            "crates/marrow/src/cmd_fmt.rs",
+            include_str!("../src/cmd_fmt.rs"),
+        ),
+    ];
+    const STALE_PHRASES: &[&str] = &[
+        "every module of a project",
+        "every module of the project",
+        "starter module",
+        "no in-source module header",
+        "single-file fallback",
+    ];
+
+    for (path, source) in OWNER_SOURCES {
+        let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
+        for stale in STALE_PHRASES {
+            assert!(
+                !normalized.contains(stale),
+                "{path} retains stale source-owner wording: {stale}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -122,11 +189,11 @@ fn a_failed_init_leaves_no_debris_and_a_retry_succeeds() {
 }
 
 #[test]
-fn fmt_project_checks_and_writes_every_module() {
+fn fmt_project_checks_and_writes_every_captured_source_file() {
     let temp = TempDir::new("fmt-project");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
-    // A deliberately misformatted module (over-indented body the formatter normalizes
+    // A deliberately misformatted source file (over-indented body the formatter normalizes
     // back to the canonical single indent).
     write(
         &project.join("src").join("main.mw"),
@@ -140,7 +207,7 @@ fn fmt_project_checks_and_writes_every_module() {
 "#,
     );
 
-    // --check reports the unformatted module and fails.
+    // --check reports the unformatted source file and fails.
     let checked = run(&["fmt", "--check", project.to_str().unwrap()]);
     assert!(
         !checked.status.success(),
@@ -249,7 +316,7 @@ fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
 
-    // An external tree with an unformatted module, reachable only through the
+    // An external tree with an unformatted source file, reachable only through the
     // symlinked root.
     let external = temp.join("external");
     let stray = r#"pub fn stray() {
