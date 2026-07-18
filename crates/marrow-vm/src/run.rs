@@ -14,7 +14,8 @@ use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{BoundedLimit, CommitResult, Durable, EntryValue, Presence};
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
-    SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget, VerifiedImage,
+    FunctionIndex, SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget,
+    VerifiedImage,
 };
 
 use crate::fault::RuntimeFault;
@@ -51,7 +52,7 @@ const MAX_AGGREGATE_BYTES: usize = 1 << 20;
 /// durable export (its demand is nonempty); use [`run_durable`].
 pub fn run(
     image: &VerifiedImage,
-    func_index: u16,
+    func_index: FunctionIndex,
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let mut budget = INSTRUCTION_BUDGET;
@@ -63,7 +64,7 @@ pub fn run(
 /// transaction session for a mutating one.
 pub fn run_durable(
     image: &VerifiedImage,
-    func_index: u16,
+    func_index: FunctionIndex,
     args: Vec<Value>,
     session: &mut dyn Durable,
 ) -> Result<Option<Value>, RuntimeFault> {
@@ -80,7 +81,7 @@ pub fn run_durable(
 pub(crate) trait DriverDispatch {
     fn invoke(
         &mut self,
-        func: u16,
+        func: FunctionIndex,
         args: Vec<Value>,
         depth: u32,
         budget: &mut u64,
@@ -91,7 +92,7 @@ pub(crate) trait DriverDispatch {
 /// dispatches each call through `driver`, which opens one session per invocation.
 pub(crate) fn run_driver(
     image: &VerifiedImage,
-    func_index: u16,
+    func_index: FunctionIndex,
     args: Vec<Value>,
     driver: &mut dyn DriverDispatch,
 ) -> Result<Option<Value>, RuntimeFault> {
@@ -104,7 +105,7 @@ pub(crate) fn run_driver(
 /// dispatched invocation inside the session it opened, without a nested driver.
 pub(crate) fn run_in_session(
     image: &VerifiedImage,
-    func_index: u16,
+    func_index: FunctionIndex,
     args: Vec<Value>,
     depth: u32,
     budget: &mut u64,
@@ -119,7 +120,7 @@ pub(crate) fn run_in_session(
 /// test-body driver frame, where each call becomes its own session-scoped invocation.
 fn execute<'s>(
     image: &VerifiedImage,
-    func_index: u16,
+    func_index: FunctionIndex,
     args: Vec<Value>,
     depth: u32,
     budget: &mut u64,
@@ -724,7 +725,8 @@ fn execute<'s>(
                 if depth + 1 > MAX_CALL_DEPTH {
                     return Err(fault(function, pc, Code::RunCallDepth.as_str()));
                 }
-                let arg_count = image.function(*target).params().len();
+                let callee = FunctionIndex::new(*target);
+                let arg_count = image.function(callee).params().len();
                 let start = stack.len() - arg_count;
                 // a0 was pushed first, so the tail of the stack is a0..an-1 in order.
                 let call_args = stack.split_off(start);
@@ -733,10 +735,10 @@ fn execute<'s>(
                 // Otherwise the call joins this frame's session (a helper inside its
                 // owner's transaction) or runs storeless.
                 let returned = match driver.as_deref_mut() {
-                    Some(driver) => driver.invoke(*target, call_args, depth + 1, budget)?,
+                    Some(driver) => driver.invoke(callee, call_args, depth + 1, budget)?,
                     None => execute(
                         image,
-                        *target,
+                        callee,
                         call_args,
                         depth + 1,
                         budget,

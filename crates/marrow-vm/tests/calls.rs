@@ -2,7 +2,7 @@
 //! dynamic call-depth guard.
 
 use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
-use marrow_verify::verify;
+use marrow_verify::{FunctionIndex, verify};
 use marrow_vm::{Value, run};
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
@@ -60,6 +60,48 @@ fn a_direct_call_runs() {
         .expect("export")
         .function();
     assert_eq!(run(&image, index, Vec::new()), Ok(Some(Value::Int(42))));
+}
+
+/// The VM's run entry addresses a function by a typed [`FunctionIndex`], not a bare
+/// `u16`: the only image-blessed source is [`marrow_verify::SealedExport::function`],
+/// and the newtype round-trips through `get`/`new` while staying distinct from the
+/// many other `u16` handles a sealed image carries. A raw integer (a local slot, a
+/// const index) cannot be presented to `run` in its place — that is a compile error,
+/// which is the boundary this test documents.
+#[test]
+fn the_vm_run_entry_takes_a_typed_function_index() {
+    let mut draft = ImageDraft::new();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("answer");
+    let forty_two = draft.intern_int(42);
+    let code = vec![Instr::ConstLoad(forty_two.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "answer"), func);
+    let bytes = draft.encode().expect("encode").bytes;
+    let image = verify(&bytes).expect("verifies");
+
+    let index: FunctionIndex = image
+        .export_by_id(ExportId::of_local("", "answer"))
+        .expect("export")
+        .function();
+
+    // The typed index addresses the right function.
+    assert_eq!(image.function(index).name(), "answer");
+
+    // The newtype round-trips, and a value reconstructed through `new` addresses the
+    // same function the export named — the only sanctioned way to build one by hand.
+    let rebuilt = FunctionIndex::new(index.get());
+    assert_eq!(rebuilt, index);
+    assert_eq!(rebuilt.index(), index.get() as usize);
+    assert_eq!(run(&image, rebuilt, Vec::new()), Ok(Some(Value::Int(42))));
 }
 
 #[test]

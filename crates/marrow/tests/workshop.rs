@@ -48,6 +48,6 @@ fn workshop_source_tests_pass_on_the_production_path() {
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
     assert!(summary.contains(r#""errored":0"#), "{summary}");
-    assert!(summary.contains(r#""total":11"#), "{summary}");
-    assert!(summary.contains(r#""passed":11"#), "{summary}");
+    assert!(summary.contains(r#""total":12"#), "{summary}");
+    assert!(summary.contains(r#""passed":12"#), "{summary}");
 }

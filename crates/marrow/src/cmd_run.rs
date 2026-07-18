@@ -21,7 +21,9 @@ use std::rc::Rc;
 
 use marrow_compile::{ExportEntry, ExportId, SourceDiagnostic, compile};
 use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
-use marrow_verify::{ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage};
+use marrow_verify::{
+    FunctionIndex, ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage,
+};
 use marrow_vm::Value;
 
 use crate::outcome::Record;
@@ -342,7 +344,11 @@ fn resolve_export(directory: &[ExportEntry], query: &str) -> Result<ExportId, St
 }
 
 /// Run a storeless export.
-fn run_storeless(image: &VerifiedImage, func_index: u16, call_args: Vec<Value>) -> Record {
+fn run_storeless(
+    image: &VerifiedImage,
+    func_index: FunctionIndex,
+    call_args: Vec<Value>,
+) -> Record {
     match marrow_vm::run(image, func_index, call_args) {
         Ok(value) => Record::Value(value),
         Err(fault) => Record::Fault {

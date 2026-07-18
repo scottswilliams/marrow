@@ -13,7 +13,7 @@ use marrow_image::{
     VariantShape,
 };
 use marrow_local_wire::Id32;
-use marrow_verify::{RetShape, VerifiedImage};
+use marrow_verify::{FunctionIndex, RetShape, VerifiedImage};
 
 /// Reconstruct the wire interface from a verified image using only its public
 /// accessors. The identity, transfer-graph law, and canonical encoding live in
@@ -83,7 +83,7 @@ fn ret_to_image(ret: RetShape) -> ImageType {
 /// verified demand is durable (which the stock runner will not execute).
 pub(crate) struct ServedExport {
     id: [u8; 32],
-    func: u16,
+    func: FunctionIndex,
     durable: bool,
 }
 
@@ -132,7 +132,7 @@ impl Service {
 }
 
 impl ServedExport {
-    pub(crate) fn func(&self) -> u16 {
+    pub(crate) fn func(&self) -> FunctionIndex {
         self.func
     }
     pub(crate) fn is_durable(&self) -> bool {

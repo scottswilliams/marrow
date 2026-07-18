@@ -21,7 +21,7 @@ use marrow_kernel::durable::{
     StoreSchema,
 };
 use marrow_verify::{
-    CeilingDescriptor, ExportDemand, ImageType, Scalar, SealedExport, SealedIndex,
+    CeilingDescriptor, ExportDemand, FunctionIndex, ImageType, Scalar, SealedExport, SealedIndex,
     SealedIndexComponent, SealedSite, SealedSiteTarget, SealedTestEntry, VerifiedImage,
 };
 
@@ -119,7 +119,7 @@ struct TestDriver<'a> {
 impl DriverDispatch for TestDriver<'_> {
     fn invoke(
         &mut self,
-        func: u16,
+        func: FunctionIndex,
         args: Vec<Value>,
         depth: u32,
         budget: &mut u64,
@@ -159,7 +159,7 @@ impl DriverDispatch for TestDriver<'_> {
 /// is a subset of the test-image union the ceiling is minted from, so a well-formed
 /// image never reaches this; it is mapped to a source-positioned `run.authority`
 /// fault rather than a panic.
-fn session_open_fault(image: &VerifiedImage, func: u16) -> RuntimeFault {
+fn session_open_fault(image: &VerifiedImage, func: FunctionIndex) -> RuntimeFault {
     let (line, column) = image.function(func).span_at(0).unwrap_or((1, 1));
     RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column)
 }

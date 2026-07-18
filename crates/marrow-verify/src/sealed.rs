@@ -14,6 +14,35 @@ use marrow_image::{
     SemanticPath, SemanticTarget,
 };
 
+/// A function's position in a [`VerifiedImage`]'s function table. A typed handle so a
+/// function index cannot be confused with the many other `u16` indices a sealed image
+/// carries (local slots, const indices, field/site/root/group handles): the VM's run
+/// entry points and the image's function accessors take a `FunctionIndex`, and the
+/// only ways to obtain one are [`SealedExport::function`], [`SealedTestEntry::func`],
+/// or an explicit [`FunctionIndex::new`] over a value the caller vouches is a function
+/// index. It is meaningful only within its own image's [`ImageId`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FunctionIndex(u16);
+
+impl FunctionIndex {
+    /// Wrap a raw function-table position. The caller asserts `raw` indexes the
+    /// image's function table; the accessors that return a `FunctionIndex` are the
+    /// safe sources.
+    pub fn new(raw: u16) -> Self {
+        FunctionIndex(raw)
+    }
+
+    /// The raw function-table position.
+    pub fn get(self) -> u16 {
+        self.0
+    }
+
+    /// The position as a table subscript.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// A resolved constant value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealedConst {
@@ -713,8 +742,8 @@ impl SealedExport {
     pub fn id(&self) -> ExportId {
         self.id
     }
-    pub fn function(&self) -> u16 {
-        self.func
+    pub fn function(&self) -> FunctionIndex {
+        FunctionIndex(self.func)
     }
     pub fn is_mutating(&self) -> bool {
         self.mutating
@@ -778,8 +807,8 @@ impl SealedTestEntry {
     }
 
     /// The image function index this test runs.
-    pub fn func(&self) -> u16 {
-        self.func
+    pub fn func(&self) -> FunctionIndex {
+        FunctionIndex(self.func)
     }
 
     /// The verifier-reconstructed durable demand of this test entry's call closure.
@@ -935,15 +964,15 @@ impl VerifiedImage {
         &self.consts
     }
 
-    pub fn function(&self, index: u16) -> &SealedFunction {
-        &self.functions[index as usize]
+    pub fn function(&self, index: FunctionIndex) -> &SealedFunction {
+        &self.functions[index.index()]
     }
 
     /// The reconstructed durable demand of the function at `index` over its whole
     /// call closure. A test-body driver consults this to open the read or write
     /// session one export call requires; empty demand needs no session.
-    pub fn function_demand(&self, index: u16) -> &ExportDemand {
-        &self.function_demands[index as usize]
+    pub fn function_demand(&self, index: FunctionIndex) -> &ExportDemand {
+        &self.function_demands[index.index()]
     }
 
     pub fn functions(&self) -> &[SealedFunction] {

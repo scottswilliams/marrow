@@ -7,6 +7,37 @@
 //! definite-init dataflow is satisfied. Jumps are emitted with placeholder targets
 //! and patched to instruction indices once the target position is known; the
 //! encoder rewrites indices to byte offsets.
+//!
+//! ## Panic surface (never reachable from a source shape)
+//!
+//! Every source-level problem lowering can encounter is reported by pushing a typed
+//! [`SourceDiagnostic`] onto `diagnostics` and returning `None`; lowering never aborts
+//! on ill-typed or unsupported source. The remaining `expect`/`unreachable!`/`panic!`
+//! sites assert invariants established *before* the panicking line, so a source shape
+//! cannot reach one — only a compiler bug could. Each falls into one class, and each
+//! carries a message naming its guarantor:
+//!
+//! - **Checker-classified type** — a scrutinee already resolved to an enum, a type
+//!   already classified as a struct or nominal, a bare enum value already bound to its
+//!   variants. The checker rejects the mismatched source (`check.type`,
+//!   `check.match_arm`, `check.unsupported`) before lowering runs.
+//! - **Match-arm narrowing** — a dispatch whose earlier arms removed every other case
+//!   (an admitted arithmetic op, `and`/`or` short-circuit, a text-floor or temporal
+//!   builtin the caller already matched by name).
+//! - **Parser-guaranteed shape** — a binary operation has both operands; a list
+//!   literal reaching the inferred path is non-empty (the empty case is handled first).
+//! - **Lowering's own bookkeeping** — a loop context pushed at loop entry is present at
+//!   `break`/loop-exit; a jump placeholder patched here was emitted here as a jump; a
+//!   group-leaf `delete` was routed to its dedicated path before the shared emit.
+//!
+//! The audit that established this (2026-07-18): every `panic!`/`unwrap`/`expect`/
+//! `unreachable!` in this file was enumerated and classified into the four classes
+//! above; the one bare `unwrap` was given a message; and a battery of adversarial
+//! source shapes (`break`/`continue` outside a loop, a `match` on a non-enum, a
+//! mis-arity builtin call, an ill-typed operator, an unresolved enum member, an empty
+//! inferred list) was driven through the production pipeline and each produced a typed
+//! diagnostic, never a panic. New panic-class sites must fall into one of these
+//! classes and say so, or become a diagnostic.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -5276,7 +5307,10 @@ impl<'a> FnLowerer<'a> {
                     .type_template_by_name(enum_name)
                     .is_some_and(|t| self.records.template_is_enum(t)) =>
             {
-                let template = self.records.type_template_by_name(enum_name).unwrap();
+                let template = self
+                    .records
+                    .type_template_by_name(enum_name)
+                    .expect("the match guard proved this name resolves to a template");
                 self.lower_generic_enum_construct(template, item, args, span)
                     .map(CallResult::Value)
             }
