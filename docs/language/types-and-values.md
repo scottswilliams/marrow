@@ -648,8 +648,8 @@ field or store key is not a `List` or `Map`.
 
 An empty collection is constructed with `List()` or `Map()`, whose element and
 key/value types come from the expected type (an annotation, argument, return type,
-or coercion). The closed set of procedural collection operations — there is no
-method syntax:
+or coercion). The closed set of procedural collection operations is small — there
+is no method syntax:
 
 | Form | Result |
 |---|---|

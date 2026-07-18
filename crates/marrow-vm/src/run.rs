@@ -928,10 +928,13 @@ fn execute<'s>(
             SealedInstr::ListGet => {
                 let index = pop_int(&mut stack);
                 let (_, items) = as_list(pop(&mut stack));
-                // Emitted only by positional `for` lowering, which drives the index
-                // over `0..length`, so the element is always present.
+                // Positional `for` lowering drives the index over `0..length`, so a
+                // verified compiler image is always in bounds. The verifier proves the
+                // operand types but not the index value, so a forged image can present
+                // an out-of-range index; it fails closed with `run.corruption` rather
+                // than reading past the collection.
                 let Some(value) = usize::try_from(index).ok().and_then(|i| items.get(i)) else {
-                    unreachable!("positional `for` lowering keeps the index in bounds");
+                    return Err(fault(function, pc, Code::RunCorruption.as_str()));
                 };
                 stack.push(value.clone());
                 pc += 1;
@@ -1005,11 +1008,12 @@ fn execute<'s>(
             SealedInstr::MapKeyAt => {
                 let index = pop_int(&mut stack);
                 let (_, entries) = as_map(pop(&mut stack));
-                // Emitted only by positional map `for` lowering, which drives the index
-                // over `0..length`, so the entry is always present.
+                // Positional map `for` lowering drives the index over `0..length`; a
+                // forged image with an out-of-range index fails closed with
+                // `run.corruption` rather than reading past the map (see `ListGet`).
                 let Some((key, _)) = usize::try_from(index).ok().and_then(|i| entries.get(i))
                 else {
-                    unreachable!("positional `for` lowering keeps the index in bounds");
+                    return Err(fault(function, pc, Code::RunCorruption.as_str()));
                 };
                 stack.push(key_to_value(key.clone()));
                 pc += 1;
@@ -1017,11 +1021,12 @@ fn execute<'s>(
             SealedInstr::MapValueAt => {
                 let index = pop_int(&mut stack);
                 let (_, entries) = as_map(pop(&mut stack));
-                // Emitted only by positional map `for` lowering, which drives the index
-                // over `0..length`, so the entry is always present.
+                // Positional map `for` lowering drives the index over `0..length`; a
+                // forged image with an out-of-range index fails closed with
+                // `run.corruption` rather than reading past the map (see `ListGet`).
                 let Some((_, value)) = usize::try_from(index).ok().and_then(|i| entries.get(i))
                 else {
-                    unreachable!("positional `for` lowering keeps the index in bounds");
+                    return Err(fault(function, pc, Code::RunCorruption.as_str()));
                 };
                 stack.push(value.clone());
                 pc += 1;

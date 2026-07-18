@@ -3,7 +3,9 @@
 //! canonical bytes, and sealed by the independent verifier before the VM sees it —
 //! so the executable trust path is exercised end to end without the compiler.
 
-use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
+use marrow_image::{
+    CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
+};
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
@@ -86,6 +88,98 @@ fn range_guard_image() -> Vec<u8> {
     });
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
+}
+
+/// Build a one-function image `forged(): int` that constructs an empty collection,
+/// pushes an out-of-range positional index, and performs `read`. The verifier proves
+/// the operand types (a collection under an int, yielding the element/key/value type),
+/// but not the index value, so this image verifies — it is the shape a hand-built or
+/// corrupted image takes. The compiler never emits such an out-of-range positional
+/// read; the VM's totality guard is what these images probe.
+fn forged_list_positional_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("forged");
+    let source = draft.intern_string("src/main.mw");
+    let coll = draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
+    let index = draft.intern_int(100);
+    let func = draft.add_function(FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        code: vec![
+            Instr::ListNew(coll.index()),
+            Instr::ConstLoad(index.index()),
+            Instr::ListGet,
+            Instr::Return,
+        ],
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 2,
+            column: 12,
+        }],
+    });
+    draft.add_export(answer_id(), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// The map twin: an empty map, an out-of-range positional index, and `read`
+/// (`MapKeyAt` or `MapValueAt`). The key and value types are `int`, so the read
+/// yields an `int` and the image verifies.
+fn forged_map_positional_image(read: Instr) -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("forged");
+    let source = draft.intern_string("src/main.mw");
+    let coll = draft.add_collection_type(CollectionTypeDef::Map {
+        key: ImageType::scalar(Scalar::Int),
+        value: ImageType::scalar(Scalar::Int),
+    });
+    let index = draft.intern_int(5);
+    let func = draft.add_function(FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        code: vec![
+            Instr::MapNew(coll.index()),
+            Instr::ConstLoad(index.index()),
+            read,
+            Instr::Return,
+        ],
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 2,
+            column: 12,
+        }],
+    });
+    draft.add_export(answer_id(), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// A forged image whose internal positional read (`ListGet`/`MapKeyAt`/`MapValueAt`)
+/// addresses a position past an empty collection passes verification — the verifier
+/// bounds operand types, not index values — and fails closed at runtime with the typed
+/// `run.corruption` fault rather than panicking or reading past the collection. This
+/// restores the totality the deleted `run.collection_range` guard provided while
+/// keeping the source law that no out-of-bounds fault is named.
+#[test]
+fn a_forged_out_of_range_positional_read_faults_run_corruption() {
+    let images = [
+        forged_list_positional_image(),
+        forged_map_positional_image(Instr::MapKeyAt),
+        forged_map_positional_image(Instr::MapValueAt),
+    ];
+    for bytes in images {
+        let image = verify(&bytes).expect("a type-correct forged image verifies");
+        let export = image.export_by_id(answer_id()).expect("export present");
+        let fault = run(&image, export.function(), Vec::<Value>::new())
+            .expect_err("an out-of-range positional read must fault, not panic");
+        assert_eq!(fault.code(), "run.corruption");
+    }
 }
 
 /// The range guard peeks: an in-interval int passes through unchanged at both

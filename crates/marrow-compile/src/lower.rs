@@ -7774,12 +7774,12 @@ impl<'a> FnLowerer<'a> {
                     let label = simple_base_label(base);
                     let message = match label {
                         Some(name) => format!(
-                            "list positions count from 1, so `{name}[{index_text}]` names no \
-                             position; the first element is `{name}[1]`"
+                            "`{name}[{index_text}]` names no list position. List positions \
+                             count from 1; the first element is `{name}[1]`"
                         ),
                         None => format!(
-                            "list positions count from 1, so index `{index_text}` names no \
-                             position; the first element is at position 1"
+                            "`[{index_text}]` names no list position. List positions count \
+                             from 1; the first element is at position 1"
                         ),
                     };
                     self.fail(SourceDiagnostic::at(
@@ -7888,13 +7888,15 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalSet(slot), span);
             }
             CollSpec::List { elem } => {
+                let rhs = simple_value_spelling(value).unwrap_or_else(|| "_".to_string());
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
                     span,
                     format!(
-                        "a list has no keyed write; grow it with `append({name}, <value>)`, \
-                         or use a `Map<int, {}>` for replacement at a position",
+                        "`{name}` is a list, and a list has no keyed write. Grow it with \
+                         `append({name}, {rhs})`, or use a `Map<int, {}>` for replacement at a \
+                         position",
                         garg_to_lty(elem).spelling(self.records)
                     ),
                 ));
@@ -9152,6 +9154,37 @@ fn simple_base_label(base: &Expression) -> Option<&str> {
     match base {
         Expression::Name { segments, .. } => match segments.as_slice() {
             [name] => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The source spelling of a simple assigned value, for a fix line that names the
+/// user's own right-hand side (`v` in `xs[i] = v`, `9` in `xs[1] = 9`). Compound
+/// expressions have no short spelling here; the caller falls back to the canonical
+/// `_` placeholder.
+fn simple_value_spelling(value: &Expression) -> Option<String> {
+    match value {
+        Expression::Name { segments, .. } => match segments.as_slice() {
+            [name] => Some(name.clone()),
+            _ => None,
+        },
+        Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            ..
+        } => Some(text.clone()),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => match operand.as_ref() {
+            Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                ..
+            } => Some(format!("-{text}")),
             _ => None,
         },
         _ => None,

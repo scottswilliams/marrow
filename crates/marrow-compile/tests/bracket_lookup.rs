@@ -80,9 +80,18 @@ fn a_literal_dead_list_index_is_a_teaching_check_type() {
             "pub fn f(xs: List<int>): int {{\n    return xs[{index}] ?? 0\n}}"
         )));
         let diagnostic = first_of(&diagnostics, "check.type");
+        // Fact-first (voice standard, rule 1): the source spelling of the dead index
+        // leads, the governing law follows, the canonical first position closes.
         assert!(
-            diagnostic.message.contains("positions count from 1")
-                && diagnostic.message.contains("xs[1]"),
+            diagnostic
+                .message
+                .starts_with(&format!("`xs[{index}]` names no list position")),
+            "dead index {index}: {}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("List positions count from 1")
+                && diagnostic.message.contains("`xs[1]`"),
             "dead index {index}: {}",
             diagnostic.message
         );
@@ -133,8 +142,15 @@ fn a_list_keyed_write_is_a_teaching_check_type() {
         "pub fn f(): int {\n    var xs: List<int> = List()\n    xs = append(xs, 1)\n    xs[1] = 9\n    return 0\n}",
     ));
     let diagnostic = first_of(&diagnostics, "check.type");
+    // Fact-first: the list is named in source spelling, the law follows, and the fix
+    // names the user's own right-hand side (`9`) with the canonical spellings.
     assert!(
-        diagnostic.message.contains("append(xs, <value>)")
+        diagnostic.message.starts_with("`xs` is a list"),
+        "{}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.message.contains("append(xs, 9)")
             && diagnostic.message.contains("Map<int, int>"),
         "{}",
         diagnostic.message
