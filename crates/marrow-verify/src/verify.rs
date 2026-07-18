@@ -1949,20 +1949,26 @@ fn decode_indexes(
             _ => None,
         })
         .collect();
-    // Index eligibility is decoupled from field executability: an index component must
-    // project an orderable durable-key *scalar* leaf, which a widened (struct/enum) field
-    // is not. A widened field is executable (framed inline in its cell) but never an index
-    // component, so the eligible set is the scalar top-level fields only — refused
-    // independently of `keeps_root_flat`, which now admits widened fields.
-    let scalar_field_ids: Vec<LedgerIdBytes> = members
+    // A managed-index field component must project one of the compiler's closed set of
+    // orderable durable-key scalar shapes. Field executability is independent: Duration
+    // and widened values can be stored but are not index-eligible.
+    let index_eligible_field_ids: Vec<LedgerIdBytes> = members
         .iter()
         .filter_map(|member| match member {
-            DecodedMember::Field {
-                id,
-                value: DurableValueShape::Scalar(_),
-                ..
-            } => Some(*id),
-            _ => None,
+            DecodedMember::Field { id, value, .. } => match value {
+                DurableValueShape::Scalar(
+                    Scalar::Int
+                    | Scalar::Text
+                    | Scalar::Bool
+                    | Scalar::Bytes
+                    | Scalar::Date
+                    | Scalar::Instant,
+                ) => Some(*id),
+                DurableValueShape::Scalar(Scalar::Duration)
+                | DurableValueShape::Struct(_)
+                | DurableValueShape::Enum { .. } => None,
+            },
+            DecodedMember::Group { .. } | DecodedMember::Branch { .. } => None,
         })
         .collect();
     let count = reader
@@ -2014,12 +2020,12 @@ fn decode_indexes(
             let leaf = LedgerIdBytes::from_bytes(leaf);
             let component = match kind {
                 0x02 => {
-                    if !scalar_field_ids.contains(&leaf) {
+                    if !index_eligible_field_ids.contains(&leaf) {
                         return Err(reject(
                             VerifyPhase::Table,
                             if field_ids.contains(&leaf) {
-                                "durable index field component names a widened (non-scalar) \
-                                 field, which is not index-eligible"
+                                "durable index field component names a field that is not \
+                                 index-eligible"
                             } else {
                                 "durable index field component names no top-level field of its root"
                             },

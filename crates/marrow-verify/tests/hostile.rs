@@ -14,7 +14,7 @@ use marrow_image::{
     ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity,
     Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef, image_id,
 };
-use marrow_verify::verify;
+use marrow_verify::{VerifyPhase, verify};
 
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
 /// the site-path helpers so a hostile mutation can target one precisely.
@@ -1236,6 +1236,8 @@ fn group_branch_draft_with_branch_record(
 /// The fixed index ids of the indexed tracer graph.
 const BY_LABEL_INDEX_ID: [u8; 16] = [0x70; 16];
 const BY_VALUE_INDEX_ID: [u8; 16] = [0x71; 16];
+const NON_INDEX_ELIGIBLE_FIELD_DETAIL: &str =
+    "durable index field component names a field that is not index-eligible";
 
 /// The semantic path of a managed index of the tracer root: `application ->
 /// placement -> index`.
@@ -1426,6 +1428,83 @@ fn a_unique_index_with_an_empty_projection_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
+/// A root with one required scalar field and a unique index projecting that field.
+/// The scalar is variable so the closed managed-index eligibility domain can be
+/// exercised without changing any other image fact.
+fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
+    const FIELD_ID: [u8; 16] = [0x1d; 16];
+    let mut draft = ImageDraft::new();
+    let record_name = draft.intern_string("IndexedScalar");
+    let field_name = draft.intern_string("value");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: record_name,
+        fields: vec![FieldDef {
+            name: field_name,
+            ty: ImageType::scalar(scalar),
+            required: true,
+        }],
+    });
+    let root = draft.intern_string("indexedScalars");
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft.add_root(RootDef {
+        name: root,
+        keys: vec![KeyColumn {
+            scalar: Scalar::Text,
+            id: LedgerIdBytes::from_bytes([0x0c; 16]),
+        }],
+        record,
+        identity: RootIdentity {
+            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+            product: LedgerIdBytes::from_bytes([0x0d; 16]),
+            members: vec![DurableMemberDef::Field {
+                id: LedgerIdBytes::from_bytes(FIELD_ID),
+                required: true,
+                value: DurableValueShape::Scalar(scalar),
+            }],
+            indexes: vec![DurableIndexShape {
+                id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
+                unique: true,
+                components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                    FIELD_ID,
+                ))],
+            }],
+        },
+    });
+    draft
+}
+
+#[test]
+fn every_orderable_scalar_field_managed_index_verifies() {
+    for scalar in [
+        Scalar::Int,
+        Scalar::Text,
+        Scalar::Bool,
+        Scalar::Bytes,
+        Scalar::Date,
+        Scalar::Instant,
+    ] {
+        let bytes = scalar_field_indexed_draft(scalar)
+            .encode()
+            .expect("encode orderable scalar-field index")
+            .bytes;
+        verify(&bytes).unwrap_or_else(|rejection| {
+            panic!("{scalar:?} field index should verify: {rejection}")
+        });
+    }
+}
+
+#[test]
+fn a_duration_field_is_not_a_managed_index_component() {
+    let bytes = scalar_field_indexed_draft(Scalar::Duration)
+        .encode()
+        .expect("encode hostile duration-field index")
+        .bytes;
+    let rejection = verify(&bytes).expect_err("a duration-field managed index is refused");
+    assert_eq!(rejection.phase(), VerifyPhase::Table);
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(rejection.detail(), NON_INDEX_ELIGIBLE_FIELD_DETAIL);
+}
+
 /// A `Counter` root whose `owner` field is a widened dense struct, with a unique index
 /// forging a component over that widened field. A widened field is executable (framed
 /// inline in its cell) but never index-eligible — an index component must project an
@@ -1518,10 +1597,14 @@ fn an_index_component_over_a_widened_field_rejects() {
     // The widened `owner` field is admitted (its root is flat-executable), but naming it
     // as an index component is refused at decode — index eligibility is decoupled from
     // field executability, so a widened field is never an index leaf.
-    assert_eq!(
-        code_of(&widened_field_indexed_draft().encode().unwrap().bytes),
-        "image.table",
-    );
+    let bytes = widened_field_indexed_draft()
+        .encode()
+        .expect("encode hostile widened-field index")
+        .bytes;
+    let rejection = verify(&bytes).expect_err("a widened-field managed index is refused");
+    assert_eq!(rejection.phase(), VerifyPhase::Table);
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(rejection.detail(), NON_INDEX_ELIGIBLE_FIELD_DETAIL);
 }
 
 #[test]
