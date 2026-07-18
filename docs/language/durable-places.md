@@ -39,6 +39,12 @@ an identity and is not a durable key. A resource declares fields that are
 project-wide: any module uses the declared root shape directly, and function
 visibility does not change root access.
 
+A project may declare more than one store root. Each root has its own name and its
+own keyed entry family, and each is addressed by its own name in ordinary function
+bodies. Two store roots may not share a name. A single `transaction` region may read
+and write several roots; its writes commit, or on a fault roll back, as one atomic
+unit across every root it touched.
+
 ### Durable Field Values
 
 A stored field holds a value from the closed acyclic durable value set:

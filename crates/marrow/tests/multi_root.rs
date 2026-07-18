@@ -13,8 +13,8 @@
 //! addresses.
 
 use marrow_compile::SourceDiagnostic;
-use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+use marrow_verify::{SealedExport, TestKind, VerifiedImage};
+use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_driver_test, run_export};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -371,6 +371,53 @@ store ^assets[key: int]: Asset
             .any(|d| d.code == "check.type" && d.message.contains("more than once")),
         "expected a duplicate-root-name check.type rejection, got {diagnostics:#?}"
     );
+}
+
+/// A driver `test` drives both roots through export calls — each call its own invocation
+/// boundary — exactly as a terminal drives an application: a mutating export writes both
+/// roots and commits, and later reading exports observe each root's committed value. This
+/// is the two-root shape of the invocation-boundary isolation law.
+#[test]
+fn a_two_root_driver_test_drives_both_roots_through_exports() {
+    let source = format!(
+        "{SOURCE}\ntest \"cross-root driver round trip\" {{\n    \
+             putBoth(5, \"d\", \"beam\", 4)\n    \
+             assert (assetName(5) ?? \"none\") == \"beam\"\n    \
+             assert (tallyCount(\"d\") ?? 0) == 4\n}}\n"
+    );
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile_with_tests(&project).unwrap_or_else(|diagnostics| {
+        panic!("a two-root driver test must compile: {diagnostics:#?}")
+    });
+    let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
+
+    let entry = image
+        .test_entries()
+        .iter()
+        .find(|entry| entry.name() == "cross-root driver round trip")
+        .expect("the driver test entry is sealed");
+    assert!(
+        matches!(entry.kind(), TestKind::Driver),
+        "a test that only calls exports is a driver test",
+    );
+    match run_driver_test(&image, entry) {
+        DurableRun::Ran(Ok(_)) => {}
+        other => panic!(
+            "the two-root driver test must run cleanly: {:?}",
+            DebugRun(&other)
+        ),
+    }
 }
 
 /// Each root's entry identity `Id(^root)` carries that root's own RootId, so an identity

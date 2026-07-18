@@ -145,7 +145,14 @@ durable-contract identity computed over those ledger ids and the graph shape
 (including key-column order) — so an anchor move preserves durable identity (the
 ledger-model property; a rename becomes an anchor move under the future apply
 action, while the additive-only `run` mint does not) — which the verifier
-independently recomputes from the image and rejects on mismatch. The
+independently recomputes from the image and rejects on mismatch. A project may
+declare more than one store root; each is a distinct durable graph node with its own
+name-keyed cell family and its own kernel schema, and the read/write kernel executes
+over all of them. A single `transaction` region may read and write several roots and
+commits — or, on a fault, rolls back — as one atomic unit. An entry identity is
+root-local: `Id(^assets)` addresses `^assets` and only `^assets`, and using it against
+another root is rejected both at the checker and, for a forged image, at the verifier;
+two store roots may not share a name (which would share a physical cell family). The
 compiler fully lowers operations over a keyed root — single-column or a composite tuple
 — whose top-level fields are each a scalar or a widened value (a dense `struct`/record, a
 closed `enum`, or an `Option`/`Result`), together with its root-level `group` members (of
