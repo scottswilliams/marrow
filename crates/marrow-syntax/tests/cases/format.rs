@@ -233,9 +233,9 @@ fn folds_left_anchored_self_update_to_compound_assign() {
 #[test]
 fn leaves_non_self_update_assignments_as_explicit() {
     let unchanged = [
-        "n = 1 + n",       // right-anchored: `n -= .. ` would differ for `-`/`/`
-        "n = m + 1",       // different name
-        "n = n + a + b",   // nested left operand `(n + a)` is not the bare name
+        "n = 1 + n",             // right-anchored: `n -= .. ` would differ for `-`/`/`
+        "n = m + 1",             // different name
+        "n = n + a + b",         // nested left operand `(n + a)` is not the bare name
         "r.count = r.count + 1", // field target: reading the path is not a bare local
         "xs[i] = xs[i] + 1",     // index target
         "flag = flag and ready", // `and` has no compound form
@@ -262,7 +262,10 @@ fn compound_assign_fold_is_idempotent_and_reparses() {
 
     let body = reparsed_run_body(&once);
     assert!(
-        matches!(body.statements.as_slice(), [Statement::CompoundAssign { .. }]),
+        matches!(
+            body.statements.as_slice(),
+            [Statement::CompoundAssign { .. }]
+        ),
         "folded output must re-parse to a compound assignment: {:#?}",
         body.statements
     );
@@ -275,8 +278,7 @@ fn compound_assign_fold_is_idempotent_and_reparses() {
 /// deduplicated, and one per line, regardless of their source order or repetition.
 #[test]
 fn sorts_and_deduplicates_the_use_block() {
-    let source =
-        "module app\n\nuse shelf::books\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
+    let source = "module app\n\nuse shelf::books\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
     let expected =
         "module app\n\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
     assert_eq!(format_source(source), expected);
@@ -288,7 +290,11 @@ fn sorts_and_deduplicates_the_use_block() {
 fn use_block_formatting_is_idempotent() {
     let source = "module app\n\nuse shelf::b\nuse shelf::a\nuse shelf::a\n\nfn f(): int {\n    return 0\n}\n";
     let once = format_source(source);
-    assert_eq!(once, format_source(&once), "use-block sort is not a fixed point");
+    assert_eq!(
+        once,
+        format_source(&once),
+        "use-block sort is not a fixed point"
+    );
 }
 
 /// The formatter owns only the `use` block; it never reorders declarations. With
@@ -296,8 +302,7 @@ fn use_block_formatting_is_idempotent() {
 /// the imports sort but the functions keep their source order.
 #[test]
 fn use_block_sort_never_reorders_declarations() {
-    let source =
-        "module app\n\nuse z::mod\nuse a::mod\n\nfn second(): int {\n    return 2\n}\n\nfn first(): int {\n    return 1\n}\n";
+    let source = "module app\n\nuse z::mod\nuse a::mod\n\nfn second(): int {\n    return 2\n}\n\nfn first(): int {\n    return 1\n}\n";
     let formatted = format_source(source);
     assert!(
         formatted.contains("use a::mod\nuse z::mod"),

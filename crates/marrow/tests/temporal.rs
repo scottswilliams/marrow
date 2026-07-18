@@ -254,6 +254,9 @@ fn the_retired_snake_case_temporal_names_are_out_of_scope() {
         let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{retired} must fail: {stdout}");
-        assert!(stdout.contains(r#""code":"check.type""#), "{retired}: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.type""#),
+            "{retired}: {stdout}"
+        );
     }
 }

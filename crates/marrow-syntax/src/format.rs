@@ -115,7 +115,9 @@ fn format_parsed(source: &str, parsed: &crate::ast::ParsedSource) -> String {
 /// them is semantics-preserving; owning their layout removes the commonest
 /// merge conflict between co-authors editing the same header.
 fn format_use_block(uses: &[crate::ast::UseDecl]) -> Option<FormatSection> {
-    let anchor = uses.iter().min_by_key(|use_decl| use_decl.span.start_byte)?;
+    let anchor = uses
+        .iter()
+        .min_by_key(|use_decl| use_decl.span.start_byte)?;
     let mut names: Vec<&str> = uses.iter().map(|use_decl| use_decl.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();
@@ -1154,7 +1156,10 @@ fn compound_assign_fold<'a>(
     value: &'a Expression,
 ) -> Option<(&'a str, CompoundAssignOp, &'a Expression)> {
     let name = plain_local_name(target)?;
-    let Expression::Binary { op, left, right, .. } = value else {
+    let Expression::Binary {
+        op, left, right, ..
+    } = value
+    else {
         return None;
     };
     let compound = CompoundAssignOp::from_binary(*op)?;
@@ -1198,20 +1203,18 @@ fn format_statement_with_comments(
                 format_type_annotation(ty),
             )
         }
-        Statement::Assign { target, value, .. } => {
-            match compound_assign_fold(target, value) {
-                Some((name, op, rhs)) => format!(
-                    "{pad}{name} {} {}",
-                    op.symbol(),
-                    format_expression_at(rhs, level)
-                ),
-                None => format!(
-                    "{pad}{} = {}",
-                    format_expression_at(target, level),
-                    format_expression_at(value, level)
-                ),
-            }
-        }
+        Statement::Assign { target, value, .. } => match compound_assign_fold(target, value) {
+            Some((name, op, rhs)) => format!(
+                "{pad}{name} {} {}",
+                op.symbol(),
+                format_expression_at(rhs, level)
+            ),
+            None => format!(
+                "{pad}{} = {}",
+                format_expression_at(target, level),
+                format_expression_at(value, level)
+            ),
+        },
         Statement::CompoundAssign {
             target, op, value, ..
         } => format!(
