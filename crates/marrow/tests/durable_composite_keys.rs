@@ -69,14 +69,22 @@ pub fn sessionRoom(student: string, course: string, term: int, slot: int): strin
 }
 "#;
 
-// Place bindings over the composite-key root and the composite-key branch. A field read
-// through a `place` must resolve the field against the place's durable node — a root by
-// its entry site, a branch by its record — and the node kind is independent of how many
-// key slots the place carries. A composite-key root place has several key slots but is
-// still a root, so `e.grade` resolves the root's `grade`, not a (nonexistent) branch field.
+// Place bindings over the composite-key root and the composite-key branch. A field read or
+// write through a `place` must resolve the field against the place's durable node — a root
+// by its entry site, a branch by its record — and the node kind is independent of how many
+// key slots the place carries. A composite-key root place has several key slots but is still
+// a root, so both `e.grade` and `e.grade = g` resolve the root's `grade`, not a (nonexistent)
+// branch field.
 const PLACE_EXPORTS: &str = r#"pub fn gradeViaPlace(student: string, course: string): int? {
     place e = ^enrollments[student, course]
     return e.grade
+}
+
+pub fn setGradeViaPlace(student: string, course: string, grade: int) {
+    transaction {
+        place e = ^enrollments[student, course]
+        e.grade = grade
+    }
 }
 
 pub fn roomViaPlace(student: string, course: string, term: int, slot: int): string? {
@@ -346,13 +354,15 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
     );
 }
 
-/// A `place` over a composite-key root resolves its fields against the root node, exactly
-/// like an inline `^enrollments[student, course].grade` address: the two key operands do not
-/// reclassify it as a branch place. A composite-key branch place is the control — both node
-/// kinds run through the same place field-resolution family — and resolves `room` against
-/// its branch record.
+/// A `place` over a composite-key root resolves its fields against the root node for both
+/// reads and writes, exactly like an inline `^enrollments[student, course].grade` address:
+/// the two key operands do not reclassify it as a branch place. Seeding then reading proves
+/// the read side; writing a new `grade` back through the place and reading it again proves
+/// the symmetric write side resolves the same root field. A composite-key branch place is
+/// the control — both node kinds run through the same place field-resolution family — and
+/// resolves `room` against its branch record.
 #[test]
-fn a_composite_root_place_reads_its_fields_by_the_root_node() {
+fn a_composite_root_place_reads_and_writes_its_fields_by_the_root_node() {
     let source = format!("{SOURCE_A}\n{PLACE_EXPORTS}");
     let image = compile_verify(&source, IDS_A);
     let mut attachment = attach(&image);
@@ -372,6 +382,25 @@ fn a_composite_root_place_reads_its_fields_by_the_root_node() {
         ),
         some_int(90),
         "a composite-root place reads `grade` off the root node",
+    );
+
+    // A field write through the composite-root place resolves the same root `grade`; the
+    // read-back through the place observes the newly written value.
+    run(
+        &image,
+        &mut attachment,
+        "setGradeViaPlace",
+        vec![s("amy"), s("cs"), Value::Int(75)],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "gradeViaPlace",
+            vec![s("amy"), s("cs")]
+        ),
+        some_int(75),
+        "a composite-root place writes `grade` on the root node, not a misrouted branch field",
     );
 
     run(

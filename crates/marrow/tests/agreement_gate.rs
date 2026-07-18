@@ -243,19 +243,21 @@ fn matrix() -> Vec<Row> {
         },
         // ---- PL01: a place over a composite-key root resolves fields by the root node. ----
         // A composite-key root place carries several key slots but is still a root, so a
-        // field read through it (`g.score`) resolves the root's field — not a branch record.
-        // The node kind is recorded at the binding from the canonical resolved durable node,
-        // independent of key-operand count.
+        // field read (`g.score`) and a symmetric field write (`g.score = s`) through it both
+        // resolve the root's field — not a branch record. The node kind is recorded at the
+        // binding from the canonical resolved durable node, independent of key-operand count.
         Row {
-            label: "composite-root place field read / outside a transaction",
-            ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}",
+            label: "composite-root place field read + write / read outside, write inside a region",
+            ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\npub fn crPlaceWrite(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        g.score = score\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
-        // Driven end to end: a seed export writes a composite-root entry, then a composite-
-        // root place field read reads its `score` back — each export call its own boundary.
+        // Driven end to end: a seed export writes a composite-root entry, a composite-root
+        // place field write updates its `score`, and a composite-root place field read reads
+        // the new value back — each export call its own invocation boundary, so the write and
+        // the read-back both resolve the root field through their own place binding.
         Row {
-            label: "composite-root place field read round trip / driver test",
-            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place reads a seeded score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 90\n}",
+            label: "composite-root place field write round trip / driver test",
+            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crWriteVia(student: string, course: string, score: int) {\n    transaction {\n        place g = ^grades[student, course]\n        g.score = score\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place writes then reads a score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    crWriteVia(\"amy\", \"cs\", 75)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // ---- Resource values at function boundaries. ----
