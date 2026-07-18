@@ -97,19 +97,30 @@ partial entry — so several required fields may be populated across separate
 statements in one transaction and validated together at commit.
 
 A mutating export observes durable data *inside* its transaction, where reads see
-the staged writes, and returns values it captured there. Because the commit closes
-the transaction, no durable operation — read or write — may follow it; to return a
-committed value, read it into a local inside the region and return that local after
-the block:
+the staged writes. A region's commit sites are its exits: each `return` written
+inside the region and the region's closing brace. An in-region `return` evaluates
+its expression first — so a durable read in the returned value runs before the
+commit and sees the staged writes — then commits the region's staged writes, then
+returns. The closing brace commits the fall-through path. Because the commit closes
+the transaction, no durable operation — read or write — may follow it on that path.
+A committed value is returned directly from inside the region. Here every path
+returns from inside the region, so the region has no fall-through and needs no
+trailing return:
 
 ```mw
+module docs::staging
+
+resource Counter {
+    required value: int
+}
+
+store ^counters[name: string]: Counter
+
 pub fn setAndReport(name: string, v: int): int? {
-    var reported: int? = absent
     transaction {
         ^counters[name] = Counter(value: v)
-        reported = ^counters[name].value
+        return ^counters[name].value
     }
-    return reported
 }
 ```
 
@@ -121,9 +132,11 @@ trusting the compiler. An image that violates any rule below — including a
 tampered one — is rejected with `image.flow` before it can run:
 
 - an owning export begins its transaction exactly once and commits on every
-  path that returns;
+  path that returns; its commit sites are the region's exits — each in-region
+  `return` and the closing brace — and only the owning export's returns commit,
+  not a helper's return inside its own frame;
 - every mutation sits inside the region, and no durable operation — read or
-  write, direct or through a callee — follows the commit;
+  write, direct or through a callee — follows the commit on any path;
 - a `transaction` marker appears only inside the export that owns it: a helper
   or read-only function that carries one is rejected;
 - a transaction owner is not called by another function, so its region never
@@ -145,34 +158,40 @@ A propagated `err` is an ordinary return value: it neither commits nor rolls the
 transaction back on its own. Rollback is reserved for a runtime fault or a
 confirmed abort.
 
-Because a `try` on the `err` path returns, and because the owning export must
-commit before it returns on every path, a `try` may not stand on any path that
-returns before the commit — neither inside the region nor before it opens. Its
-`err` return would exit while the transaction is still uncommitted. Today the
-verifier reports this from the image as *a path returns without committing the
-transaction* (`image.flow`); a later lane may report it at check time.
+An explicit `return` inside the region is a commit site: it commits the staged
+writes before it returns. A `try`'s `err` exit is different — it is an implicit
+exit, not a spelled `return`, and carries no commit. A `try` may therefore not
+stand on any path that would exit the function from inside the region, nor before
+the region opens while one is owed: its implicit `err` exit would leave the
+transaction uncommitted. The verifier reports this from the image as *a path
+returns without committing the transaction* (`image.flow`); a later lane may
+report it at check time.
 
-To fail a durable change deliberately, keep the single commit and make the
-mutation itself conditional inside the region, then map the outcome to `err`
-after the block. The region always reaches its commit; on the failure path the
-mutation simply does not run, so nothing is staged and the commit persists no
+To fail a durable change deliberately, spell the exit as a `return`. A guard that
+returns `err` before staging anything commits an empty region and persists no
 change:
 
 ```mw
+module docs::deliberate_failure
+
+resource Counter {
+    required value: int
+}
+
+store ^counters[name: string]: Counter
+
 pub fn setPositive(name: string, v: int): Result<int, string> {
-    var wrote: bool = false
     transaction {
-        if v > 0 {
-            ^counters[name] = Counter(value: v)
-            wrote = true
-        }
+        if v <= 0 { return err("value must be positive") }
+        ^counters[name] = Counter(value: v)
     }
-    if wrote {
-        return ok(v)
-    }
-    return err("value must be positive")
+    return ok(v)
 }
 ```
+
+Because an in-region `return` is a commit site regardless of the value it returns,
+a `return err(...)` placed *after* a staged write commits that write. Put the guard
+before the mutation, as above, to leave nothing staged on the failure path.
 
 ### Rollback and isolation
 

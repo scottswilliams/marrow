@@ -2090,10 +2090,18 @@ impl<'a> FnLowerer<'a> {
             Statement::Transaction { body, .. } => {
                 self.push(Instr::TxnBegin, body.span);
                 self.txn_depth += 1;
-                self.lower_block(body);
+                let body_flow = self.lower_block(body);
                 self.txn_depth -= 1;
-                self.push(Instr::TxnCommit, body.span);
-                Flow::Fallthrough
+                // The closing brace is a commit site only for a path that falls out of
+                // the region. When every path returns from inside (each in-region
+                // `return` is its own commit site), the region has no fall-through: no
+                // closing commit is emitted — it would be unreachable — and the region's
+                // divergence propagates so the checker sees the function return on every
+                // path.
+                if body_flow == Flow::Fallthrough {
+                    self.push(Instr::TxnCommit, body.span);
+                }
+                body_flow
             }
             Statement::Delete { path, span } => {
                 self.lower_durable_delete(path, *span);
@@ -2495,10 +2503,27 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Emit a function-exit `return`. Inside an owned `transaction` region an explicit
+    /// `return` is a commit site: the region's staged writes commit before the frame
+    /// exits. The return expression is already lowered (its durable reads ran while the
+    /// region was open), so the ordering is evaluate → commit → return, with the value
+    /// left on the stack across the stack-neutral `TxnCommit`. Only the owning export
+    /// runs with `txn_depth > 0`; a helper called inside the region lowers at depth zero,
+    /// so its own `return` carries no commit and is not a region exit. `try`'s implicit
+    /// `err` exit is emitted separately and never routes here, so it stays barred from
+    /// crossing a region. The verifier independently proves a `TxnCommit` precedes the
+    /// `Return` on every in-region path.
+    fn emit_region_return(&mut self, span: SourceSpan) {
+        if self.txn_depth > 0 {
+            self.push(Instr::TxnCommit, span);
+        }
+        self.push(Instr::Return, span);
+    }
+
     fn lower_return(&mut self, value: Option<&Expression>, span: SourceSpan) -> Flow {
         match (value, self.ret) {
             (None, RetType::Unit) => {
-                self.push(Instr::Return, span);
+                self.emit_region_return(span);
             }
             (None, RetType::Value(_)) => {
                 self.fail(SourceDiagnostic::at(
@@ -2518,7 +2543,7 @@ impl<'a> FnLowerer<'a> {
             }
             (Some(expr), RetType::Value(want)) => {
                 if self.lower_as(expr, want).is_some() {
-                    self.push(Instr::Return, span);
+                    self.emit_region_return(span);
                 }
             }
         }
@@ -4175,7 +4200,7 @@ impl<'a> FnLowerer<'a> {
                 match self.ret {
                     RetType::Value(want) => {
                         self.coerce_bare_int_to(want, span, span);
-                        self.push(Instr::Return, span);
+                        self.emit_region_return(span);
                     }
                     RetType::Unit => {
                         self.fail(SourceDiagnostic::at(

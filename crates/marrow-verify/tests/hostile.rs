@@ -2396,6 +2396,33 @@ fn flow_return_without_commit_rejects() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
+/// DX01 artifact-level positive: an in-region `return` on a guarded branch verifies
+/// when a `TxnCommit` precedes the `Return` on that path. The present edge commits and
+/// returns (indices 4–5); the absent edge writes, then commits at the closing brace and
+/// returns (indices 9–10). The flow lattice admits this because every return is reached
+/// in the `AfterCommit` state — it verifies the commit-before-return ordering the
+/// lowering places rather than trusting it. The sibling
+/// [`flow_return_without_commit_rejects`] pins the tamper: a return that skips the
+/// commit is refused.
+#[test]
+fn flow_in_region_return_commits_then_returns_verifies() {
+    let value_site = 1;
+    let draft = put_export(vec![
+        Instr::TxnBegin,
+        Instr::LocalGet(0),
+        Instr::DurExists(0),
+        Instr::JumpIfFalse(6),
+        Instr::TxnCommit,
+        Instr::Return,
+        Instr::LocalGet(0),
+        Instr::LocalGet(1),
+        Instr::DurSetRequired(value_site),
+        Instr::TxnCommit,
+        Instr::Return,
+    ]);
+    assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
+}
+
 #[test]
 fn flow_double_begin_rejects() {
     let value_site = 1;

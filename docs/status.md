@@ -87,7 +87,13 @@ effect: the compiler refuses a durable mutation, or a call to a mutating functio
 that reaches an export body outside a `transaction` block (`check.requires_transaction`,
 at the mutation or call site), and propagates the requirement transitively along the
 acyclic call graph. The verifier independently reconstructs the same mutation closure
-from the image and rejects a violating or tampered image at `image.flow`.
+from the image and rejects a violating or tampered image at `image.flow`. A `return`
+inside an owned region is a commit site: it commits the region's staged writes, then
+returns (evaluate expression, commit, return). The region's commit sites are its exits
+— each in-region `return` and the closing brace — so a guard that returns early commits
+and exits without threading an accumulator flag; only the owning export's returns
+commit. Prefix `try` may not cross an owned region: its implicit `err` exit carries no
+commit and is refused at `image.flow`.
 
 `marrow run <export>` drives this path end to end for a storeless export. A
 durable program — a keyed resource, a store root, its transactions, reads, and

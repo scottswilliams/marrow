@@ -20,13 +20,13 @@
 //! RV01 closed the three review-of-record defects: D1 (a test body drives a mutating
 //! export, each call its own invocation boundary), D2 (a whole-entry read inside a
 //! read-only region is admitted), and D3 (a whole-entry write through an identity
-//! lookup lowers). Their rows are positive controls now. Two divergences remain
-//! ledgered — a return from inside an owned region, and an empty (no-op)
-//! `transaction` — which the verifier refuses but the checker still accepts; both
-//! belong to the by-design checker false-negative family TX02 promotes to check-time
-//! diagnostics. The correct-rollback journey below locks the invocation-boundary
-//! isolation law: a faulting export invocation rolls back without disturbing a prior
-//! committed one.
+//! lookup lowers). DX01 then made a `return` inside an owned region a commit site, so
+//! the return-inside-region row is a round trip too. Their rows are positive controls
+//! now. One divergence remains ledgered — an empty (no-op) `transaction` — which the
+//! verifier refuses but the checker still accepts; it belongs to the by-design checker
+//! false-negative family TX02 promotes to check-time diagnostics. The correct-rollback
+//! journey below locks the invocation-boundary isolation law: a faulting export
+//! invocation rolls back without disturbing a prior committed one.
 
 use marrow_verify::{TestKind, VerifiedImage};
 use marrow_vm::{
@@ -272,18 +272,37 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn d3IdentityWrite(isbn: string, title: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found] = Book(title: title, isbn: isbn)\n        }\n    }\n}",
             expect: Expect::RoundTrips { run: false },
         },
-        // ---- Explicit remaining divergence (owned by TX02, not RV01). ----
-        // A return from inside an owned region is correctly refused by the verifier
-        // (a path returns without committing), but the checker still accepts it — a
-        // by-design checker false-negative TX02 promotes to a check-time diagnostic.
-        // Ledgered so the remaining divergence stays visible rather than skipped.
+        // ---- DX01: a return inside an owned region commits, then returns. ----
+        // The in-region `return b.title` commits the region's staged writes (here a
+        // read-only region, so nothing is staged), evaluates the return value
+        // pre-commit, then returns it. The lowering places `TxnCommit` before the
+        // `Return`; the verifier proves that ordering, so checker and verifier agree
+        // and the round trip runs. Driven end to end: a seed export commits an entry,
+        // then the in-region return reads its title back.
         Row {
-            label: "return inside an owned region (TX02 promotes to check time)",
-            ops: "pub fn returnInsideRegion(id: int): string? {\n    transaction {\n        if const b = ^books[id] {\n            return b.title\n        }\n    }\n    return absent\n}",
-            expect: Expect::KnownDivergent {
-                code: "image.flow",
-                detail: "a path returns without committing the transaction",
-            },
+            label: "DX01: return inside an owned region (commits, then returns the read value)",
+            ops: "pub fn dxSeed(id: int, title: string) {\n    transaction {\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn returnInsideRegion(id: int): string? {\n    transaction {\n        if const b = ^books[id] {\n            return b.title\n        }\n    }\n    return absent\n}\n\ntest \"in-region return commits and returns the read value\" {\n    dxSeed(8, \"dune\")\n    assert returnInsideRegion(8) ?? \"none\" == \"dune\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // DX01: an all-paths-return region — every path returns from inside the
+        // `transaction`, so the region has no fall-through. The checker must accept it
+        // (the region diverges, so the function returns on every path) and the verifier
+        // must admit it (no unreachable closing commit is emitted). This is the natural
+        // `transaction { ...; return x }` shape; it nets the checker-accept ⇒ verify
+        // class for a region with no trailing return. Driven end to end.
+        Row {
+            label: "DX01: all-paths-return region (no fall-through, no closing commit)",
+            ops: "pub fn allPaths(id: int, title: string): string? {\n    transaction {\n        ^books[id] = Book(title: title, isbn: \"i\")\n        return ^books[id].title\n    }\n}\n\ntest \"all-paths-return region commits and returns the staged value\" {\n    assert allPaths(11, \"dune\") ?? \"none\" == \"dune\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // DX01: a mutating in-region guard-return — the shape the Workshop app teaches.
+        // The present path returns `false` at the guard (committing an empty stage); the
+        // absent path stages the write and returns `true` at the closing brace. Driven:
+        // a first add commits, a re-add is rejected without disturbing the first entry.
+        Row {
+            label: "DX01: mutating in-region guard-return (commits on both exits)",
+            ops: "pub fn addOnce(id: int, title: string): bool {\n    transaction {\n        if exists(^books[id]) {\n            return false\n        }\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n    return true\n}\n\npub fn titleOf(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"guard-return adds once and rejects a re-add\" {\n    assert addOnce(9, \"dune\")\n    assert not addOnce(9, \"impostor\")\n    assert titleOf(9) ?? \"none\" == \"dune\"\n}",
+            expect: Expect::RoundTrips { run: true },
         },
         // A `transaction` block with no durable operation is a no-op region the runtime
         // cannot run (it opens no session), refused by the verifier; the checker still
@@ -421,14 +440,15 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
         }
     }
 
-    // The divergence set is explicit and bounded. RV01 closed D1/D2/D3, so the only
-    // remaining checker-accept/verify-reject row is the return-inside-region case TX02
-    // owns; nothing is checker-refused. A new divergence added without a ledger row
-    // fails an individual row above; these counts fail if a ledger row is silently
-    // removed or an unledgered one appears.
+    // The divergence set is explicit and bounded. RV01 closed D1/D2/D3, and DX01 turned
+    // the return-inside-region row into a round trip, so the only remaining
+    // checker-accept/verify-reject row is the empty (no-op) transaction TX02 owns;
+    // nothing is checker-refused beyond the deferred group-leaf case. A new divergence
+    // added without a ledger row fails an individual row above; these counts fail if a
+    // ledger row is silently removed or an unledgered one appears.
     assert_eq!(
-        known_divergent, 2,
-        "expected exactly the TX02-owned return-inside-region and empty-transaction divergences",
+        known_divergent, 1,
+        "expected exactly the TX02-owned empty-transaction divergence",
     );
     assert_eq!(
         checker_refused, 1,

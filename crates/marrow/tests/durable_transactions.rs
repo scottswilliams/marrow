@@ -103,6 +103,126 @@ pub fn getLabel(id: int): string? {
 }
 "#;
 
+/// In-region guard-return exports (DX01): a `return` inside the owned region commits
+/// the region's staged writes, then returns. Every export here reuses the `Counter`
+/// schema so the shared identity ledger covers it. `addOnce` is the guard-return
+/// shape the Workshop app teaches: the present path returns `false` (committing an
+/// empty stage), the absent path stages the write and returns `true` at the closing
+/// brace. `setAndReport` returns a value read inside the region on one path.
+/// `setNested` returns from inside two nested guards. `setDoubled` calls a helper
+/// whose own early `return` is not a region exit — only the owning export's returns
+/// commit.
+const GUARD_SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn addOnce(id: int, v: int): bool {
+    transaction {
+        if exists(^counters[id]) {
+            return false
+        }
+        ^counters[id] = Counter(value: v)
+    }
+    return true
+}
+
+pub fn setAndReport(id: int, v: int): int? {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        if v > 0 {
+            return ^counters[id].value
+        }
+    }
+    return absent
+}
+
+pub fn setNested(id: int, v: int, ready: bool): bool {
+    transaction {
+        if not exists(^counters[id]) {
+            if ready {
+                ^counters[id] = Counter(value: v)
+                return true
+            }
+        }
+    }
+    return false
+}
+
+fn doubled(x: int): int {
+    if x > 1000 {
+        return 1000
+    }
+    return x + x
+}
+
+pub fn setDoubled(id: int, v: int) {
+    transaction {
+        ^counters[id] = Counter(value: doubled(v))
+    }
+}
+
+pub fn unconditionalReturn(id: int, v: int): int? {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        return ^counters[id].value
+    }
+}
+
+pub fn bothArms(id: int, v: int, hi: bool): bool {
+    transaction {
+        if hi {
+            ^counters[id] = Counter(value: v)
+            return true
+        } else {
+            ^counters[id] = Counter(value: 0)
+            return false
+        }
+    }
+}
+
+pub fn setAndDouble(id: int, v: int): int {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        return checked v + v
+            on out_of_range {
+                return 0
+            }
+    }
+}
+
+pub fn getValue(id: int): int? {
+    return ^counters[id].value
+}
+"#;
+
+/// A `Result`-returning export whose in-region `return` commits (DX01). `setUnlessBig`
+/// stages the write, then on the over-limit path returns `err(...)` *after* the stage
+/// — the author-explicit trap: the staged write commits before the `err` returns.
+const RESULT_SOURCE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn setUnlessBig(id: int, v: int): Result<int, string> {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        if v > 100 {
+            return err("value is large")
+        }
+    }
+    return ok(v)
+}
+
+pub fn getValue(id: int): int? {
+    return ^counters[id].value
+}
+"#;
+
 fn compile_verify(source: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -398,6 +518,303 @@ pub fn setAndGet(id: int, v: int): int? {
             vec![Value::Int(1), Value::Int(5)]
         ),
         Some(Value::Optional(Some(Box::new(Value::Int(5)))))
+    );
+}
+
+/// DX01: an in-region guard-return commits the region's staged writes, then returns.
+/// The present path returns `false` at the guard, committing an empty stage; the
+/// absent path stages the write and returns `true` at the closing brace. Both paths
+/// commit, so a re-add is rejected without disturbing the first entry.
+#[test]
+fn an_in_region_guard_return_commits_and_returns() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    // Absent path: stage and commit, returning `true`.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "addOnce",
+            vec![Value::Int(1), Value::Int(5)]
+        ),
+        Some(Value::Bool(true)),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(5))))),
+        "the absent-path in-region return committed the staged write",
+    );
+
+    // Present path: the guard returns `false` and commits nothing new, leaving the
+    // first entry intact.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "addOnce",
+            vec![Value::Int(1), Value::Int(9)]
+        ),
+        Some(Value::Bool(false)),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(5))))),
+        "the guard-return path staged nothing, so the first value stands",
+    );
+}
+
+/// DX01: an in-region `return <expr>` evaluates the expression (a durable read runs
+/// pre-commit), commits, then returns. The captured value is the committed one.
+#[test]
+fn an_in_region_value_return_commits_the_read_value() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "setAndReport",
+            vec![Value::Int(2), Value::Int(7)]
+        ),
+        Some(Value::Optional(Some(Box::new(Value::Int(7))))),
+        "the in-region return read the staged value pre-commit and committed it",
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(7))))),
+    );
+}
+
+/// DX01: a `return` from inside two nested guards commits the region's staged write.
+#[test]
+fn a_return_in_a_nested_guard_commits() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    // The nested guards reach the in-region return and commit.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "setNested",
+            vec![Value::Int(3), Value::Int(4), Value::Bool(true)]
+        ),
+        Some(Value::Bool(true)),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(3)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(4))))),
+    );
+
+    // The path that falls through the guards to the closing brace stages nothing.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "setNested",
+            vec![Value::Int(4), Value::Int(4), Value::Bool(false)]
+        ),
+        Some(Value::Bool(false)),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(4)]),
+        Some(Value::Optional(None)),
+    );
+}
+
+/// DX01: a helper's own early `return` inside the owner's region is not a region exit
+/// — only the owning export's returns commit. The helper returns a value to the owner,
+/// which commits at its closing brace.
+#[test]
+fn a_helper_return_is_not_a_region_exit() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    // The helper's `x + x` return path.
+    run(
+        &image,
+        &mut attachment,
+        "setDoubled",
+        vec![Value::Int(5), Value::Int(6)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(5)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(12))))),
+    );
+
+    // The helper's early `return 1000` path.
+    run(
+        &image,
+        &mut attachment,
+        "setDoubled",
+        vec![Value::Int(6), Value::Int(2000)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(1000))))),
+    );
+}
+
+/// DX01 all-paths-return region: a `transaction` whose only path returns from inside
+/// (no trailing return after the block) is a legal, whole region — the checker accepts
+/// it (the region diverges, so the function returns on every path) and the verifier
+/// admits it (no unreachable closing commit is emitted). The in-region return commits
+/// the staged write and returns the read value.
+#[test]
+fn an_unconditional_in_region_return_commits() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "unconditionalReturn",
+            vec![Value::Int(1), Value::Int(8)]
+        ),
+        Some(Value::Optional(Some(Box::new(Value::Int(8))))),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(8))))),
+        "the unconditional in-region return committed the staged write",
+    );
+}
+
+/// DX01 all-paths-return region: an `if`/`else` where both arms return from inside the
+/// region is a whole region with no fall-through. Each arm commits its own staged write
+/// before returning, and no closing-brace commit is emitted.
+#[test]
+fn both_arms_returning_in_region_commit() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "bothArms",
+            vec![Value::Int(2), Value::Int(9), Value::Bool(true)]
+        ),
+        Some(Value::Bool(true)),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(9))))),
+        "the true arm committed its staged write",
+    );
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "bothArms",
+            vec![Value::Int(3), Value::Int(9), Value::Bool(false)]
+        ),
+        Some(Value::Bool(false)),
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(3)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(0))))),
+        "the false arm committed its staged write",
+    );
+}
+
+/// DX01: a `return checked` inside a region commits on its success path — the
+/// `CheckedBind::Return` lowering site places the commit before the return. The whole
+/// region is an all-paths-return region (the checked form and its diverging arm both
+/// exit), so no closing commit is emitted.
+#[test]
+fn a_return_checked_in_region_commits() {
+    let image = compile_verify(GUARD_SOURCE);
+    let mut attachment = attach(&image);
+
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "setAndDouble",
+            vec![Value::Int(4), Value::Int(5)]
+        ),
+        Some(Value::Int(10)),
+        "the checked success path returned 2v after committing",
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(4)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(5))))),
+        "the return-checked in-region path committed the staged write",
+    );
+}
+
+/// DX01 adversarial: `return err(...)` after a staged write COMMITS the write. The
+/// in-region return is a commit site regardless of the returned `Result` tag — the
+/// author-explicit trap the decision of record pins. The over-limit path returns an
+/// `err` value, yet the staged write is durably committed and reads back.
+#[test]
+fn a_return_err_after_staged_writes_commits_them() {
+    let image = compile_verify(RESULT_SOURCE);
+    let mut attachment = attach(&image);
+
+    // Over-limit path: the export returns `err(...)`, but the staged write commits.
+    run(
+        &image,
+        &mut attachment,
+        "setUnlessBig",
+        vec![Value::Int(1), Value::Int(200)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(1)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(200))))),
+        "the in-region `return err(...)` committed the staged write",
+    );
+
+    // Under-limit path commits and returns `ok(...)`; the value reads back too.
+    run(
+        &image,
+        &mut attachment,
+        "setUnlessBig",
+        vec![Value::Int(2), Value::Int(50)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(2)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(50))))),
+    );
+}
+
+/// DX01 re-pin: prefix `try` still may not cross an owned region. Its implicit `err`
+/// exit carries no commit, so a `try` on a path that returns before the region's
+/// commit is refused at verify with `image.flow` — *a path returns without committing
+/// the transaction* — exactly as before this lane. The sharpened rationale: a spelled
+/// `return` is a visible commit sentence; `try`'s exit is implicit and carries none.
+#[test]
+fn a_try_crossing_a_region_is_still_rejected() {
+    let try_crossing = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+fn check(v: int): Result<int, string> {
+    if v > 0 {
+        return ok(v)
+    }
+    return err("value must be positive")
+}
+
+pub fn setChecked(id: int, v: int): Result<int, string> {
+    transaction {
+        const w = try check(v)
+        ^counters[id] = Counter(value: w)
+    }
+    return ok(v)
+}
+"#;
+    assert_eq!(
+        verify_rejection(try_crossing).as_deref(),
+        Some("image.flow")
     );
 }
 

@@ -81,9 +81,34 @@ of an `else` block is required by the language — a let-else `else` cannot fall
 through (see [Control flow](control-flow.md#let-else-bindings)) — so past the guard
 the name is always in scope with a present value.
 
-The prelude is idiomatic for a read-only export. A mutating export reads and writes
-inside its `transaction` block rather than guarding before it; see
-[Errors and transactions](errors-and-transactions.md#transactions).
+The prelude works the same inside a mutating export's `transaction` region. An
+in-region `return` commits the region's staged writes before it returns (see
+[Errors and transactions](errors-and-transactions.md#transactions)), so the guards
+go at the top of the block and the happy path writes below them, with no accumulator
+flag threaded through:
+
+```mw
+module clinic::admit
+
+resource Bed {
+    required ward: string
+    patient: string
+}
+
+store ^beds[bid: int]: Bed
+
+pub fn assign(bid: int, who: string): Result<int, string> {
+    transaction {
+        place slot = ^beds[bid]
+        if not exists(slot) { return err("no such bed") }
+        slot.patient = who
+    }
+    return ok(bid)
+}
+```
+
+Each guard's `return` is a region exit that commits before it returns; a guard that
+returns before staging anything commits an empty region and persists no change.
 
 ## Interpolation For Multi-Part Text, `+` For Accumulation
 

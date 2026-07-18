@@ -169,8 +169,9 @@ pub fn show(wanted: string): string {
 }
 ```
 
-When these exits leave a transaction normally, the transaction commits before
-control transfers. An escaping error instead rolls it back.
+When these exits leave a transaction normally — including a `return` from inside
+the region — the transaction commits before control transfers. An escaping runtime
+fault instead rolls it back; a returned `err` value is a normal exit and commits.
 
 ## `unreachable`
 

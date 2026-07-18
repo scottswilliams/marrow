@@ -56,39 +56,30 @@ store ^tallies[name: string]: Tally
 // payload, its first `log` branch entry, and the "catalogued" counter on `^tallies`
 // all commit together, or — on any fault before the commit — roll back together.
 pub fn add(id: int, tag: string, name: string, category: string, at: instant): bool {
-    var added = false
     transaction {
-        if not exists(^assets[id]) {
-            ^assets[id] = Asset(tag: tag, name: name, category: category)
-            ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
-            const priorCatalogued = ^tallies["catalogued"].count ?? 0
-            ^tallies["catalogued"].count = priorCatalogued + 1
-            added = true
-        }
+        if exists(^assets[id]) { return false }
+        ^assets[id] = Asset(tag: tag, name: name, category: category)
+        ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
+        const priorCatalogued = ^tallies["catalogued"].count ?? 0
+        ^tallies["catalogued"].count = priorCatalogued + 1
     }
-    return added
+    return true
 }
 
 pub fn replace(id: int, tag: string, name: string, category: string): bool {
-    var replaced = false
     transaction {
-        if exists(^assets[id]) {
-            ^assets[id] = Asset(tag: tag, name: name, category: category)
-            replaced = true
-        }
+        if not exists(^assets[id]) { return false }
+        ^assets[id] = Asset(tag: tag, name: name, category: category)
     }
-    return replaced
+    return true
 }
 
 pub fn erase(id: int): bool {
-    var erased = false
     transaction {
-        if exists(^assets[id]) {
-            delete ^assets[id]
-            erased = true
-        }
+        if not exists(^assets[id]) { return false }
+        delete ^assets[id]
     }
-    return erased
+    return true
 }
 
 pub fn present(id: int): bool {
@@ -128,53 +119,41 @@ pub fn recordMove(id: int, location: string) {
 // one field of an entry known to exist without materializing the record or touching
 // another root.
 pub fn setLocation(id: int, location: string): bool {
-    var set = false
     transaction {
         place slot = ^assets[id]
-        if exists(slot) {
-            slot.location = location
-            set = true
-        }
+        if not exists(slot) { return false }
+        slot.location = location
     }
-    return set
+    return true
 }
 
 // A guarded field-exact update: the `place` proves the asset present, so the set
 // updates the one field of an entry known to exist without materializing the record.
 pub fn setCondition(id: int, note: string): bool {
-    var updated = false
     transaction {
         place slot = ^assets[id]
-        if exists(slot) {
-            slot.conditionNote = note
-            updated = true
-        }
+        if not exists(slot) { return false }
+        slot.conditionNote = note
     }
-    return updated
+    return true
 }
 
 pub fn checkout(id: int, holder: string): bool {
-    var done = false
     transaction {
         place slot = ^assets[id]
-        if exists(slot) {
-            slot.checkedOutTo = holder
-            done = true
-        }
+        if not exists(slot) { return false }
+        slot.checkedOutTo = holder
     }
-    return done
+    return true
 }
 
 pub fn checkin(id: int): bool {
-    var done = false
     transaction {
         place slot = ^assets[id]
-        if exists(slot) {
-            slot.checkedOutTo = absent
-            done = true
-        }
+        if not exists(slot) { return false }
+        slot.checkedOutTo = absent
     }
-    return done
+    return true
 }
 
 // The partial-copy round-trip: read the whole asset, let a helper rework a local
@@ -194,30 +173,23 @@ fn withName(asset: Asset, name: string): Asset {
 }
 
 pub fn relocate(id: int, location: string): bool {
-    var moved = false
     transaction {
-        if const current = ^assets[id] {
-            ^assets[id] = withLocation(current, location)
-            moved = true
-        }
+        const current = ^assets[id] else return false
+        ^assets[id] = withLocation(current, location)
     }
-    return moved
+    return true
 }
 
 // An identity-keyed whole-entry write: the unique index yields the asset's
 // `Id(^assets)`, and the found identity addresses the whole-entry write that
 // renames it — preserving the log branch through the payload-only write.
 pub fn renameByTag(tag: string, name: string): bool {
-    var renamed = false
     transaction {
-        if const found = ^assets.byTag[tag] {
-            if const current = ^assets[found] {
-                ^assets[found] = withName(current, name)
-                renamed = true
-            }
-        }
+        const found = ^assets.byTag[tag] else return false
+        const current = ^assets[found] else return false
+        ^assets[found] = withName(current, name)
     }
-    return renamed
+    return true
 }
 
 // acts: reads -----------------------------------------------------------------
@@ -248,25 +220,19 @@ pub fn label(id: int): string {
 // acts: the nested log branch (payload-plus-subnodes) -------------------------
 
 pub fn addNote(id: int, seq: int, text: string, at: instant): bool {
-    var added = false
     transaction {
-        if exists(^assets[id]) {
-            ^assets[id].log[seq] = Asset.log(text: text, at: at)
-            added = true
-        }
+        if not exists(^assets[id]) { return false }
+        ^assets[id].log[seq] = Asset.log(text: text, at: at)
     }
-    return added
+    return true
 }
 
 pub fn pinNote(id: int, seq: int, text: string, at: instant): bool {
-    var added = false
     transaction {
-        if exists(^assets[id]) {
-            ^assets[id].log[seq] = Asset.log(text: text, at: at, pinned: true)
-            added = true
-        }
+        if not exists(^assets[id]) { return false }
+        ^assets[id].log[seq] = Asset.log(text: text, at: at, pinned: true)
     }
-    return added
+    return true
 }
 
 pub fn noteText(id: int, seq: int): string? {
@@ -295,13 +261,9 @@ pub fn pinnedCount(): int {
                         total += 1
                     }
                 }
-            } on more {
-                return -1
-            }
+            } on more return -1
         }
-    } on more {
-        return -1
-    }
+    } on more return -1
     return total
 }
 
@@ -311,9 +273,7 @@ pub fn countInCategory(category: string): int {
         if exists(^assets[assetId]) {
             count += 1
         }
-    } on more {
-        return -1
-    }
+    } on more return -1
     return count
 }
 
@@ -406,7 +366,7 @@ test "example: replace drops sparse fields but keeps the log" {
     assert setLocation(4, "Bay 3")
     assert location(4) ?? "" == "Bay 3"
     assert replace(4, "T-400", "Table Saw", "cutting")
-    assert (location(4) ?? "<none>") == "<none>"
+    assert location(4) ?? "<none>" == "<none>"
     assert noteText(4, 1) ?? "" == "catalogued"
     assert countInCategory("cutting") == 1
 }
@@ -427,7 +387,7 @@ test "example: a guarded condition update lands only on a present asset" {
     assert checkout(6, "dana")
     assert holderOf(6) ?? "" == "dana"
     assert checkin(6)
-    assert (holderOf(6) ?? "<none>") == "<none>"
+    assert holderOf(6) ?? "<none>" == "<none>"
 }
 
 test "example: a rejected duplicate leaves both roots intact" {
@@ -452,7 +412,7 @@ test "example: holders replays a checkout log" {
     assert length(board) == 2
     assert board["T-200"] ?? "" == "bob"
     assert board["T-300"] ?? "" == "carol"
-    assert (board["T-100"] ?? "<none>") == "<none>"
+    assert board["T-100"] ?? "<none>" == "<none>"
 }
 
 test "example: unique tag lookup, identity write, and range seeding" {
