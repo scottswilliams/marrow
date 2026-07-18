@@ -72,7 +72,8 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
         .expect("run marrow binary")
 }
 
-/// The stable fixture: scalars, a record, an enum, and a unit return.
+/// The stable fixture: scalars, a record, an enum, a grouped resource, and a
+/// unit return.
 const FIXTURE: &str = r#"struct Point {
     x: int
     y: int
