@@ -445,7 +445,7 @@ fn encode_code(
     for instr in code {
         out.push(instr.opcode());
         match instr {
-            Instr::ConstLoad(raw) | Instr::Unreachable(raw) => {
+            Instr::ConstLoad(raw) | Instr::Unreachable(raw) | Instr::Todo(raw) => {
                 push_u16(&mut out, const_map[*raw as usize])
             }
             Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(&mut out, *l),

@@ -158,7 +158,7 @@ VM can run it.
 
 Source-mapped runtime faults raised by the VM and the path kernel while running a
 verified program: checked-arithmetic overflow, a zero division or remainder
-divisor, a text bound, a reached `unreachable` invariant, call depth, an
+divisor, a text bound, a reached `unreachable` invariant or `todo` deferral, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
 authority denial, a required field left unset at commit, a unique-index
 collision, an unconfirmed commit, and durable corruption. These are not
@@ -170,6 +170,7 @@ catchable inside the program.
 | `run.divide_by_zero` | A division or remainder operation had a zero divisor at runtime. The fault is mapped to the source span of the operation and is not catchable inside the program. |
 | `run.text_limit` | A text concatenation would exceed the fixed 64 KiB result bound, so the operation faults rather than allocating unboundedly. Mapped to the source span of the concatenation and not catchable inside the program. |
 | `run.unreachable` | A program reached an `unreachable("...")` statement, the sole application-declared invariant fault. The static text records the invariant the author believed held; reaching the statement means it did not. The fault is mapped to the statement's source span and is not catchable inside the program. |
+| `run.todo` | A program reached a `todo("...")` statement, an unfinished path the author marked as not yet implemented. The static text names the deferred work. Like `unreachable`, `todo` diverges and satisfies return-path analysis; reaching it maps the fault to the statement's source span and is not catchable inside the program. |
 | `run.assert` | A `test`'s `assert` condition was false at runtime, so the test fails. `marrow test` reports the test as failed and maps the fault to the assertion's source span. Only a `test` body can produce this fault; it is not catchable inside the program. |
 | `run.call_depth` | Runtime call depth exceeded the fixed limit (64). Static recursion is already rejected at verification, so this guards a pathologically deep non-recursive call chain; mapped to the call site and not catchable inside the program. |
 | `run.budget` | A running program exhausted the fixed per-invocation instruction budget, shared across the whole call tree so total work stays bounded regardless of loop or call structure. A non-terminating loop faults here rather than running forever. The fault stops execution and is not catchable inside the program. |

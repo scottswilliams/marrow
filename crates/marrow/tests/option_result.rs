@@ -301,7 +301,7 @@ fn an_uninferable_bare_constructor_is_reported() {
 
 /// Every value-level built-in the compiler intercepts before user resolution —
 /// the `Option`/`Result` constructors (`none`/`some`/`ok`/`err`), the presence
-/// test (`exists`), the divergence marker (`unreachable`), and the pure text
+/// test (`exists`), the divergence markers (`unreachable`/`todo`), and the pure text
 /// floor (`isEmpty`/`contains`/`trim`) — is reserved at every value-binding
 /// declaration site. A `fn`, module `const`, parameter, local `const`/`var`, or
 /// `if const` binding that reuses one is a `check.name_conflict` at the
@@ -309,13 +309,14 @@ fn an_uninferable_bare_constructor_is_reported() {
 /// its use site (surfacing later as a confusing `check.type`).
 #[test]
 fn redeclaring_a_reserved_builtin_value_name_is_reported() {
-    const NAMES: [&str; 11] = [
+    const NAMES: [&str; 12] = [
         "none",
         "some",
         "ok",
         "err",
         "exists",
         "unreachable",
+        "todo",
         "isEmpty",
         "addDays",
         "daysBetween",

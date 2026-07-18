@@ -922,6 +922,58 @@ fn unreachable_rejects_a_computed_argument() {
     assert!(stdout.contains("check.type"), "{output:?}");
 }
 
+/// `todo("...")` mirrors `unreachable`: it diverges (so it satisfies exhaustive
+/// return), it requires a static string literal, and reaching it faults with the
+/// distinct `run.todo` code carrying the author text.
+#[test]
+fn todo_diverges_and_faults_run_todo() {
+    let temp = TempDir::new("todo");
+
+    // Divergence satisfies the "all paths return" check and the real path runs.
+    project(
+        &temp,
+        r#"pub fn classify(n: int): int {
+    if n > 0 { return 1 }
+    todo("handle non-positive inputs")
+}
+"#,
+    );
+    let ok = run_in(&temp, &["run", "classify", "--", "7"]);
+    assert!(ok.status.success(), "{ok:?}");
+    assert_eq!(String::from_utf8_lossy(&ok.stdout), "1\n");
+
+    // Reaching it faults with run.todo; the typed surface stays code + span, the text
+    // surface carries the author string.
+    let jsonl = run_in(&temp, &["run", "classify", "--format", "jsonl", "--", "-1"]);
+    assert!(!jsonl.status.success());
+    let jsonl_out = String::from_utf8_lossy(&jsonl.stdout);
+    assert!(jsonl_out.contains(r#""outcome":"fault""#), "{jsonl:?}");
+    assert!(jsonl_out.contains("run.todo"), "{jsonl:?}");
+    assert!(
+        !jsonl_out.contains("handle non-positive"),
+        "static text stays out of the typed JSONL grammar: {jsonl:?}"
+    );
+    let text = run_in(&temp, &["run", "classify", "--", "-1"]);
+    let text_out = String::from_utf8_lossy(&text.stdout);
+    assert!(text_out.contains("run.todo"), "{text:?}");
+    assert!(text_out.contains("handle non-positive inputs"), "{text:?}");
+
+    // A computed argument is rejected, like `unreachable`.
+    project(
+        &temp,
+        r#"pub fn bad(s: string): int {
+    todo(s)
+}
+"#,
+    );
+    let out = run_in(&temp, &["run", "bad", "--format", "jsonl", "--", "x"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("check.type"),
+        "{out:?}"
+    );
+}
+
 /// A project whose resource, constructor, field reads, optional coalescing, and
 /// `if const` guard travel the full path. One source file drives several exports.
 const RECORDS_SOURCE: &str = r#"resource Note {

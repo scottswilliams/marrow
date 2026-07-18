@@ -657,6 +657,19 @@ fn execute<'s>(
                     text,
                 ));
             }
+            SealedInstr::Todo(idx) => {
+                let text = match &image.consts()[*idx as usize] {
+                    SealedConst::Text(text) => text.clone(),
+                    _ => unreachable!("verifier proved a text const operand"),
+                };
+                let (line, column) = function.span_at(pc).unwrap_or((1, 1));
+                return Err(RuntimeFault::with_detail(
+                    Code::RunTodo.as_str(),
+                    line,
+                    column,
+                    text,
+                ));
+            }
             SealedInstr::Assert => {
                 // A test assertion: on a false condition the running test fails with a
                 // source-mapped `run.assert` fault; the verifier proved this appears

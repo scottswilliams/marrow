@@ -183,6 +183,9 @@ pub enum SealedInstr {
     /// Fault with `run.unreachable`, carrying the static text at const index `_0`.
     /// Terminates the frame; it never falls through.
     Unreachable(u16),
+    /// Fault with `run.todo`, carrying the static text at const index `_0`. A deferred
+    /// path; like `Unreachable` it terminates the frame and never falls through.
+    Todo(u16),
     /// Pop a bool; on false fault with `run.assert` at this instruction's span, else
     /// fall through. The verifier admits it only in a test-entry function.
     Assert,

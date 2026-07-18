@@ -196,6 +196,26 @@ pub fn sign(n: int): int {
 
 It is a statement, not an expression: it cannot be used where a value is required.
 
+## `todo`
+
+`todo("static text")` marks a path the author has not implemented yet. It mirrors
+`unreachable` exactly: it takes one static string literal — never a computed value —
+naming the deferred work, it diverges so it satisfies return-path analysis and stands
+as the final statement of a value-returning function, and it is a statement, not an
+expression. The one difference is meaning: reaching `todo` raises the
+source-uncatchable `run.todo` fault rather than `run.unreachable`, distinguishing an
+unfinished path from a broken invariant. Like `unreachable`, `todo` has one spelling,
+so `todo(` is the complete worklist of deferred paths in a module.
+
+```mw
+module docs::deferral
+
+pub fn describe(n: int): string {
+    if n > 0 { return "positive" }
+    todo("classify zero and negative inputs")
+}
+```
+
 ## Checked Arithmetic
 
 By default an integer operation that overflows or divides by zero raises a

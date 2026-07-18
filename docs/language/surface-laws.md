@@ -76,6 +76,7 @@ occurrence.
 | `\bwhile\b` | every loop with no iteration limit |
 | `\bdelete\b` | every durable deletion |
 | `unreachable\(` | every application-declared invariant fault |
+| `todo\(` | every deferred, not-yet-implemented path |
 | `\bpub ` | every public declaration (an exported function or enum) |
 
 Two rows depend on the durable-access rules and are stated precisely:

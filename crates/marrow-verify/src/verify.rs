@@ -37,7 +37,7 @@ use marrow_image::{
     OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN,
     OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
     OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
-    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TXN_BEGIN,
+    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN,
     OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
     TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY,
@@ -3397,7 +3397,7 @@ impl Effects {
 /// The control-flow successors of the sealed instruction at `index`.
 fn flow_successors(code: &[SealedInstr], index: usize) -> Vec<usize> {
     match &code[index] {
-        SealedInstr::Return | SealedInstr::Unreachable(_) => Vec::new(),
+        SealedInstr::Return | SealedInstr::Unreachable(_) | SealedInstr::Todo(_) => Vec::new(),
         SealedInstr::Jump(target) => vec![*target],
         SealedInstr::JumpIfFalse(target)
         | SealedInstr::BranchPresent(target)
@@ -3843,6 +3843,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_IDENTITY_KEY_PATH => SealedInstr::IdentityKeyPath(operand_u16(&mut reader)?),
             OP_BRANCH_PRESENT => SealedInstr::BranchPresent(operand_u32(&mut reader)? as usize),
             OP_UNREACHABLE => SealedInstr::Unreachable(operand_u16(&mut reader)?),
+            OP_TODO => SealedInstr::Todo(operand_u16(&mut reader)?),
             OP_ASSERT => SealedInstr::Assert,
             OP_CALL => SealedInstr::Call(operand_u16(&mut reader)?),
             OP_DUR_EXISTS => SealedInstr::DurExists(operand_u16(&mut reader)?),
@@ -4796,6 +4797,16 @@ fn apply(
             )),
             None => Err(reject(VerifyPhase::Function, "const index out of range")),
         },
+        SealedInstr::Todo(idx) => match consts.get(*idx as usize) {
+            // The operand is the static deferral text; like `Unreachable` it must be a
+            // text const and ends the frame without a return-value check.
+            Some(SealedConst::Text(_)) => Ok(Control::Return),
+            Some(_) => Err(reject(
+                VerifyPhase::Function,
+                "todo operand must be a text const",
+            )),
+            None => Err(reject(VerifyPhase::Function, "const index out of range")),
+        },
         SealedInstr::Jump(target) => Ok(Control::Jump(*target)),
         SealedInstr::JumpIfFalse(target) => {
             expect_scalar(pop(stack)?, Scalar::Bool)?;
@@ -5220,6 +5231,7 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         | SealedInstr::IdentityKeyPath(_)
         | SealedInstr::BranchPresent(_)
         | SealedInstr::Unreachable(_)
+        | SealedInstr::Todo(_)
         | SealedInstr::Assert
         | SealedInstr::Call(_)
         | SealedInstr::ListNew(_)

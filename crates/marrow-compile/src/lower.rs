@@ -409,6 +409,7 @@ enum Builtin {
     Err,
     Exists,
     Unreachable,
+    Todo,
     IsEmpty,
     Contains,
     Trim,
@@ -452,6 +453,7 @@ impl Builtin {
             "err" => Builtin::Err,
             "exists" => Builtin::Exists,
             "unreachable" => Builtin::Unreachable,
+            "todo" => Builtin::Todo,
             "isEmpty" => Builtin::IsEmpty,
             "contains" => Builtin::Contains,
             "trim" => Builtin::Trim,
@@ -892,6 +894,7 @@ fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::JumpIfFalse(_)
         | Instr::BranchPresent(_)
         | Instr::Unreachable(_)
+        | Instr::Todo(_)
         | Instr::Assert
         | Instr::IntAdd
         | Instr::IntSub
@@ -4307,13 +4310,19 @@ impl<'a> FnLowerer<'a> {
                     None
                 }
                 CallResult::Diverges => {
-                    // `unreachable` is a diverging statement, not a value; it is only
-                    // valid in statement position.
+                    // A diverging builtin (`unreachable`/`todo`) is a statement, not a
+                    // value; it is only valid in statement position.
+                    let name = match callee.as_ref() {
+                        Expression::Name { segments, .. } if segments.len() == 1 => {
+                            segments[0].as_str()
+                        }
+                        _ => "unreachable",
+                    };
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         self.file,
                         *span,
-                        "`unreachable` is a statement and cannot be used as a value".to_string(),
+                        format!("`{name}` is a statement and cannot be used as a value"),
                     ));
                     None
                 }
@@ -5206,6 +5215,7 @@ impl<'a> FnLowerer<'a> {
             return match builtin {
                 Builtin::Exists => self.lower_exists(args, span).map(CallResult::Value),
                 Builtin::Unreachable => self.lower_unreachable(args, span),
+                Builtin::Todo => self.lower_todo(args, span),
                 // `some(v)` infers its Option from `v`; `ok`/`err` cannot infer the
                 // whole Result, so they need an expected type (an annotation,
                 // argument, return, or coerced position).
@@ -8625,6 +8635,51 @@ impl<'a> FnLowerer<'a> {
         };
         let const_id = self.draft.intern_text(&decoded);
         self.push(Instr::Unreachable(const_id.index()), span);
+        Some(CallResult::Diverges)
+    }
+
+    /// Lower `todo("static text")`: a deferred path the author has not implemented. It
+    /// mirrors `unreachable` exactly — one static string literal, a fault instruction
+    /// carrying that text, and divergence — but raises `run.todo` when reached.
+    fn lower_todo(&mut self, args: &[Argument], span: SourceSpan) -> Option<CallResult> {
+        let [arg] = args else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`todo` takes one static string literal".to_string(),
+            ));
+            return None;
+        };
+        if arg.name.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`todo` takes one positional static string literal".to_string(),
+            ));
+            return None;
+        }
+        let Expression::Literal {
+            kind: LiteralKind::String,
+            text,
+            span: lit_span,
+        } = &arg.value
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                "`todo` requires a static string literal, not a computed value".to_string(),
+            ));
+            return None;
+        };
+        let Ok(decoded) = decode_string_literal(text) else {
+            self.fail(unsupported(self.file, *lit_span, "this string literal"));
+            return None;
+        };
+        let const_id = self.draft.intern_text(&decoded);
+        self.push(Instr::Todo(const_id.index()), span);
         Some(CallResult::Diverges)
     }
 

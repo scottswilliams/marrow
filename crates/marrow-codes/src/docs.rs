@@ -204,7 +204,7 @@ VM can run it.
 
 Source-mapped runtime faults raised by the VM and the path kernel while running a
 verified program: checked-arithmetic overflow, a zero division or remainder
-divisor, a text bound, a reached `unreachable` invariant, call depth, an
+divisor, a text bound, a reached `unreachable` invariant or `todo` deferral, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
 authority denial, a required field left unset at commit, a unique-index
 collision, an unconfirmed commit, and durable corruption. These are not
@@ -218,6 +218,7 @@ catchable inside the program.
             Code::RunDivideByZero,
             Code::RunTextLimit,
             Code::RunUnreachable,
+            Code::RunTodo,
             Code::RunAssert,
             Code::RunCallDepth,
             Code::RunBudget,
