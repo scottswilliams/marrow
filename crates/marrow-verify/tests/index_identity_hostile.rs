@@ -341,13 +341,16 @@ fn an_identity_key_path_with_the_wrong_column_count_is_refused() {
 
 #[test]
 fn a_valid_identity_round_trip_verifies() {
-    // The baseline the forgeries perturb: build an identity and spread it back to its
-    // one key column, leaving an int the function returns.
+    // The baseline the forgeries perturb: build an identity of the root and spread it
+    // back to its one key column, which keys a durable operation on that same root — the
+    // spread column's only legitimate consumer. (A spread key column is a distinct typed
+    // operand, not a plain int, so it flows to a durable key-path rather than a return.)
     let code = vec![
         Instr::LocalGet(0),
         Instr::MakeIdentity { root: 0, cols: 1 },
         Instr::IdentityKeyPath(1),
+        Instr::DurExists(0),
         Instr::Return,
     ];
-    assert!(verify_one(code, vec![int()], int()).is_ok());
+    assert!(verify_one(code, vec![int()], ImageType::scalar(Scalar::Bool)).is_ok());
 }

@@ -1076,6 +1076,20 @@ fn decode_durable(
         });
     }
 
+    // A root's name keys its physical cell family, so two roots that resolve to the same
+    // name would share one family — a later write to one silently overwriting the other.
+    // The escape encoding is injective, so distinct name strings never collide physically;
+    // reject only an image whose roots resolve to the same name string. Placement/product/
+    // key ledger ids are already distinct across the table (`take_distinct_id`), so this
+    // closes the one remaining cross-root physical-collision axis.
+    for (i, root) in roots.iter().enumerate() {
+        for other in &roots[..i] {
+            if strings[root.name as usize] == strings[other.name as usize] {
+                return Err(reject(VerifyPhase::Table, "two durable roots share a name"));
+            }
+        }
+    }
+
     // Reconstruct the durable graph's node set now, from the same descriptor the
     // contract id is computed over, so every operation site resolves against this
     // verifier's own derivation of the graph rather than a compiler-side summary.
@@ -4748,8 +4762,14 @@ fn apply(
             }
             // Spread the key columns root-first (k0 pushed first) so the key-path sits
             // exactly as an inline `^root[k…]` access would leave it for the entry read.
+            // Each column is tagged with the identity's root so a durable op can re-prove
+            // it addresses that same root — an identity of one root can never key an
+            // operation on another, even through a local slot.
             for scalar in &sealed_root.keys {
-                frame.stack.push(VType::bare_scalar(*scalar));
+                frame.stack.push(VType::IdentityColumn {
+                    root,
+                    scalar: *scalar,
+                });
             }
             return Ok(Control::Fallthrough);
         }
@@ -5570,7 +5590,7 @@ fn apply_durable(
     let stack = &mut frame.stack;
     match instr {
         SealedInstr::DurExists(_) => {
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
         SealedInstr::DurFamilyExists(_) => {
@@ -5601,27 +5621,27 @@ fn apply_durable(
         SealedInstr::DurReadField(_) => {
             let field = field_of(ctx, site_target, root)?;
             let value = durable_field_vtype(field).to_optional();
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
             stack.push(value);
         }
         SealedInstr::DurReadEntry(_) => {
             require_entry(site_target)?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
             stack.push(VType::bare_record(entry_record).to_optional());
         }
         SealedInstr::DurReadGroup(_) => {
             require_group(site_target)?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
             stack.push(VType::bare_record(entry_record).to_optional());
         }
         SealedInstr::DurReplaceGroup(_) => {
             require_group(site_target)?;
             expect(pop(stack)?, VType::bare_record(entry_record))?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurEraseGroup(_) => {
             require_group(site_target)?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurSetRequired(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -5633,7 +5653,7 @@ fn apply_durable(
             }
             let value = durable_field_vtype(field);
             expect(pop(stack)?, value)?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurSetSparse(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -5645,7 +5665,7 @@ fn apply_durable(
             }
             let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, value)?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurSetSparsePresent { key_slots, .. } => {
             // The strict present form reads its containing entry's whole key-path from
@@ -5708,7 +5728,7 @@ fn apply_durable(
         SealedInstr::DurCreateEntry(_) | SealedInstr::DurReplaceEntry(_) => {
             require_entry(site_target)?;
             expect(pop(stack)?, VType::bare_record(entry_record))?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurEraseField(_) => {
             let field = field_of(ctx, site_target, root)?;
@@ -5718,11 +5738,11 @@ fn apply_durable(
                     "erase targets a required field",
                 ));
             }
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurEraseEntry(_) => {
             require_entry(site_target)?;
-            pop_key_path(stack, &key_path)?;
+            pop_key_path(stack, &key_path, site_root)?;
         }
         SealedInstr::DurIterateBounded {
             limit,
@@ -5951,9 +5971,29 @@ fn apply_index_read(
 /// Pop and type-check a durable operation's key-path against `key_path` (the key
 /// types in stack-pop order — the branch key then the root key for a branch entry
 /// site, the single root key otherwise).
-fn pop_key_path(stack: &mut Vec<VType>, key_path: &[VType]) -> Result<(), VerifyRejection> {
+fn pop_key_path(
+    stack: &mut Vec<VType>,
+    key_path: &[VType],
+    site_root: u16,
+) -> Result<(), VerifyRejection> {
     for ty in key_path {
-        expect(pop(stack)?, *ty)?;
+        match pop(stack)? {
+            // A key column spread from an entry identity carries its root; it may key
+            // this operation only when the identity addresses the *same* root as the
+            // site, and its scalar must still match the site's key column. This re-proves
+            // the cross-root identity distinction through a local slot, independently of
+            // the compiler.
+            VType::IdentityColumn { root, scalar } => {
+                if root != site_root {
+                    return Err(reject(
+                        VerifyPhase::Function,
+                        "an entry identity keys a durable operation on a different store root",
+                    ));
+                }
+                expect(VType::bare_scalar(scalar), *ty)?;
+            }
+            other => expect(other, *ty)?,
+        }
     }
     Ok(())
 }

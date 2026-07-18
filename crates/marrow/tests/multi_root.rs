@@ -351,6 +351,28 @@ fn a_cross_root_transaction_rolls_both_roots_back() {
     );
 }
 
+/// Two `store` declarations that share a root name are a precise `check.type` rejection:
+/// each root's name keys a distinct physical cell family, so a repeated name has no
+/// unambiguous address. The verifier rejects the same collision independently for a
+/// forged image (see marrow-verify's multi_root_hostile).
+#[test]
+fn two_stores_sharing_a_root_name_are_rejected_at_check() {
+    let source = r#"resource Asset {
+    required name: string
+}
+
+store ^assets[id: int]: Asset
+store ^assets[key: int]: Asset
+"#;
+    let diagnostics = compile(source, IDS).expect_err("a duplicate root name is rejected");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code == "check.type" && d.message.contains("more than once")),
+        "expected a duplicate-root-name check.type rejection, got {diagnostics:#?}"
+    );
+}
+
 /// Each root's entry identity `Id(^root)` carries that root's own RootId, so an identity
 /// minted over one root cannot address another: it is a precise `check.type` rejection,
 /// not a silently accepted confusion of two distinct durable addresses.

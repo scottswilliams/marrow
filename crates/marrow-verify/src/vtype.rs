@@ -31,6 +31,17 @@ pub(crate) enum VType {
         root: u16,
         optional: bool,
     },
+    /// One key column spread from an entry identity of `root` (`IdentityKeyPath`), tagged
+    /// with that root so it survives storage in a local and reaches the durable op that
+    /// consumes it. A durable key-path admits it only when it addresses the *same* root,
+    /// so an identity minted over one root can never key an operation on another — the
+    /// verifier re-proves the cross-root distinction the checker enforces, independently
+    /// of the compiler. It carries the column's scalar so the site's key-column type
+    /// check is unchanged; it is never optional and never a value the language can name.
+    IdentityColumn {
+        root: u16,
+        scalar: Scalar,
+    },
 }
 
 impl VType {
@@ -83,6 +94,8 @@ impl VType {
             | VType::Enum { optional, .. }
             | VType::Collection { optional, .. }
             | VType::Identity { optional, .. } => optional,
+            // A spread identity key column is never optional.
+            VType::IdentityColumn { .. } => false,
         }
     }
 
@@ -109,6 +122,8 @@ impl VType {
                 root,
                 optional: false,
             },
+            // A spread identity key column is already bare.
+            VType::IdentityColumn { .. } => self,
         }
     }
 
@@ -135,6 +150,9 @@ impl VType {
                 root,
                 optional: true,
             },
+            // A spread identity key column is never optionalized; it flows only to a
+            // durable key-path.
+            VType::IdentityColumn { .. } => self,
         }
     }
 
