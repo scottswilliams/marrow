@@ -125,20 +125,20 @@ pub struct EphemeralAttachment {
 }
 
 impl EphemeralAttachment {
-    /// Mint a fresh ephemeral attachment over an empty in-memory store. The schema
-    /// and site table are the executor's derivation from a verified image; the
-    /// ceiling bounds every session's authority. A fresh id is drawn from entropy
+    /// Mint a fresh ephemeral attachment over an empty in-memory store. The root-indexed
+    /// schema table and site table are the executor's derivation from a verified image;
+    /// the ceiling bounds every session's authority. A fresh id is drawn from entropy
     /// before the store is built, so a mint either yields a fully-formed attachment
     /// or fails without one.
     pub fn mint(
-        schema: StoreSchema,
+        schemas: Vec<StoreSchema>,
         sites: Vec<SiteSpec>,
         ceiling: DeploymentCeiling,
     ) -> Result<Self, AttachError> {
         let id = AttachmentId::draw()?;
-        let store = DurableStore::from_engine_with_ceiling(
+        let store = DurableStore::from_schemas_with_ceiling(
             MemoryEngine::new(),
-            schema,
+            schemas,
             sites,
             ceiling.coverage(),
         );
@@ -234,6 +234,7 @@ mod tests {
 
     fn sites() -> Vec<SiteSpec> {
         vec![SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         }]
     }
@@ -252,14 +253,15 @@ mod tests {
 
     #[test]
     fn each_mint_draws_a_distinct_id() {
-        let a = EphemeralAttachment::mint(schema(), sites(), read_only()).expect("mint");
-        let b = EphemeralAttachment::mint(schema(), sites(), read_only()).expect("mint");
+        let a = EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
+        let b = EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
         assert_ne!(a.id(), b.id(), "two attachments must not share an id");
     }
 
     #[test]
     fn a_read_only_ceiling_denies_a_writing_invocation() {
-        let mut att = EphemeralAttachment::mint(schema(), sites(), read_only()).expect("mint");
+        let mut att =
+            EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
         // A writing demand exceeds a read-only ceiling even under a full grant.
         let denied = att.txn_session(
             InvocationGrant::full_store(),
@@ -277,7 +279,7 @@ mod tests {
         // bound to the exact ceiling it was minted under. Two distinct ceilings mint
         // attachments that report distinct ids.
         let a = EphemeralAttachment::mint(
-            schema(),
+            vec![schema()],
             sites(),
             DeploymentCeiling::new(
                 DemandCoverage {
@@ -291,7 +293,7 @@ mod tests {
         assert_eq!(a.ceiling_id(), CeilingIdToken::new([0x22; 32]));
 
         let b = EphemeralAttachment::mint(
-            schema(),
+            vec![schema()],
             sites(),
             DeploymentCeiling::new(
                 DemandCoverage {
@@ -307,7 +309,8 @@ mod tests {
 
     #[test]
     fn a_fresh_attachment_observes_no_entries() {
-        let mut att = EphemeralAttachment::mint(schema(), sites(), read_only()).expect("mint");
+        let mut att =
+            EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
         let mut read = att
             .read_session(
                 InvocationGrant::full_store(),

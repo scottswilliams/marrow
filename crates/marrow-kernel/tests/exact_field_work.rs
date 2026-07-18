@@ -45,9 +45,11 @@ fn schema(extra: usize) -> StoreSchema {
 fn sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::FieldLeaf(0),
         },
     ]
@@ -64,9 +66,9 @@ fn write() -> DemandCoverage {
 /// declaring `1 + extra` fields.
 fn writes_for_single_field_set(extra: usize) -> usize {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(extra),
+        vec![schema(extra)],
         sites(),
         write(),
     );
@@ -88,9 +90,9 @@ fn writes_for_single_field_set(extra: usize) -> usize {
 /// stages against a resource declaring `1 + extra` fields.
 fn writes_for_narrow_create(extra: usize) -> usize {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(extra),
+        vec![schema(extra)],
         sites(),
         write(),
     );

@@ -186,7 +186,22 @@ fn push_indexes(out: &mut Vec<u8>, indexes: &[IndexSchema]) {
 /// its managed indexes. A field, group, branch (at any depth), or index-set change
 /// therefore changes the descriptor, so a store's recorded profile refuses a reopen under
 /// a different field, group, branch, or index shape.
-pub(super) fn descriptor(schema: &StoreSchema) -> Vec<u8> {
+/// The canonical profile descriptor bytes for a whole store: a `u16` root count, then
+/// each root's [`descriptor`] in declaration order. One store meta cell describes every
+/// root, so a changed root count, root order, or any per-root shape change refuses a
+/// reopen. The root count is itself an actual-count length prefix in the same style as
+/// every repeated section, so the descriptor stays self-delimiting and no profile-version
+/// bump is needed: a single-root store records a leading `0x0001` and one root section.
+pub(super) fn store_descriptor(schemas: &[StoreSchema]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(schemas.len() as u16).to_be_bytes());
+    for schema in schemas {
+        out.extend_from_slice(&descriptor(schema));
+    }
+    out
+}
+
+fn descriptor(schema: &StoreSchema) -> Vec<u8> {
     let mut out = vec![PROFILE_VERSION];
     out.extend_from_slice(&VALUE_CODEC_VERSION.to_be_bytes());
     push_name(&mut out, &schema.root_name);
@@ -527,6 +542,39 @@ mod tests {
         let mut swapped = base.clone();
         swapped.indexes = vec![by_isbn, by_shelf];
         assert_ne!(descriptor(&both), descriptor(&swapped));
+    }
+
+    #[test]
+    fn store_descriptor_covers_every_root_and_its_order() {
+        let assets = StoreSchema {
+            root_name: "assets".into(),
+            key: vec![ScalarKind::Int],
+            fields: vec![FieldSchema::scalar("name", ScalarKind::Str, true)],
+            groups: Vec::new(),
+            branches: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let tallies = StoreSchema {
+            root_name: "tallies".into(),
+            key: vec![ScalarKind::Str],
+            fields: vec![FieldSchema::scalar("count", ScalarKind::Int, true)],
+            groups: Vec::new(),
+            branches: Vec::new(),
+            indexes: Vec::new(),
+        };
+
+        // A single-root store descriptor is a leading 0x0001 root count then that root's
+        // own descriptor — byte-for-byte.
+        let one = store_descriptor(std::slice::from_ref(&assets));
+        let mut expected_one = 1u16.to_be_bytes().to_vec();
+        expected_one.extend_from_slice(&descriptor(&assets));
+        assert_eq!(one, expected_one);
+
+        // A two-root store records both, so it differs from either single root, and root
+        // order is significant (swapping the two roots changes the descriptor).
+        let both = store_descriptor(&[assets.clone(), tallies.clone()]);
+        assert_ne!(both, store_descriptor(std::slice::from_ref(&assets)));
+        assert_ne!(both, store_descriptor(&[tallies, assets]));
     }
 
     #[test]

@@ -53,12 +53,15 @@ fn schema() -> StoreSchema {
 fn sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::IndexScan(0),
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::IndexLookup(1),
         },
     ]
@@ -89,9 +92,9 @@ fn entry(shelf: &str, isbn: &str) -> EntryValue {
 /// ids and isbns, over the counting engine.
 fn seeded(distinct: usize, fanout: usize) -> (DurableStore<CountingEngine>, Counters) {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(),
+        vec![schema()],
         sites(),
         write(),
     );

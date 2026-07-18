@@ -189,7 +189,11 @@ pub trait Durable {
 /// The durable store handle. CLI-only caller at T01; dies at D00.
 pub struct DurableStore<E: ByteEngine> {
     engine: E,
-    schema: StoreSchema,
+    /// The store's roots by declaration position: one [`StoreSchema`] per durable root,
+    /// each with its own name-keyed physical cell family. A site's `root` indexes this
+    /// table. One engine transaction spans every root, so a cross-root write commits or
+    /// rolls back as one unit.
+    schemas: Vec<StoreSchema>,
     sites: Vec<SiteSpec>,
     /// The store's deployment ceiling: the read/write coverage this handle admits,
     /// intersected with each invocation's grant before the first engine call. For a
@@ -201,30 +205,33 @@ pub struct DurableStore<E: ByteEngine> {
 }
 
 impl<E: ByteEngine> DurableStore<E> {
-    /// Build a store over an already-open engine, minting the store ceiling from the
-    /// handle's write capability. The native/tracer caller; an ephemeral attachment
-    /// uses [`Self::from_engine_with_ceiling`] to bound the ceiling by image demand.
+    /// Build a single-root store over an already-open engine, minting the store ceiling
+    /// from the handle's write capability. The native/tracer caller; an ephemeral
+    /// attachment uses [`Self::from_schemas_with_ceiling`] to bound the ceiling by image
+    /// demand and to carry every root of a multi-root image.
     pub fn from_engine(engine: E, schema: StoreSchema, sites: Vec<SiteSpec>) -> Self {
         let ceiling = DemandCoverage {
             read: true,
             write: engine.require_write_access("open").is_ok(),
         };
-        Self::from_engine_with_ceiling(engine, schema, sites, ceiling)
+        Self::from_schemas_with_ceiling(engine, vec![schema], sites, ceiling)
     }
 
-    /// Build a store over an already-open engine with an explicit deployment
-    /// ceiling. The ephemeral-attachment caller bounds the ceiling by the image's
-    /// demand union, so authority never exceeds what the compiler described even
-    /// when the backing engine is unconditionally writable.
-    pub fn from_engine_with_ceiling(
+    /// Build a store over an already-open engine from the image's root-indexed schema
+    /// table and an explicit deployment ceiling. The ephemeral-attachment caller bounds
+    /// the ceiling by the image's demand union, so authority never exceeds what the
+    /// compiler described even when the backing engine is unconditionally writable. A
+    /// site's `root` indexes `schemas`; every root shares this one engine, so a
+    /// transaction spanning several roots commits atomically.
+    pub fn from_schemas_with_ceiling(
         engine: E,
-        schema: StoreSchema,
+        schemas: Vec<StoreSchema>,
         sites: Vec<SiteSpec>,
         ceiling: DemandCoverage,
     ) -> Self {
         Self {
             engine,
-            schema,
+            schemas,
             sites,
             ceiling,
             poisoned: false,
@@ -249,7 +256,7 @@ impl<E: ByteEngine> DurableStore<E> {
             .map_err(SessionError::Engine)?
         {
             None => Ok(()),
-            Some(stored) if stored == profile::descriptor(&self.schema) => Ok(()),
+            Some(stored) if stored == profile::store_descriptor(&self.schemas) => Ok(()),
             Some(_) => Err(SessionError::ProfileMismatch),
         }
     }
@@ -257,7 +264,7 @@ impl<E: ByteEngine> DurableStore<E> {
     fn authorized_sites(&self) -> Vec<AuthorizedSite> {
         self.sites
             .iter()
-            .map(|site| resolve_site(&self.schema, &site.target))
+            .map(|site| resolve_site(&self.schemas[site.root as usize], site.root, &site.target))
             .collect()
     }
 
@@ -287,8 +294,15 @@ impl<E: ByteEngine> DurableStore<E> {
         resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         self.verify_profile()?;
         let auth = self.authorized_sites();
-        let descriptor = profile::descriptor(&self.schema);
-        let indexes = self.schema.indexes.clone();
+        let descriptor = profile::store_descriptor(&self.schemas);
+        // Per-root managed indexes: a write to root R maintains exactly `indexes[R]`, so a
+        // cross-root transaction keeps each root's own indexes coherent without confusing
+        // one root's index cells with another's.
+        let indexes: Vec<Vec<IndexSchema>> = self
+            .schemas
+            .iter()
+            .map(|schema| schema.indexes.clone())
+            .collect();
         // Split the store's fields into disjoint borrows: the transaction borrows the
         // engine mutably while the session still writes the poison flag. The schema is
         // read here (into `descriptor` and the resolved sites) before the split.
@@ -344,11 +358,12 @@ fn resolve_authority(
 /// for a field target — the field's name, kind, and required flag. A branch target
 /// walks its branch path through the recursive schema so the addressed node carries the
 /// key kind and record of the branch the path descends to, at any depth.
-fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
+fn resolve_site(schema: &StoreSchema, root_index: u16, target: &SiteTarget) -> AuthorizedSite {
     // A managed-index read addresses no source node: it resolves to the index's cell
     // family identity, its read kind, and the scalar kind of each projected component
     // (root key columns and top-level fields, by position), and carries an empty branch
-    // path since every index is root-level.
+    // path since every index is root-level. The index position is local to this root's
+    // schema (the image-wide position was rebased per root when the site table was built).
     if let SiteTarget::IndexScan(position) | SiteTarget::IndexLookup(position) = target {
         let index = &schema.indexes[*position as usize];
         let projection = index
@@ -358,6 +373,7 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
             .collect();
         return AuthorizedSite::index(
             schema.root_name.clone(),
+            root_index,
             schema.key.clone(),
             AuthTarget::index(index.id, index.unique, projection),
         );
@@ -369,6 +385,7 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
         let group = &schema.groups[*position as usize];
         return AuthorizedSite::new(
             schema.root_name.clone(),
+            root_index,
             schema.key.clone(),
             Vec::new(),
             AuthTarget::Group {
@@ -410,7 +427,13 @@ fn resolve_site(schema: &StoreSchema, target: &SiteTarget) -> AuthorizedSite {
             unreachable!("index and group targets resolved above")
         }
     };
-    AuthorizedSite::new(schema.root_name.clone(), schema.key.clone(), branch, target)
+    AuthorizedSite::new(
+        schema.root_name.clone(),
+        root_index,
+        schema.key.clone(),
+        branch,
+        target,
+    )
 }
 
 /// The scalar kind of one managed-index projection component, resolved by position
@@ -665,10 +688,11 @@ where
     poisoned: &'s mut bool,
     auth: Vec<AuthorizedSite>,
     token: [u8; 16],
-    /// The root's managed indexes, in stable declaration order. Every root-level write
-    /// keeps them coherent as a consequence of the source write; a store with no index
-    /// carries an empty list and skips maintenance entirely.
-    indexes: Vec<IndexSchema>,
+    /// Each root's managed indexes, in stable declaration order, indexed by the root's
+    /// declaration position (aligned to the store's schema table). A root-level write to
+    /// root R keeps `indexes[R]` coherent as a consequence of the source write; a root
+    /// with no index carries an empty list and skips maintenance entirely.
+    indexes: Vec<Vec<IndexSchema>>,
     /// The durable nodes whose fields were staged this transaction, keyed by the
     /// node's marker stem so several field sets on one node stage it once. Each is
     /// reconciled at commit to decide created vs required-missing — a root node or a
@@ -1024,7 +1048,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
                     self.read_projected(
                         &stem,
                         fields,
-                        &Self::projected_positions_of(&self.indexes),
+                        &Self::projected_positions_of(self.indexes_of(site)),
                     )?
                 } else {
                     Vec::new()
@@ -1056,7 +1080,11 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         }
         let maintains = self.maintains_root(site);
         let old = if maintains {
-            self.read_projected(&stem, fields, &Self::projected_positions_of(&self.indexes))?
+            self.read_projected(
+                &stem,
+                fields,
+                &Self::projected_positions_of(self.indexes_of(site)),
+            )?
         } else {
             Vec::new()
         };
@@ -1099,7 +1127,11 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         let existed = read_raw(self.txn(), &stem)?.is_some();
         let maintains = self.maintains_root(site);
         let old = if maintains {
-            self.read_projected(&stem, fields, &Self::projected_positions_of(&self.indexes))?
+            self.read_projected(
+                &stem,
+                fields,
+                &Self::projected_positions_of(self.indexes_of(site)),
+            )?
         } else {
             Vec::new()
         };
@@ -1144,12 +1176,19 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         Ok(())
     }
 
+    /// The managed indexes of the root the `site` addresses, by its declaration position.
+    /// Index maintenance reads and moves only this root's index cells, so a cross-root
+    /// transaction never confuses one root's indexes with another's.
+    fn indexes_of(&self, site: &AuthorizedSite) -> &[IndexSchema] {
+        &self.indexes[site.root_index() as usize]
+    }
+
     /// Whether root-level managed-index maintenance applies to a write on `site`: the
-    /// store declares indexes and the write addresses a root entry. A branch entry carries
-    /// no index (indexes project a root's own keys and top-level fields), so a branch write
-    /// never maintains one.
+    /// site's root declares indexes and the write addresses a root entry. A branch entry
+    /// carries no index (indexes project a root's own keys and top-level fields), so a
+    /// branch write never maintains one.
     fn maintains_root(&self, site: &AuthorizedSite) -> bool {
-        !self.indexes.is_empty() && site.branch.is_empty()
+        !self.indexes_of(site).is_empty() && site.branch.is_empty()
     }
 
     /// The distinct root field positions `indexes` project, so maintenance reads exactly the
@@ -1173,10 +1212,11 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         positions
     }
 
-    /// The managed indexes that project the root field at `position` — the exact indexes a
-    /// write to that field must maintain, and the only ones it reads sibling leaves for.
-    fn indexes_projecting(&self, position: usize) -> Vec<IndexSchema> {
-        self.indexes
+    /// The managed indexes of the `site`'s root that project the root field at
+    /// `position` — the exact indexes a write to that field must maintain, and the only
+    /// ones it reads sibling leaves for.
+    fn indexes_projecting(&self, site: &AuthorizedSite, position: usize) -> Vec<IndexSchema> {
+        self.indexes_of(site)
             .iter()
             .filter(|index| {
                 index.projection.iter().any(|component| {
@@ -1224,7 +1264,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         }
         let record = site_record(site);
         let position = field_index_in_record(site, record);
-        let indexes = self.indexes_projecting(position);
+        let indexes = self.indexes_projecting(site, position);
         if indexes.is_empty() {
             return Ok(None);
         }
@@ -1270,7 +1310,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         old: &[Option<ValueDomain>],
         new: &[Option<ValueDomain>],
     ) -> Result<(), KernelFault> {
-        let ops = Planner::new().index_writes(&site.root, &self.indexes, keys, old, new)?;
+        let ops = Planner::new().index_writes(&site.root, self.indexes_of(site), keys, old, new)?;
         self.apply_index_ops(ops)
     }
 
@@ -1917,12 +1957,15 @@ mod tests {
     fn sites() -> Vec<SiteSpec> {
         vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::FieldLeaf(0),
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::FieldLeaf(1),
             },
         ]
@@ -2074,6 +2117,7 @@ mod tests {
             indexes: Vec::new(),
         };
         let sites = vec![SiteSpec {
+            root: 0,
             target: branch_field(&[0], 0),
         }];
         let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
@@ -2182,9 +2226,11 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: branch_entry(&[0]),
             },
         ];
@@ -2549,15 +2595,19 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: branch_entry(&[0]),
             },
             SiteSpec {
+                root: 0,
                 target: branch_field(&[0], 3),
             },
             SiteSpec {
+                root: 0,
                 target: branch_field(&[0], 0),
             },
         ];
@@ -3312,24 +3362,31 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: branch_entry(&[0]),
             },
             SiteSpec {
+                root: 0,
                 target: branch_entry(&[0, 0]),
             },
             SiteSpec {
+                root: 0,
                 target: branch_entry(&[0, 0, 0]),
             },
             SiteSpec {
+                root: 0,
                 target: branch_field(&[0, 0], 1),
             },
             SiteSpec {
+                root: 0,
                 target: branch_field(&[0, 0], 0),
             },
             SiteSpec {
+                root: 0,
                 target: branch_field(&[0], 1),
             },
         ];
@@ -3878,9 +3935,11 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::FieldLeaf(0),
             },
         ];
@@ -3943,6 +4002,7 @@ mod tests {
             indexes: Vec::new(),
         };
         let sites = vec![SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         }];
         let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
@@ -3979,9 +4039,11 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::BranchEntry(Box::from([0u16])),
             },
         ];
@@ -4152,11 +4214,11 @@ mod tests {
         use crate::durable::store::{op_index_lookup, op_index_scan, resolve_site};
 
         fn scan_site() -> AuthorizedSite {
-            resolve_site(&indexed_schema(), &SiteTarget::IndexScan(0))
+            resolve_site(&indexed_schema(), 0, &SiteTarget::IndexScan(0))
         }
 
         fn lookup_site() -> AuthorizedSite {
-            resolve_site(&indexed_schema(), &SiteTarget::IndexLookup(1))
+            resolve_site(&indexed_schema(), 0, &SiteTarget::IndexLookup(1))
         }
 
         /// A store seeded through the real maintenance path: three entries whose `byLabel`
@@ -4707,15 +4769,19 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::GroupEntry(0),
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::GroupEntry(1),
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::BranchEntry(vec![0].into()),
             },
         ];
@@ -4988,9 +5054,11 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::GroupEntry(0),
             },
         ];
@@ -5046,9 +5114,11 @@ mod tests {
         };
         let sites = vec![
             SiteSpec {
+                root: 0,
                 target: SiteTarget::WholePayload,
             },
             SiteSpec {
+                root: 0,
                 target: SiteTarget::GroupEntry(0),
             },
         ];

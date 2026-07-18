@@ -144,11 +144,17 @@ pub struct BranchSchema {
 }
 
 /// A verified operation site the kernel maps to physical layout, indexed by the
-/// image's site index. Its root is the single T01 root; the target is the sealed
-/// [`SemanticTarget`](marrow_verify::SemanticTarget) projected to the physical flat
-/// root — the whole payload or one of the root's fields.
+/// image's site index. `root` is the site's durable root by declaration position —
+/// its index into the store's root-indexed schema table, so a per-root read or write
+/// resolves against exactly that root's [`StoreSchema`] and name-keyed cell family. The
+/// target is the sealed [`SemanticTarget`](marrow_verify::SemanticTarget) projected to
+/// that root's physical layout — the whole payload, one field, a keyed branch, a group,
+/// or a managed-index read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteSpec {
+    /// The site's durable root by declaration position: its index into the store's
+    /// root-indexed schema table.
+    pub root: u16,
     pub target: SiteTarget,
 }
 
@@ -397,6 +403,11 @@ pub enum Reopen {
 #[derive(Debug, Clone)]
 pub struct AuthorizedSite {
     root: String,
+    /// The addressed root's declaration position — its index into the store's
+    /// root-indexed schema and per-root managed-index tables. A write op maintains
+    /// exactly this root's indexes; the root *name* keys the physical cell family, and
+    /// this index selects the root's schema-derived facts.
+    root_index: u16,
     /// The root's ordered key column kinds, checked against the leading columns of an
     /// operation's key-path.
     key: Vec<ScalarKind>,
@@ -486,11 +497,19 @@ impl AuthTarget {
 }
 
 impl AuthorizedSite {
-    /// Assemble a resolved site from its root, root key column kinds, branch path, and
-    /// target. Kernel-internal; the store's site resolver is the sole constructor.
-    fn new(root: String, key: Vec<ScalarKind>, branch: Vec<BranchHop>, target: AuthTarget) -> Self {
+    /// Assemble a resolved site from its root name and declaration position, root key
+    /// column kinds, branch path, and target. Kernel-internal; the store's site resolver
+    /// is the sole constructor.
+    fn new(
+        root: String,
+        root_index: u16,
+        key: Vec<ScalarKind>,
+        branch: Vec<BranchHop>,
+        target: AuthTarget,
+    ) -> Self {
         Self {
             root,
+            root_index,
             key,
             branch,
             target,
@@ -499,13 +518,20 @@ impl AuthorizedSite {
 
     /// A root-level managed-index read site: no branch path, an [`AuthTarget::Index`]
     /// target. The store's site resolver is the sole constructor.
-    fn index(root: String, key: Vec<ScalarKind>, target: AuthTarget) -> Self {
+    fn index(root: String, root_index: u16, key: Vec<ScalarKind>, target: AuthTarget) -> Self {
         Self {
             root,
+            root_index,
             key,
             branch: Vec::new(),
             target,
         }
+    }
+
+    /// The addressed root's declaration position — its index into the store's per-root
+    /// schema and managed-index tables.
+    pub(super) fn root_index(&self) -> u16 {
+        self.root_index
     }
 
     /// The number of key columns the whole key-path this site addresses carries: the

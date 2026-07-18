@@ -40,6 +40,7 @@ fn schema(declared: usize) -> StoreSchema {
 
 fn sites() -> Vec<SiteSpec> {
     vec![SiteSpec {
+        root: 0,
         target: SiteTarget::WholePayload,
     }]
 }
@@ -72,9 +73,9 @@ struct Measured {
 fn measure_whole_entry(declared: usize, populated: usize) -> Measured {
     assert!(populated <= declared);
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(declared),
+        vec![schema(declared)],
         sites(),
         write(),
     );
@@ -253,9 +254,9 @@ fn measure_group_entry(
     b_present: usize,
 ) -> GroupMeasured {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        group_schema(top_declared, group_declared),
+        vec![group_schema(top_declared, group_declared)],
         sites(),
         write(),
     );

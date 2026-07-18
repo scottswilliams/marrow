@@ -46,13 +46,13 @@ pub enum DurableRun {
 /// ceiling is the test-image demand union; the invocation demand is the entry's own
 /// reconstructed demand under a full test grant.
 pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
-    let Some((schema, sites)) = derive_schema(image) else {
+    let Some((schemas, sites)) = derive_schemas(image) else {
         return DurableRun::Parked;
     };
 
     // The deployment ceiling admits exactly the test-image demand union.
     let ceiling = deployment_ceiling(image.test_demand_union());
-    let mut attachment = match EphemeralAttachment::mint(schema, sites, ceiling) {
+    let mut attachment = match EphemeralAttachment::mint(schemas, sites, ceiling) {
         Ok(attachment) => attachment,
         Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     };
@@ -94,11 +94,11 @@ fn coverage(read: bool, write: bool) -> DemandCoverage {
 /// direct durable operation — the verifier's test-entry phase refuses a body that
 /// mixes the two.
 pub fn run_driver_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
-    let Some((schema, sites)) = derive_schema(image) else {
+    let Some((schemas, sites)) = derive_schemas(image) else {
         return DurableRun::Parked;
     };
     let ceiling = deployment_ceiling(image.test_demand_union());
-    let mut attachment = match EphemeralAttachment::mint(schema, sites, ceiling) {
+    let mut attachment = match EphemeralAttachment::mint(schemas, sites, ceiling) {
         Ok(attachment) => attachment,
         Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     };
@@ -198,11 +198,11 @@ pub enum Ephemeral {
 /// retains the attachment and drives several exports against the same store, so a
 /// committed transaction is observable by a later read and a rolled-back one is not.
 pub fn mint_ephemeral(image: &VerifiedImage) -> Ephemeral {
-    let Some((schema, sites)) = derive_schema(image) else {
+    let Some((schemas, sites)) = derive_schemas(image) else {
         return Ephemeral::Parked;
     };
     let ceiling = deployment_ceiling(image.demand_union());
-    match EphemeralAttachment::mint(schema, sites, ceiling) {
+    match EphemeralAttachment::mint(schemas, sites, ceiling) {
         Ok(attachment) => Ephemeral::Ready(Box::new(attachment)),
         Err(_) => Ephemeral::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     }
@@ -242,32 +242,58 @@ pub fn run_export(
     DurableRun::Ran(result)
 }
 
-/// Derive the flat store schema and index-aligned site table from a verified image,
-/// or `None` when the image's durable shape is not executable by the ephemeral read
-/// kernel. The image is the sole source of a valid schema — a forged image cannot be
-/// verified, so it can never reach this derivation.
-fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> {
-    // v0 carries at most one durable root; a durable test with demand has exactly
-    // one. A flat executable root is keyed (one or more columns) with no member tree.
-    //
-    // The executable layout is the keyed root (any key arity, its fields scalar or widened
-    // composite) plus root-level unkeyed groups of storable-value fields plus field-only keyed
-    // branches nested to any depth, including composite-keyed branches. A group nested in a
-    // branch or in another group parks the root; a singleton (keyless) root parks; bounded
-    // traversal over a composite-keyed layer parks separately. A parked shape stays parked
-    // until its owner lands it.
-    // The ephemeral read kernel serves a single executable root. A project may declare
-    // more than one `store` root and seal/verify all of them; until the multi-root kernel
-    // dispatch lands, a multi-root image is honestly parked here rather than silently
-    // serving only its first root.
-    if image.roots().len() > 1 {
+/// Derive the store's root-indexed schema table and the index-aligned site table from a
+/// verified image, or `None` when the image's durable shape is not executable by the
+/// ephemeral kernel. Every declared root must be flat-executable; if any one parks, the
+/// whole image parks, since a partial store — some roots served, others silently absent —
+/// is never minted. The image is the sole source of a valid schema — a forged image cannot
+/// be verified, so it can never reach this derivation.
+fn derive_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSpec>)> {
+    // A durable image declares at least one root; a storeless image never reaches attach.
+    if image.roots().is_empty() {
         return None;
     }
-    let root = image.roots().first()?;
-    // A root with a group nested below its direct members (or a nested/composite-keyed shape
-    // the flat kernel cannot serve) is not yet executable (`has_extras`); a root-level group,
-    // and field-only branches nested to any depth with composite keys, are executable and do
-    // not set that flag. A singleton root has no key columns and parks.
+
+    // One StoreSchema per declared root, in declaration order, plus each root's offset into
+    // the image-wide managed-index table. A site names its index by that image-wide
+    // position; the kernel resolves it against its own root's schema, so the offset rebases
+    // the position to root-local when the site table is built.
+    let mut schemas = Vec::with_capacity(image.roots().len());
+    let mut index_offsets = Vec::with_capacity(image.roots().len());
+    let mut running_indexes = 0u16;
+    for (root_index, root) in image.roots().iter().enumerate() {
+        let schema = derive_root_schema(image, root_index as u16, root)?;
+        index_offsets.push(running_indexes);
+        running_indexes += schema.indexes.len() as u16;
+        schemas.push(schema);
+    }
+
+    // The site table is index-aligned with the image's sites so `Durable::site` resolves by
+    // image site index. A parked site is never referenced by a verified durable opcode (the
+    // verifier refuses that in phase 3), so it maps to an inert root-0 whole-payload
+    // placeholder that no execution observes.
+    let sites = image
+        .sites()
+        .iter()
+        .map(|site| build_site(site, &index_offsets))
+        .collect();
+
+    Some((schemas, sites))
+}
+
+/// Derive one root's [`StoreSchema`] from the image, or `None` when the root is not
+/// flat-executable (a singleton keyless root, or a group nested below its direct members).
+fn derive_root_schema(
+    image: &VerifiedImage,
+    root_index: u16,
+    root: &marrow_verify::SealedRoot,
+) -> Option<StoreSchema> {
+    // The executable layout is the keyed root (any key arity, its fields scalar or widened
+    // composite) plus root-level unkeyed groups of storable-value fields plus field-only keyed
+    // branches nested to any depth, including composite-keyed branches. A root with a group
+    // nested below its direct members (or a nested/composite-keyed shape the flat kernel
+    // cannot serve) is not yet executable (`has_extras`); a singleton (keyless) root has no
+    // key columns and parks.
     if root.has_extras() || root.keys().is_empty() {
         return None;
     }
@@ -306,88 +332,59 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
         branches.push(branch_schema(image, branch)?);
     }
 
-    // The executable root is root 0; its managed indexes seal with a position-resolved
-    // projection the kernel maintains. An index over a parked root never reaches here (a
-    // parked root returns `None` above).
+    // This root's own managed indexes, in declaration order, each with a position-resolved
+    // projection the kernel maintains. An index over a parked root never reaches here (the
+    // root parks above before its indexes are read).
     let indexes = image
         .indexes()
         .iter()
-        .filter(|index| index.root() == 0)
+        .filter(|index| index.root() == root_index)
         .map(index_schema)
         .collect();
 
-    let schema = StoreSchema {
+    Some(StoreSchema {
         root_name: root.name().to_string(),
         key,
         fields,
         groups,
         branches,
         indexes,
+    })
+}
+
+/// Project one sealed site to a kernel [`SiteSpec`], tagging it with its root's declaration
+/// position and rebasing an index-read position from image-wide to root-local. A parked
+/// site — never referenced by a verified durable opcode — maps to an inert root-0
+/// whole-payload placeholder.
+fn build_site(site: &SealedSite, index_offsets: &[u16]) -> SiteSpec {
+    let (root, target) = match site {
+        SealedSite::Flat { root, target } => (*root, target),
+        SealedSite::Parked { .. } => {
+            return SiteSpec {
+                root: 0,
+                target: SiteTarget::WholePayload,
+            };
+        }
     };
-
-    // The site table is index-aligned with the image's sites so `Durable::site`
-    // resolves by image site index. A parked site is never referenced by a verified
-    // durable opcode (the verifier refuses that in phase 3), so it maps to an inert
-    // whole-payload placeholder that no execution observes.
-    let sites = image
-        .sites()
-        .iter()
-        .map(|site| match site {
-            SealedSite::Flat {
-                target: SealedSiteTarget::WholePayload,
-                ..
-            } => SiteSpec {
-                target: SiteTarget::WholePayload,
-            },
-            SealedSite::Flat {
-                target: SealedSiteTarget::FieldLeaf(field),
-                ..
-            } => SiteSpec {
-                target: SiteTarget::FieldLeaf(*field),
-            },
-            SealedSite::Flat {
-                target: SealedSiteTarget::BranchEntry(branch),
-                ..
-            } => SiteSpec {
-                target: SiteTarget::BranchEntry(branch.clone()),
-            },
-            SealedSite::Flat {
-                target: SealedSiteTarget::BranchField { branch, field },
-                ..
-            } => SiteSpec {
-                target: SiteTarget::BranchField {
-                    branch: branch.clone(),
-                    field: *field,
-                },
-            },
-            SealedSite::Flat {
-                target: SealedSiteTarget::GroupEntry(group),
-                ..
-            } => SiteSpec {
-                target: SiteTarget::GroupEntry(*group),
-            },
-            // An index-read site names its index by position in the image-wide index
-            // table; a single-root store's index table aligns with the kernel schema's
-            // root-0 index list, so the position carries through unchanged.
-            SealedSite::Flat {
-                target: SealedSiteTarget::IndexScan(index),
-                ..
-            } => SiteSpec {
-                target: SiteTarget::IndexScan(*index),
-            },
-            SealedSite::Flat {
-                target: SealedSiteTarget::IndexLookup(index),
-                ..
-            } => SiteSpec {
-                target: SiteTarget::IndexLookup(*index),
-            },
-            SealedSite::Parked { .. } => SiteSpec {
-                target: SiteTarget::WholePayload,
-            },
-        })
-        .collect();
-
-    Some((schema, sites))
+    let target = match target {
+        SealedSiteTarget::WholePayload => SiteTarget::WholePayload,
+        SealedSiteTarget::FieldLeaf(field) => SiteTarget::FieldLeaf(*field),
+        SealedSiteTarget::BranchEntry(branch) => SiteTarget::BranchEntry(branch.clone()),
+        SealedSiteTarget::BranchField { branch, field } => SiteTarget::BranchField {
+            branch: branch.clone(),
+            field: *field,
+        },
+        SealedSiteTarget::GroupEntry(group) => SiteTarget::GroupEntry(*group),
+        // An index-read site names its index by image-wide position; the kernel resolves it
+        // against this root's own schema, so rebase it by the root's index offset.
+        SealedSiteTarget::IndexScan(index) => {
+            SiteTarget::IndexScan(*index - index_offsets[root as usize])
+        }
+        SealedSiteTarget::IndexLookup(index) => {
+            SiteTarget::IndexLookup(*index - index_offsets[root as usize])
+        }
+    };
+    SiteSpec { root, target }
 }
 
 /// Derive one managed index's kernel [`IndexSchema`] from its sealed form: its stable

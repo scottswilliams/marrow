@@ -58,9 +58,11 @@ fn schema() -> StoreSchema {
 fn sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::FieldLeaf(0),
         },
     ]
@@ -87,9 +89,9 @@ fn writing_demand() -> DemandCoverage {
 #[test]
 fn a_denied_transaction_open_makes_zero_engine_calls() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(),
+        vec![schema()],
         sites(),
         read_only_ceiling(),
     );
@@ -107,9 +109,9 @@ fn a_denied_transaction_open_makes_zero_engine_calls() {
 #[test]
 fn a_denied_read_open_makes_zero_engine_calls() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(),
+        vec![schema()],
         sites(),
         read_only_ceiling(),
     );
@@ -139,9 +141,9 @@ fn a_denied_read_open_makes_zero_engine_calls() {
 #[test]
 fn a_permitted_open_makes_a_nonzero_number_of_engine_calls() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(),
+        vec![schema()],
         sites(),
         read_only_ceiling(),
     );
@@ -169,9 +171,9 @@ fn a_permitted_open_makes_a_nonzero_number_of_engine_calls() {
 #[test]
 fn a_value_range_rejection_stages_zero_engine_writes() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(),
+        vec![schema()],
         sites(),
         DemandCoverage {
             read: true,
@@ -203,9 +205,9 @@ fn a_value_range_rejection_stages_zero_engine_writes() {
 #[test]
 fn an_in_range_write_advances_the_write_counter() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_engine_with_ceiling(
+    let mut store = DurableStore::from_schemas_with_ceiling(
         CountingEngine::new(counters.clone()),
-        schema(),
+        vec![schema()],
         sites(),
         DemandCoverage {
             read: true,

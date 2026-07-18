@@ -211,9 +211,11 @@ fn schema() -> StoreSchema {
 fn sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::FieldLeaf(0),
         },
     ]

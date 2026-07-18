@@ -83,12 +83,15 @@ fn schema() -> StoreSchema {
 fn sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::FieldLeaf(0),
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::FieldLeaf(1),
         },
     ]
@@ -539,9 +542,11 @@ fn group_schema() -> StoreSchema {
 fn group_sites() -> Vec<SiteSpec> {
     vec![
         SiteSpec {
+            root: 0,
             target: SiteTarget::WholePayload,
         },
         SiteSpec {
+            root: 0,
             target: SiteTarget::GroupEntry(0),
         },
     ]

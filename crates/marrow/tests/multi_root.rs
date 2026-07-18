@@ -1,17 +1,20 @@
-//! MR01 step 3b: a project may declare more than one `store` root. Each root is a
-//! distinct durable graph node with its own complete ledger identity, its own slot in
-//! the image DURABLE table, and its own contribution to the durable-contract identity
-//! the verifier independently re-encodes. Two roots over two resources
-//! (`^assets` + `^tallies`) compile, seal, and verify together, and each is addressed
-//! by its own name in ordinary function bodies.
+//! MR01: a project may declare more than one `store` root, and the kernel executes
+//! over all of them. Each root is a distinct durable graph node with its own complete
+//! ledger identity, its own slot in the image DURABLE table, its own kernel
+//! `StoreSchema`, and its own name-keyed physical cell family. Two roots over two
+//! resources (`^assets` + `^tallies`) compile, seal, verify, and *execute* together:
+//! each is addressed by its own name in ordinary function bodies, a per-root read or
+//! write dispatches to that root's schema, and a single `transaction` region may write
+//! both roots and commit — or roll back — as one atomic unit.
 //!
-//! The ephemeral read kernel serves a single executable root at this step, so a
-//! two-root image is honestly *parked* at attach — the compile/verify path is plural
-//! while runtime execution over more than one root lands in a later step.
+//! Entry identity stays root-local: `Id(^assets, id)` addresses `^assets` and only
+//! `^assets`. Using it against `^assets` executes; naming it against `^tallies` is a
+//! precise `check.type` rejection, never a silent confusion of two distinct durable
+//! addresses.
 
 use marrow_compile::SourceDiagnostic;
-use marrow_verify::VerifiedImage;
-use marrow_vm::{Ephemeral, mint_ephemeral};
+use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -27,6 +30,10 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
+/// Two roots over two resources. Reads and writes address each root by its own name;
+/// `putBoth` writes both roots in one transaction, and `putBothOrFail` proves an
+/// atomic cross-root rollback. `viaId` proves a root-local entry identity round-trips
+/// against its own root.
 const SOURCE: &str = r#"resource Asset {
     required name: string
 }
@@ -38,12 +45,46 @@ resource Tally {
 store ^assets[id: int]: Asset
 store ^tallies[key: string]: Tally
 
+pub fn putAsset(id: int, n: string) {
+    transaction {
+        ^assets[id] = Asset(name: n)
+    }
+}
+
+pub fn putTally(key: string, c: int) {
+    transaction {
+        ^tallies[key] = Tally(count: c)
+    }
+}
+
 pub fn assetName(id: int): string? {
     return ^assets[id].name
 }
 
 pub fn tallyCount(key: string): int? {
     return ^tallies[key].count
+}
+
+pub fn viaId(id: int): string? {
+    const a = Id(^assets, id)
+    return ^assets[a].name
+}
+
+pub fn putBoth(id: int, key: string, n: string, c: int) {
+    transaction {
+        ^assets[id] = Asset(name: n)
+        ^tallies[key] = Tally(count: c)
+    }
+}
+
+pub fn putBothOrFail(id: int, key: string, n: string, c: int, boom: bool) {
+    transaction {
+        ^assets[id] = Asset(name: n)
+        ^tallies[key] = Tally(count: c)
+        if boom {
+            unreachable("the invariant broke after staging both roots")
+        }
+    }
 }
 "#;
 
@@ -70,6 +111,69 @@ fn verify(source: &str, ids: &str) -> VerifiedImage {
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
 }
 
+fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
+    image
+        .exports()
+        .iter()
+        .find(|export| image.function(export.function()).name() == name)
+        .expect("export present")
+}
+
+/// A minted two-root attachment; the kernel must execute over it, not park it.
+fn attach(image: &VerifiedImage) -> marrow_kernel::durable::EphemeralAttachment {
+    match mint_ephemeral(image) {
+        Ephemeral::Ready(attachment) => *attachment,
+        Ephemeral::Parked => panic!("a two-root image must be executable, not parked"),
+        Ephemeral::Failed(code) => panic!("minting the attachment failed: {code}"),
+    }
+}
+
+/// Run `name(args)` against `attachment`, returning its VM value (a fault panics).
+fn run(
+    image: &VerifiedImage,
+    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    name: &str,
+    args: Vec<Value>,
+) -> Option<Value> {
+    match run_export(image, attachment, export(image, name), args) {
+        DurableRun::Ran(Ok(value)) => value,
+        other => panic!("{name} did not run cleanly: {:?}", DebugRun(&other)),
+    }
+}
+
+/// Run `name(args)` expecting a source-mapped runtime fault, returning its code.
+fn run_faulting(
+    image: &VerifiedImage,
+    attachment: &mut marrow_kernel::durable::EphemeralAttachment,
+    name: &str,
+    args: Vec<Value>,
+) -> String {
+    match run_export(image, attachment, export(image, name), args) {
+        DurableRun::Ran(Err(fault)) => fault.code().to_string(),
+        other => panic!("{name} did not fault: {:?}", DebugRun(&other)),
+    }
+}
+
+struct DebugRun<'a>(&'a DurableRun);
+impl std::fmt::Debug for DebugRun<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            DurableRun::Ran(Ok(_)) => write!(f, "Ran(Ok(value))"),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Parked => write!(f, "Parked"),
+            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+        }
+    }
+}
+
+fn some_text(text: &str) -> Option<Value> {
+    Some(Value::Optional(Some(Box::new(Value::Text(text.into())))))
+}
+
+fn some_int(value: i64) -> Option<Value> {
+    Some(Value::Optional(Some(Box::new(Value::Int(value)))))
+}
+
 /// Two roots over two resources compile and verify into one image carrying both roots
 /// in declaration order.
 #[test]
@@ -84,14 +188,166 @@ fn two_roots_compile_seal_and_verify() {
     assert_eq!(image.roots()[1].name(), "tallies");
 }
 
-/// The single-root ephemeral read kernel honestly parks a two-root image rather than
-/// silently serving only the first root.
+/// The kernel executes over a two-root image: a write to each root dispatches to that
+/// root's own schema and name-keyed cell family, and a later read of each root returns
+/// exactly that root's committed value. The two roots do not alias — a value written to
+/// `^assets` is not observable through `^tallies` and vice versa.
 #[test]
-fn a_two_root_image_parks_at_attach() {
+fn each_root_reads_and_writes_independently() {
     let image = verify(SOURCE, IDS);
-    assert!(
-        matches!(mint_ephemeral(&image), Ephemeral::Parked),
-        "a two-root image is not yet executable by the flat kernel"
+    let mut attachment = attach(&image);
+
+    // Both roots start empty.
+    assert_eq!(
+        run(&image, &mut attachment, "assetName", vec![Value::Int(1)]),
+        Some(Value::Optional(None))
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tallyCount",
+            vec![Value::Text("x".into())]
+        ),
+        Some(Value::Optional(None))
+    );
+
+    // Write each root under its own key type; read each back from its own schema.
+    run(
+        &image,
+        &mut attachment,
+        "putAsset",
+        vec![Value::Int(1), Value::Text("widget".into())],
+    );
+    run(
+        &image,
+        &mut attachment,
+        "putTally",
+        vec![Value::Text("x".into()), Value::Int(5)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "assetName", vec![Value::Int(1)]),
+        some_text("widget"),
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tallyCount",
+            vec![Value::Text("x".into())]
+        ),
+        some_int(5),
+    );
+}
+
+/// A root-local entry identity round-trips against its own root: `Id(^assets, id)` used
+/// against `^assets` reads the committed entry, exercising the declaration-ordered
+/// `RootId` at runtime rather than only at check time.
+#[test]
+fn a_root_local_identity_reads_its_own_root() {
+    let image = verify(SOURCE, IDS);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "putAsset",
+        vec![Value::Int(7), Value::Text("gear".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "viaId", vec![Value::Int(7)]),
+        some_text("gear"),
+        "an identity minted over ^assets reads ^assets",
+    );
+}
+
+/// One `transaction` region writes both roots and commits them as one atomic unit: a
+/// later read observes both writes. The witness rides one engine transaction spanning
+/// the disjoint name-keyed cell families of both roots.
+#[test]
+fn a_cross_root_transaction_commits_both_roots() {
+    let image = verify(SOURCE, IDS);
+    let mut attachment = attach(&image);
+
+    run(
+        &image,
+        &mut attachment,
+        "putBoth",
+        vec![
+            Value::Int(2),
+            Value::Text("k".into()),
+            Value::Text("bolt".into()),
+            Value::Int(9),
+        ],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "assetName", vec![Value::Int(2)]),
+        some_text("bolt"),
+        "the cross-root transaction committed the ^assets write",
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tallyCount",
+            vec![Value::Text("k".into())]
+        ),
+        some_int(9),
+        "the cross-root transaction committed the ^tallies write",
+    );
+}
+
+/// A `transaction` region that stages writes to both roots and then faults before
+/// committing rolls *both* roots back together: neither the `^assets` write nor the
+/// `^tallies` write survives. Atomicity is cross-root, not per-root.
+#[test]
+fn a_cross_root_transaction_rolls_both_roots_back() {
+    let image = verify(SOURCE, IDS);
+    let mut attachment = attach(&image);
+
+    // Seed distinct committed values on both roots.
+    run(
+        &image,
+        &mut attachment,
+        "putBoth",
+        vec![
+            Value::Int(3),
+            Value::Text("r".into()),
+            Value::Text("old".into()),
+            Value::Int(1),
+        ],
+    );
+
+    // Stage a replacement of both roots, then fault before the commit.
+    let code = run_faulting(
+        &image,
+        &mut attachment,
+        "putBothOrFail",
+        vec![
+            Value::Int(3),
+            Value::Text("r".into()),
+            Value::Text("new".into()),
+            Value::Int(2),
+            Value::Bool(true),
+        ],
+    );
+    assert_eq!(code, "run.unreachable");
+
+    // Both roots retain their pre-transaction committed values: the rollback was atomic
+    // across both roots, not partial.
+    assert_eq!(
+        run(&image, &mut attachment, "assetName", vec![Value::Int(3)]),
+        some_text("old"),
+        "the faulted transaction rolled the ^assets write back",
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tallyCount",
+            vec![Value::Text("r".into())]
+        ),
+        some_int(1),
+        "the faulted transaction rolled the ^tallies write back",
     );
 }
 
