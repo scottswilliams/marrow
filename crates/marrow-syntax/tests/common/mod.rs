@@ -34,9 +34,9 @@ pub fn reason_count(diagnostics: &[Diagnostic], reason: DiagnosticReason) -> usi
         .count()
 }
 
-/// One fenced ```mw``` block from a language-reference markdown file.
+/// One fenced ```mw``` block from a current-documentation Markdown file.
 pub struct MwBlock {
-    /// The markdown file name (such as `resources.md`).
+    /// The repository-relative Markdown path (such as `docs/language/resources.md`).
     pub path: String,
     /// The 1-based index of this block within its file.
     pub index: usize,
@@ -44,26 +44,28 @@ pub struct MwBlock {
     pub source: String,
 }
 
-/// Read every fenced ```mw``` block from the language reference and the
-/// repository front door, in file then block order: first `docs/language/*.md`
-/// (sorted), then every top-level `*.md` at the repository root (sorted). The
-/// root sweep keeps front-door examples — the README's tour of the durable model
-/// — compiler-gated alongside the reference pages, so a `.md` outside
-/// `docs/language/` cannot ship a stale surface unnoticed.
+/// Read every fenced ```mw``` block from current documentation and repository
+/// front doors, in file then block order. `docs/future/` is intentionally absent;
+/// the production-path docs gate separately enforces that future pages contain no
+/// current-source fences.
 pub fn mw_blocks() -> Vec<MwBlock> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
-    let mut files = markdown_files(&root.join("docs").join("language"));
-    files.extend(markdown_files(&root));
+    let files = current_markdown_files(&root);
 
     let mut blocks = Vec::new();
     for path in files {
-        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let doc = path
+            .strip_prefix(&root)
+            .expect("documentation path beneath repository root")
+            .to_string_lossy()
+            .into_owned();
         let text = std::fs::read_to_string(&path).expect("read markdown doc");
         let mut in_block = false;
         let mut index = 0usize;
         let mut source = String::new();
         for line in text.lines() {
             if line.trim() == "```mw" {
+                assert!(!in_block, "nested mw fence in {doc} block #{index}");
                 in_block = true;
                 index += 1;
                 source.clear();
@@ -71,7 +73,7 @@ pub fn mw_blocks() -> Vec<MwBlock> {
             }
             if line.trim() == "```" && in_block {
                 blocks.push(MwBlock {
-                    path: file_name.clone(),
+                    path: doc.clone(),
                     index,
                     source: source.clone(),
                 });
@@ -83,6 +85,7 @@ pub fn mw_blocks() -> Vec<MwBlock> {
                 source.push('\n');
             }
         }
+        assert!(!in_block, "unterminated mw fence in {doc} block #{index}");
     }
     blocks
 }
@@ -95,6 +98,40 @@ fn markdown_files(dir: &Path) -> Vec<std::path::PathBuf> {
         .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("md"))
         .collect::<Vec<_>>();
     files.sort();
+    files
+}
+
+/// The `.md` files recursively beneath `dir`, optionally excluding one complete
+/// subtree.
+fn markdown_files_recursively(dir: &Path, excluded: Option<&Path>) -> Vec<std::path::PathBuf> {
+    fn collect(dir: &Path, excluded: Option<&Path>, files: &mut Vec<std::path::PathBuf>) {
+        if excluded == Some(dir) {
+            return;
+        }
+        let mut entries = std::fs::read_dir(dir)
+            .expect("read markdown directory")
+            .map(|entry| entry.expect("markdown entry").path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                collect(&path, excluded, files);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+                files.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect(dir, excluded, &mut files);
+    files
+}
+
+fn current_markdown_files(root: &Path) -> Vec<std::path::PathBuf> {
+    let docs = root.join("docs");
+    let future = docs.join("future");
+    let mut files = markdown_files_recursively(&docs, Some(&future));
+    files.extend(markdown_files(root));
     files
 }
 
@@ -142,7 +179,7 @@ fn collect_mw(dir: &Path, out: &mut Vec<(String, String)>) {
 pub fn reference_sample() -> String {
     mw_blocks()
         .into_iter()
-        .find(|block| block.path == "sample.md")
+        .find(|block| block.path == "docs/language/sample.md")
         .expect("sample.md should contain a Marrow code block")
         .source
 }

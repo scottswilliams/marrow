@@ -141,7 +141,7 @@ fn repo_root() -> PathBuf {
         .expect("canonical repo root")
 }
 
-/// The `.md` files directly in `dir` (not recursive), in sorted path order.
+/// The `.md` files directly in `dir`, in sorted path order.
 fn markdown_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = fs::read_dir(dir)
         .expect("read markdown directory")
@@ -152,13 +152,75 @@ fn markdown_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Every complete `mw` fence in the reference, in the same corpus order the
-/// syntax gates read: `docs/language/*.md` (sorted), then top-level `*.md`
-/// (sorted). Contextual fragments use another fence language and are absent.
+/// The `.md` files recursively beneath `dir`, optionally excluding one complete
+/// subtree.
+fn markdown_files_recursively(dir: &Path, excluded: Option<&Path>) -> Vec<PathBuf> {
+    fn collect(dir: &Path, excluded: Option<&Path>, files: &mut Vec<PathBuf>) {
+        if excluded == Some(dir) {
+            return;
+        }
+        let mut entries = fs::read_dir(dir)
+            .expect("read markdown directory")
+            .map(|entry| entry.expect("markdown entry").path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                collect(&path, excluded, files);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                files.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect(dir, excluded, &mut files);
+    files
+}
+
+/// Current documentation sources: every Markdown page below `docs/` except the
+/// explicitly future subtree, followed by repository-root Markdown front doors.
+fn current_markdown_files(root: &Path) -> Vec<PathBuf> {
+    let docs = root.join("docs");
+    let future = docs.join("future");
+    let mut files = markdown_files_recursively(&docs, Some(&future));
+    files.extend(markdown_files(root));
+    files
+}
+
+fn fences_in_document(doc: &str, text: &str) -> Vec<DocFence> {
+    let mut fences = Vec::new();
+    let mut in_block = false;
+    let mut index = 0usize;
+    let mut source = String::new();
+    for line in text.lines() {
+        if line.trim() == "```mw" {
+            assert!(!in_block, "nested mw fence in {doc} block #{index}");
+            in_block = true;
+            index += 1;
+            source.clear();
+            continue;
+        }
+        if line.trim() == "```" && in_block {
+            in_block = false;
+            fences.push(DocFence::new(doc.to_string(), index, source.clone()));
+            continue;
+        }
+        if in_block {
+            source.push_str(line);
+            source.push('\n');
+        }
+    }
+    assert!(!in_block, "unterminated mw fence in {doc} block #{index}");
+    fences
+}
+
+/// Every complete `mw` fence in current documentation, in the same corpus order
+/// the syntax gates read. Contextual fragments use another fence language and
+/// are absent; future pages are checked separately for `mw`-fence absence.
 fn documented_fences() -> Vec<DocFence> {
     let root = repo_root();
-    let mut files = markdown_files(&root.join("docs").join("language"));
-    files.extend(markdown_files(&root));
+    let files = current_markdown_files(&root);
 
     let mut fences = Vec::new();
     for path in files {
@@ -168,26 +230,7 @@ fn documented_fences() -> Vec<DocFence> {
             .to_string_lossy()
             .into_owned();
         let text = fs::read_to_string(&path).expect("read markdown doc");
-        let mut in_block = false;
-        let mut index = 0usize;
-        let mut source = String::new();
-        for line in text.lines() {
-            if line.trim() == "```mw" {
-                in_block = true;
-                index += 1;
-                source.clear();
-                continue;
-            }
-            if line.trim() == "```" && in_block {
-                in_block = false;
-                fences.push(DocFence::new(doc.clone(), index, source.clone()));
-                continue;
-            }
-            if in_block {
-                source.push_str(line);
-                source.push('\n');
-            }
-        }
+        fences.extend(fences_in_document(&doc, &text));
     }
     fences
 }
@@ -209,6 +252,7 @@ struct FailureRecord {
 #[derive(Debug)]
 struct FenceFailure {
     status: Option<i32>,
+    initial_records: Vec<FailureRecord>,
     records: Vec<FailureRecord>,
     stdout: String,
     stderr: String,
@@ -219,6 +263,7 @@ impl FenceFailure {
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         Self {
             status: output.status.code(),
+            initial_records: Vec::new(),
             records: failure_records(&stdout),
             stdout,
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -237,10 +282,16 @@ impl FenceFailure {
             .any(|record| record.code.as_deref() == Some(code))
     }
 
+    fn initially_has(&self, outcome: &str, code: &str) -> bool {
+        self.initial_records
+            .iter()
+            .any(|record| record.outcome == outcome && record.code.as_deref() == Some(code))
+    }
+
     fn describe(&self) -> String {
         format!(
-            "status={:?}, records={:?}, stdout={:?}, stderr={:?}",
-            self.status, self.records, self.stdout, self.stderr
+            "status={:?}, initial_records={:?}, records={:?}, stdout={:?}, stderr={:?}",
+            self.status, self.initial_records, self.records, self.stdout, self.stderr
         )
     }
 }
@@ -280,7 +331,10 @@ fn verify_fence(fence: &DocFence) -> Result<(), FenceFailure> {
     // convenience mint publishes them; require a fresh final compile+verify over
     // the minted ledger. The final result remains authoritative if minting fails.
     let _ = run_in(&temp, &["run", "__doc_fence_probe__"]);
-    finish(run_in(&temp, &["test", "--format", "jsonl"]))
+    finish(run_in(&temp, &["test", "--format", "jsonl"])).map_err(|mut failure| {
+        failure.initial_records = first_failure.records;
+        failure
+    })
 }
 
 /// Typed failure records carried by the CLI's flat JSONL stream. Passing tests
@@ -363,24 +417,65 @@ fn a_source_rejected_fence_is_caught() {
     );
 }
 
-/// The gate must fail after checking when the independent verifier rejects the
-/// compiler's image. An empty durable region is the agreement ledger's smallest
-/// checker-accepted `image.flow` case.
+/// The gate must fail after a durable project's identity mint when the
+/// independent verifier rejects the compiler's image. This is the historical
+/// sample shape: a durable read precedes the transaction that makes the export
+/// an owner, so the final verified-path attempt is rejected with `image.flow`.
 #[test]
 fn a_verifier_rejected_fence_is_caught() {
     let broken = DocFence::new(
         "in-test".to_string(),
         1,
-        "module broken::verify\n\npub fn emptyRegion() {\n    transaction {\n    }\n}\n"
+        "module broken::verify\n\nresource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn replace(id: int, value: string): bool {\n    if const current = ^items[id].value {\n        transaction {\n            ^items[id].value = value\n        }\n        return current != value\n    }\n    return false\n}\n"
             .to_string(),
     );
 
     let failure = verify_fence(&broken).expect_err("rejected image must fail the gate");
     assert!(
+        failure.initially_has("diagnostic", "check.durable_identity"),
+        "the probe must cross the identity mint/retry boundary, got: {}",
+        failure.describe(),
+    );
+    assert!(
         failure.has("artifact_rejected", "image.flow"),
         "the gate must catch a verifier-rejected fence, got: {}",
         failure.describe(),
     );
+}
+
+#[test]
+fn current_documentation_inventory_reaches_nested_sections() {
+    let root = repo_root();
+    let files = current_markdown_files(&root)
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix(&root)
+                .expect("documentation beneath repository root")
+                .to_path_buf()
+        })
+        .collect::<Vec<_>>();
+    assert!(files.contains(&PathBuf::from("docs/implementation/testing.md")));
+    assert!(files.contains(&PathBuf::from("docs/tools/cli.md")));
+    assert!(!files.iter().any(|path| path.starts_with("docs/future")));
+}
+
+#[test]
+#[should_panic(expected = "unterminated mw fence")]
+fn an_unterminated_mw_fence_cannot_escape_the_gate() {
+    let _ = fences_in_document("in-test.md", "```mw\nmodule broken\n");
+}
+
+#[test]
+fn future_pages_have_no_current_source_fences() {
+    let future = repo_root().join("docs").join("future");
+    for path in markdown_files_recursively(&future, None) {
+        let text = fs::read_to_string(&path).expect("read future page");
+        assert!(
+            !text.lines().any(|line| line.trim() == "```mw"),
+            "future page {} must use a non-current fence language",
+            path.display(),
+        );
+    }
 }
 
 /// A complete source file does not need a `module` header. The two standalone

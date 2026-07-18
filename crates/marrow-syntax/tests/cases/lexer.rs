@@ -654,12 +654,12 @@ fn rejects_an_at_sign_at_its_own_column() {
     );
 }
 
-/// Corpus smoke test (one owner): every fenced `mw` block in the language
-/// reference lexes without errors and ends with EOF. It guards the documented
+/// Corpus smoke test (one owner): every fenced `mw` block in current
+/// documentation lexes without errors and ends with EOF. It guards the documented
 /// examples as a whole; the per-token and per-error lexer contracts are owned by
 /// the focused tests above.
 #[test]
-fn lexes_all_language_reference_mw_blocks_without_errors() {
+fn lexes_all_current_documentation_mw_blocks_without_errors() {
     for block in common::mw_blocks() {
         let lexed = lex_source(&block.source);
         assert!(
