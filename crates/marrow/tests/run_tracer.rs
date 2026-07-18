@@ -304,6 +304,7 @@ fn byte_literal_boundary_and_reference_are_exact() {
     assert_eq!(String::from_utf8_lossy(&constructor.stdout), "0x6b6579\n");
 
     let reference = include_str!("../../../docs/language/source-and-syntax.md");
+    let normalized_reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         !reference.contains("| Bytes |"),
         "the literal table must not present bytes as an executable literal"
@@ -317,7 +318,8 @@ fn byte_literal_boundary_and_reference_are_exact() {
         "the current bytes constructor must remain documented"
     );
     assert!(
-        reference.contains("**Future:** The parser recognizes direct byte-literal spelling"),
+        normalized_reference
+            .contains("**Future:** The parser recognizes direct byte-literal spelling"),
         "the direct byte-literal boundary must remain explicitly labeled"
     );
 }

@@ -146,9 +146,13 @@ member or collection places may appear on the left of assignment.
 | Boolean | `true`, `false` | |
 | String | `"text"`, `"line\n"` | UTF-8 text with escapes |
 | Interpolated string | `$"id: {id}"` | Expressions occur inside `{...}` |
-| Bytes | `b"Marrow"`, `b"\x00\xff"` | Byte string |
 | Duration | `duration("PT600S")` | Canonical text constructor (see [temporal types](types-and-values.md#temporal-types)) |
 | Absence | `absent` | The missing case of an optional value |
+
+`bytes("Marrow")` constructs the UTF-8 bytes of a string. **Future:** The parser
+recognizes direct byte-literal spelling such as `b"Marrow"`, but that spelling is
+not currently an executable value form and reports a typed `check.unsupported`
+diagnostic.
 
 String escapes are `\\`, `\"`, `\n`, `\r`, `\t`, and `\u{H}`, where `H` is one to
 six hexadecimal digits naming a Unicode scalar value (at most `10FFFF` and not a
@@ -162,8 +166,10 @@ canonically renderable value: a scalar (`string`, `int`, `bool`, `bytes`, `date`
 `Enum::member(a, b)`), or an entry identity (`Id(...)`). A bare `struct`, `List`,
 `Map`, or presence-optional (`T?`) is not a hole and is refused at check. `Option<T>`
 and `Result<T, E>` are enums, so they interpolate as `Option::some(v)`/`Option::none`
-and `Result::ok(v)`/`Result::err(e)`, rendering their payload whatever its shape. Byte strings accept the five non-unicode escapes plus
-`\xNN`; `\u{H}` is text-only and is not a byte escape. Date and instant values are constructed from one canonical text literal each — `date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock builtin.
+and `Result::ok(v)`/`Result::err(e)`, rendering their payload whatever its shape.
+Date and instant values are constructed from one canonical text literal each —
+`date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock
+builtin.
 
 Duration units are `second`, `minute`, `hour`, `day`, and `week`, with singular
 and plural spellings. Months and years are not fixed durations.
