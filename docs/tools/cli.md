@@ -43,7 +43,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 
 Formats Marrow source to canonical layout through the retained formatter. The
 target is either a single `.mw` file or a [project](projects.md) directory, in
-which case every captured module is formatted through the project input.
+which case every captured source file is formatted through the project input.
 
 With no flag on a single file, the formatted source is printed to stdout; on a
 project directory, no flag checks without writing. `--check` leaves files

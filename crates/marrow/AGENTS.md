@@ -2,7 +2,8 @@
 
 On the beta line this is a thin CLI with five implemented commands. `marrow
 init` creates a project, and `marrow fmt` formats a single `.mw` file or every
-module of a project directory through the retained formatter. `marrow run
+captured source file in a project directory through the retained formatter.
+`marrow run
 <export>` drives the production path: capture the project at the working
 directory (including the machine-written `marrow.ids` identity ledger), compile
 it to canonical image bytes — minting missing durable identities from OS
