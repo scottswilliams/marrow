@@ -383,14 +383,10 @@ fn execute<'s>(
                 }
                 pc += 1;
             }
-            SealedInstr::ConvStringInt => {
-                let v = pop_int(&mut stack);
-                stack.push(Value::Text(v.to_string().into()));
-                pc += 1;
-            }
-            SealedInstr::ConvStringBool => {
-                let v = as_bool(pop(&mut stack));
-                stack.push(Value::Text(if v { "true" } else { "false" }.into()));
+            SealedInstr::ConvString => {
+                let value = pop(&mut stack);
+                let text = crate::render::value_text(&value, image.record_types(), image.enums());
+                stack.push(Value::Text(text.into()));
                 pc += 1;
             }
             SealedInstr::ConvBytesText => {

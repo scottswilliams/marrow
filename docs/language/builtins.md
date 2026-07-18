@@ -185,9 +185,11 @@ ErrorCode(value)
 Each accepts a fixed set of source types and validates range or text form.
 Failure raises a typed runtime error. No conversion is implicit.
 
-`ErrorCode(value)` validates dotted lowercase code text. `string(value)` uses
-canonical scalar or enum rendering. `std::bytes::toText` is the explicit UTF-8
-decode operation; converting bytes to `string` does not perform that decode.
+`ErrorCode(value)` validates dotted lowercase code text. `string(value)` renders
+any interpolable value — a scalar, an enum member, or an entry identity — to the
+same canonical text interpolation and program output use. `std::bytes::toText` is
+the explicit UTF-8 decode operation; converting bytes to `string` does not perform
+that decode.
 
 ## Temporal
 

@@ -153,8 +153,13 @@ surrogate); other Unicode characters may appear directly in UTF-8 source. In an
 interpolated string the `\u{H}` escape is recognized as text, so its braces do not
 open an expression hole, and a doubled `{{` or `}}` is one literal brace. Each
 `{...}` hole holds one expression whose value is rendered into the string through
-the same canonical conversions `string(...)` provides, so on the current beta line
-an interpolable hole is a `string`, `int`, or `bool` value. Byte strings accept the five non-unicode escapes plus
+the same canonical conversions `string(...)` provides. An interpolable hole is any
+canonically renderable value: a scalar (`string`, `int`, `bool`, `bytes`, `date`,
+`instant`, `duration`), an enum member (`Enum::member`, with a payload as
+`Enum::member(a, b)`), or an entry identity (`Id(...)`). A bare `struct`, `List`,
+`Map`, or presence-optional (`T?`) is not a hole and is refused at check. `Option<T>`
+and `Result<T, E>` are enums, so they interpolate as `Option::some(v)`/`Option::none`
+and `Result::ok(v)`/`Result::err(e)`, rendering their payload whatever its shape. Byte strings accept the five non-unicode escapes plus
 `\xNN`; `\u{H}` is text-only and is not a byte escape. Date and instant values are constructed from one canonical text literal each — `date("YYYY-MM-DD")` and `instant("YYYY-MM-DDTHH:MM:SSZ")`; there is no clock builtin.
 
 Duration units are `second`, `minute`, `hour`, `day`, and `week`, with singular

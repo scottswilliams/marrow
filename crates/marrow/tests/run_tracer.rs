@@ -922,6 +922,158 @@ fn unreachable_rejects_a_computed_argument() {
     assert!(stdout.contains("check.type"), "{output:?}");
 }
 
+/// Every canonically renderable value is an interpolation hole and rides `string(...)`:
+/// temporals, enums (with payloads), and bytes render through the one canonical owner,
+/// the same text `run`/`print` produces. A record, list, map, or optional hole is not
+/// renderable and is refused.
+#[test]
+fn interpolation_and_string_render_every_scalar_and_enum() {
+    let temp = TempDir::new("interp-canon");
+    project(
+        &temp,
+        r#"enum Shape {
+    dot
+    circle(radius: int)
+}
+
+pub fn temporal(): string {
+    const due = date("2026-08-01")
+    const at = instant("2026-07-15T17:00:00Z")
+    return $"{due} {at} in {3 days}"
+}
+
+pub fn shape(): string {
+    return $"{Shape::circle(radius: 5)} and {Shape::dot}"
+}
+
+pub fn asText(): string {
+    return string(date("2026-08-01"))
+}
+
+pub fn bytesHole(s: string): string {
+    return $"{bytes(s)}"
+}
+"#,
+    );
+
+    let temporal = run_in(&temp, &["run", "temporal"]);
+    assert!(temporal.status.success(), "{temporal:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&temporal.stdout),
+        "2026-08-01 2026-07-15T17:00:00Z in PT259200S\n"
+    );
+
+    let shape = run_in(&temp, &["run", "shape"]);
+    assert_eq!(
+        String::from_utf8_lossy(&shape.stdout),
+        "Shape::circle(5) and Shape::dot\n"
+    );
+
+    let as_text = run_in(&temp, &["run", "asText"]);
+    assert_eq!(String::from_utf8_lossy(&as_text.stdout), "2026-08-01\n");
+
+    // "hi" is 0x6869; a bytes hole renders as canonical hex.
+    let bytes = run_in(&temp, &["run", "bytesHole", "--", "hi"]);
+    assert_eq!(String::from_utf8_lossy(&bytes.stdout), "0x6869\n");
+
+    // A list hole is not a renderable value.
+    project(
+        &temp,
+        "module main\n\npub fn f(): string {\n    var xs: List<int> = List(1, 2)\n    return $\"{xs}\"\n}\n",
+    );
+    let list = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    assert!(!list.status.success());
+    assert!(
+        String::from_utf8_lossy(&list.stdout).contains("check.unsupported"),
+        "{list:?}"
+    );
+}
+
+/// `Option`/`Result` are enums whose payload can be an aggregate, so rendering must be
+/// total: interpolating an `Option<struct>` and returning one through `run`/`print`/
+/// `jsonl` all render the canonical enum text (never a VM panic), and the text output
+/// is byte-identical to the pre-interpolation-canon renderer.
+#[test]
+fn generic_enum_payloads_render_totally() {
+    let temp = TempDir::new("generic-enum-render");
+    project(
+        &temp,
+        r#"struct Point {
+    x: int
+    y: int
+}
+
+pub fn interp(): string {
+    const p: Option<Point> = some(Point(x: 1, y: 2))
+    return $"p is {p}"
+}
+
+pub fn retOpt(): Option<Point> {
+    return some(Point(x: 1, y: 2))
+}
+
+pub fn retNone(): Option<Point> {
+    return none
+}
+
+pub fn retResult(): Result<Point, string> {
+    return ok(Point(x: 3, y: 4))
+}
+
+pub fn retNested(): Option<Option<int>> {
+    return some(some(7))
+}
+"#,
+    );
+
+    // Interpolating an Option<struct> renders the canonical enum text (this panicked
+    // the VM before the renderer was made total).
+    let interp = run_in(&temp, &["run", "interp"]);
+    assert!(interp.status.success(), "{interp:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&interp.stdout),
+        "p is Option::some({x: 1, y: 2})\n"
+    );
+
+    // Returned generic-enum values render the same enum text through `run`/`print`,
+    // byte-identical to the pre-canon renderer's enum arm.
+    for (export, expected) in [
+        ("retOpt", "Option::some({x: 1, y: 2})\n"),
+        ("retNone", "Option::none\n"),
+        ("retResult", "Result::ok({x: 3, y: 4})\n"),
+        ("retNested", "Option::some(Option::some(7))\n"),
+    ] {
+        let out = run_in(&temp, &["run", export]);
+        assert!(out.status.success(), "{export}: {out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{export}");
+    }
+
+    // The jsonl surface keeps its structured enum object (unchanged by the canon).
+    let jsonl = run_in(&temp, &["run", "retOpt", "--format", "jsonl"]);
+    assert!(
+        String::from_utf8_lossy(&jsonl.stdout)
+            .contains(r#""data":{"enum":"Option","member":"some","payload":[{"x":1,"y":2}]}"#),
+        "{jsonl:?}"
+    );
+}
+
+/// A bare presence-optional (`T?`) hole stays refused at check — only a scalar, enum,
+/// or identity is a renderable hole; the `Option<T>` enum renders, the `T?` does not.
+#[test]
+fn a_bare_presence_optional_hole_is_still_refused() {
+    let temp = TempDir::new("optional-hole");
+    project(
+        &temp,
+        "module main\n\nfn maybe(n: int): int? {\n    if n > 0 { return n }\n    return absent\n}\n\npub fn f(n: int): string {\n    return $\"{maybe(n)}\"\n}\n",
+    );
+    let out = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "1"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("check.unsupported"),
+        "{out:?}"
+    );
+}
+
 /// `todo("...")` mirrors `unreachable`: it diverges (so it satisfies exhaustive
 /// return), it requires a static string literal, and reaching it faults with the
 /// distinct `run.todo` code carrying the author text.

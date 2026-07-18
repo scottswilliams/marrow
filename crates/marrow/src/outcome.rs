@@ -6,7 +6,6 @@
 //! source diagnostic, an artifact rejection, a source-mapped runtime fault, and an
 //! owner-local operational error are distinct records.
 
-use marrow_kernel::codec::key::KeyScalar;
 use marrow_verify::{SealedEnumType, SealedRecordType};
 use marrow_vm::Value;
 
@@ -223,150 +222,19 @@ impl TestSummary {
     }
 }
 
-/// Render bytes as `0x`-prefixed lowercase hex, the canonical `bytes` rendering.
-fn hex_bytes(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(2 + bytes.len() * 2);
-    out.push_str("0x");
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
 fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
 }
 
+/// The canonical text of a returned value. `run`/`print` output and interpolation
+/// share one owner: this delegates to [`marrow_vm::render::value_text`], which renders
+/// every value shape (scalars, enums, identities, records, lists, maps, optionals).
 fn render_value_text(
     value: &Value,
     types: &[SealedRecordType],
     enums: &[SealedEnumType],
 ) -> String {
-    match value {
-        Value::Int(v) => v.to_string(),
-        Value::Bool(v) => v.to_string(),
-        Value::Text(v) => v.to_string(),
-        Value::Bytes(v) => hex_bytes(v),
-        Value::Date(v) => date_text(*v),
-        Value::Instant(v) => instant_text(*v),
-        Value::Duration(v) => marrow_temporal::format_duration(*v),
-        Value::Optional(None) => "absent".to_string(),
-        Value::Optional(Some(inner)) => render_value_text(inner, types, enums),
-        // A returned record renders `{field: value, ...}` in field declaration order,
-        // reading names from the sealed record type.
-        Value::Record(idx, slots) => {
-            let fields = types.get(*idx as usize).map(SealedRecordType::fields);
-            let mut out = String::from("{");
-            for (position, slot) in slots.iter().enumerate() {
-                if position > 0 {
-                    out.push_str(", ");
-                }
-                if let Some(field) = fields.and_then(|fields| fields.get(position)) {
-                    out.push_str(&field.name);
-                    out.push_str(": ");
-                }
-                match slot {
-                    Some(inner) => out.push_str(&render_value_text(inner, types, enums)),
-                    None => out.push_str("absent"),
-                }
-            }
-            out.push('}');
-            out
-        }
-        // An enum value renders `Enum::member` or `Enum::member(payload, ...)`,
-        // reading the declared and member names from the sealed enum type.
-        Value::Enum(enum_idx, variant, payload) => {
-            let enum_def = enums.get(*enum_idx as usize);
-            let variant_def = enum_def.and_then(|e| e.variants().get(*variant as usize));
-            let enum_name = enum_def.map(SealedEnumType::name).unwrap_or("enum");
-            let member = variant_def.map(|v| v.name.as_ref()).unwrap_or("?");
-            let mut out = format!("{enum_name}::{member}");
-            if !payload.is_empty() {
-                out.push('(');
-                for (position, value) in payload.iter().enumerate() {
-                    if position > 0 {
-                        out.push_str(", ");
-                    }
-                    out.push_str(&render_value_text(value, types, enums));
-                }
-                out.push(')');
-            }
-            out
-        }
-        // A list renders `[a, b, ...]` in insertion order.
-        Value::List(_, _, items) => {
-            let mut out = String::from("[");
-            for (position, item) in items.iter().enumerate() {
-                if position > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&render_value_text(item, types, enums));
-            }
-            out.push(']');
-            out
-        }
-        // A map renders `[k: v, ...]` in ascending key order (the entries are stored
-        // sorted), matching the type-directed map literal spelling.
-        Value::Map(_, _, entries) => {
-            let mut out = String::from("[");
-            for (position, (key, value)) in entries.iter().enumerate() {
-                if position > 0 {
-                    out.push_str(", ");
-                }
-                out.push_str(&render_key_text(key));
-                out.push_str(": ");
-                out.push_str(&render_value_text(value, types, enums));
-            }
-            if entries.is_empty() {
-                out.push(':');
-            }
-            out.push(']');
-            out
-        }
-        // An entry identity renders `Id(k0, k1)` — the key tuple that addresses the
-        // entry, each column in canonical scalar text. A program declares one store
-        // root, so the key tuple identifies it without a root discriminator.
-        Value::Id(_, keys) => render_identity_text(keys),
-    }
-}
-
-/// Render an entry identity as `Id(k0, k1)`, each key column in canonical scalar text.
-fn render_identity_text(keys: &[KeyScalar]) -> String {
-    let mut out = String::from("Id(");
-    for (position, key) in keys.iter().enumerate() {
-        if position > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(&render_key_text(key));
-    }
-    out.push(')');
-    out
-}
-
-/// Render a `KeyScalar` map key in the canonical scalar text form.
-fn render_key_text(key: &KeyScalar) -> String {
-    match key {
-        KeyScalar::Int(v) => v.to_string(),
-        KeyScalar::Bool(v) => v.to_string(),
-        KeyScalar::Str(v) => v.clone(),
-        KeyScalar::Bytes(v) => hex_bytes(v),
-        KeyScalar::Date(v) => date_text(*v),
-        KeyScalar::Instant(v) => instant_text(*v),
-        KeyScalar::Duration(v) => marrow_temporal::format_duration(*v),
-    }
-}
-
-/// The canonical `YYYY-MM-DD` text of a date. A validated date always formats; a raw
-/// day outside the supported range (only reachable from a hand-built value) falls
-/// back to its integer so rendering never fails.
-fn date_text(days: i32) -> String {
-    marrow_temporal::format_date(days).unwrap_or_else(|| days.to_string())
-}
-
-/// The canonical UTC text of an instant, with the same out-of-range fallback.
-fn instant_text(nanos: i128) -> String {
-    marrow_temporal::format_instant(nanos).unwrap_or_else(|| nanos.to_string())
+    marrow_vm::render::value_text(value, types, enums)
 }
 
 /// Render a value as the JSONL `data` field, or `Err` when it exceeds the data
@@ -391,11 +259,11 @@ fn render_data(
             if v.len() * 2 + 2 > MAX_DATA_BYTES {
                 return Err(());
             }
-            json_string(&hex_bytes(v))
+            json_string(&marrow_vm::render::hex_bytes(v))
         }
         // Temporal values render as their canonical text in a JSON string, like bytes.
-        Some(Value::Date(v)) => json_string(&date_text(*v)),
-        Some(Value::Instant(v)) => json_string(&instant_text(*v)),
+        Some(Value::Date(v)) => json_string(&marrow_vm::render::date_text(*v)),
+        Some(Value::Instant(v)) => json_string(&marrow_vm::render::instant_text(*v)),
         Some(Value::Duration(v)) => json_string(&marrow_temporal::format_duration(*v)),
         Some(Value::Optional(Some(inner))) => render_data(Some(inner), types, enums)?,
         Some(Value::Record(idx, slots)) => {
@@ -466,7 +334,7 @@ fn render_data(
                 if position > 0 {
                     out.push(',');
                 }
-                out.push_str(&json_string(&render_key_text(key)));
+                out.push_str(&json_string(&marrow_vm::render::key_text(key)));
                 out.push(':');
                 out.push_str(&render_data(Some(value), types, enums)?);
             }
@@ -478,7 +346,7 @@ fn render_data(
         }
         // An entry identity renders as its `Id(k0, k1)` text in a JSON string.
         Some(Value::Id(_, keys)) => {
-            let out = json_string(&render_identity_text(keys));
+            let out = json_string(&marrow_vm::render::id_text(keys));
             if out.len() > MAX_DATA_BYTES {
                 return Err(());
             }

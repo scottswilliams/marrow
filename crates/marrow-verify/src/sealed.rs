@@ -70,10 +70,9 @@ pub enum SealedInstr {
     BytesLe,
     BytesGt,
     BytesGe,
-    /// `int → string` (decimal), `bool → string`, and `string → bytes` (UTF-8): the
-    /// closed scalar conversions.
-    ConvStringInt,
-    ConvStringBool,
+    /// `value → string`: render an interpolable value (scalar, enum, or identity) to
+    /// its canonical text. `string → bytes` (UTF-8) is the reverse byte conversion.
+    ConvString,
     ConvBytesText,
     /// The closed pure text floor: `string → bool`, `string, string → bool`,
     /// `string → string`.

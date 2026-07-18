@@ -253,7 +253,7 @@ fn scalar_conversions_render_and_encode() {
             ImageType::scalar(Scalar::Text),
             vec![
                 Instr::ConstLoad(n.index()),
-                Instr::ConvStringInt,
+                Instr::ConvString,
                 Instr::Return,
             ],
         )
@@ -266,7 +266,7 @@ fn scalar_conversions_render_and_encode() {
             ImageType::scalar(Scalar::Text),
             vec![
                 Instr::ConstLoad(b.index()),
-                Instr::ConvStringBool,
+                Instr::ConvString,
                 Instr::Return,
             ],
         )

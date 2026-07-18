@@ -920,8 +920,7 @@ fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::BytesLe
         | Instr::BytesGt
         | Instr::BytesGe
-        | Instr::ConvStringInt
-        | Instr::ConvStringBool
+        | Instr::ConvString
         | Instr::ConvBytesText
         | Instr::TextIsEmpty
         | Instr::TextContains
@@ -4469,24 +4468,24 @@ impl<'a> FnLowerer<'a> {
                 let Some(ty) = self.lower_expr(expr) else {
                     return false;
                 };
-                match ty.bare_scalar_type() {
-                    Some(ScalarType::Text) => true,
-                    Some(ScalarType::Int) => {
-                        self.push(Instr::ConvStringInt, expr.span());
-                        true
-                    }
-                    Some(ScalarType::Bool) => {
-                        self.push(Instr::ConvStringBool, expr.span());
-                        true
-                    }
-                    _ => {
-                        self.fail(unsupported(
-                            self.file,
-                            expr.span(),
-                            &format!("interpolating a {} value", ty.spelling(self.records)),
-                        ));
-                        false
-                    }
+                // A `string` hole is already text and needs no conversion; every other
+                // interpolable value renders to canonical text through the one owner.
+                if let LTy::Scalar {
+                    scalar: ScalarType::Text,
+                    optional: false,
+                } = ty
+                {
+                    true
+                } else if is_interpolable(ty) {
+                    self.push(Instr::ConvString, expr.span());
+                    true
+                } else {
+                    self.fail(unsupported(
+                        self.file,
+                        expr.span(),
+                        &format!("interpolating a {} value", ty.spelling(self.records)),
+                    ));
+                    false
                 }
             }
         }
@@ -8575,10 +8574,15 @@ impl<'a> FnLowerer<'a> {
             return None;
         }
         let source = self.lower_expr(&arg.value)?;
-        use ScalarType::{Bool, Bytes, Int, Text};
+        // `string(value)` renders any interpolable value — a scalar, an enum, or an
+        // entry identity — to its canonical text, the same rendering interpolation and
+        // program output use.
+        if target == "string" && is_interpolable(source) {
+            self.push(Instr::ConvString, span);
+            return Some(LTy::bare_scalar(ScalarType::Text));
+        }
+        use ScalarType::{Bytes, Text};
         let (instr, result) = match (target, source.bare_scalar_type()) {
-            ("string", Some(Int)) => (Instr::ConvStringInt, Text),
-            ("string", Some(Bool)) => (Instr::ConvStringBool, Text),
             ("bytes", Some(Text)) => (Instr::ConvBytesText, Bytes),
             _ => {
                 self.fail(unsupported(
@@ -9570,6 +9574,25 @@ fn operator_symbol(op: BinaryOp) -> &'static str {
 
 pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
+}
+
+/// Whether `ty` is a value that renders to canonical text — a bare scalar, enum, or
+/// entry identity. A record, collection, or optional is not renderable; those are not
+/// interpolation holes and cannot ride `string(...)`.
+fn is_interpolable(ty: LTy) -> bool {
+    matches!(
+        ty,
+        LTy::Scalar {
+            optional: false,
+            ..
+        } | LTy::Enum {
+            optional: false,
+            ..
+        } | LTy::Identity {
+            optional: false,
+            ..
+        }
+    )
 }
 
 /// Whether `expr` is an integer literal, possibly negated, whose value is provably

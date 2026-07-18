@@ -10,6 +10,7 @@
 
 mod attach;
 mod fault;
+pub mod render;
 mod run;
 mod value;
 

@@ -330,14 +330,20 @@ pub fn renderFlag(active: bool): string {
 | `bool` | `bool`, or `int` equal to `0` or `1` |
 | `int` | `int`, canonical integer text, or an integral `decimal` in range |
 | `decimal` | `decimal`, `int`, or canonical decimal text in range |
-| `string` | Any scalar or enum value, rendered canonically |
+| `string` | Any scalar, enum, or entry-identity value, rendered canonically |
 | `bytes` | `bytes`, or the UTF-8 bytes of a `string` |
 | `ErrorCode` | validated `string` text |
 
-On the current beta line the implemented conversions are `string(int)`,
-`string(bool)`, and `bytes(string)`; every other row above — including parsing an
-`int` or `decimal` from text — is documented direction that is not yet
-implemented and reports `check.unsupported`. Temporal values are built with the
+On the current beta line the implemented conversions are `string(value)` over any
+scalar, enum, or identity and `bytes(string)`; every other row above — including
+parsing an `int` or `decimal` from text — is documented direction that is not yet
+implemented and reports `check.unsupported`. `string(value)` renders through the
+same canonical owner interpolation and `marrow run`/`print` output use, so the text
+is identical across all three. An interpolation hole (`$"{value}"`) is any value
+`string(value)` accepts — a scalar, an enum member (`Option<T>` and `Result<T, E>`
+included, rendered with their payload whatever its shape), or an entry identity; a
+bare `struct`, `List`, `Map`, or presence-optional (`T?`) is not a hole and is
+refused at check. Temporal values are built with the
 literal constructors in [Temporal Types](#temporal-types), not these conversions.
 
 `ErrorCode` is represented as a string value. Its documented direction is that

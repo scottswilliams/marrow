@@ -122,8 +122,9 @@ test "example: report" {
 `label` formats one fixed message; interpolation keeps the layout of the result
 visible in the source. `report` accumulates: `+` and `+=` build the body up across
 iterations. Interpolation is for formatting a fixed, multi-part message; `+` is for
-progressively appending text across steps. On the current beta line an interpolation
-hole renders a `string`, `int`, or `bool`; other values are converted first (see
+progressively appending text across steps. An interpolation hole renders any
+canonically renderable value — a scalar, an enum member, or an entry identity —
+through the same rendering `string(...)` and program output use (see
 [Built-ins](builtins.md#output)).
 
 ## `checked` As The Arithmetic Signature

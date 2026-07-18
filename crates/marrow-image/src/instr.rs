@@ -47,8 +47,7 @@ pub const OP_BYTES_LT: u8 = 0x45;
 pub const OP_BYTES_LE: u8 = 0x46;
 pub const OP_BYTES_GT: u8 = 0x47;
 pub const OP_BYTES_GE: u8 = 0x48;
-pub const OP_CONV_STRING_INT: u8 = 0x50;
-pub const OP_CONV_STRING_BOOL: u8 = 0x51;
+pub const OP_CONV_STRING: u8 = 0x50;
 pub const OP_CONV_BYTES_TEXT: u8 = 0x52;
 pub const OP_TEXT_IS_EMPTY: u8 = 0x60;
 pub const OP_TEXT_CONTAINS: u8 = 0x61;
@@ -208,10 +207,11 @@ pub enum Instr {
     BytesLe,
     BytesGt,
     BytesGe,
-    /// `int → string`: canonical decimal rendering.
-    ConvStringInt,
-    /// `bool → string`: `"true"`/`"false"`.
-    ConvStringBool,
+    /// Render the top-of-stack value to its canonical text (`value → string`). The
+    /// operand is an interpolable value — a scalar, an enum, or an entry identity — as
+    /// proved by the verifier; the runtime renders it through the one canonical owner.
+    /// Shared by `$"{}"` interpolation and `string(value)`.
+    ConvString,
     /// `string → bytes`: the UTF-8 bytes of the text.
     ConvBytesText,
     /// The closed pure text floor. `string → bool`, `string, string → bool`, and
@@ -488,8 +488,7 @@ impl Instr {
             Instr::BytesLe => OP_BYTES_LE,
             Instr::BytesGt => OP_BYTES_GT,
             Instr::BytesGe => OP_BYTES_GE,
-            Instr::ConvStringInt => OP_CONV_STRING_INT,
-            Instr::ConvStringBool => OP_CONV_STRING_BOOL,
+            Instr::ConvString => OP_CONV_STRING,
             Instr::ConvBytesText => OP_CONV_BYTES_TEXT,
             Instr::TextIsEmpty => OP_TEXT_IS_EMPTY,
             Instr::TextContains => OP_TEXT_CONTAINS,
