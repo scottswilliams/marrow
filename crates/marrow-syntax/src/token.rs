@@ -121,6 +121,10 @@ pub enum Keyword {
     Declassify,
     Transaction,
     Lock,
+    // Held for the future effect-signature clause (`pub fn f(): T writes ^a reads ^b`).
+    // Reserved now so the spelling stays free; the clause itself is not yet grammar.
+    Writes,
+    Reads,
     Try,
     True,
     False,
@@ -242,6 +246,8 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
         "declassify" => Keyword::Declassify,
         "transaction" => Keyword::Transaction,
         "lock" => Keyword::Lock,
+        "writes" => Keyword::Writes,
+        "reads" => Keyword::Reads,
         "try" => Keyword::Try,
         "true" => Keyword::True,
         "false" => Keyword::False,

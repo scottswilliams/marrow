@@ -50,7 +50,8 @@ int bool string bytes decimal date instant duration unknown Error ErrorCode Id
 `surface` begins a reachable legacy declaration and is intentionally outside
 the main reference. `merge` and `lock` are reserved statement heads that produce
 parser diagnostics. `journal`, `sensitive`, and `declassify` are held keywords,
-not current statement forms. These spellings are unavailable as ordinary
+not current statement forms; `writes` and `reads` are held for a future
+effect-signature clause. These spellings are unavailable as ordinary
 identifiers.
 
 Standard-library path segments such as `std::text` are resolved as declared

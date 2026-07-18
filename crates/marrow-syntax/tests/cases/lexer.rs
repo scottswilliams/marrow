@@ -70,6 +70,22 @@ fn lexes_future_data_keywords_as_keywords() {
 }
 
 #[test]
+fn lexes_held_effect_words_as_keywords() {
+    // `writes`/`reads` are held for a future effect-signature clause; they lex as
+    // keywords now, so they cannot be ordinary identifiers.
+    let source = "writes reads";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Writes),
+            TokenKind::Keyword(Keyword::Reads),
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
 fn preserves_doc_comments_as_tokens() {
     let source = "/// Books saved by id.\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book\n";
 
