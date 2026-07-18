@@ -71,6 +71,9 @@ The pages are arranged from source text to durable behavior:
 - [Execution limits](execution-limits.md) records fixed runtime and parser
   bounds.
 - [Grammar](grammar.md) gives a syntax-only EBNF summary.
+- [The surface laws](surface-laws.md) state the closed sigil economy, the grep
+  contract, and the no-synonym law.
+- [Idioms](idioms.md) describes how idiomatic Marrow is written.
 - [Reference sample](sample.md) is a larger checked and executed module.
 
 ## Core Terms

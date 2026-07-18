@@ -42,6 +42,15 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
   supervision module; `marrow --version` and `marrow --help`. Every other
   command name is recognized but reports `cli.command_unsupported` until its
   refounding lane lands.
+- The formatter canonicalizes a left-anchored self-update to compound assignment
+  (`x = x + e` becomes `x += e`) and owns the `use` block (sorted, deduplicated,
+  one import per line); it never reorders declarations.
+- Reference pages state how idiomatic Marrow is written
+  ([Idioms](language/idioms.md)) and the closed surface laws — the sigil economy,
+  the grep contract, and the no-synonym law
+  ([the surface laws](language/surface-laws.md)). The normative message-prose standard
+  for the one diagnostic renderer is
+  [Diagnostic voice](implementation/diagnostic-voice.md).
 - Linux and macOS source builds with the pinned Rust toolchain.
 
 ### Storage engine
