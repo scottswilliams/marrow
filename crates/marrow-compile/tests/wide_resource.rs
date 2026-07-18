@@ -1,4 +1,4 @@
-//! WR01 wide-resource scale floor: a resource may declare thousands of sparse
+//! Wide-resource scale floor: a resource may declare thousands of sparse
 //! fields (the M-shaped workload) and still compile to a canonical image. The
 //! width bound is a law-9 decode-allocation guard, not a durable-format byte, so
 //! widening it admits the wide declaration with no stored-format change. The
@@ -66,7 +66,7 @@ fn compile_ok(sparse: usize) -> Compiled {
 }
 
 /// The M-shaped declared width — two thousand sparse fields — compiles to a
-/// canonical image. Before WR01 the width cap rejected it; the widened law-9 bound
+/// canonical image. The width cap once rejected it; the widened law-9 bound
 /// now admits it with no durable-format change.
 #[test]
 fn a_wide_resource_compiles() {

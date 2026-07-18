@@ -86,10 +86,11 @@ pub const MAX_SITES: usize = 8192;
 /// index projects a small ordered leaf set (top-level fields and identity keys) for
 /// a narrow lookup. The component count is deliberately fixed and independent of the
 /// widened record field width: widening [`MAX_RECORD_FIELDS`] must NOT let an index
-/// project thousands of components. The value preserves the T01 admissible ceiling —
-/// a handful of projected fields plus a full composite key tuple — and stays far
-/// below any resource's declared field set, keeping the image and verifier index
-/// decoders allocating within a fixed limit (§ law 9).
+/// project thousands of components. The value (72) preserves the T01 admissible
+/// ceiling — up to 64 projected leaf components plus a full [`MAX_KEY_COLUMNS`]
+/// (8-column) key tuple, the previous `64 + MAX_KEY_COLUMNS` ceiling kept
+/// deliberately — and stays far below any resource's declared field set, keeping the
+/// image and verifier index decoders allocating within a fixed limit (§ law 9).
 pub const MAX_INDEXES: usize = 32;
 pub const MAX_INDEX_COMPONENTS: usize = 72;
 
@@ -179,7 +180,7 @@ pub const MAX_TRAVERSAL_BOUND: u32 = 65_536;
 /// exceeds this with a typed error rather than materializing an exponential tree.
 pub const MAX_INTERFACE_TRANSFER_NODES: usize = 4096;
 
-// WR01 width-bound decoupling invariants, enforced at compile time: a future edit
+// Width-bound decoupling invariants, enforced at compile time: a future edit
 // that re-couples the narrow bounds to the widened record field width — or drops a
 // graph-scaled bound below it — fails the build here, not silently at runtime. The
 // dense inline-composite leaf count and the index projection width must NOT scale
@@ -222,7 +223,7 @@ const _: () = {
 
 #[cfg(test)]
 mod tests {
-    //! Width-bound known-answer tests (WR01): the chosen value of each widened or
+    //! Width-bound known-answer tests: the chosen value of each widened or
     //! re-derived width constant. The *decoupling* relationships are enforced at
     //! compile time by the `const _` block above.
     use super::*;

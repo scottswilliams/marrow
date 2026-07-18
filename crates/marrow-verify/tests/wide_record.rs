@@ -1,4 +1,4 @@
-//! WR01 verifier re-check: the independent verifier admits a record type at the
+//! Verifier re-check: the independent verifier admits a record type at the
 //! widened top-level field width ([`MAX_RECORD_FIELDS`]), and the encoder still
 //! refuses one field beyond it. The verifier and encoder share one bounds owner, so
 //! this pins that the widened law-9 width holds on both sides of the trust boundary.

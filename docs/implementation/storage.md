@@ -50,7 +50,10 @@ pinned by a law test). This is a named, deferred representation seam — sparse 
 versus an `Rc`-COW record backing — carried at kernel↔VM boundary width because the
 dense positional shape is woven through the create/read/replace and index-maintenance
 contract; the durable engine-work law above is the release-veto-critical property and
-is already `O(populated)`.
+is already `O(populated)`. The decode-side per-read cost rides the same seam: resolving
+each scanned leaf to its declared position uses a per-read name map that is `O(declared)`
+CPU and allocation, so it too becomes `O(populated)` only under the sparse-slot
+representation the seam defers.
 
 ## What was deleted at B00
 

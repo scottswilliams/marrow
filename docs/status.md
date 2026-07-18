@@ -100,7 +100,10 @@ cursor family (opcode, kernel op, and neighbor `next`/`prev` built-ins) and have
 owner. Widened field values — a dense `struct`/record, a closed `enum`, and
 `Option`/`Result` — are stored inline in a field-leaf cell and execute end to end;
 nominal-typed fields stay parked with their owning lanes, and a collection in a field is
-rejected. Persistent
+rejected. A resource may declare thousands of mostly-sparse fields: a whole-entry read
+is a field-leaf range scan whose engine work is proportional to the present count
+(`O(populated / page + 1)` scan calls), not the declared width, and the durable field
+width is bounded by the image byte ceiling at roughly 3100 declared fields. Persistent
 execution is still in the trough: T01's in-process store open died at D00, so
 `marrow run` no longer opens a store and reports a durable export with the typed
 `cli.durable_unsupported` outcome until the persistent terminal path lands over a

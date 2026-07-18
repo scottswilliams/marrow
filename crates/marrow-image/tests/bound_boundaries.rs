@@ -1,4 +1,4 @@
-//! WR01 boundary known-answer tests: the narrow width bounds that did NOT widen
+//! Boundary known-answer tests: the narrow width bounds that did NOT widen
 //! with the record field width still bite at exactly their chosen value. The dense
 //! inline-composite leaf count admits `MAX_STRUCT_LEAVES` and refuses one more; the
 //! index projection width admits `MAX_INDEX_COMPONENTS` and refuses one more. These

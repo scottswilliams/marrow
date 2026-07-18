@@ -1,5 +1,5 @@
 //! Whole-entry read engine work is proportional to the *populated* field count, not
-//! the *declared* width (WR01 obligation ii).
+//! the *declared* width.
 //!
 //! A sparse entry stores one cell per present field plus its marker, so materializing
 //! the whole entry is a structural-tag-bounded range scan over the entry's own
@@ -16,7 +16,7 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitResult, CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema,
-    InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
+    GroupSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -138,12 +138,14 @@ fn whole_entry_read_engine_work_is_flat_across_declared_widths() {
         "declared width must not change the engine work of reading a fixed present set \
          (narrow={narrow}, wide={wide})",
     );
-    // O(populated + 1): the whole-entry read stages at most one range-scan read per
-    // present leaf plus the boundary read, far below the declared width — a
-    // per-declared-field probe would stage one read per declared field (101 and 2001).
-    assert!(
-        narrow <= 20 + 1,
-        "whole-entry read is O(populated + 1), got {narrow} reads for 20 present fields",
+    // Exact page math (SCAN_MAX_RECORDS = 64): probe(1) + one scan call for the 20
+    // present leaves (< one page) + one boundary call = 3, independent of declared
+    // width. A per-declared-field probe would stage one read per declared field (101
+    // and 2001). The counted unit is engine scan calls, O(populated / page + 1) — one
+    // scan call per SCAN_MAX_RECORDS page plus a boundary call, not one call per leaf.
+    assert_eq!(
+        narrow, 3,
+        "whole-entry read is a probe plus one page scan plus a boundary call",
     );
 }
 
@@ -163,7 +165,7 @@ fn whole_entry_read_engine_work_grows_with_the_populated_count() {
 /// The materialized value size is O(declared): the whole-entry read yields a dense
 /// schema-aligned `EntryValue.fields` with one slot per *declared* field, so its
 /// length tracks the declared width and is independent of the present count. This is
-/// the accepted, measured O(declared) value-size seam WR01 records and defers: the
+/// the accepted, measured O(declared) value-size seam recorded and deferred: the
 /// engine work is already O(populated+1) (above), but the value shape stays dense.
 /// The named seam a later lane can take to make value size O(populated) is sparse
 /// sorted (field-index, value) slots (which the field-leaf scan already yields in
@@ -180,5 +182,206 @@ fn whole_entry_read_value_size_is_the_declared_width() {
         measure_whole_entry(2000, 20).value_len,
         measure_whole_entry(2000, 200).value_len,
         "value size is set by the declared width, not the present count",
+    );
+}
+
+// --- Group-bearing whole-entry read ---------------------------------------------
+
+/// A schema with a wide top-level plus two sibling unkeyed groups `a` and `b`, each
+/// declaring `group_declared` optional `Int` fields. A whole-entry read materializes
+/// the top-level record and every group, each through its own field-leaf range scan.
+fn group_schema(top_declared: usize, group_declared: usize) -> StoreSchema {
+    let group_fields = |prefix: &str| {
+        (0..group_declared)
+            .map(|i| FieldSchema::scalar(format!("{prefix}{i}"), ScalarKind::Int, false))
+            .collect()
+    };
+    StoreSchema {
+        root_name: "wide".into(),
+        key: vec![ScalarKind::Int],
+        fields: (0..top_declared)
+            .map(|i| FieldSchema::scalar(format!("t{i}"), ScalarKind::Int, false))
+            .collect(),
+        branches: Vec::new(),
+        groups: vec![
+            GroupSchema {
+                name: "a".into(),
+                fields: group_fields("af"),
+            },
+            GroupSchema {
+                name: "b".into(),
+                fields: group_fields("bf"),
+            },
+        ],
+        indexes: Vec::new(),
+    }
+}
+
+/// A dense schema-aligned column of `declared` slots with the leading `present` slots
+/// set to `base + i`, so each group's present values occupy a disjoint numeric range.
+fn present_column(declared: usize, present: usize, base: i64) -> Vec<Option<ValueDomain>> {
+    (0..declared)
+        .map(|i| (i < present).then(|| ValueDomain::Scalar(RuntimeScalar::Int(base + i as i64))))
+        .collect()
+}
+
+/// The present values of a materialized column, in slot order.
+fn present_values(fields: &[Option<ValueDomain>]) -> Vec<i64> {
+    fields
+        .iter()
+        .filter_map(|slot| match slot {
+            Some(ValueDomain::Scalar(RuntimeScalar::Int(v))) => Some(*v),
+            _ => None,
+        })
+        .collect()
+}
+
+struct GroupMeasured {
+    reads: usize,
+    entry: EntryValue,
+}
+
+/// Create a group-bearing entry (top-level `1000+`, group `a` `10000+`, group `b`
+/// `20000+`), commit it, then read it back through BOTH a read session (value
+/// correctness) and a transaction session (engine-read count). The two sessions must
+/// materialize an identical value; the transaction read supplies the counted work.
+fn measure_group_entry(
+    top_declared: usize,
+    group_declared: usize,
+    top_present: usize,
+    a_present: usize,
+    b_present: usize,
+) -> GroupMeasured {
+    let counters = Counters::new();
+    let mut store = DurableStore::from_engine_with_ceiling(
+        CountingEngine::new(counters.clone()),
+        group_schema(top_declared, group_declared),
+        sites(),
+        write(),
+    );
+    let entry_value = || EntryValue {
+        fields: present_column(top_declared, top_present, 1000),
+        groups: vec![
+            EntryValue {
+                fields: present_column(group_declared, a_present, 10000),
+                groups: Vec::new(),
+            },
+            EntryValue {
+                fields: present_column(group_declared, b_present, 20000),
+                groups: Vec::new(),
+            },
+        ],
+    };
+    {
+        let mut txn = store
+            .txn_session(InvocationGrant::full_store(), write())
+            .expect("txn session");
+        let entry = txn.site(0);
+        assert_eq!(
+            txn.create_entry(&entry, &[KeyScalar::Int(1)], entry_value())
+                .expect("create"),
+            CreateOutcome::Created,
+        );
+        assert_eq!(txn.commit(), CommitResult::Committed);
+    }
+
+    // Read session: value correctness (its engine reads are uncounted).
+    let read_value = {
+        let mut session = store
+            .read_session(InvocationGrant::full_store(), read())
+            .expect("read session");
+        let entry = session.site(0);
+        session
+            .read_entry(&entry, &[KeyScalar::Int(1)])
+            .expect("read")
+            .expect("entry present")
+    };
+
+    // Transaction session: the counted whole-entry read.
+    let mut session = store
+        .txn_session(InvocationGrant::full_store(), read())
+        .expect("read txn session");
+    let entry = session.site(0);
+    let before = counters.reads();
+    let txn_value = session
+        .read_entry(&entry, &[KeyScalar::Int(1)])
+        .expect("read")
+        .expect("entry present");
+    let reads = counters.reads() - before;
+
+    assert_eq!(
+        read_value.fields, txn_value.fields,
+        "the read and transaction sessions materialize the same top-level record",
+    );
+    assert_eq!(
+        read_value.groups.len(),
+        txn_value.groups.len(),
+        "both sessions materialize the same group count",
+    );
+    for (r, t) in read_value.groups.iter().zip(&txn_value.groups) {
+        assert_eq!(
+            r.fields, t.fields,
+            "the read and transaction sessions materialize the same group record",
+        );
+    }
+    GroupMeasured {
+        reads,
+        entry: txn_value,
+    }
+}
+
+/// A whole-entry read of a group-bearing sparse entry keeps every group's leaves in
+/// its own group (no sibling bleed), materializes a group whose present count crosses
+/// the scan page size (paging), and stages engine work flat across declared widths at
+/// a fixed present set — the group loop in `op_read_entry` obeys the same
+/// O(populated/page + 1) law as the top-level record.
+#[test]
+fn group_bearing_whole_entry_read_is_bounded_and_isolated() {
+    // group `a`: 100 present (crosses the 64-record page size); group `b`: 20 present.
+    let narrow = measure_group_entry(100, 300, 20, 100, 20);
+    let wide = measure_group_entry(3000, 3000, 20, 100, 20);
+
+    // Sibling-group isolation: each group materializes only its own values, in its own
+    // disjoint numeric range — no value bleeds from `a` (10000+) into `b` (20000+).
+    let group_a = present_values(&narrow.entry.groups[0].fields);
+    let group_b = present_values(&narrow.entry.groups[1].fields);
+    assert_eq!(
+        group_a,
+        (10000..10100).collect::<Vec<_>>(),
+        "group a is intact"
+    );
+    assert_eq!(
+        group_b,
+        (20000..20020).collect::<Vec<_>>(),
+        "group b is intact"
+    );
+    assert!(
+        group_a.iter().all(|v| (10000..20000).contains(v)),
+        "no group-b value bled into group a",
+    );
+
+    // Paging: group `a` materialized all 100 present leaves even though the count
+    // crosses the SCAN_MAX_RECORDS page size, so the range scan pages correctly.
+    assert_eq!(
+        group_a.len(),
+        100,
+        "group a materialized every present leaf across the page boundary",
+    );
+
+    // Flat across declared widths: the same present set stages the same engine work on
+    // a 300-declared and a 3000-declared group (and top-level).
+    assert_eq!(
+        narrow.reads, wide.reads,
+        "group-bearing whole-entry read work is flat across declared widths \
+         (narrow={}, wide={})",
+        narrow.reads, wide.reads,
+    );
+
+    // Counted engine calls, by page math (SCAN_MAX_RECORDS = 64, one boundary call per
+    // scanned range): probe(1) + top-level 20-present(2) + group a 100-present(3) +
+    // group b 20-present(2) = 8.
+    assert_eq!(
+        narrow.reads, 8,
+        "one scan call per SCAN_MAX_RECORDS page plus a boundary call, per scanned node",
     );
 }
