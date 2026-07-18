@@ -45,8 +45,103 @@ struct AllowedPanicSite {
     multiplicity: usize,
 }
 
-// Populated only after the empty allowlist has exposed every live site.
-const ALLOWED_PANIC_SITES: &[AllowedPanicSite] = &[];
+const ALLOWED_PANIC_SITES: &[AllowedPanicSite] = &[
+    AllowedPanicSite {
+        invocation: ".expect(\"a bare enum value resolves to enum variants\")",
+        class: InvariantClass::CheckerClassifiedType,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"classified as a nominal\")",
+        class: InvariantClass::CheckerClassifiedType,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"caller classified a nominal\")",
+        class: InvariantClass::CheckerClassifiedType,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"the match guard proved this name resolves to a template\")",
+        class: InvariantClass::CheckerClassifiedType,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"a struct template has struct fields\")",
+        class: InvariantClass::CheckerClassifiedType,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: "panic!(\"a bare struct type resolves to a struct info or instantiation\")",
+        class: InvariantClass::CheckerClassifiedType,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"classified as an admitted binary op\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"guard matched\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 4,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"only and/or reach short-circuit lowering\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"caller matched the text-floor names\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"caller passes only a temporal scalar\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 2,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"caller passes only a date-arithmetic builtin\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"a set evaluates its value\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"caller passes a non-empty argument list\")",
+        class: InvariantClass::MatchArmNarrowing,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"division has a right operand\")",
+        class: InvariantClass::ParserGuaranteedShape,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"patch target is not a jump: {other:?}\")",
+        class: InvariantClass::LoweringBookkeeping,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"loop present\")",
+        class: InvariantClass::LoweringBookkeeping,
+        multiplicity: 1,
+    },
+    AllowedPanicSite {
+        invocation: ".expect(\"loop was pushed\")",
+        class: InvariantClass::LoweringBookkeeping,
+        multiplicity: 3,
+    },
+    AllowedPanicSite {
+        invocation: "unreachable!(\"a group-leaf delete is handled before the shared key-path emit\")",
+        class: InvariantClass::LoweringBookkeeping,
+        multiplicity: 1,
+    },
+];
 
 #[derive(Debug, PartialEq, Eq)]
 struct ExplicitPanicSite<'a> {
@@ -62,9 +157,11 @@ const PANIC_MACROS: &[&str] = &[
     "unimplemented",
     "assert",
     "assert_eq",
+    "assert_matches",
     "assert_ne",
     "debug_assert",
     "debug_assert_eq",
+    "debug_assert_matches",
     "debug_assert_ne",
 ];
 
@@ -72,7 +169,7 @@ const PANIC_MACROS: &[&str] = &[
 /// contents as Rust code. The extracted invocation text remains byte-exact so the
 /// allowlist detects message and spelling changes without snapshotting line numbers.
 fn explicit_panic_sites(source: &str) -> Vec<ExplicitPanicSite<'_>> {
-    let code = mask_comments_and_strings(source);
+    let code = mask_comments_and_literals(source);
     let mut sites = Vec::new();
     let mut cursor = 0;
 
@@ -90,15 +187,11 @@ fn explicit_panic_sites(source: &str) -> Vec<ExplicitPanicSite<'_>> {
         let ident = &source[ident_start..cursor];
 
         let invocation = if PANIC_METHODS.contains(&ident) {
-            let Some(dot) = previous_non_whitespace(&code, ident_start) else {
-                continue;
-            };
-            if code[dot] != b'.' {
-                continue;
-            }
             let open = next_non_whitespace(&code, cursor);
             match open {
-                Some(open) if code[open] == b'(' => Some((dot, open)),
+                Some(open) if code[open] == b'(' => {
+                    method_invocation_start(&code, ident_start).map(|start| (start, open))
+                }
                 _ => None,
             }
         } else if PANIC_MACROS.contains(&ident) {
@@ -159,6 +252,18 @@ fn next_non_whitespace(code: &[u8], mut cursor: usize) -> Option<usize> {
     (cursor < code.len()).then_some(cursor)
 }
 
+fn method_invocation_start(code: &[u8], ident_start: usize) -> Option<usize> {
+    let before = previous_non_whitespace(code, ident_start)?;
+    if code[before] == b'.' {
+        return Some(before);
+    }
+    if code[before] != b':' {
+        return None;
+    }
+    let first_colon = previous_non_whitespace(code, before)?;
+    (code[first_colon] == b':').then_some(ident_start)
+}
+
 fn matching_delimiter(code: &[u8], open: usize) -> Option<usize> {
     let mut stack = vec![match code[open] {
         b'(' => b')',
@@ -184,10 +289,10 @@ fn matching_delimiter(code: &[u8], open: usize) -> Option<usize> {
     None
 }
 
-/// Preserve byte offsets and newlines while blanking nested comments and string
-/// literals, including raw and byte/C string forms. Character literals cannot hold
-/// an invocation spelling and are left alone, avoiding confusion with lifetimes.
-fn mask_comments_and_strings(source: &str) -> Vec<u8> {
+/// Preserve byte offsets and newlines while blanking nested comments and literals.
+/// Character literals are recognized only when a closing apostrophe follows one
+/// character or one escape, so lifetime syntax remains visible as ordinary code.
+fn mask_comments_and_literals(source: &str) -> Vec<u8> {
     let bytes = source.as_bytes();
     let mut code = bytes.to_vec();
     let mut cursor = 0;
@@ -211,6 +316,13 @@ fn mask_comments_and_strings(source: &str) -> Vec<u8> {
             let end = quoted_string_end(bytes, cursor);
             blank(&mut code, cursor, end);
             cursor = end;
+        } else if bytes[cursor] == b'\'' {
+            if let Some(end) = character_literal_end(source, cursor) {
+                blank(&mut code, cursor, end);
+                cursor = end;
+            } else {
+                cursor += 1;
+            }
         } else {
             cursor += 1;
         }
@@ -291,6 +403,29 @@ fn quoted_string_end(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
+fn character_literal_end(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let content = start + 1;
+    let next = *bytes.get(content)?;
+
+    let closing = if next == b'\\' {
+        let escape = content + 1;
+        match *bytes.get(escape)? {
+            b'x' => escape.checked_add(3)?,
+            b'u' if bytes.get(escape + 1) == Some(&b'{') => {
+                let close_brace = bytes[escape + 2..].iter().position(|byte| *byte == b'}')?;
+                escape + 3 + close_brace
+            }
+            _ => escape + 1,
+        }
+    } else {
+        let character = source[content..].chars().next()?;
+        content + character.len_utf8()
+    };
+
+    (bytes.get(closing) == Some(&b'\'')).then_some(closing + 1)
+}
+
 #[test]
 fn the_explicit_panic_counter_covers_the_closed_family_and_ignores_non_code() {
     let source = r####"
@@ -307,11 +442,30 @@ assert_eq!(live, live);
 assert_ne!(live, other);
 debug_assert!(live);
 debug_assert_eq!(live, live);
+assert_matches!(live, Some(_));
+debug_assert_matches!(live, Some(_));
 debug_assert_ne!(live, other);
 // value.expect("comment") and panic!("comment")
 /* unreachable!("outer comment"); /* todo!("nested comment"); */ */
 const NORMAL: &str = "value.unwrap(); assert!(not_code);";
 const RAW: &str = r#"value.unwrap_err(); debug_assert!(not_code);"#;
+const QUOTE: char = '\"';
+const BYTE_QUOTE: u8 = b'\"';
+const APOSTROPHE: char = '\'';
+const HEX_QUOTE: char = '\x22';
+const UNICODE_QUOTE: char = '\u{22}';
+const UNICODE: char = 'λ';
+const LIFETIME: PhantomData<&'static str> = PhantomData;
+fn expect(value: Value) {}
+expect(value);
+Option::expect(value, "qualified expect");
+Result::expect_err(value, "qualified expect_err");
+Option::unwrap(value);
+Result::unwrap_err(value);
+assert_eq!(')', ')');
+debug_assert_eq!(b'(', b'(');
+after_literals.expect("live after literals");
+panic!("live after literals");
 "####;
 
     let invocations: Vec<_> = explicit_panic_sites(source)
@@ -334,7 +488,17 @@ const RAW: &str = r#"value.unwrap_err(); debug_assert!(not_code);"#;
             "assert_ne!(live, other)",
             "debug_assert!(live)",
             "debug_assert_eq!(live, live)",
+            "assert_matches!(live, Some(_))",
+            "debug_assert_matches!(live, Some(_))",
             "debug_assert_ne!(live, other)",
+            "expect(value, \"qualified expect\")",
+            "expect_err(value, \"qualified expect_err\")",
+            "unwrap(value)",
+            "unwrap_err(value)",
+            "assert_eq!(')', ')')",
+            "debug_assert_eq!(b'(', b'(')",
+            ".expect(\"live after literals\")",
+            "panic!(\"live after literals\")",
         ]
     );
 }
