@@ -51,11 +51,12 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
   ([the surface laws](language/surface-laws.md)). The normative message-prose standard
   for the one diagnostic renderer is
   [Diagnostic voice](implementation/diagnostic-voice.md).
-- Every complete `module` example in the language reference is compiler-gated: a
-  docs-corpus test extracts each `mw` fence to a correctly-pathed project and runs
-  it through check on the production path, so a documented example that stops
-  type-checking fails CI. Deliberately future examples use `text` fences. (The
-  `marrow-syntax` parse gate proves the same fences parse and format.)
+- Every complete `mw` source example in the current reference is production-gated:
+  a docs-corpus test extracts each module or moduleless script to a correctly
+  pathed project, then compiles and independently verifies it through `marrow
+  test`. A source diagnostic or artifact rejection fails CI. Contextual and
+  deliberately future examples use `text` fences. The `marrow-syntax` corpus
+  proves the same complete sources parse and format.
 - Linux and macOS source builds with the pinned Rust toolchain.
 
 ### Storage engine

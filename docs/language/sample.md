@@ -2,7 +2,7 @@
 
 This shelf module combines resources, durable paths, typed identities,
 transactions, keyed children, presence reads, and index traversal in one
-checkable program.
+compiler- and verifier-accepted program.
 
 ```mw
 module shelf::sample
@@ -42,29 +42,28 @@ pub fn add(id: Id(^books), title: string, author: string, shelf: string, changed
 }
 
 pub fn moveToShelf(id: Id(^books), shelf: string, changedAt: instant): bool {
-    if const currentVersion = ^books[id].currentVersion {
-        if const title = ^books[id].title {
-            transaction {
+    transaction {
+        if const currentVersion = ^books[id].currentVersion {
+            if const title = ^books[id].title {
                 const version: int = currentVersion + 1
                 ^books[id].shelf = shelf
                 ^books[id].currentVersion = version
                 ^books[id].versions[version].title = title
                 ^books[id].versions[version].shelf = shelf
                 ^books[id].versions[version].changedAt = changedAt
+                return true
             }
-            return true
         }
+        return false
     }
-    return false
 }
 
 pub fn addNote(id: Id(^books), noteId: string, text: string): bool {
-    if not exists(^books[id]) { return false }
-
     transaction {
+        if not exists(^books[id]) { return false }
         ^books[id].notes[noteId].text = text
+        return true
     }
-    return true
 }
 
 pub fn remove(id: Id(^books)) {

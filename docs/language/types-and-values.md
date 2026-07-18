@@ -589,7 +589,7 @@ A struct value is built with a named-only literal that provides every field
 exactly once; the field arguments may appear in any order and are evaluated in
 field declaration order:
 
-```mw
+```text
 const p = Point(x: 3, y: 4)
 
 const q = Point(y: 4, x: 3)
@@ -660,7 +660,7 @@ explicit `Name<Args>` construction form. The type arguments are inferred from th
 field or payload values, so every parameter must appear in a value the construction
 supplies:
 
-```mw
+```text
 const p = Pair(first: 7, second: "hello") // Pair<int, string>
 
 const b = Box::full(value: 9) // Box<int>

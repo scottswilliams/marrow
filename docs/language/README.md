@@ -33,12 +33,11 @@ pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
 }
 
 pub fn complete(id: Id(^tasks)): bool {
-    if not exists(^tasks[id]) { return false }
-
     transaction {
+        if not exists(^tasks[id]) { return false }
         ^tasks[id].done = true
+        return true
     }
-    return true
 }
 ```
 
@@ -78,7 +77,8 @@ The pages are arranged from source text to durable behavior:
 - [The surface laws](surface-laws.md) state the closed sigil economy, the grep
   contract, and the no-synonym law.
 - [Idioms](idioms.md) describes how idiomatic Marrow is written.
-- [Reference sample](sample.md) is a larger checked and executed module.
+- [Reference sample](sample.md) is a larger compiled and independently verified
+  module.
 
 ## Core Terms
 

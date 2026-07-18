@@ -62,7 +62,8 @@ Plans, research reports, issue discussions, and old proposals are not language
 authority. When documentation and reachable behavior disagree, that mismatch
 is a defect to resolve in the reference, tests, or code.
 
-Every `mw` code fence in current documentation is a complete module checked by
-the production checker. Short syntax fragments use `text` or `ebnf` fences so
-they cannot be mistaken for verified programs. Future pages contain no `mw`
-fences because unimplemented syntax is not a reference.
+Every `mw` code fence in current documentation is a complete source file compiled
+and independently verified through the production path. A complete file may
+declare a module or be a moduleless script. Short syntax fragments use `text` or
+`ebnf` fences so they cannot be mistaken for verified programs. Future pages
+contain no `mw` fences because unimplemented syntax is not a reference.
