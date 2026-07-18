@@ -91,6 +91,34 @@ const IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
+/// A declaration-only agreement sibling for the nominal-field managed-index
+/// boundary. It is intentionally separate from [`SCHEMA`] and [`IDS`]: nominal-root
+/// operations remain parked, while checker admission must still imply that the
+/// independent verifier accepts the declaration graph.
+const NOMINAL_INDEX_SCHEMA: &str = r#"type Rank: int in 0..=100
+
+resource Book {
+    required title: string
+    rank: Rank
+}
+
+store ^books[id: int]: Book {
+    index byRank[rank, id]
+}
+"#;
+
+const NOMINAL_INDEX_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.rank 10101010101010101010101010101010\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id index books.byRank 70707070707070707070707070707070\n\
+     high-water 0\n\
+     end\n";
+
 /// The pipeline verdict for one composition, at the stage it first stops.
 enum Stage {
     /// The checker rejected the source with this typed code.
@@ -485,6 +513,26 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
         checker_refused, 1,
         "expected exactly the deferred group-leaf-through-identity refusal",
     );
+}
+
+#[test]
+fn nominal_field_index_admission_implies_independent_verification() {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let project = marrow_project::capture(
+        &manifest,
+        vec![marrow_project::CapturedFile::new(
+            "src/main.mw".to_string(),
+            NOMINAL_INDEX_SCHEMA.as_bytes().to_vec(),
+        )],
+        Some(NOMINAL_INDEX_IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&project)
+        .expect("the checker admits the nominal-field index declaration");
+    let image = marrow_verify::verify(&compiled.image.bytes)
+        .expect("the independent verifier admits the checker-accepted declaration");
+    assert_eq!(image.indexes().len(), 1, "the declaration seals one index");
 }
 
 /// The correct-rollback journey, locking the invocation-boundary isolation law: three

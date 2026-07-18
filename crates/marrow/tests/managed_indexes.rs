@@ -53,6 +53,40 @@ const INDEXED_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
+/// A nominal field remains a distinct source type but erases to `int` in the
+/// durable stored shape. The same erased scalar must therefore admit and type the
+/// managed-index projection without introducing nominal identity into the image.
+const NOMINAL_INDEX_SOURCE: &str = r#"type Rank: int in 0..=100
+
+resource Book {
+    required title: string
+    rank: Rank
+}
+
+store ^books[id: int]: Book {
+    index byRank[rank, id]
+}
+
+pub fn label(): string {
+    return "books"
+}
+"#;
+
+/// The complete ledger for [`NOMINAL_INDEX_SOURCE`]. The nominal itself mints no
+/// durable anchor; its field, root, key, and managed index retain their ordinary
+/// identities.
+const NOMINAL_INDEX_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Book.rank 10101010101010101010101010101010\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id index books.byRank 70707070707070707070707070707070\n\
+     high-water 0\n\
+     end\n";
+
 fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage, String> {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -134,6 +168,47 @@ fn the_verifier_resolves_each_index_projection_to_record_and_key_positions() {
     );
     // byIsbn projects only the `isbn` field (a unique index omits the identity suffix).
     assert_eq!(indexes[1].projection(), &[SealedIndexComponent::Field(2)]);
+}
+
+#[test]
+fn a_nominal_field_managed_index_projects_its_erased_integer_shape() {
+    let image = verify_source(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS)
+        .expect("a nominal-field managed index compiles and independently verifies");
+    let indexes = image.indexes();
+    assert_eq!(indexes.len(), 1, "the nominal index seals exactly once");
+    assert_eq!(indexes[0].id(), rep(0x70));
+    assert_eq!(
+        indexes[0].components(),
+        &[
+            DurableIndexComponent::Field(rep(0x10)),
+            DurableIndexComponent::Key(rep(0x0c)),
+        ],
+    );
+    assert_eq!(
+        indexes[0].projection(),
+        &[SealedIndexComponent::Field(1), SealedIndexComponent::Key(0)],
+    );
+
+    let contract = image.durable_contract();
+    let repeated = verify_source(NOMINAL_INDEX_SOURCE, NOMINAL_INDEX_IDS)
+        .expect("the nominal index verifies repeatedly")
+        .durable_contract();
+    assert_eq!(contract, repeated, "the durable contract stays stable");
+}
+
+#[test]
+fn a_nominal_field_root_operation_remains_parked() {
+    let source = format!(
+        "{NOMINAL_INDEX_SOURCE}\n\
+         pub fn present(id: int): bool {{\n\
+         \x20   return exists(^books[id])\n\
+         }}\n"
+    );
+    assert_eq!(
+        compile_codes(&source, NOMINAL_INDEX_IDS),
+        vec!["check.unsupported"],
+        "admitting the nominal index declaration does not make its root executable",
+    );
 }
 
 #[test]
@@ -342,6 +417,33 @@ fn an_index_repeating_a_projection_component_is_rejected() {
     // cell; each projection component appears at most once.
     let source = base_source("    index byShelf[shelf, shelf, id]\n");
     assert_eq!(compile_codes(&source, BASE_IDS), vec!["check.type"]);
+}
+
+#[test]
+fn a_duration_field_is_not_an_orderable_managed_index_component() {
+    let source = r#"resource Event {
+    required span: duration
+}
+
+store ^events[id: int]: Event {
+    index bySpan[span, id]
+}
+
+pub fn label(): string {
+    return "events"
+}
+"#;
+    let ids = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+         id product Event 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+         id field Event.span 10101010101010101010101010101010\n\
+         id root events 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+         id key events.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+         id index events.bySpan 70707070707070707070707070707070\n\
+         high-water 0\n\
+         end\n";
+    assert_eq!(compile_codes(source, ids), vec!["check.type"]);
 }
 
 #[test]

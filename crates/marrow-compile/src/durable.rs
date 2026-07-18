@@ -55,16 +55,21 @@ const APPLICATION_ANCHOR_PATH: &str = ".";
 const MAX_STORE_INDEXES: usize = 8;
 
 /// One top-level stored field as an index-projection candidate: its source name, its
-/// ledger id, and whether its stored value is an orderable durable-key scalar (the
-/// predicate a projected leaf must satisfy).
+/// ledger id, and the base scalar of its stored value when that value is an orderable
+/// durable-key scalar.
 struct IndexFieldLeaf {
     name: String,
     id: LedgerIdBytes,
-    orderable_key: bool,
-    /// The field's base key scalar when it is orderable — the projected component's
-    /// type the lowerer checks a source index-read operand against. `None` for a
-    /// non-orderable field (which is never an admitted component).
     scalar: Option<ScalarType>,
+}
+
+/// One admitted component of a managed-index projection. Its durable identity
+/// reference and lowerer-facing scalar travel together so admission cannot produce a
+/// component whose projection type is missing.
+#[derive(Clone, Copy)]
+struct ResolvedIndexComponent {
+    component: DurableIndexComponent,
+    scalar: ScalarType,
 }
 
 /// A resolved managed index: its image shape (for the durable identity), its source
@@ -88,22 +93,22 @@ pub(crate) struct DurableIndex {
     pub(crate) projection: Vec<ScalarType>,
 }
 
-/// Whether a durable field's stored value shape is an orderable durable-key scalar —
-/// the closed set an index component may project (int, string, bool, bytes, date,
-/// instant; a nominal erases to its base scalar). A dense struct, a closed enum, or
-/// any non-scalar value is not a durable key and cannot be indexed.
-fn is_orderable_key_value(value: &DurableValueShape) -> bool {
-    matches!(
-        value,
-        DurableValueShape::Scalar(
-            Scalar::Int
-                | Scalar::Text
-                | Scalar::Bool
-                | Scalar::Bytes
-                | Scalar::Date
-                | Scalar::Instant
-        )
-    )
+/// The compiler scalar carried by an orderable durable-key stored shape. This stored
+/// shape is the sole index-eligibility classifier: a nominal has already erased to
+/// `int`, while a dense struct, closed enum, duration, or other non-key value returns
+/// `None`.
+fn orderable_key_scalar(value: &DurableValueShape) -> Option<ScalarType> {
+    match value {
+        DurableValueShape::Scalar(Scalar::Int) => Some(ScalarType::Int),
+        DurableValueShape::Scalar(Scalar::Text) => Some(ScalarType::Text),
+        DurableValueShape::Scalar(Scalar::Bool) => Some(ScalarType::Bool),
+        DurableValueShape::Scalar(Scalar::Bytes) => Some(ScalarType::Bytes),
+        DurableValueShape::Scalar(Scalar::Date) => Some(ScalarType::Date),
+        DurableValueShape::Scalar(Scalar::Instant) => Some(ScalarType::Instant),
+        DurableValueShape::Scalar(Scalar::Duration)
+        | DurableValueShape::Struct(_)
+        | DurableValueShape::Enum { .. } => None,
+    }
 }
 
 /// One resolved durable field site.
@@ -480,12 +485,13 @@ fn build_one(
     // and value shape is read from it. An index admission violation is a precise
     // `check.type` diagnostic that also marks the graph incomplete, so a rejected
     // index discards the whole durable graph rather than emitting a partial one.
-    let key_entries: Vec<(String, LedgerIdBytes)> = store
+    let key_entries: Vec<(String, LedgerIdBytes, ScalarType)> = store
         .root
         .keys
         .iter()
         .zip(&key_ids)
-        .map(|(key_param, id)| (key_param.name.clone(), *id))
+        .zip(&key_scalars)
+        .map(|((key_param, id), scalar)| (key_param.name.clone(), *id, *scalar))
         .collect();
     let field_entries: Vec<IndexFieldLeaf> = record
         .fields
@@ -499,18 +505,13 @@ fn build_one(
             IndexFieldLeaf {
                 name: field.name.clone(),
                 id,
-                orderable_key: is_orderable_key_value(value),
-                scalar: match field.ty {
-                    GArg::Scalar(scalar) => Some(scalar),
-                    _ => None,
-                },
+                scalar: orderable_key_scalar(value),
             }
         })
         .collect();
     let built_indexes = resolver.build_indexes(
         &store.root.root,
         &key_entries,
-        &key_scalars,
         &field_entries,
         &store.indexes,
     );
@@ -1071,8 +1072,7 @@ impl<'a> IdentityResolver<'a> {
     fn build_indexes(
         &mut self,
         root: &str,
-        keys: &[(String, LedgerIdBytes)],
-        key_scalars: &[ScalarType],
+        keys: &[(String, LedgerIdBytes, ScalarType)],
         fields: &[IndexFieldLeaf],
         indexes: &[IndexDecl],
     ) -> Vec<BuiltIndex> {
@@ -1100,7 +1100,7 @@ impl<'a> IdentityResolver<'a> {
             // The index name shares the root's source namespace with the identity keys,
             // the stored fields, and the other indexes; a collision has no unambiguous
             // address.
-            let name_collision = keys.iter().any(|(name, _)| name == &index.name)
+            let name_collision = keys.iter().any(|(name, _, _)| name == &index.name)
                 || fields.iter().any(|leaf| leaf.name == index.name)
                 || seen_names.contains(&index.name.as_str());
             if name_collision {
@@ -1126,27 +1126,13 @@ impl<'a> IdentityResolver<'a> {
                 continue;
             }
 
-            let Some(components) = self.resolve_index_components(index, keys, fields) else {
+            let Some(resolved) = self.resolve_index_components(index, keys, fields) else {
                 continue;
             };
-            // The projected components' scalar types, in order: a `Key` reads the root's
-            // key-column scalar at that key's declaration position, a `Field` its own base
-            // key scalar. The lowerer checks each source index-read operand against these.
-            let projection: Vec<ScalarType> = components
-                .iter()
-                .map(|component| match component {
-                    DurableIndexComponent::Key(id) => keys
-                        .iter()
-                        .position(|(_, key_id)| key_id == id)
-                        .map(|pos| key_scalars[pos])
-                        .expect("a resolved key component names a declared key"),
-                    DurableIndexComponent::Field(id) => fields
-                        .iter()
-                        .find(|leaf| leaf.id == *id)
-                        .and_then(|leaf| leaf.scalar)
-                        .expect("a resolved field component is an orderable scalar field"),
-                })
-                .collect();
+            // The image identity references and lowerer-facing scalar projection are
+            // two views of the same admitted components, in the same order.
+            let components = resolved.iter().map(|item| item.component).collect();
+            let projection = resolved.iter().map(|item| item.scalar).collect();
             let id = self.resolve(IdentityKind::Index, &format!("{root}.{}", index.name));
             shapes.push(BuiltIndex {
                 shape: DurableIndexShape {
@@ -1170,9 +1156,9 @@ impl<'a> IdentityResolver<'a> {
     fn resolve_index_components(
         &mut self,
         index: &IndexDecl,
-        keys: &[(String, LedgerIdBytes)],
+        keys: &[(String, LedgerIdBytes, ScalarType)],
         fields: &[IndexFieldLeaf],
-    ) -> Option<Vec<DurableIndexComponent>> {
+    ) -> Option<Vec<ResolvedIndexComponent>> {
         let mut components = Vec::with_capacity(index.args.len());
         let mut leading_key = false;
         let trailing_start = index.args.len().saturating_sub(keys.len());
@@ -1205,13 +1191,16 @@ impl<'a> IdentityResolver<'a> {
                 ok = false;
                 continue;
             }
-            if let Some((_, key_id)) = keys.iter().find(|(name, _)| name == arg) {
+            if let Some((_, key_id, scalar)) = keys.iter().find(|(name, _, _)| name == arg) {
                 if !index.unique && position < trailing_start {
                     leading_key = true;
                 }
-                components.push(DurableIndexComponent::Key(*key_id));
+                components.push(ResolvedIndexComponent {
+                    component: DurableIndexComponent::Key(*key_id),
+                    scalar: *scalar,
+                });
             } else if let Some(leaf) = fields.iter().find(|leaf| &leaf.name == arg) {
-                if !leaf.orderable_key {
+                let Some(scalar) = leaf.scalar else {
                     self.reject_index(
                         span,
                         format!(
@@ -1221,8 +1210,11 @@ impl<'a> IdentityResolver<'a> {
                     );
                     ok = false;
                     continue;
-                }
-                components.push(DurableIndexComponent::Field(leaf.id));
+                };
+                components.push(ResolvedIndexComponent {
+                    component: DurableIndexComponent::Field(leaf.id),
+                    scalar,
+                });
             } else {
                 self.reject_index(
                     span,
@@ -1242,10 +1234,13 @@ impl<'a> IdentityResolver<'a> {
         // suffix, in declaration order, with no identity key appearing earlier.
         if !index.unique {
             let ends_with_identity = index.args.len() >= keys.len()
-                && keys.iter().enumerate().all(|(offset, (_, key_id))| {
+                && keys.iter().enumerate().all(|(offset, (_, key_id, _))| {
                     matches!(
                         components.get(trailing_start + offset),
-                        Some(DurableIndexComponent::Key(id)) if *id == *key_id
+                        Some(ResolvedIndexComponent {
+                            component: DurableIndexComponent::Key(id),
+                            ..
+                        }) if *id == *key_id
                     )
                 });
             if leading_key || !ends_with_identity {

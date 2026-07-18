@@ -9,11 +9,12 @@
 //! the interval is carried by the guard instructions the compiler emits, not by
 //! an image type table. Two product kinds lower into image [`RecordTypeDef`]s,
 //! the single canonical product-leaf order owner: the optional `resource` (a record
-//! with required and sparse fields — scalar or closed-enum, no groups and no keyed
-//! children; only scalar fields when it backs a `store`) and any number of dense
-//! `struct` value types (every field required, non-durable, constructible and read
-//! by value). Value types are built declare-then-fill so a field may name any other
-//! value type regardless of order; the sole nesting restriction is acyclicity.
+//! with required and sparse scalar, nominal, dense-struct, or closed-enum fields plus
+//! materialized unkeyed groups) and any number of dense `struct` value types (every
+//! field required, non-durable, constructible and read by value). Keyed resource
+//! children belong to the durable graph rather than this record. Value types are built
+//! declare-then-fill so a field may name any other value type regardless of order; the
+//! sole nesting restriction is acyclicity.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -364,11 +365,10 @@ pub(crate) struct NominalInfo {
     pub(crate) supports: SupportSet,
 }
 
-/// One resolved record field, in declaration order. The field type is a bare value
-/// type. A resource field is a scalar (durable-storable) or a closed enum
-/// (`Option`/`Result`/a user `enum`) local value; a struct field may additionally be
-/// another struct or a nominal. Nesting is admitted behind the value-graph
-/// acyclicity proof.
+/// One resolved record field, in declaration order. A resource field is a scalar,
+/// nominal scalar, dense struct, or closed enum (`Option`/`Result`/a user `enum`);
+/// a struct field may additionally use a collection. Nesting is admitted behind the
+/// value-graph acyclicity proof.
 #[derive(Clone)]
 pub(crate) struct FieldInfo {
     pub(crate) name: String,
@@ -2397,11 +2397,11 @@ fn fill_records(
 
 /// Fill one reserved record (`registry.records[index]`) from its resource
 /// declaration: resolve each field against the full registry and fill both the
-/// registry info and the image record. A resource field is a scalar
-/// (durable-storable) or a closed enum value (`Option`/`Result`/a user `enum`) held
-/// locally; a nominal, struct, or unknown spelling is not an admitted field type. A
-/// group or keyed member, and a bad field type, are `check.unsupported` and skip
-/// only that member (the record keeps its other fields).
+/// registry info and the image record. A resource field is a scalar, nominal scalar,
+/// dense struct, or closed enum value (`Option`/`Result`/a user `enum`). A collection,
+/// keyed field, or unknown spelling is not admitted; an unkeyed group is materialized
+/// separately below. A bad member is `check.unsupported` and only that member is
+/// skipped (the record keeps its other fields).
 fn fill_record(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
