@@ -364,7 +364,7 @@ fn json_field(line: &str, key: &str) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
-/// The gate: every complete `mw` fence in the current reference compiles and
+/// The gate: every complete `mw` fence in current documentation compiles and
 /// independently verifies. A failure names the page, block, source kind, process
 /// status, and typed JSONL failure records.
 #[test]
@@ -372,7 +372,7 @@ fn every_documented_mw_fence_compiles_and_verifies() {
     let fences = documented_fences();
     assert!(
         fences.len() >= 60,
-        "expected the reference corpus, found {} complete source fences",
+        "expected the current documentation corpus, found {} complete source fences",
         fences.len()
     );
 
@@ -397,10 +397,8 @@ fn every_documented_mw_fence_compiles_and_verifies() {
     );
 }
 
-/// The gate is red-provable: a deliberately broken fence — a keyed scalar leaf,
-/// the historical `check.unsupported` shape that shipped silently before this
-/// gate — is caught, so a regression that reintroduces an unchecked fence cannot
-/// pass green.
+/// A keyed scalar leaf is rejected with a typed source diagnostic. This probe
+/// requires that diagnostic to make the documentation gate fail closed.
 #[test]
 fn a_source_rejected_fence_is_caught() {
     let broken = DocFence::new(
@@ -418,9 +416,9 @@ fn a_source_rejected_fence_is_caught() {
 }
 
 /// The gate must fail after a durable project's identity mint when the
-/// independent verifier rejects the compiler's image. This is the historical
-/// sample shape: a durable read precedes the transaction that makes the export
-/// an owner, so the final verified-path attempt is rejected with `image.flow`.
+/// independent verifier rejects the compiler's image. A durable read precedes
+/// the transaction that makes the export an owner, so the final verified-path
+/// attempt is rejected with `image.flow`.
 #[test]
 fn a_verifier_rejected_fence_is_caught() {
     let broken = DocFence::new(

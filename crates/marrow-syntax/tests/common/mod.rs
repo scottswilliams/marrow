@@ -1,7 +1,7 @@
 //! Shared helpers for the integration tests: one reader over the fenced `mw`
-//! code blocks in the language reference, so the lexer, parser, and formatter
-//! suites all filter the same source of documented examples, plus the reusable
-//! bounded [`oracle`] the source-bytes drivers adapt.
+//! code blocks in current documentation, so the lexer, parser, and formatter
+//! suites consume the same source inventory, plus the reusable bounded
+//! [`oracle`] the source-bytes drivers adapt.
 pub mod oracle;
 
 use std::path::Path;
