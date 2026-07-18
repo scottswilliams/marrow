@@ -256,6 +256,13 @@ fn derive_schema(image: &VerifiedImage) -> Option<(StoreSchema, Vec<SiteSpec>)> 
     // branch or in another group parks the root; a singleton (keyless) root parks; bounded
     // traversal over a composite-keyed layer parks separately. A parked shape stays parked
     // until its owner lands it.
+    // The ephemeral read kernel serves a single executable root. A project may declare
+    // more than one `store` root and seal/verify all of them; until the multi-root kernel
+    // dispatch lands, a multi-root image is honestly parked here rather than silently
+    // serving only its first root.
+    if image.roots().len() > 1 {
+        return None;
+    }
     let root = image.roots().first()?;
     // A root with a group nested below its direct members (or a nested/composite-keyed shape
     // the flat kernel cannot serve) is not yet executable (`has_extras`); a root-level group,

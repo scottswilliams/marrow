@@ -1,7 +1,8 @@
 //! The durable graph registry (design §B/§C).
 //!
-//! The durable graph admits at most one `store` root over the project's single
-//! resource record. A root is a *singleton* (`store ^root: Record`, no key) or a
+//! The durable graph admits one or more `store` roots, each over its own resource
+//! record and in declaration order (a root's DURABLE-table index is its RootId). A root
+//! is a *singleton* (`store ^root: Record`, no key) or a
 //! *keyed tuple* (`store ^root(k1: K1, k2: K2): Record`, one or more ordered
 //! orderable durable-key columns). A resource's durable shape is a **member tree**:
 //! its top-level stored fields, plus any static `group` field-path namespaces and
@@ -248,28 +249,49 @@ impl DurableRoot {
     }
 }
 
-/// The durable registry: zero or one root. `executable` is populated only for the
-/// flat keyed root the kernel can serve; `declared_root` names any
-/// admitted root (singleton, single-column, composite, or one bearing groups or
-/// branches) so a durable operation over a not-yet-executable shape reports
-/// precisely rather than as "no store".
+/// The durable registry: every admitted `store` root, in declaration order. `roots`
+/// holds the flat keyed roots the kernel can serve, addressed by name; `declared_roots`
+/// names every admitted root (executable or parked — a singleton, a composite, or one
+/// bearing groups or branches), so a durable operation over a not-yet-executable shape
+/// reports precisely rather than as "no store". A root's index in the draft's DURABLE
+/// table is its declaration order (RootId), so the two lists stay declaration-ordered.
 #[derive(Default)]
 pub(crate) struct DurableRegistry {
-    executable: Option<DurableRoot>,
-    declared_root: Option<String>,
+    roots: Vec<DurableRoot>,
+    declared_roots: Vec<String>,
 }
 
 impl DurableRegistry {
-    /// The executable flat keyed root, if the project declares one.
-    pub(crate) fn root(&self) -> Option<&DurableRoot> {
-        self.executable.as_ref()
+    /// The executable flat keyed root declared with the placement name `name`, if any —
+    /// the owner an entry address `^name[…]` resolves against.
+    pub(crate) fn root_by_name(&self, name: &str) -> Option<&DurableRoot> {
+        self.roots.iter().find(|root| root.name == name)
+    }
+
+    /// The executable flat keyed root whose backing resource is `resource`, if any — the
+    /// owner of a branch constructor `Resource.branch(…)`. Each store binds one resource,
+    /// so at most one executable root matches a resource name.
+    pub(crate) fn root_by_resource(&self, resource: &str) -> Option<&DurableRoot> {
+        self.roots.iter().find(|root| root.resource == resource)
+    }
+
+    /// Every executable flat keyed root, in declaration order.
+    pub(crate) fn roots(&self) -> &[DurableRoot] {
+        &self.roots
+    }
+
+    /// The executable flat keyed root whose whole-payload entry site is `entry_site`, if
+    /// any — the owner a source-local root `place` resolves its fields against. Each root
+    /// has a distinct entry site, so at most one matches.
+    pub(crate) fn root_by_entry_site(&self, entry_site: u16) -> Option<&DurableRoot> {
+        self.roots.iter().find(|root| root.entry_site == entry_site)
     }
 
     /// The executable branch whose materialized entry record is the image type `ty`, if
     /// any — the owner that resolves a field of a materialized branch entry value read
-    /// through `if const n = ^root(k)….branch(bk)`. Searches the whole recursive branch
-    /// tree, so a nested branch's record resolves to its own branch; each branch has its
-    /// own materialized record type, so at most one branch matches.
+    /// through `if const n = ^root(k)….branch(bk)`. Searches every executable root's whole
+    /// recursive branch tree; each branch has its own materialized record type, so at most
+    /// one branch matches.
     pub(crate) fn branch_by_record(&self, ty: marrow_image::TypeId) -> Option<&DurableBranch> {
         fn find(branches: &[DurableBranch], ty: marrow_image::TypeId) -> Option<&DurableBranch> {
             for branch in branches {
@@ -282,31 +304,38 @@ impl DurableRegistry {
             }
             None
         }
-        find(&self.executable.as_ref()?.branches, ty)
+        self.roots.iter().find_map(|root| find(&root.branches, ty))
     }
 
-    /// The name of a declared root the kernel cannot yet serve (a singleton root, a
-    /// resource declaring a nominal-typed field, or a group nested in a branch or another
-    /// group). `Some` exactly when a root is declared but not executable, so the lowerer can
-    /// distinguish a not-yet-executable operation from an operation with no store at all.
-    pub(crate) fn not_yet_executable_root(&self) -> Option<&str> {
-        match (&self.executable, &self.declared_root) {
-            (None, Some(name)) => Some(name),
-            _ => None,
+    /// The name of a declared root of placement `name` that the kernel cannot yet serve (a
+    /// singleton root, a resource declaring a nominal-typed field, or a group nested in a
+    /// branch or another group). `Some` exactly when a root of that name is declared but
+    /// not executable, so the lowerer can distinguish a not-yet-executable operation over a
+    /// named root from an unknown name.
+    pub(crate) fn not_yet_executable_root_named(&self, name: &str) -> Option<&str> {
+        if self.root_by_name(name).is_some() {
+            return None;
         }
+        self.declared_roots
+            .iter()
+            .find(|declared| declared.as_str() == name)
+            .map(String::as_str)
     }
 
-    /// Build the registry from the project's store declarations, adding the one
-    /// admitted root and its complete ledger identity block to the draft. More
-    /// than one store, an index, a missing or mismatched resource, a key column
-    /// outside the closed orderable durable-key set, or a key tuple past the
-    /// column bound are rejected — and so is a durable graph whose identity is
-    /// incomplete: every durable declaration (the application, the root placement,
-    /// its product, each key column, each stored field, each group namespace, and
-    /// each nested branch placement and key column) must have a live row in the
-    /// committed `marrow.ids` ledger, or the declaration fails precisely with
-    /// `check.durable_identity`. The compiler only *reads* the ledger; minting
-    /// lives in the `marrow run` convenience action (and in the accepted apply
+    /// Build the registry from the project's store declarations, adding each admitted
+    /// root and its complete ledger identity block to the draft in declaration order (so
+    /// a root's DURABLE-table index is its RootId). A store whose placement name repeats
+    /// an earlier one is a precise `check.type` rejection and does not enter the draft;
+    /// an index, a missing or mismatched resource, a key column outside the closed
+    /// orderable durable-key set, or a key tuple past the column bound reject that one
+    /// store — and so does a durable graph whose identity is incomplete: every durable
+    /// declaration (the application, the root placement, its product, each key column,
+    /// each stored field, each group namespace, and each nested branch placement and key
+    /// column) must have a live row in the committed `marrow.ids` ledger, or the
+    /// declaration fails precisely with `check.durable_identity`. A store that fails
+    /// validation contributes only its diagnostic; the other stores' roots stand, so one
+    /// store's gap never erases the whole registry. The compiler only *reads* the ledger;
+    /// minting lives in the `marrow run` convenience action (and in the accepted apply
     /// action when it lands).
     pub(crate) fn build(
         draft: &mut ImageDraft,
@@ -316,307 +345,332 @@ impl DurableRegistry {
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
-        if stores.len() > 1 {
-            for (file, store) in &stores[1..] {
-                diagnostics.push(unsupported(
+        let mut registry = Self::default();
+        for (file, store) in stores {
+            // A repeated placement name has no unambiguous address and cannot key a second
+            // DURABLE-table row; reject it and keep the first declaration.
+            if registry.declared_roots.contains(&store.root.root) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
                     file,
-                    store.span,
-                    "more than one store root per project",
+                    store.root.span,
+                    format!(
+                        "store root `^{}` is declared more than once; each store root has a \
+                         distinct name",
+                        store.root.root
+                    ),
                 ));
+                continue;
+            }
+            if let Some(built) =
+                build_one(draft, records, resources, file, store, ledger, diagnostics)
+            {
+                registry.declared_roots.push(built.name);
+                if let Some(root) = built.executable {
+                    registry.roots.push(root);
+                }
             }
         }
-        let Some((file, store)) = stores.first() else {
-            return Self::default();
-        };
+        registry
+    }
+}
 
-        if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
-            diagnostics.push(unsupported(
-                file,
-                store.root.span,
-                "a store key with more than eight columns",
-            ));
-            return Self::default();
-        }
-        // Resolve each root key column's scalar in declared tuple order. A singleton
-        // root has no columns.
-        let Some(key_scalars) = resolve_key_scalars(
+/// One store declaration's build outcome: the placement name that entered the draft and,
+/// when the root is a flat kernel-serviceable shape, its executable descriptor.
+struct BuiltRoot {
+    name: String,
+    executable: Option<DurableRoot>,
+}
+
+/// Resolve, validate, and commit one `store` declaration into the draft, returning its
+/// build outcome or `None` when the store fails validation (its diagnostic is pushed and
+/// nothing that forms a root — no application identity, root, or site — is committed for
+/// it, so a failing store cannot corrupt an already-appended root). The heavy resolution
+/// runs against a local [`IdentityResolver`] and the completeness gate below precedes
+/// every root/site/identity commit, so the draft is touched only once the store is known
+/// admissible.
+fn build_one(
+    draft: &mut ImageDraft,
+    records: &TypeRegistry,
+    resources: &[(String, &ResourceDecl)],
+    file: &str,
+    store: &StoreDecl,
+    ledger: Option<&IdentityLedger>,
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) -> Option<BuiltRoot> {
+    if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
+        diagnostics.push(unsupported(
             file,
             store.root.span,
-            &store.root.keys,
-            records,
-            diagnostics,
-        ) else {
-            return Self::default();
-        };
-        let Some(record) = records.by_name(&store.resource) else {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                file,
-                store.span,
-                format!("`{}` is not a resource in this project", store.resource),
-            ));
-            return Self::default();
-        };
-        let Some((_, resource)) = resources
-            .iter()
-            .find(|(_, decl)| decl.name == store.resource)
-        else {
-            return Self::default();
-        };
+            "a store key with more than eight columns",
+        ));
+        return None;
+    }
+    // Resolve each root key column's scalar in declared tuple order. A singleton
+    // root has no columns.
+    let key_scalars = resolve_key_scalars(
+        file,
+        store.root.span,
+        &store.root.keys,
+        records,
+        diagnostics,
+    )?;
+    let Some(record) = records.by_name(&store.resource) else {
+        diagnostics.push(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            file,
+            store.span,
+            format!("`{}` is not a resource in this project", store.resource),
+        ));
+        return None;
+    };
+    let (_, resource) = resources
+        .iter()
+        .find(|(_, decl)| decl.name == store.resource)?;
 
-        // Resolve the durable graph's ledger identities. The application, the root
-        // placement, its product, and each root key column anchor first; then the
-        // resource's member tree (top-level fields, groups, and branches) anchors as
-        // it is walked. A missing or retired anchor is a precise typed diagnostic
-        // carrying the `(kind, path)` gap the mint action consumes.
-        let mut resolver = IdentityResolver::new(file, store.span, ledger, diagnostics);
-        let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
-        let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
-        let product = resolver.resolve(IdentityKind::Product, &store.resource);
-        let key_ids: Vec<LedgerIdBytes> = store
-            .root
-            .keys
-            .iter()
-            .map(|key_param| {
-                resolver.resolve(
-                    IdentityKind::Key,
-                    &format!("{}.{}", store.root.root, key_param.name),
-                )
-            })
-            .collect();
-
-        // The resource's member tree, in canonical order: its top-level fields
-        // (aligned with the materialized record), then its static `group`
-        // namespaces, then its keyed `branch` placements — each group and branch
-        // recursively holding its own members. A top-level field's value shape is
-        // drawn from the closed acyclic durable value set (a nominal scalar, a dense
-        // struct, a closed enum, or an `Option` of one), the field anchoring the
-        // ledger id while nested product leaves are shape bytes and each durable-
-        // reachable enum contributes its own sum/member identities. `has_extras`
-        // records whether the resource declares any group or branch.
-        let mut members: Vec<DurableMemberDef> = record
-            .fields
-            .iter()
-            .map(|field| DurableMemberDef::Field {
-                id: resolver.resolve(
-                    IdentityKind::Field,
-                    &format!("{}.{}", store.resource, field.name),
-                ),
-                required: field.required,
-                value: resolver.build_value_shape(records, field.ty, 1),
-            })
-            .collect();
-        let groups_and_branches =
-            resolver.build_extras(draft, records, &resource.members, &store.resource);
-
-        // Resolve the root's managed indexes before appending the group/branch members
-        // (an index projects only the root's identity keys and top-level fields, so it
-        // resolves against exactly those leaves). `members[0..record.fields.len()]` is
-        // the top-level field member set, in record order, so each field's ledger id
-        // and value shape is read from it. An index admission violation is a precise
-        // `check.type` diagnostic that also marks the graph incomplete, so a rejected
-        // index discards the whole durable graph rather than emitting a partial one.
-        let key_entries: Vec<(String, LedgerIdBytes)> = store
-            .root
-            .keys
-            .iter()
-            .zip(&key_ids)
-            .map(|(key_param, id)| (key_param.name.clone(), *id))
-            .collect();
-        let field_entries: Vec<IndexFieldLeaf> = record
-            .fields
-            .iter()
-            .zip(&members)
-            .map(|(field, member)| {
-                let (id, value) = match member {
-                    DurableMemberDef::Field { id, value, .. } => (*id, value),
-                    _ => unreachable!("the first members are the record's top-level fields"),
-                };
-                IndexFieldLeaf {
-                    name: field.name.clone(),
-                    id,
-                    orderable_key: is_orderable_key_value(value),
-                    scalar: match field.ty {
-                        GArg::Scalar(scalar) => Some(scalar),
-                        _ => None,
-                    },
-                }
-            })
-            .collect();
-        let built_indexes = resolver.build_indexes(
-            &store.root.root,
-            &key_entries,
-            &key_scalars,
-            &field_entries,
-            &store.indexes,
-        );
-
-        members.extend(groups_and_branches);
-
-        // Every identity must resolve before the graph enters the image; a single
-        // gap already reported precisely leaves the durable graph absent, so an
-        // operation over it is not additionally mislabelled "not yet executable"
-        // (the identity gap is the diagnosis, whatever the shape).
-        if !resolver.complete {
-            return Self::default();
-        }
-        draft.set_application_identity(application);
-        let key_columns: Vec<KeyColumn> = key_scalars
-            .iter()
-            .zip(&key_ids)
-            .map(|(scalar, id)| KeyColumn {
-                scalar: scalar.image(),
-                id: *id,
-            })
-            .collect();
-
-        // Emit the complete operation-site set for the whole durable graph now: one
-        // whole-payload site per keyed placement (this root and every nested
-        // `branch`) and one field-leaf site per stored field (top-level, group-scoped,
-        // and branch-scoped, including a widened-field leaf). A site names its target
-        // node by the node's semantic path — the chain of kind-tagged ledger ids from
-        // the application down — so it follows the graph's ledger ids. The verifier
-        // re-derives every site from its own reconstructed node set, so this path is a
-        // producer claim, not a trusted address: a nested site completes its identity
-        // and seals even though the flat-root kernel cannot execute over it yet. Sites
-        // are emitted from the graph, not per operation, so the site table scales with
-        // the graph rather than with operation count. The flat executable root's entry
-        // and top-level-field sites are captured here for the lowerer.
-        let root_steps = vec![
-            SemanticStep::new(SemanticStepKind::Application, application),
-            SemanticStep::new(SemanticStepKind::Placement, placement),
-        ];
-        let entry_site = draft
-            .add_site(SiteDef::whole_payload(SemanticPath::from_steps(
-                root_steps.clone(),
-            )))
-            .index();
-        let (top_field_sites, top_groups, top_branches) =
-            emit_root_member_sites(draft, &root_steps, &members);
-        // One read site per managed index: a nonunique index is a progressive-prefix
-        // scan, a unique index a complete-key exact lookup. There is deliberately no
-        // index-write site — maintenance is compiler-owned. Every index site seals as
-        // parked (an index node is never a flat-executable node); runtime traversal and
-        // lookup land at E05.
-        let mut lowered_indexes: Vec<DurableIndex> = Vec::with_capacity(built_indexes.len());
-        for built in &built_indexes {
-            let mut steps = root_steps.clone();
-            steps.push(SemanticStep::new(SemanticStepKind::Index, built.shape.id));
-            let path = SemanticPath::from_steps(steps);
-            let site = if built.shape.unique {
-                SiteDef::index_lookup(path)
-            } else {
-                SiteDef::index_scan(path)
-            };
-            let site_index = draft.add_site(site).index();
-            lowered_indexes.push(DurableIndex {
-                name: built.name.clone(),
-                unique: built.shape.unique,
-                site: site_index,
-                projection: built.projection.clone(),
-            });
-        }
-        let indexes: Vec<DurableIndexShape> =
-            built_indexes.into_iter().map(|built| built.shape).collect();
-
-        // Decide executability and capture the executable branch descriptors while the
-        // member tree (which carries each branch's materialized record type) is still in
-        // hand — it moves into the `RootDef` below.
-        //
-        // Executable durable operations exist for the flat keyed root whose top-level fields
-        // are each a scalar or a widened composite (a dense struct, or a closed
-        // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
-        // codec), together with its root-level groups of such fields and its field-only keyed
-        // branches nested to any depth — the shape the kernel serves. A singleton (keyless)
-        // root, a nominal field, or a group nested in a branch or another group parks
-        // (severed until its lane lands): it carries its identity and full site set, but the
-        // lowerer reports any operation over it as not yet executable. Composite root keys and
-        // keyed branches (including composite-keyed) are executable for whole/field sites; a
-        // root-level group no longer parks, mirroring the verifier's independent
-        // `member_flat_at_root`.
-        // `record.fields` (the registry record) carries only the top-level value fields;
-        // its unkeyed groups live in `record.groups`, so a group value never appears here.
-        let all_fields_executable = record
-            .fields
-            .iter()
-            .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)));
-        // A keyed root of executable fields with root-level scalar/widened-field groups and
-        // only field-only branches is executable, at any key arity (one or more columns); a
-        // singleton root (no key columns) parks. `member_flat_at_root` admits a root-level
-        // group of storable-value fields while `member_keeps_root_flat` (the branch-member
-        // predicate) keeps a group parked below the root, so a group in a branch or another
-        // group never makes the root flat — mirroring the verifier's `member_flat_at_root`.
-        let keyed = !key_scalars.is_empty();
-        let members_flat = members.iter().all(member_flat_at_root);
-        let executable = keyed && all_fields_executable && members_flat;
-        let (branches, groups) = if executable {
-            (
-                build_executable_branches(records, resource, &top_branches),
-                build_executable_groups(&record.groups, &top_groups),
+    // Resolve the durable graph's ledger identities. The application, the root
+    // placement, its product, and each root key column anchor first; then the
+    // resource's member tree (top-level fields, groups, and branches) anchors as
+    // it is walked. A missing or retired anchor is a precise typed diagnostic
+    // carrying the `(kind, path)` gap the mint action consumes.
+    let mut resolver = IdentityResolver::new(file, store.span, ledger, diagnostics);
+    let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
+    let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
+    let product = resolver.resolve(IdentityKind::Product, &store.resource);
+    let key_ids: Vec<LedgerIdBytes> = store
+        .root
+        .keys
+        .iter()
+        .map(|key_param| {
+            resolver.resolve(
+                IdentityKind::Key,
+                &format!("{}.{}", store.root.root, key_param.name),
             )
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        })
+        .collect();
 
-        let root_name = draft.intern_string(&store.root.root);
-        draft.add_root(RootDef {
-            name: root_name,
-            keys: key_columns,
-            record: record.type_id,
-            identity: RootIdentity {
-                placement,
-                product,
-                members,
-                indexes,
-            },
-        });
+    // The resource's member tree, in canonical order: its top-level fields
+    // (aligned with the materialized record), then its static `group`
+    // namespaces, then its keyed `branch` placements — each group and branch
+    // recursively holding its own members. A top-level field's value shape is
+    // drawn from the closed acyclic durable value set (a nominal scalar, a dense
+    // struct, a closed enum, or an `Option` of one), the field anchoring the
+    // ledger id while nested product leaves are shape bytes and each durable-
+    // reachable enum contributes its own sum/member identities. `has_extras`
+    // records whether the resource declares any group or branch.
+    let mut members: Vec<DurableMemberDef> = record
+        .fields
+        .iter()
+        .map(|field| DurableMemberDef::Field {
+            id: resolver.resolve(
+                IdentityKind::Field,
+                &format!("{}.{}", store.resource, field.name),
+            ),
+            required: field.required,
+            value: resolver.build_value_shape(records, field.ty, 1),
+        })
+        .collect();
+    let groups_and_branches =
+        resolver.build_extras(draft, records, &resource.members, &store.resource);
 
-        if !executable {
-            return Self::declared(&store.root.root);
-        }
-        // A flat root's top-level fields map positionally to `top_field_sites`, so
-        // `top_field_sites[i]` is the field-leaf site of `record.fields[i]` (both in
-        // member/record order). Each field carries its resolved value type (a scalar or a
-        // widened composite), from which the lowerer builds the read/written value type.
-        let fields = record
-            .fields
-            .iter()
-            .enumerate()
-            .map(|(index, field)| DurableField {
+    // Resolve the root's managed indexes before appending the group/branch members
+    // (an index projects only the root's identity keys and top-level fields, so it
+    // resolves against exactly those leaves). `members[0..record.fields.len()]` is
+    // the top-level field member set, in record order, so each field's ledger id
+    // and value shape is read from it. An index admission violation is a precise
+    // `check.type` diagnostic that also marks the graph incomplete, so a rejected
+    // index discards the whole durable graph rather than emitting a partial one.
+    let key_entries: Vec<(String, LedgerIdBytes)> = store
+        .root
+        .keys
+        .iter()
+        .zip(&key_ids)
+        .map(|(key_param, id)| (key_param.name.clone(), *id))
+        .collect();
+    let field_entries: Vec<IndexFieldLeaf> = record
+        .fields
+        .iter()
+        .zip(&members)
+        .map(|(field, member)| {
+            let (id, value) = match member {
+                DurableMemberDef::Field { id, value, .. } => (*id, value),
+                _ => unreachable!("the first members are the record's top-level fields"),
+            };
+            IndexFieldLeaf {
                 name: field.name.clone(),
-                site: top_field_sites[index],
-                ty: field.ty,
-                required: field.required,
-            })
-            .collect();
+                id,
+                orderable_key: is_orderable_key_value(value),
+                scalar: match field.ty {
+                    GArg::Scalar(scalar) => Some(scalar),
+                    _ => None,
+                },
+            }
+        })
+        .collect();
+    let built_indexes = resolver.build_indexes(
+        &store.root.root,
+        &key_entries,
+        &key_scalars,
+        &field_entries,
+        &store.indexes,
+    );
 
-        Self {
-            executable: Some(DurableRoot {
-                name: store.root.root.clone(),
-                resource: store.resource.clone(),
-                key: key_scalars.clone(),
-                record: record.type_id,
-                entry_site,
-                fields,
-                groups,
-                branches,
-                indexes: lowered_indexes,
-            }),
-            declared_root: Some(store.root.root.clone()),
-        }
+    members.extend(groups_and_branches);
+
+    // Every identity must resolve before the graph enters the image; a single
+    // gap already reported precisely leaves the durable graph absent, so an
+    // operation over it is not additionally mislabelled "not yet executable"
+    // (the identity gap is the diagnosis, whatever the shape).
+    if !resolver.complete {
+        return None;
     }
+    draft.set_application_identity(application);
+    let key_columns: Vec<KeyColumn> = key_scalars
+        .iter()
+        .zip(&key_ids)
+        .map(|(scalar, id)| KeyColumn {
+            scalar: scalar.image(),
+            id: *id,
+        })
+        .collect();
 
-    /// A registry recording that a root of the named placement is declared, in the
-    /// image with a complete identity, but not executable — the kernel does not serve
-    /// its shape (a singleton/keyless root, a resource with a nominal-typed field, or a
-    /// group nested in a branch or another group). Used only after the root has entered the
-    /// draft.
-    fn declared(root: &str) -> Self {
-        Self {
+    // Emit the complete operation-site set for the whole durable graph now: one
+    // whole-payload site per keyed placement (this root and every nested
+    // `branch`) and one field-leaf site per stored field (top-level, group-scoped,
+    // and branch-scoped, including a widened-field leaf). A site names its target
+    // node by the node's semantic path — the chain of kind-tagged ledger ids from
+    // the application down — so it follows the graph's ledger ids. The verifier
+    // re-derives every site from its own reconstructed node set, so this path is a
+    // producer claim, not a trusted address: a nested site completes its identity
+    // and seals even though the flat-root kernel cannot execute over it yet. Sites
+    // are emitted from the graph, not per operation, so the site table scales with
+    // the graph rather than with operation count. The flat executable root's entry
+    // and top-level-field sites are captured here for the lowerer.
+    let root_steps = vec![
+        SemanticStep::new(SemanticStepKind::Application, application),
+        SemanticStep::new(SemanticStepKind::Placement, placement),
+    ];
+    let entry_site = draft
+        .add_site(SiteDef::whole_payload(SemanticPath::from_steps(
+            root_steps.clone(),
+        )))
+        .index();
+    let (top_field_sites, top_groups, top_branches) =
+        emit_root_member_sites(draft, &root_steps, &members);
+    // One read site per managed index: a nonunique index is a progressive-prefix
+    // scan, a unique index a complete-key exact lookup. There is deliberately no
+    // index-write site — maintenance is compiler-owned. Every index site seals as
+    // parked (an index node is never a flat-executable node); runtime traversal and
+    // lookup land at E05.
+    let mut lowered_indexes: Vec<DurableIndex> = Vec::with_capacity(built_indexes.len());
+    for built in &built_indexes {
+        let mut steps = root_steps.clone();
+        steps.push(SemanticStep::new(SemanticStepKind::Index, built.shape.id));
+        let path = SemanticPath::from_steps(steps);
+        let site = if built.shape.unique {
+            SiteDef::index_lookup(path)
+        } else {
+            SiteDef::index_scan(path)
+        };
+        let site_index = draft.add_site(site).index();
+        lowered_indexes.push(DurableIndex {
+            name: built.name.clone(),
+            unique: built.shape.unique,
+            site: site_index,
+            projection: built.projection.clone(),
+        });
+    }
+    let indexes: Vec<DurableIndexShape> =
+        built_indexes.into_iter().map(|built| built.shape).collect();
+
+    // Decide executability and capture the executable branch descriptors while the
+    // member tree (which carries each branch's materialized record type) is still in
+    // hand — it moves into the `RootDef` below.
+    //
+    // Executable durable operations exist for the flat keyed root whose top-level fields
+    // are each a scalar or a widened composite (a dense struct, or a closed
+    // `enum`/`Option`/`Result` — framed inline in the field cell by the durable value
+    // codec), together with its root-level groups of such fields and its field-only keyed
+    // branches nested to any depth — the shape the kernel serves. A singleton (keyless)
+    // root, a nominal field, or a group nested in a branch or another group parks
+    // (severed until its lane lands): it carries its identity and full site set, but the
+    // lowerer reports any operation over it as not yet executable. Composite root keys and
+    // keyed branches (including composite-keyed) are executable for whole/field sites; a
+    // root-level group no longer parks, mirroring the verifier's independent
+    // `member_flat_at_root`.
+    // `record.fields` (the registry record) carries only the top-level value fields;
+    // its unkeyed groups live in `record.groups`, so a group value never appears here.
+    let all_fields_executable = record
+        .fields
+        .iter()
+        .all(|f| matches!(f.ty, GArg::Scalar(_) | GArg::Struct(_) | GArg::Enum(_)));
+    // A keyed root of executable fields with root-level scalar/widened-field groups and
+    // only field-only branches is executable, at any key arity (one or more columns); a
+    // singleton root (no key columns) parks. `member_flat_at_root` admits a root-level
+    // group of storable-value fields while `member_keeps_root_flat` (the branch-member
+    // predicate) keeps a group parked below the root, so a group in a branch or another
+    // group never makes the root flat — mirroring the verifier's `member_flat_at_root`.
+    let keyed = !key_scalars.is_empty();
+    let members_flat = members.iter().all(member_flat_at_root);
+    let executable = keyed && all_fields_executable && members_flat;
+    let (branches, groups) = if executable {
+        (
+            build_executable_branches(records, resource, &top_branches),
+            build_executable_groups(&record.groups, &top_groups),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let root_name = draft.intern_string(&store.root.root);
+    draft.add_root(RootDef {
+        name: root_name,
+        keys: key_columns,
+        record: record.type_id,
+        identity: RootIdentity {
+            placement,
+            product,
+            members,
+            indexes,
+        },
+    });
+
+    if !executable {
+        return Some(BuiltRoot {
+            name: store.root.root.clone(),
             executable: None,
-            declared_root: Some(root.to_string()),
-        }
+        });
     }
+    // A flat root's top-level fields map positionally to `top_field_sites`, so
+    // `top_field_sites[i]` is the field-leaf site of `record.fields[i]` (both in
+    // member/record order). Each field carries its resolved value type (a scalar or a
+    // widened composite), from which the lowerer builds the read/written value type.
+    let fields = record
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| DurableField {
+            name: field.name.clone(),
+            site: top_field_sites[index],
+            ty: field.ty,
+            required: field.required,
+        })
+        .collect();
+
+    Some(BuiltRoot {
+        name: store.root.root.clone(),
+        executable: Some(DurableRoot {
+            name: store.root.root.clone(),
+            resource: store.resource.clone(),
+            key: key_scalars.clone(),
+            record: record.type_id,
+            entry_site,
+            fields,
+            groups,
+            branches,
+            indexes: lowered_indexes,
+        }),
+    })
 }
 
 /// Resolve each key column's scalar in declared tuple order, rejecting a key type

@@ -685,6 +685,16 @@ struct PlaceLocal {
     record: TypeId,
 }
 
+/// A resolved source managed-index read `^root.index[keys]`: the index, the executable
+/// root that owns it (whose identity backs a scan's yielded `Id(^root)`), and the bracket
+/// key operands. The index and root borrow the durable registry (lifetime `'a`); the
+/// operands borrow the source expression (lifetime `'e`).
+struct IndexRead<'a, 'e> {
+    index: &'a crate::durable::DurableIndex,
+    root: &'a crate::durable::DurableRoot,
+    keys: &'e [Expression],
+}
+
 impl PlaceLocal {
     /// Whether this place addresses a nested (branch) entry rather than the root.
     fn is_nested(&self) -> bool {
@@ -1824,20 +1834,29 @@ impl<'a> FnLowerer<'a> {
         self.failed = true;
     }
 
-    /// The diagnostic for a durable operation reaching no executable root: a
-    /// not-yet-executable rejection when a parked root is declared (a singleton
-    /// root, or a root whose resource declares a group or a nominal-typed field —
-    /// its identity is complete but the kernel does not serve its shape), or the
-    /// caller's no-store rejection when no root is declared at all.
-    fn no_executable_root_diagnostic(
-        &self,
+    /// Resolve the store root named `name` to its executable descriptor, reporting the
+    /// precise diagnostic on failure: a not-yet-executable rejection when a root of that
+    /// name is declared but parked (a singleton root, or a root whose resource declares a
+    /// group or a nominal-typed field — its identity is complete but the kernel does not
+    /// serve its shape), or a name error when no root of that name is declared at all. The
+    /// returned reference borrows the durable registry (lifetime `'a`), not `self`, so it
+    /// stays valid across later mutating lowering calls.
+    fn resolve_root(
+        &mut self,
+        name: &str,
         span: SourceSpan,
-        no_store_subject: &str,
-    ) -> SourceDiagnostic {
-        match self.durable.not_yet_executable_root() {
-            Some(root) => not_yet_executable(self.file, span, root),
-            None => unsupported(self.file, span, no_store_subject),
+    ) -> Option<&'a crate::durable::DurableRoot> {
+        let durable: &'a DurableRegistry = self.durable;
+        if let Some(root) = durable.root_by_name(name) {
+            return Some(root);
         }
+        let diagnostic = if durable.not_yet_executable_root_named(name).is_some() {
+            not_yet_executable(self.file, span, name)
+        } else {
+            name_error(self.file, span, name)
+        };
+        self.fail(diagnostic);
+        None
     }
 
     fn lookup(&self, name: &str) -> Option<&Local> {
@@ -2982,8 +3001,8 @@ impl<'a> FnLowerer<'a> {
         }
         // A `for` head over a managed index scans it. Only a nonunique index is scanned
         // (progressive-prefix); a unique index is an exact lookup, not an iteration.
-        if let Some((index, keys)) = self.resolve_index_read(iterable) {
-            if index.unique {
+        if let Some(read) = self.resolve_index_read(iterable) {
+            if read.index.unique {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -2991,7 +3010,7 @@ impl<'a> FnLowerer<'a> {
                     format!(
                         "unique index `{}` is an exact lookup, not a scan; read it with \
                          `if const x = ^root.{}[keys]`",
-                        index.name, index.name
+                        read.index.name, read.index.name
                     ),
                 ));
                 return Flow::Fallthrough;
@@ -3000,7 +3019,7 @@ impl<'a> FnLowerer<'a> {
                 self.fail(unsupported(self.file, span, "reversed index scan"));
                 return Flow::Fallthrough;
             }
-            return self.lower_index_scan(binding, index, keys, bound, body, span);
+            return self.lower_index_scan(binding, read, bound, body, span);
         }
         // A durable traversal place iterates the store; it is always bounded.
         if Self::is_traversal_place(iterable) {
@@ -3206,18 +3225,17 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// The durable node an entry-address expression addresses, resolved against the single
+    /// The durable node an entry-address expression addresses, resolved against the named
     /// durable root without emitting a diagnostic. `None` when `expr` is not a resolvable
-    /// entry address (a wrong root name, an unknown branch, or a non-address shape). Used
-    /// only to classify an `exists` tail; the real resolvers own diagnostics.
+    /// entry address (a wrong or parked root name, an unknown branch, or a non-address
+    /// shape). Used only to classify an `exists` tail; the real resolvers own diagnostics.
     fn entry_address_node(&self, expr: &Expression) -> Option<DurNode<'a>> {
-        let root = self.durable.root()?;
         let Expression::Keyed { base, .. } = expr else {
             return None;
         };
         match &**base {
             Expression::SavedRoot { name, .. } => {
-                (root.name == *name).then_some(DurNode::Root(root))
+                self.durable.root_by_name(name).map(DurNode::Root)
             }
             Expression::Field {
                 base: parent_base,
@@ -3245,15 +3263,9 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<TraversalTarget<'e>> {
         match iterable {
             Expression::SavedRoot { name, span } => {
-                let Some(root) = self.durable.root() else {
-                    let diagnostic =
-                        self.no_executable_root_diagnostic(*span, "iterating without a store");
-                    self.fail(diagnostic);
-                    return None;
-                };
+                let root = self.resolve_root(name, *span)?;
                 let entry_site = root.entry_site;
                 let record = root.record;
-                self.check_root_name(root, name, *span)?;
                 let key_ty = self.single_traversal_column(&root.key, *span)?;
                 Some(TraversalTarget {
                     entry_site,
@@ -3270,17 +3282,12 @@ impl<'a> FnLowerer<'a> {
                 span,
                 ..
             } => {
-                let Some(root) = self.durable.root() else {
-                    let diagnostic = self.no_executable_root_diagnostic(
-                        iterable.span(),
-                        "iterating without a store",
-                    );
-                    self.fail(diagnostic);
-                    return None;
-                };
                 // The base is the addressed parent entry `^root(k)….b(bk)`; the final bare
                 // name is the branch family iterated under it. Its ancestor key-path is the
-                // parent entry's whole key-path (root-first).
+                // parent entry's whole key-path (root-first). The store is resolved at the
+                // base's `^name` leaf.
+                let root_name = saved_root_name(base)?;
+                let root = self.resolve_root(root_name, iterable.span())?;
                 let (ancestor_keys, parent) = self.resolve_entry_address(root, base)?;
                 let Some(layer) = parent.branch(layer_name) else {
                     self.fail(SourceDiagnostic::at(
@@ -3520,12 +3527,13 @@ impl<'a> FnLowerer<'a> {
     fn lower_index_scan(
         &mut self,
         binding: &ForBinding,
-        index: &crate::durable::DurableIndex,
-        keys: &[Expression],
+        read: IndexRead<'a, '_>,
         bound: Option<&TraversalBound>,
         body: &Block,
         span: SourceSpan,
     ) -> Flow {
+        let index = read.index;
+        let keys = read.keys;
         let var = match binding.names.as_slice() {
             [key] => key,
             _ => {
@@ -3569,13 +3577,9 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         }
         // The scan yields a whole source identity, so the root's identity is a single key
-        // column; the scanned (trailing) projection component is that key.
-        let Some(root) = self.durable.root() else {
-            let diagnostic =
-                self.no_executable_root_diagnostic(span, "an index scan without a store");
-            self.fail(diagnostic);
-            return Flow::Fallthrough;
-        };
+        // column; the scanned (trailing) projection component is that key. The scanned
+        // index belongs to `read.root` (resolved with it), so its identity is that root's.
+        let root = read.root;
         if root.key.len() != 1 {
             self.fail(unsupported(
                 self.file,
@@ -4254,9 +4258,9 @@ impl<'a> FnLowerer<'a> {
         // A read through a managed index `^root.index[keys]`: a unique index is an exact
         // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
         // by scanning it with a `for` head, so naming one in value position is rejected.
-        if let Some((index, keys)) = self.resolve_index_read(expr) {
-            if index.unique {
-                return self.lower_index_lookup(index, keys, expr.span());
+        if let Some(read) = self.resolve_index_read(expr) {
+            if read.index.unique {
+                return self.lower_index_lookup(read.index, read.keys, expr.span());
             }
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -4265,7 +4269,7 @@ impl<'a> FnLowerer<'a> {
                 format!(
                     "read the non-unique index `{}` by scanning it with a `for` head, \
                      not as a value",
-                    index.name
+                    read.index.name
                 ),
             ));
             return None;
@@ -5936,10 +5940,7 @@ impl<'a> FnLowerer<'a> {
         resource: &str,
         path: &[&str],
     ) -> Option<&'a crate::durable::DurableBranch> {
-        let root = self.durable.root()?;
-        if root.resource != resource {
-            return None;
-        }
+        let root = self.durable.root_by_resource(resource)?;
         let (first, rest) = path.split_first()?;
         let mut branch = root.branch(first)?;
         for name in rest {
@@ -7102,11 +7103,11 @@ impl<'a> FnLowerer<'a> {
         else {
             return false;
         };
-        if !matches!(root_base.as_ref(), Expression::SavedRoot { .. }) {
+        let Expression::SavedRoot { name, .. } = root_base.as_ref() else {
             return false;
-        }
+        };
         self.durable
-            .root()
+            .root_by_name(name)
             .is_some_and(|root| root.group(mid).is_some())
     }
 
@@ -7181,10 +7182,7 @@ impl<'a> FnLowerer<'a> {
     /// `Keyed` whose base is a field of the store root naming a declared index). The
     /// index reference lives as long as the durable registry, so it may be held across a
     /// mutable lowering call.
-    fn resolve_index_read<'e>(
-        &self,
-        expr: &'e Expression,
-    ) -> Option<(&'a crate::durable::DurableIndex, &'e [Expression])> {
+    fn resolve_index_read<'e>(&self, expr: &'e Expression) -> Option<IndexRead<'a, 'e>> {
         let Expression::Keyed { base, keys, .. } = expr else {
             return None;
         };
@@ -7203,12 +7201,13 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let durable: &'a DurableRegistry = self.durable;
-        let root = durable.root()?;
-        if root.name != *root_name {
-            return None;
-        }
+        let root = durable.root_by_name(root_name)?;
         let index = root.index(name)?;
-        Some((index, keys.as_slice()))
+        Some(IndexRead {
+            index,
+            root,
+            keys: keys.as_slice(),
+        })
     }
 
     /// Lower a unique index's exact lookup `^root.index[keys]`: check the operands against
@@ -7298,6 +7297,7 @@ impl<'a> FnLowerer<'a> {
                 let keys = place.bound_keys();
                 let nested = place.is_nested();
                 let record = place.record;
+                let entry_site = place.entry_site;
                 let field = if nested {
                     self.durable
                         .branch_by_record(record)
@@ -7305,7 +7305,7 @@ impl<'a> FnLowerer<'a> {
                         .map(|field| (field.site, GArg::Scalar(field.scalar), field.required))
                 } else {
                     self.durable
-                        .root()
+                        .root_by_entry_site(entry_site)
                         .and_then(|root| root.field(field_name))
                         .map(|field| (field.site, field.ty, field.required))
                 };
@@ -7323,7 +7323,7 @@ impl<'a> FnLowerer<'a> {
                                 .unwrap_or_default()
                         } else {
                             self.durable
-                                .root()
+                                .root_by_entry_site(entry_site)
                                 .map(|root| root.name.clone())
                                 .unwrap_or_default()
                         };
@@ -7361,7 +7361,11 @@ impl<'a> FnLowerer<'a> {
                         optional: false,
                     },
                 )?;
-                let cols = self.durable.root().map_or(0, |root| root.key.len()) as u16;
+                let cols = self
+                    .durable
+                    .roots()
+                    .first()
+                    .map_or(0, |root| root.key.len()) as u16;
                 self.push(Instr::IdentityKeyPath(cols), span);
                 Some(())
             }
@@ -7396,7 +7400,11 @@ impl<'a> FnLowerer<'a> {
                 optional: false,
             },
         )?;
-        let cols = self.durable.root().map_or(0, |root| root.key.len());
+        let cols = self
+            .durable
+            .roots()
+            .first()
+            .map_or(0, |root| root.key.len());
         self.push(Instr::IdentityKeyPath(cols as u16), span);
         // `IdentityKeyPath` leaves the columns root-first, so the last column is on top;
         // pop into slots from the last column back so each slot holds its own column.
@@ -7497,14 +7505,11 @@ impl<'a> FnLowerer<'a> {
         if is_place_access {
             return self.resolve_place_access(expr);
         }
-        let Some(root) = self.durable.root() else {
-            let diagnostic = self.no_executable_root_diagnostic(
-                expr.span(),
-                "durable access without a declared store",
-            );
-            self.fail(diagnostic);
-            return None;
-        };
+        // A durable access names its store at the `^name` leaf. Resolving it here (rather
+        // than assuming one store) selects the addressed root and reports a bad name or a
+        // parked shape precisely; a non-address expression is cleanly `None`.
+        let root_name = saved_root_name(expr)?;
+        let root = self.resolve_root(root_name, expr.span())?;
         match expr {
             // A whole-entry address `^root[key].b1[k1]….bn[kn]` at any depth.
             Expression::Keyed { span, .. } => {
@@ -7902,13 +7907,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let Some(root) = self.durable.root() else {
-            let diagnostic =
-                self.no_executable_root_diagnostic(*root_span, "an entry identity without a store");
-            self.fail(diagnostic);
-            return None;
-        };
-        self.check_root_name(root, root_name, *root_span)?;
+        let root = self.resolve_root(root_name, *root_span)?;
         let key_columns = root.key.clone();
         if key_args.len() != key_columns.len() {
             self.fail(SourceDiagnostic::at(
@@ -9434,10 +9433,7 @@ fn resolve_expanded(
         // is not declared, or over a not-yet-executable root, is an unsupported type
         // (`None`), reported by the caller like any other unresolved annotation.
         TypeExpr::Identity(identity) => {
-            let root = durable.root()?;
-            if root.name != identity.root {
-                return None;
-            }
+            durable.root_by_name(&identity.root)?;
             Some(LTy::Identity {
                 root: 0,
                 optional: false,
@@ -9950,6 +9946,19 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
         span,
         format!("{subject} is not yet supported on the beta line"),
     )
+}
+
+/// The store-root name a durable address expression bottoms out at: the leftmost
+/// `^name` leaf reached through keyed accesses and field/branch selectors, or `None`
+/// when `expr` is not rooted at a `SavedRoot` (not a `^root` durable access at all).
+/// The one owner that extracts which store an address names, so the resolvers dispatch
+/// against a single root lookup.
+fn saved_root_name(expr: &Expression) -> Option<&str> {
+    match expr {
+        Expression::SavedRoot { name, .. } => Some(name),
+        Expression::Keyed { base, .. } | Expression::Field { base, .. } => saved_root_name(base),
+        _ => None,
+    }
 }
 
 /// Whether `expr` is a durable whole-entry address `^root[key]….b[bkey]` at any depth: a
