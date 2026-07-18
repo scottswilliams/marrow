@@ -1585,11 +1585,9 @@ pub fn run(): int {
 }
 
 #[test]
-fn a_headerless_script_is_not_importable_by_module_path() {
-    // `lib.mw` has no `module` header, so it is a single-file script, not an
-    // importable module; a `use` of it does not resolve.
+fn a_headerless_path_derived_module_can_be_imported() {
     let temp = multi_module(
-        "script-not-importable",
+        "headerless-module-import",
         &[
             (
                 "lib.mw",
@@ -1605,13 +1603,18 @@ fn a_headerless_script_is_not_importable_by_module_path() {
 use lib
 
 pub fn run(): int {
-    return 1
+    return lib::helper()
 }
 "#,
             ),
         ],
     );
-    assert!(run_diagnostic_code(&temp, "main.run").contains("check.import"));
+    let output = run_in(&temp, &["run", "main.run", "--format", "jsonl"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{\"data\":1,\"kind\":\"run\",\"outcome\":\"value\"}\n"
+    );
 }
 
 #[test]
