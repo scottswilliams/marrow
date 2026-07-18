@@ -123,6 +123,7 @@ fn source_owner_wording_does_not_restore_the_stale_module_script_law() {
         "every module of a project",
         "every module of the project",
         "starter module",
+        "unformatted module",
         "no in-source module header",
         "single-file fallback",
     ];

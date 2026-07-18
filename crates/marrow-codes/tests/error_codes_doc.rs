@@ -69,4 +69,12 @@ fn generated_reference_has_no_prototype_source_error_channel() {
         generated.contains("dynamic 1 MiB") && generated.contains("aggregate"),
         "generated reference must name the source-reachable aggregate value bound"
     );
+
+    let registry_source = include_str!("../src/lib.rs");
+    for removed_axis in ["pub enum Catchability", "fn catchability("] {
+        assert!(
+            !registry_source.contains(removed_axis),
+            "the deleted catchability classification returned to the registry: {removed_axis}"
+        );
+    }
 }
