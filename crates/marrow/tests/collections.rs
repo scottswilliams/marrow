@@ -151,6 +151,197 @@ pub fn scores(): Map<string, int> {
     assert!(stdout.contains("[ada: 10, grace: 12]"), "{stdout}");
 }
 
+/// The current local Map key domain stays aligned across the compiler, verifier,
+/// VM, and both claims in the language reference.
+#[test]
+fn map_key_domain_and_reference_agree() {
+    let accepted = TempDir::new("map-key-domain");
+    project(
+        &accepted,
+        r#"module main
+
+type Rank: int in 1..=8
+
+pub fn values(): string {
+    var ints: Map<int, int> = Map()
+    ints[1] = 1
+    var bools: Map<bool, int> = Map()
+    bools[true] = 2
+    var strings: Map<string, int> = Map()
+    strings["key"] = 3
+    var byteStrings: Map<bytes, int> = Map()
+    byteStrings[bytes("key")] = 4
+    var dates: Map<date, int> = Map()
+    dates[date("2026-07-18")] = 5
+    var instants: Map<instant, int> = Map()
+    instants[instant("2026-07-18T12:00:00Z")] = 6
+    var durations: Map<duration, int> = Map()
+    durations[duration("PT1S")] = 7
+    const rankLow = Rank(1)
+    const rankHigh = Rank(8)
+    var ranks: Map<Rank, int> = Map()
+    ranks[rankHigh] = 8
+    ranks[rankLow] = 1
+    var rankOrder: int = 0
+    for key, value in ranks {
+        rankOrder = rankOrder * 10 + value
+    }
+    if rankOrder != 18 {
+        return "rank-order"
+    }
+    var result: string = ""
+    result = result + string(ints[1] ?? 0)
+    result = result + string(bools[true] ?? 0)
+    result = result + string(strings["key"] ?? 0)
+    result = result + string(byteStrings[bytes("key")] ?? 0)
+    result = result + string(dates[date("2026-07-18")] ?? 0)
+    result = result + string(instants[instant("2026-07-18T12:00:00Z")] ?? 0)
+    result = result + string(durations[duration("PT1S")] ?? 0)
+    result = result + string(ranks[rankHigh] ?? 0)
+    return result
+}
+"#,
+    );
+    let output = run_in(&accepted, &["run", "values"]);
+    assert!(
+        output.status.success(),
+        "all admitted Map keys must compile, verify, and run: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.stdout, b"12345678\n");
+
+    let rejected = [
+        (
+            "decimal",
+            r#"module main
+
+pub fn value(): int {
+    const values: Map<decimal, int> = Map()
+    return 0
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "ErrorCode",
+            r#"module main
+
+pub fn value(): int {
+    const values: Map<ErrorCode, int> = Map()
+    return 0
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "generic parameter",
+            r#"module main
+
+fn f<K supports order>(key: K): int {
+    const values: Map<K, int> = Map()
+    return 0
+}
+
+pub fn value(): int {
+    return f(1)
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "plain int for nominal key",
+            r#"module main
+
+type Rank: int in 1..=8
+
+pub fn value(): int {
+    var values: Map<Rank, int> = Map()
+    values[1] = 1
+    return 0
+}
+"#,
+            "check.type",
+        ),
+    ];
+    for (name, source, expected_code) in rejected {
+        let temp = TempDir::new("map-key-rejection");
+        project(&temp, source);
+        let output = run_in(&temp, &["run", "value", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success(),
+            "{name} must be rejected: {stdout}"
+        );
+        let codes: Vec<&str> = stdout
+            .lines()
+            .filter_map(|line| {
+                let (_, rest) = line.split_once(r#""code":""#)?;
+                rest.split_once('"').map(|(code, _)| code)
+            })
+            .collect();
+        assert_eq!(codes, [expected_code], "{name}: {stdout}");
+    }
+
+    let reference = include_str!("../../../docs/language/types-and-values.md");
+    let (_, lists_and_maps) = reference
+        .split_once("## Lists And Maps")
+        .expect("Lists And Maps section");
+    let (lists_and_maps, key_types) = lists_and_maps
+        .split_once("## Key Types")
+        .expect("Key Types section");
+    let (key_types, _) = key_types
+        .split_once("## Entry Identity")
+        .expect("Entry Identity section");
+    let lists_and_maps = lists_and_maps
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let key_types = key_types.split_whitespace().collect::<Vec<_>>().join(" ");
+    let local_domain = "`int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`";
+    let nominal_rule = "A nominal Map key retains its source type and uses its base scalar for representation and ordering.";
+    for (name, section) in [
+        ("Lists And Maps", lists_and_maps.as_str()),
+        ("Key Types", key_types.as_str()),
+    ] {
+        assert!(section.contains(local_domain), "{name}: {section}");
+        assert!(section.contains("nominal int type"), "{name}: {section}");
+        assert!(section.contains(nominal_rule), "{name}: {section}");
+        assert!(
+            section.contains("`ErrorCode` is not a local Map key"),
+            "{name}: {section}"
+        );
+    }
+    assert!(
+        key_types.contains(
+            "Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`"
+        ),
+        "{key_types}"
+    );
+    assert!(
+        key_types.contains(
+            "Managed-index key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`"
+        ),
+        "{key_types}"
+    );
+    assert!(
+        key_types.contains("`duration` and nominal source types are not durable keys."),
+        "{key_types}"
+    );
+    assert!(
+        key_types.contains("A nominal stored field projects through its base scalar."),
+        "{key_types}"
+    );
+    let normalized_reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        !normalized_reference.contains(concat!("Store identity col", "umns")),
+        "the reference must not use the stale identity-key shape analogy"
+    );
+    assert!(
+        !normalized_reference.contains(concat!("ordered lexicographically by col", "umn")),
+        "the reference must describe tuple order by key position"
+    );
+}
+
 /// Appending past the aggregate-byte bound faults with `run.collection_limit`, the
 /// law-9 typed runtime fault, rather than allocating unboundedly.
 #[test]
