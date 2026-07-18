@@ -37,7 +37,8 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
   path-derived module identity, and an immutable project input. See
   [Projects](tools/projects.md).
 - `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
-  or every module of a project directory (`--check`/`--write`); `marrow client
+  or every captured source file in a project directory (`--check`/`--write`);
+  `marrow client
   typescript` generates the strict TypeScript client and the pinned Node
   supervision module; `marrow --version` and `marrow --help`. Every other
   command name is recognized but reports `cli.command_unsupported` until its

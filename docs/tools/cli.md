@@ -17,7 +17,7 @@ direction.
 | Command | Behavior today |
 |---|---|
 | `init` | Create a new project directory (this page). |
-| `fmt` | Format a `.mw` file or every module of a project (this page). |
+| `fmt` | Format a `.mw` file or every captured source file in a project (this page). |
 | `run` | Compile, verify, and run an exported function (this page). |
 | `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
 | `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
@@ -30,10 +30,10 @@ marrow init <projectdir>
 ```
 
 Creates a new [project](projects.md): a `marrow.toml` manifest declaring the
-current edition and a contained `src` tree with a starter `main` module. The
-target directory must not already exist — `init` claims it with an exclusive
-create, so two concurrent runs cannot both win, and an existing directory
-reports `config.invalid`. `init` creates no store.
+current edition and a contained `src` tree with a headerless `src/main.mw`
+script. The target directory must not already exist — `init` claims it with an
+exclusive create, so two concurrent runs cannot both win, and an existing
+directory reports `config.invalid`. `init` creates no store.
 
 ## `marrow fmt`
 
