@@ -272,3 +272,23 @@ fn a_verifier_rejected_module_fence_is_caught() {
         "the gate must catch a verifier-rejected fence, got: {codes:?}",
     );
 }
+
+/// A complete source file does not need a `module` header. The two standalone
+/// declarations in the values reference are moduleless scripts and belong to
+/// the production-path corpus.
+#[test]
+fn complete_moduleless_reference_fences_are_gated() {
+    let fences = module_fences();
+    assert!(
+        fences
+            .iter()
+            .any(|fence| fence.source.trim_start().starts_with("struct Point")),
+        "the complete moduleless Point declaration must be gated",
+    );
+    assert!(
+        fences
+            .iter()
+            .any(|fence| fence.source.trim_start().starts_with("struct Pair")),
+        "the complete moduleless generic declarations must be gated",
+    );
+}
