@@ -16,8 +16,10 @@ use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 struct TempDir {
     root: PathBuf,
@@ -25,17 +27,26 @@ struct TempDir {
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "marrow-doc-fences-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
+        loop {
+            let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "marrow-doc-fences-{name}-{}-{serial}",
+                std::process::id(),
+            ));
+            match fs::create_dir(&root) {
+                Ok(()) => return TempDir { root },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create temp dir: {error}"),
+            }
+        }
     }
+}
+
+#[test]
+fn scratch_projects_are_unique_within_the_test_process() {
+    let first = TempDir::new("unique");
+    let second = TempDir::new("unique");
+    assert_ne!(first.root, second.root);
 }
 
 impl Deref for TempDir {
