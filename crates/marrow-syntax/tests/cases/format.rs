@@ -142,10 +142,26 @@ fn formats_expressions_to_canonical_source() {
         "a + b..c + d",
         "not not ready",
         "$\"book {id}: {{ready}}\"",
+        // Duration word literals, already in number agreement.
+        "1 day",
+        "3 days",
+        "1 second",
+        "2 weeks",
     ];
     for source in canonical {
         assert_eq!(format_const_value(source), source, "input {source:?}");
     }
+}
+
+#[test]
+fn formats_duration_word_literals_in_number_agreement() {
+    // The formatter rewrites the unit to agree with the count: singular for `1`,
+    // plural otherwise. It is idempotent — an already-agreeing literal is unchanged.
+    assert_eq!(format_const_value("1 days"), "1 day");
+    assert_eq!(format_const_value("2 day"), "2 days");
+    assert_eq!(format_const_value("1 hour"), "1 hour");
+    assert_eq!(format_const_value("7 week"), "7 weeks");
+    assert_eq!(format_const_value("1 minute"), "1 minute");
 }
 
 #[test]

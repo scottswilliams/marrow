@@ -147,14 +147,27 @@ on a clock, timezone, or locale.
 
 A temporal value is constructed from exactly one static string literal in the
 type's canonical text form, validated and folded at compile time. There is no
-suffix literal (the prototype's `1.second` form reports `check.unsupported`), no
-ambient `today`/`now`, and no runtime string parse in the language floor.
+dotted suffix literal (the prototype's `1.second` form reports
+`check.unsupported`), no ambient `today`/`now`, and no runtime string parse in the
+language floor.
 
 | Constructor | Canonical text | Example |
 |---|---|---|
 | `date("…")` | `YYYY-MM-DD` (fixed width) | `date("2026-07-15")` |
 | `instant("…")` | `YYYY-MM-DDTHH:MM:SS[.fraction]Z` (UTC, `Z` required) | `instant("2026-07-15T17:00:00Z")` |
 | `duration("…")` | `[-]PT<seconds>[.fraction]S` (zero is `PT0S`) | `duration("PT3600S")` |
+
+A `duration` of whole units also has a word literal: an integer count immediately
+followed by a fixed unit word — `second`(s), `minute`(s), `hour`(s), `day`(s), or
+`week`(s) — folds at compile time to the same `duration` value, so `3 days` equals
+`duration("PT259200S")`. The unit word is read as a unit only in that position,
+directly after an integer literal, so an ordinary name spelling a unit (`const
+seconds = 5`) is unaffected. Months and years have no fixed span, so `1 month` and
+`2 years` are a compile-time parse error rather than a duration. The formatter
+writes the unit in agreement with its count (`1 day`, `2 days`). Scaling a literal
+by a variable is not expressible: `n * 1 minute` folds `1 minute` first and then
+rejects `int * duration`; use `duration("…")` for a computed span. The
+`duration("…")` form remains the way to write a fractional-second span.
 
 The forms are strict and canonical: a field must have its fixed width, an
 optional sub-second `fraction` is one to nine digits with no trailing zero, whole

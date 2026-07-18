@@ -86,6 +86,9 @@ pub enum ParseDiagnosticReason {
     /// A `{ … }` block appears where the grammar admits none — only compound
     /// statements and body-bearing declarations introduce blocks.
     UnexpectedBlock,
+    /// A duration word literal spelled with a month or year (`1 month`, `2 years`),
+    /// which have no fixed span. The fixed-unit set runs second(s) through week(s).
+    UnfixedDurationUnit,
     Unsupported(UnsupportedSyntax),
 }
 

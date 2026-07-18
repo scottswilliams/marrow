@@ -10,9 +10,9 @@
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
     CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding,
-    FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl,
-    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind,
-    TraversalBound, TypeExpr, UnaryOp, encode_string_literal,
+    FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
+    NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl,
+    TokenKind, TraversalBound, TypeExpr, UnaryOp, duration_unit_forms, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -1799,8 +1799,29 @@ enum Layout {
     Inline,
 }
 
+/// Render a duration word literal in canonical form: the count, one space, and the
+/// unit agreeing in number — singular for a count of `1`, plural otherwise. The parser
+/// only produces this node from `COUNT UNIT` with a known fixed unit, so both parts are
+/// present; an unexpected shape falls back to the stored text.
+fn format_duration_words(text: &str) -> String {
+    let mut parts = text.split_whitespace();
+    let (Some(count), Some(unit), None) = (parts.next(), parts.next(), parts.next()) else {
+        return text.to_string();
+    };
+    let Some((singular, plural)) = duration_unit_forms(unit) else {
+        return text.to_string();
+    };
+    let agreed = if count == "1" { singular } else { plural };
+    format!("{count} {agreed}")
+}
+
 fn format_expression_layout(expression: &Expression, level: usize, layout: Layout) -> String {
     match expression {
+        Expression::Literal {
+            kind: LiteralKind::DurationWords,
+            text,
+            ..
+        } => format_duration_words(text),
         Expression::Literal { text, .. } => text.clone(),
         Expression::Name { segments, .. } => segments.join("::"),
         Expression::SavedRoot { name, .. } => format!("^{name}"),

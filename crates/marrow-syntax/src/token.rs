@@ -278,6 +278,27 @@ pub fn duration_unit_seconds(unit: &str) -> Option<i64> {
     })
 }
 
+/// Whether `word` names a calendar unit with no fixed span — a month or a year.
+/// These read like duration units but their length varies, so a duration word
+/// literal spelled with one is refused rather than silently folded.
+pub fn is_unfixed_duration_unit(word: &str) -> bool {
+    matches!(word, "month" | "months" | "year" | "years")
+}
+
+/// The singular and plural spellings of a fixed duration unit, from either spelling,
+/// or `None` for a non-unit. A duration word literal agrees in number with its count:
+/// the singular for `1`, the plural otherwise.
+pub fn duration_unit_forms(unit: &str) -> Option<(&'static str, &'static str)> {
+    Some(match unit {
+        "second" | "seconds" => ("second", "seconds"),
+        "minute" | "minutes" => ("minute", "minutes"),
+        "hour" | "hours" => ("hour", "hours"),
+        "day" | "days" => ("day", "days"),
+        "week" | "weeks" => ("week", "weeks"),
+        _ => return None,
+    })
+}
+
 pub(crate) fn is_identifier_start_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphabetic()
 }

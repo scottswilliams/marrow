@@ -59,6 +59,14 @@ fn parses_const_values_into_expression_nodes() {
             Expectation::Literal(LiteralKind::Bool, "true"),
         ),
         (
+            "const D = 3 days\n",
+            Expectation::Literal(LiteralKind::DurationWords, "3 days"),
+        ),
+        (
+            "const One = 1 second\n",
+            Expectation::Literal(LiteralKind::DurationWords, "1 second"),
+        ),
+        (
             "const Default = SomeName\n",
             Expectation::Name(&["SomeName"]),
         ),
@@ -92,6 +100,45 @@ fn parses_const_values_into_expression_nodes() {
             (expected, actual) => panic!("expected {expected:?} for {source:?}, got {actual:?}"),
         }
     }
+}
+
+#[test]
+fn a_month_or_year_word_literal_is_an_unfixed_duration_unit_error() {
+    for source in [
+        "fn f(): int {\n    return 1 month\n}\n",
+        "fn f(): int {\n    return 3 months\n}\n",
+        "fn f(): int {\n    return 1 year\n}\n",
+        "fn f(): int {\n    return 2 years\n}\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::UnfixedDurationUnit)
+            ),
+            "expected an unfixed-duration-unit error for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_unit_word_is_only_a_unit_directly_after_an_integer_literal() {
+    // `seconds` as an ordinary binding name and value is untouched by the literal fold.
+    let parsed = parse_source("fn f(): int {\n    const seconds = 5\n    return seconds\n}\n");
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "an identifier spelling a unit must parse cleanly: {:#?}",
+        parsed.diagnostics
+    );
+    let Statement::Const {
+        value: Expression::Literal { kind, .. },
+        ..
+    } = &parsed.file.function("f").expect("f").body.statements[0]
+    else {
+        panic!("expected `const seconds = 5` to bind an integer literal");
+    };
+    assert_eq!(*kind, LiteralKind::Integer);
 }
 
 #[test]

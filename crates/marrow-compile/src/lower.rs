@@ -17,7 +17,8 @@ use marrow_image::{
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
     InterpolationPart, LiteralKind, MatchArm, RangeExpr, SourceSpan, Statement, TraversalBound,
-    TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal, range_expr,
+    TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal, duration_unit_seconds,
+    range_expr,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -4367,6 +4368,21 @@ impl<'a> FnLowerer<'a> {
                         .to_string(),
                 ));
                 return None;
+            }
+            // A duration word literal (`3 days`) folds at compile time to the canonical
+            // temporal encoding: count times the unit's whole seconds times a second in
+            // nanoseconds. The parser guarantees the `COUNT UNIT` shape with a fixed unit.
+            LiteralKind::DurationWords => {
+                let Some(nanos) = duration_words_nanos(text) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        "duration literal is out of the representable range".to_string(),
+                    ));
+                    return None;
+                };
+                (ScalarType::Duration, self.draft.intern_duration(nanos))
             }
             _ => {
                 self.fail(unsupported(self.file, span, "this literal"));
@@ -9404,6 +9420,19 @@ fn operator_symbol(op: BinaryOp) -> &'static str {
 
 pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
+}
+
+/// Fold a duration word literal `COUNT UNIT` to signed nanoseconds: the count times
+/// the unit's whole seconds times a second in nanoseconds. Returns `None` when the
+/// shape is unexpected or the product leaves the representable range.
+fn duration_words_nanos(text: &str) -> Option<i128> {
+    let mut parts = text.split_whitespace();
+    let (Some(count), Some(unit), None) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
+    let count = i128::from(parse_int(count)?);
+    let seconds = i128::from(duration_unit_seconds(unit)?);
+    count.checked_mul(seconds)?.checked_mul(1_000_000_000)
 }
 
 /// The rendered index text of a statically dead list index literal — `0` or any

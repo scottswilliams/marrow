@@ -260,3 +260,80 @@ fn the_retired_snake_case_temporal_names_are_out_of_scope() {
         );
     }
 }
+
+/// A duration word literal `COUNT UNIT` folds at compile time to the same `duration`
+/// value as its canonical text, over each fixed unit, and renders as canonical text.
+#[test]
+fn duration_word_literals_fold_to_canonical_durations() {
+    let cases: [(&str, &str); 5] = [
+        ("3 days", "PT259200S"),
+        ("1 second", "PT1S"),
+        ("2 weeks", "PT1209600S"),
+        ("1 hour", "PT3600S"),
+        ("5 minutes", "PT300S"),
+    ];
+    for (literal, canonical) in cases {
+        let temp = TempDir::new("dur-words");
+        project(
+            &temp,
+            &format!("module main\n\npub fn f(): duration {{\n    return {literal}\n}}\n"),
+        );
+        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{literal}: {stdout}");
+        assert!(
+            stdout.contains(&format!(r#""data":"{canonical}""#)),
+            "{literal} should fold to {canonical}: {stdout}"
+        );
+    }
+}
+
+/// A unit word is contextual: it names a unit only immediately after an integer
+/// literal, so an ordinary identifier spelling a unit is untouched.
+#[test]
+fn a_unit_word_is_an_ordinary_identifier_away_from_an_integer_literal() {
+    let temp = TempDir::new("dur-ident");
+    project(
+        &temp,
+        "module main\n\npub fn f(): int {\n    const seconds = 5\n    return seconds\n}\n",
+    );
+    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":5"#), "{stdout}");
+}
+
+/// Months and years have no fixed span, so a duration word literal spelled with one
+/// is a parse error rather than a duration.
+#[test]
+fn a_month_or_year_word_literal_is_a_parse_error() {
+    for literal in ["1 month", "3 months", "1 year", "2 years"] {
+        let temp = TempDir::new("dur-unfixed");
+        project(
+            &temp,
+            &format!("module main\n\npub fn f(): duration {{\n    return {literal}\n}}\n"),
+        );
+        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{literal} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"parse.syntax""#),
+            "{literal}: {stdout}"
+        );
+    }
+}
+
+/// Scaling a duration literal by a variable is not expressible: the literal folds to
+/// a `duration` first, so `n * 1 minute` is a plain `int * duration` type error.
+#[test]
+fn scaling_a_duration_literal_is_a_type_error() {
+    let temp = TempDir::new("dur-scale");
+    project(
+        &temp,
+        "module main\n\npub fn f(n: int): duration {\n    return n * 1 minute\n}\n",
+    );
+    let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""code":"check.type""#), "{stdout}");
+}

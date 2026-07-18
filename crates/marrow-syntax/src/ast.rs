@@ -348,6 +348,11 @@ pub enum LiteralKind {
     /// A duration literal `NUMBER.UNIT` (`1.day`); the token text is the whole
     /// literal and [`crate::duration_unit_seconds`] validates the unit.
     Duration,
+    /// A duration word literal `COUNT UNIT` (`3 days`), folded at parse time from an
+    /// integer literal immediately followed by a fixed unit word. The text is the
+    /// single-spaced `COUNT UNIT` and [`crate::duration_unit_seconds`] validates the
+    /// unit; the formatter enforces number agreement.
+    DurationWords,
     String,
     Bytes,
     Bool,

@@ -45,8 +45,8 @@ pub use literal::{
 use marrow_codes::Code;
 pub use marrow_codes::kind_for_code;
 pub use token::{
-    Keyword, LexedSource, Token, TokenKind, duration_unit_seconds, is_expression_callable_keyword,
-    is_expression_path_segment_keyword,
+    Keyword, LexedSource, Token, TokenKind, duration_unit_forms, duration_unit_seconds,
+    is_expression_callable_keyword, is_expression_path_segment_keyword, is_unfixed_duration_unit,
 };
 
 use parse_decl::DeclParser;

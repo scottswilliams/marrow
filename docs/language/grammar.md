@@ -41,7 +41,7 @@ qualified_name  = identifier, {"::", identifier} ;
 
 integer_lit     = digit, {digit} ;
 decimal_lit     = digit, {digit}, ".", digit, {digit} ;
-duration_lit    = digit, {digit}, ".", duration_unit ;
+duration_word_lit = integer_lit, duration_unit ;
 duration_unit   = "second" | "seconds"
                 | "minute" | "minutes"
                 | "hour" | "hours"
@@ -415,7 +415,7 @@ primary_expr    = literal
                 | resource_constructor
                 | "(", expression, ")" ;
 
-literal         = integer_lit | decimal_lit | duration_lit
+literal         = integer_lit | decimal_lit | duration_word_lit
                 | string_lit | bytes_lit | interp_lit ;
 
 conversion_call = conversion_type, "(", argument_list?, ")" ;
@@ -442,6 +442,14 @@ Keyed address is carried by the parse: a `key_suffix` builds a keyed-access node
 directly. The checker distinguishes a function call, resource constructor, struct
 literal, conversion, and entry-identity constructor from the common parenthesized
 call shape after parsing.
+
+In `duration_word_lit`, the `duration_unit` is contextual: it is read as a unit only
+immediately after an integer literal, a position where an identifier is otherwise a
+parse error, so an ordinary name spelling a unit (`const seconds = 5`) is unaffected.
+The unit set is the fixed spans only; `month` and `year` in that position are a parse
+error, since their span is not fixed. The dotted `NUMBER.UNIT` form (`1.day`) is not a
+duration literal — it is refused (`check.unsupported`), and a fractional-second span
+uses the `duration("PT…")` constructor.
 
 ## Arguments
 

@@ -8,12 +8,12 @@
 //! error node as it unwinds, so no ancestor reports a second, cascading
 //! diagnostic on top of it.
 
-use crate::token::is_trivia;
+use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
     Argument, BinaryOp, CompoundAssignOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
     InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
     ParseDiagnosticReason, Severity, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
-    is_expression_callable_keyword, is_expression_path_segment_keyword,
+    duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -896,7 +896,7 @@ impl<'a> ExprParser<'a> {
         };
         let text = token.text(self.source);
         match token.kind {
-            TokenKind::Integer => self.literal(token, LiteralKind::Integer),
+            TokenKind::Integer => self.integer_or_duration_words(token),
             TokenKind::Decimal => self.literal(token, LiteralKind::Decimal),
             TokenKind::Duration => self.literal(token, LiteralKind::Duration),
             TokenKind::String => self.literal(token, LiteralKind::String),
@@ -1012,6 +1012,47 @@ impl<'a> ExprParser<'a> {
             text: token.text(self.source).to_string(),
             span: token.span,
         }
+    }
+
+    /// An integer literal, folding a contextual duration word literal when the next
+    /// token is a fixed unit word (`3 days`). The unit word is contextual: it is read
+    /// as a unit only immediately after an integer literal, a position where an
+    /// identifier is otherwise a parse error, so an ordinary name spelling a unit is
+    /// unaffected. A month or year word is refused — those spans are not fixed.
+    fn integer_or_duration_words(&mut self, token: Token) -> Expression {
+        let Some(next) = self.tokens.get(self.pos + 1).copied() else {
+            return self.literal(token, LiteralKind::Integer);
+        };
+        if next.kind != TokenKind::Identifier {
+            return self.literal(token, LiteralKind::Integer);
+        }
+        let unit = next.text(self.source);
+        if duration_unit_seconds(unit).is_some() {
+            let span = join_spans(token.span, next.span);
+            let text = format!("{} {unit}", token.text(self.source));
+            self.advance();
+            self.advance();
+            return Expression::Literal {
+                kind: LiteralKind::DurationWords,
+                text,
+                span,
+            };
+        }
+        if is_unfixed_duration_unit(unit) {
+            let span = join_spans(token.span, next.span);
+            self.advance();
+            self.advance();
+            return self.error_expr(
+                span,
+                ParseDiagnosticReason::UnfixedDurationUnit,
+                "months and years are not fixed durations".to_string(),
+                Some(
+                    "write a fixed unit — second(s), minute(s), hour(s), day(s), or week(s)"
+                        .to_string(),
+                ),
+            );
+        }
+        self.literal(token, LiteralKind::Integer)
     }
 
     fn interpolation_expr(&mut self) -> Expression {
