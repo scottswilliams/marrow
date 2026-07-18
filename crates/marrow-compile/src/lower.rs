@@ -661,9 +661,10 @@ enum PlaceKey<'e> {
 }
 
 /// One column of a durable operation's key-path: how it reaches the stack and its
-/// scalar type. A root entry is a one-column path `[root_key]`; a single-level branch
-/// entry is a two-column path `[root_key, branch_key]`, pushed root-first so the
-/// innermost key is on top (the order the kernel's `pop_key_path` expects).
+/// scalar type. A single-key root entry is a one-column path `[root_key]`; a
+/// single-level branch entry is a two-column path `[root_key, branch_key]`, pushed
+/// root-first so the innermost key is on top (the order the kernel's `pop_key_path`
+/// expects). A composite-key root has several root key columns rather than one.
 #[derive(Clone, Copy)]
 struct DurKey<'e> {
     key: PlaceKey<'e>,
@@ -681,8 +682,9 @@ struct DurablePlace<'e> {
 
 impl DurablePlace<'_> {
     /// The single root key slot when this place's whole key-path is one pre-evaluated
-    /// `Bound` column. `None` for an inline key or a nested (branch) path. Used only by
-    /// the whole-entry root upsert, which establishes root presence for that one slot.
+    /// `Bound` column. `None` for an inline key or any multi-column key path — a branch
+    /// or a composite-key root. Used only by the whole-entry root upsert, which
+    /// establishes root presence for that one slot.
     fn root_bound_slot(&self) -> Option<u16> {
         match self.keys.as_slice() {
             [
@@ -822,7 +824,7 @@ enum DurNode<'a> {
 struct DurFieldRef {
     site: u16,
     /// The field's value type: a root field's widened value set, or a branch field's
-    /// scalar (branch fields stay scalar-only this lane) lifted to `GArg::Scalar`.
+    /// scalar (branch fields are currently scalar-only) lifted to `GArg::Scalar`.
     ty: GArg,
     required: bool,
 }
@@ -7478,7 +7480,9 @@ impl<'a> FnLowerer<'a> {
 
     /// Emit a durable operation's whole key-path, root column first, so the innermost
     /// key is left on top — the order the kernel's `pop_key_path` reads back to a
-    /// root-first path. A one-column path is a root address; a two-column path a branch.
+    /// root-first path. Path length does not name the node kind: a single-key root is
+    /// one column and a single-level branch two, but a composite-key root is itself
+    /// multi-column.
     fn emit_key_path(&mut self, keys: &[DurKey], span: SourceSpan) -> Option<()> {
         for column in keys {
             self.emit_key(column.key, column.key_ty, span)?;

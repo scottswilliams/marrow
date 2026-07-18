@@ -347,7 +347,7 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
 }
 
 /// A `place` over a composite-key root resolves its fields against the root node, exactly
-/// like an inline `^enrollments(student, course).grade` address: the two key operands do not
+/// like an inline `^enrollments[student, course].grade` address: the two key operands do not
 /// reclassify it as a branch place. A composite-key branch place is the control — both node
 /// kinds run through the same place field-resolution family — and resolves `room` against
 /// its branch record.
