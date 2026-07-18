@@ -518,7 +518,7 @@ fn bounded_traversal_over_a_composite_layer_is_rejected() {
 }
 
 /// A missing field through a composite-root `place` is a located `check.type` that names
-/// the root container, exactly like an inline `^enrollments(student, course).nope` would
+/// the root container, exactly like an inline `^enrollments[student, course].nope` would
 /// be. Resolving the field against the root node (not a misrouted, nonexistent branch)
 /// means the message names `enrollments`, never an empty container.
 #[test]
