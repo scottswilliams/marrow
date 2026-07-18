@@ -312,6 +312,17 @@ struct FnInst {
     func: u16,
 }
 
+/// The source location a type instantiation is minted from, threaded through
+/// [`TypeRegistry::mint_type_instance`] so a mint-time rejection — a collection as
+/// an enum payload leaf — points at the construction or annotation site rather than
+/// the reserved `Option`/`Result` template, which carries no user span. `file` is
+/// empty only for a synthetic mint with no source anchor.
+#[derive(Clone, Copy)]
+pub(crate) struct MintSite<'a> {
+    pub(crate) file: &'a str,
+    pub(crate) span: SourceSpan,
+}
+
 /// The single owner of generic instantiation identity across functions and value
 /// types. Interior-mutable so a shared `&TypeRegistry` mints instances during field
 /// resolution and body lowering. Type instantiations mint their image record/enum
@@ -506,9 +517,10 @@ impl TypeRegistry {
         &self,
         draft: &mut ImageDraft,
         inner: GArg,
+        site: MintSite<'_>,
     ) -> EnumId {
         let template = self.reserved_template(Reserved::Option);
-        match self.mint_type_instance(draft, template, &[inner]) {
+        match self.mint_type_instance(draft, template, &[inner], site) {
             Some(TypeInstId::Enum(id)) => id,
             _ => unreachable!("the reserved Option template mints an enum for one value argument"),
         }
@@ -593,8 +605,9 @@ impl TypeRegistry {
         &self,
         draft: &mut ImageDraft,
         annotation: &TypeExpr,
+        site: MintSite<'_>,
     ) -> Option<GArg> {
-        self.resolve_garg_expanded(draft, &self.expand(annotation), &[])
+        self.resolve_garg_expanded(draft, &self.expand(annotation), &[], site)
     }
 
     /// Resolve a type expression under a substitution environment (`param name ->
@@ -605,8 +618,9 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
+        site: MintSite<'_>,
     ) -> Option<GArg> {
-        self.resolve_garg_expanded(draft, &self.expand(ty), subst)
+        self.resolve_garg_expanded(draft, &self.expand(ty), subst, site)
     }
 
     fn resolve_garg_expanded(
@@ -614,6 +628,7 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         ty: &TypeExpr,
         subst: &[(String, GArg)],
+        site: MintSite<'_>,
     ) -> Option<GArg> {
         match ty {
             TypeExpr::Name { text, .. } => {
@@ -632,20 +647,22 @@ impl TypeRegistry {
             TypeExpr::Apply { head, args, .. } => match head.as_str() {
                 "List" => {
                     let [elem] = args.as_slice() else { return None };
-                    let elem = self.resolve_garg_expanded(draft, &self.expand(elem), subst)?;
+                    let elem =
+                        self.resolve_garg_expanded(draft, &self.expand(elem), subst, site)?;
                     Some(GArg::Collection(self.instantiate_list(draft, elem)))
                 }
                 "Map" => {
                     let [key, value] = args.as_slice() else {
                         return None;
                     };
-                    let key = self.resolve_garg_expanded(draft, &self.expand(key), subst)?;
+                    let key = self.resolve_garg_expanded(draft, &self.expand(key), subst, site)?;
                     // A map key is drawn from the durable-key scalar family; a struct,
                     // enum, collection, or decimal key is not admitted.
                     if !key.is_key_type() {
                         return None;
                     }
-                    let value = self.resolve_garg_expanded(draft, &self.expand(value), subst)?;
+                    let value =
+                        self.resolve_garg_expanded(draft, &self.expand(value), subst, site)?;
                     Some(GArg::Collection(self.instantiate_map(draft, key, value)))
                 }
                 _ => {
@@ -656,6 +673,7 @@ impl TypeRegistry {
                             draft,
                             &self.expand(arg),
                             subst,
+                            site,
                         )?);
                     }
                     if resolved.len() != self.type_templates[template].type_params.len() {
@@ -676,7 +694,7 @@ impl TypeRegistry {
                             return None;
                         }
                     }
-                    self.mint_type_instance(draft, template, &resolved)
+                    self.mint_type_instance(draft, template, &resolved, site)
                         .map(|id| match id {
                             TypeInstId::Record(ty) => GArg::Struct(ty),
                             TypeInstId::Enum(id) => GArg::Enum(id),
@@ -699,6 +717,7 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         template: usize,
         args: &[GArg],
+        site: MintSite<'_>,
     ) -> Option<TypeInstId> {
         if let Some(inst) = self
             .generics
@@ -766,7 +785,7 @@ impl TypeRegistry {
         // overflow the stack, while any finite nesting (source nesting is itself
         // depth-bounded) completes.
         self.generics.borrow_mut().fill_depth += 1;
-        let filled = self.fill_type_body(draft, template, id, args);
+        let filled = self.fill_type_body(draft, template, id, args, site);
         self.generics.borrow_mut().fill_depth -= 1;
         let filled = filled?;
         self.generics.borrow_mut().type_insts[inst_index].body = filled;
@@ -782,6 +801,7 @@ impl TypeRegistry {
         template: usize,
         id: TypeInstId,
         args: &[GArg],
+        site: MintSite<'_>,
     ) -> Option<InstBody> {
         let subst: Vec<(String, GArg)> = self.type_templates[template]
             .type_params
@@ -795,7 +815,7 @@ impl TypeRegistry {
                 let mut resolved = Vec::with_capacity(fields.len());
                 let mut defs = Vec::with_capacity(fields.len());
                 for (fname, fty) in &fields {
-                    let arg = self.resolve_garg_env(draft, fty, &subst)?;
+                    let arg = self.resolve_garg_env(draft, fty, &subst, site)?;
                     defs.push(FieldDef {
                         name: draft.intern_string(fname),
                         ty: arg.image(),
@@ -809,13 +829,30 @@ impl TypeRegistry {
                 InstBody::Struct(resolved)
             }
             TemplateBody::Enum(variants) => {
+                let enum_name = &self.type_templates[template].name;
+                let mut reported = false;
                 let mut resolved = Vec::with_capacity(variants.len());
                 let mut defs = Vec::with_capacity(variants.len());
                 for variant in &variants {
                     let mut payload = Vec::with_capacity(variant.payload.len());
                     let mut leaves = Vec::with_capacity(variant.payload.len());
                     for field in &variant.payload {
-                        let arg = self.resolve_garg_env(draft, &field.ty, &subst)?;
+                        let arg = self.resolve_garg_env(draft, &field.ty, &subst, site)?;
+                        // The image admits a bare scalar, record, or enum as an enum
+                        // payload leaf; a collection is not a payload type. Reject at the
+                        // mint so a checker-clean program can never emit an image the
+                        // verifier rejects at the Table phase.
+                        if let GArg::Collection(coll) = arg
+                            && !reported
+                        {
+                            self.record_collection_payload_rejection(
+                                site,
+                                enum_name,
+                                &variant.name,
+                                coll,
+                            );
+                            reported = true;
+                        }
                         leaves.push(arg.image());
                         payload.push((field.name.clone(), arg));
                     }
@@ -835,6 +872,38 @@ impl TypeRegistry {
                 InstBody::Enum(resolved)
             }
         })
+    }
+
+    /// Record the mint-time rejection of a collection payload leaf at the construction
+    /// or annotation site. The instantiation still fills its body so the shared
+    /// instance cache stays consistent; the non-empty pending queue makes the driver
+    /// reject before the image is encoded, so the collection leaf never reaches the
+    /// verifier.
+    fn record_collection_payload_rejection(
+        &self,
+        site: MintSite<'_>,
+        enum_name: &str,
+        variant_name: &str,
+        coll: u16,
+    ) {
+        let kind = match self.collection_spec(coll) {
+            CollSpec::List { .. } => "List",
+            CollSpec::Map { .. } => "Map",
+        };
+        self.generics
+            .borrow_mut()
+            .pending
+            .push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                site.file,
+                site.span,
+                format!(
+                    "the `{variant_name}` payload of `{enum_name}` is a `{kind}` value. An enum \
+                 member payload is a bare scalar, a struct, or another enum; a collection is not a \
+                 payload type. Declare a struct that holds the collection and use that struct as \
+                 the payload."
+                ),
+            ));
     }
 
     /// The template index and concrete arguments a minted type instantiation came
@@ -1989,7 +2058,14 @@ fn struct_fields(
             ok = false;
             continue;
         }
-        let Some(field_ty) = registry.resolve_garg(draft, &field.ty) else {
+        let Some(field_ty) = registry.resolve_garg(
+            draft,
+            &field.ty,
+            MintSite {
+                file,
+                span: field.ty.span(),
+            },
+        ) else {
             diagnostics.push(unsupported(file, field.ty.span(), "this struct field type"));
             ok = false;
             continue;
@@ -2290,7 +2366,14 @@ fn fill_record(
                 // value set: a scalar, a nominal scalar, a dense struct, or a closed
                 // enum (`Option`/`Result`/a user `enum`). A collection is not a durable
                 // field value; an abstract parameter never reaches a concrete record.
-                let field_ty = match registry.resolve_garg(draft, &field.ty) {
+                let field_ty = match registry.resolve_garg(
+                    draft,
+                    &field.ty,
+                    MintSite {
+                        file,
+                        span: field.ty.span(),
+                    },
+                ) {
                     Some(
                         ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_)),
                     ) => ty,
@@ -2389,7 +2472,14 @@ fn build_group_leaves(
             diagnostics.push(unsupported(file, field.span, "a keyed field"));
             continue;
         }
-        let field_ty = match registry.resolve_garg(draft, &field.ty) {
+        let field_ty = match registry.resolve_garg(
+            draft,
+            &field.ty,
+            MintSite {
+                file,
+                span: field.ty.span(),
+            },
+        ) {
             Some(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
             _ => {
                 diagnostics.push(unsupported(file, field.ty.span(), "this group field type"));

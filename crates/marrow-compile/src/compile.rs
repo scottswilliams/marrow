@@ -245,12 +245,12 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
 
     // The function signatures paired with their dotted module, in declaration order
     // (the order lowering assigns image indices).
-    let functions: Vec<(String, &FunctionDecl)> = parsed
+    let functions: Vec<(String, String, &FunctionDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl {
-                    Some((module.name.clone(), function))
+                    Some((module.file.clone(), module.name.clone(), function))
                 } else {
                     None
                 }

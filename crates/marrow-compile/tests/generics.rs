@@ -475,3 +475,231 @@ pub fn run(): int {
 "#,
     );
 }
+
+/// A collection as a bare `some(...)` payload is refused at check time. The image
+/// admits a scalar, record, or enum enum-payload leaf; a `List` is not one, so a
+/// checker-clean program can never mint an image the verifier rejects at the Table
+/// phase. The refusal is located at the constructed value.
+#[test]
+fn a_collection_some_payload_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn run(): int {
+    const x = some(List(1, 2, 3))
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("`some` payload of `Option`")
+                && d.message.contains("not a payload type")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// The same rejection reaches an `Option<List<int>>` type annotation carrying no
+/// constructor: the mint that resolves the annotation is where the collection
+/// payload leaf is refused.
+#[test]
+fn a_collection_option_annotation_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn run(): int {
+    const x: Option<List<int>> = none
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("not a payload type")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A `Result` whose `ok` payload monomorphizes to a `Map` is refused with the same
+/// teaching diagnostic, naming the offending member.
+#[test]
+fn a_collection_result_payload_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn run(): Result<Map<int, int>, int> {
+    return ok(Map())
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("`ok` payload of `Result`") && d.message.contains("`Map`")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A user generic enum instantiated with a collection type argument that lands in a
+/// payload position is refused, exactly like the reserved generics.
+#[test]
+fn a_user_generic_enum_collection_argument_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+enum Box<T> {
+    wrap(v: T)
+}
+
+pub fn run(): int {
+    const x = Box::wrap(v: List(1, 2, 3))
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("`wrap` payload of `Box`")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A user generic enum whose template body wraps its parameter in a collection has a
+/// collection payload leaf for every instantiation — even `E<int>` — and is refused
+/// at the instantiation site.
+#[test]
+fn a_user_generic_enum_internal_collection_payload_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+enum E<T> {
+    v(x: List<T>)
+}
+
+pub fn run(): int {
+    const x = E::v(x: List(1))
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("`v` payload of `E`")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A collection buried under nested `Option` layers is still refused: the inner
+/// `Option<List<int>>` mint carries the illegal leaf.
+#[test]
+fn a_nested_option_collection_payload_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn run(): int {
+    const x = some(some(List(1, 2, 3)))
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("not a payload type")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// A function parameter typed `Option<List<int>>` is refused during signature
+/// resolution, so the collection payload leaf never reaches an image function type.
+#[test]
+fn a_collection_option_parameter_is_rejected() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn takes(o: Option<List<int>>): int {
+    return 0
+}
+
+pub fn run(): int {
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.unsupported"),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("not a payload type")),
+        "{diagnostics:#?}"
+    );
+}
+
+/// An `Option` of a struct keeps compiling: a struct is an admitted enum-payload
+/// leaf, so wrapping a collection in a struct is the stated fix and it works.
+#[test]
+fn an_option_of_a_struct_holding_a_collection_compiles() {
+    compile_ok(
+        r#"module main
+
+struct Items {
+    xs: List<int>
+}
+
+pub fn run(): int {
+    const x = some(Items(xs: List(1, 2, 3)))
+    return 0
+}
+"#,
+    );
+}
+
+/// A `List` field on a struct is unaffected: the enum-payload restriction does not
+/// touch struct fields, which admit collections.
+#[test]
+fn a_struct_field_collection_still_compiles() {
+    compile_ok(
+        r#"module main
+
+struct Items {
+    xs: List<int>
+}
+
+pub fn run(): int {
+    const x = Items(xs: List(1, 2, 3))
+    return 0
+}
+"#,
+    );
+}

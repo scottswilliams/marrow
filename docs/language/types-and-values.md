@@ -624,6 +624,13 @@ making it a generic value type. Each distinct application `Name<Args>` is a sepa
 monomorphized value type; the type arguments substitute for the parameters in the
 fields (a struct) or variant payloads (an enum).
 
+A substituted enum variant payload leaf is a scalar, a `struct`, or another enum; a
+collection (`List` or `Map`) is not a payload type. A generic enum whose payload
+resolves to a collection — including `Option<List<int>>` and `Result<Map<K, V>, E>`
+through the reserved generic enums — is a `check.unsupported` at the construction or
+annotation site. Wrap the collection in a `struct` and carry that struct as the
+payload.
+
 ```mw
 struct Pair<A, B> {
     first: A

@@ -4,7 +4,8 @@
 //! so the verifier — the only decoder — is what rejects.
 
 use marrow_image::{
-    EnumTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, VariantDef,
+    CollectionTypeDef, EnumTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar,
+    SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
 
@@ -215,6 +216,39 @@ fn an_out_of_range_payload_field_rejects_at_function() {
     assert_eq!(
         verify_fn(draft, vec![], ImageType::scalar(Scalar::Int), code),
         "image.function"
+    );
+}
+
+#[test]
+fn a_collection_enum_payload_leaf_rejects_at_table() {
+    // The payload-shape contract admits a bare scalar, record, or enum enum-payload
+    // leaf; a collection is not one. A tampered image whose variant payload names a
+    // `List` collection type is refused at the phase that owns the ENUMS table, so the
+    // compiler's check-time refusal of the same shape is defense in depth, not the
+    // trust boundary.
+    let mut draft = ImageDraft::new();
+    let list_int = draft
+        .add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        })
+        .index();
+    let name = draft.intern_string("Holder");
+    let wrap = draft.intern_string("wrap");
+    draft.add_enum_type(EnumTypeDef {
+        name,
+        variants: vec![VariantDef {
+            name: wrap,
+            category: false,
+            payload: vec![ImageType::Collection {
+                idx: list_int,
+                optional: false,
+            }],
+        }],
+    });
+    let code = vec![Instr::Return];
+    assert_eq!(
+        verify_fn(draft, vec![], ImageType::Unit, code),
+        "image.table"
     );
 }
 

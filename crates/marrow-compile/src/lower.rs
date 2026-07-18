@@ -26,8 +26,8 @@ use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
-    CollSpec, GArg, MAX_INSTANTIATIONS, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR, RESULT_OK,
-    SupportSet, TypeConstraint, TypeInstId, TypeRegistry,
+    CollSpec, GArg, MAX_INSTANTIATIONS, MintSite, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR,
+    RESULT_OK, SupportSet, TypeConstraint, TypeInstId, TypeRegistry,
 };
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
@@ -1024,7 +1024,7 @@ impl FunctionRegistry {
         records: &TypeRegistry,
         draft: &mut ImageDraft,
         durable: &DurableRegistry,
-        functions: &[(String, &FunctionDecl)],
+        functions: &[(String, String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
     ) -> Self {
@@ -1036,20 +1036,30 @@ impl FunctionRegistry {
         // over non-generic functions only, matching the order [`FnLowerer::lower`]
         // adds them into the image FUNCTIONS table.
         let mut index: u16 = 0;
-        for (module, function) in functions {
+        for (file, module, function) in functions {
             if !function.type_params.is_empty() {
                 continue;
             }
             let mut params = Vec::with_capacity(function.params.len());
             for param in &function.params {
-                if let Some(ty) = param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY) {
+                let site = MintSite {
+                    file,
+                    span: param.ty.span(),
+                };
+                if let Some(ty) =
+                    param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site)
+                {
                     params.push(ty);
                 }
             }
             let ret = match &function.return_type {
                 None => RetType::Unit,
                 Some(annotation) => {
-                    match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY) {
+                    let site = MintSite {
+                        file,
+                        span: annotation.span(),
+                    };
+                    match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY, site) {
                         Some(LTy::Record { .. }) | None => {
                             // A resource-record or unsupported return; the function's own
                             // lowering reports it. Record Unit here so indices stay aligned.
@@ -1534,21 +1544,31 @@ impl<'a> FnLowerer<'a> {
             let env = TypeEnv { params: &type_env };
             match &function.return_type {
                 None => RetType::Unit,
-                Some(annotation) => match resolve_type(records, draft, durable, annotation, env) {
-                    Some(LTy::Record { .. }) => {
-                        diagnostics.push(unsupported(
-                            file,
-                            annotation.span(),
-                            "a resource return type",
-                        ));
-                        return None;
+                Some(annotation) => {
+                    let site = MintSite {
+                        file,
+                        span: annotation.span(),
+                    };
+                    match resolve_type(records, draft, durable, annotation, env, site) {
+                        Some(LTy::Record { .. }) => {
+                            diagnostics.push(unsupported(
+                                file,
+                                annotation.span(),
+                                "a resource return type",
+                            ));
+                            return None;
+                        }
+                        Some(ty) => RetType::Value(ty),
+                        None => {
+                            diagnostics.push(unsupported(
+                                file,
+                                annotation.span(),
+                                "this return type",
+                            ));
+                            return None;
+                        }
                     }
-                    Some(ty) => RetType::Value(ty),
-                    None => {
-                        diagnostics.push(unsupported(file, annotation.span(), "this return type"));
-                        return None;
-                    }
-                },
+                }
             }
         };
 
@@ -5625,12 +5645,17 @@ impl<'a> FnLowerer<'a> {
                 binding: ParamBinding::Concrete(*arg),
             })
             .collect();
+        let site = MintSite {
+            file: self.file,
+            span: annotation.span(),
+        };
         match resolve_type(
             self.records,
             self.draft,
             self.durable,
             annotation,
             TypeEnv { params: &env },
+            site,
         ) {
             Some(LTy::Record { .. }) | None => RetType::Unit,
             Some(ty) => RetType::Value(ty),
@@ -6200,9 +6225,13 @@ impl<'a> FnLowerer<'a> {
         if !self.constraints_satisfied(template, &name, &concrete, span) {
             return None;
         }
+        let site = MintSite {
+            file: self.file,
+            span,
+        };
         let TypeInstId::Record(type_id) = self
             .records
-            .mint_type_instance(self.draft, template, &concrete)?
+            .mint_type_instance(self.draft, template, &concrete, site)?
         else {
             return None;
         };
@@ -6278,9 +6307,13 @@ impl<'a> FnLowerer<'a> {
         if !self.constraints_satisfied(template, &name, &concrete, span) {
             return None;
         }
+        let site = MintSite {
+            file: self.file,
+            span,
+        };
         let TypeInstId::Enum(enum_id) = self
             .records
-            .mint_type_instance(self.draft, template, &concrete)?
+            .mint_type_instance(self.draft, template, &concrete, site)?
         else {
             return None;
         };
@@ -6534,8 +6567,13 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// The image enum index of the reserved `Option[inner]`, minting it on first use.
-    fn opt_enum(&mut self, inner: GArg) -> EnumId {
-        self.records.instantiate_reserved_option(self.draft, inner)
+    fn opt_enum(&mut self, inner: GArg, span: SourceSpan) -> EnumId {
+        let site = MintSite {
+            file: self.file,
+            span,
+        };
+        self.records
+            .instantiate_reserved_option(self.draft, inner, site)
     }
 
     /// Lower a reserved `Option`/`Result` constructor directed by an expected type:
@@ -6679,7 +6717,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let id = self.opt_enum(inner);
+        let id = self.opt_enum(inner, arg.value.span());
         self.push(
             Instr::EnumConstruct {
                 enum_idx: id.index(),
@@ -9019,14 +9057,29 @@ impl<'a> FnLowerer<'a> {
         let env = TypeEnv {
             params: &self.type_env,
         };
-        resolve_type(self.records, self.draft, self.durable, annotation, env)
+        let site = MintSite {
+            file: self.file,
+            span: annotation.span(),
+        };
+        resolve_type(
+            self.records,
+            self.draft,
+            self.durable,
+            annotation,
+            env,
+            site,
+        )
     }
 
     fn param_type(&mut self, ty: &TypeExpr) -> Option<LTy> {
         let env = TypeEnv {
             params: &self.type_env,
         };
-        match param_type(self.records, self.draft, self.durable, ty, env) {
+        let site = MintSite {
+            file: self.file,
+            span: ty.span(),
+        };
+        match param_type(self.records, self.draft, self.durable, ty, env, site) {
             Some(param) => Some(param),
             None => {
                 self.fail(unsupported(self.file, ty.span(), "this parameter type"));
@@ -9092,8 +9145,9 @@ fn param_type(
     durable: &DurableRegistry,
     ty: &TypeExpr,
     env: TypeEnv,
+    site: MintSite<'_>,
 ) -> Option<LTy> {
-    match resolve_type(records, draft, durable, ty, env) {
+    match resolve_type(records, draft, durable, ty, env, site) {
         Some(
             param @ (LTy::Scalar {
                 optional: false, ..
@@ -9136,8 +9190,16 @@ fn resolve_type(
     durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
+    site: MintSite<'_>,
 ) -> Option<LTy> {
-    resolve_expanded(records, draft, durable, &records.expand(annotation), env)
+    resolve_expanded(
+        records,
+        draft,
+        durable,
+        &records.expand(annotation),
+        env,
+        site,
+    )
 }
 
 fn resolve_expanded(
@@ -9146,6 +9208,7 @@ fn resolve_expanded(
     durable: &DurableRegistry,
     annotation: &TypeExpr,
     env: TypeEnv,
+    site: MintSite<'_>,
 ) -> Option<LTy> {
     match annotation {
         TypeExpr::Name { text, .. } => {
@@ -9185,7 +9248,7 @@ fn resolve_expanded(
             }
         }
         TypeExpr::Optional { inner, .. } => {
-            let inner = resolve_expanded(records, draft, durable, inner, env)?;
+            let inner = resolve_expanded(records, draft, durable, inner, env, site)?;
             if inner.is_optional() {
                 None
             } else {
@@ -9193,7 +9256,7 @@ fn resolve_expanded(
             }
         }
         TypeExpr::Apply { head, args, .. } => {
-            resolve_generic(records, draft, durable, head, args, env)
+            resolve_generic(records, draft, durable, head, args, env, site)
         }
         // `Id(^root)`: the entry-identity value type of the one declared store root.
         // The root name must match the declared root; a program has zero or one root,
@@ -9228,11 +9291,12 @@ fn resolve_generic(
     head: &str,
     args: &[TypeExpr],
     env: TypeEnv,
+    site: MintSite<'_>,
 ) -> Option<LTy> {
     match head {
         "List" => {
             let [elem] = args else { return None };
-            let elem = resolve_expanded(records, draft, durable, elem, env)?.as_garg()?;
+            let elem = resolve_expanded(records, draft, durable, elem, env, site)?.as_garg()?;
             Some(LTy::Collection {
                 idx: records.instantiate_list(draft, elem),
                 optional: false,
@@ -9240,14 +9304,14 @@ fn resolve_generic(
         }
         "Map" => {
             let [key, value] = args else { return None };
-            let key = resolve_expanded(records, draft, durable, key, env)?.as_garg()?;
+            let key = resolve_expanded(records, draft, durable, key, env, site)?.as_garg()?;
             // A type parameter is not admitted as a map key: keys are drawn from the
             // durable-key scalar family, and a generic key would need an order
             // constraint the collection contract does not model here.
             if !key.is_key_type() {
                 return None;
             }
-            let value = resolve_expanded(records, draft, durable, value, env)?.as_garg()?;
+            let value = resolve_expanded(records, draft, durable, value, env, site)?.as_garg()?;
             Some(LTy::Collection {
                 idx: records.instantiate_map(draft, key, value),
                 optional: false,
@@ -9261,7 +9325,8 @@ fn resolve_generic(
             }
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expanded(records, draft, durable, arg, env)?.as_garg()?);
+                resolved
+                    .push(resolve_expanded(records, draft, durable, arg, env, site)?.as_garg()?);
             }
             // Per-application constraint revalidation: a concrete argument must
             // support the constraint; an abstract parameter satisfies it when its own
@@ -9285,7 +9350,7 @@ fn resolve_generic(
                     }
                 }
             }
-            match records.mint_type_instance(draft, template, &resolved)? {
+            match records.mint_type_instance(draft, template, &resolved, site)? {
                 TypeInstId::Record(ty) => Some(LTy::Struct {
                     ty,
                     optional: false,
