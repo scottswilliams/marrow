@@ -746,11 +746,27 @@ impl SealedExport {
 /// is recorded in a table parallel to — and separate from — the export demand table
 /// so an E01 ephemeral test attachment can bound the test's authority by the
 /// test-image demand union.
+/// How a test body reaches durable data, deciding the runtime that drives it. The
+/// three kinds are disjoint: a body that performs a direct durable op and also
+/// drives a transaction owner is refused by the verifier before this classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestKind {
+    /// No durable demand: runs with no attachment.
+    Storeless,
+    /// Performs durable operations directly in its body: runs against one harness
+    /// session over a fresh attachment.
+    DirectDurable,
+    /// Reaches durable data only through calls: runs as a driver, where each call is
+    /// its own invocation boundary against a fresh persistent attachment.
+    Driver,
+}
+
 #[derive(Debug, Clone)]
 pub struct SealedTestEntry {
     pub(crate) name: Rc<str>,
     pub(crate) func: u16,
     pub(crate) demand: ExportDemand,
+    pub(crate) kind: TestKind,
 }
 
 impl SealedTestEntry {
@@ -770,6 +786,11 @@ impl SealedTestEntry {
     pub fn demand(&self) -> &ExportDemand {
         &self.demand
     }
+
+    /// How this test reaches durable data, deciding which runtime drives it.
+    pub fn kind(&self) -> TestKind {
+        self.kind
+    }
 }
 
 /// The verified, sealed program image.
@@ -788,6 +809,12 @@ pub struct VerifiedImage {
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
     pub(crate) test_entries: Vec<SealedTestEntry>,
+    /// Per-function reconstructed durable demand over its whole call closure,
+    /// indexed by image function index. The same `Effects` owner that builds each
+    /// export's demand builds this, so a test-body driver can open the session one
+    /// export call requires without a second demand model. Derived, never
+    /// serialized in the image.
+    pub(crate) function_demands: Vec<ExportDemand>,
 }
 
 impl VerifiedImage {
@@ -908,6 +935,13 @@ impl VerifiedImage {
 
     pub fn function(&self, index: u16) -> &SealedFunction {
         &self.functions[index as usize]
+    }
+
+    /// The reconstructed durable demand of the function at `index` over its whole
+    /// call closure. A test-body driver consults this to open the read or write
+    /// session one export call requires; empty demand needs no session.
+    pub fn function_demand(&self, index: u16) -> &ExportDemand {
+        &self.function_demands[index as usize]
     }
 
     pub fn functions(&self) -> &[SealedFunction] {

@@ -26,7 +26,7 @@ use marrow_verify::{
 };
 
 use crate::fault::RuntimeFault;
-use crate::run::run_durable;
+use crate::run::{DriverDispatch, run_driver, run_durable, run_in_session};
 use crate::value::Value;
 
 /// The outcome of attempting to run one durable test against a fresh ephemeral
@@ -83,6 +83,85 @@ pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> Durab
 
 fn coverage(read: bool, write: bool) -> DemandCoverage {
     DemandCoverage { read, write }
+}
+
+/// Run one durable *driver* test entry against a fresh persistent ephemeral
+/// attachment. The test body drives exports: each durable call it makes is its own
+/// invocation boundary (see [`TestDriver`]), so a mutating export commits to the
+/// attachment and a later reading export observes the committed state, exactly as a
+/// terminal drives an application. The attachment is minted per test and discarded
+/// at the end, so no test observes another's writes. A driver test performs no
+/// direct durable operation — the verifier's test-entry phase refuses a body that
+/// mixes the two.
+pub fn run_driver_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
+    let Some((schema, sites)) = derive_schema(image) else {
+        return DurableRun::Parked;
+    };
+    let ceiling = deployment_ceiling(image.test_demand_union());
+    let mut attachment = match EphemeralAttachment::mint(schema, sites, ceiling) {
+        Ok(attachment) => attachment,
+        Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
+    };
+    let mut driver = TestDriver {
+        image,
+        attachment: &mut attachment,
+    };
+    DurableRun::Ran(run_driver(image, entry.func(), Vec::new(), &mut driver))
+}
+
+/// The invocation dispatcher for a driver test body: it owns one persistent
+/// attachment and turns each call the driver frame makes into its own session.
+struct TestDriver<'a> {
+    image: &'a VerifiedImage,
+    attachment: &'a mut EphemeralAttachment,
+}
+
+impl DriverDispatch for TestDriver<'_> {
+    fn invoke(
+        &mut self,
+        func: u16,
+        args: Vec<Value>,
+        depth: u32,
+        budget: &mut u64,
+    ) -> Result<Option<Value>, RuntimeFault> {
+        let demand = self.image.function_demand(func);
+        // A storeless callee needs no session.
+        if demand.is_empty() {
+            return run_in_session(self.image, func, args, depth, budget, None);
+        }
+        let grant = InvocationGrant::full_store();
+        let cover = coverage(demand.reads(), demand.writes());
+        // A mutating call drives a transaction session (which also reads and, on its
+        // own `TxnCommit`, commits to the attachment); a read-only call drives a read
+        // session, so a read-only demand never opens a writer. Either session closes
+        // when this invocation returns — a committed writer persists, a dropped one
+        // rolls back — before the next call opens its own.
+        if cover.write {
+            match self.attachment.txn_session(grant, cover) {
+                Ok(mut session) => {
+                    run_in_session(self.image, func, args, depth, budget, Some(&mut session))
+                }
+                Err(_) => Err(session_open_fault(self.image, func)),
+            }
+        } else {
+            match self.attachment.read_session(grant, cover) {
+                Ok(mut session) => {
+                    run_in_session(self.image, func, args, depth, budget, Some(&mut session))
+                }
+                Err(_) => Err(session_open_fault(self.image, func)),
+            }
+        }
+    }
+}
+
+/// A driver invocation whose session could not open — the authority resolved against
+/// the attachment's ceiling and the invocation grant refused it. The callee's demand
+/// is a subset of the test-image union the ceiling is minted from, so a well-formed
+/// image never reaches this; it is mapped to a source-positioned `run.authority`
+/// fault rather than a panic.
+fn session_open_fault(image: &VerifiedImage, func: u16) -> RuntimeFault {
+    let (line, column) = image.function(func).span_at(0).unwrap_or((1, 1));
+    RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column)
 }
 
 /// Derive the deployment ceiling a fresh attachment is bounded by from a demand

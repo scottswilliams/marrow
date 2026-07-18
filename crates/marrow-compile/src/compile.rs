@@ -98,10 +98,18 @@ struct LoweredFn {
     /// from its caller or the test harness, so the requirement is reported only at
     /// export entries.
     is_export: bool,
+    /// Whether this is a `test` body. A test body is one of two disjoint kinds: it
+    /// performs durable operations directly, or it drives exports. Mixing the two is
+    /// refused by the strict-separation check.
+    is_test: bool,
     /// Spans of durable mutations this body performs outside any `transaction` block.
     unwrapped_mutations: Vec<SourceSpan>,
     /// Calls this body performs outside any `transaction` block, with their spans.
     unwrapped_calls: Vec<(u16, SourceSpan)>,
+    /// Whether this body performs a durable-place operation directly.
+    has_direct_durable_op: bool,
+    /// Whether this body owns a `transaction` block.
+    owns_transaction: bool,
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
@@ -463,8 +471,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                         span: function.span,
                         callees: result.callees,
                         is_export: function.public,
+                        is_test: false,
                         unwrapped_mutations: result.unwrapped_mutations,
                         unwrapped_calls: result.unwrapped_calls,
+                        has_direct_durable_op: result.has_direct_durable_op,
+                        owns_transaction: result.owns_transaction,
                     });
                     if function.public {
                         // The injectivity owner's own guard: every dotted module
@@ -550,11 +561,14 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     index: result.func.index(),
                     file: module.file.clone(),
                     name: test.name.clone(),
-                    span: test.span,
+                    span: test.name_span,
                     callees: result.callees,
                     is_export: false,
+                    is_test: true,
                     unwrapped_mutations: result.unwrapped_mutations,
                     unwrapped_calls: result.unwrapped_calls,
+                    has_direct_durable_op: result.has_direct_durable_op,
+                    owns_transaction: result.owns_transaction,
                 });
                 let name_id = draft.intern_string(&test.name);
                 draft.add_test_entry(name_id, result.func);
@@ -603,8 +617,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 span: template.span(),
                 callees: result.callees,
                 is_export: false,
+                is_test: false,
                 unwrapped_mutations: result.unwrapped_mutations,
                 unwrapped_calls: result.unwrapped_calls,
+                has_direct_durable_op: result.has_direct_durable_op,
+                owns_transaction: result.owns_transaction,
             });
         }
     }
@@ -634,6 +651,14 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // graph is acyclic so the effect fixpoint terminates and indices are aligned.
     if diagnostics.is_empty() {
         reject_missing_transaction(&lowered, &mut diagnostics);
+    }
+
+    // A test body reaches durable data in one of two disjoint ways — directly, or by
+    // driving exports — and may not do both. Reported at check time so the source
+    // carries the diagnostic; the verifier's test-entry phase rejects a mixed image
+    // (image.test_entry) as defense in depth. Run once the call graph is acyclic.
+    if diagnostics.is_empty() {
+        reject_mixed_test_bodies(&lowered, &mut diagnostics);
     }
 
     if !diagnostics.is_empty() {
@@ -831,6 +856,45 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Vec<Sourc
                     ),
                 ));
             }
+        }
+    }
+}
+
+/// Report `check.test_driver_mix` for every `test` body that both performs a durable
+/// operation directly and drives a transaction-owning export. The two invocation
+/// models — one harness session for direct operations, one session per driven export
+/// call — cannot share a body: the driven export's commit would consume the harness
+/// session the direct operation needs. Only a directly-owned transaction counts as a
+/// driven owner; because a transaction owner is never reached through a helper, the
+/// test body's direct call edges carry the whole relation.
+fn reject_mixed_test_bodies(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+    let count = lowered.len();
+    let mut owns_transaction = vec![false; count];
+    for function in lowered {
+        if (function.index as usize) < count {
+            owns_transaction[function.index as usize] = function.owns_transaction;
+        }
+    }
+    for test in lowered.iter().filter(|f| f.is_test) {
+        if !test.has_direct_durable_op {
+            continue;
+        }
+        let drives_owner = test
+            .callees
+            .iter()
+            .any(|callee| (*callee as usize) < count && owns_transaction[*callee as usize]);
+        if drives_owner {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckTestDriverMix.as_str(),
+                &test.file,
+                test.span,
+                "this test body performs a durable operation directly and also drives an \
+                 export that owns a transaction. A test either works durable data directly, \
+                 in the harness session, or drives exports, where each call is its own \
+                 invocation boundary; the two cannot share one body. Split them into \
+                 separate tests, or reach the durable data through the exports it drives."
+                    .to_string(),
+            ));
         }
     }
 }

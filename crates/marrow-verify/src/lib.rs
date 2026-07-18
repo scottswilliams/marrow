@@ -25,6 +25,6 @@ pub use sealed::{
     AtomIncidence, NodeIncidence, RetShape, SealedBranch, SealedConst, SealedEnumType,
     SealedExport, SealedField, SealedFunction, SealedGroup, SealedIndex, SealedIndexComponent,
     SealedInstr, SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry,
-    SealedVariant, SpanRow, VerifiedImage,
+    SealedVariant, SpanRow, TestKind, VerifiedImage,
 };
 pub use verify::verify;

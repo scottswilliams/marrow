@@ -96,7 +96,11 @@ identity. Durable execution has returned for source tests (E01): a `test` whose
 body reads or writes durable data runs against a fresh in-memory ephemeral
 attachment, minted from the verified test image with a ceiling equal to the
 test-image demand union, so the read kernel drives the store under `marrow test`
-without any raw seeder. The flat single-column scalar root — entry and field
+without any raw seeder. A test either performs those durable operations directly
+or **drives** the application's exports, where each export call is its own
+invocation boundary — a mutating export commits to the attachment and a later
+reading export observes it, and a faulting export rolls back without disturbing a
+prior commit. A body may not combine the two styles (`check.test_driver_mix`). The flat single-column scalar root — entry and field
 presence, field reads and coalesce, required and sparse field writes — executes
 this way, together with its single-level single-column-keyed scalar-field `branch`
 placements, whose whole entries create, read, replace, and erase through the

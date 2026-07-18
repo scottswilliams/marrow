@@ -350,6 +350,87 @@ test "a fresh attachment does not observe another test's write" {
     assert!(summary.contains(r#""errored":0"#), "{summary}");
 }
 
+/// A driver test drives the application's exports: it calls a mutating export, then
+/// reads the result back through a reading export, each call its own invocation
+/// boundary. The mutating export commits to the test's fresh attachment and the later
+/// read observes the committed value, with no raw seeding — the E06 app-testing style.
+#[test]
+fn a_driver_test_drives_a_mutating_export_and_reads_it_back() {
+    let temp = TempDir::new("driver");
+    project(
+        &temp,
+        r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn set(id: int, v: int) {
+    transaction {
+        ^counters[id] = Counter(value: v)
+    }
+}
+
+pub fn valueOf(id: int): int? {
+    return ^counters[id].value
+}
+
+test "driver sets then reads back" {
+    set(1, 42)
+    assert valueOf(1) ?? 0 == 42
+}
+"#,
+    );
+    write(&temp.join("marrow.ids"), COUNTERS_IDS);
+
+    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let record = stdout
+        .lines()
+        .find(|l| l.contains(r#""name":"driver sets then reads back""#))
+        .unwrap_or_else(|| panic!("no driver record: {stdout}"));
+    assert!(record.contains(r#""outcome":"passed""#), "{record}");
+    assert!(!stdout.contains("cli.durable_unsupported"), "{stdout}");
+}
+
+/// A test body may not both perform a durable operation directly and drive an export
+/// that owns a transaction — the driven export's commit would consume the harness
+/// session the direct operation needs. The compiler refuses the mix at check time.
+#[test]
+fn mixing_a_direct_durable_op_and_driving_an_export_is_a_check_diagnostic() {
+    let temp = TempDir::new("mixed-body");
+    project(
+        &temp,
+        r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn set(id: int, v: int) {
+    transaction {
+        ^counters[id] = Counter(value: v)
+    }
+}
+
+test "mixed body" {
+    set(1, 5)
+    assert exists(^counters[1])
+}
+"#,
+    );
+    write(&temp.join("marrow.ids"), COUNTERS_IDS);
+
+    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    assert!(!output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{stdout}");
+    assert!(stdout.contains("check.test_driver_mix"), "{stdout}");
+}
+
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
 fn filter_selects_a_subset_by_name() {

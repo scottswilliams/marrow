@@ -14,8 +14,10 @@ trough), execute on the VM, and
 render the value or the first failure as text or, under `--format jsonl`, as
 one canonical typed record per line. `marrow test` drives the same path over
 the project's `test` declarations: it compiles them into a separately verified
-image carrying the closed TEST-ENTRY table and runs each one storeless,
-reporting pass/fail/error per test plus a summary. `marrow client typescript`
+image carrying the closed TEST-ENTRY table and runs each one — storeless, against
+a fresh ephemeral attachment for a direct durable test, or as a driver whose
+export calls are each their own invocation boundary — reporting pass/fail/error
+per test plus a summary. `marrow client typescript`
 compiles and verifies the project, reconstructs its wire interface (the one
 transfer/identity owner is `marrow-image`), and emits the deterministic strict
 TypeScript client beside the pinned Node supervision module (`src/supervisor/`,

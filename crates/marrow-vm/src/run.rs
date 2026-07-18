@@ -55,7 +55,7 @@ pub fn run(
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let mut budget = INSTRUCTION_BUDGET;
-    execute(image, func_index, args, 0, &mut budget, None)
+    execute(image, func_index, args, 0, &mut budget, None, None)
 }
 
 /// Run a durable function at `func_index`, driving `session` for every durable
@@ -68,12 +68,55 @@ pub fn run_durable(
     session: &mut dyn Durable,
 ) -> Result<Option<Value>, RuntimeFault> {
     let mut budget = INSTRUCTION_BUDGET;
-    execute(image, func_index, args, 0, &mut budget, Some(session))
+    execute(image, func_index, args, 0, &mut budget, Some(session), None)
+}
+
+/// A test-body driver: it turns each durable-touching call the driver frame makes
+/// into its own invocation boundary — opening the session that call's demand
+/// requires, running it, committing or rolling it back, and closing it — exactly as
+/// a terminal invocation does. The driver frame itself performs no direct durable
+/// operation (the test-entry phase refuses a body that mixes the two), so it drives
+/// only through calls.
+pub(crate) trait DriverDispatch {
+    fn invoke(
+        &mut self,
+        func: u16,
+        args: Vec<Value>,
+        depth: u32,
+        budget: &mut u64,
+    ) -> Result<Option<Value>, RuntimeFault>;
+}
+
+/// Run `func_index` as a test-body driver frame: it holds no session of its own and
+/// dispatches each call through `driver`, which opens one session per invocation.
+pub(crate) fn run_driver(
+    image: &VerifiedImage,
+    func_index: u16,
+    args: Vec<Value>,
+    driver: &mut dyn DriverDispatch,
+) -> Result<Option<Value>, RuntimeFault> {
+    let mut budget = INSTRUCTION_BUDGET;
+    execute(image, func_index, args, 0, &mut budget, None, Some(driver))
+}
+
+/// Run `func_index` at `depth` sharing `budget`, driving `session` for its durable
+/// operations (or `None` for a storeless callee). The driver uses this to run one
+/// dispatched invocation inside the session it opened, without a nested driver.
+pub(crate) fn run_in_session(
+    image: &VerifiedImage,
+    func_index: u16,
+    args: Vec<Value>,
+    depth: u32,
+    budget: &mut u64,
+    session: Option<&mut dyn Durable>,
+) -> Result<Option<Value>, RuntimeFault> {
+    execute(image, func_index, args, depth, budget, session, None)
 }
 
 /// Execute one frame. `depth` is the current call depth and `budget` is shared
 /// across the whole call tree so total work stays bounded. `session` drives durable
-/// operations; it is `None` for a storeless call tree.
+/// operations; it is `None` for a storeless call tree. `driver` is present only for a
+/// test-body driver frame, where each call becomes its own session-scoped invocation.
 fn execute<'s>(
     image: &VerifiedImage,
     func_index: u16,
@@ -81,6 +124,7 @@ fn execute<'s>(
     depth: u32,
     budget: &mut u64,
     mut session: Option<&mut (dyn Durable + 's)>,
+    mut driver: Option<&mut dyn DriverDispatch>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let function = image.function(func_index);
     let mut locals: Vec<Option<Value>> = Vec::with_capacity(function.local_count() as usize);
@@ -684,14 +728,23 @@ fn execute<'s>(
                 let start = stack.len() - arg_count;
                 // a0 was pushed first, so the tail of the stack is a0..an-1 in order.
                 let call_args = stack.split_off(start);
-                if let Some(value) = execute(
-                    image,
-                    *target,
-                    call_args,
-                    depth + 1,
-                    budget,
-                    session.as_deref_mut(),
-                )? {
+                // In a driver frame each call is its own invocation boundary: the
+                // driver opens the session the callee demands, runs it, and closes it.
+                // Otherwise the call joins this frame's session (a helper inside its
+                // owner's transaction) or runs storeless.
+                let returned = match driver.as_deref_mut() {
+                    Some(driver) => driver.invoke(*target, call_args, depth + 1, budget)?,
+                    None => execute(
+                        image,
+                        *target,
+                        call_args,
+                        depth + 1,
+                        budget,
+                        session.as_deref_mut(),
+                        None,
+                    )?,
+                };
+                if let Some(value) = returned {
                     stack.push(value);
                 }
                 pc += 1;

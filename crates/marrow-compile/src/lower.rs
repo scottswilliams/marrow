@@ -865,6 +865,40 @@ pub(crate) struct Lowered {
     pub unwrapped_mutations: Vec<SourceSpan>,
     /// Calls this body performs outside any `transaction` block, with their spans.
     pub unwrapped_calls: Vec<(u16, SourceSpan)>,
+    /// Whether this body performs a durable-place operation directly (as opposed to
+    /// reaching durable data only through calls). Consumed by the test-body
+    /// strict-separation check.
+    pub has_direct_durable_op: bool,
+    /// Whether this body owns a `transaction` block (emits a begin). A test body that
+    /// drives such a function mixes invocation boundaries and is refused.
+    pub owns_transaction: bool,
+}
+
+/// Whether an instruction is a direct durable-place operation — a read, write,
+/// presence probe, erase, or managed-index access over a `^` place. A `Duration*`
+/// arithmetic opcode is not one. The test-body strict-separation check uses this to
+/// tell a body that touches durable data directly from one that only drives exports.
+fn is_durable_place_op(instr: &Instr) -> bool {
+    matches!(
+        instr,
+        Instr::DurExists(_)
+            | Instr::DurFamilyExists(_)
+            | Instr::DurReadField(_)
+            | Instr::DurReadEntry(_)
+            | Instr::DurReadGroup(_)
+            | Instr::DurSetRequired(_)
+            | Instr::DurSetSparse(_)
+            | Instr::DurSetSparsePresent { .. }
+            | Instr::DurCreateEntry(_)
+            | Instr::DurReplaceEntry(_)
+            | Instr::DurReplaceGroup(_)
+            | Instr::DurEraseField(_)
+            | Instr::DurEraseEntry(_)
+            | Instr::DurEraseGroup(_)
+            | Instr::DurIterateBounded { .. }
+            | Instr::DurIndexScan { .. }
+            | Instr::DurIndexLookup(_)
+    )
 }
 
 /// Whether an instruction stages a durable mutation (a write, replacement, or
@@ -1703,6 +1737,8 @@ impl<'a> FnLowerer<'a> {
         let source_id = self.draft.intern_string(self.file);
         let code = std::mem::take(&mut self.code);
         let spans = std::mem::take(&mut self.spans);
+        let has_direct_durable_op = code.iter().any(is_durable_place_op);
+        let owns_transaction = code.iter().any(|instr| matches!(instr, Instr::TxnBegin));
         let func_id = self.draft.add_function(FunctionDef {
             name: name_id,
             source: source_id,
@@ -1717,6 +1753,8 @@ impl<'a> FnLowerer<'a> {
             callees: std::mem::take(&mut self.calls),
             unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
+            has_direct_durable_op,
+            owns_transaction,
         })
     }
 
@@ -7339,6 +7377,37 @@ impl<'a> FnLowerer<'a> {
         Some(())
     }
 
+    /// Capture the root key-path an entry identity supplies into one pre-evaluated
+    /// slot per root key column (root-first). The identity stands for the whole root
+    /// key tuple, so a whole-entry write through it — which reads (`DurExists`) and
+    /// writes off the same columns several times — evaluates the identity once here
+    /// and reuses the slots, exactly as an inline key tuple is captured. Returns the
+    /// slots in root-column order.
+    fn capture_identity_key_slots(
+        &mut self,
+        expr: &Expression,
+        span: SourceSpan,
+    ) -> Option<Vec<u16>> {
+        self.lower_as(
+            expr,
+            LTy::Identity {
+                root: 0,
+                optional: false,
+            },
+        )?;
+        let cols = self.durable.root().map_or(0, |root| root.key.len());
+        self.push(Instr::IdentityKeyPath(cols as u16), span);
+        // `IdentityKeyPath` leaves the columns root-first, so the last column is on top;
+        // pop into slots from the last column back so each slot holds its own column.
+        let mut slots = vec![0u16; cols];
+        for column in (0..cols).rev() {
+            let slot = self.alloc_slot();
+            self.push(Instr::LocalSet(slot), span);
+            slots[column] = slot;
+        }
+        Some(slots)
+    }
+
     /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple
     /// exactly once into a fresh local slot and record the binding. The binding is
     /// immutable and does not shadow an existing name; the target must be a whole
@@ -8914,33 +8983,42 @@ impl<'a> FnLowerer<'a> {
         // A bound (place) column already holds its key in a pre-evaluated slot; reuse it
         // so the create/replace ops key off it (the verifier's presence lattice
         // recognizes a root create as establishing that slot's entry). An inline column
-        // is evaluated once into a fresh slot.
-        let mut key_slots = Vec::with_capacity(keys.len());
-        for column in keys {
-            let slot = match column.key {
-                PlaceKey::Bound(slot) => slot,
-                PlaceKey::Expr(_) => {
-                    let slot = self.alloc_slot();
-                    self.emit_key(column.key, column.key_ty, span)?;
-                    self.push(Instr::LocalSet(slot), span);
-                    slot
-                }
-                // Writing a whole entry through an identity key is not part of the
-                // identity value slice (an identity is a read/lookup value here); a
-                // whole-entry write keys by explicit columns.
-                PlaceKey::Identity(_) => {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckUnsupported.as_str(),
-                        self.file,
-                        span,
-                        "writing a whole entry through an identity key is not yet supported"
-                            .to_string(),
-                    ));
-                    return None;
-                }
-            };
-            key_slots.push(slot);
-        }
+        // is evaluated once into a fresh slot. An entry identity supplies the whole root
+        // key tuple as a single operand; its columns are captured into per-column slots
+        // (root-first) so the exists/replace/create ops key off the same evaluation.
+        let key_slots: Vec<u16> = if let [column] = keys
+            && let PlaceKey::Identity(expr) = column.key
+        {
+            self.capture_identity_key_slots(expr, span)?
+        } else {
+            let mut key_slots = Vec::with_capacity(keys.len());
+            for column in keys {
+                let slot = match column.key {
+                    PlaceKey::Bound(slot) => slot,
+                    PlaceKey::Expr(_) => {
+                        let slot = self.alloc_slot();
+                        self.emit_key(column.key, column.key_ty, span)?;
+                        self.push(Instr::LocalSet(slot), span);
+                        slot
+                    }
+                    PlaceKey::Identity(_) => {
+                        // An identity only appears as the sole key column (it stands for
+                        // the whole root tuple), handled above; it cannot sit among
+                        // explicit columns.
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckUnsupported.as_str(),
+                            self.file,
+                            span,
+                            "writing a whole entry through an identity key is not yet supported"
+                                .to_string(),
+                        ));
+                        return None;
+                    }
+                };
+                key_slots.push(slot);
+            }
+            key_slots
+        };
         let rec_slot = self.alloc_slot();
         self.lower_as(
             value,

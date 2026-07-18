@@ -175,6 +175,7 @@ Static errors found while checking source.
             Code::CheckRecursion,
             Code::CheckRequiresTransaction,
             Code::CheckAssertOutsideTest,
+            Code::CheckTestDriverMix,
             Code::CheckMatchNonexhaustive,
             Code::CheckMatchArm,
             Code::CheckInstantiationLimit,

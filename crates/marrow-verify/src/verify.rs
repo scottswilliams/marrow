@@ -50,7 +50,7 @@ use crate::sealed::{
     RetShape, SealedBranch, SealedCollectionType, SealedConst, SealedEnumType, SealedExport,
     SealedField, SealedFunction, SealedGroup, SealedIndex, SealedIndexComponent, SealedInstr,
     SealedRecordType, SealedRoot, SealedSite, SealedSiteTarget, SealedTestEntry, SealedVariant,
-    SpanRow, VerifiedImage,
+    SpanRow, TestKind, VerifiedImage,
 };
 use crate::vtype::VType;
 
@@ -2930,8 +2930,20 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         }
         entries
     };
+    let test_entry_mask: Vec<bool> = {
+        let mut entries = vec![false; functions.len()];
+        for (_, func) in &decoded.test_entries {
+            entries[*func as usize] = true;
+        }
+        entries
+    };
     for (index, function) in functions.iter().enumerate() {
-        effects.check_transaction_flow(index, function, export_entries[index])?;
+        effects.check_transaction_flow(
+            index,
+            function,
+            export_entries[index],
+            test_entry_mask[index],
+        )?;
     }
 
     // Phase 5 (presence): every present-entry sparse set is dominated by a presence
@@ -2964,6 +2976,12 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
 
     let test_entries = check_test_entries(&decoded, &functions, &export_entries, &effects)?;
 
+    // Per-function demand from the same effects owner, so a test-body driver can open
+    // the session one export call requires without a second demand model.
+    let function_demands: Vec<ExportDemand> = (0..functions.len() as u16)
+        .map(|f| effects.demand(f))
+        .collect();
+
     Ok(VerifiedImage {
         image_id: decoded.image_id,
         types,
@@ -2978,6 +2996,7 @@ fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejection> {
         functions,
         exports,
         test_entries,
+        function_demands,
     })
 }
 
@@ -3059,13 +3078,53 @@ fn check_test_entries(
         }
     }
 
+    // A test body is one of two disjoint kinds: it performs durable operations
+    // directly (running in the harness session) or it drives exports, where each
+    // export call is its own invocation boundary. Mixing the two — a direct durable
+    // op together with a call to a transaction owner — is refused: the owner's commit
+    // would consume the harness session out from under the direct op, and no single
+    // session can carry both. The compiler reports the same shape at check time; this
+    // is the independent artifact-level mirror.
+    for (_, func) in &decoded.test_entries {
+        let function = &functions[*func as usize];
+        let has_direct_durable = function
+            .instrs()
+            .iter()
+            .any(|instr| durable_op_class(instr).is_some());
+        let drives_owner = call_targets(function)
+            .iter()
+            .any(|&callee| effects.has_begin[callee]);
+        if has_direct_durable && drives_owner {
+            return Err(reject(
+                VerifyPhase::TestEntry,
+                "a test body performs a direct durable operation and also drives a \
+                 transaction-owning export",
+            ));
+        }
+    }
+
     Ok(decoded
         .test_entries
         .iter()
-        .map(|(name, func)| SealedTestEntry {
-            name: decoded.strings[*name as usize].clone(),
-            func: *func,
-            demand: effects.demand(*func),
+        .map(|(name, func)| {
+            let demand = effects.demand(*func);
+            let kind = if demand.is_empty() {
+                TestKind::Storeless
+            } else if functions[*func as usize]
+                .instrs()
+                .iter()
+                .any(|instr| durable_op_class(instr).is_some())
+            {
+                TestKind::DirectDurable
+            } else {
+                TestKind::Driver
+            };
+            SealedTestEntry {
+                name: decoded.strings[*name as usize].clone(),
+                func: *func,
+                demand,
+                kind,
+            }
         })
         .collect())
 }
@@ -3276,21 +3335,42 @@ impl Effects {
         index: usize,
         function: &SealedFunction,
         is_export_entry: bool,
+        is_test_entry: bool,
     ) -> Result<(), VerifyRejection> {
         // A function containing `TxnBegin` is a transaction owner and may never be
-        // called.
-        for &callee in &call_targets(function) {
-            if self.has_begin[callee] {
-                return Err(reject(
-                    VerifyPhase::Flow,
-                    "a transaction owner may not be called",
-                ));
+        // called — except from a test-entry driver, where each export call is its own
+        // invocation boundary (a terminal-style driver). The test-entry phase
+        // separately refuses a driver that also performs a direct durable op, which no
+        // single session could run.
+        if !is_test_entry {
+            for &callee in &call_targets(function) {
+                if self.has_begin[callee] {
+                    return Err(reject(
+                        VerifyPhase::Flow,
+                        "a transaction owner may not be called",
+                    ));
+                }
             }
         }
 
-        // A mutating export entry owns exactly one transaction; the lattice requires
-        // it to begin and commit on every path with all mutations inside.
-        if is_export_entry && self.mutates_closure[index] {
+        // A transaction owns durable work: a `transaction` block whose closure performs
+        // no durable operation is a no-op region. It commits nothing, so the runtime
+        // opens no session for it (its demand is empty) and its `TxnCommit` would have
+        // no session to consume. Refuse it here rather than admit a region that cannot
+        // run. A region that reads carries read demand and is admitted below.
+        if is_export_entry && self.has_begin[index] && self.atoms_closure[index].is_empty() {
+            return Err(reject(
+                VerifyPhase::Flow,
+                "a transaction performs no durable operation",
+            ));
+        }
+
+        // An export entry that owns a transaction runs the lattice: it must begin and
+        // commit on every path with every mutation inside. A read-only region (a
+        // transaction whose closure only reads) is admitted here — the read demand
+        // inside the owned region is coherent — while a mutating export with no begin is
+        // still caught, since the lattice rejects a mutation before begin.
+        if is_export_entry && (self.mutates_closure[index] || self.has_begin[index]) {
             return self.check_owner_lattice(function);
         }
 

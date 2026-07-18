@@ -42,7 +42,9 @@ durable write reachable from the export sits inside that block, and the export's
 call graph joins it implicitly: a helper the export calls performs its writes
 inside the owner's transaction but cannot open or finish one of its own. A
 read-only export needs no transaction and observes one coherent snapshot for its
-whole call.
+whole call. It may still open a `transaction` block — a read-only region, whose
+reads are admitted inside it — though it gains nothing by doing so; as in any owned
+region, no durable operation may follow the block's commit.
 
 A function that mutates durable state carries a checked *requires an ambient
 transaction* requirement. A durable write, replacement, or erase — or a call to

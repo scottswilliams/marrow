@@ -100,28 +100,23 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
             .find(|test| test.name == entry.name())
             .expect("compiler and image agree on the test set");
 
-        // Family 3: a source-mapped runtime fault, or a pass. A storeless test (empty
-        // reconstructed demand) runs with no session; a durable test runs against its
-        // own fresh ephemeral-memory attachment bounded by the test-image demand
-        // union, so tests never observe one another's writes. A durable shape the
-        // ephemeral read kernel does not yet execute is reported as the trough.
-        let outcome = if entry.demand().is_empty() {
-            classify(marrow_vm::run(&image, entry.func(), Vec::new()))
-        } else {
-            match marrow_vm::run_durable_test(&image, entry) {
-                marrow_vm::DurableRun::Ran(result) => classify(result),
-                // A durable shape the ephemeral read kernel does not yet execute, or
-                // an operational mint failure, reports at the test's declaration.
-                marrow_vm::DurableRun::Parked => TestOutcome::Errored {
-                    code: Code::CliDurableUnsupported.as_str(),
-                    line: meta.line,
-                    column: meta.column,
-                },
-                marrow_vm::DurableRun::Failed(code) => TestOutcome::Errored {
-                    code,
-                    line: meta.line,
-                    column: meta.column,
-                },
+        // Family 3: a source-mapped runtime fault, or a pass. A storeless test runs
+        // with no session. A direct-durable test runs against one harness session over
+        // its own fresh attachment. A driver test runs against a fresh persistent
+        // attachment, where each export call it makes is its own invocation boundary
+        // (a mutating export commits, a later reading export observes it). Every test
+        // gets its own attachment, so tests never observe one another's writes. A
+        // durable shape the ephemeral kernel does not yet execute is reported as the
+        // trough.
+        let outcome = match entry.kind() {
+            marrow_verify::TestKind::Storeless => {
+                classify(marrow_vm::run(&image, entry.func(), Vec::new()))
+            }
+            marrow_verify::TestKind::DirectDurable => {
+                durable_outcome(marrow_vm::run_durable_test(&image, entry), meta)
+            }
+            marrow_verify::TestKind::Driver => {
+                durable_outcome(marrow_vm::run_driver_test(&image, entry), meta)
             }
         };
         match &outcome {
@@ -156,6 +151,25 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     };
     emit_tests(args.format, &records, &summary, exit)
+}
+
+/// Map a durable VM run into a test outcome. A run classifies by its result; a
+/// durable shape the ephemeral kernel does not yet execute, or an operational mint
+/// failure, reports at the test's declaration position.
+fn durable_outcome(run: marrow_vm::DurableRun, meta: &marrow_compile::TestEntry) -> TestOutcome {
+    match run {
+        marrow_vm::DurableRun::Ran(result) => classify(result),
+        marrow_vm::DurableRun::Parked => TestOutcome::Errored {
+            code: Code::CliDurableUnsupported.as_str(),
+            line: meta.line,
+            column: meta.column,
+        },
+        marrow_vm::DurableRun::Failed(code) => TestOutcome::Errored {
+            code,
+            line: meta.line,
+            column: meta.column,
+        },
+    }
 }
 
 /// Classify a VM run result into a test outcome: a value or unit return passes, a

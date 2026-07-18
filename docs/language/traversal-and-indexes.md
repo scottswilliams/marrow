@@ -268,6 +268,11 @@ yields the next distinct component; the complete projection yields the source-ro
 and a `unique` index read is a complete-key exact lookup that yields exactly the one
 matching `Id(^root)` or absent — never a sibling.
 
+A bound `Id(^root)` addresses the whole entry: dereferencing it with `^root[id]` reads
+the entry, and inside a transaction the same address is written or replaced — for
+example `^root[found] = Resource(...)` updates the entry the lookup found — exactly as an
+inline key address is.
+
 **Future.** A scan that binds an intermediate distinct component (rather than the
 trailing identity), a composite-identity scan, and a `from` cursor on a scan are not yet
 spelled; a source read of those shapes reports a precise not-yet-supported diagnostic.

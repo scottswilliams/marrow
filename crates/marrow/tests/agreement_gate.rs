@@ -17,14 +17,21 @@
 //! without moving the row, the gate fails on the changed verdict — the ledger
 //! cannot silently drift.
 //!
-//! Session-1 state (D1 semantic + this skeleton): the D1 test-body invocation
-//! boundary and the D2 read-only-region admission are ledgered known-divergent
-//! (both `image.flow`), and the D3 identity-keyed whole-entry write is ledgered
-//! checker-refused (`check.unsupported`). A later session flips each as its
-//! kernel/compiler fix lands.
+//! RV01 closed the three review-of-record defects: D1 (a test body drives a mutating
+//! export, each call its own invocation boundary), D2 (a whole-entry read inside a
+//! read-only region is admitted), and D3 (a whole-entry write through an identity
+//! lookup lowers). Their rows are positive controls now. Two divergences remain
+//! ledgered — a return from inside an owned region, and an empty (no-op)
+//! `transaction` — which the verifier refuses but the checker still accepts; both
+//! belong to the by-design checker false-negative family TX02 promotes to check-time
+//! diagnostics. The correct-rollback journey below locks the invocation-boundary
+//! isolation law: a faulting export invocation rolls back without disturbing a prior
+//! committed one.
 
-use marrow_verify::VerifiedImage;
-use marrow_vm::{DurableRun, run_durable_test};
+use marrow_verify::{TestKind, VerifiedImage};
+use marrow_vm::{
+    DurableRun, Ephemeral, Value, mint_ephemeral, run_driver_test, run_durable_test, run_export,
+};
 
 /// The shared durable graph every composition is written against: a flat keyed
 /// root with a required and a sparse field, a root-level group, a keyed branch,
@@ -222,36 +229,63 @@ fn matrix() -> Vec<Row> {
             ops: "test \"direct whole-entry round trip\" {\n    ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    if const b = ^books[1] {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- The review-of-record divergence set (RV01 closes it). ----
-        // D2: a whole-entry read inside a region the export owns is coherent, but
-        // the owner lattice rejects a region whose closure performs no mutation —
-        // the same read outside a transaction verifies. Checker accepts.
+        // ---- The review-of-record round trip, now whole (RV01 closes D1/D2/D3). ----
+        // D2 (closed): a whole-entry read inside a region the export owns is coherent.
+        // The owner lattice now runs for any export that owns a transaction, so a
+        // read-only region reads inside and returns the captured value after the block.
         Row {
-            label: "D2: whole-entry read / inside a read-only region",
-            ops: "pub fn d2ReadOnlyRegion(id: int): string? {\n    transaction {\n        if const b = ^books[id] {\n            return b.title\n        }\n    }\n    return absent\n}",
-            expect: Expect::KnownDivergent {
-                code: "image.flow",
-                detail: "a transaction marker sits outside its owning export",
-            },
+            label: "D2: whole-entry read / inside a read-only region (captured, returned after)",
+            ops: "pub fn d2ReadOnlyRegion(id: int): string? {\n    var out: string? = absent\n    transaction {\n        if const b = ^books[id] {\n            out = b.title\n        }\n    }\n    return out\n}",
+            expect: Expect::RoundTrips { run: false },
         },
-        // D1: a test body drives a mutating export. The adopted semantic is that
-        // each export call from a test body is its own invocation boundary (a
-        // terminal-style driver); the owner-not-called law rejects it today.
-        // Checker accepts.
+        // D1 (closed): a test body drives a mutating export, then reads back through a
+        // reading export — each call its own invocation boundary. The round trip runs.
         Row {
-            label: "D1: export call owning a transaction / from a test body",
-            ops: "pub fn d1Add(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\ntest \"driver adds through an export\" {\n    d1Add(7)\n    assert true\n}",
-            expect: Expect::KnownDivergent {
-                code: "image.flow",
-                detail: "a transaction owner may not be called",
-            },
+            label: "D1: driver test — mutating export call then read-back export",
+            ops: "pub fn d1Add(id: int, title: string) {\n    transaction {\n        ^books[id] = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn d1Title(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"driver adds through an export and reads it back\" {\n    d1Add(7, \"dune\")\n    assert d1Title(7) ?? \"none\" == \"dune\"\n}",
+            expect: Expect::RoundTrips { run: true },
         },
-        // D3: a whole-entry write through an identity-lookup result. A field write
-        // through the same lookup already round-trips (positive control above);
-        // the whole-entry form is refused at the checker.
+        // D3 (closed): a whole-entry write through an identity-lookup result. A field
+        // write through the same lookup already round-trips; the whole-entry form now
+        // lowers by spreading the identity into the root's key columns.
         Row {
             label: "D3: identity-keyed whole-entry write / inside a mutating region",
-            ops: "pub fn d3IdentityWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found] = Book(title: \"t\", isbn: isbn)\n        }\n    }\n}",
+            ops: "pub fn d3IdentityWrite(isbn: string, title: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found] = Book(title: title, isbn: isbn)\n        }\n    }\n}",
+            expect: Expect::RoundTrips { run: false },
+        },
+        // ---- Explicit remaining divergence (owned by TX02, not RV01). ----
+        // A return from inside an owned region is correctly refused by the verifier
+        // (a path returns without committing), but the checker still accepts it — a
+        // by-design checker false-negative TX02 promotes to a check-time diagnostic.
+        // Ledgered so the remaining divergence stays visible rather than skipped.
+        Row {
+            label: "return inside an owned region (TX02 promotes to check time)",
+            ops: "pub fn returnInsideRegion(id: int): string? {\n    transaction {\n        if const b = ^books[id] {\n            return b.title\n        }\n    }\n    return absent\n}",
+            expect: Expect::KnownDivergent {
+                code: "image.flow",
+                detail: "a path returns without committing the transaction",
+            },
+        },
+        // A `transaction` block with no durable operation is a no-op region the runtime
+        // cannot run (it opens no session), refused by the verifier; the checker still
+        // accepts it — the same by-design false-negative family TX02 promotes to check
+        // time. Ledgered so the remaining divergence stays visible.
+        Row {
+            label: "empty transaction — no durable operation (TX02 promotes to check time)",
+            ops: "pub fn emptyRegion() {\n    transaction {\n    }\n}",
+            expect: Expect::KnownDivergent {
+                code: "image.flow",
+                detail: "a transaction performs no durable operation",
+            },
+        },
+        // ---- A genuinely-deferred form, refused in agreement by both owners. ----
+        // A group-leaf write through an identity-lookup result is not yet lowered
+        // (distinct from D3's whole-entry write, which is). The checker refuses it, so
+        // the checker-accept ⇒ verify implication holds vacuously; ledgered so its
+        // eventual promotion flips this row to a round trip.
+        Row {
+            label: "group-leaf write through an identity key (deferred)",
+            ops: "pub fn identityGroupWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found].details.pages = 3\n        }\n    }\n}",
             expect: Expect::CheckerRefused {
                 code: "check.unsupported",
             },
@@ -269,7 +303,14 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
         "{label}: a run-row must carry at least one test entry",
     );
     for entry in image.test_entries() {
-        match run_durable_test(image, entry) {
+        // Dispatch each test through the runtime its kind names: a driver test runs
+        // each export call as its own invocation boundary; a direct-durable test runs
+        // against one harness session. A storeless test never reaches a run row.
+        let run = match entry.kind() {
+            TestKind::Driver => run_driver_test(image, entry),
+            TestKind::DirectDurable | TestKind::Storeless => run_durable_test(image, entry),
+        };
+        match run {
             DurableRun::Ran(Ok(_)) => {}
             DurableRun::Ran(Err(fault)) => {
                 panic!(
@@ -361,16 +402,115 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
         }
     }
 
-    // The divergence set is explicit and bounded: exactly D1 and D2 are
-    // checker-accept/verify-reject, and exactly D3 is checker-refused. A new
-    // divergence added without a ledger row fails an individual row above; these
-    // counts fail if a ledger row is silently removed.
+    // The divergence set is explicit and bounded. RV01 closed D1/D2/D3, so the only
+    // remaining checker-accept/verify-reject row is the return-inside-region case TX02
+    // owns; nothing is checker-refused. A new divergence added without a ledger row
+    // fails an individual row above; these counts fail if a ledger row is silently
+    // removed or an unledgered one appears.
     assert_eq!(
         known_divergent, 2,
-        "expected exactly the D1 and D2 known-divergent rows",
+        "expected exactly the TX02-owned return-inside-region and empty-transaction divergences",
     );
     assert_eq!(
         checker_refused, 1,
-        "expected exactly the D3 checker-refused row",
+        "expected exactly the deferred group-leaf-through-identity refusal",
     );
 }
+
+/// The correct-rollback journey, locking the invocation-boundary isolation law: three
+/// exports run in sequence against one persistent attachment, exactly as a terminal
+/// drives them. A mutating export commits; a second export that mutates then faults
+/// rolls its own staged write back without disturbing the first commit; a reading
+/// export then observes the committed-only state. This is the isolation a driver test
+/// relies on — each call is its own boundary — proven at the invocation level.
+#[test]
+fn a_faulting_export_invocation_rolls_back_without_disturbing_a_prior_commit() {
+    let Stage::Verified(image) = pipeline(
+        "pub fn shelve(id: int, title: string, isbn: string) {\n    \
+             transaction {\n        ^books[id] = Book(title: title, isbn: isbn)\n    }\n}\n\n\
+         pub fn badUpdate(id: int, divisor: int) {\n    transaction {\n        \
+             ^books[id].title = \"changed\"\n        \
+             ^books[id].details.pages = 100 / divisor\n    }\n}\n\n\
+         pub fn titleOf(id: int): string? {\n    return ^books[id].title\n}",
+    ) else {
+        panic!("the rollback-journey program must verify");
+    };
+
+    let Ephemeral::Ready(mut attachment) = mint_ephemeral(&image) else {
+        panic!("the books root must mint an executable attachment");
+    };
+
+    // Commit an entry.
+    assert!(matches!(
+        run_export(
+            &image,
+            &mut attachment,
+            export_by_name(&image, "shelve"),
+            vec![
+                Value::Int(1),
+                Value::Text("first".into()),
+                Value::Text("i1".into())
+            ],
+        ),
+        DurableRun::Ran(Ok(_)),
+    ));
+
+    // A mutating invocation that faults before its commit (a divide-by-zero) rolls its
+    // staged title write back.
+    match run_export(
+        &image,
+        &mut attachment,
+        export_by_name(&image, "badUpdate"),
+        vec![Value::Int(1), Value::Int(0)],
+    ) {
+        DurableRun::Ran(Err(fault)) => assert_eq!(
+            fault.code(),
+            "run.divide_by_zero",
+            "the fault reached the caller"
+        ),
+        other => panic!("badUpdate must fault, not {:?}", DurableRunDebug(&other)),
+    }
+
+    // The prior commit survives, unchanged by the rolled-back invocation.
+    match run_export(
+        &image,
+        &mut attachment,
+        export_by_name(&image, "titleOf"),
+        vec![Value::Int(1)],
+    ) {
+        DurableRun::Ran(Ok(Some(Value::Optional(Some(title))))) => {
+            assert_eq!(
+                *title,
+                Value::Text("first".into()),
+                "the rolled-back write left no trace"
+            )
+        }
+        other => panic!(
+            "titleOf must read the committed-only value, got {:?}",
+            DurableRunDebug(&other)
+        ),
+    }
+}
+
+/// The verified export whose function is named `name`. The image carries no export
+/// name, so the function directory resolves the name to its function index.
+fn export_by_name<'a>(image: &'a VerifiedImage, name: &str) -> &'a marrow_verify::SealedExport {
+    image
+        .exports()
+        .iter()
+        .find(|export| image.function(export.function()).name() == name)
+        .unwrap_or_else(|| panic!("export `{name}` is present"))
+}
+
+impl std::fmt::Debug for DurableRunDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            DurableRun::Ran(Ok(value)) => write!(f, "Ran(Ok({value:?}))"),
+            DurableRun::Ran(Err(fault)) => write!(f, "Ran(Err({}))", fault.code()),
+            DurableRun::Parked => write!(f, "Parked"),
+            DurableRun::Failed(code) => write!(f, "Failed({code})"),
+        }
+    }
+}
+
+struct DurableRunDebug<'a>(&'a DurableRun);
