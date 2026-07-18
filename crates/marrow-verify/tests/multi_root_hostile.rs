@@ -8,7 +8,7 @@ use marrow_image::{
     Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
     SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
 };
-use marrow_verify::verify;
+use marrow_verify::{VerifyPhase, verify};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("assets"): placement/product/key/field ledger ids.
@@ -198,9 +198,15 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
         vec![ImageType::scalar(Scalar::Int)],
         ImageType::scalar(Scalar::Bool),
     );
-    let result = verify(&draft.encode().expect("encode").bytes);
+    let rejection = verify(&draft.encode().expect("encode").bytes)
+        .expect_err("an identity minted over ^assets must not reach a ^tallies site");
+    assert_eq!(
+        rejection.phase(),
+        VerifyPhase::Function,
+        "the cross-root identity confusion is a per-function stack-effect rejection",
+    );
     assert!(
-        result.is_err(),
-        "an identity minted over ^assets must not reach a ^tallies site",
+        rejection.detail().contains("different store root"),
+        "expected a cross-root identity rejection, got {rejection:?}",
     );
 }

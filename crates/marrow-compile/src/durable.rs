@@ -383,8 +383,9 @@ struct BuiltRoot {
 
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
 /// build outcome or `None` when the store fails validation (its diagnostic is pushed and
-/// nothing that forms a root — no application identity, root, or site — is committed for
-/// it, so a failing store cannot corrupt an already-appended root). The heavy resolution
+/// no root, site, or application identity is committed for it, so a failing store cannot
+/// corrupt an already-appended root; `build_extras` may append record types before the
+/// gate, which is harmless — the pushed diagnostic fails compilation). The heavy resolution
 /// runs against a local [`IdentityResolver`] and the completeness gate below precedes
 /// every root/site/identity commit, so the draft is touched only once the store is known
 /// admissible.

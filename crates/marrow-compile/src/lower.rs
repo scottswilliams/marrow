@@ -703,6 +703,15 @@ struct IndexRead<'a, 'e> {
 
 impl PlaceLocal {
     /// Whether this place addresses a nested (branch) entry rather than the root.
+    ///
+    /// DEFERRAL (composite-key root conflation): a root place with a composite key has
+    /// more than one key slot, so this classifies it as nested and its field access
+    /// misroutes through `branch_by_record` instead of the root's record. Only the
+    /// place-bound composite-root field path is affected; the direct-address path
+    /// (`^root(k1, k2).field`, which does not build a `PlaceLocal`) is unaffected, and a
+    /// single-column root place — including every multi-root place — has one slot and is
+    /// classified correctly. Fix by distinguishing a place's node kind from its key arity
+    /// rather than inferring it from `key_slots.len()`.
     fn is_nested(&self) -> bool {
         self.key_slots.len() > 1
     }
