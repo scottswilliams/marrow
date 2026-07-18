@@ -852,7 +852,7 @@ impl VerifiedImage {
         self.collections[index as usize]
     }
 
-    /// The durable roots (0 or 1 at v0).
+    /// The durable roots, in declaration order (up to `MAX_ROOTS`).
     pub fn roots(&self) -> &[SealedRoot] {
         &self.roots
     }

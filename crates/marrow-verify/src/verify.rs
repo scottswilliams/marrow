@@ -966,8 +966,8 @@ fn reject_value_type_cycles(
     Ok(())
 }
 
-/// Decode the DURABLE table (design §C 0x03): 0 or 1 roots — preceded, when any
-/// root is present, by the application's 16-byte ledger id — then the operation
+/// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
+/// when any root is present, by the application's 16-byte ledger id — then the operation
 /// sites, then the 32-byte durable-contract id closing the section. Each root
 /// carries its ledger identity block (placement, product, and key ids plus one id
 /// per record field). Every site is revalidated against the roots and record

@@ -71,15 +71,32 @@ pub const MAX_PAYLOAD_FIELDS: usize = 64;
 /// element count — the latter is a private VM bound (`MAX_COLLECTION_LEN`).
 pub const MAX_COLLECTIONS: usize = 64;
 
-/// Durable roots (0 or 1) and operation sites. The site table is emitted from the
-/// durable graph, not per operation: one whole-payload site per keyed placement and
-/// one field-leaf site per stored field (plus group, branch, and index sites), so
-/// it scales with the graph's field width rather than with code. A wide resource
-/// therefore mints a site per declared field, so [`MAX_SITES`] must admit at least a
-/// wide resource's field set ([`MAX_RECORD_FIELDS`]) plus its group, branch, and
-/// index sites. The value carries that with headroom; [`MAX_IMAGE_BYTES`] remains
-/// the true byte bound on the emitted site paths.
-pub const MAX_ROOTS: usize = 1;
+/// Durable roots per project and operation sites. A project declares a store root per
+/// durable resource it serves — a multi-global application (its ledger root beside its
+/// counter root beside its catalog root) is the ordinary shape — so the count admits a
+/// modest family of roots rather than one. The value joins the 64-family
+/// ([`MAX_TYPES`]/[`MAX_ENUMS`]/[`MAX_FUNCTIONS`]): each root's resource is a record
+/// type, so [`MAX_TYPES`] already bounds the root count from above (the `MAX_ROOTS <=
+/// MAX_TYPES` invariant below), and matching it keeps one obvious ceiling rather than a
+/// second arbitrary one. [`MAX_IMAGE_BYTES`] remains the true byte bound on the emitted
+/// graph.
+///
+/// Widening this from the T01 value of 1 is monotone: a bound is a decode-time
+/// allocation guard, never a stored-format byte (the durable graph encodes its actual
+/// `u16` root count), so every image the narrow bound accepted a wider one still accepts
+/// byte-for-byte, and no image-container or profile version bump is required (see the
+/// module header). The verifier rechecks `root_count <= MAX_ROOTS` against the received
+/// bytes before it allocates the root vector, so a hostile image claiming more roots is
+/// refused with a typed bound rejection, not misread.
+///
+/// The site table is emitted from the durable graph, not per operation: one
+/// whole-payload site per keyed placement and one field-leaf site per stored field (plus
+/// group, branch, and index sites), so it scales with the graph's field width rather
+/// than with code. A wide resource therefore mints a site per declared field, so
+/// [`MAX_SITES`] must admit at least a wide resource's field set ([`MAX_RECORD_FIELDS`])
+/// plus its group, branch, and index sites. The value carries that with headroom;
+/// [`MAX_IMAGE_BYTES`] remains the true byte bound on the emitted site paths.
+pub const MAX_ROOTS: usize = 64;
 pub const MAX_SITES: usize = 8192;
 
 /// Managed indexes per durable root, and projected leaf components per index. Each
@@ -219,6 +236,10 @@ const _: () = {
         MAX_STRINGS > MAX_RECORD_FIELDS,
         "each field interns a name; the string pool must admit a wide field set",
     );
+    assert!(
+        MAX_ROOTS <= MAX_TYPES,
+        "each root's resource is a record type; the type table bounds the root count",
+    );
 };
 
 #[cfg(test)]
@@ -236,5 +257,6 @@ mod tests {
         assert_eq!(MAX_DURABLE_MEMBERS, 8192, "durable member-tree total");
         assert_eq!(MAX_SITES, 8192, "operation-site table");
         assert_eq!(MAX_STRINGS, 8192, "string-pool entries");
+        assert_eq!(MAX_ROOTS, 64, "durable roots per project");
     }
 }
