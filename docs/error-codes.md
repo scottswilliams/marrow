@@ -35,10 +35,9 @@ for a single diagnostic object:
 }
 ```
 
-The envelope is a tooling representation of an error. In `.mw` code, thrown
-errors are `Error` values as described in the language reference. Tools may
-add fields such as `kind` and `source_span` when reporting the error outside
-the running program.
+The envelope is a tooling representation of a failure. Source Marrow has no
+throwable error-value channel; runtime faults terminate the invocation. Tools
+may add fields such as `kind` and `source_span` when reporting a failure.
 
 Common fields:
 
@@ -186,14 +185,14 @@ catchable inside the program.
 
 ### `value.*` — kind `runtime`
 
-Value codec range faults raised at the store write/read boundary while encoding
-a runtime value to its canonical saved bytes or projecting it to an
-order-preserving key. These are catchable `Error` values inside a running
-program.
+Value codec range faults raised while encoding a runtime value to its canonical
+saved bytes for a durable write. Read-side decode and index-projection failures
+are corruption faults instead. These terminate the invocation and are not source
+values.
 
 | Code | Meaning |
 |---|---|
-| `value.range` | A `date` or `instant` reaching the store codec lies outside Marrow's supported calendar range, years 0001-9999. This is a store-boundary integrity guard, not a source-arithmetic fault: every `.mw` temporal path (the compile-time-validated `date`/`instant` literal constructors, `addDays`, and `instant +/- duration` arithmetic) shares the same 0001-9999 envelope and rejects at check time or raises `run.temporal_overflow` before an out-of-range value can be produced, so no ordinary checked program reaches this code. It fires only if a value that bypasses those bounds reaches the canonical encoder or key projection. |
+| `value.range` | A durable value could not be represented by the canonical store codec. Ordinary checked source can reach this at a durable write when a composite field's individually bounded scalar leaves exceed the dynamic 1 MiB aggregate encoded-value limit. The fault is mapped to the write span and is not catchable inside the program; encoding completes before any store write, so the rejected operation has no store effect. The same code also closes defense-in-depth codec range arms, including a date or instant outside years 0001-9999, although checked temporal source cannot produce those values. |
 
 ### `store.*` — kind `storage`
 
@@ -220,16 +219,16 @@ closed with a typed code — never a process crash: a truncated or torn body is
 
 ### `io.*` — kind `io`
 
-I/O faults spanning the CLI, the durable store, and the `std::io` builtins. The
-CLI reports `io.read` when it cannot read a project file (e.g. `marrow.toml`)
-and `io.thread` when it cannot start its worker thread. The `std::io` builtins
-raise `io.read`/`io.write` as catchable `Error` values inside a running program.
+Operational I/O faults from the CLI and runner. The CLI reports `io.read` when
+it cannot read a project file (for example `marrow.toml`) and `io.thread` when
+it cannot start its worker thread. Runner framing and output paths retain the
+same read/write codes. Source Marrow exposes no I/O module or error-value channel.
 
 | Code | Meaning |
 |---|---|
-| `io.read` | A read failed: a project source file or `marrow.toml` could not be read, or `std::io::readText`/`readBytes` failed. |
+| `io.read` | An operational read failed, such as reading a project source file, `marrow.toml`, a runner launch artifact, or a runner protocol frame. |
 | `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
-| `io.write` | `std::io::writeText`/`writeBytes` failed. |
+| `io.write` | An operational write failed, such as creating an initialized project file, publishing a generated client or identity artifact, writing command output, or writing a runner protocol frame. |
 
 ### `config.*` — kind `tooling`
 

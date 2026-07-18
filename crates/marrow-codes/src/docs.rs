@@ -70,10 +70,9 @@ for a single diagnostic object:
 }
 ```
 
-The envelope is a tooling representation of an error. In `.mw` code, thrown
-errors are `Error` values as described in the language reference. Tools may
-add fields such as `kind` and `source_span` when reporting the error outside
-the running program.
+The envelope is a tooling representation of a failure. Source Marrow has no
+throwable error-value channel; runtime faults terminate the invocation. Tools
+may add fields such as `kind` and `source_span` when reporting a failure.
 
 Common fields:
 
@@ -235,10 +234,10 @@ catchable inside the program.
         r#"
 ### `value.*` — kind `runtime`
 
-Value codec range faults raised at the store write/read boundary while encoding
-a runtime value to its canonical saved bytes or projecting it to an
-order-preserving key. These are catchable `Error` values inside a running
-program.
+Value codec range faults raised while encoding a runtime value to its canonical
+saved bytes for a durable write. Read-side decode and index-projection failures
+are corruption faults instead. These terminate the invocation and are not source
+values.
 
 | Code | Meaning |
 |---|---|"#
@@ -273,10 +272,10 @@ closed with a typed code — never a process crash: a truncated or torn body is
         r#"
 ### `io.*` — kind `io`
 
-I/O faults spanning the CLI, the durable store, and the `std::io` builtins. The
-CLI reports `io.read` when it cannot read a project file (e.g. `marrow.toml`)
-and `io.thread` when it cannot start its worker thread. The `std::io` builtins
-raise `io.read`/`io.write` as catchable `Error` values inside a running program.
+Operational I/O faults from the CLI and runner. The CLI reports `io.read` when
+it cannot read a project file (for example `marrow.toml`) and `io.thread` when
+it cannot start its worker thread. Runner framing and output paths retain the
+same read/write codes. Source Marrow exposes no I/O module or error-value channel.
 
 | Code | Meaning |
 |---|---|"#

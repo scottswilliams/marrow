@@ -44,3 +44,29 @@ fn no_out_of_bounds_fault_code_is_registered() {
         );
     }
 }
+
+/// The generated reference describes the channels the production toolchain actually
+/// exposes. Source Marrow has no throwable `Error` channel or `std::io` module, while
+/// `value.range` is reachable through the bounded durable-value encoder.
+#[test]
+fn generated_reference_has_no_prototype_source_error_channel() {
+    let generated = marrow_codes::generate();
+    for false_claim in [
+        "thrown errors are `Error` values",
+        "catchable `Error` values",
+        "`std::io`",
+        "std::io::",
+        "no ordinary checked program reaches this code",
+        "store write/read boundary",
+        "projecting it to an order-preserving key",
+    ] {
+        assert!(
+            !generated.contains(false_claim),
+            "generated reference retained false source-channel claim: {false_claim}"
+        );
+    }
+    assert!(
+        generated.contains("dynamic 1 MiB") && generated.contains("aggregate"),
+        "generated reference must name the source-reachable aggregate value bound"
+    );
+}
