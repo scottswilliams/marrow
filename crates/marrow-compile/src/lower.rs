@@ -4277,6 +4277,12 @@ impl<'a> FnLowerer<'a> {
             Expression::Binary {
                 op, left, right, ..
             } => self.lower_binary(*op, left, right),
+            Expression::Membership {
+                value,
+                range,
+                negated,
+                span,
+            } => self.lower_membership(value, range, *negated, *span),
             Expression::Call {
                 callee, args, span, ..
             } => match self.lower_call_core(callee, args, *span)? {
@@ -4997,6 +5003,85 @@ impl<'a> FnLowerer<'a> {
             _ => unreachable!("only and/or reach short-circuit lowering"),
         }
         Some(bool_ty)
+    }
+
+    /// Lower interval membership `value in lo..hi` / `value not in lo..=hi` to a bool.
+    /// The value is evaluated once into a slot and tested against both bounds:
+    /// `lo <= value` and `value < hi` (exclusive) or `value <= hi` (inclusive), joined
+    /// with the short-circuit `and`; `not in` negates the result. The range is over
+    /// integers — a temporal range is not current behavior.
+    fn lower_membership(
+        &mut self,
+        value: &Expression,
+        range: &Expression,
+        negated: bool,
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        let Some(range) = range_expr(range) else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                range.span(),
+                "the right side of this `in` is not a range. Interval membership tests a \
+                 range on the right. Write `value in lo..hi`."
+                    .to_string(),
+            ));
+            return None;
+        };
+        if range.step.is_some() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                range.span,
+                "an interval-membership range takes no `by` step".to_string(),
+            ));
+            return None;
+        }
+        let (Some(lo), Some(hi)) = (range.start, range.end) else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                range.span,
+                "interval membership tests a range with both bounds; write `value in lo..hi`"
+                    .to_string(),
+            ));
+            return None;
+        };
+        let int = LTy::bare_scalar(ScalarType::Int);
+        // The value is evaluated once; both bound tests read it from the slot.
+        self.lower_as(value, int)?;
+        let value_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(value_slot), span);
+
+        // lo <= value
+        self.lower_as(lo, int)?;
+        self.push(Instr::LocalGet(value_slot), span);
+        self.push(Instr::IntLe, span);
+        let jif = self.push_jif(span);
+
+        // value <op> hi
+        self.push(Instr::LocalGet(value_slot), span);
+        self.lower_as(hi, int)?;
+        self.push(
+            if range.inclusive_end {
+                Instr::IntLe
+            } else {
+                Instr::IntLt
+            },
+            span,
+        );
+        let to_end = self.push_jump(span);
+        let false_at = self.here();
+        self.patch(jif, false_at);
+        let konst = self.draft.intern_bool(false);
+        self.push(Instr::ConstLoad(konst.index()), span);
+        let end = self.here();
+        self.patch(to_end, end);
+
+        if negated {
+            self.push(Instr::BoolNot, span);
+        }
+        Some(LTy::bare_scalar(ScalarType::Bool))
     }
 
     /// A parenthesized application is a record constructor (`Note(title: t, ...)`)

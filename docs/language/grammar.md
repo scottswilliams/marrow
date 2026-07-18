@@ -361,7 +361,8 @@ equality_expr   = comparison_expr,
                   (("==" | "!="), comparison_expr)? ;
 
 comparison_expr = range_expr,
-                  (("<" | "<=" | ">" | ">="), range_expr)? ;
+                  ( ("<" | "<=" | ">" | ">="), range_expr
+                  | ("in" | "not", "in"), range_expr )? ;
 
 range_expr      = coalesce_expr, range_tail?
                 | open_range ;
@@ -394,6 +395,12 @@ optional_field_suffix = "?.", identifier ;
 
 A comparison is single and non-associative — the `?` on `comparison_expr` admits
 at most one operator — so `a < b > c` is a parse error and `<`/`>` never chain.
+Interval membership (`value in lo..hi`, `value not in lo..hi`) sits at this level
+with a range right operand and shares the non-association: `a in r in s` and
+`a in r < b` are parse errors. Because the `in` here is a comparison operator, an
+expression-level `in` never appears at the top level of a `for` head's iterable or
+a nominal-type interval — those heads split on their leading `in` before the
+expression grammar runs.
 A `paren_suffix` is invocation or construction; a `key_suffix` is keyed address —
 an ordered tuple of positional key values selecting an entry (`^books[id]`,
 `^grid[a, b]`, `visit.obs[oid]`). The two never mix: a bracket group holds

@@ -364,6 +364,30 @@ impl<'a> ExprParser<'a> {
         if left.is_error() {
             return left;
         }
+        // Interval membership `value in range` / `value not in range` sits at this
+        // level and does not chain: its right operand is a range, and a second
+        // membership or comparison after it is a non-associative error.
+        if let Some(negated) = self.peek_membership_kind() {
+            if negated {
+                self.advance();
+            }
+            self.advance();
+            let range = self.range_expr();
+            if range.is_error() {
+                return range;
+            }
+            if self.peek_membership_kind().is_some() || self.peek_is_comparison() {
+                let text = if negated { "not in" } else { "in" };
+                return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
+            }
+            let span = join_spans(left.span(), range.span());
+            return Expression::Membership {
+                value: Box::new(left),
+                range: Box::new(range),
+                negated,
+                span,
+            };
+        }
         let (op, text) = match self.peek() {
             Some(TokenKind::Less) => (BinaryOp::Less, "<"),
             Some(TokenKind::LessEqual) => (BinaryOp::LessEqual, "<="),
@@ -376,7 +400,29 @@ impl<'a> ExprParser<'a> {
         if right.is_error() {
             return right;
         }
-        if matches!(
+        if self.peek_is_comparison() || self.peek_membership_kind().is_some() {
+            return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
+        }
+        binary_expr(op, left, right)
+    }
+
+    /// Whether an interval-membership operator begins at the cursor: `in` (`Some(false)`)
+    /// or `not in` (`Some(true)`). `not` alone is the prefix logical operator, so only a
+    /// `not` immediately followed by `in` is the membership negation.
+    fn peek_membership_kind(&self) -> Option<bool> {
+        match self.peek() {
+            Some(TokenKind::Keyword(Keyword::In)) => Some(false),
+            Some(TokenKind::Keyword(Keyword::Not))
+                if matches!(self.peek_at(1), Some(TokenKind::Keyword(Keyword::In))) =>
+            {
+                Some(true)
+            }
+            _ => None,
+        }
+    }
+
+    fn peek_is_comparison(&self) -> bool {
+        matches!(
             self.peek(),
             Some(
                 TokenKind::Less
@@ -384,10 +430,7 @@ impl<'a> ExprParser<'a> {
                     | TokenKind::Greater
                     | TokenKind::GreaterEqual
             )
-        ) {
-            return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
-        }
-        binary_expr(op, left, right)
+        )
     }
 
     /// Report a second operator on a non-associative level (`==`/`!=`, a

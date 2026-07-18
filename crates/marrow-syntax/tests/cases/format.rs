@@ -147,6 +147,11 @@ fn formats_expressions_to_canonical_source() {
         "3 days",
         "1 second",
         "2 weeks",
+        // Interval membership: comparison-level, range right operand.
+        "x in 0..10",
+        "x in 0..=10",
+        "x not in 0..100",
+        "score in low..high",
     ];
     for source in canonical {
         assert_eq!(format_const_value(source), source, "input {source:?}");

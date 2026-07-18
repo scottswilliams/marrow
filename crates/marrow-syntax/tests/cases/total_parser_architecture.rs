@@ -110,6 +110,9 @@ fn expr_has_error(expr: &Expression) -> bool {
             .into_iter()
             .flatten()
             .any(|part| expr_has_error(part)),
+        Expression::Membership { value, range, .. } => {
+            expr_has_error(value) || expr_has_error(range)
+        }
         Expression::Interpolation { parts, .. } => parts.iter().any(|part| match part {
             InterpolationPart::Expr(inner) => expr_has_error(inner),
             InterpolationPart::Text { .. } => false,

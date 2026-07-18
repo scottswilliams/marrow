@@ -19,6 +19,9 @@ use crate::{
 /// last: atoms bind tightest, then unary, with binary operators below.
 const PREC_ATOM: u8 = 12;
 const PREC_UNARY: u8 = 11;
+/// Interval membership binds at the comparison level: its operands parenthesize
+/// anything looser (a comparison, `and`/`or`, `is`, equality).
+const PREC_MEMBERSHIP: u8 = 5;
 
 const INDENT: &str = "    ";
 
@@ -1928,6 +1931,19 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
             }
             out
         }
+        Expression::Membership {
+            value,
+            range,
+            negated,
+            ..
+        } => {
+            let keyword = if *negated { "not in" } else { "in" };
+            format!(
+                "{} {keyword} {}",
+                format_child_at(value, PREC_MEMBERSHIP + 1, level, layout),
+                format_child_at(range, PREC_MEMBERSHIP + 1, level, layout),
+            )
+        }
         Expression::Interpolation { parts, .. } => format_interpolation_at(parts, level),
         // Prefix `try <expr>`: a statement-level value form. The parser produces it
         // only as a statement's top-level right-hand side, so it never needs
@@ -2019,6 +2035,7 @@ fn format_interpolation_at(parts: &[InterpolationPart], level: usize) -> String 
 fn precedence(expression: &Expression) -> u8 {
     match expression {
         Expression::Binary { op, .. } => binary_precedence(*op),
+        Expression::Membership { .. } => PREC_MEMBERSHIP,
         Expression::Unary { .. } => PREC_UNARY,
         _ => PREC_ATOM,
     }

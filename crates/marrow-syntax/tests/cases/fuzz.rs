@@ -62,6 +62,8 @@ fn tracer_subset_programs() -> Vec<String> {
         "module app\n\nfn strings() {\n    const b = b\"bytes\"\n    const d = 1.day\n    const n = start ?? 0\n}\n",
         "module app\n\nfn timing(): duration {\n    return 3 days\n}\n",
         "module app\n\nfn counting(n: int): int {\n    var s = 0\n    for i in 1..=n {\n        s += i\n    }\n    return s\n}\n",
+        "module app\n\nfn within(x: int): bool {\n    return x in 0..10\n}\n",
+        "module app\n\nfn without(x: int): bool {\n    return x not in 0..=100\n}\n",
         "module app\n\nfn guard(a: int, b: int): int {\n    const q: int = checked a / b\n        on out_of_range {\n            return 0\n        } on zero_divisor return 0\n    return q\n}\n",
         "module app\n\nfn guardReturn(a: int, b: int): int {\n    return checked a + b\n        on out_of_range return 0\n}\n",
         "module app\n\ntest \"adds two numbers\" {\n    const sum = 1 + 1\n    assert sum == 2\n}\n",

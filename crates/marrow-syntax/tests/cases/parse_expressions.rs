@@ -142,6 +142,52 @@ fn a_unit_word_is_only_a_unit_directly_after_an_integer_literal() {
 }
 
 #[test]
+fn parses_interval_membership_with_a_range_operand() {
+    for (source, expect_negated) in [
+        ("fn f(x: int): bool {\n    return x in 0..10\n}\n", false),
+        (
+            "fn f(x: int): bool {\n    return x not in 0..=10\n}\n",
+            true,
+        ),
+    ] {
+        let expr = parsed_return_expr(source);
+        let Expression::Membership { range, negated, .. } = &expr else {
+            panic!("expected a membership expression in {source:?}, got {expr:?}");
+        };
+        assert_eq!(*negated, expect_negated, "{source:?}");
+        assert!(
+            matches!(
+                range.as_ref(),
+                Expression::Binary {
+                    op: BinaryOp::RangeExclusive | BinaryOp::RangeInclusive,
+                    ..
+                }
+            ),
+            "membership right operand is a range in {source:?}, got {range:?}"
+        );
+    }
+}
+
+#[test]
+fn interval_membership_does_not_chain() {
+    for source in [
+        "fn f(x: int): bool {\n    return x in 0..10 in 0..3\n}\n",
+        "fn f(x: int): bool {\n    return x in 0..10 < 3\n}\n",
+        "fn f(x: int): bool {\n    return x < 3 in 0..10\n}\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::NonAssociativeOperator)
+            ),
+            "expected a non-associative error for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn parses_const_operator_expressions_with_precedence() {
     // 60 * 60 + 1 parses as (60 * 60) + 1.
     let parsed = parse_source("const Total: int = 60 * 60 + 1\n");

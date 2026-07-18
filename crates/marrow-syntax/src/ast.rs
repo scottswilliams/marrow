@@ -232,6 +232,15 @@ pub enum Expression {
         step: Option<Box<Expression>>,
         span: SourceSpan,
     },
+    /// Interval membership `value in range` / `value not in range`: a comparison-level,
+    /// non-associative test whose right operand is a range. `negated` distinguishes
+    /// `not in` from `in`. The half-open/inclusive rule follows the range's own end.
+    Membership {
+        value: Box<Expression>,
+        range: Box<Expression>,
+        negated: bool,
+        span: SourceSpan,
+    },
     /// An interpolated string `$"..."` as a sequence of literal text and embedded
     /// expression parts, in source order.
     Interpolation {
@@ -268,6 +277,7 @@ impl Expression {
             | Self::Unary { span, .. }
             | Self::Binary { span, .. }
             | Self::Range { span, .. }
+            | Self::Membership { span, .. }
             | Self::Interpolation { span, .. }
             | Self::Try { span, .. }
             | Self::Error { span } => *span,

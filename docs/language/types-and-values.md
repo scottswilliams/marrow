@@ -259,6 +259,7 @@ numeric types implicitly.
 | `a % b` | `int` and `int` | `int` |
 | `<`, `<=`, `>`, `>=` | matching `int`, `string`, `bytes`, `date`, `instant`, or `duration` | `bool` |
 | `==`, `!=` | matching scalars, the same enum type, or identities for the same store root | `bool` |
+| `value in lo..hi`, `value not in lo..hi` | `int` value and an `int` range | `bool` |
 | `and`, `or` | `bool` and `bool` | `bool` |
 | `optional ?? fallback` | compatible present-arm types | presence follows the fallback |
 
@@ -272,6 +273,28 @@ and no calendar-month or calendar-year arithmetic. See
 remainder so that `a == (a / b) * b + a % b`. A zero divisor raises
 `run.divide_by_zero`, and `i64::MIN / -1` (like `i64::MIN % -1`) raises
 `run.overflow` because its result is unrepresentable.
+
+Interval membership tests whether an integer lies within a range: `value in lo..hi`
+is `true` when `lo <= value` and `value < hi`, and `value in lo..=hi` includes the
+upper bound. `not in` is the negation. It reads the range's half-open or inclusive
+end exactly as range iteration does, evaluates the value once, and is a
+`bool`-valued expression usable anywhere a condition is. Like the comparisons it
+sits beside, it is non-associative: `a in r in s` and `a in r < b` are parse errors.
+The range endpoints are integers — a temporal range is not current behavior.
+
+```mw
+module docs::membership
+
+pub fn grade(score: int): string {
+    if score not in 0..=100 {
+        return "out of range"
+    }
+    if score in 90..=100 {
+        return "A"
+    }
+    return "below A"
+}
+```
 
 Whole resources, lists, maps, and `Error` values have no top-level equality
 operator, though a list or map reached inside a compared struct or enum
