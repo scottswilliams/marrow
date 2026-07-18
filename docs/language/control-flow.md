@@ -340,6 +340,14 @@ pub fn openTwice(a: int, b: int): Result<int, string> {
 ```
 
 `Result<T, E>` and `Option<T>` are ordinary value types; see
-[Types and values](types-and-values.md). `transaction` groups durable effects;
-its exit rules are defined in
-[Errors and transactions](errors-and-transactions.md).
+[Types and values](types-and-values.md).
+
+Inside a `transaction` block, prefix `try` keeps this same meaning: it is
+ordinary control flow, not a transaction abort. On `ok` it yields the value; on
+`err` it returns that `err` from the enclosing function. A propagated `err`
+neither commits nor rolls the transaction back on its own — rollback is reserved
+for a runtime fault or a confirmed abort. Because the owning export must commit
+on every returning path, a `try` on a path that would exit the region the same
+function owns before its commit is rejected. `transaction` grouping, ownership,
+and these exit rules are defined in
+[Errors and transactions](errors-and-transactions.md#try-inside-a-transaction).
