@@ -1,7 +1,8 @@
 # Source standard library
 
-This page is future direction. The current standard library is implemented by
-Rust descriptor and interpreter tables.
+This page records future direction. The current toolchain supplies no `std::`
+modules. A project-declared `std::` path follows ordinary project-module
+resolution and remains project code.
 
 ## Goal
 

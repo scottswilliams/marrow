@@ -180,23 +180,17 @@ collection.
 
 ## Arguments
 
-Project-function arguments may be positional:
+Project and generic functions take positional arguments.
 
 ```text
 add("Small Gods", "Terry Pratchett")
 ```
 
-or named:
-
-```text
-add(title: "Small Gods", author: "Terry Pratchett")
-```
-
-After the first named argument, remaining arguments must be named. Named
-arguments are matched to project-function parameter names, and a trailing comma
-is accepted in a multiline call. Resource constructors and `Error` use named
-fields. Conversions, `Id`, language built-ins, and `std::` operations use
-positional arguments.
+A named project-function argument reports `check.type`. Struct and resource
+constructors and user-declared enum payloads name fields. The toolchain-defined
+`Option` and `Result` constructor forms, current conversions, `Id`, and
+language built-ins are positional. A trailing comma is accepted in a multiline
+call.
 
 Calls are evaluated from left to right. A value-returning function may also be
 called as a statement when its result is intentionally ignored. A no-return
@@ -204,9 +198,9 @@ function is called only as a statement.
 
 ## Local Scope
 
-Parameters, local `const` bindings, local `var` bindings, loop variables,
-`if const` bindings, and catch bindings have lexical block scope. A name cannot
-be declared twice in one scope. An inner block may shadow an outer local name.
+Parameters, local `const` bindings, local `var` bindings, loop variables, and
+`if const` bindings have lexical block scope. A name cannot be declared twice
+in one scope. An inner block may shadow an outer local name.
 
 A top-level constant binds a scalar value and is module-private: it is referred
 to by name only within its own module, and it is folded into its uses at compile
@@ -219,10 +213,10 @@ a later addition.
 ## Effects
 
 The function syntax does not divide calls into separate function and procedure
-categories. A function body may read or write durable places, throw, or call a
-host-provided standard-library function. The checker records those
-effects for contexts that restrict them, including transaction bodies,
-presence narrowing, and address expressions.
+categories. A body may read or write durable places. The checker records durable
+effects and propagates the requirement for an ambient transaction through calls.
+A handled failure is an ordinary `Result<T, E>` value; a runtime fault is not a
+source value.
 
 An optional-producing user call is still a valid subject for `if const` or
 `??`. Effect restrictions are applied where the expression is used; optionality
@@ -243,4 +237,4 @@ module share the file namespace. Built-in names resolve when not shadowed by an
 allowed local binding.
 
 Module-level declarations cannot redefine built-ins such as `exists`, `Id`, or
-`Error`.
+`string`.

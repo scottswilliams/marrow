@@ -1,16 +1,15 @@
 # Standard Library
 
-The beta line has no `std::` standard library. Qualified standard-library calls
-such as `std::text::trim(value)` are not resolved by the current checker; a
-`std::` path reports `check.type` until a standard-library owner is refounded.
+The current toolchain supplies no `std::` modules. A path beginning with `std::`
+uses ordinary project-module resolution. An absent module or function reports
+`check.type`; a cross-module call to a non-public function reports
+`check.visibility`. A project-declared `std::` path is project code, not an
+ambient library.
 
-The current pure floor is the set of built-ins available without `use`:
-presence checks, the text floor (`isEmpty`, `contains`, `trim`, `split`,
-`lines`, `join`), the finite collections `List<T>` and `Map<K, V>` with their
-operations, and the error constructors. See [Built-ins](builtins.md) for the
-complete current set, and [Types and values](types-and-values.md#lists-and-maps)
-for collection value semantics.
+Compiler-owned built-ins and constructors are available without module imports.
+[Built-ins](builtins.md) documents the current callable forms, and
+[Types and values](types-and-values.md) defines their value boundaries.
 
-A broader standard library (text, bytes, hashing, mathematics, clock, JSON/CSV,
-and host capabilities) is future direction recorded under
-[`docs/future/`](../future/); it is not current syntax or a guarantee.
+A source-defined standard library is future direction recorded in
+[Source standard library](../future/source-standard-library.md). That direction
+does not make a module or callable form current.

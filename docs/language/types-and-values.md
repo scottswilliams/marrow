@@ -296,78 +296,38 @@ pub fn grade(score: int): string {
 }
 ```
 
-Whole resources, lists, maps, and `Error` values have no top-level equality
+Whole resources, lists, and maps have no top-level equality
 operator, though a list or map reached inside a compared struct or enum
 participates in that aggregate's structural equality. Arithmetic overflow,
 invalid division, and invalid temporal
-arithmetic raise typed runtime errors. Range endpoint and step combinations are
+arithmetic raise typed runtime faults. Range endpoint and step combinations are
 defined under [Traversal and indexes](traversal-and-indexes.md#ranges).
 
 ## Explicit Conversion
 
-The scalar conversion names `bool`, `int`, `decimal`, `string`, `bytes`, and
-`ErrorCode` use call syntax. Conversions validate their input and fail at runtime
-when the value cannot be represented. `Id(^root, keys...)` uses the same call
-shape but constructs a nominal entry identity rather than converting one scalar
-type to another. The temporal names `date`, `instant`, and `duration` also use
-call syntax, but they are compile-time literal constructors rather than runtime
-conversions (see [Temporal Types](#temporal-types)).
+Conversion is explicit and uses call syntax. The implemented forms are:
 
-```mw
-module docs::conversion
-
-pub fn render(amount: int): string {
-    return string(amount)
-}
-
-pub fn renderFlag(active: bool): string {
-    return string(active)
-}
-```
-
-| Target | Accepted source values |
+| Form | Accepted input and result |
 |---|---|
-| `bool` | `bool`, or `int` equal to `0` or `1` |
-| `int` | `int`, canonical integer text, or an integral `decimal` in range |
-| `decimal` | `decimal`, `int`, or canonical decimal text in range |
-| `string` | Any scalar, enum, or entry-identity value, rendered canonically |
-| `bytes` | `bytes`, or the UTF-8 bytes of a `string` |
-| `ErrorCode` | validated `string` text |
+| `string(value)` | A current bare scalar, enum value, or entry identity, rendered canonically as `string` |
+| `bytes(text)` | A `string`, encoded as UTF-8 `bytes` |
 
-On the current beta line the implemented conversions are `string(value)` over any
-scalar, enum, or identity and `bytes(string)`; every other row above — including
-parsing an `int` or `decimal` from text — is documented direction that is not yet
-implemented and reports `check.unsupported`. `string(value)` renders through the
-same canonical owner interpolation and `marrow run` output use, so the text
-is identical across all three. An interpolation hole (`$"{value}"`) is any value
-`string(value)` accepts — a scalar, an enum member (`Option<T>` and `Result<T, E>`
-included, rendered with their payload whatever its shape), or an entry identity; a
-bare `struct`, `List`, `Map`, or presence-optional (`T?`) is not a hole and is
-refused at check. Temporal values are built with the
-literal constructors in [Temporal Types](#temporal-types), not these conversions.
+Unsupported pairs that use a current scalar name report `check.unsupported`:
+`int("1")` and `bool(1)` are examples. `decimal` and `ErrorCode` have no current
+callable scalar owner, so `decimal(1)` and `ErrorCode("run.example")` report
+`check.type`.
 
-`ErrorCode` is represented as a string value. Its documented direction is that
-`ErrorCode(text)` requires two or more nonempty dot-separated segments containing
-lowercase ASCII letters, digits, or `_`, and that the same validation applies to
-explicit initialization of a non-optional annotated local and to construction or
-assignment of a declared resource `ErrorCode` member. The `ErrorCode` conversion
-is not yet implemented on the beta line and reports `check.unsupported`.
-
-The current checker does not preserve this refinement through function
-parameters and returns, later reassignment of a bare local, local collection
-elements, key columns, optional local initialization, an uninitialized
-`ErrorCode` variable, or a module-level constant. Those positions can behave as
-plain `string`; an uninitialized variable starts as the empty string. This is an
-implementation limitation, not a separate persisted scalar representation.
+The temporal names `date`, `instant`, and `duration` are compile-time literal
+constructors rather than runtime conversions.
 
 ## Optional Values
 
 `T?` contains either a present `T` or `absent`. Optional types do not nest.
-Fields, key columns, and keyed leaf declarations cannot themselves be optional;
+Fields, key components, and keyed leaf declarations cannot themselves be optional;
 `List<T>?` is valid because the optionality applies to the collection value.
 
-Optional values arise from sparse reads, lookup operations, optional returns,
-and optional standard-library functions. Four constructs consume them:
+Optional values arise from sparse reads, lookup operations, and optional returns.
+Four constructs consume them:
 
 - `value ?? fallback` selects the present value or a fallback.
 - `if const name = value` enters its block and binds `name` only when the value
@@ -830,13 +790,6 @@ read the store and does not establish that the entry exists. Stored identity
 values do not create a cascading relationship: deleting the addressed entry
 does not rewrite other values that contain its identity. `marrow data integrity`
 can report such dangling identities.
-
-## Error Values
-
-`Error` is the built-in resource value constructed by `Error(...)`, returned
-like another resource, or transferred with `throw`. Its fields, construction
-rules, catchability, and transaction interaction are defined in
-[Errors and transactions](errors-and-transactions.md).
 
 ## Mutability
 

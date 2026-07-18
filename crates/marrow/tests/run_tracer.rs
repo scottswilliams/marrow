@@ -237,9 +237,10 @@ fn integer_division_truncates_toward_zero() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "-3\n");
 }
 
-/// The closed scalar conversions travel the full path and render canonically.
+/// The implemented `string` and `bytes` conversions travel the full path and
+/// render canonically.
 #[test]
-fn scalar_conversions_travel_the_full_path() {
+fn implemented_scalar_conversions_travel_the_full_path() {
     let temp = TempDir::new("conv");
     project(
         &temp,
@@ -307,7 +308,7 @@ fn byte_literal_boundary_and_reference_are_exact() {
     let normalized_reference = reference.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         !reference.contains("| Bytes |"),
-        "the literal table must not present bytes as an executable literal"
+        "the literal reference must not present bytes as an executable literal"
     );
     assert!(
         !reference.contains("Byte strings accept"),
@@ -322,6 +323,392 @@ fn byte_literal_boundary_and_reference_are_exact() {
             .contains("**Future:** The parser recognizes direct byte-literal spelling"),
         "the direct byte-literal boundary must remain explicitly labeled"
     );
+}
+
+#[test]
+fn std_paths_use_ordinary_project_module_resolution() {
+    let missing = source_project(
+        "std-module-missing",
+        &[(
+            "main.mw",
+            r#"module main
+
+pub fn run(): string {
+    return std::text::decorate("Marrow")
+}
+"#,
+        )],
+    );
+    let diagnostic = run_diagnostic_code(&missing, "main.run");
+    assert!(
+        diagnostic.contains(r#""code":"check.type""#),
+        "{diagnostic}"
+    );
+
+    let declared = source_project(
+        "std-module-declared",
+        &[
+            (
+                "main.mw",
+                r#"module main
+
+pub fn run(): string {
+    return std::text::decorate("Marrow")
+}
+"#,
+            ),
+            (
+                "std/text.mw",
+                r#"module std::text
+
+pub fn decorate(value: string): string {
+    return $"[{value}]"
+}
+"#,
+            ),
+        ],
+    );
+    let output = run_in(&declared, &["run", "main.run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "[Marrow]\n");
+
+    let private = source_project(
+        "std-module-private",
+        &[
+            (
+                "main.mw",
+                r#"module main
+
+pub fn run(): string {
+    return std::text::decorate("Marrow")
+}
+"#,
+            ),
+            (
+                "std/text.mw",
+                r#"module std::text
+
+fn decorate(value: string): string {
+    return $"[{value}]"
+}
+"#,
+            ),
+        ],
+    );
+    let diagnostic = run_diagnostic_code(&private, "main.run");
+    assert!(
+        diagnostic.contains(r#""code":"check.visibility""#),
+        "{diagnostic}"
+    );
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let standard = normalize(include_str!("../../../docs/language/standard-library.md"));
+    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
+    let functions = normalize(include_str!(
+        "../../../docs/language/modules-and-functions.md"
+    ));
+    let future = normalize(include_str!(
+        "../../../docs/future/source-standard-library.md"
+    ));
+
+    assert!(standard.contains("The current toolchain supplies no `std::` modules."));
+    assert!(standard.contains(
+        "An absent module or function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
+    ));
+    assert!(
+        standard
+            .contains("A project-declared `std::` path is project code, not an ambient library.")
+    );
+    assert!(!standard.contains("std::text::trim"));
+    assert!(!source.contains("declared library names"));
+    assert!(source.contains(
+        "An absent module or function reports `check.type`; a cross-module call to a non-public function reports `check.visibility`."
+    ));
+    assert!(!source.contains("std::text::contains"));
+    assert!(!functions.contains("`std::` operations"));
+    assert!(!functions.contains("host-provided standard-library function"));
+    assert!(!future.contains("current standard library is implemented"));
+}
+
+#[test]
+fn project_and_generic_function_arguments_are_positional() {
+    let positional = source_project(
+        "positional-project-call",
+        &[(
+            "main.mw",
+            r#"module main
+
+fn decorate(value: string): string {
+    return $"[{value}]"
+}
+
+pub fn run(): string {
+    return decorate("Marrow")
+}
+"#,
+        )],
+    );
+    let output = run_in(&positional, &["run", "main.run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "[Marrow]\n");
+
+    for (name, source) in [
+        (
+            "named-project-call",
+            r#"module main
+
+fn decorate(value: string): string {
+    return $"[{value}]"
+}
+
+pub fn run(): string {
+    return decorate(value: "Marrow")
+}
+"#,
+        ),
+        (
+            "named-generic-call",
+            r#"module main
+
+fn identity<T>(value: T): T {
+    return value
+}
+
+pub fn run(): int {
+    return identity(value: 7)
+}
+"#,
+        ),
+    ] {
+        let temp = source_project(name, &[("main.mw", source)]);
+        let diagnostic = run_diagnostic_code(&temp, "main.run");
+        assert!(
+            diagnostic.contains(r#""code":"check.type""#),
+            "{name}: {diagnostic}"
+        );
+    }
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
+    let functions = normalize(include_str!(
+        "../../../docs/language/modules-and-functions.md"
+    ));
+
+    assert!(source.contains("Project and generic functions take positional arguments."));
+    assert!(functions.contains("Project and generic functions take positional arguments."));
+    assert!(!source.contains("project functions match argument labels"));
+    assert!(!source.contains("does not yet reject labels consistently"));
+    assert!(!functions.contains("Project-function arguments may be positional"));
+    assert!(!functions.contains("matched to project-function parameter names"));
+}
+
+#[test]
+fn export_output_and_scalar_conversion_rendering_are_distinct() {
+    let resource = source_project(
+        "resource-export-rendering",
+        &[(
+            "main.mw",
+            r#"module main
+
+resource Book {
+    required title: string
+    required author: string
+}
+
+pub fn draft(title: string, author: string): Book {
+    return Book(title: title, author: author)
+}
+"#,
+        )],
+    );
+    let output = run_in(
+        &resource,
+        &["run", "main.draft", "--", "Small Gods", "Pratchett"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "{title: Small Gods, author: Pratchett}\n"
+    );
+
+    let unsupported = source_project(
+        "resource-string-rejection",
+        &[(
+            "main.mw",
+            r#"module main
+
+resource Book {
+    required title: string
+}
+
+pub fn text(): string {
+    return string(Book(title: "Marrow"))
+}
+"#,
+        )],
+    );
+    let diagnostic = run_diagnostic_code(&unsupported, "main.text");
+    assert!(
+        diagnostic.contains(r#""code":"check.unsupported""#),
+        "{diagnostic}"
+    );
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let builtins = normalize(include_str!("../../../docs/language/builtins.md"));
+    assert!(builtins.contains(
+        "`marrow run` renders every admitted export result through the canonical value renderer."
+    ));
+    assert!(builtins.contains(
+        "`string(...)` and interpolation use the same scalar, enum, and identity renderings but reject bare aggregates and presence optionals."
+    ));
+    assert!(!builtins.contains("Resources and local or durable trees have no direct rendering"));
+}
+
+#[test]
+fn rejected_conversion_and_decimal_literal_codes_are_exact() {
+    for (name, source, code) in [
+        (
+            "int-from-text",
+            r#"module main
+
+pub fn value(): int {
+    return int("1")
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "bool-from-int",
+            r#"module main
+
+pub fn value(): bool {
+    return bool(1)
+}
+"#,
+            "check.unsupported",
+        ),
+        (
+            "decimal-call",
+            r#"module main
+
+pub fn value(): int {
+    const converted = decimal(1)
+    return 0
+}
+"#,
+            "check.type",
+        ),
+        (
+            "error-code-call",
+            r#"module main
+
+pub fn value(): int {
+    const converted = ErrorCode("run.example")
+    return 0
+}
+"#,
+            "check.type",
+        ),
+        (
+            "decimal-literal",
+            r#"module main
+
+pub fn value(): int {
+    return 1.5
+}
+"#,
+            "check.unsupported",
+        ),
+    ] {
+        let temp = source_project(name, &[("main.mw", source)]);
+        let diagnostic = run_diagnostic_code(&temp, "main.value");
+        let expected = format!(r#""code":"{code}""#);
+        assert!(diagnostic.contains(&expected), "{name}: {diagnostic}");
+    }
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let types = normalize(include_str!("../../../docs/language/types-and-values.md"));
+    let syntax = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
+    let builtins = normalize(include_str!("../../../docs/language/builtins.md"));
+
+    assert!(types.contains(
+        "`int(\"1\")` and `bool(1)` are examples. `decimal` and `ErrorCode` have no current callable scalar owner, so `decimal(1)` and `ErrorCode(\"run.example\")` report `check.type`."
+    ));
+    assert!(syntax.contains("| Decimal (**future**) |"));
+    assert!(!syntax.contains("| Decimal |"));
+    assert!(!builtins.contains("std::bytes::toText"));
+    assert!(!types.contains("| `bool` | `bool`, or `int` equal to `0` or `1` |"));
+}
+
+#[test]
+fn reference_excludes_removed_throwable_channel_and_keywords() {
+    let identifiers = source_project(
+        "removed-channel-identifiers",
+        &[(
+            "main.mw",
+            r#"module main
+
+fn catch(value: int): int {
+    return value + 1
+}
+
+fn throw(value: int): int {
+    return value + 1
+}
+
+pub fn run(): int {
+    return catch(throw(2))
+}
+"#,
+        )],
+    );
+    let output = run_in(&identifiers, &["run", "main.run"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "4\n");
+
+    for (name, statement) in [
+        ("removed-throw-statement", "throw \"failure\""),
+        ("removed-catch-clause", "catch { return 0 }"),
+    ] {
+        let source =
+            format!("module main\n\npub fn run(): int {{\n    {statement}\n    return 1\n}}\n");
+        let temp = source_project(name, &[("main.mw", &source)]);
+        let diagnostic = run_diagnostic_code(&temp, "main.run");
+        assert!(
+            diagnostic.contains(r#""code":"parse.syntax""#),
+            "{name}: {diagnostic}"
+        );
+    }
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let readme = normalize(include_str!("../../../docs/language/README.md"));
+    let standard = normalize(include_str!("../../../docs/language/standard-library.md"));
+    let source = normalize(include_str!("../../../docs/language/source-and-syntax.md"));
+    let functions = normalize(include_str!(
+        "../../../docs/language/modules-and-functions.md"
+    ));
+    let types = normalize(include_str!("../../../docs/language/types-and-values.md"));
+    let control = normalize(include_str!("../../../docs/language/control-flow.md"));
+
+    assert!(!readme.contains("defines thrown values"));
+    assert!(!readme.contains("catchable faults"));
+    assert!(!standard.contains("error constructors"));
+    assert!(!source.contains("resource and `Error` constructors"));
+    assert!(!functions.contains("catch bindings"));
+    assert!(!functions.contains("may read or write durable places, throw"));
+    assert!(!types.contains("and `Error` values have no"));
+    assert!(!types.contains("## Error Values"));
+    assert!(!types.contains("constructed by `Error(...)`"));
+    assert!(!types.contains("optional standard-library functions"));
+    assert!(!control.contains("optional standard-library result"));
+    assert!(!source.contains("try catch throw delete"));
+
+    assert!(source.contains(
+        "`catch` and `throw` are not keywords; statement-head forms from the removed exception channel report `parse.syntax`."
+    ));
+    assert!(readme.contains("`Result` propagation"));
+    assert!(functions.contains("A handled failure is an ordinary `Result<T, E>` value"));
+    assert!(types.contains("`Result<T, E>` models a recoverable failure"));
 }
 
 /// A terminal value literal must be in canonical form: the `bytes` decoder admits
@@ -662,8 +1049,8 @@ pub fn has(h: string, n: string): bool {
 }
 
 /// Interpolated strings travel the full path: literal segments carry their
-/// decoded text and doubled-brace escapes, and `int`/`bool` holes render through
-/// the same conversions `string(int)`/`string(bool)` expose.
+/// decoded text and doubled-brace escapes, and scalar holes use the same
+/// canonical rendering as `string(value)`.
 #[test]
 fn interpolation_renders_holes_and_escapes() {
     let temp = TempDir::new("interp");
@@ -698,8 +1085,8 @@ pub fn empty(): string {
     );
 }
 
-/// A hole whose value is not a renderable scalar is a typed `check.unsupported`,
-/// matching the closed conversion floor (`string(int)`/`string(bool)` only).
+/// A hole whose value has no current canonical rendering is a typed
+/// `check.unsupported`, matching the `string(value)` boundary.
 #[test]
 fn interpolation_rejects_an_unrenderable_hole() {
     let temp = TempDir::new("interp-bad");
@@ -977,9 +1364,9 @@ fn unreachable_rejects_a_computed_argument() {
     assert!(stdout.contains("check.type"), "{output:?}");
 }
 
-/// Every canonically renderable value is an interpolation hole and rides `string(...)`:
-/// temporals, enums (with payloads), and bytes render through the one canonical owner,
-/// the same text `run`/`print` produces. A record, list, map, or optional hole is not
+/// Every canonically renderable value is an interpolation hole and rides
+/// `string(...)`: temporals, enums (with payloads), and bytes use the same
+/// canonical text as `marrow run`. A record, list, map, or optional hole is not
 /// renderable and is refused.
 #[test]
 fn interpolation_and_string_render_every_scalar_and_enum() {
@@ -1044,10 +1431,9 @@ pub fn bytesHole(s: string): string {
     );
 }
 
-/// `Option`/`Result` are enums whose payload can be an aggregate, so rendering must be
-/// total: interpolating an `Option<struct>` and returning one through `run`/`print`/
-/// `jsonl` all render the canonical enum text (never a VM panic), and the text output
-/// is byte-identical to the pre-interpolation-canon renderer.
+/// `Option`/`Result` are enums whose payload can be an aggregate. Interpolation
+/// and `marrow run` text use the canonical enum rendering, including aggregate
+/// payloads, without a runtime fault; JSONL preserves the structured value.
 #[test]
 fn generic_enum_payloads_render_totally() {
     let temp = TempDir::new("generic-enum-render");
@@ -1081,8 +1467,7 @@ pub fn retNested(): Option<Option<int>> {
 "#,
     );
 
-    // Interpolating an Option<struct> renders the canonical enum text (this panicked
-    // the VM before the renderer was made total).
+    // Interpolation renders an aggregate enum payload through the canonical owner.
     let interp = run_in(&temp, &["run", "interp"]);
     assert!(interp.status.success(), "{interp:?}");
     assert_eq!(
@@ -1090,8 +1475,7 @@ pub fn retNested(): Option<Option<int>> {
         "p is Option::some({x: 1, y: 2})\n"
     );
 
-    // Returned generic-enum values render the same enum text through `run`/`print`,
-    // byte-identical to the pre-canon renderer's enum arm.
+    // Returned generic-enum values use the same canonical text through `marrow run`.
     for (export, expected) in [
         ("retOpt", "Option::some({x: 1, y: 2})\n"),
         ("retNone", "Option::none\n"),
@@ -1103,7 +1487,7 @@ pub fn retNested(): Option<Option<int>> {
         assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{export}");
     }
 
-    // The jsonl surface keeps its structured enum object (unchanged by the canon).
+    // JSONL keeps the structured enum object.
     let jsonl = run_in(&temp, &["run", "retOpt", "--format", "jsonl"]);
     assert!(
         String::from_utf8_lossy(&jsonl.stdout)

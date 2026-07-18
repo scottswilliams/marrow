@@ -54,7 +54,7 @@ The pages are arranged from source text to durable behavior:
 - [Source and syntax](source-and-syntax.md) defines files, tokens, literals,
   declarations, statements, expressions, and paths.
 - [Types and values](types-and-values.md) defines scalar, resource, collection,
-  identity, optional, and error values.
+  identity, optional, and generic values.
 - [Modules and functions](modules-and-functions.md) defines name resolution,
   visibility, calls, parameters, and returns.
 - [Resources](resources.md) defines sparse records, required members, keyed
@@ -65,12 +65,14 @@ The pages are arranged from source text to durable behavior:
   ranges, positional keyed leaves, and maintained alternate orderings.
 - [Control flow](control-flow.md) defines branches, loops, matching, and
   evaluation order.
-- [Errors and transactions](errors-and-transactions.md) defines thrown values,
-  catchable faults, commit, and rollback.
+- [Errors and transactions](errors-and-transactions.md) distinguishes diagnostics,
+  artifact rejection, runtime faults, operational errors, `Result` propagation,
+  commit, and rollback.
 - [Tests](tests.md) defines the `test` declaration and the owned `assert`
   statement that `marrow test` runs.
-- [Built-ins](builtins.md) and the
-  [standard library](standard-library.md) list callable operations.
+- [Built-ins](builtins.md) lists current compiler-owned callable operations.
+  [Standard library](standard-library.md) records the current `std::` module
+  boundary.
 - [Execution limits](execution-limits.md) records fixed runtime and parser
   bounds.
 - [Grammar](grammar.md) gives a syntax-only EBNF summary.

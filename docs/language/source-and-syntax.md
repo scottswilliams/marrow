@@ -45,10 +45,13 @@ these reserved or contextual words:
 module use pub const var fn return alias type supports resource struct required store index unique test assert
 enum category match is
 if else while for in reversed by at most from on more
-break continue transaction place checked try catch throw delete unset
+break continue transaction place checked try delete unset
 and or not true false absent
 int bool string bytes decimal date instant duration unknown Error ErrorCode Id
 ```
+
+`catch` and `throw` are not keywords; statement-head forms from the removed
+exception channel report `parse.syntax`.
 
 `surface` begins a reachable legacy declaration and is intentionally outside
 the main reference. `merge` and `lock` are reserved statement heads that produce
@@ -57,8 +60,10 @@ not current statement forms; `writes` and `reads` are held for a future
 effect-signature clause. These spellings are unavailable as ordinary
 identifiers.
 
-Standard-library path segments such as `std::text` are resolved as declared
-library names even when a segment resembles a type word.
+A path beginning with `std::` follows ordinary project-module resolution. An
+absent module or function reports `check.type`; a cross-module call to a
+non-public function reports `check.visibility`. The current toolchain supplies
+no ambient `std::` namespace.
 
 ## Blocks
 
@@ -142,7 +147,7 @@ member or collection places may appear on the left of assignment.
 | Kind | Examples | Notes |
 |---|---|---|
 | Integer | `0`, `-12`, `1000` | Signed decimal integer |
-| Decimal | `12.50`, `-0.25` | Fixed decimal value |
+| Decimal (**future**) | `12.50`, `-0.25` | Parser-recognized; current compilation reports `check.unsupported` |
 | Boolean | `true`, `false` | |
 | String | `"text"`, `"line\n"` | UTF-8 text with escapes |
 | Interpolated string | `$"id: {id}"` | Expressions occur inside `{...}` |
@@ -231,23 +236,20 @@ value, yielding `absent` when the value is absent and the member wrapped optiona
 otherwise. Numeric binary operators require matching numeric types; there are no
 implicit numeric conversions. String and temporal operator combinations are
 listed in [Types and values](types-and-values.md#operators). Division and
-remainder by zero are runtime errors.
+remainder by zero are runtime faults.
 
 ## Calls
 
-The common call syntax accepts positional and named arguments. Once a named
-argument is used, remaining arguments are named. A trailing comma is accepted.
-Which form has meaning depends on the callee: project functions match argument
-labels to parameter names, resource and `Error` constructors name fields, and
-conversions, `Id`, built-ins, and standard-library operations are called
-positionally. The checker does not yet reject labels consistently on intrinsic
-and local-collection calls. A mislabeled call can check without producing an
-executable function body, or fail only when evaluated. Do not use labels for a
-positional-only callee.
+Calls use positional arguments or named constructor fields, depending on the
+callee. A trailing comma is accepted. Project and generic functions take
+positional arguments. The toolchain-defined `Option` and `Result` constructor
+forms, current conversions, `Id`, and built-ins are also positional. Struct and
+resource constructors and user-declared enum payloads name fields. A call using
+the wrong form reports `check.type`.
 
 ```text
-record(title: "Draft", priority: 2)
-std::text::contains("Draft", "aft")
+Point(x: 0, y: 0)
+contains("Draft", "aft")
 ```
 
 Function declarations and call rules are defined in

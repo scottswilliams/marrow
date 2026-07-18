@@ -1,7 +1,7 @@
 # Built-Ins
 
-Built-ins are available without `use`. They cover presence, local collection
-views, ordered navigation, durable identities, output, and conversion.
+Built-ins are available without `use`. They cover presence, local collections,
+text, durable identities, temporal arithmetic, conversion, and canonical output.
 
 ## Presence
 
@@ -41,10 +41,8 @@ decoding failure.
 `length(collection): int` reports a `List` or `Map` element count. `isEmpty` also
 accepts a `string` (the text floor form below).
 
-The collection views `keys(local)` and `values(local)` (the present keys or
-values as a new `List`), `count(place)` (the number of immediate present
-children, or scalar presence), and the `std::text::length`/`std::bytes::length`
-scalar lengths are **future**: the current compiler resolves none of them.
+Additional collection projections and scalar-length operations are not current
+built-ins.
 
 ## Text
 
@@ -71,12 +69,12 @@ pub fn isBlank(s: string): bool {
     return isEmpty(trim(s))
 }
 
-pub fn fieldCount(row: string): int {
-    return length(split(row, ","))
+pub fn partCount(text: string): int {
+    return length(split(text, ","))
 }
 
-pub fn rejoin(row: string): string {
-    return join(split(row, ","), ";")
+pub fn rejoin(text: string): string {
+    return join(split(text, ","), ";")
 }
 ```
 
@@ -88,8 +86,8 @@ construct an empty collection of the expected type; `append` adds an element and
 yields the updated list (collections are values); `length`/`isEmpty` report size.
 A collection is read with bracket lookup (`xs[i]`, `m[k]`, each yielding the
 presence-typed optional) and a map is written with bracket assignment (`m[k] =
-value`). See [Lists and maps](types-and-values.md#lists-and-maps) for the full
-table, the 1-based list positions, and value semantics.
+value`). See [Lists and maps](types-and-values.md#lists-and-maps) for the current
+operation list, the 1-based list positions, and value semantics.
 
 ```mw
 module docs::collection_builtins
@@ -126,44 +124,30 @@ check a keyed scalar leaf, so no durable form of `append` is current.
 `Id(^root, key...): Id(^root)` constructs an identity from explicit declared
 keys without reading the store.
 
-`nextId(^root): Id(^root)` (a next integer identity candidate for a single-`int`
-keyed root) and `key(id)` (the raw key of a single-column identity) are
-**future**: the current compiler does not resolve either. A caller supplies the
-identity directly as an `Id(^root)` today.
+`nextId` and `key` are not current built-ins. A caller supplies an identity
+directly as an `Id(^root)`.
 
 ## Output
 
-A program produces output by returning a value: `marrow run <export>` renders the
-value the export returns through the one canonical rendering owner, the same
-renderings `string(...)` and interpolation use. Scalars, enums, and entry
-identities render directly; bytes render as `0x`-prefixed lowercase hexadecimal,
-temporal values use canonical text, and enums use `Enum::member`. Resources and
-local or durable trees have no direct rendering.
+`marrow run` renders every admitted export result through the canonical value
+renderer. Bytes use `0x`-prefixed lowercase hexadecimal, temporal values use
+canonical text, and enums use `Enum::member`. `string(...)` and interpolation
+use the same scalar, enum, and identity renderings but reject bare aggregates
+and presence optionals.
 
-A streaming statement built-in that writes a value mid-program (`print`) is
-**future**: the current compiler has no output statement.
+The current language has no streaming output statement.
 
 ## Conversion
 
-Conversions use call syntax:
+Two scalar conversion forms are current:
 
-```text
-bool(value)
-int(value)
-decimal(value)
-string(value)
-bytes(value)
-ErrorCode(value)
-```
+- `string(value): string` renders a current bare scalar, enum value, or entry
+  identity through the canonical rendering owner.
+- `bytes(text): bytes` encodes a `string` as UTF-8 bytes.
 
-Each accepts a fixed set of source types and validates range or text form.
-Failure raises a typed runtime error. No conversion is implicit.
-
-`ErrorCode(value)` validates dotted lowercase code text. `string(value)` renders
-any interpolable value — a scalar, an enum member, or an entry identity — to the
-same canonical text interpolation and program output use. `std::bytes::toText` is
-the explicit UTF-8 decode operation; converting bytes to `string` does not perform
-that decode.
+No conversion is implicit, and no current conversion decodes bytes as text.
+[Types and values](types-and-values.md#explicit-conversion) gives the exact
+rejected-call boundary.
 
 ## Temporal
 

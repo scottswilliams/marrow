@@ -38,8 +38,7 @@ pub fn display(enabled: bool): string {
 ```
 
 The subject may be any `T?`, including a local optional, a local collection
-read, a durable read, a user-function result, or an optional standard-library
-result.
+read, a durable read, or a user-function result.
 
 An `if const` head may chain several bindings and an optional trailing condition
 with `and`. Each subject is evaluated left to right and only when every earlier
