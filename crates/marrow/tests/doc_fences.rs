@@ -415,20 +415,10 @@ fn a_source_rejected_fence_is_caught() {
     );
 }
 
-/// The gate must fail after a durable project's identity mint when the
-/// independent verifier rejects the compiler's image. A durable read precedes
-/// the transaction that makes the export an owner, so the final verified-path
-/// attempt is rejected with `image.flow`.
-#[test]
-fn a_verifier_rejected_fence_is_caught() {
-    let broken = DocFence::new(
-        "in-test".to_string(),
-        1,
-        "module broken::verify\n\nresource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn replace(id: int, value: string): bool {\n    if const current = ^items[id].value {\n        transaction {\n            ^items[id].value = value\n        }\n        return current != value\n    }\n    return false\n}\n"
-            .to_string(),
-    );
+const VERIFIER_REJECTED_DURABLE_BODY: &str = "resource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn replace(id: int, value: string): bool {\n    if const current = ^items[id].value {\n        transaction {\n            ^items[id].value = value\n        }\n        return current != value\n    }\n    return false\n}\n";
 
-    let failure = verify_fence(&broken).expect_err("rejected image must fail the gate");
+fn assert_verifier_rejected(fence: &DocFence) {
+    let failure = verify_fence(fence).expect_err("rejected image must fail the gate");
     assert!(
         failure.initially_has("diagnostic", "check.durable_identity"),
         "the probe must cross the identity mint/retry boundary, got: {}",
@@ -439,6 +429,36 @@ fn a_verifier_rejected_fence_is_caught() {
         "the gate must catch a verifier-rejected fence, got: {}",
         failure.describe(),
     );
+}
+
+/// The gate must fail after a durable project's identity mint when the
+/// independent verifier rejects the compiler's image. A durable read precedes
+/// the transaction that makes the export an owner, so the final verified-path
+/// attempt is rejected with `image.flow`.
+#[test]
+fn a_verifier_rejected_fence_is_caught() {
+    let broken = DocFence::new(
+        "in-test".to_string(),
+        1,
+        format!("module broken::verify\n\n{VERIFIER_REJECTED_DURABLE_BODY}"),
+    );
+
+    assert_verifier_rejected(&broken);
+}
+
+/// The moduleless branch must write the same rejected durable source to the
+/// script path before crossing the identity-mint and independent-verifier gates.
+#[test]
+fn a_moduleless_verifier_rejected_fence_is_caught() {
+    let broken = DocFence::new(
+        "in-test".to_string(),
+        1,
+        VERIFIER_REJECTED_DURABLE_BODY.to_string(),
+    );
+
+    assert!(matches!(&broken.kind, FenceKind::Script));
+    assert_verifier_rejected(&broken);
+    assert_eq!(broken.source_rel_path(), PathBuf::from("src/main.mw"));
 }
 
 #[test]
