@@ -1,9 +1,9 @@
 # Traversal And Indexes
 
-`for` traverses an integer or temporal range, a local collection, or a durable
-root or branch family. Durable traversal is always bounded: it visits at most a
-declared number of immediate keys and states, at the traversal head, what to do
-when more remain.
+`for` traverses an integer range, a local collection, or a durable root or
+branch family. Durable traversal is always bounded: it visits at most a declared
+number of immediate keys and states, at the traversal head, what to do when more
+remain.
 
 ## Bounded Durable Traversal
 
@@ -108,20 +108,38 @@ There is one collection ceiling, not a separate traversal-specific one.
 
 ## Ranges
 
-Range iteration is not implemented on the current beta line. The parser accepts a
-range `for` head, but the checker does not lower one, so a range loop is a
-`check.type` today; a `for` head currently iterates a local collection or a durable
-place (above). The syntax record is kept here because it parses: `..` marks an
-excluded end and `..=` an included end, with an optional `by` step.
+A `for` head over an integer range binds one name to each integer the range
+covers, in ascending order. `..` marks an excluded end and `..=` an included
+end; both endpoints are `int` expressions, evaluated once. An optional `by step`
+advances the counter by a positive integer literal each iteration, defaulting to
+`1`. A range takes no `at most N` bound — its length is determined by its
+endpoints.
 
-```text
-for value in 0..10 by 2 {
-    count += 1
+```mw
+module docs::ranges
+
+pub fn sumTo(n: int): int {
+    var s = 0
+    for i in 1..=n {
+        s += i
+    }
+    return s
+}
+
+pub fn evens(): int {
+    var count = 0
+    for value in 0..10 by 2 {
+        count += 1
+    }
+    return count
 }
 ```
 
-Range iteration is a planned future addition; its endpoints, steps, and
-dead-range rules are not current behavior. See [Project status](../status.md).
+A dead or empty range runs the body zero times: `for i in 5..3` and
+`for i in 5..=4` never enter. The step must be a positive integer literal; `by 0`,
+a negative step, and a computed step are refused at compile time. A range that
+reaches the integer domain boundary ends the loop rather than faulting. Range
+iteration is over integers only; a temporal range is not current behavior.
 
 ## Local Collections
 

@@ -2,10 +2,8 @@ module control
 
 pub fn sumTo(n: int): int {
     var s = 0
-    var i = 1
-    while i <= n {
+    for i in 1..=n {
         s += i
-        i += 1
     }
     return s
 }

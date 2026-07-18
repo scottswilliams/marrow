@@ -16,8 +16,8 @@ use marrow_image::{
 };
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
-    InterpolationPart, LiteralKind, MatchArm, SourceSpan, Statement, TraversalBound, TypeExpr,
-    UnaryOp, decode_interpolation_text, decode_string_literal,
+    InterpolationPart, LiteralKind, MatchArm, RangeExpr, SourceSpan, Statement, TraversalBound,
+    TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal, range_expr,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -2899,6 +2899,26 @@ impl<'a> FnLowerer<'a> {
         body: &Block,
         span: SourceSpan,
     ) -> Flow {
+        // An integer range iterates its counter directly onto a pure counter loop; it
+        // takes neither a durable `at most` bound nor a reversed walk in the first ring.
+        if let Some(range) = range_expr(iterable) {
+            if order != marrow_syntax::LoopOrder::Forward {
+                self.fail(unsupported(self.file, span, "a reversed range"));
+                return Flow::Fallthrough;
+            }
+            if bound.is_some() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    "`at most N` and `on more` apply only to a durable root or branch \
+                     traversal (`for k in ^root at most N`), not to a range"
+                        .to_string(),
+                ));
+                return Flow::Fallthrough;
+            }
+            return self.lower_for_range(binding, range, step, body, span);
+        }
         // A `for` head over a managed index scans it. Only a nonunique index is scanned
         // (progressive-prefix); a unique index is an exact lookup, not an iteration.
         if let Some((index, keys)) = self.resolve_index_read(iterable) {
@@ -2953,6 +2973,147 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         }
         self.lower_for_collection(binding, iterable, body, span)
+    }
+
+    /// Lower `for i in lo..hi` / `for i in lo..=hi [by step]` over an integer range: a
+    /// pure counter loop. Both bounds are `int` expressions evaluated once, `lo` into the
+    /// counter and `hi` into a fixed bound; the counter is bound to the loop variable each
+    /// iteration and advanced by a positive integer-literal `step` (default `1`). A dead or
+    /// empty range (`lo >= hi` exclusive, `lo > hi` inclusive) runs the body zero times.
+    /// The advance uses the checked add, so a range that reaches the integer domain
+    /// boundary ends the loop rather than raising `run.overflow`.
+    fn lower_for_range(
+        &mut self,
+        binding: &ForBinding,
+        range: RangeExpr,
+        step: Option<&Expression>,
+        body: &Block,
+        span: SourceSpan,
+    ) -> Flow {
+        let [name] = binding.names.as_slice() else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "a range `for` binds one integer name, found {}; write `for i in lo..hi`",
+                    binding.names.len()
+                ),
+            ));
+            return Flow::Fallthrough;
+        };
+        let (Some(lo), Some(hi)) = (range.start, range.end) else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                range.span,
+                "a range `for` iterates between two bounds, but this range leaves one end \
+                 open. Write `for i in lo..hi` with both endpoints."
+                    .to_string(),
+            ));
+            return Flow::Fallthrough;
+        };
+        let Some(stride) = self.range_step(step) else {
+            return Flow::Fallthrough;
+        };
+        let int = LTy::bare_scalar(ScalarType::Int);
+
+        // counter = lo
+        if self.lower_as(lo, int).is_none() {
+            return Flow::Fallthrough;
+        }
+        let counter_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(counter_slot), span);
+        // hi is evaluated once and held for the guard.
+        if self.lower_as(hi, int).is_none() {
+            return Flow::Fallthrough;
+        }
+        let hi_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(hi_slot), span);
+        let step_const = self.draft.intern_int(stride);
+
+        // The advance sits at the loop top and the first entry skips it, so `continue`
+        // jumps to the advance and always makes progress toward the bound.
+        let skip = self.push_jump(span);
+        let advance = self.here();
+        self.push(Instr::LocalGet(counter_slot), span);
+        self.push(Instr::ConstLoad(step_const.index()), span);
+        let advance_at = self.here();
+        self.push(Instr::IntAddChecked(0), span);
+        self.push(Instr::LocalSet(counter_slot), span);
+
+        let guard = self.here();
+        self.patch(skip, guard);
+        self.push(Instr::LocalGet(counter_slot), span);
+        self.push(Instr::LocalGet(hi_slot), span);
+        self.push(
+            if range.inclusive_end {
+                Instr::IntLe
+            } else {
+                Instr::IntLt
+            },
+            span,
+        );
+        let exit_jif = self.push_jif(span);
+
+        // The loop variable reads the counter slot directly; it is immutable to the body,
+        // and the advance between iterations updates it.
+        let mark = self.locals.len();
+        let place_mark = self.places.len();
+        self.locals.push(Local {
+            name: name.name.clone(),
+            ty: int,
+            mutable: false,
+            slot: counter_slot,
+        });
+        self.loops.push(LoopCtx {
+            continue_target: advance,
+            break_jumps: Vec::new(),
+        });
+        let body_flow = self.lower_block(body);
+        if body_flow == Flow::Fallthrough {
+            self.push(Instr::Jump(advance as u32), body.span);
+        }
+        let ctx = self.loops.pop().expect("loop was pushed");
+        self.locals.truncate(mark);
+        self.places.truncate(place_mark);
+
+        let after_loop = self.here();
+        self.patch(exit_jif, after_loop);
+        // Reaching the integer domain boundary ends the loop at the same exit.
+        self.patch(advance_at, after_loop);
+        self.patch_all(ctx.break_jumps, after_loop);
+        Flow::Fallthrough
+    }
+
+    /// Evaluate a range `by step`: a positive compile-time integer literal, defaulting to
+    /// `1` when the head carries no `by`. A zero, negative, or computed step is a precise
+    /// diagnostic — the stride must be a literal so a non-progressing loop is refused at
+    /// compile time.
+    fn range_step(&mut self, step: Option<&Expression>) -> Option<i64> {
+        let Some(expr) = step else {
+            return Some(1);
+        };
+        if let Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            ..
+        } = expr
+            && let Some(value) = parse_int(text).filter(|value| *value > 0)
+        {
+            return Some(value);
+        }
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            expr.span(),
+            "this range step is not a positive integer literal. A range advances by a \
+             positive integer literal each iteration, so `by 0`, a negative step, and a \
+             computed step make no valid stride. Write `by N` with a positive literal, or \
+             omit `by` for a step of 1."
+                .to_string(),
+        ));
+        None
     }
 
     /// Whether `iterable` names a durable traversal place syntactically: a bare store root

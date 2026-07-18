@@ -113,9 +113,10 @@ limit and may run indefinitely when the program does not make progress.
 
 ## `for`
 
-`for` traverses a local collection or a durable root or branch family. Integer and
-temporal range iteration parses but is not yet implemented (see
-[Ranges](traversal-and-indexes.md#ranges)):
+`for` traverses an integer range, a local collection, or a durable root or
+branch family. A range head binds one name over the integers a range covers (see
+[Ranges](traversal-and-indexes.md#ranges)); a temporal range is not current
+behavior.
 
 ```text
 for name [, name ...] in [reversed] iterable [by step] {

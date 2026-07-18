@@ -87,13 +87,11 @@ test "every position in 1..=length reads a present element" {
     xs = append(xs, 9)
     var sum: int = 0
     var seen: int = 0
-    var i: int = 1
-    while i <= length(xs) {
+    for i in 1..=length(xs) {
         if const e = xs[i] {
             sum += e
             seen += 1
         }
-        i += 1
     }
     assert seen == length(xs)
     assert sum == 21
