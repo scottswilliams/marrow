@@ -54,7 +54,7 @@ fn startsWith(s: string, prefix: string): bool {
         } else {
             hadSeparator = true
         }
-        idx = idx + 1
+        idx += 1
     }
     return firstEmpty and hadSeparator
 }
@@ -73,7 +73,7 @@ fn parsePair(s: string, sep: string): Option<Pair> {
         } else if idx == 1 {
             right = trim(p)
         }
-        idx = idx + 1
+        idx += 1
     }
     if idx == 2 { return some(Pair(left: left, right: right)) }
     return none
@@ -105,7 +105,7 @@ fn reachableFrom(edges: List<Edge>, start: string, nodeCount: int): Map<string, 
     var passes: int = 0
     while changed and passes <= nodeCount {
         changed = false
-        passes = passes + 1
+        passes += 1
         for e in edges {
             if getOr(reached, e.src, false) {
                 if not getOr(reached, e.dst, false) {
@@ -130,7 +130,7 @@ fn topoOrder(edges: List<Edge>, nodes: Map<string, bool>, nodeCount: int): List<
     var passes: int = 0
     var progress: bool = true
     while count < nodeCount and progress and passes <= nodeCount + 1 {
-        passes = passes + 1
+        passes += 1
         var remaining: Map<string, int> = Map()
         for e in edges {
             if not getOr(emitted, e.src, false) {
@@ -149,7 +149,7 @@ fn topoOrder(edges: List<Edge>, nodes: Map<string, bool>, nodeCount: int): List<
             for n in ready {
                 order = append(order, n)
                 emitted = insert(emitted, n, true)
-                count = count + 1
+                count += 1
             }
         }
     }
@@ -215,7 +215,7 @@ fn renderReachable(edges: List<Edge>, nodes: Map<string, bool>, hasRoot: bool, r
     for n in nodes {
         if getOr(reached, n, false) {
             names = append(names, n)
-            reachedCount = reachedCount + 1
+            reachedCount += 1
         }
     }
     return "  from " + root + ": " + join(names, ", ") + " (" + string(reachedCount) + "/" + string(nodeCount) + ")"
@@ -241,7 +241,7 @@ pub fn report(input: string): string {
                     const left = pr.left
                     const right = pr.right
                     if isEmpty(left) and isEmpty(right) {
-                        malformed = malformed + 1
+                        malformed += 1
                     } else if isEmpty(left) {
                         root = right
                         hasRoot = true
@@ -260,7 +260,7 @@ pub fn report(input: string): string {
                         }
                     }
                 }
-                none => malformed = malformed + 1
+                none => malformed += 1
             }
         } else {
             nodes = insert(nodes, line, true)

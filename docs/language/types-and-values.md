@@ -672,7 +672,7 @@ pub fn total(): int {
     xs = append(xs, 20)
     var sum: int = 0
     for x in xs {
-        sum = sum + x
+        sum += x
     }
     return sum
 }

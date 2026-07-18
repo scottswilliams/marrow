@@ -9,10 +9,10 @@
 
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding, FunctionDecl,
-    IfConstBinding, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl, ParamDecl,
-    ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind, TraversalBound,
-    TypeExpr, UnaryOp, encode_string_literal,
+    CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding,
+    FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LoopOrder, MatchArm, NominalDecl,
+    ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl, TokenKind,
+    TraversalBound, TypeExpr, UnaryOp, encode_string_literal,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -72,14 +72,8 @@ fn format_parsed(source: &str, parsed: &crate::ast::ParsedSource) -> String {
             trailing_comment_line: TrailingCommentLine::Last,
         });
     }
-    for use_decl in &file.uses {
-        sections.push(FormatSection {
-            span: use_decl.span,
-            leading_line: use_decl.span.line,
-            text: format!("use {}", use_decl.name),
-            kind: FormatSectionKind::Use,
-            trailing_comment_line: TrailingCommentLine::Last,
-        });
+    if let Some(uses) = format_use_block(&file.uses) {
+        sections.push(uses);
     }
     for declaration in &file.declarations {
         let text = format_declaration(source, declaration);
@@ -109,6 +103,34 @@ fn format_parsed(source: &str, parsed: &crate::ast::ParsedSource) -> String {
     }
     out.push('\n');
     out
+}
+
+/// Render the file's `use` imports as one formatter-owned block: sorted by module
+/// path, deduplicated, one import per line. The block is anchored at the earliest
+/// import's position so it keeps its place relative to the surrounding
+/// declarations, which the formatter never reorders. Returns `None` for a file
+/// with no imports.
+///
+/// Imports are order-independent for name resolution, so sorting and collapsing
+/// them is semantics-preserving; owning their layout removes the commonest
+/// merge conflict between co-authors editing the same header.
+fn format_use_block(uses: &[crate::ast::UseDecl]) -> Option<FormatSection> {
+    let anchor = uses.iter().min_by_key(|use_decl| use_decl.span.start_byte)?;
+    let mut names: Vec<&str> = uses.iter().map(|use_decl| use_decl.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    let text = names
+        .iter()
+        .map(|name| format!("use {name}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(FormatSection {
+        span: anchor.span,
+        leading_line: anchor.span.line,
+        text,
+        kind: FormatSectionKind::Use,
+        trailing_comment_line: TrailingCommentLine::Last,
+    })
 }
 
 /// Whether replacing `source` with `formatted` would preserve every comment
@@ -193,12 +215,6 @@ fn format_function_header_last_line(decl: &FunctionDecl) -> usize {
 }
 
 fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str {
-    if prev.kind == FormatSectionKind::Use
-        && next.kind == FormatSectionKind::Use
-        && next.span.line == prev.span.line + 1
-    {
-        return "\n";
-    }
     if matches!(prev.kind, FormatSectionKind::Comment(_)) && next.leading_line == prev.span.line + 1
     {
         return "\n";
@@ -1114,6 +1130,42 @@ struct StatementFormatContext<'source, 'comments> {
     level: usize,
 }
 
+/// The single-segment local name an expression denotes, or `None` for any path,
+/// qualified name, field, index, or compound expression. A one-segment `Name` is
+/// a bare local: reading it twice has no effect and names the same binding both
+/// times, which is what makes the compound-assign fold provably sound.
+fn plain_local_name(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Name { segments, .. } if segments.len() == 1 => Some(&segments[0]),
+        _ => None,
+    }
+}
+
+/// Fold a left-anchored `x = x <op> e` assignment into its canonical compound
+/// form `x <op>= e`, returning the local name, the compound operator, and the
+/// right operand. The fold fires only when the target and the binary's left
+/// operand are the same plain local name and the operator has a compound form
+/// (`+ - * / %`); it is then exactly semantics-preserving. It never fires on a
+/// field or index target (`r.n = r.n + 1`), a right-anchored form (`x = e - x`,
+/// whose meaning differs for non-commutative operators), or a nested left
+/// operand (`x = x + a + b`, which parses as `(x + a) + b`).
+fn compound_assign_fold<'a>(
+    target: &Expression,
+    value: &'a Expression,
+) -> Option<(&'a str, CompoundAssignOp, &'a Expression)> {
+    let name = plain_local_name(target)?;
+    let Expression::Binary { op, left, right, .. } = value else {
+        return None;
+    };
+    let compound = CompoundAssignOp::from_binary(*op)?;
+    let left_name = plain_local_name(left)?;
+    if left_name != name {
+        return None;
+    }
+    // Borrow the name from `value` so the returned references share its lifetime.
+    Some((left_name, compound, right))
+}
+
 fn format_statement_with_comments(
     source: &str,
     statement: &Statement,
@@ -1146,11 +1198,20 @@ fn format_statement_with_comments(
                 format_type_annotation(ty),
             )
         }
-        Statement::Assign { target, value, .. } => format!(
-            "{pad}{} = {}",
-            format_expression_at(target, level),
-            format_expression_at(value, level)
-        ),
+        Statement::Assign { target, value, .. } => {
+            match compound_assign_fold(target, value) {
+                Some((name, op, rhs)) => format!(
+                    "{pad}{name} {} {}",
+                    op.symbol(),
+                    format_expression_at(rhs, level)
+                ),
+                None => format!(
+                    "{pad}{} = {}",
+                    format_expression_at(target, level),
+                    format_expression_at(value, level)
+                ),
+            }
+        }
         Statement::CompoundAssign {
             target, op, value, ..
         } => format!(

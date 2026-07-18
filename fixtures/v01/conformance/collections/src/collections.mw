@@ -25,7 +25,7 @@ test "append grows a list and iteration sums its elements" {
     assert not isEmpty(xs)
     var total: int = 0
     for x in xs {
-        total = total + x
+        total += x
     }
     assert total == 42
 }
@@ -37,7 +37,7 @@ test "list iteration preserves insertion order" {
     xs = append(xs, "c")
     var joined: string = ""
     for s in xs {
-        joined = joined + s
+        joined += s
     }
     assert joined == "abc"
 }
@@ -90,7 +90,7 @@ test "map iteration visits keys in ascending order" {
     var valueSum: int = 0
     for k, v in m {
         keyOrder = keyOrder * 10 + k
-        valueSum = valueSum + v
+        valueSum += v
     }
     assert keyOrder == 123
     assert valueSum == 60
@@ -102,7 +102,7 @@ test "map key-only iteration binds keys in order" {
     m = insert(m, 1, "a")
     var sum: int = 0
     for k in m {
-        sum = sum + k
+        sum += k
     }
     assert sum == 3
 }
@@ -163,14 +163,14 @@ pub fn overflowAggregate(): int {
     var big: string = "x"
     var doublings: int = 0
     while doublings < 16 {
-        big = big + big
-        doublings = doublings + 1
+        big += big
+        doublings += 1
     }
     var xs: List<string> = List()
     var appended: int = 0
     while appended < 32 {
         xs = append(xs, big)
-        appended = appended + 1
+        appended += 1
     }
     return length(xs)
 }
@@ -182,14 +182,14 @@ pub fn overflowJoin(): int {
     var big: string = "x"
     var doublings: int = 0
     while doublings < 13 {
-        big = big + big
-        doublings = doublings + 1
+        big += big
+        doublings += 1
     }
     var xs: List<string> = List()
     var appended: int = 0
     while appended < 16 {
         xs = append(xs, big)
-        appended = appended + 1
+        appended += 1
     }
     const whole = join(xs, "")
     if isEmpty(whole) { return 0 }
@@ -204,8 +204,8 @@ test "a list of enum values iterates by value" {
     var reds: int = 0
     for c in cs {
         match c {
-            red => reds = reds + 1
-            green => reds = reds + 0
+            red => reds += 1
+            green => reds += 0
         }
     }
     assert reds == 2

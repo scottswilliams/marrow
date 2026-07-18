@@ -422,6 +422,21 @@ impl CompoundAssignOp {
         }
     }
 
+    /// The compound-assign operator matching an arithmetic binary operator, or
+    /// `None` for a binary operator with no compound form (comparison, logic,
+    /// `is`). The inverse of [`Self::binary`]; the formatter uses it to fold a
+    /// left-anchored `x = x <op> e` into the canonical `x <op>= e`.
+    pub fn from_binary(op: BinaryOp) -> Option<Self> {
+        match op {
+            BinaryOp::Add => Some(Self::Add),
+            BinaryOp::Subtract => Some(Self::Subtract),
+            BinaryOp::Multiply => Some(Self::Multiply),
+            BinaryOp::Divide => Some(Self::Divide),
+            BinaryOp::Remainder => Some(Self::Remainder),
+            _ => None,
+        }
+    }
+
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Add => "+=",

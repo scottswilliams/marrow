@@ -192,7 +192,7 @@ fn formatting_is_a_stable_fixed_point() {
 #[test]
 fn formats_statement_blocks_with_braces() {
     let source = "module app\nfn run(n: int) {\n    const total: int = 0\n    var seen[id: int]: bool\n    if n < 0 {\n        print(\"neg\")\n    } else if n == 0 {\n        print(\"zero\")\n    } else {\n        total = total + n\n    }\n    for id in keys(^books) {\n        delete ^books[id]\n    }\n    return total\n}\n";
-    let expected = "    const total: int = 0\n    var seen[id: int]: bool\n    if n < 0 {\n        print(\"neg\")\n    } else if n == 0 {\n        print(\"zero\")\n    } else {\n        total = total + n\n    }\n    for id in keys(^books) {\n        delete ^books[id]\n    }\n    return total";
+    let expected = "    const total: int = 0\n    var seen[id: int]: bool\n    if n < 0 {\n        print(\"neg\")\n    } else if n == 0 {\n        print(\"zero\")\n    } else {\n        total += n\n    }\n    for id in keys(^books) {\n        delete ^books[id]\n    }\n    return total";
     assert_eq!(format_function_body(source), expected);
 }
 
@@ -202,6 +202,112 @@ fn formats_compound_assignment_canonically() {
     assert_eq!(
         format_function_body(source),
         "    count *= 3\n    total += count"
+    );
+}
+
+/// A left-anchored `x = x <op> e` over a plain local name folds to the canonical
+/// compound form `x <op>= e` for each of the five arithmetic operators. The fold
+/// is a pure surface rewrite of an equivalent statement; the right operand is
+/// re-rendered unchanged.
+#[test]
+fn folds_left_anchored_self_update_to_compound_assign() {
+    let cases = [
+        ("s = s + i", "    s += i"),
+        ("s = s - i", "    s -= i"),
+        ("s = s * 2", "    s *= 2"),
+        ("s = s / 2", "    s /= 2"),
+        ("s = s % 2", "    s %= 2"),
+        ("s = s + a * b", "    s += a * b"),
+    ];
+    for (stmt, expected) in cases {
+        let source = format!("module app\nfn run() {{\n    {stmt}\n}}\n");
+        assert_eq!(format_function_body(&source), expected, "input {stmt:?}");
+    }
+}
+
+/// The fold is conservative: it fires only when the target and the binary's left
+/// operand are the same plain local name and the operator has a compound form.
+/// A right-anchored form, a different name, a nested left operand
+/// (`x = x + a + b` parses as `(x + a) + b`), a field or index target, and a
+/// non-arithmetic operator all keep the explicit `=` assignment.
+#[test]
+fn leaves_non_self_update_assignments_as_explicit() {
+    let unchanged = [
+        "n = 1 + n",       // right-anchored: `n -= .. ` would differ for `-`/`/`
+        "n = m + 1",       // different name
+        "n = n + a + b",   // nested left operand `(n + a)` is not the bare name
+        "r.count = r.count + 1", // field target: reading the path is not a bare local
+        "xs[i] = xs[i] + 1",     // index target
+        "flag = flag and ready", // `and` has no compound form
+    ];
+    for stmt in unchanged {
+        let source = format!("module app\nfn run() {{\n    {stmt}\n}}\n");
+        assert_eq!(
+            format_function_body(&source),
+            format!("    {stmt}"),
+            "input {stmt:?} must not fold"
+        );
+    }
+}
+
+/// Folding is idempotent and its output re-parses to a compound-assign statement:
+/// formatting the folded form again is a fixed point, and the canonical text is
+/// itself a valid compound assignment (span-erased reparse equality).
+#[test]
+fn compound_assign_fold_is_idempotent_and_reparses() {
+    let source = "module app\nfn run() {\n    s = s + i\n}\n";
+    let once = format_source(source);
+    let twice = format_source(&once);
+    assert_eq!(once, twice, "fold must be a fixed point");
+
+    let body = reparsed_run_body(&once);
+    assert!(
+        matches!(body.statements.as_slice(), [Statement::CompoundAssign { .. }]),
+        "folded output must re-parse to a compound assignment: {:#?}",
+        body.statements
+    );
+    // The already-compound spelling formats to the identical canonical text.
+    let already = "module app\nfn run() {\n    s += i\n}\n";
+    assert_eq!(format_source(already), once);
+}
+
+/// The `use` block is formatter-owned: imports render sorted by module path,
+/// deduplicated, and one per line, regardless of their source order or repetition.
+#[test]
+fn sorts_and_deduplicates_the_use_block() {
+    let source =
+        "module app\n\nuse shelf::books\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
+    let expected =
+        "module app\n\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
+    assert_eq!(format_source(source), expected);
+}
+
+/// Sorting and collapsing the `use` block is a fixed point: formatting the
+/// canonical block again leaves it unchanged.
+#[test]
+fn use_block_formatting_is_idempotent() {
+    let source = "module app\n\nuse shelf::b\nuse shelf::a\nuse shelf::a\n\nfn f(): int {\n    return 0\n}\n";
+    let once = format_source(source);
+    assert_eq!(once, format_source(&once), "use-block sort is not a fixed point");
+}
+
+/// The formatter owns only the `use` block; it never reorders declarations. With
+/// the imports written out of order and the functions written second-then-first,
+/// the imports sort but the functions keep their source order.
+#[test]
+fn use_block_sort_never_reorders_declarations() {
+    let source =
+        "module app\n\nuse z::mod\nuse a::mod\n\nfn second(): int {\n    return 2\n}\n\nfn first(): int {\n    return 1\n}\n";
+    let formatted = format_source(source);
+    assert!(
+        formatted.contains("use a::mod\nuse z::mod"),
+        "imports must sort:\n{formatted}"
+    );
+    let second_at = formatted.find("fn second").expect("second present");
+    let first_at = formatted.find("fn first").expect("first present");
+    assert!(
+        second_at < first_at,
+        "declaration order must be preserved:\n{formatted}"
     );
 }
 
@@ -453,7 +559,7 @@ fn formats_optional_function_return_and_absent_value() {
 #[test]
 fn formats_whole_file_with_blank_line_policy() {
     let source = "module shelf::books\nuse std::clock\nuse shelf::books\nconst MaxLoans: int = 5\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book\npub fn add(title: string): int {\n    return 1\n}\n";
-    let expected = "module shelf::books\n\nuse std::clock\nuse shelf::books\n\nconst MaxLoans: int = 5\n\nresource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book\n\npub fn add(title: string): int {\n    return 1\n}\n";
+    let expected = "module shelf::books\n\nuse shelf::books\nuse std::clock\n\nconst MaxLoans: int = 5\n\nresource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book\n\npub fn add(title: string): int {\n    return 1\n}\n";
     assert_eq!(format_source(source), expected);
 }
 

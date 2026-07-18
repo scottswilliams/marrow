@@ -25,7 +25,7 @@ use crate::common::oracle::{
 fn tracer_subset_programs() -> Vec<String> {
     [
         "module app\n",
-        "module shelf::books\n\nuse std::clock\nuse shelf::books\n",
+        "module shelf::books\n\nuse shelf::books\nuse std::clock\n",
         "module app\n\nconst Max: int = 5\n",
         "module app\n\nalias Count = int\n\nalias MaybeCount = Count?\n\nfn f(n: Count): MaybeCount {\n    return n\n}\n",
         "module app\n\ntype Age: int in 0..=150 supports add, subtract, step, scale\n\ntype Percent: int in 0..101\n\nfn f(a: Age): Age? {\n    return Age.checked(a - Age(0))\n}\n",
