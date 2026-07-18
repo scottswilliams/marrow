@@ -488,6 +488,91 @@ fn checked_form_arm_rules_are_diagnostics() {
     );
 }
 
+/// A checked `/`/`%` whose divisor is a provably-nonzero integer literal takes no
+/// `on zero_divisor` arm (the fault is dead), runs correctly, and still arms the
+/// live `on out_of_range` overflow. A supplied dead arm is rejected; a non-literal
+/// or literal-zero divisor still requires the arm.
+#[test]
+fn checked_division_by_a_nonzero_literal_drops_the_dead_zero_arm() {
+    let temp = TempDir::new("checked-litdiv");
+
+    // No zero_divisor arm needed; runs.
+    project(
+        &temp,
+        r#"pub fn half(x: int): int {
+    const q: int = checked x / 100
+        on out_of_range return -1
+    return q
+}
+"#,
+    );
+    let out = run_in(&temp, &["run", "half", "--format", "jsonl", "--", "500"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(r#""data":5"#),
+        "{out:?}"
+    );
+
+    // The out_of_range arm stays live: i64::MIN / -1 overflows into it.
+    project(
+        &temp,
+        r#"pub fn neg(x: int): int {
+    const q: int = checked x / -1
+        on out_of_range return 777
+    return q
+}
+"#,
+    );
+    let out = run_in(
+        &temp,
+        &[
+            "run",
+            "neg",
+            "--format",
+            "jsonl",
+            "--",
+            "-9223372036854775808",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(r#""data":777"#),
+        "{out:?}"
+    );
+
+    // A supplied `on zero_divisor` arm on a literal-nonzero divisor is a dead arm.
+    project(
+        &temp,
+        r#"pub fn dead(x: int): int {
+    const q: int = checked x / 100
+        on out_of_range return -1
+        on zero_divisor return 0
+    return q
+}
+"#,
+    );
+    let out = run_in(&temp, &["run", "dead", "--format", "jsonl", "--", "1"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("check.type"),
+        "{out:?}"
+    );
+
+    // A non-literal divisor and a literal-zero divisor still require the arm.
+    for body in [
+        "pub fn f(x: int, d: int): int {\n    return checked x / d\n        on out_of_range return -1\n}\n",
+        "pub fn f(x: int): int {\n    return checked x / 0\n        on out_of_range return -1\n}\n",
+    ] {
+        project(&temp, body);
+        let out = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "1", "2"]);
+        assert!(!out.status.success(), "{body}");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("check.type"),
+            "{body}"
+        );
+    }
+}
+
 /// The closed pure text floor: isEmpty / contains / trim.
 #[test]
 fn text_floor_builtins_travel_the_full_path() {

@@ -229,6 +229,13 @@ are exactly the faults the operation can raise: `+`, `-`, `*`, and negation take
 `i64::MIN / -1` case) and `on zero_divisor`. A missing, extra, or non-diverging arm
 is a compile error.
 
+The required arms are literal-aware for the zero divisor: when the divisor of a
+checked `/` or `%` is a nonzero integer literal, a zero divisor is provably
+impossible, so the `on zero_divisor` arm is neither required nor allowed — `checked
+x / 100` takes only `on out_of_range`. This is literal-only; a non-literal divisor is
+still assumed possibly zero, and the `on out_of_range` arm stays required regardless
+(a literal divisor of `-1` still admits the `i64::MIN / -1` overflow).
+
 ## Enum Matching
 
 A closed enum is a nominal set of declared members. A member may be bare or

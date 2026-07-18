@@ -3900,9 +3900,18 @@ impl<'a> FnLowerer<'a> {
             wrapped,
             Wrapped::Binary(BinaryOp::Divide | BinaryOp::Remainder, _, _)
         );
+        // A `/`/`%` whose divisor is a nonzero integer literal cannot fault with a zero
+        // divisor: the fault is provably dead. This is literal-aware only — a non-literal
+        // divisor is still assumed possibly zero. Overflow stays possible regardless (the
+        // `i64::MIN / -1` case), so the `out_of_range` arm is untouched.
+        let divisor_provably_nonzero = matches!(
+            &wrapped,
+            Wrapped::Binary(_, _, right) if divisor_nonzero_literal(right)
+        );
+        let can_zero_fault = is_div && !divisor_provably_nonzero;
 
-        // Arm requirements: out_of_range is always possible; a zero divisor is
-        // possible for `/`/`%` and never for the others.
+        // Arm requirements: out_of_range is always possible; a zero divisor is possible
+        // only for a `/`/`%` whose divisor is not a provably-nonzero literal.
         let Some(out_of_range) = out_of_range else {
             self.fail(checked_arm_error(
                 self.file,
@@ -3911,7 +3920,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return Flow::Fallthrough;
         };
-        if is_div && zero_divisor.is_none() {
+        if can_zero_fault && zero_divisor.is_none() {
             self.fail(checked_arm_error(
                 self.file,
                 span,
@@ -3919,12 +3928,13 @@ impl<'a> FnLowerer<'a> {
             ));
             return Flow::Fallthrough;
         }
-        if !is_div && zero_divisor.is_some() {
-            self.fail(checked_arm_error(
-                self.file,
-                span,
-                "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm",
-            ));
+        if !can_zero_fault && zero_divisor.is_some() {
+            let reason = if is_div {
+                "the divisor is a nonzero literal, so this checked operation cannot fault with a zero divisor and takes no `on zero_divisor` arm"
+            } else {
+                "this checked operation cannot fault with a zero divisor, so it takes no `on zero_divisor` arm"
+            };
+            self.fail(checked_arm_error(self.file, span, reason));
             return Flow::Fallthrough;
         }
 
@@ -3962,15 +3972,15 @@ impl<'a> FnLowerer<'a> {
         };
 
         // A checked `/`/`%` tests its divisor first; a zero divisor runs the diverging
-        // `on zero_divisor` arm.
-        if is_div {
+        // `on zero_divisor` arm. A provably-nonzero literal divisor has no such arm and
+        // needs no runtime test — the operation cannot reach a zero divisor.
+        if is_div && let Some(zero_block) = zero_divisor {
             let lb = lb.expect("division has a right operand");
             self.push(Instr::LocalGet(lb), span);
             let zero = self.draft.intern_int(0);
             self.push(Instr::ConstLoad(zero.index()), span);
             self.push(Instr::EqInt, span);
             let to_nonzero = self.push_jif(span);
-            let zero_block = zero_divisor.expect("checked division requires the arm");
             if self.lower_block(zero_block) != Flow::Terminates {
                 self.fail(checked_arm_error(
                     self.file,
@@ -9505,6 +9515,35 @@ fn operator_symbol(op: BinaryOp) -> &'static str {
 
 pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
+}
+
+/// Whether `expr` is an integer literal, possibly negated, whose value is provably
+/// nonzero. A checked `/`/`%` with such a divisor cannot fault with a zero divisor, so
+/// the `on zero_divisor` arm is dead. A non-literal divisor is assumed possibly zero.
+fn divisor_nonzero_literal(expr: &Expression) -> bool {
+    let literal = match expr {
+        Expression::Literal {
+            kind: LiteralKind::Integer,
+            text,
+            ..
+        } => Some(text),
+        Expression::Unary {
+            op: UnaryOp::Neg,
+            operand,
+            ..
+        } => match operand.as_ref() {
+            Expression::Literal {
+                kind: LiteralKind::Integer,
+                text,
+                ..
+            } => Some(text),
+            _ => None,
+        },
+        _ => None,
+    };
+    literal
+        .and_then(|text| parse_int(text))
+        .is_some_and(|value| value != 0)
 }
 
 /// Fold a duration word literal `COUNT UNIT` to signed nanoseconds: the count times
