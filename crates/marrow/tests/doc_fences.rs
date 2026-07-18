@@ -252,3 +252,23 @@ fn a_broken_module_fence_is_caught() {
         "the gate must catch a keyed-scalar-leaf fence, got: {codes:?}",
     );
 }
+
+/// The gate must fail after checking when the independent verifier rejects the
+/// compiler's image. An empty durable region is the agreement ledger's smallest
+/// checker-accepted `image.flow` case.
+#[test]
+fn a_verifier_rejected_module_fence_is_caught() {
+    let broken = ModuleFence {
+        doc: "in-test".to_string(),
+        index: 1,
+        module_path: "broken.verify".to_string(),
+        source: "module broken::verify\n\npub fn emptyRegion() {\n    transaction {\n    }\n}\n"
+            .to_string(),
+    };
+
+    let codes = check_codes(&broken);
+    assert!(
+        codes.iter().any(|code| code == "image.flow"),
+        "the gate must catch a verifier-rejected fence, got: {codes:?}",
+    );
+}
