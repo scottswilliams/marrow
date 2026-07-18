@@ -168,6 +168,24 @@ fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
 }
 
+/// Capture and compile `source` against `ids` through the production path, returning the
+/// rejection diagnostics. Panics if compilation unexpectedly succeeds.
+fn compile_errors(source: &str, ids: &str) -> Vec<SourceDiagnostic> {
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(ids.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    marrow_compile::compile(&project).expect_err("compilation must be rejected")
+}
+
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
@@ -488,24 +506,38 @@ fn bounded_traversal_over_a_composite_layer_is_rejected() {
 }
 "#;
     let source = format!("{SOURCE_A}\n{body}");
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS_A.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let diagnostics: Vec<SourceDiagnostic> =
-        marrow_compile::compile(&project).expect_err("composite-key traversal must be rejected");
+    let diagnostics = compile_errors(&source, IDS_A);
     let hit = diagnostics
         .iter()
         .find(|d| d.code == marrow_codes::Code::CheckUnsupported.as_str())
         .expect("a check.unsupported diagnostic for composite-key traversal");
+    assert!(
+        hit.line >= 1 && hit.column >= 1,
+        "the rejection carries a located span",
+    );
+}
+
+/// A missing field through a composite-root `place` is a located `check.type` that names
+/// the root container, exactly like an inline `^enrollments(student, course).nope` would
+/// be. Resolving the field against the root node (not a misrouted, nonexistent branch)
+/// means the message names `enrollments`, never an empty container.
+#[test]
+fn a_missing_field_through_a_composite_root_place_names_the_root_container() {
+    let body = r#"pub fn badGrade(student: string, course: string): int? {
+    place e = ^enrollments[student, course]
+    return e.nope
+}
+"#;
+    let source = format!("{SOURCE_A}\n{body}");
+    let diagnostics = compile_errors(&source, IDS_A);
+    let hit = diagnostics
+        .iter()
+        .find(|d| d.code == marrow_codes::Code::CheckType.as_str())
+        .expect("a check.type diagnostic for the missing field");
+    assert_eq!(
+        hit.message, "`enrollments` has no field `nope`",
+        "a composite-root place names its root container, not an empty branch",
+    );
     assert!(
         hit.line >= 1 && hit.column >= 1,
         "the rejection carries a located span",

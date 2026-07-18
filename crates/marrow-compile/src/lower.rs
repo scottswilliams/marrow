@@ -9013,9 +9013,10 @@ impl<'a> FnLowerer<'a> {
                 {
                     // A root upsert leaves the root entry present on every path from
                     // here, so subsequent sparse sets through the root place lower to the
-                    // strict form. A branch upsert (multi-column key-path) has no bound
-                    // single root slot here and marks nothing — a guarded branch set uses
-                    // the `exists`/`if const` presence path instead.
+                    // strict form. A key-path with more than one bound key slot — whether a
+                    // branch or a composite-key root — has no single root slot here and so
+                    // marks nothing; a guarded set through such a place uses the
+                    // `exists`/`if const` presence path instead.
                     self.mark_present(vec![slot]);
                 }
             }
