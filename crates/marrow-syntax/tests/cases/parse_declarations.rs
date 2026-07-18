@@ -8,18 +8,16 @@ use marrow_syntax::{
     ResourceMember, parse_source,
 };
 
-/// Corpus smoke test (one owner): every fenced `mw` block that opens with
-/// `module` is a complete library file and must parse without diagnostics. It
-/// guards the documented examples as a whole; the per-construct parse contracts
-/// are owned by the focused `parse_*` suites. Signature-only and fragment
-/// examples are illustrative and excluded here; the lexer corpus covers all
-/// blocks.
+/// Corpus smoke test (one owner): every fenced `mw` block is a complete source
+/// file and must parse without diagnostics. It guards the documented examples
+/// as a whole; the per-construct parse contracts are owned by the focused
+/// `parse_*` suites. Contextual fragments use non-`mw` fences.
 #[test]
-fn parses_all_documented_module_files() {
-    let blocks = common::documented_module_blocks();
+fn parses_all_documented_source_files() {
+    let blocks = common::documented_source_blocks();
     assert!(
         blocks.len() >= 5,
-        "expected several documented module files, found {}",
+        "expected several documented source files, found {}",
         blocks.len()
     );
     for block in blocks {
@@ -36,12 +34,12 @@ fn parses_all_documented_module_files() {
 }
 
 /// The repository front door is in the gated corpus: the root `README.md` durable-
-/// model tour (its `enum Status` example) is a documented module block, so it
+/// model tour (its `enum Status` example) is a documented source block, so it
 /// parses cleanly like the reference pages and cannot regress to a stale surface
 /// unnoticed. Distinguished from `docs/language/README.md` by the enum it carries.
 #[test]
 fn the_repo_readme_example_is_gated_by_the_corpus() {
-    let gated = common::documented_module_blocks()
+    let gated = common::documented_source_blocks()
         .into_iter()
         .any(|block| block.path == "README.md" && block.source.contains("module app::tasks"));
     assert!(

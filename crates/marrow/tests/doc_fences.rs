@@ -1,17 +1,16 @@
-//! Docs-honesty check gate: every complete `module` fence in the language
-//! reference travels the real production path (`marrow test`) and must check
-//! clean. The parse gate in `marrow-syntax` proves each fence parses and formats;
-//! it cannot check, because checking needs the compiler. This gate closes that
-//! gap: a documented `mw` example that no longer type-checks fails CI instead of
-//! shipping a stale surface.
+//! Docs-honesty verification gate: every `mw` fence in the current reference is
+//! a complete source file that travels the real production path (`marrow test`)
+//! through capture, compile, and independent image verification. The syntax
+//! corpus proves the same fences parse and format; this gate additionally fails
+//! when a documented example no longer checks or its compiled image is rejected.
 //!
 //! A fence is extracted to a correctly-pathed scratch project — module identity
-//! is path-derived, so a `module a::b` header sits at `src/a/b.mw` — and run
-//! through the built binary. Durable fences need a minted `marrow.ids`; the one
-//! convenience mint action (`marrow run`) publishes it before the durable export
-//! parks, so a durable fence checks after the mint pre-pass exactly as a caller's
-//! project would. Incomplete or deliberately future examples use `text` fences
-//! and are skipped here by construction (only `module`-opening `mw` fences check).
+//! is path-derived, so a `module a::b` header sits at `src/a/b.mw`; a moduleless
+//! script sits at `src/main.mw`. Durable fences need a minted `marrow.ids`; the
+//! one convenience mint action (`marrow run`) publishes it before the durable
+//! export parks, so a durable fence verifies after the mint pre-pass exactly as a
+//! caller's project would. Contextual fragments and deliberately future examples
+//! use `text` fences and are skipped by construction.
 
 use std::fs;
 use std::ops::Deref;
@@ -67,25 +66,58 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
         .expect("run marrow binary")
 }
 
-/// One complete `module` fence from a reference page: where it lives, and its
-/// source. `module_path` is the dotted path its header declares (`a::b` → `a.b`),
-/// which fixes the file location the project capture derives its identity from.
-struct ModuleFence {
+/// How a complete source fence establishes its project identity.
+enum FenceKind {
+    /// A library file whose header declares a dotted module path.
+    Module(String),
+    /// A complete source file with no module header.
+    Script,
+}
+
+/// One complete `mw` fence from a current reference page.
+struct DocFence {
     doc: String,
     index: usize,
-    module_path: String,
+    kind: FenceKind,
     source: String,
 }
 
-impl ModuleFence {
-    /// The correctly-pathed source file for this fence: `module a::b` → `src/a/b.mw`.
-    fn source_rel_path(&self) -> PathBuf {
-        let mut path = PathBuf::from("src");
-        for segment in self.module_path.split('.') {
-            path.push(segment);
+impl DocFence {
+    fn new(doc: String, index: usize, source: String) -> Self {
+        let kind = match module_path_of(&source) {
+            Some(path) => FenceKind::Module(path),
+            None => FenceKind::Script,
+        };
+        Self {
+            doc,
+            index,
+            kind,
+            source,
         }
-        path.set_extension("mw");
-        path
+    }
+
+    /// The project-relative source path derived by the real capture contract.
+    fn source_rel_path(&self) -> PathBuf {
+        match &self.kind {
+            FenceKind::Module(module_path) => {
+                let mut path = PathBuf::from("src");
+                for segment in module_path.split('.') {
+                    path.push(segment);
+                }
+                path.set_extension("mw");
+                path
+            }
+            FenceKind::Script => PathBuf::from("src/main.mw"),
+        }
+    }
+
+    fn source_label(&self) -> String {
+        match &self.kind {
+            FenceKind::Module(module_path) => {
+                format!("module {}", module_path.replace('.', "::"))
+            }
+            FenceKind::Script => "moduleless script".to_string(),
+        }
     }
 }
 
@@ -109,18 +141,21 @@ fn markdown_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Every complete `module` fence in the reference, in the same corpus order the
-/// parse gate reads: `docs/language/*.md` (sorted), then top-level `*.md` (sorted).
-/// A fence that opens with `module ` is a complete library file; a fragment or a
-/// `text` fence is not a `mw` module and is not returned.
-fn module_fences() -> Vec<ModuleFence> {
+/// Every complete `mw` fence in the reference, in the same corpus order the
+/// syntax gates read: `docs/language/*.md` (sorted), then top-level `*.md`
+/// (sorted). Contextual fragments use another fence language and are absent.
+fn documented_fences() -> Vec<DocFence> {
     let root = repo_root();
     let mut files = markdown_files(&root.join("docs").join("language"));
     files.extend(markdown_files(&root));
 
     let mut fences = Vec::new();
     for path in files {
-        let doc = path.file_name().unwrap().to_string_lossy().into_owned();
+        let doc = path
+            .strip_prefix(&root)
+            .expect("documentation path beneath repository root")
+            .to_string_lossy()
+            .into_owned();
         let text = fs::read_to_string(&path).expect("read markdown doc");
         let mut in_block = false;
         let mut index = 0usize;
@@ -134,14 +169,7 @@ fn module_fences() -> Vec<ModuleFence> {
             }
             if line.trim() == "```" && in_block {
                 in_block = false;
-                if let Some(module_path) = module_path_of(&source) {
-                    fences.push(ModuleFence {
-                        doc: doc.clone(),
-                        index,
-                        module_path,
-                        source: source.clone(),
-                    });
-                }
+                fences.push(DocFence::new(doc.clone(), index, source.clone()));
                 continue;
             }
             if in_block {
@@ -153,42 +181,113 @@ fn module_fences() -> Vec<ModuleFence> {
     fences
 }
 
-/// The dotted module path a complete fence declares, or `None` when the fence is
-/// a fragment (no `module ` header). `module a::b` yields `a.b`.
+/// The dotted module path a complete fence declares, or `None` for a script.
+/// `module a::b` yields `a.b`.
 fn module_path_of(source: &str) -> Option<String> {
     let header = source.trim_start().lines().next()?;
     let rest = header.strip_prefix("module ")?;
     Some(rest.trim().replace("::", "."))
 }
 
-/// The `check.*` diagnostic codes a fence produces on the production check path,
-/// empty when it checks clean. A durable fence is minted once (`marrow run` is the
-/// sole mint owner) and re-checked, so a clean durable example is reported clean
-/// rather than blocked on a machine-written identity artifact.
-fn check_codes(fence: &ModuleFence) -> Vec<String> {
+#[derive(Debug, PartialEq, Eq)]
+struct FailureRecord {
+    outcome: String,
+    code: Option<String>,
+}
+
+#[derive(Debug)]
+struct FenceFailure {
+    status: Option<i32>,
+    records: Vec<FailureRecord>,
+    stdout: String,
+    stderr: String,
+}
+
+impl FenceFailure {
+    fn from_output(output: Output) -> Self {
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        Self {
+            status: output.status.code(),
+            records: failure_records(&stdout),
+            stdout,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+
+    fn has(&self, outcome: &str, code: &str) -> bool {
+        self.records
+            .iter()
+            .any(|record| record.outcome == outcome && record.code.as_deref() == Some(code))
+    }
+
+    fn has_code(&self, code: &str) -> bool {
+        self.records
+            .iter()
+            .any(|record| record.code.as_deref() == Some(code))
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "status={:?}, records={:?}, stdout={:?}, stderr={:?}",
+            self.status, self.records, self.stdout, self.stderr
+        )
+    }
+}
+
+/// Require one final production-path command to succeed without a typed failure
+/// record. The status is the primary contract; checking the record stream too
+/// makes a future exit-code regression fail closed.
+fn finish(output: Output) -> Result<(), FenceFailure> {
+    let success = output.status.success();
+    let failure = FenceFailure::from_output(output);
+    if success && failure.records.is_empty() {
+        Ok(())
+    } else {
+        Err(failure)
+    }
+}
+
+/// Compile and independently verify one fence on the production CLI path. A
+/// durable fence is minted once (`marrow run` is the sole mint owner) and then
+/// retried, so a clean durable example reaches verification rather than stopping
+/// at its missing machine-written identity artifact.
+fn verify_fence(fence: &DocFence) -> Result<(), FenceFailure> {
     let temp = TempDir::new("fence");
     write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
     write(&temp.join(fence.source_rel_path()), &fence.source);
 
-    let first = check_diagnostic_codes(&run_in(&temp, &["test", "--format", "jsonl"]));
-    if !first.iter().any(|code| code == "check.durable_identity") {
-        return first;
+    let first = run_in(&temp, &["test", "--format", "jsonl"]);
+    if first.status.success() {
+        return finish(first);
+    }
+    let first_failure = FenceFailure::from_output(first);
+    if !first_failure.has_code("check.durable_identity") {
+        return Err(first_failure);
     }
 
     // A durable fence is missing only its machine-written ids until the one
-    // convenience mint publishes them; re-check against the minted ledger.
+    // convenience mint publishes them; require a fresh final compile+verify over
+    // the minted ledger. The final result remains authoritative if minting fails.
     let _ = run_in(&temp, &["run", "__doc_fence_probe__"]);
-    check_diagnostic_codes(&run_in(&temp, &["test", "--format", "jsonl"]))
+    finish(run_in(&temp, &["test", "--format", "jsonl"]))
 }
 
-/// The `check.*` codes carried by the `diagnostic` records in a JSONL run.
-fn check_diagnostic_codes(output: &Output) -> Vec<String> {
-    let stdout = String::from_utf8_lossy(&output.stdout);
+/// Typed failure records carried by the CLI's flat JSONL stream. Passing tests
+/// and summaries are not failures and therefore do not appear here.
+fn failure_records(stdout: &str) -> Vec<FailureRecord> {
     stdout
         .lines()
-        .filter(|line| line.contains(r#""outcome":"diagnostic""#))
-        .filter_map(|line| json_field(line, "code"))
-        .filter(|code| code.starts_with("check."))
+        .filter_map(|line| {
+            let outcome = json_field(line, "outcome")?;
+            matches!(
+                outcome.as_str(),
+                "diagnostic" | "artifact_rejected" | "fault" | "error" | "failed" | "errored"
+            )
+            .then(|| FailureRecord {
+                outcome,
+                code: json_field(line, "code"),
+            })
+        })
         .collect()
 }
 
@@ -200,34 +299,34 @@ fn json_field(line: &str, key: &str) -> Option<String> {
     Some(line[start..end].to_string())
 }
 
-/// The gate: every complete `module` fence in the reference checks clean on the
-/// production path. A failure names the page, the block, and its `check.*` codes.
+/// The gate: every complete `mw` fence in the current reference compiles and
+/// independently verifies. A failure names the page, block, source kind, process
+/// status, and typed JSONL failure records.
 #[test]
-fn every_documented_module_fence_checks() {
-    let fences = module_fences();
+fn every_documented_mw_fence_compiles_and_verifies() {
+    let fences = documented_fences();
     assert!(
-        fences.len() >= 40,
-        "expected the reference corpus, found {} module fences",
+        fences.len() >= 60,
+        "expected the reference corpus, found {} complete source fences",
         fences.len()
     );
 
     let mut failures = Vec::new();
     for fence in &fences {
-        let codes = check_codes(fence);
-        if !codes.is_empty() {
+        if let Err(failure) = verify_fence(fence) {
             failures.push(format!(
-                "{} fence #{} [module {}] failed check: {:?}",
+                "{} fence #{} [{}] failed compile/verify: {}",
                 fence.doc,
                 fence.index,
-                fence.module_path.replace('.', "::"),
-                codes,
+                fence.source_label(),
+                failure.describe(),
             ));
         }
     }
 
     assert!(
         failures.is_empty(),
-        "{} documented module fence(s) fail the check gate:\n{}",
+        "{} documented source fence(s) fail the compile+verify gate:\n{}",
         failures.len(),
         failures.join("\n"),
     );
@@ -238,18 +337,18 @@ fn every_documented_module_fence_checks() {
 /// gate — is caught, so a regression that reintroduces an unchecked fence cannot
 /// pass green.
 #[test]
-fn a_broken_module_fence_is_caught() {
-    let broken = ModuleFence {
-        doc: "in-test".to_string(),
-        index: 1,
-        module_path: "broken.leaf".to_string(),
-        source: "module broken::leaf\n\nresource Book {\n    required title: string\n    tags[pos: int]: string\n}\n".to_string(),
-    };
+fn a_source_rejected_fence_is_caught() {
+    let broken = DocFence::new(
+        "in-test".to_string(),
+        1,
+        "module broken::leaf\n\nresource Book {\n    required title: string\n    tags[pos: int]: string\n}\n".to_string(),
+    );
 
-    let codes = check_codes(&broken);
+    let failure = verify_fence(&broken).expect_err("broken source must fail the gate");
     assert!(
-        codes.iter().any(|code| code == "check.unsupported"),
-        "the gate must catch a keyed-scalar-leaf fence, got: {codes:?}",
+        failure.has("diagnostic", "check.unsupported"),
+        "the gate must catch a keyed-scalar-leaf fence, got: {}",
+        failure.describe(),
     );
 }
 
@@ -257,19 +356,19 @@ fn a_broken_module_fence_is_caught() {
 /// compiler's image. An empty durable region is the agreement ledger's smallest
 /// checker-accepted `image.flow` case.
 #[test]
-fn a_verifier_rejected_module_fence_is_caught() {
-    let broken = ModuleFence {
-        doc: "in-test".to_string(),
-        index: 1,
-        module_path: "broken.verify".to_string(),
-        source: "module broken::verify\n\npub fn emptyRegion() {\n    transaction {\n    }\n}\n"
+fn a_verifier_rejected_fence_is_caught() {
+    let broken = DocFence::new(
+        "in-test".to_string(),
+        1,
+        "module broken::verify\n\npub fn emptyRegion() {\n    transaction {\n    }\n}\n"
             .to_string(),
-    };
+    );
 
-    let codes = check_codes(&broken);
+    let failure = verify_fence(&broken).expect_err("rejected image must fail the gate");
     assert!(
-        codes.iter().any(|code| code == "image.flow"),
-        "the gate must catch a verifier-rejected fence, got: {codes:?}",
+        failure.has("artifact_rejected", "image.flow"),
+        "the gate must catch a verifier-rejected fence, got: {}",
+        failure.describe(),
     );
 }
 
@@ -278,7 +377,7 @@ fn a_verifier_rejected_module_fence_is_caught() {
 /// the production-path corpus.
 #[test]
 fn complete_moduleless_reference_fences_are_gated() {
-    let fences = module_fences();
+    let fences = documented_fences();
     assert!(
         fences
             .iter()

@@ -1031,13 +1031,13 @@ fn canonical_sample_is_already_fmt_canonical() {
     );
 }
 
-/// Corpus contract for the whole formatter over every documented module file:
-/// `format_source` is a fixed point, re-parses cleanly, and preserves the declaration
-/// tree.
+/// Corpus contract for the whole formatter over every documented source file:
+/// `format_source` is a fixed point, re-parses cleanly, and preserves the
+/// declaration tree.
 #[test]
 fn format_source_preserves_structure_and_reparses_cleanly() {
-    let blocks = common::documented_module_blocks();
-    assert!(blocks.len() >= 5, "expected several module files");
+    let blocks = common::documented_source_blocks();
+    assert!(blocks.len() >= 5, "expected several source files");
     for block in blocks {
         let source = block.source;
         let once = format_source(&source);

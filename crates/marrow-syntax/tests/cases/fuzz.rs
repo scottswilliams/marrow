@@ -202,12 +202,12 @@ fn formatter_faithful_regressions() -> Vec<String> {
     .collect()
 }
 
-/// The valid-program corpus: the tracer-subset programs, the documented module
+/// The valid-program corpus: the tracer-subset programs, the documented source
 /// blocks, and the tracked `.mw` fixtures that parse cleanly. Each feeds both the
 /// total and the faithful-formatter lens.
 fn valid_programs() -> Vec<String> {
     let mut programs = tracer_subset_programs();
-    for block in common::documented_module_blocks() {
+    for block in common::documented_source_blocks() {
         programs.push(block.source);
     }
     programs

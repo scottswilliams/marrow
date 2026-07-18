@@ -246,7 +246,7 @@ fn file_has_error(file: &SourceFile) -> bool {
 /// a well-formed program never yields the error placeholder.
 #[test]
 fn valid_programs_yield_no_error_nodes() {
-    for block in common::documented_module_blocks() {
+    for block in common::documented_source_blocks() {
         let parsed = parse_source(&block.source);
         assert!(
             !parsed.has_errors(),
@@ -269,7 +269,7 @@ fn valid_programs_yield_no_error_nodes() {
 #[test]
 fn every_error_node_travels_with_a_diagnostic() {
     let mut malformed_seen = false;
-    for block in common::documented_module_blocks() {
+    for block in common::documented_source_blocks() {
         // Every byte-boundary truncation is a distinct partially-written program.
         for end in char_boundaries(&block.source) {
             let ParsedSource { file, diagnostics } = parse_source(&block.source[..end]);

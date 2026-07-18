@@ -42,9 +42,6 @@ pub struct MwBlock {
     pub index: usize,
     /// The block's source text, with a trailing newline on each line.
     pub source: String,
-    /// Whether the block opens with a `module ` declaration, i.e. it is a
-    /// complete library file rather than a signature-only or fragment example.
-    pub starts_with_module: bool,
 }
 
 /// Read every fenced ```mw``` block from the language reference and the
@@ -76,7 +73,6 @@ pub fn mw_blocks() -> Vec<MwBlock> {
                 blocks.push(MwBlock {
                     path: file_name.clone(),
                     index,
-                    starts_with_module: source.trim_start().starts_with("module "),
                     source: source.clone(),
                 });
                 in_block = false;
@@ -102,13 +98,10 @@ fn markdown_files(dir: &Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// The blocks that open with a `module ` declaration: complete library files
-/// that must parse and format without diagnostics.
-pub fn documented_module_blocks() -> Vec<MwBlock> {
+/// Every current `mw` fence. Documentation uses `mw` only for complete source
+/// files; contextual fragments use `text` or `ebnf`.
+pub fn documented_source_blocks() -> Vec<MwBlock> {
     mw_blocks()
-        .into_iter()
-        .filter(|block| block.starts_with_module)
-        .collect()
 }
 
 /// Every tracked `.mw` fixture under `fixtures/v01/`, in sorted path order. These
