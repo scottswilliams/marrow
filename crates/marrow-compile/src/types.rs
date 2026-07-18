@@ -490,7 +490,7 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
 }
 
 /// The project named-type registry: the transparent aliases, the nominal int
-/// types, the dense struct value types, and zero or one durable record type.
+/// types, the dense struct value types, and the durable-capable record types.
 #[derive(Default)]
 pub(crate) struct TypeRegistry {
     /// `alias name -> alias-free expanded target`. Cyclic aliases are reported
@@ -499,7 +499,10 @@ pub(crate) struct TypeRegistry {
     nominals: Vec<NominalInfo>,
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
-    record: Option<RecordInfo>,
+    /// The project's `resource` record types, in source order. Each is a value
+    /// record type; at most one backs a durable store this line. Names are unique
+    /// (a duplicate is rejected at declare), so a name selects at most one.
+    records: Vec<RecordInfo>,
     /// The generic value-type templates: the reserved toolchain generics
     /// (`Option`/`Result`) followed by the user `struct`/`enum` templates. Fixed
     /// after `build`; instantiations reference a template by index.
@@ -1118,7 +1121,7 @@ impl TypeRegistry {
     }
 
     pub(crate) fn by_name(&self, name: &str) -> Option<&RecordInfo> {
-        self.record.as_ref().filter(|info| info.name == name)
+        self.records.iter().find(|info| info.name == name)
     }
 
     pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
@@ -1149,17 +1152,17 @@ impl TypeRegistry {
     }
 
     pub(crate) fn by_name_for_type(&self, ty: TypeId) -> Option<&RecordInfo> {
-        self.record.as_ref().filter(|info| info.type_id == ty)
+        self.records.iter().find(|info| info.type_id == ty)
     }
 
     /// The unkeyed group whose materialized-value record type is `ty`, if any. Field
     /// resolution of a group sub-record value (`entry.group.field`) resolves its
-    /// leaves through this owner.
+    /// leaves through this owner. Group record types are distinct across resources,
+    /// so at most one record owns a group of a given type.
     pub(crate) fn group_by_type(&self, ty: TypeId) -> Option<&GroupInfo> {
-        self.record
-            .as_ref()?
-            .groups
+        self.records
             .iter()
+            .flat_map(|record| record.groups.iter())
             .find(|group| group.type_id == ty)
     }
 
@@ -1191,7 +1194,7 @@ impl TypeRegistry {
     /// and cycles rejected; targets pre-expanded to alias-free form and validated
     /// against the known types), then the value types in two passes.
     ///
-    /// Value types (the one resource record, the dense structs, and the closed
+    /// Value types (the resource records, the dense structs, and the closed
     /// enums) are built declare-then-fill: pass one reserves every type's image
     /// index with empty members and decides name conflicts, so pass two can resolve
     /// each field or payload against the full set of declared types regardless of
@@ -1199,9 +1202,9 @@ impl TypeRegistry {
     /// structs may reference each other, and a resource field may name a user enum.
     /// The only nesting restriction is acyclicity: a value type may not contain
     /// itself directly or transitively, reported at check time (and independently
-    /// re-rejected by the verifier). The resource record reserves its image index
-    /// before the structs, so a project's durable root and sites keep the same
-    /// record index whether or not dense structs are also declared.
+    /// re-rejected by the verifier). The resource records reserve their image
+    /// indices before the structs, so a project's durable root and sites keep the
+    /// same record index whether or not dense structs are also declared.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut ImageDraft,
@@ -1217,7 +1220,7 @@ impl TypeRegistry {
             nominals: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
-            record: None,
+            records: Vec::new(),
             type_templates: reserved_templates(),
             generics: RefCell::default(),
             collections: RefCell::default(),
@@ -1241,8 +1244,10 @@ impl TypeRegistry {
         register_type_templates(&mut registry, structs, enums, resources, diagnostics);
 
         // Pass one: reserve every value type's image index with empty members and
-        // decide name conflicts. The record reserves first (image index 0).
-        let record_decl = declare_record(draft, &mut registry, resources, diagnostics);
+        // decide name conflicts. The records reserve first (image indices `0..n`),
+        // so a project's durable root and sites keep the same record index whether
+        // or not dense structs are also declared.
+        let record_decls = declare_records(draft, &mut registry, resources, diagnostics);
         let struct_decls = declare_structs(
             draft,
             &mut registry,
@@ -1260,7 +1265,7 @@ impl TypeRegistry {
 
         // Pass two: resolve and fill each definition's members against the full
         // registry, monomorphizing any generic field type on first use.
-        fill_record(draft, &mut registry, record_decl.as_ref(), diagnostics);
+        fill_records(draft, &mut registry, &record_decls, diagnostics);
         fill_structs(draft, &mut registry, &struct_decls, diagnostics);
         fill_enums(draft, &mut registry, &enum_decls, diagnostics);
 
@@ -1282,7 +1287,7 @@ impl TypeRegistry {
             nominals: self.nominals.clone(),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
-            record: self.record.clone(),
+            records: self.records.clone(),
             type_templates: self.type_templates.clone(),
             generics: RefCell::new(self.generics.borrow().clone()),
             collections: RefCell::new(self.collections.borrow().clone()),
@@ -2289,47 +2294,74 @@ fn enum_payload(
     ok.then_some((payload, scalars))
 }
 
-/// Pass one for the one admitted record type: reserve its image [`RecordTypeDef`]
-/// index (empty for now, ahead of the structs) and register its name, returning the
-/// surviving resource declaration for pass two. More than one resource, or a
-/// reserved resource name, drops the record.
-fn declare_record<'a>(
+/// Pass one for the admitted record types: reserve each resource's image
+/// [`RecordTypeDef`] index (empty for now, ahead of the structs) and register its
+/// name, returning the surviving resource declarations for pass two in the same
+/// order as [`TypeRegistry::records`]. A reserved resource name, or a name a prior
+/// resource already declared, drops that resource with a precise diagnostic; the
+/// first declaration of a name stands. The durable graph still admits one store
+/// this line, so a second resource is a value record type, never a second root.
+fn declare_records<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     resources: &'a [(String, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Option<(String, &'a ResourceDecl)> {
-    if resources.len() > 1 {
-        for (file, resource) in &resources[1..] {
+) -> Vec<(String, &'a ResourceDecl)> {
+    let mut survivors = Vec::new();
+    for (file, resource) in resources {
+        if is_reserved_type_name(&resource.name) {
+            diagnostics.push(reserved_name(file, resource.name_span, &resource.name));
+            continue;
+        }
+        // Two resources of the same name have no unambiguous record identity, so a
+        // repeat is a precise typed rejection and the first declaration stands.
+        if registry
+            .records
+            .iter()
+            .any(|info| info.name == resource.name)
+        {
             diagnostics.push(SourceDiagnostic::at(
-                Code::CheckUnsupported.as_str(),
+                Code::CheckType.as_str(),
                 file,
                 resource.name_span,
-                "the beta line admits only one resource type per project".to_string(),
+                format!("`{}` is already declared as a resource", resource.name),
             ));
+            continue;
         }
+        let name_id = draft.intern_string(&resource.name);
+        let type_id = draft.add_record_type(RecordTypeDef {
+            name: name_id,
+            fields: Vec::new(),
+        });
+        registry.records.push(RecordInfo {
+            type_id,
+            name: resource.name.clone(),
+            fields: Vec::new(),
+            groups: Vec::new(),
+        });
+        survivors.push((file.clone(), *resource));
     }
-    let (file, resource) = resources.first()?;
-    if is_reserved_type_name(&resource.name) {
-        diagnostics.push(reserved_name(file, resource.name_span, &resource.name));
-        return None;
-    }
-    let name_id = draft.intern_string(&resource.name);
-    let type_id = draft.add_record_type(RecordTypeDef {
-        name: name_id,
-        fields: Vec::new(),
-    });
-    registry.record = Some(RecordInfo {
-        type_id,
-        name: resource.name.clone(),
-        fields: Vec::new(),
-        groups: Vec::new(),
-    });
-    Some((file.clone(), resource))
+    survivors
 }
 
-/// Pass two for the record type: resolve each field against the full registry and
-/// fill both the registry info and the image record. A resource field is a scalar
+/// Pass two for the record types: fill each reserved record from its surviving
+/// declaration, in the reserved order.
+fn fill_records(
+    draft: &mut ImageDraft,
+    registry: &mut TypeRegistry,
+    record_decls: &[(String, &ResourceDecl)],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    // The survivors are in the same order as the reserved records, so record `index`
+    // is the one this declaration reserved.
+    for (index, (file, resource)) in record_decls.iter().enumerate() {
+        fill_record(draft, registry, index, file, resource, diagnostics);
+    }
+}
+
+/// Fill one reserved record (`registry.records[index]`) from its resource
+/// declaration: resolve each field against the full registry and fill both the
+/// registry info and the image record. A resource field is a scalar
 /// (durable-storable) or a closed enum value (`Option`/`Result`/a user `enum`) held
 /// locally; a nominal, struct, or unknown spelling is not an admitted field type. A
 /// group or keyed member, and a bad field type, are `check.unsupported` and skip
@@ -2337,17 +2369,12 @@ fn declare_record<'a>(
 fn fill_record(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    record_decl: Option<&(String, &ResourceDecl)>,
+    index: usize,
+    file: &str,
+    resource: &ResourceDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
-    let Some((file, resource)) = record_decl else {
-        return;
-    };
-    let type_id = registry
-        .record
-        .as_ref()
-        .expect("a reserved record is present when its declaration survived")
-        .type_id;
+    let type_id = registry.records[index].type_id;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
     let mut groups = Vec::new();
@@ -2435,10 +2462,9 @@ fn fill_record(
     // storeless value model.
     field_defs.extend(group_slot_defs);
     draft.set_record_fields(type_id, field_defs);
-    if let Some(info) = registry.record.as_mut() {
-        info.fields = fields;
-        info.groups = groups;
-    }
+    let info = &mut registry.records[index];
+    info.fields = fields;
+    info.groups = groups;
 }
 
 /// The direct scalar/enum leaves of an unkeyed group, in declaration order,
@@ -2526,14 +2552,15 @@ pub(crate) fn reject_value_cycles(
             diagnostics.push(value_cycle_diagnostic(&file, span, &info.name, &path));
         }
     }
-    if let Some(record) = registry.record.as_ref()
-        && let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id))
-    {
-        let (file, span) = resources
-            .first()
-            .map(|(file, decl)| (file.clone(), decl.name_span))
-            .expect("a reserved record has a surviving declaration");
-        diagnostics.push(value_cycle_diagnostic(&file, span, &record.name, &path));
+    for record in &registry.records {
+        if let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id)) {
+            let (file, span) = resources
+                .iter()
+                .find(|(_, decl)| decl.name == record.name)
+                .map(|(file, decl)| (file.clone(), decl.name_span))
+                .expect("a reserved record has a surviving declaration");
+            diagnostics.push(value_cycle_diagnostic(&file, span, &record.name, &path));
+        }
     }
     // A monomorphized generic type on a cycle (`Tree[int]` containing `Tree[int]`)
     // is an ordinary record/enum cycle per instantiation; report each once at its
@@ -2602,7 +2629,7 @@ impl ValueGraph {
             nodes.push(node);
             labels.push(label);
         };
-        if let Some(record) = registry.record.as_ref() {
+        for record in &registry.records {
             push(ValueNode::Record(record.type_id), record.name.clone());
         }
         for info in &registry.structs {
@@ -2657,9 +2684,9 @@ impl ValueGraph {
         for (from, node) in nodes.iter().enumerate() {
             let targets: Vec<GArg> = match node {
                 ValueNode::Record(ty) => registry
-                    .record
-                    .as_ref()
-                    .filter(|record| record.type_id == *ty)
+                    .records
+                    .iter()
+                    .find(|record| record.type_id == *ty)
                     .map(|record| record.fields.iter().map(|field| field.ty).collect())
                     .or_else(|| {
                         registry
