@@ -24,7 +24,7 @@ use marrow_local_wire::{
 };
 use marrow_runner::{Channel, Deadlines, LaunchSecrets, Service, mint_id};
 
-const ADD: &str = "pub fn add(a: int, b: int): int\n\x20   return a + b\n";
+const ADD: &str = "pub fn add(a: int, b: int): int {\n    return a + b\n}\n";
 
 /// Brisk deadlines so the timeout-shaped tests finish quickly.
 fn quick() -> Deadlines {
