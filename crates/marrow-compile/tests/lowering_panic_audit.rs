@@ -7,12 +7,407 @@
 //! test drives one adversarial source shape per invariant class through the production
 //! `compile` path. Each must come back as a typed diagnostic — a `compile` that returned
 //! `Err` proves lowering did not abort, and the asserted code proves the checker
-//! intercepted the shape before a lowering invariant could be violated. A regression
-//! that turned any of these into a panic would abort this test process instead of
-//! returning `Err`, making the failure conspicuous.
+//! intercepted the shape before a lowering invariant could be violated. A source-owned
+//! exact allowlist independently counts the complete explicit panic-API family in
+//! `lower.rs`, so an added, removed, duplicated, or renamed invocation is conspicuous.
+//! This is deliberately limited to explicit APIs; it is not a total panic-freedom claim.
+//! A regression that turned any sampled source into a panic would abort this test
+//! process instead of returning `Err`, making the failure conspicuous.
 
 use marrow_compile::{SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+
+const LOWERING_SOURCE: &str = include_str!("../src/lower.rs");
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InvariantClass {
+    CheckerClassifiedType,
+    MatchArmNarrowing,
+    ParserGuaranteedShape,
+    LoweringBookkeeping,
+}
+
+impl InvariantClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CheckerClassifiedType => "checker-classified type",
+            Self::MatchArmNarrowing => "match-arm narrowing",
+            Self::ParserGuaranteedShape => "parser-guaranteed shape",
+            Self::LoweringBookkeeping => "lowering bookkeeping",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AllowedPanicSite {
+    invocation: &'static str,
+    class: InvariantClass,
+    multiplicity: usize,
+}
+
+// Populated only after the empty allowlist has exposed every live site.
+const ALLOWED_PANIC_SITES: &[AllowedPanicSite] = &[];
+
+#[derive(Debug, PartialEq, Eq)]
+struct ExplicitPanicSite<'a> {
+    invocation: &'a str,
+    line: usize,
+}
+
+const PANIC_METHODS: &[&str] = &["expect", "expect_err", "unwrap", "unwrap_err"];
+const PANIC_MACROS: &[&str] = &[
+    "panic",
+    "unreachable",
+    "todo",
+    "unimplemented",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+];
+
+/// Enumerate the closed explicit-panic family without treating comments or literal
+/// contents as Rust code. The extracted invocation text remains byte-exact so the
+/// allowlist detects message and spelling changes without snapshotting line numbers.
+fn explicit_panic_sites(source: &str) -> Vec<ExplicitPanicSite<'_>> {
+    let code = mask_comments_and_strings(source);
+    let mut sites = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < code.len() {
+        if !is_ident_start(code[cursor]) {
+            cursor += 1;
+            continue;
+        }
+
+        let ident_start = cursor;
+        cursor += 1;
+        while cursor < code.len() && is_ident_continue(code[cursor]) {
+            cursor += 1;
+        }
+        let ident = &source[ident_start..cursor];
+
+        let invocation = if PANIC_METHODS.contains(&ident) {
+            let Some(dot) = previous_non_whitespace(&code, ident_start) else {
+                continue;
+            };
+            if code[dot] != b'.' {
+                continue;
+            }
+            let open = next_non_whitespace(&code, cursor);
+            match open {
+                Some(open) if code[open] == b'(' => Some((dot, open)),
+                _ => None,
+            }
+        } else if PANIC_MACROS.contains(&ident) {
+            let Some(bang) = next_non_whitespace(&code, cursor) else {
+                continue;
+            };
+            if code[bang] != b'!' {
+                continue;
+            }
+            let Some(open) = next_non_whitespace(&code, bang + 1) else {
+                continue;
+            };
+            if matches!(code[open], b'(' | b'[' | b'{') {
+                Some((ident_start, open))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let Some((start, open)) = invocation else {
+            continue;
+        };
+        let close = matching_delimiter(&code, open)
+            .expect("an invocation in compiling Rust source has a matching delimiter");
+        sites.push(ExplicitPanicSite {
+            invocation: &source[start..=close],
+            line: source[..start]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count()
+                + 1,
+        });
+    }
+
+    sites
+}
+
+fn is_ident_start(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic()
+}
+
+fn is_ident_continue(byte: u8) -> bool {
+    is_ident_start(byte) || byte.is_ascii_digit()
+}
+
+fn previous_non_whitespace(code: &[u8], before: usize) -> Option<usize> {
+    code[..before]
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+}
+
+fn next_non_whitespace(code: &[u8], mut cursor: usize) -> Option<usize> {
+    while cursor < code.len() && code[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    (cursor < code.len()).then_some(cursor)
+}
+
+fn matching_delimiter(code: &[u8], open: usize) -> Option<usize> {
+    let mut stack = vec![match code[open] {
+        b'(' => b')',
+        b'[' => b']',
+        b'{' => b'}',
+        _ => return None,
+    }];
+
+    for (offset, byte) in code[open + 1..].iter().copied().enumerate() {
+        match byte {
+            b'(' => stack.push(b')'),
+            b'[' => stack.push(b']'),
+            b'{' => stack.push(b'}'),
+            b')' | b']' | b'}' if stack.last() == Some(&byte) => {
+                stack.pop();
+                if stack.is_empty() {
+                    return Some(open + 1 + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Preserve byte offsets and newlines while blanking nested comments and string
+/// literals, including raw and byte/C string forms. Character literals cannot hold
+/// an invocation spelling and are left alone, avoiding confusion with lifetimes.
+fn mask_comments_and_strings(source: &str) -> Vec<u8> {
+    let bytes = source.as_bytes();
+    let mut code = bytes.to_vec();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        if bytes[cursor..].starts_with(b"//") {
+            let end = bytes[cursor..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |offset| cursor + offset);
+            blank(&mut code, cursor, end);
+            cursor = end;
+        } else if bytes[cursor..].starts_with(b"/*") {
+            let end = block_comment_end(bytes, cursor);
+            blank(&mut code, cursor, end);
+            cursor = end;
+        } else if let Some(end) = raw_string_end(bytes, cursor) {
+            blank(&mut code, cursor, end);
+            cursor = end;
+        } else if bytes[cursor] == b'"' {
+            let end = quoted_string_end(bytes, cursor);
+            blank(&mut code, cursor, end);
+            cursor = end;
+        } else {
+            cursor += 1;
+        }
+    }
+
+    code
+}
+
+fn blank(code: &mut [u8], start: usize, end: usize) {
+    for byte in &mut code[start..end] {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+}
+
+fn block_comment_end(bytes: &[u8], start: usize) -> usize {
+    let mut depth = 1;
+    let mut cursor = start + 2;
+    while cursor < bytes.len() {
+        if bytes[cursor..].starts_with(b"/*") {
+            depth += 1;
+            cursor += 2;
+        } else if bytes[cursor..].starts_with(b"*/") {
+            depth -= 1;
+            cursor += 2;
+            if depth == 0 {
+                return cursor;
+            }
+        } else {
+            cursor += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut cursor = start;
+    if matches!(bytes.get(cursor), Some(b'b' | b'c')) {
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'r') {
+        return None;
+    }
+    cursor += 1;
+
+    let hashes_start = cursor;
+    while bytes.get(cursor) == Some(&b'#') {
+        cursor += 1;
+    }
+    let hashes = cursor - hashes_start;
+    if bytes.get(cursor) != Some(&b'"') {
+        return None;
+    }
+    cursor += 1;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'"'
+            && bytes.get(cursor + 1..cursor + 1 + hashes)
+                == Some(&bytes[hashes_start..hashes_start + hashes])
+        {
+            return Some(cursor + 1 + hashes);
+        }
+        cursor += 1;
+    }
+    Some(bytes.len())
+}
+
+fn quoted_string_end(bytes: &[u8], start: usize) -> usize {
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor = (cursor + 2).min(bytes.len()),
+            b'"' => return cursor + 1,
+            _ => cursor += 1,
+        }
+    }
+    bytes.len()
+}
+
+#[test]
+fn the_explicit_panic_counter_covers_the_closed_family_and_ignores_non_code() {
+    let source = r####"
+value.expect("live");
+value.expect_err("live");
+value.unwrap();
+value.unwrap_err();
+panic!("live");
+unreachable!["live"];
+todo! { "live" };
+unimplemented!("live");
+assert!(live);
+assert_eq!(live, live);
+assert_ne!(live, other);
+debug_assert!(live);
+debug_assert_eq!(live, live);
+debug_assert_ne!(live, other);
+// value.expect("comment") and panic!("comment")
+/* unreachable!("outer comment"); /* todo!("nested comment"); */ */
+const NORMAL: &str = "value.unwrap(); assert!(not_code);";
+const RAW: &str = r#"value.unwrap_err(); debug_assert!(not_code);"#;
+"####;
+
+    let invocations: Vec<_> = explicit_panic_sites(source)
+        .into_iter()
+        .map(|site| site.invocation)
+        .collect();
+    assert_eq!(
+        invocations,
+        vec![
+            ".expect(\"live\")",
+            ".expect_err(\"live\")",
+            ".unwrap()",
+            ".unwrap_err()",
+            "panic!(\"live\")",
+            "unreachable![\"live\"]",
+            "todo! { \"live\" }",
+            "unimplemented!(\"live\")",
+            "assert!(live)",
+            "assert_eq!(live, live)",
+            "assert_ne!(live, other)",
+            "debug_assert!(live)",
+            "debug_assert_eq!(live, live)",
+            "debug_assert_ne!(live, other)",
+        ]
+    );
+}
+
+#[test]
+fn every_explicit_lowering_panic_is_allowlisted() {
+    let sites = explicit_panic_sites(LOWERING_SOURCE);
+    let expected_total: usize = ALLOWED_PANIC_SITES
+        .iter()
+        .map(|allowed| allowed.multiplicity)
+        .sum();
+    let mut drift = Vec::new();
+
+    if sites.len() != expected_total {
+        drift.push(format!(
+            "complete explicit-family count is {}, allowlist multiplicity is {}",
+            sites.len(),
+            expected_total
+        ));
+    }
+
+    for (index, allowed) in ALLOWED_PANIC_SITES.iter().enumerate() {
+        if ALLOWED_PANIC_SITES[..index]
+            .iter()
+            .any(|prior| prior.invocation == allowed.invocation)
+        {
+            drift.push(format!(
+                "duplicate allowlist entry {:?}",
+                allowed.invocation
+            ));
+            continue;
+        }
+        let actual = sites
+            .iter()
+            .filter(|site| site.invocation == allowed.invocation)
+            .count();
+        if actual != allowed.multiplicity {
+            drift.push(format!(
+                "{} {:?}: expected {}, found {}",
+                allowed.class.label(),
+                allowed.invocation,
+                allowed.multiplicity,
+                actual
+            ));
+        }
+    }
+
+    let unclassified: Vec<_> = sites
+        .iter()
+        .filter(|site| {
+            !ALLOWED_PANIC_SITES
+                .iter()
+                .any(|allowed| allowed.invocation == site.invocation)
+        })
+        .collect();
+    if !unclassified.is_empty() {
+        drift.push(format!(
+            "{} unclassified explicit site(s):\n{}",
+            unclassified.len(),
+            unclassified
+                .iter()
+                .map(|site| format!("  line {}: {}", site.line, site.invocation))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    assert!(
+        drift.is_empty(),
+        "lower.rs explicit-panic allowlist drift:\n{}",
+        drift.join("\n")
+    );
+}
 
 fn project(source: &str) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
