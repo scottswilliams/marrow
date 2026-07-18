@@ -191,6 +191,8 @@ fn generated_signatures_and_interface_pin_are_exact() {
     // One named method per export, in the exact projected types.
     for signature in [
         "async add(arg0: bigint, arg1: bigint): Promise<bigint>",
+        "async echoAsset(arg0: { label: string; details: { count: bigint } }): \
+         Promise<{ label: string; details: { count: bigint } }>",
         "async shift(arg0: { x: bigint; y: bigint }, arg1: bigint): Promise<{ x: bigint; y: bigint }>",
         "async grow(arg0: { member: \"dot\"; payload: [] } | { member: \"circle\"; payload: [bigint] }): \
          Promise<{ member: \"dot\"; payload: [] } | { member: \"circle\"; payload: [bigint] }>",
