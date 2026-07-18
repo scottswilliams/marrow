@@ -34,14 +34,14 @@ use marrow_image::{
     OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED,
     OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET,
     OP_LIST_INDEX, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY,
-    OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_VALUE_AT, OP_POP,
-    OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS,
-    OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT,
-    OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE,
-    OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar, SemanticNode, SemanticNodeKind,
-    SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL, TAG_BYTES,
-    TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT,
-    TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE,
+    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
+    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
+    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN,
+    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY,
+    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
 };
 
 use crate::reader::Reader;
@@ -3983,6 +3983,7 @@ fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> {
             OP_LIST_INDEX => SealedInstr::ListIndex,
             OP_MAP_NEW => SealedInstr::MapNew(operand_u16(&mut reader)?),
             OP_MAP_INSERT => SealedInstr::MapInsert,
+            OP_MAP_REMOVE => SealedInstr::MapRemove,
             OP_MAP_GET => SealedInstr::MapGet,
             OP_MAP_LEN => SealedInstr::MapLen,
             OP_MAP_KEY_AT => SealedInstr::MapKeyAt,
@@ -4744,6 +4745,18 @@ fn apply(
             frame.stack.push(VType::bare_collection(idx));
             return Ok(Control::Fallthrough);
         }
+        SealedInstr::MapRemove => {
+            let key = pop(&mut frame.stack)?;
+            let (idx, key_ty, _value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+            if key != VType::from_image(key_ty).expect("a map key type is never unit") {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "map-remove key type does not match the map key type",
+                ));
+            }
+            frame.stack.push(VType::bare_collection(idx));
+            return Ok(Control::Fallthrough);
+        }
         SealedInstr::MapGet => {
             let key = pop(&mut frame.stack)?;
             let (_, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
@@ -5107,6 +5120,7 @@ fn apply(
         | SealedInstr::ListIndex
         | SealedInstr::MapNew(_)
         | SealedInstr::MapInsert
+        | SealedInstr::MapRemove
         | SealedInstr::MapGet
         | SealedInstr::MapLen
         | SealedInstr::MapKeyAt
@@ -5335,6 +5349,7 @@ fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         | SealedInstr::ListIndex
         | SealedInstr::MapNew(_)
         | SealedInstr::MapInsert
+        | SealedInstr::MapRemove
         | SealedInstr::MapGet
         | SealedInstr::MapLen
         | SealedInstr::MapKeyAt
@@ -6049,4 +6064,347 @@ fn map_spans(
         });
     }
     Ok(rows)
+}
+
+#[cfg(test)]
+mod opcode_bijection {
+    //! Decode-bijection enforcement. Each opcode byte must decode to its own
+    //! `SealedInstr` variant. A decode arm whose right-hand `OP_*` const is not in
+    //! scope silently becomes an irrefutable binding pattern that swallows every
+    //! opcode listed after it onto one variant; that class is caught here (and, at
+    //! build time, by the workspace `unreachable_patterns`/`unused_variables` deny
+    //! lints). The match over `SealedInstr` is the growth gate: a new opcode cannot
+    //! land without extending both `canonical_bytes` and `SAMPLES`.
+    use super::*;
+    use std::collections::HashMap;
+
+    /// The smallest valid byte encoding the decoder accepts for `instr`: its opcode
+    /// followed by minimal in-range operands (a `u16`/`u32` is `0`, a `RangeGuard`
+    /// interval is the non-empty `[0, 0]`, a `VacantLoad` type is optional `int`, a
+    /// present-set key-path is one slot, a bounded traversal is a false `from`).
+    fn canonical_bytes(instr: &SealedInstr) -> Vec<u8> {
+        fn none(op: u8) -> Vec<u8> {
+            vec![op]
+        }
+        fn u16op(op: u8) -> Vec<u8> {
+            vec![op, 0, 0]
+        }
+        fn u32op(op: u8) -> Vec<u8> {
+            vec![op, 0, 0, 0, 0]
+        }
+        fn two_u16(op: u8) -> Vec<u8> {
+            vec![op, 0, 0, 0, 0]
+        }
+        match instr {
+            SealedInstr::ConstLoad(_) => u16op(OP_CONST_LOAD),
+            SealedInstr::LocalGet(_) => u16op(OP_LOCAL_GET),
+            SealedInstr::LocalSet(_) => u16op(OP_LOCAL_SET),
+            SealedInstr::Pop => none(OP_POP),
+            SealedInstr::Return => none(OP_RETURN),
+            SealedInstr::Jump(_) => u32op(OP_JUMP),
+            SealedInstr::JumpIfFalse(_) => u32op(OP_JUMP_IF_FALSE),
+            SealedInstr::IntAdd => none(OP_INT_ADD),
+            SealedInstr::IntSub => none(OP_INT_SUB),
+            SealedInstr::IntMul => none(OP_INT_MUL),
+            SealedInstr::IntRem => none(OP_INT_REM),
+            SealedInstr::IntDiv => none(OP_INT_DIV),
+            SealedInstr::IntNeg => none(OP_INT_NEG),
+            SealedInstr::BoolNot => none(OP_BOOL_NOT),
+            SealedInstr::IntLt => none(OP_INT_LT),
+            SealedInstr::IntLe => none(OP_INT_LE),
+            SealedInstr::IntGt => none(OP_INT_GT),
+            SealedInstr::IntGe => none(OP_INT_GE),
+            SealedInstr::EqInt => none(OP_EQ_INT),
+            SealedInstr::EqBool => none(OP_EQ_BOOL),
+            SealedInstr::EqText => none(OP_EQ_TEXT),
+            SealedInstr::TextConcat => none(OP_TEXT_CONCAT),
+            SealedInstr::TextLt => none(OP_TEXT_LT),
+            SealedInstr::TextLe => none(OP_TEXT_LE),
+            SealedInstr::TextGt => none(OP_TEXT_GT),
+            SealedInstr::TextGe => none(OP_TEXT_GE),
+            SealedInstr::EqBytes => none(OP_EQ_BYTES),
+            SealedInstr::BytesLt => none(OP_BYTES_LT),
+            SealedInstr::BytesLe => none(OP_BYTES_LE),
+            SealedInstr::BytesGt => none(OP_BYTES_GT),
+            SealedInstr::BytesGe => none(OP_BYTES_GE),
+            SealedInstr::ConvString => none(OP_CONV_STRING),
+            SealedInstr::ConvBytesText => none(OP_CONV_BYTES_TEXT),
+            SealedInstr::TextIsEmpty => none(OP_TEXT_IS_EMPTY),
+            SealedInstr::TextContains => none(OP_TEXT_CONTAINS),
+            SealedInstr::TextTrim => none(OP_TEXT_TRIM),
+            SealedInstr::TextSplit(_) => u16op(OP_TEXT_SPLIT),
+            SealedInstr::TextLines(_) => u16op(OP_TEXT_LINES),
+            SealedInstr::TextJoin => none(OP_TEXT_JOIN),
+            SealedInstr::EqDate => none(OP_EQ_DATE),
+            SealedInstr::DateLt => none(OP_DATE_LT),
+            SealedInstr::DateLe => none(OP_DATE_LE),
+            SealedInstr::DateGt => none(OP_DATE_GT),
+            SealedInstr::DateGe => none(OP_DATE_GE),
+            SealedInstr::EqInstant => none(OP_EQ_INSTANT),
+            SealedInstr::InstantLt => none(OP_INSTANT_LT),
+            SealedInstr::InstantLe => none(OP_INSTANT_LE),
+            SealedInstr::InstantGt => none(OP_INSTANT_GT),
+            SealedInstr::InstantGe => none(OP_INSTANT_GE),
+            SealedInstr::EqDuration => none(OP_EQ_DURATION),
+            SealedInstr::DurationLt => none(OP_DURATION_LT),
+            SealedInstr::DurationLe => none(OP_DURATION_LE),
+            SealedInstr::DurationGt => none(OP_DURATION_GT),
+            SealedInstr::DurationGe => none(OP_DURATION_GE),
+            SealedInstr::DateAddDays => none(OP_DATE_ADD_DAYS),
+            SealedInstr::DateDaysBetween => none(OP_DATE_DAYS_BETWEEN),
+            SealedInstr::DurationAdd => none(OP_DURATION_ADD),
+            SealedInstr::DurationSub => none(OP_DURATION_SUB),
+            SealedInstr::InstantAddDuration => none(OP_INSTANT_ADD_DURATION),
+            SealedInstr::InstantSubDuration => none(OP_INSTANT_SUB_DURATION),
+            SealedInstr::IntAddChecked(_) => u32op(OP_INT_ADD_CHECKED),
+            SealedInstr::IntSubChecked(_) => u32op(OP_INT_SUB_CHECKED),
+            SealedInstr::IntMulChecked(_) => u32op(OP_INT_MUL_CHECKED),
+            SealedInstr::IntNegChecked(_) => u32op(OP_INT_NEG_CHECKED),
+            SealedInstr::IntDivChecked(_) => u32op(OP_INT_DIV_CHECKED),
+            SealedInstr::IntRemChecked(_) => u32op(OP_INT_REM_CHECKED),
+            SealedInstr::RangeGuard { .. } => {
+                let mut bytes = vec![OP_RANGE_GUARD];
+                bytes.extend_from_slice(&[0u8; 16]);
+                bytes
+            }
+            SealedInstr::RecordNew(_) => u16op(OP_RECORD_NEW),
+            SealedInstr::FieldGet(_) => u16op(OP_FIELD_GET),
+            SealedInstr::FieldSet(_) => u16op(OP_FIELD_SET),
+            SealedInstr::FieldUnset(_) => u16op(OP_FIELD_UNSET),
+            SealedInstr::SomeWrap => none(OP_SOME_WRAP),
+            SealedInstr::VacantLoad(_) => vec![OP_VACANT_LOAD, OPTIONAL_FLAG | TAG_INT],
+            SealedInstr::EnumConstruct { .. } => two_u16(OP_ENUM_CONSTRUCT),
+            SealedInstr::EnumTag => none(OP_ENUM_TAG),
+            SealedInstr::EnumPayloadGet { .. } => two_u16(OP_ENUM_PAYLOAD_GET),
+            SealedInstr::EqEnum => none(OP_EQ_ENUM),
+            SealedInstr::EqId => none(OP_EQ_ID),
+            SealedInstr::MakeIdentity { .. } => two_u16(OP_MAKE_IDENTITY),
+            SealedInstr::IdentityKeyPath(_) => u16op(OP_IDENTITY_KEY_PATH),
+            SealedInstr::BranchPresent(_) => u32op(OP_BRANCH_PRESENT),
+            SealedInstr::Unreachable(_) => u16op(OP_UNREACHABLE),
+            SealedInstr::Todo(_) => u16op(OP_TODO),
+            SealedInstr::Assert => none(OP_ASSERT),
+            SealedInstr::Call(_) => u16op(OP_CALL),
+            SealedInstr::DurExists(_) => u16op(OP_DUR_EXISTS),
+            SealedInstr::DurFamilyExists(_) => u16op(OP_DUR_FAMILY_EXISTS),
+            SealedInstr::DurReadField(_) => u16op(OP_DUR_READ_FIELD),
+            SealedInstr::DurReadEntry(_) => u16op(OP_DUR_READ_ENTRY),
+            SealedInstr::DurSetRequired(_) => u16op(OP_DUR_SET_REQUIRED),
+            SealedInstr::DurSetSparse(_) => u16op(OP_DUR_SET_SPARSE),
+            SealedInstr::DurSetSparsePresent { .. } => {
+                vec![OP_DUR_SET_SPARSE_PRESENT, 0, 0, 0, 1, 0, 0]
+            }
+            SealedInstr::DurCreateEntry(_) => u16op(OP_DUR_CREATE_ENTRY),
+            SealedInstr::DurReplaceEntry(_) => u16op(OP_DUR_REPLACE_ENTRY),
+            SealedInstr::DurEraseField(_) => u16op(OP_DUR_ERASE_FIELD),
+            SealedInstr::DurEraseEntry(_) => u16op(OP_DUR_ERASE_ENTRY),
+            SealedInstr::DurReadGroup(_) => u16op(OP_DUR_READ_GROUP),
+            SealedInstr::DurReplaceGroup(_) => u16op(OP_DUR_REPLACE_GROUP),
+            SealedInstr::DurEraseGroup(_) => u16op(OP_DUR_ERASE_GROUP),
+            SealedInstr::DurIterateBounded { .. } => {
+                let mut bytes = vec![OP_DUR_ITERATE_BOUNDED];
+                bytes.extend_from_slice(&[0u8; 9]);
+                bytes
+            }
+            SealedInstr::DurIndexScan { .. } => {
+                let mut bytes = vec![OP_DUR_INDEX_SCAN];
+                bytes.extend_from_slice(&[0u8; 9]);
+                bytes
+            }
+            SealedInstr::DurIndexLookup(_) => u16op(OP_DUR_INDEX_LOOKUP),
+            SealedInstr::TxnBegin => none(OP_TXN_BEGIN),
+            SealedInstr::TxnCommit => none(OP_TXN_COMMIT),
+            SealedInstr::ListNew(_) => u16op(OP_LIST_NEW),
+            SealedInstr::ListAppend => none(OP_LIST_APPEND),
+            SealedInstr::ListLen => none(OP_LIST_LEN),
+            SealedInstr::ListGet => none(OP_LIST_GET),
+            SealedInstr::ListIndex => none(OP_LIST_INDEX),
+            SealedInstr::MapNew(_) => u16op(OP_MAP_NEW),
+            SealedInstr::MapInsert => none(OP_MAP_INSERT),
+            SealedInstr::MapRemove => none(OP_MAP_REMOVE),
+            SealedInstr::MapGet => none(OP_MAP_GET),
+            SealedInstr::MapLen => none(OP_MAP_LEN),
+            SealedInstr::MapKeyAt => none(OP_MAP_KEY_AT),
+            SealedInstr::MapValueAt => none(OP_MAP_VALUE_AT),
+        }
+    }
+
+    /// One value of every `SealedInstr` variant. Kept complete by the exhaustive match
+    /// in [`canonical_bytes`]: a new opcode fails that match to compile, and this list
+    /// gains the matching entry so the round trip covers it.
+    fn samples() -> Vec<SealedInstr> {
+        let optional_int = ImageType::Scalar {
+            scalar: Scalar::Int,
+            optional: true,
+        };
+        vec![
+            SealedInstr::ConstLoad(0),
+            SealedInstr::LocalGet(0),
+            SealedInstr::LocalSet(0),
+            SealedInstr::Pop,
+            SealedInstr::Return,
+            SealedInstr::Jump(0),
+            SealedInstr::JumpIfFalse(0),
+            SealedInstr::IntAdd,
+            SealedInstr::IntSub,
+            SealedInstr::IntMul,
+            SealedInstr::IntRem,
+            SealedInstr::IntDiv,
+            SealedInstr::IntNeg,
+            SealedInstr::BoolNot,
+            SealedInstr::IntLt,
+            SealedInstr::IntLe,
+            SealedInstr::IntGt,
+            SealedInstr::IntGe,
+            SealedInstr::EqInt,
+            SealedInstr::EqBool,
+            SealedInstr::EqText,
+            SealedInstr::TextConcat,
+            SealedInstr::TextLt,
+            SealedInstr::TextLe,
+            SealedInstr::TextGt,
+            SealedInstr::TextGe,
+            SealedInstr::EqBytes,
+            SealedInstr::BytesLt,
+            SealedInstr::BytesLe,
+            SealedInstr::BytesGt,
+            SealedInstr::BytesGe,
+            SealedInstr::ConvString,
+            SealedInstr::ConvBytesText,
+            SealedInstr::TextIsEmpty,
+            SealedInstr::TextContains,
+            SealedInstr::TextTrim,
+            SealedInstr::TextSplit(0),
+            SealedInstr::TextLines(0),
+            SealedInstr::TextJoin,
+            SealedInstr::EqDate,
+            SealedInstr::DateLt,
+            SealedInstr::DateLe,
+            SealedInstr::DateGt,
+            SealedInstr::DateGe,
+            SealedInstr::EqInstant,
+            SealedInstr::InstantLt,
+            SealedInstr::InstantLe,
+            SealedInstr::InstantGt,
+            SealedInstr::InstantGe,
+            SealedInstr::EqDuration,
+            SealedInstr::DurationLt,
+            SealedInstr::DurationLe,
+            SealedInstr::DurationGt,
+            SealedInstr::DurationGe,
+            SealedInstr::DateAddDays,
+            SealedInstr::DateDaysBetween,
+            SealedInstr::DurationAdd,
+            SealedInstr::DurationSub,
+            SealedInstr::InstantAddDuration,
+            SealedInstr::InstantSubDuration,
+            SealedInstr::IntAddChecked(0),
+            SealedInstr::IntSubChecked(0),
+            SealedInstr::IntMulChecked(0),
+            SealedInstr::IntNegChecked(0),
+            SealedInstr::IntDivChecked(0),
+            SealedInstr::IntRemChecked(0),
+            SealedInstr::RangeGuard { lo: 0, hi: 0 },
+            SealedInstr::RecordNew(0),
+            SealedInstr::FieldGet(0),
+            SealedInstr::FieldSet(0),
+            SealedInstr::FieldUnset(0),
+            SealedInstr::SomeWrap,
+            SealedInstr::VacantLoad(optional_int),
+            SealedInstr::EnumConstruct {
+                enum_idx: 0,
+                variant: 0,
+            },
+            SealedInstr::EnumTag,
+            SealedInstr::EnumPayloadGet {
+                variant: 0,
+                field: 0,
+            },
+            SealedInstr::EqEnum,
+            SealedInstr::EqId,
+            SealedInstr::MakeIdentity { root: 0, cols: 0 },
+            SealedInstr::IdentityKeyPath(0),
+            SealedInstr::BranchPresent(0),
+            SealedInstr::Unreachable(0),
+            SealedInstr::Todo(0),
+            SealedInstr::Assert,
+            SealedInstr::Call(0),
+            SealedInstr::DurExists(0),
+            SealedInstr::DurFamilyExists(0),
+            SealedInstr::DurReadField(0),
+            SealedInstr::DurReadEntry(0),
+            SealedInstr::DurSetRequired(0),
+            SealedInstr::DurSetSparse(0),
+            SealedInstr::DurSetSparsePresent {
+                site: 0,
+                key_slots: vec![0],
+            },
+            SealedInstr::DurCreateEntry(0),
+            SealedInstr::DurReplaceEntry(0),
+            SealedInstr::DurEraseField(0),
+            SealedInstr::DurEraseEntry(0),
+            SealedInstr::DurReadGroup(0),
+            SealedInstr::DurReplaceGroup(0),
+            SealedInstr::DurEraseGroup(0),
+            SealedInstr::DurIterateBounded {
+                site: 0,
+                limit: 0,
+                from: false,
+                list_ty: 0,
+            },
+            SealedInstr::DurIndexScan {
+                site: 0,
+                limit: 0,
+                from: false,
+                list_ty: 0,
+            },
+            SealedInstr::DurIndexLookup(0),
+            SealedInstr::TxnBegin,
+            SealedInstr::TxnCommit,
+            SealedInstr::ListNew(0),
+            SealedInstr::ListAppend,
+            SealedInstr::ListLen,
+            SealedInstr::ListGet,
+            SealedInstr::ListIndex,
+            SealedInstr::MapNew(0),
+            SealedInstr::MapInsert,
+            SealedInstr::MapRemove,
+            SealedInstr::MapGet,
+            SealedInstr::MapLen,
+            SealedInstr::MapKeyAt,
+            SealedInstr::MapValueAt,
+        ]
+    }
+
+    #[test]
+    fn every_opcode_decodes_to_its_own_variant() {
+        let mut by_opcode: HashMap<u8, std::mem::Discriminant<SealedInstr>> = HashMap::new();
+        for sample in samples() {
+            let want = std::mem::discriminant(&sample);
+            let bytes = canonical_bytes(&sample);
+            let opcode = bytes[0];
+            let decoded = decode_code(&bytes)
+                .unwrap_or_else(|e| panic!("canonical bytes for {sample:?} must decode: {e}"));
+            assert_eq!(
+                decoded.len(),
+                1,
+                "{sample:?} must encode as exactly one instruction",
+            );
+            assert_eq!(
+                std::mem::discriminant(&decoded[0].instr),
+                want,
+                "opcode {opcode:#04x} decoded to {:?}, expected {sample:?} — a decode arm \
+                 is mapping this opcode to the wrong variant",
+                decoded[0].instr,
+            );
+            // Injectivity: two variants sharing one opcode is the wildcard-binding
+            // collapse (an unimported `OP_*` const bound as a catch-all).
+            if let Some(previous) = by_opcode.insert(opcode, want) {
+                assert_eq!(
+                    previous, want,
+                    "opcode {opcode:#04x} decodes to two different variants",
+                );
+            }
+        }
+    }
 }

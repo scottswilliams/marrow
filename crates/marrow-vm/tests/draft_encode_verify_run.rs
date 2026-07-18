@@ -182,6 +182,125 @@ fn a_forged_out_of_range_positional_read_faults_run_corruption() {
     }
 }
 
+/// A forged image that removes a key absent from an empty `Map<int, int>` and returns
+/// its length. `MapRemove` on an absent key is idempotent, so the map stays empty and
+/// the run yields `0` — the removal neither faults nor reads past the map.
+fn forged_map_remove_absent_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("forged");
+    let source = draft.intern_string("src/main.mw");
+    let coll = draft.add_collection_type(CollectionTypeDef::Map {
+        key: ImageType::scalar(Scalar::Int),
+        value: ImageType::scalar(Scalar::Int),
+    });
+    let key = draft.intern_int(7);
+    let func = draft.add_function(FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        code: vec![
+            Instr::MapNew(coll.index()),
+            Instr::ConstLoad(key.index()),
+            Instr::MapRemove,
+            Instr::MapLen,
+            Instr::Return,
+        ],
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 2,
+            column: 12,
+        }],
+    });
+    draft.add_export(answer_id(), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// A forged image whose `MapRemove` key operand is a `string` while the map is keyed by
+/// `int`. The verifier owns the key-type agreement, so this image is rejected at the
+/// function phase and never reaches the VM.
+fn forged_map_remove_wrong_key_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("forged");
+    let source = draft.intern_string("src/main.mw");
+    let coll = draft.add_collection_type(CollectionTypeDef::Map {
+        key: ImageType::scalar(Scalar::Int),
+        value: ImageType::scalar(Scalar::Int),
+    });
+    let key = draft.intern_text("x");
+    let func = draft.add_function(FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        code: vec![
+            Instr::MapNew(coll.index()),
+            Instr::ConstLoad(key.index()),
+            Instr::MapRemove,
+            Instr::MapLen,
+            Instr::Return,
+        ],
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 2,
+            column: 12,
+        }],
+    });
+    draft.add_export(answer_id(), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// A forged image whose `MapRemove` collection operand is an `int`, not a map. The
+/// verifier owns the operand shape, so this image is rejected at the function phase.
+fn forged_map_remove_non_map_image() -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("forged");
+    let source = draft.intern_string("src/main.mw");
+    let base = draft.intern_int(1);
+    let key = draft.intern_int(7);
+    let func = draft.add_function(FunctionDef {
+        name,
+        source,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        code: vec![
+            Instr::ConstLoad(base.index()),
+            Instr::ConstLoad(key.index()),
+            Instr::MapRemove,
+            Instr::Return,
+        ],
+        spans: vec![SpanEntry {
+            instr_index: 0,
+            line: 2,
+            column: 12,
+        }],
+    });
+    draft.add_export(answer_id(), func);
+    draft.encode().expect("encode").bytes
+}
+
+/// `MapRemove` on an absent key is a total, fault-free no-op through verify and run,
+/// while a `MapRemove` whose key operand mismatches the map key type — or whose
+/// collection operand is not a map at all — is rejected by the verifier and never runs.
+#[test]
+fn map_remove_is_idempotent_and_type_checked() {
+    let image = verify(&forged_map_remove_absent_image()).expect("an absent removal verifies");
+    let export = image.export_by_id(answer_id()).expect("export present");
+    let result = run(&image, export.function(), Vec::<Value>::new()).expect("run");
+    assert_eq!(result, Some(Value::Int(0)));
+
+    for forged in [
+        forged_map_remove_wrong_key_image(),
+        forged_map_remove_non_map_image(),
+    ] {
+        let rejection = verify(&forged).expect_err("a mistyped map-remove must reject");
+        assert_eq!(rejection.code(), "image.function");
+    }
+}
+
 /// The range guard peeks: an in-interval int passes through unchanged at both
 /// boundaries, and an out-of-interval int faults `run.range` at the guarded
 /// instruction's source span, on both sides.

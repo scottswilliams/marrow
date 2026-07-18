@@ -1052,6 +1052,25 @@ fn execute<'s>(
                 }
                 pc += 1;
             }
+            SealedInstr::MapRemove => {
+                let key = pop_key(&mut stack);
+                let Value::Map(idx, old_bytes, mut entries) = pop(&mut stack) else {
+                    unreachable!("verifier proved a map operand");
+                };
+                // Remove the entry if present; an absent key is an idempotent no-op.
+                // The delta mirrors `MapInsert`: drop the removed key and value bytes
+                // from the cached aggregate. Removal never exceeds a bound, so it
+                // cannot fault.
+                if let Ok(position) = entries.binary_search_by(|(k, _)| k.cmp(&key)) {
+                    let new_bytes =
+                        old_bytes - key_bytes(&key) - entries[position].1.structural_bytes();
+                    Rc::make_mut(&mut entries).remove(position);
+                    stack.push(Value::Map(idx, new_bytes, entries));
+                } else {
+                    stack.push(Value::Map(idx, old_bytes, entries));
+                }
+                pc += 1;
+            }
             SealedInstr::MapGet => {
                 let key = pop_key(&mut stack);
                 let (_, entries) = as_map(pop(&mut stack));

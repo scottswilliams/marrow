@@ -286,6 +286,8 @@ pub enum SealedInstr {
     MapNew(u16),
     /// `[map, key, value] → [map]`: insert or replace by key in key order.
     MapInsert,
+    /// `[map, key] → [map]`: remove the key if present, idempotent if absent.
+    MapRemove,
     /// `[map, key] → [value?]`: the value at `key`, or absent.
     MapGet,
     /// `[map] → [int]`: the entry count.

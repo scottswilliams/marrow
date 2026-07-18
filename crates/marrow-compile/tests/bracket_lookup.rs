@@ -157,6 +157,47 @@ fn a_list_keyed_write_is_a_teaching_check_type() {
     );
 }
 
+/// `unset m[k]` on a `var` map binding is admitted (statement form, all admitted
+/// key/value types); a `const` binding gets the ordinary modify-a-const rejection.
+#[test]
+fn a_map_bracket_unset_needs_a_var_binding() {
+    compile_ok(&wrap(
+        "pub fn f(): int {\n    var m: Map<string, int> = Map()\n    m[\"k\"] = 1\n    unset m[\"k\"]\n    unset m[\"absent\"]\n    return m[\"k\"] ?? 0\n}",
+    ));
+    compile_ok(&wrap(
+        "pub fn f(): int {\n    var m: Map<int, int> = Map()\n    m[0] = 1\n    unset m[0]\n    return m[0] ?? -1\n}",
+    ));
+    let diagnostics = compile_err(&wrap(
+        "pub fn f(): int {\n    const m: Map<string, int> = Map()\n    unset m[\"k\"]\n    return 0\n}",
+    ));
+    let diagnostic = first_of(&diagnostics, "check.type");
+    assert!(
+        diagnostic.message.contains("`const`") && diagnostic.message.contains("cannot be modified"),
+        "{}",
+        diagnostic.message
+    );
+}
+
+/// A list has no keyed removal: `unset xs[i]` is a `check.type` teaching diagnostic
+/// naming the dense-list reality — no holes — and the `Map<int, T>` alternative.
+#[test]
+fn a_list_bracket_unset_is_a_teaching_check_type() {
+    let diagnostics = compile_err(&wrap(
+        "pub fn f(): int {\n    var xs: List<int> = List()\n    xs = append(xs, 1)\n    unset xs[1]\n    return 0\n}",
+    ));
+    let diagnostic = first_of(&diagnostics, "check.type");
+    assert!(
+        diagnostic.message.starts_with("`xs` is a list"),
+        "{}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.message.contains("Map<int, int>"),
+        "{}",
+        diagnostic.message
+    );
+}
+
 /// The `get` and `insert` builtins are deleted: a bare call to either is an unresolved
 /// name (`check.type`, not in scope), and a user-defined function of the same name
 /// still shadows cleanly.

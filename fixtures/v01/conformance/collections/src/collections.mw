@@ -169,6 +169,53 @@ test "a Map<int, V> admits the key zero" {
     assert m[0] ?? -1 == 100
 }
 
+test "unset removes a present map key and shrinks the map" {
+    var m: Map<string, int> = Map()
+    m["ada"] = 10
+    m["grace"] = 12
+    unset m["ada"]
+    assert length(m) == 1
+    if const hit = m["ada"] {
+        assert false
+    } else {
+        assert true
+    }
+    assert m["grace"] ?? 0 == 12
+}
+
+test "unset on an absent map key is an idempotent no-op" {
+    var m: Map<string, int> = Map()
+    m["k"] = 1
+    unset m["absent"]
+    unset m["k"]
+    unset m["k"]
+    assert length(m) == 0
+    assert isEmpty(m)
+}
+
+test "unset removes the key zero from a Map<int, V>" {
+    var m: Map<int, int> = Map()
+    m[0] = 100
+    m[1] = 200
+    unset m[0]
+    if const hole = m[0] {
+        assert false
+    } else {
+        assert true
+    }
+    assert m[1] ?? -1 == 200
+    assert length(m) == 1
+}
+
+test "a map key unset on a copy does not alias its source" {
+    var a: Map<string, int> = Map()
+    a["k"] = 1
+    var b = a
+    unset b["k"]
+    assert a["k"] ?? 0 == 1
+    assert isEmpty(b)
+}
+
 test "a copied map does not alias its source" {
     var a: Map<string, int> = Map()
     a["k"] = 1

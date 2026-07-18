@@ -127,6 +127,9 @@ pub const OP_TEXT_JOIN: u8 = 0x9C;
 // the optional element. No out-of-bounds fault class exists; an index outside
 // `1..=length` yields absent.
 pub const OP_LIST_INDEX: u8 = 0x9D;
+// The source-level local map key removal `unset m[k]`: remove the key if present,
+// idempotent no-op if absent. No fault class; keys stay in `CollectionKeyOrder`.
+pub const OP_MAP_REMOVE: u8 = 0x9E;
 // Temporal comparison and equality. Operands are two bare temporals of the named
 // type; the result is a bool. The order agrees with the kernel key-codec byte order
 // (pinned in `marrow-vm`'s `temporal_order_agreement` test).
@@ -438,6 +441,10 @@ pub enum Instr {
     /// `[map, key, value] → [map']`: insert or replace the value at `key`, keeping
     /// keys in `CollectionKeyOrder`. Faults `run.collection_limit` on bound excess.
     MapInsert,
+    /// `[map, key] → [map']`: remove the entry at `key` if present, or leave the map
+    /// unchanged if absent (idempotent). Keys stay in `CollectionKeyOrder`. No fault
+    /// class: removal never exceeds a collection bound and never faults.
+    MapRemove,
     /// `[map, key] → [value?]`: the value at `key`, or absent.
     MapGet,
     /// `[map] → [int]`: the entry count.
@@ -563,6 +570,7 @@ impl Instr {
             Instr::ListIndex => OP_LIST_INDEX,
             Instr::MapNew(_) => OP_MAP_NEW,
             Instr::MapInsert => OP_MAP_INSERT,
+            Instr::MapRemove => OP_MAP_REMOVE,
             Instr::MapGet => OP_MAP_GET,
             Instr::MapLen => OP_MAP_LEN,
             Instr::MapKeyAt => OP_MAP_KEY_AT,

@@ -26,3 +26,8 @@ authors = ["Marrow contributors"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# A decode/dispatch `match` arm whose right-hand constant is not in scope is silently
+# read as an irrefutable binding that swallows later arms (the CR01 opcode regression).
+# Denying these turns that class into an ordinary build failure, not a clippy-only one.
+unreachable_patterns = "deny"
+unused_variables = "deny"

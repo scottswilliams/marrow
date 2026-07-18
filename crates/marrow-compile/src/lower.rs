@@ -1020,6 +1020,7 @@ fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::ListIndex
         | Instr::MapNew(_)
         | Instr::MapInsert
+        | Instr::MapRemove
         | Instr::MapGet
         | Instr::MapLen
         | Instr::MapKeyAt
@@ -2241,9 +2242,10 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalSet(slot), span);
     }
 
-    /// Lower `unset local.field`: clear a sparse field of a local product to
-    /// absent. A required field cannot be unset (`check.type`); a durable place uses
-    /// `delete`, not `unset`; a non-field place is unsupported.
+    /// Lower `unset local.field` or `unset m[k]`: clear a sparse field of a local
+    /// product to absent, or remove a key from a local map. A required field cannot be
+    /// unset (`check.type`); a durable place uses `delete`, not `unset`; a list has no
+    /// keyed removal; any other place is unsupported.
     fn lower_unset(&mut self, place: &Expression, span: SourceSpan) {
         if Self::durable_shape(place).is_some() {
             self.fail(SourceDiagnostic::at(
@@ -2252,6 +2254,13 @@ impl<'a> FnLowerer<'a> {
                 span,
                 "`unset` clears a local field; use `delete` for a durable place".to_string(),
             ));
+            return;
+        }
+        if let Expression::Keyed {
+            base, keys, span, ..
+        } = place
+        {
+            self.lower_local_bracket_unset(base, keys, *span);
             return;
         }
         let Expression::Field {
@@ -8402,6 +8411,92 @@ impl<'a> FnLowerer<'a> {
                         "`{name}` is a list, and a list has no keyed write. Grow it with \
                          `append({name}, {rhs})`, or use a `Map<int, {}>` for replacement at a \
                          position",
+                        garg_to_lty(elem).spelling(self.records)
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// Lower `unset m[k]`: remove a key from a local map, idempotent on an absent key.
+    /// The base names a mutable local map; the key is coerced to the map key type and a
+    /// `MapRemove` read-modify-writes the local. A list has no keyed removal — a dense
+    /// list holds no holes — so `unset xs[i]` is refused with a teaching diagnostic.
+    fn lower_local_bracket_unset(
+        &mut self,
+        base: &Expression,
+        keys: &[Expression],
+        span: SourceSpan,
+    ) {
+        let Expression::Name {
+            segments,
+            span: base_span,
+            ..
+        } = base
+        else {
+            self.fail(unsupported(self.file, base.span(), "this `unset` target"));
+            return;
+        };
+        let [name] = segments.as_slice() else {
+            self.fail(unsupported(self.file, *base_span, "this `unset` target"));
+            return;
+        };
+        let Some(local) = self.lookup(name) else {
+            self.fail(name_error(self.file, *base_span, name));
+            return;
+        };
+        let (slot, ty, mutable) = (local.slot, local.ty, local.mutable);
+        let LTy::Collection {
+            idx,
+            optional: false,
+        } = ty
+        else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                *base_span,
+                format!(
+                    "a bracket removal needs a map, found {}",
+                    ty.spelling(self.records)
+                ),
+            ));
+            return;
+        };
+        let [key] = keys else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a local bracket removal takes exactly one key".to_string(),
+            ));
+            return;
+        };
+        match self.records.collection_spec(idx) {
+            CollSpec::Map { key: key_ty, .. } => {
+                if !mutable {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *base_span,
+                        format!("`{name}` is a `const` and cannot be modified"),
+                    ));
+                    return;
+                }
+                self.push(Instr::LocalGet(slot), span);
+                if self.lower_as(key, garg_to_lty(key_ty)).is_none() {
+                    return;
+                }
+                self.push(Instr::MapRemove, span);
+                self.push(Instr::LocalSet(slot), span);
+            }
+            CollSpec::List { elem } => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "`{name}` is a list, and a list has no keyed removal — a dense list \
+                         holds no holes. Use a `Map<int, {}>` when a position may be removed",
                         garg_to_lty(elem).spelling(self.records)
                     ),
                 ));

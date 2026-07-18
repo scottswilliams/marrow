@@ -71,7 +71,7 @@ fn fixture_dir() -> PathBuf {
 }
 
 /// The collection conformance fixture passes end to end: list construction, append,
-/// iteration, length/isEmpty, map insert/get/replace, key-ordered iteration, nested
+/// iteration, length/isEmpty, map insert/get/replace/remove, key-ordered iteration, nested
 /// collections, struct/enum element values, and the collection-returning text floor
 /// (`split`/`lines`/`join`) all report `passed` through the production path.
 #[test]
@@ -91,7 +91,7 @@ fn collection_conformance_fixture_passes_on_the_production_path() {
         .find(|line| line.contains(r#""kind":"summary""#))
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
-    assert!(summary.contains(r#""total":26"#), "{summary}");
+    assert!(summary.contains(r#""total":30"#), "{summary}");
 }
 
 /// A returned list renders as a JSON array (insertion order) under `--format jsonl`

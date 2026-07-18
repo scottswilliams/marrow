@@ -747,9 +747,16 @@ clause; there is no out-of-bounds fault class.
   read-modify-write with value semantics. A `const` binding is not reassignable.
   A list has no keyed write: `xs[i] = value` is a `check.type` diagnostic naming
   `append(xs, value)` for growth and `Map<int, T>` for replacement at a position.
+- `unset m[k]` on a `var` map binding removes the entry at `k`. It is idempotent —
+  removing an absent key leaves the map unchanged — never faults, and lowers as a
+  read-modify-write with value semantics, so removing a key from one map does not
+  affect a copy. `unset` here is the same local absence verb that clears a sparse
+  field (a durable place is instead erased with `delete`). A `const` binding cannot
+  be modified. A list has no keyed removal — a dense list holds no positional holes —
+  so `unset xs[i]` is a `check.type` diagnostic naming `Map<int, T>` for a keyed
+  collection whose positions may be removed.
 
-Removing a map key (`unset m[k]`) and a nested bracket target (`outer[k1][k2] =
-value`) are not yet admitted.
+A nested bracket target (`outer[k1][k2] = value`) is not yet admitted.
 
 ```mw
 module docs::collections
@@ -773,6 +780,14 @@ pub fn lookup(name: string): int {
     var scores: Map<string, int> = Map()
     scores["ada"] = 10
     return scores[name] ?? 0
+}
+
+pub fn withdrawn(name: string): bool {
+    var scores: Map<string, int> = Map()
+    scores["ada"] = 10
+    unset scores["ada"]
+    unset scores[name]
+    return isEmpty(scores)
 }
 ```
 
