@@ -379,6 +379,106 @@ pub fn run(): int {
     );
 }
 
+/// A nested generic value cycle renders every instantiation on the reported
+/// `check.recursion` path in the canonical angle form: the cycle through
+/// `Loop<int>` and the nested `Box<Loop<int>>` names both with angle delimiters at
+/// every level, the same display form the checker uses for all other generic labels.
+#[test]
+fn a_nested_generic_value_cycle_labels_instantiations_in_angle_form() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Loop<T> {
+    step: Box<Loop<T>>
+}
+
+struct Box<T> {
+    held: T
+}
+
+fn useLoop(l: Loop<int>): int {
+    return 0
+}
+
+pub fn run(): int {
+    return 0
+}
+"#,
+    );
+    assert!(
+        has_code(&diagnostics, "check.recursion"),
+        "{diagnostics:#?}"
+    );
+    let cycle = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "check.recursion")
+        .expect("a recursion diagnostic");
+    assert!(
+        cycle.message.contains("Loop<int>"),
+        "the cycle path must render `Loop<int>` in angle form: {}",
+        cycle.message
+    );
+    assert!(
+        cycle.message.contains("Box<Loop<int>>"),
+        "the cycle path must render the nested `Box<Loop<int>>` in angle form: {}",
+        cycle.message
+    );
+}
+
+/// A nested collection instantiation is named in checker diagnostics in the
+/// canonical angle form at every level: a `Map<string, List<int>>` value bound to an
+/// `int` renders `Map<string, List<int>>`, including the nested `List<int>` value
+/// type, rather than a bracket spelling.
+#[test]
+fn a_nested_collection_type_is_named_in_angle_form() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn run(): int {
+    const m: Map<string, List<int>> = Map()
+    return m
+}
+"#,
+    );
+    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("Map<string, List<int>>")),
+        "the collection type must render in angle form: {diagnostics:#?}"
+    );
+}
+
+/// A nested `try` error mismatch names its `Result` operands in the canonical angle
+/// form: when the propagated error type is itself a `Result<int, string>`, the typed
+/// `check.type` message renders `Result<int, string>` at every level, not a bracket
+/// spelling. This is the compiler diagnostic owner — `marrow run` projects
+/// diagnostics to KAT-frozen code+span records, so the operand is asserted here at
+/// `compile`, not through the binary.
+#[test]
+fn a_nested_try_error_mismatch_names_result_operands_in_angle_form() {
+    let diagnostics = compile_err(
+        r#"module main
+
+fn g(n: int): Result<int, Result<int, string>> {
+    return ok(n)
+}
+
+pub fn f(): Result<int, int> {
+    const x = try g(1)
+    return ok(x)
+}
+"#,
+    );
+    assert!(has_code(&diagnostics, "check.type"), "{diagnostics:#?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("Result<int, string>")),
+        "the propagated error operand must render in angle form: {diagnostics:#?}"
+    );
+}
+
 /// A cycle broken by a collection (`struct Node[T]` whose field is `List[Node[T]]`)
 /// is a finite value and is admitted: a list terminates, so it adds no containment
 /// edge.

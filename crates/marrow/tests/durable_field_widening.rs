@@ -374,3 +374,106 @@ pub fn label(): string {
         "{diagnostics:?}"
     );
 }
+
+// --- Nested multi-argument generic enum anchor (KAT). ---
+
+// A resource storing a nested, multi-argument generic enum: `Result<Option<int>,
+// string>`. The checker prints this type in the canonical angle form in diagnostics,
+// but its *durable* identity is the opaque space-free bracket spelling
+// `Result[Option[int],string]` — note the comma carries no space, so the anchor is a
+// valid `marrow.ids` path. The `Option<int>` reached through the `ok` payload is
+// itself durable-reachable and carries its own `Option[int]` sum/member anchors.
+// These bracket bytes are a frozen ledger contract, deliberately independent of the
+// display spelling; this KAT pins them through compile + independent verify.
+const OUTCOME_SOURCE: &str = r#"resource Outcome {
+    required id: int
+    required result: Result<Option<int>, string>
+}
+
+store ^outcomes[id: int]: Outcome
+
+pub fn label(): string {
+    return "outcomes"
+}
+"#;
+
+const OUTCOME_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Outcome 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id root outcomes 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key outcomes.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id field Outcome.id 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Outcome.result 1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f\n\
+     id sum Result[Option[int],string] 80808080808080808080808080808080\n\
+     id member Result[Option[int],string].ok 81818181818181818181818181818181\n\
+     id member Result[Option[int],string].err 82828282828282828282828282828282\n\
+     id sum Option[int] 90909090909090909090909090909090\n\
+     id member Option[int].none 91919191919191919191919191919191\n\
+     id member Option[int].some 92929292929292929292929292929292\n\
+     high-water 0\n\
+     end\n";
+
+#[test]
+fn a_nested_multi_arg_generic_enum_field_pins_its_bracket_anchors() {
+    // Completing identity and verifying the sealed image *requires* the compiler to
+    // ask for exactly the space-free bracket anchors named in `OUTCOME_IDS`. Any
+    // other spelling (angle form, or a comma with a space) would leave a gap and fail
+    // the compile, so a successful, stable durable contract pins the anchor bytes,
+    // including the multi-argument comma, through compile + independent verify.
+    let id = contract_of(OUTCOME_SOURCE, OUTCOME_IDS);
+    assert_eq!(id, contract_of(OUTCOME_SOURCE, OUTCOME_IDS), "stable");
+}
+
+#[test]
+fn a_missing_nested_result_sum_reports_the_space_free_bracket_anchor() {
+    // `identity_gap` names the opaque durable anchor, not the angle-form display
+    // spelling: the multi-argument sum reports `Result[Option[int],string]` with the
+    // comma carrying no space.
+    let without_sum = OUTCOME_IDS.replace(
+        "id sum Result[Option[int],string] 80808080808080808080808080808080\n",
+        "",
+    );
+    let diagnostics = compile(OUTCOME_SOURCE, &without_sum).expect_err("incomplete identity");
+    assert!(
+        codes(&diagnostics).contains(&"check.durable_identity"),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("sum `Result[Option[int],string]`")),
+        "the gap names the multi-argument enum sum anchor with a space-free comma: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn a_missing_nested_result_member_reports_the_space_free_bracket_anchor() {
+    let without_member = OUTCOME_IDS.replace(
+        "id member Result[Option[int],string].ok 81818181818181818181818181818181\n",
+        "",
+    );
+    let diagnostics = compile(OUTCOME_SOURCE, &without_member).expect_err("incomplete identity");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("member `Result[Option[int],string].ok`")),
+        "the gap names the multi-argument enum member anchor: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn the_nested_option_reached_through_the_result_mints_its_own_anchor() {
+    // The `Option<int>` reached through the `ok` payload is durable-reachable and
+    // anchored at its own space-free bracket spelling `Option[int]`.
+    let without_option_sum =
+        OUTCOME_IDS.replace("id sum Option[int] 90909090909090909090909090909090\n", "");
+    let diagnostics =
+        compile(OUTCOME_SOURCE, &without_option_sum).expect_err("incomplete identity");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("sum `Option[int]`")),
+        "{diagnostics:?}"
+    );
+}

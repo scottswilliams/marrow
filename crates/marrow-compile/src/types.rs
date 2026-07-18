@@ -997,17 +997,53 @@ impl TypeRegistry {
     /// result is a valid `marrow.ids` anchor path (printable ASCII, no spaces). The
     /// spelling is stable across appending an enum member, so an append preserves the
     /// sum anchor while minting only the new member.
+    ///
+    /// The bracket, space-free-comma recursion below is deliberately independent of
+    /// the angle-form display owner ([`inst_spelling`](Self::inst_spelling) and its
+    /// family): the two never call each other, so changing a user-facing diagnostic
+    /// delimiter can never move an opaque durable identity byte. The near-duplication
+    /// is the isolation boundary, not accidental repetition.
     pub(crate) fn enum_anchor_spelling(&self, id: EnumId) -> String {
         if let Some(info) = self.enum_by_id(id) {
             return info.name.clone();
         }
-        self.inst_spelling(TypeInstId::Enum(id))
-            .map(|spelling| spelling.replace(' ', ""))
+        self.inst_anchor_spelling(TypeInstId::Enum(id))
             .unwrap_or_else(|| format!("enum#{}", id.index()))
     }
 
-    /// The source spelling of a generic type instantiation, `Name[arg, ...]`, if
-    /// `id` names one.
+    /// The durable-anchor spelling of a generic instantiation, `Name[arg,arg]` with a
+    /// space-free comma, or `None` if `id` names no instantiation. The opaque-ledger
+    /// twin of [`inst_spelling`](Self::inst_spelling); it never calls the display
+    /// family.
+    fn inst_anchor_spelling(&self, id: TypeInstId) -> Option<String> {
+        let generics = self.generics.borrow();
+        let inst = generics.type_insts.iter().find(|inst| inst.id == id)?;
+        let name = self.type_templates[inst.template].name.clone();
+        let args: Vec<String> = inst
+            .args
+            .iter()
+            .map(|arg| garg_anchor_spelling(self, *arg))
+            .collect();
+        Some(format!("{name}[{}]", args.join(",")))
+    }
+
+    /// The durable-anchor spelling of a collection instantiation, `List[..]` /
+    /// `Map[..,..]` with a space-free comma. The opaque-ledger twin of
+    /// [`collection_spelling`](Self::collection_spelling).
+    fn collection_anchor_spelling(&self, idx: u16) -> String {
+        match self.collection_spec(idx) {
+            CollSpec::List { elem } => format!("List[{}]", garg_anchor_spelling(self, elem)),
+            CollSpec::Map { key, value } => format!(
+                "Map[{},{}]",
+                garg_anchor_spelling(self, key),
+                garg_anchor_spelling(self, value)
+            ),
+        }
+    }
+
+    /// The source spelling of a generic type instantiation, `Name<arg, ...>`, if
+    /// `id` names one. The canonical angle-form display owner for diagnostics and
+    /// cycle labels; durable identity uses [`enum_anchor_spelling`](Self::enum_anchor_spelling).
     pub(crate) fn inst_spelling(&self, id: TypeInstId) -> Option<String> {
         let generics = self.generics.borrow();
         let inst = generics.type_insts.iter().find(|inst| inst.id == id)?;
@@ -1017,7 +1053,7 @@ impl TypeRegistry {
             .iter()
             .map(|arg| garg_spelling(self, *arg))
             .collect();
-        Some(format!("{name}[{}]", args.join(", ")))
+        Some(format!("{name}<{}>", args.join(", ")))
     }
 
     /// Set the base image function index for generic function instantiations, once
@@ -1108,12 +1144,12 @@ impl TypeRegistry {
     }
 
     /// The source spelling of a collection instantiation (`List<T>` / `Map<K, V>`),
-    /// used in diagnostics and cycle labels.
+    /// used in diagnostics and cycle labels. The canonical angle-form display owner.
     pub(crate) fn collection_spelling(&self, idx: u16) -> String {
         match self.collection_spec(idx) {
-            CollSpec::List { elem } => format!("List[{}]", garg_spelling(self, elem)),
+            CollSpec::List { elem } => format!("List<{}>", garg_spelling(self, elem)),
             CollSpec::Map { key, value } => format!(
-                "Map[{}, {}]",
+                "Map<{}, {}>",
                 garg_spelling(self, key),
                 garg_spelling(self, value)
             ),
@@ -2759,8 +2795,9 @@ impl ValueGraph {
     }
 }
 
-/// The source spelling of a bare value-type argument, recursing through nested
-/// generic instantiations. Shared by cycle labels and diagnostics.
+/// The canonical angle-form display spelling of a bare value-type argument,
+/// recursing through nested generic instantiations. Shared by cycle labels and
+/// diagnostics. The durable-anchor twin is [`garg_anchor_spelling`].
 pub(crate) fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
     match arg {
         GArg::Scalar(scalar) => scalar.spelling().to_string(),
@@ -2786,6 +2823,41 @@ pub(crate) fn garg_spelling(registry: &TypeRegistry, arg: GArg) -> String {
         // A `Param` never enters the real registry's cycle labels; it only exists
         // in the discarded template-check draft.
         GArg::Param(index) => format!("<type parameter {index}>"),
+    }
+}
+
+/// The durable-anchor spelling of a bare value-type argument: the space-free,
+/// bracket-form opaque-ledger twin of [`garg_spelling`], recursing through nested
+/// generic instantiations. It never calls the angle-form display owner, so the
+/// ledger bytes stay byte-stable and independent of diagnostic spelling. The
+/// deliberate near-duplication is the isolation boundary the durable identity relies
+/// on; do not merge the two behind a shared delimiter policy.
+fn garg_anchor_spelling(registry: &TypeRegistry, arg: GArg) -> String {
+    match arg {
+        GArg::Scalar(scalar) => scalar.spelling().to_string(),
+        GArg::Nominal(id) => registry.nominal(id).name.clone(),
+        GArg::Struct(ty) => registry
+            .inst_anchor_spelling(TypeInstId::Record(ty))
+            .or_else(|| registry.struct_by_type(ty).map(|info| info.name.clone()))
+            .or_else(|| {
+                registry
+                    .by_name_for_type(ty)
+                    .map(|record| record.name.clone())
+            })
+            .unwrap_or_else(|| "struct".to_string()),
+        GArg::Group(ty) => registry
+            .group_by_type(ty)
+            .map(|group| group.name.clone())
+            .unwrap_or_else(|| "group".to_string()),
+        GArg::Enum(id) => registry
+            .inst_anchor_spelling(TypeInstId::Enum(id))
+            .or_else(|| registry.enum_by_id(id).map(|info| info.name.clone()))
+            .unwrap_or_else(|| "enum".to_string()),
+        GArg::Collection(idx) => registry.collection_anchor_spelling(idx),
+        // A `Param` never reaches a durable anchor: the real registry is fully
+        // monomorphized before an enum's identity is resolved. The space-free token
+        // preserves the no-spaces ledger-path invariant for the impossible case.
+        GArg::Param(index) => format!("<typeparameter{index}>"),
     }
 }
 
