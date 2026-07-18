@@ -45,7 +45,7 @@ fn write(path: &Path, contents: &str) {
     fs::write(path, contents).expect("write file");
 }
 
-/// Create a project rooted at `dir` with one module `src/main.mw`.
+/// Create a project rooted at `dir` with one source file at `src/main.mw`.
 fn project(dir: &Path, source: &str) {
     write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
     write(&dir.join("src").join("main.mw"), source);
@@ -1202,7 +1202,7 @@ fn an_absent_optional_return_renders_absent() {
 
 #[test]
 fn a_module_constant_folds_into_a_function() {
-    let temp = multi_module(
+    let temp = source_project(
         "module-const",
         &[(
             "main.mw",
@@ -1223,7 +1223,7 @@ pub fn cap(): int {
 
 #[test]
 fn a_negated_integer_constant_is_allowed() {
-    let temp = multi_module(
+    let temp = source_project(
         "neg-const",
         &[(
             "main.mw",
@@ -1244,7 +1244,7 @@ pub fn floor(): int {
 
 #[test]
 fn a_constant_type_annotation_must_match_its_value() {
-    let temp = multi_module(
+    let temp = source_project(
         "const-type",
         &[(
             "main.mw",
@@ -1263,7 +1263,7 @@ pub fn run(): bool {
 
 #[test]
 fn a_non_literal_constant_is_unsupported() {
-    let temp = multi_module(
+    let temp = source_project(
         "const-nonliteral",
         &[(
             "main.mw",
@@ -1284,7 +1284,7 @@ pub fn run(): int {
 fn a_module_constant_is_private_to_its_module() {
     // `SECRET` is declared in `lib`; referencing it unqualified from `main` is not
     // in scope, and a qualified constant reference is not a supported form.
-    let temp = multi_module(
+    let temp = source_project(
         "const-private",
         &[
             ("lib.mw", "module lib\n\nconst SECRET = 7\n"),
@@ -1305,7 +1305,7 @@ pub fn run(): int {
 
 #[test]
 fn a_duplicate_constant_in_one_module_conflicts() {
-    let temp = multi_module(
+    let temp = source_project(
         "dup-const",
         &[(
             "main.mw",
@@ -1328,10 +1328,10 @@ pub fn run(): int {
 
 /// Write a `marrow.toml` and the named `(relative path, source)` files under a
 /// fresh temp project, returning it.
-fn multi_module(name: &str, modules: &[(&str, &str)]) -> TempDir {
+fn source_project(name: &str, files: &[(&str, &str)]) -> TempDir {
     let temp = TempDir::new(name);
     write(&temp.join("marrow.toml"), "edition = \"2026\"\n");
-    for (path, source) in modules {
+    for (path, source) in files {
         write(&temp.join("src").join(path), source);
     }
     temp
@@ -1346,7 +1346,7 @@ fn run_diagnostic_code(dir: &Path, export: &str) -> String {
 
 #[test]
 fn a_use_import_resolves_a_cross_module_call() {
-    let temp = multi_module(
+    let temp = source_project(
         "use-import",
         &[
             (
@@ -1382,7 +1382,7 @@ pub fn run(): int {
 
 #[test]
 fn a_fully_qualified_call_resolves_without_a_use() {
-    let temp = multi_module(
+    let temp = source_project(
         "fully-qualified",
         &[
             (
@@ -1413,7 +1413,7 @@ pub fn run(): int {
 #[test]
 fn a_same_name_function_in_another_module_does_not_conflict() {
     // Two modules each define `helper`; an unqualified call binds the caller's own.
-    let temp = multi_module(
+    let temp = source_project(
         "same-name",
         &[
             (
@@ -1449,7 +1449,7 @@ pub fn run(): int {
 fn a_bare_call_does_not_reach_a_function_in_another_module() {
     // `greet` exists only in `other`; an unqualified call from `main` resolves in
     // `main` alone and is unresolved, not silently bound across the boundary.
-    let temp = multi_module(
+    let temp = source_project(
         "bare-foreign",
         &[
             (
@@ -1479,7 +1479,7 @@ pub fn run(): int {
 fn a_qualified_call_to_an_own_module_private_function_resolves() {
     // Qualifying a call with the caller's own module reaches a private function
     // there; visibility only gates crossing a module boundary.
-    let temp = multi_module(
+    let temp = source_project(
         "own-qualified-private",
         &[(
             "main.mw",
@@ -1502,7 +1502,7 @@ pub fn run(): int {
 
 #[test]
 fn calling_a_private_function_across_modules_is_a_visibility_error() {
-    let temp = multi_module(
+    let temp = source_project(
         "visibility",
         &[
             (
@@ -1530,7 +1530,7 @@ pub fn run(): int {
 
 #[test]
 fn a_use_of_an_unknown_module_is_an_import_error() {
-    let temp = multi_module(
+    let temp = source_project(
         "unknown-import",
         &[(
             "main.mw",
@@ -1549,7 +1549,7 @@ pub fn run(): int {
 
 #[test]
 fn a_headerless_script_export_runs_by_its_path_derived_name() {
-    let temp = multi_module(
+    let temp = source_project(
         "headerless-script-export",
         &[(
             "tools/math.mw",
@@ -1566,7 +1566,7 @@ fn a_headerless_script_export_runs_by_its_path_derived_name() {
 
 #[test]
 fn a_headerless_script_is_not_importable_by_module_path() {
-    let temp = multi_module(
+    let temp = source_project(
         "script-not-importable",
         &[
             (
@@ -1594,7 +1594,7 @@ pub fn run(): int {
 
 #[test]
 fn a_module_header_that_disagrees_with_its_path_is_rejected() {
-    let temp = multi_module(
+    let temp = source_project(
         "module-path",
         &[(
             "main.mw",
@@ -1611,7 +1611,7 @@ pub fn run(): int {
 
 #[test]
 fn a_duplicate_function_name_in_one_module_conflicts() {
-    let temp = multi_module(
+    let temp = source_project(
         "dup-in-module",
         &[(
             "main.mw",
