@@ -7,7 +7,7 @@
 import * as M from "./marrow-supervisor.mjs";
 
 /** The identity of the wire interface this client was generated for. */
-export const INTERFACE_ID = "a2d2fc12c9fbdab2731fc78df5fff555582b8cbb962d97f7ae03383f86f4c442";
+export const INTERFACE_ID = "1b7824af5eca288fa9aeb8f92b69c9cb5111bdba79aebe61b002ff63a72cad6f";
 
 export class Client {
   private readonly session: M.Session;
@@ -47,6 +47,12 @@ export class Client {
   async ping(): Promise<void> {
     const data = await this.session.call("64f416543f8043012160edb9a7154b2c97ef4424848b54f01f22e7ba1cb79389", []);
     return M.dUnit(data);
+  }
+
+  /** `main.echoAsset` */
+  async echoAsset(arg0: { label: string; details: { count: bigint } }): Promise<{ label: string; details: { count: bigint } }> {
+    const data = await this.session.call("6983ed0642ac588503184f3c6979b421ba8502a3a27ff4b696c97bf47d308d90", [M.eRecord([["label", true, M.eText], ["details", true, M.eRecord([["count", true, M.eInt]])]])(arg0)]);
+    return M.dRecord([["label", true, M.dText], ["details", true, M.dRecord([["count", true, M.dInt]])]])(data) as { label: string; details: { count: bigint } };
   }
 
   /** `main.grow` */

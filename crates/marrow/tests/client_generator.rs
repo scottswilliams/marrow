@@ -83,8 +83,20 @@ enum Shape {
     circle(radius: int)
 }
 
+resource Asset {
+    required label: string
+
+    details {
+        required count: int
+    }
+}
+
 pub fn add(a: int, b: int): int {
     return a + b
+}
+
+pub fn echoAsset(asset: Asset): Asset {
+    return asset
 }
 
 pub fn shift(p: Point, dx: int): Point {
