@@ -21,10 +21,14 @@ A rendered message follows six rules.
 2. **Then the governing law.** The second sentence states the rule that was broken,
    in the same words the language reference uses for it. The message teaches the
    rule at the point it was met, rather than only reporting the instance.
-3. **End with the fix, spelled canonically.** The final sentence gives the change to
-   make, written as formatter-canonical Marrow. Because there is one way to write
-   each construct and a total formatter, a message can state the fix rather than
-   suggest a direction. A fix that names code uses the reader's own identifiers.
+3. **End with the fix, spelled canonically.** The final sentence states the change to
+   make: the construct to add or the corrected call, written as formatter-canonical
+   Marrow. Because there is one way to write each construct and a total formatter, the
+   message spells the fix rather than gesturing at a direction. Identifiers the reader
+   already wrote appear in their own spelling; content the author must still supply — a
+   bound size, a block body, a payload binding — appears as a canonical placeholder
+   (`N`, `{ … }`, `_`). Where the code fully determines the corrected form, such as a
+   method call rewritten as the equivalent function call, it is spelled in full.
 4. **No person, blame, apology, or humor.** The register is steady and impersonal —
    the register of a land registry. A message that may accompany a durable change is
    never chummy, and never scolds. There are no exclamation marks, no "you", no
@@ -73,7 +77,7 @@ the unwrapped mutation or call, cites the rule, and states the wrap.
 ```text
 check.requires_transaction — the durable mutation here has no ambient transaction.
 A durable write, replacement, or erase executes only inside a `transaction` block.
-Wrap it in a `transaction` block.
+Wrap it in a `transaction { … }` block.
 ```
 
 ### Match
@@ -85,7 +89,7 @@ the fix.
 ```text
 check.match_nonexhaustive — the `match` on `Shape` does not cover `rect`.
 A match covers every member of an enum exactly once and admits no wildcard arm.
-Add an arm for `rect`.
+Add the missing arm: `rect(_, _) =>`.
 ```
 
 ### Method-call shape
@@ -95,7 +99,7 @@ and every operation on a value is a free function. A call written as a method is
 rejected with the free-function spelling of the same call.
 
 ```text
-check.unsupported — `trim` is written as a method call on a value.
+check.unsupported — `trim` is written as a method call on `s`.
 A value has no methods; an operation on a value is an ordinary function call.
 Write `trim(s)`.
 ```

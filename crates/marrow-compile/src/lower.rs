@@ -2826,22 +2826,38 @@ impl<'a> FnLowerer<'a> {
         }
 
         // Exhaustiveness: every member covered exactly once, no wildcard arm.
-        let missing: Vec<&str> = variants
+        let missing: Vec<(&str, usize)> = variants
             .iter()
             .zip(&covered)
             .filter(|(_, covered)| !**covered)
-            .map(|((name, _), _)| name.as_str())
+            .map(|((name, payload), _)| (name.as_str(), payload.len()))
             .collect();
         if !missing.is_empty() {
+            let names = missing
+                .iter()
+                .map(|(name, _)| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            // The canonical arm head each missing member needs: a payloadless member
+            // takes `member =>`; a member with an N-value payload takes N positional
+            // bindings, spelled `member(_, …) =>` with author-neutral `_` placeholders.
+            let arms = missing
+                .iter()
+                .map(|(name, arity)| match arity {
+                    0 => format!("`{name} =>`"),
+                    n => format!("`{name}({}) =>`", vec!["_"; *n].join(", ")),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let arm_word = if missing.len() == 1 { "arm" } else { "arms" };
             self.fail(SourceDiagnostic::at(
                 Code::CheckMatchNonexhaustive.as_str(),
                 self.file,
                 span,
                 format!(
-                    "the `match` on `{enum_name}` does not cover {missing}. A match covers \
-                     every member of an enum exactly once and admits no wildcard arm. Add an \
-                     arm for {missing}.",
-                    missing = missing.join(", ")
+                    "the `match` on `{enum_name}` does not cover {names}. A match covers every \
+                     member of an enum exactly once and admits no wildcard arm. Add the missing \
+                     {arm_word}: {arms}."
                 ),
             ));
         }
@@ -3099,7 +3115,7 @@ impl<'a> FnLowerer<'a> {
                 span,
                 "this durable traversal is unbounded. A `for` head over a durable root or \
                  branch is always bounded and states its overflow behavior. Add `at most N` \
-                 and an `on more` block."
+                 and an `on more { … }` block."
                     .to_string(),
             ));
             return Flow::Fallthrough;
@@ -3125,7 +3141,7 @@ impl<'a> FnLowerer<'a> {
                 self.file,
                 span,
                 "this bounded traversal has no overflow arm. A bounded `for` head states its \
-                 overflow behavior in a trailing `on more` block. Add an `on more` block."
+                 overflow behavior in a trailing `on more` block. Add an `on more { … }` block."
                     .to_string(),
             ));
             return Flow::Fallthrough;
@@ -3294,8 +3310,8 @@ impl<'a> FnLowerer<'a> {
                 self.file,
                 span,
                 "this index scan is unbounded. A `for` head over a managed index is always \
-                 bounded and states its overflow behavior. Add `at most N` and an `on more` \
-                 block."
+                 bounded and states its overflow behavior. Add `at most N` and an \
+                 `on more { … }` block."
                     .to_string(),
             ));
             return Flow::Fallthrough;
@@ -3306,7 +3322,7 @@ impl<'a> FnLowerer<'a> {
                 self.file,
                 span,
                 "this bounded scan has no overflow arm. A bounded `for` head states its \
-                 overflow behavior in a trailing `on more` block. Add an `on more` block."
+                 overflow behavior in a trailing `on more` block. Add an `on more { … }` block."
                     .to_string(),
             ));
             return Flow::Fallthrough;
