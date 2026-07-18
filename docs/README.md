@@ -1,9 +1,8 @@
 # Marrow documentation
 
-Marrow is an experimental statically typed language being developed as a
-general-purpose language with direct durable hierarchical state. These
-documents describe the source tree at the same revision; Marrow has not made a
-stable release.
+Marrow is a general-purpose statically typed compiled language with direct
+durable hierarchical state. These documents describe the source tree at the same
+revision; Marrow is unreleased and on a v0.1 beta line.
 
 ## Start here
 

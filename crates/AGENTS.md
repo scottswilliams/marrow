@@ -10,3 +10,9 @@ verifier (`marrow-verify`), the stack VM (`marrow-vm`), the path kernel
 compiler, interpreter, catalog, and durable owners were deleted at B00 and are
 being refounded lane by lane; a feature is absent until its lane lands it. The
 nearest crate instructions apply in addition to the repository instructions.
+
+Marrow is a general-purpose language designed to be built with production at
+scale in mind: build each crate against what a widely used mainstream language
+and its largest deployments require, never against what a prototype can get away
+with. Current bounds are honest waypoints, not the bar. See the repository
+`AGENTS.md` for the full statement.

@@ -1,10 +1,9 @@
 # Marrow
 
-Marrow is an experimental statically typed programming language being developed
-as a general-purpose language for programs that work with durable data. Its
-distinctive model is that hierarchical durable locations are typed language
-places rather than tables, queries, repository objects, or string-keyed storage
-calls.
+Marrow is a general-purpose statically typed compiled language for programs that
+work with durable data. Its distinctive model is that hierarchical durable
+locations are typed language places rather than tables, queries, repository
+objects, or string-keyed storage calls.
 
 ```text
 task.status = Status::done
@@ -16,14 +15,20 @@ Both resolve `status` through the language's type system; `^` makes the durable
 effect visible. Durable code still has additional rules for presence, keyed
 children, transactions, bounded traversal, and failure.
 
-Marrow is language- and compiler-first. It is not a new query engine and has no
-supported public serving profile. The project is refounding an entangled
-prototype into a v0.1 beta: at lane B00 the prototype's compiler, interpreter,
-and durable owners were deleted, leaving a retained core (the syntax owner, the
+Marrow is language- and compiler-first, and is designed to be built with
+production at scale in mind: its architecture, representations, and semantics are
+judged against what a widely used general-purpose language and its largest
+deployments require, not against what a prototype or demo can get away with. It
+is not a query engine and has no supported public serving profile.
+
+The language is unreleased and on a v0.1 beta line. The project is refounding an
+entangled prototype: at lane B00 the prototype's compiler, interpreter, and
+durable owners were deleted, leaving a retained core (the syntax owner, the
 diagnostic-code registry, and an ordered-byte storage engine) plus a thin CLI.
 The verticals below — a reproducible program image, an independent verifier, a
 bytecode VM, a path kernel, and the durable model — are being rebuilt lane by
-lane. A feature is absent until its lane lands it.
+lane. A feature is absent until its lane lands it. Current bounds and capability
+gaps are honest waypoints on that path, not the design bar.
 
 ## Example
 
@@ -72,8 +77,8 @@ entry identity as an `Id(^tasks)` rather than the store minting one.
 
 Applications commonly repeat the meaning of durable state across source types,
 serialization, database access, migrations, external interfaces, and
-authorization code. Marrow investigates whether one compiler-owned semantic
-model can remove much of that seam while keeping the realities of durable data
+authorization code. Marrow is designed so that one compiler-owned semantic model
+can remove much of that seam while keeping the realities of durable data
 explicit:
 
 - point reads and writes can fail;

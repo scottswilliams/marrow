@@ -1,9 +1,20 @@
 # Marrow contributor instructions
 
-Marrow is an experimental general-purpose statically typed language whose
-distinctive capability is direct interaction with durable hierarchical data.
-Pure programs need no store. Durable programs use typed language places rather
-than a query, ORM, repository, or raw key API.
+Marrow is a general-purpose statically typed compiled language whose distinctive
+capability is direct interaction with durable hierarchical data. Pure programs
+need no store. Durable programs use typed language places rather than a query,
+ORM, repository, or raw key API.
+
+Marrow is not an experimental or hobby language. It is designed to be built with
+production at scale in mind: judge architecture, representations, and semantics
+against what a widely used mainstream language and its largest deployments
+require, never against what a prototype or demo can get away with, and let no
+design assume smallness of programs, data, teams, or deployment lifetime. Current
+bounds and capability gaps are honest, evidence-widened waypoints, not the bar;
+the beta's personal-application release criterion is a milestone on this path,
+not the ambition. This raises the design bar without licensing maturity claims —
+the documentation standard's evidence rules still govern what may be called
+production-ready.
 
 The current production path is a parser, checker, tree interpreter, catalog,
 and redb-backed ordered tree. The target is one package-aware compiler,

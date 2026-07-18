@@ -11,6 +11,17 @@ places, transaction boundaries, potentially large traversal, and authority
 visible. Persistence should require no parallel table/document model,
 serializer, repository layer, or string-keyed database API.
 
+Marrow is not an experimental or hobby language. It is designed to be built with
+production at scale in mind: its architecture, representations, and semantics are
+judged against what a widely used mainstream language and its largest deployments
+require, not against what a prototype can get away with, and no design may assume
+smallness of programs, data, teams, or deployment lifetime. The v0.1 beta scope
+below is a milestone on that path, not the ceiling; current bounds and capability
+gaps are honest, evidence-widened waypoints rather than the bar. This states an
+ambition and a design standard; it is not a maturity claim. What may be called
+production-ready is governed by the [status](status.md) page and the evidence
+rules it inherits.
+
 ## Language and compiler first
 
 Marrow's product boundary is one canonical language implementation: package

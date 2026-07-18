@@ -1,7 +1,7 @@
 # Project status
 
-Marrow is experimental and unreleased. This page describes the repository at
-the same Git revision and separates current behavior from direction.
+Marrow is unreleased and on a v0.1 beta line. This page describes the repository
+at the same Git revision and separates current behavior from direction.
 
 The beta line began at lane B00 with a deliberate capability trough: the
 entangled prototype semantic owners were deleted, and the trustworthy decoupled
