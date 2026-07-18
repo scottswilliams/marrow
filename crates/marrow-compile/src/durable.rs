@@ -204,14 +204,18 @@ impl DurableBranch {
     }
 }
 
-/// The project's single executable durable root, its operation sites, its executable
-/// root-level groups, and its executable branches. A keyed root (any key arity) whose
-/// top-level fields are scalars or widened values, whose root-level groups hold only such
-/// fields, and whose only nested placements are field-only keyed branches reaches this
-/// form; its key columns back the kernel-serviceable read/write path, each group is a value
-/// unit of the root entry, and each branch adds its own key tuple below it.
+/// One executable durable root, its operation sites, its executable root-level groups,
+/// and its executable branches. A keyed root (any key arity) whose top-level fields are
+/// scalars or widened values, whose root-level groups hold only such fields, and whose
+/// only nested placements are field-only keyed branches reaches this form; its key columns
+/// back the kernel-serviceable read/write path, each group is a value unit of the root
+/// entry, and each branch adds its own key tuple below it.
 pub(crate) struct DurableRoot {
     pub(crate) name: String,
+    /// This root's DURABLE-table index (its declaration-ordered RootId) — the discriminant
+    /// an entry identity `Id(^root)` carries, so two identities over different roots are
+    /// distinct values and an identity addressed to the wrong root is a type error.
+    pub(crate) root_id: u16,
     /// The resource (product) name backing this store — the head of a branch's
     /// qualified constructor path `Resource.branch(…)`.
     pub(crate) resource: String,
@@ -273,11 +277,6 @@ impl DurableRegistry {
     /// so at most one executable root matches a resource name.
     pub(crate) fn root_by_resource(&self, resource: &str) -> Option<&DurableRoot> {
         self.roots.iter().find(|root| root.resource == resource)
-    }
-
-    /// Every executable flat keyed root, in declaration order.
-    pub(crate) fn roots(&self) -> &[DurableRoot] {
-        &self.roots
     }
 
     /// The executable flat keyed root whose whole-payload entry site is `entry_site`, if
@@ -623,7 +622,7 @@ fn build_one(
     };
 
     let root_name = draft.intern_string(&store.root.root);
-    draft.add_root(RootDef {
+    let root_id = draft.add_root(RootDef {
         name: root_name,
         keys: key_columns,
         record: record.type_id,
@@ -661,6 +660,7 @@ fn build_one(
         name: store.root.root.clone(),
         executable: Some(DurableRoot {
             name: store.root.root.clone(),
+            root_id,
             resource: store.resource.clone(),
             key: key_scalars.clone(),
             record: record.type_id,

@@ -617,10 +617,16 @@ enum PlaceKey<'e> {
     /// binding no matter how many operations flow through the place.
     Bound(u16),
     /// The whole root key-path supplied by one entry-identity operand (`^root[id]`):
-    /// the identity is lowered, then `IdentityKeyPath` spreads it into the root's key
-    /// columns. One `Identity` key stands for every root key column, so it is only the
-    /// root whole-key form and never mixes with per-column keys.
-    Identity(&'e Expression),
+    /// the identity is lowered against the addressed root's identity type (`root`), then
+    /// `IdentityKeyPath` spreads it into the root's `cols` key columns. One `Identity` key
+    /// stands for every root key column, so it is only the root whole-key form and never
+    /// mixes with per-column keys. `root` is the addressed root's RootId, so an identity
+    /// minted over a different root is a type mismatch here.
+    Identity {
+        expr: &'e Expression,
+        root: u16,
+        cols: u16,
+    },
 }
 
 /// One column of a durable operation's key-path: how it reaches the stack and its
@@ -667,7 +673,7 @@ impl DurablePlace<'_> {
             .iter()
             .map(|column| match column.key {
                 PlaceKey::Bound(slot) => Some(slot),
-                PlaceKey::Expr(_) | PlaceKey::Identity(_) => None,
+                PlaceKey::Expr(_) | PlaceKey::Identity { .. } => None,
             })
             .collect()
     }
@@ -3645,8 +3651,9 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalSet(coll_slot), span);
 
         // A positional walk over the frozen `List[K]`: each raw identity key is wrapped
-        // into the source `Id(^root)` the loop variable binds.
+        // into the source `Id(^root)` the loop variable binds — the scanned root's identity.
         let key_name = var.name.clone();
+        let scan_root_id = root.root_id;
         let break_jumps = self.lower_positional_walk(
             coll_slot,
             Instr::ListLen,
@@ -3657,12 +3664,18 @@ impl<'a> FnLowerer<'a> {
                 lower.push(Instr::LocalGet(coll_slot), span);
                 lower.push(Instr::LocalGet(index_slot), span);
                 lower.push(Instr::ListGet, span);
-                lower.push(Instr::MakeIdentity { root: 0, cols: 1 }, span);
+                lower.push(
+                    Instr::MakeIdentity {
+                        root: scan_root_id,
+                        cols: 1,
+                    },
+                    span,
+                );
                 lower.push(Instr::LocalSet(id_slot), span);
                 lower.locals.push(Local {
                     name: key_name,
                     ty: LTy::Identity {
-                        root: 0,
+                        root: scan_root_id,
                         optional: false,
                     },
                     mutable: false,
@@ -4260,7 +4273,12 @@ impl<'a> FnLowerer<'a> {
         // by scanning it with a `for` head, so naming one in value position is rejected.
         if let Some(read) = self.resolve_index_read(expr) {
             if read.index.unique {
-                return self.lower_index_lookup(read.index, read.keys, expr.span());
+                return self.lower_index_lookup(
+                    read.index,
+                    read.root.root_id,
+                    read.keys,
+                    expr.span(),
+                );
             }
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -7217,6 +7235,7 @@ impl<'a> FnLowerer<'a> {
     fn lower_index_lookup(
         &mut self,
         index: &crate::durable::DurableIndex,
+        root_id: u16,
         keys: &[Expression],
         span: SourceSpan,
     ) -> Option<LTy> {
@@ -7242,7 +7261,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(Instr::DurIndexLookup(site), span);
         Some(LTy::Identity {
-            root: 0,
+            root: root_id,
             optional: true,
         })
     }
@@ -7350,22 +7369,18 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalGet(slot), span);
                 Some(())
             }
-            // Lower the identity, then spread it into the root's key columns. The one
-            // `Identity` key supplies the whole root key-path, so this pushes every root
-            // key column, matching the entry site's key arity.
-            PlaceKey::Identity(expr) => {
+            // Lower the identity against the addressed root's identity type, then spread it
+            // into that root's key columns. The one `Identity` key supplies the whole root
+            // key-path, so this pushes every root key column, matching the entry site's key
+            // arity. An identity minted over a different root is a type mismatch here.
+            PlaceKey::Identity { expr, root, cols } => {
                 self.lower_as(
                     expr,
                     LTy::Identity {
-                        root: 0,
+                        root,
                         optional: false,
                     },
                 )?;
-                let cols = self
-                    .durable
-                    .roots()
-                    .first()
-                    .map_or(0, |root| root.key.len()) as u16;
                 self.push(Instr::IdentityKeyPath(cols), span);
                 Some(())
             }
@@ -7391,21 +7406,19 @@ impl<'a> FnLowerer<'a> {
     fn capture_identity_key_slots(
         &mut self,
         expr: &Expression,
+        root: u16,
+        cols: u16,
         span: SourceSpan,
     ) -> Option<Vec<u16>> {
         self.lower_as(
             expr,
             LTy::Identity {
-                root: 0,
+                root,
                 optional: false,
             },
         )?;
-        let cols = self
-            .durable
-            .roots()
-            .first()
-            .map_or(0, |root| root.key.len());
-        self.push(Instr::IdentityKeyPath(cols as u16), span);
+        self.push(Instr::IdentityKeyPath(cols), span);
+        let cols = cols as usize;
         // `IdentityKeyPath` leaves the columns root-first, so the last column is on top;
         // pop into slots from the last column back so each slot holds its own column.
         let mut slots = vec![0u16; cols];
@@ -7646,12 +7659,19 @@ impl<'a> FnLowerer<'a> {
                 // `^root[id]`: one entry-identity operand supplies the whole root key
                 // tuple. The identity is spread into the root's key columns at emit, so a
                 // single `Identity` key stands for every root column (including a composite
-                // key). A per-column key list keeps the ordinary scalar path.
+                // key). Any entry-identity operand takes this path; whether it names *this*
+                // root is decided by the identity type check at emit (the addressed root's
+                // RootId is the expected identity root). A per-column key list keeps the
+                // ordinary scalar path.
                 if let [only] = keys.as_slice()
-                    && self.identity_operand_root(only) == Some(0)
+                    && self.identity_operand_root(only).is_some()
                 {
                     let columns = vec![DurKey {
-                        key: PlaceKey::Identity(only),
+                        key: PlaceKey::Identity {
+                            expr: only,
+                            root: root.root_id,
+                            cols: root.key.len() as u16,
+                        },
                         key_ty: root.key[0],
                     }];
                     return Some((columns, DurNode::Root(root)));
@@ -7928,13 +7948,13 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(
             Instr::MakeIdentity {
-                root: 0,
+                root: root.root_id,
                 cols: key_columns.len() as u16,
             },
             span,
         );
         Some(LTy::Identity {
-            root: 0,
+            root: root.root_id,
             optional: false,
         })
     }
@@ -9000,7 +9020,7 @@ impl<'a> FnLowerer<'a> {
                     self.push(Instr::LocalSet(key_slot), span);
                     key_slot
                 }
-                PlaceKey::Identity(_) => {
+                PlaceKey::Identity { .. } => {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckUnsupported.as_str(),
                         self.file,
@@ -9073,9 +9093,9 @@ impl<'a> FnLowerer<'a> {
         // key tuple as a single operand; its columns are captured into per-column slots
         // (root-first) so the exists/replace/create ops key off the same evaluation.
         let key_slots: Vec<u16> = if let [column] = keys
-            && let PlaceKey::Identity(expr) = column.key
+            && let PlaceKey::Identity { expr, root, cols } = column.key
         {
-            self.capture_identity_key_slots(expr, span)?
+            self.capture_identity_key_slots(expr, root, cols, span)?
         } else {
             let mut key_slots = Vec::with_capacity(keys.len());
             for column in keys {
@@ -9087,7 +9107,7 @@ impl<'a> FnLowerer<'a> {
                         self.push(Instr::LocalSet(slot), span);
                         slot
                     }
-                    PlaceKey::Identity(_) => {
+                    PlaceKey::Identity { .. } => {
                         // An identity only appears as the sole key column (it stands for
                         // the whole root tuple), handled above; it cannot sit among
                         // explicit columns.
@@ -9427,15 +9447,14 @@ fn resolve_expanded(
         TypeExpr::Apply { head, args, .. } => {
             resolve_generic(records, draft, durable, head, args, env, site)
         }
-        // `Id(^root)`: the entry-identity value type of the one declared store root.
-        // The root name must match the declared root; a program has zero or one root,
-        // so the executable root is image ROOTS index 0. An identity over a root that
-        // is not declared, or over a not-yet-executable root, is an unsupported type
-        // (`None`), reported by the caller like any other unresolved annotation.
+        // `Id(^root)`: the entry-identity value type of the named store root, carrying
+        // that root's declaration-ordered RootId. An identity over a root that is not
+        // declared, or over a not-yet-executable root, is an unsupported type (`None`),
+        // reported by the caller like any other unresolved annotation.
         TypeExpr::Identity(identity) => {
-            durable.root_by_name(&identity.root)?;
+            let root = durable.root_by_name(&identity.root)?;
             Some(LTy::Identity {
-                root: 0,
+                root: root.root_id,
                 optional: false,
             })
         }

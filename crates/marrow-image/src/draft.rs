@@ -494,8 +494,12 @@ impl ImageDraft {
         self.enums[id.0 as usize].variants = variants;
     }
 
-    pub fn add_root(&mut self, def: RootDef) {
+    /// Append a durable root and return its DURABLE-table index (its declaration-ordered
+    /// RootId). The index is the discriminant an entry identity `Id(^root)` carries.
+    pub fn add_root(&mut self, def: RootDef) -> u16 {
+        let index = self.roots.len() as u16;
         self.roots.push(def);
+        index
     }
 
     /// Record the application's ledger id. Required exactly when the draft has a

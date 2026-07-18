@@ -94,3 +94,31 @@ fn a_two_root_image_parks_at_attach() {
         "a two-root image is not yet executable by the flat kernel"
     );
 }
+
+/// Each root's entry identity `Id(^root)` carries that root's own RootId, so an identity
+/// minted over one root cannot address another: it is a precise `check.type` rejection,
+/// not a silently accepted confusion of two distinct durable addresses.
+#[test]
+fn a_cross_root_identity_cannot_address_another_root() {
+    let source = r#"resource Asset {
+    required name: string
+}
+
+resource Tally {
+    required count: int
+}
+
+store ^assets[id: int]: Asset
+store ^tallies[key: string]: Tally
+
+pub fn confuse(id: int): int? {
+    const a = Id(^assets, id)
+    return ^tallies[a].count
+}
+"#;
+    let diagnostics = compile(source, IDS).expect_err("a cross-root identity is rejected");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "check.type"),
+        "expected a check.type rejection, got {diagnostics:#?}"
+    );
+}
