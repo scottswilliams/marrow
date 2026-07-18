@@ -2335,8 +2335,10 @@ impl<'a> FnLowerer<'a> {
                         self.file,
                         *span,
                         format!(
-                            "cannot assign through the possibly-absent member `{name}`; assign it \
-                             a present value first"
+                            "cannot assign through the possibly-absent member `{name}`. A member \
+                             that is not `required` is absent until it holds a value, and a \
+                             read-modify-write cannot begin from an absent place. Assign `{name}` \
+                             a present value first."
                         ),
                     ));
                     return None;
@@ -2836,8 +2838,10 @@ impl<'a> FnLowerer<'a> {
                 self.file,
                 span,
                 format!(
-                    "`match` does not cover every member; missing: {}",
-                    missing.join(", ")
+                    "the `match` on `{enum_name}` does not cover {missing}. A match covers \
+                     every member of an enum exactly once and admits no wildcard arm. Add an \
+                     arm for {missing}.",
+                    missing = missing.join(", ")
                 ),
             ));
         }
@@ -3093,8 +3097,9 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 span,
-                "a durable `for` traversal must be bounded: write `at most N` and an \
-                 `on more` block"
+                "this durable traversal is unbounded. A `for` head over a durable root or \
+                 branch is always bounded and states its overflow behavior. Add `at most N` \
+                 and an `on more` block."
                     .to_string(),
             ));
             return Flow::Fallthrough;
@@ -3119,7 +3124,9 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 span,
-                "a bounded traversal requires a trailing `on more` block".to_string(),
+                "this bounded traversal has no overflow arm. A bounded `for` head states its \
+                 overflow behavior in a trailing `on more` block. Add an `on more` block."
+                    .to_string(),
             ));
             return Flow::Fallthrough;
         };
@@ -3286,7 +3293,9 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 span,
-                "an index scan must be bounded: write `at most N` and an `on more` block"
+                "this index scan is unbounded. A `for` head over a managed index is always \
+                 bounded and states its overflow behavior. Add `at most N` and an `on more` \
+                 block."
                     .to_string(),
             ));
             return Flow::Fallthrough;
@@ -3296,7 +3305,9 @@ impl<'a> FnLowerer<'a> {
                 Code::CheckType.as_str(),
                 self.file,
                 span,
-                "a bounded scan requires a trailing `on more` block".to_string(),
+                "this bounded scan has no overflow arm. A bounded `for` head states its \
+                 overflow behavior in a trailing `on more` block. Add an `on more` block."
+                    .to_string(),
             ));
             return Flow::Fallthrough;
         };
@@ -4830,6 +4841,22 @@ impl<'a> FnLowerer<'a> {
                             .map(CallResult::Value);
                     }
                 }
+                // A method-shaped call on a value: `s.trim()`. Member syntax reaches
+                // fields and constructor paths only, so this is not a call the subset
+                // admits; the teaching form is the free-function spelling of the same
+                // call, written with the receiver as the first argument.
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckUnsupported.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "`{name}` is written as a method call on `{receiver}`. A value has no \
+                         methods; an operation on a value is an ordinary function call. Write \
+                         `{name}({receiver})`.",
+                        receiver = marrow_syntax::format_expression(base)
+                    ),
+                ));
+                return None;
             }
             self.fail(unsupported(self.file, span, "this call"));
             return None;

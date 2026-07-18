@@ -704,3 +704,24 @@ pub fn writer(id: int) {
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":5"#), "{stdout}");
 }
+
+/// Method-call syntax on a value is rejected: member syntax reaches fields and
+/// constructor paths only, so `s.trim()` is a typed `check.unsupported`. The
+/// operation on a value is the free function `trim(s)`. The diagnostic's voice is
+/// governed by `docs/implementation/diagnostic-voice.md`; the test pins the typed
+/// code, not the prose.
+#[test]
+fn a_method_call_on_a_value_is_a_check_unsupported_diagnostic() {
+    let temp = TempDir::new("method-call");
+    project(
+        &temp,
+        r#"pub fn f(s: string): string {
+    return s.trim()
+}
+"#,
+    );
+    let output = run_in(&temp, &["run", "f", "--format", "jsonl", "--", "hi"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
+}

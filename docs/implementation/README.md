@@ -36,6 +36,7 @@ through which direction.
 - [Syntax](syntax.md)
 - [Storage](storage.md)
 - [Testing](testing.md)
+- [Diagnostic voice](diagnostic-voice.md)
 
 ## Ownership rule
 

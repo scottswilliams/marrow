@@ -805,8 +805,9 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Vec<Sourc
                     Code::CheckRequiresTransaction.as_str(),
                     &function.file,
                     *span,
-                    "a durable mutation here requires an ambient transaction; \
-                     wrap it in a `transaction` block"
+                    "the durable mutation here has no ambient transaction. A durable write, \
+                     replacement, or erase executes only inside a `transaction` block. Wrap it \
+                     in a `transaction` block."
                         .to_string(),
                 ));
             }
@@ -824,8 +825,9 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Vec<Sourc
                     &function.file,
                     *span,
                     format!(
-                        "calling `{name}` requires an ambient transaction; \
-                         wrap the call in a `transaction` block"
+                        "calling `{name}` here has no ambient transaction. A durable write, \
+                         replacement, or erase executes only inside a `transaction` block. Wrap \
+                         the call in a `transaction` block."
                     ),
                 ));
             }
