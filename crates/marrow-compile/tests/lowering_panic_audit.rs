@@ -3,11 +3,12 @@
 //!
 //! `lower.rs` carries `expect`/`unreachable!`/`panic!` sites that assert invariants the
 //! parser, checker, match-arm narrowing, or lowering's own bookkeeping establish before
-//! the panicking line (see the module header there for the full classification). This
-//! test drives one adversarial source shape per invariant class through the production
-//! `compile` path. Each must come back as a typed diagnostic — a `compile` that returned
-//! `Err` proves lowering did not abort, and the asserted code proves the checker
-//! intercepted the shape before a lowering invariant could be violated. A source-owned
+//! the panicking line. The allowlist below records the reviewed class for each site.
+//! This test drives one adversarial source shape per invariant class through the
+//! production `compile` path. Each must come back as a typed diagnostic — a
+//! `compile` that returned `Err` proves lowering did not abort, and the asserted
+//! code proves the checker intercepted the shape before a lowering invariant could
+//! be violated. A source-owned
 //! exact allowlist independently counts the complete explicit panic-API family in
 //! `lower.rs`, so an added, removed, duplicated, or renamed invocation is conspicuous.
 //! This is deliberately limited to explicit APIs; it is not a total panic-freedom claim.
