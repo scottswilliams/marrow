@@ -3529,11 +3529,11 @@ fn check_presence_flow(function: &SealedFunction, ctx: &Ctx) -> Result<(), Verif
             // The strict set is proven only if a dominating fact names the exact
             // containing entry — its branch path and its whole key-path — not merely a
             // matching slot tuple (sibling branches of equal arity share slot tuples).
-            let branch = field_site_branch_path(ctx, *site).ok_or(reject(
+            let (root, branch) = field_site_branch_path(ctx, *site).ok_or(reject(
                 VerifyPhase::Flow,
                 "a present-entry sparse set does not resolve to a field site",
             ))?;
-            if !present.contains(&(branch, key_slots.clone())) {
+            if !present.contains(&(root, branch, key_slots.clone())) {
                 return Err(reject(
                     VerifyPhase::Flow,
                     "a present-entry sparse set is not dominated by a presence fact on its containing entry",
@@ -3563,11 +3563,13 @@ fn check_presence_flow(function: &SealedFunction, ctx: &Ctx) -> Result<(), Verif
     Ok(())
 }
 
-/// A proven-present containing entry in the presence-flow lattice: the entry's branch
-/// path (empty for the root) paired with its whole key-path as pre-evaluated local
-/// slots (root-first). Keying on the branch path — not the slot tuple alone —
-/// distinguishes sibling branches of equal key arity that share slot values.
-type PresenceFact = (Vec<u16>, Vec<u16>);
+/// A proven-present containing entry in the presence-flow lattice: the root index it
+/// lives under, the entry's branch path (empty for the root itself), and its whole
+/// key-path as pre-evaluated local slots (root-first). Keying on the root — not the
+/// slot tuple or branch path alone — keeps entries under distinct roots distinct even
+/// when they share a key slot; keying on the branch path distinguishes sibling
+/// branches of equal key arity that share slot values under one root.
+type PresenceFact = (u16, Vec<u16>, Vec<u16>);
 
 /// The presence-set carried on each successor edge of the instruction at `index`.
 /// Most instructions pass the set through unchanged; guards split the set (adding the
@@ -3611,28 +3613,29 @@ fn presence_edges(
             // a composite-root create's misread single slot never matches a set's full
             // key-path — so neither falsely establishes a fact a strict set relies on.
             if is_entry_site(ctx, *site)
+                && let Some(root) = site_root(ctx, *site)
                 && let Some(slot) = entry_write_key_slot(code, index)
             {
-                next.insert((Vec::new(), vec![slot]));
+                next.insert((root, Vec::new(), vec![slot]));
             }
             vec![(index + 1, next)]
         }
         SealedInstr::DurEraseEntry(site) => {
             let mut next = present.clone();
             // An entry erase whose whole key-path is pre-evaluated slots kills that exact
-            // entry's presence fact (its branch path and key-path): a root erase kills the
-            // root fact, a branch erase kills only its own branch entry.
-            if let Some((branch, arity)) = entry_site(ctx, *site)
+            // entry's presence fact (its root, branch path, and key-path): a root erase
+            // kills the root fact, a branch erase kills only its own branch entry.
+            if let Some((root, branch, arity)) = entry_site(ctx, *site)
                 && let Some(keys) = read_key_path_before(code, index, arity)
             {
-                next.remove(&(branch, keys));
+                next.remove(&(root, branch, keys));
             }
             vec![(index + 1, next)]
         }
         SealedInstr::LocalSet(slot) => {
             let mut next = present.clone();
             // A rebind of any key-path slot invalidates every fact that reads it.
-            next.retain(|(_, keys)| !keys.contains(slot));
+            next.retain(|(_, _, keys)| !keys.contains(slot));
             vec![(index + 1, next)]
         }
         _ => flow_successors(code, index)
@@ -3654,19 +3657,32 @@ fn is_entry_site(ctx: &Ctx, site: u16) -> bool {
     )
 }
 
-/// The containing entry a flat entry (whole-payload or branch-entry) `site` names: its
-/// branch path (empty for the root) and its whole key-path column arity. `None` for a
-/// non-entry site (a field leaf or index), which names no entry to prove present.
-fn entry_site(ctx: &Ctx, site: u16) -> Option<(Vec<u16>, usize)> {
-    let SealedSite::Flat { root, target } = ctx.sites.get(site as usize)? else {
+/// The root index a flat `site` resolves to. `None` for a non-flat (parked) site.
+fn site_root(ctx: &Ctx, site: u16) -> Option<u16> {
+    match ctx.sites.get(site as usize)? {
+        SealedSite::Flat { root, .. } => Some(*root),
+        SealedSite::Parked { .. } => None,
+    }
+}
+
+/// The containing entry a flat entry (whole-payload or branch-entry) `site` names: the
+/// root index it lives under, its branch path (empty for the root), and its whole
+/// key-path column arity. `None` for a non-entry site (a field leaf or index), which
+/// names no entry to prove present.
+fn entry_site(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>, usize)> {
+    let SealedSite::Flat {
+        root: root_index,
+        target,
+    } = ctx.sites.get(site as usize)?
+    else {
         return None;
     };
-    let root = ctx.roots.get(*root as usize)?;
+    let root = ctx.roots.get(*root_index as usize)?;
     match target {
-        SealedSiteTarget::WholePayload => Some((Vec::new(), root.keys.len())),
+        SealedSiteTarget::WholePayload => Some((*root_index, Vec::new(), root.keys.len())),
         SealedSiteTarget::BranchEntry(path) => {
             let extra = branch_key_columns(root, path).ok()?;
-            Some((path.to_vec(), root.keys.len() + extra.len()))
+            Some((*root_index, path.to_vec(), root.keys.len() + extra.len()))
         }
         SealedSiteTarget::FieldLeaf(_)
         | SealedSiteTarget::BranchField { .. }
@@ -3676,15 +3692,16 @@ fn entry_site(ctx: &Ctx, site: u16) -> Option<(Vec<u16>, usize)> {
     }
 }
 
-/// The branch path of a flat field-leaf `site`: empty for a root field, the branch
-/// placement path for a branch field. `None` for a non-field site.
-fn field_site_branch_path(ctx: &Ctx, site: u16) -> Option<Vec<u16>> {
-    let SealedSite::Flat { target, .. } = ctx.sites.get(site as usize)? else {
+/// The root index and branch path of a flat field-leaf `site`: the branch path is empty
+/// for a root field, the branch placement path for a branch field. `None` for a
+/// non-field site.
+fn field_site_branch_path(ctx: &Ctx, site: u16) -> Option<(u16, Vec<u16>)> {
+    let SealedSite::Flat { root, target } = ctx.sites.get(site as usize)? else {
         return None;
     };
     match target {
-        SealedSiteTarget::FieldLeaf(_) => Some(Vec::new()),
-        SealedSiteTarget::BranchField { branch, .. } => Some(branch.to_vec()),
+        SealedSiteTarget::FieldLeaf(_) => Some((*root, Vec::new())),
+        SealedSiteTarget::BranchField { branch, .. } => Some((*root, branch.to_vec())),
         _ => None,
     }
 }
@@ -3717,9 +3734,9 @@ fn exists_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Option<Pr
     let SealedInstr::DurExists(site) = &code[index - 1] else {
         return None;
     };
-    let (branch, arity) = entry_site(ctx, *site)?;
+    let (root, branch, arity) = entry_site(ctx, *site)?;
     let keys = read_key_path_before(code, index - 1, arity)?;
-    Some((branch, keys))
+    Some((root, branch, keys))
 }
 
 /// The presence fact an `if const x = p` guard proves at a `BranchPresent`:
@@ -3731,9 +3748,9 @@ fn read_entry_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Optio
     let SealedInstr::DurReadEntry(site) = &code[index - 1] else {
         return None;
     };
-    let (branch, arity) = entry_site(ctx, *site)?;
+    let (root, branch, arity) = entry_site(ctx, *site)?;
     let keys = read_key_path_before(code, index - 1, arity)?;
-    Some((branch, keys))
+    Some((root, branch, keys))
 }
 
 /// The key slot of a single-column whole-entry create at `index`: `LocalGet(S);
@@ -3745,13 +3762,11 @@ fn read_entry_guard_fact(code: &[SealedInstr], ctx: &Ctx, index: usize) -> Optio
 /// root `WholePayload` create (it gates on `is_entry_site`), so a branch create — whose
 /// key-path leaves a *branch* key adjacent to the op — never reaches here and never
 /// establishes root-entry presence, and a composite-root create's misread single slot
-/// forms a 1-tuple fact no full-key-path strict set ever matches. The durable graph
-/// admits a single root (`MAX_ROOTS == 1`, `marrow_image::bounds`), so for the gated
-/// single-column root create the key slot fully discriminates the entry it establishes.
-/// When `MAX_ROOTS` widens this no longer holds: two writes through the same slot value
-/// could touch different roots' entries, and the presence lattice must key on
-/// (root, slot). Revisit this helper for per-root slot discrimination before admitting
-/// more than one root.
+/// forms a 1-tuple fact no full-key-path strict set ever matches. The caller pairs this
+/// slot with the create's own root (`site_root`), so the established fact is keyed on
+/// (root, slot): two writes through the same slot value under different roots establish
+/// distinct facts, and a strict sparse set over one root is never proven by a create on
+/// another.
 fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
     if index < 2 {
         return None;
@@ -3763,6 +3778,79 @@ fn entry_write_key_slot(code: &[SealedInstr], index: usize) -> Option<u16> {
         return None;
     };
     Some(*slot)
+}
+
+#[cfg(test)]
+mod presence_root_discrimination {
+    //! The presence lattice keys a proven-present entry on its root, not on its
+    //! key slot alone. Two whole-entry creates that share a key slot but address
+    //! different roots must establish two distinct facts, so a strict sparse set
+    //! over one root can never be proven by a create on another. This holds the
+    //! (root, slot) discrimination structurally at the helper level, where it is
+    //! observable even while the container bound admits a single root.
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::rc::Rc;
+
+    fn keyed_root(name: &str) -> SealedRoot {
+        SealedRoot {
+            name: Rc::from(name),
+            keys: vec![Scalar::Int],
+            record: 0,
+            has_extras: false,
+            branches: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn two_root_creates_sharing_a_slot_establish_distinct_facts() {
+        let roots = [keyed_root("assets"), keyed_root("tallies")];
+        let sites = [
+            SealedSite::Flat {
+                root: 0,
+                target: SealedSiteTarget::WholePayload,
+            },
+            SealedSite::Flat {
+                root: 1,
+                target: SealedSiteTarget::WholePayload,
+            },
+        ];
+        let ctx = Ctx {
+            types: &[],
+            enums: &[],
+            collections: &[],
+            roots: &roots,
+            sites: &sites,
+            indexes: &[],
+            signatures: &[],
+        };
+        // `LocalGet(key); LocalGet(record); DurCreateEntry(site)` twice, the two
+        // creates addressing different roots through the SAME key slot (7).
+        let code = [
+            SealedInstr::LocalGet(7),
+            SealedInstr::LocalGet(3),
+            SealedInstr::DurCreateEntry(0),
+            SealedInstr::LocalGet(7),
+            SealedInstr::LocalGet(3),
+            SealedInstr::DurCreateEntry(1),
+        ];
+        let after_first = presence_edges(&code, &ctx, 2, &BTreeSet::new())
+            .into_iter()
+            .find(|(successor, _)| *successor == 3)
+            .expect("a create falls through to the next instruction")
+            .1;
+        let after_second = presence_edges(&code, &ctx, 5, &after_first)
+            .into_iter()
+            .find(|(successor, _)| *successor == 6)
+            .expect("a create falls through to the next instruction")
+            .1;
+        assert_eq!(
+            after_second.len(),
+            2,
+            "creates on distinct roots must not alias to one presence fact",
+        );
+    }
 }
 
 /// The successor edges for a two-way branch that keeps the current stack on the
