@@ -320,7 +320,7 @@ place over a store shape whose operations are not yet lowered (a singleton or
 nominal-field root, or one whose only durable content is a group nested in a branch or
 another group) reports the same not-yet-executable result as the inline form. A place's
 durable node — a store root or a keyed `branch` — follows the address it binds, not its
-key-column count: a place over a composite-key root addresses that root and reads its
+key-operand count: a place over a composite-key root addresses that root and reads its
 fields exactly like the inline `^root[k1, k2].field` form.
 
 ## Field Assignment

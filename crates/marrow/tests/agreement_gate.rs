@@ -36,7 +36,7 @@ use marrow_vm::{
 /// The shared durable graph every composition is written against: a flat keyed
 /// root with a required and a sparse field, a root-level group, a keyed branch,
 /// a unique index (identity lookup), a nonunique index (bounded scan), and a
-/// composite-key root (two key columns). The identity ledger below pins one id
+/// composite-key root (two key operands). The identity ledger below pins one id
 /// per anchor, so the schema is identity complete on its own and each
 /// composition only appends operations.
 const SCHEMA: &str = r#"resource Book {
@@ -83,11 +83,11 @@ const IDS: &str = "marrow ids v0\n\
      id group Book.details d69902579081537e5b526739d66131be\n\
      id index books.byIsbn 711c5dcd42019503ab5bbf3470f989c4\n\
      id index books.byShelf f3f35e9ded68649a50bd977094452cc3\n\
-     id product Grade b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1\n\
-     id field Grade.score b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\n\
-     id root grades b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3\n\
-     id key grades.student b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4\n\
-     id key grades.course b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5\n\
+     id product Grade b3022a809b506926824b11de41d07565\n\
+     id field Grade.score 0353d95c37594c0b2cbeb477b3adc10d\n\
+     id root grades de72c544f1a56b2e4341fc8c6e59361e\n\
+     id key grades.student 2116e6ec78f09131260cf018042e542e\n\
+     id key grades.course 1cc4fe005d385c2fa8137c54e910b89f\n\
      high-water 0\n\
      end\n";
 
@@ -242,10 +242,10 @@ fn matrix() -> Vec<Row> {
             expect: Expect::RoundTrips { run: true },
         },
         // ---- PL01: a place over a composite-key root resolves fields by the root node. ----
-        // A composite-key root place carries several key columns but is still a root, so a
+        // A composite-key root place carries several key slots but is still a root, so a
         // field read through it (`g.score`) resolves the root's field — not a branch record.
         // The node kind is recorded at the binding from the canonical resolved durable node,
-        // independent of key-column count.
+        // independent of key-operand count.
         Row {
             label: "composite-root place field read / outside a transaction",
             ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}",

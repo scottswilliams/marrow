@@ -72,7 +72,7 @@ pub fn sessionRoom(student: string, course: string, term: int, slot: int): strin
 // Place bindings over the composite-key root and the composite-key branch. A field read
 // through a `place` must resolve the field against the place's durable node — a root by
 // its entry site, a branch by its record — and the node kind is independent of how many
-// key columns the place carries. A composite-key root place has several key slots but is
+// key slots the place carries. A composite-key root place has several key slots but is
 // still a root, so `e.grade` resolves the root's `grade`, not a (nonexistent) branch field.
 const PLACE_EXPORTS: &str = r#"pub fn gradeViaPlace(student: string, course: string): int? {
     place e = ^enrollments[student, course]
@@ -329,7 +329,7 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
 }
 
 /// A `place` over a composite-key root resolves its fields against the root node, exactly
-/// like an inline `^enrollments(student, course).grade` address: the two key columns do not
+/// like an inline `^enrollments(student, course).grade` address: the two key operands do not
 /// reclassify it as a branch place. A composite-key branch place is the control — both node
 /// kinds run through the same place field-resolution family — and resolves `room` against
 /// its branch record.
