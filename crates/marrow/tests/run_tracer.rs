@@ -269,6 +269,59 @@ pub fn asBytes(s: string): bytes {
     assert_eq!(String::from_utf8_lossy(&by.stdout), "0x6869\n");
 }
 
+/// Direct byte-literal spelling is parser-recognized but not executable; the
+/// current bytes constructor remains available through the production path.
+#[test]
+fn byte_literal_boundary_and_reference_are_exact() {
+    let temp = TempDir::new("byte-literal-boundary");
+    project(
+        &temp,
+        r#"pub fn value(): bytes {
+    return b"key"
+}
+"#,
+    );
+
+    let literal = run_in(&temp, &["run", "value", "--format", "jsonl"]);
+    assert!(!literal.status.success(), "{literal:?}");
+    let stdout = String::from_utf8_lossy(&literal.stdout);
+    assert!(stdout.contains(r#""outcome":"diagnostic""#), "{literal:?}");
+    assert!(
+        stdout.contains(r#""code":"check.unsupported""#),
+        "{literal:?}"
+    );
+
+    project(
+        &temp,
+        r#"pub fn value(): bytes {
+    return bytes("key")
+}
+"#,
+    );
+
+    let constructor = run_in(&temp, &["run", "value"]);
+    assert!(constructor.status.success(), "{constructor:?}");
+    assert_eq!(String::from_utf8_lossy(&constructor.stdout), "0x6b6579\n");
+
+    let reference = include_str!("../../../docs/language/source-and-syntax.md");
+    assert!(
+        !reference.contains("| Bytes |"),
+        "the literal table must not present bytes as an executable literal"
+    );
+    assert!(
+        !reference.contains("Byte strings accept"),
+        "the parser-only escape claim must not be presented as executable behavior"
+    );
+    assert!(
+        reference.contains("`bytes(\"Marrow\")` constructs the UTF-8 bytes of a string"),
+        "the current bytes constructor must remain documented"
+    );
+    assert!(
+        reference.contains("**Future:** The parser recognizes direct byte-literal spelling"),
+        "the direct byte-literal boundary must remain explicitly labeled"
+    );
+}
+
 /// A terminal value literal must be in canonical form: the `bytes` decoder admits
 /// only a `0x`-prefixed even-length lowercase-hex string, and the `bool` decoder
 /// only `true`/`false`. A noncanonical spelling — uppercase hex, a missing `0x`
