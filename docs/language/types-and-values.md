@@ -173,8 +173,8 @@ The closed operation floor:
   the same temporal type;
 - `duration + duration` and `duration - duration`, yielding a `duration`;
 - `instant + duration` and `instant - duration`, yielding an `instant`;
-- `date_add_days(d: date, n: int): date` — the date `n` days after `d`;
-- `date_days_between(a: date, b: date): int` — the signed number of days from `a`
+- `addDays(d: date, n: int): date` — the date `n` days after `d`;
+- `daysBetween(a: date, b: date): int` — the signed number of days from `a`
   to `b`.
 
 An arithmetic result outside the type's domain (a `date` or `instant` past years
@@ -187,7 +187,7 @@ no scaling a `duration` by an `int`, and no calendar-month or calendar-year unit
 module docs::temporal
 
 pub fn dueDate(assigned: date, leadDays: int): date {
-    return date_add_days(assigned, leadDays)
+    return addDays(assigned, leadDays)
 }
 
 pub fn isOverdue(due: date, onDay: date): bool {
@@ -251,7 +251,7 @@ numeric types implicitly.
 
 The temporal operators are a closed set: a `duration` sums or differs with a
 `duration`, and a `duration` shifts an `instant`. There is no `date` operator (use
-`date_add_days`/`date_days_between`), no `instant - instant`, no `duration * int`,
+`addDays`/`daysBetween`), no `instant - instant`, no `duration * int`,
 and no calendar-month or calendar-year arithmetic. See
 [Temporal Types](#temporal-types).
 

@@ -236,10 +236,10 @@ pub enum Instr {
     DurationLe,
     DurationGt,
     DurationGe,
-    /// `date_add_days(date, int) → date`, faulting `run.temporal_overflow` when the
+    /// `addDays(date, int) → date`, faulting `run.temporal_overflow` when the
     /// result leaves the supported calendar range (years 0001-9999).
     DateAddDays,
-    /// `date_days_between(date, date) → int`: the signed day span from the first to
+    /// `daysBetween(date, date) → int`: the signed day span from the first to
     /// the second. Total (both operands are supported dates).
     DateDaysBetween,
     /// `duration +/- duration → duration`, faulting `run.temporal_overflow` on

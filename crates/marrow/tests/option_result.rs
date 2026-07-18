@@ -317,8 +317,8 @@ fn redeclaring_a_reserved_builtin_value_name_is_reported() {
         "exists",
         "unreachable",
         "isEmpty",
-        "date_add_days",
-        "date_days_between",
+        "addDays",
+        "daysBetween",
         "contains",
         "trim",
     ];

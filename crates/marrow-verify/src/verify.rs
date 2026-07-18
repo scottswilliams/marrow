@@ -4899,7 +4899,7 @@ fn apply(
             binary(stack, Scalar::Duration, Scalar::Bool)?;
             Ok(Control::Fallthrough)
         }
-        // `date_add_days(date, int) → date`: pop the int, then the date.
+        // `addDays(date, int) → date`: pop the int, then the date.
         SealedInstr::DateAddDays => {
             expect_scalar(pop(stack)?, Scalar::Int)?;
             expect_scalar(pop(stack)?, Scalar::Date)?;

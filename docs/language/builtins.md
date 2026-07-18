@@ -196,11 +196,11 @@ static canonical text literal (`date("2026-07-15")`,
 time. Two named functions provide date arithmetic:
 
 ```text
-date_add_days(d: date, n: int): date
-date_days_between(a: date, b: date): int
+addDays(d: date, n: int): date
+daysBetween(a: date, b: date): int
 ```
 
-`date_add_days` returns the date `n` days after `d`; `date_days_between` returns
+`addDays` returns the date `n` days after `d`; `daysBetween` returns
 the signed number of days from `a` to `b`. A result outside years 0001-9999
 faults `run.temporal_overflow`. `duration` sums and differences and `instant`
 shifts by a `duration` use the `+`/`-` operators. There is no clock builtin: the

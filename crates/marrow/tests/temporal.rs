@@ -194,7 +194,7 @@ fn a_temporal_result_renders_as_canonical_text() {
         r#"module main
 
 pub fn tomorrow(d: date): date {
-    return date_add_days(d, 1)
+    return addDays(d, 1)
 }
 "#,
     );
@@ -211,7 +211,7 @@ pub fn tomorrow(d: date): date {
     assert!(stdout.contains(r#""data":"2026-07-16""#), "{stdout}");
 }
 
-/// `date_add_days` past the supported range faults `run.temporal_overflow` at
+/// `addDays` past the supported range faults `run.temporal_overflow` at
 /// runtime (the value is computed from arguments, not a compile-time literal).
 #[test]
 fn date_add_days_overflow_is_a_runtime_fault() {
@@ -221,7 +221,7 @@ fn date_add_days_overflow_is_a_runtime_fault() {
         r#"module main
 
 pub fn f(d: date, n: int): date {
-    return date_add_days(d, n)
+    return addDays(d, n)
 }
 "#,
     );
@@ -235,4 +235,25 @@ pub fn f(d: date, n: int): date {
         stdout.contains(r#""code":"run.temporal_overflow""#),
         "{stdout}"
     );
+}
+
+/// The temporal arithmetic floor is spelled camelCase verb-first (`addDays`,
+/// `daysBetween`), matching the rest of the builtin floor (`isEmpty`, `nextId`).
+/// The retired snake_case spellings are not aliases: they resolve to nothing and
+/// are a `check.type` "not in scope" rejection, so there is one way to write each.
+#[test]
+fn the_retired_snake_case_temporal_names_are_out_of_scope() {
+    for retired in ["date_add_days", "date_days_between"] {
+        let temp = TempDir::new("retired");
+        project(
+            &temp,
+            &format!(
+                "module main\n\npub fn f(a: date, b: date): int {{\n    return {retired}(a, b)\n}}\n"
+            ),
+        );
+        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{retired} must fail: {stdout}");
+        assert!(stdout.contains(r#""code":"check.type""#), "{retired}: {stdout}");
+    }
 }

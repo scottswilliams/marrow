@@ -419,8 +419,8 @@ enum Builtin {
     Split,
     Lines,
     Join,
-    /// The named temporal arithmetic floor: `date_add_days(date, int): date` and
-    /// `date_days_between(date, date): int`. Named rather than operators so a date
+    /// The named temporal arithmetic floor: `addDays(date, int): date` and
+    /// `daysBetween(date, date): int`. Named rather than operators so a date
     /// offset never reads as an ambiguous `date + int`; they are reserved, so a
     /// colliding value declaration is rejected. `marrow-temporal` owns the checked
     /// operations, which fault `run.temporal_overflow` past the supported range.
@@ -457,8 +457,8 @@ impl Builtin {
             "split" => Builtin::Split,
             "lines" => Builtin::Lines,
             "join" => Builtin::Join,
-            "date_add_days" => Builtin::DateAddDays,
-            "date_days_between" => Builtin::DateDaysBetween,
+            "addDays" => Builtin::DateAddDays,
+            "daysBetween" => Builtin::DateDaysBetween,
             "List" => Builtin::List,
             "Map" => Builtin::Map,
             "Id" => Builtin::Id,
@@ -4353,7 +4353,7 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::GreaterEqual, Bytes, Bytes) => (Instr::BytesGe, Bool),
             // Temporal order (same-type only). The closed arithmetic floor: a
             // duration sums/differences with a duration, and a duration shifts an
-            // instant; there is no `date +/- int` operator (use `date_add_days`), no
+            // instant; there is no `date +/- int` operator (use `addDays`), no
             // `duration * int`, and no calendar-month arithmetic.
             (op, Date, Date) if temporal_comparison(op).is_some() => {
                 (date_comparison(op).expect("guard matched"), Bool)
@@ -7898,7 +7898,7 @@ impl<'a> FnLowerer<'a> {
         None
     }
 
-    /// Lower `date_add_days(date, int): date` or `date_days_between(date, date): int`,
+    /// Lower `addDays(date, int): date` or `daysBetween(date, date): int`,
     /// emitting the checked temporal instruction after type-checking the operands.
     fn lower_date_arith(
         &mut self,
@@ -7908,13 +7908,13 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<LTy> {
         let (name, second, instr, result) = match builtin {
             Builtin::DateAddDays => (
-                "date_add_days",
+                "addDays",
                 ScalarType::Int,
                 Instr::DateAddDays,
                 ScalarType::Date,
             ),
             Builtin::DateDaysBetween => (
-                "date_days_between",
+                "daysBetween",
                 ScalarType::Date,
                 Instr::DateDaysBetween,
                 ScalarType::Int,

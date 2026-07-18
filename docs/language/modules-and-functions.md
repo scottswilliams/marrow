@@ -28,7 +28,7 @@ use shelf::books
 
 fn example()
     const id = books::add("Small Gods")
-    const due = date_add_days(date("2026-07-15"), 10)
+    const due = addDays(date("2026-07-15"), 10)
 ```
 
 The import does not place individual declarations into the local namespace.

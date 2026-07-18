@@ -180,7 +180,7 @@ catchable inside the program.
 | `run.commit` | A durable transaction commit did not confirm. The store handle is poisoned and every later operation fails; the process must exit and reopen, where the recorded witness classifies whether the commit completed. The fault is mapped to the transaction's source span and is not catchable inside the program. |
 | `run.corruption` | The path kernel found the durable store internally inconsistent while running a verified program: a field leaf with no entry marker (an orphan leaf), a cell it could not decode as its typed value, or a stored schema descriptor that does not match the program image. The fault is mapped to the operation's source span and is not catchable inside the program. |
 | `run.collection_limit` | A `List` append or `Map` insert would grow a collection past a fixed representational bound: more than 65536 elements, or an aggregate value size over 1 MiB. The operation faults rather than allocating unboundedly, mapped to its source span, and is not catchable inside the program. |
-| `run.temporal_overflow` | A temporal operation produced a result outside its supported domain at runtime: `date_add_days` or `instant +/- duration` left the supported calendar range (years 0001-9999), or `duration +/- duration` overflowed the signed-nanosecond `i128` range. The fault is mapped to the source span of the operation and is not catchable inside the program. Every `.mw` temporal path shares this 0001-9999 / `i128` envelope, so an out-of-range value never escapes into a stored value or key. |
+| `run.temporal_overflow` | A temporal operation produced a result outside its supported domain at runtime: `addDays` or `instant +/- duration` left the supported calendar range (years 0001-9999), or `duration +/- duration` overflowed the signed-nanosecond `i128` range. The fault is mapped to the source span of the operation and is not catchable inside the program. Every `.mw` temporal path shares this 0001-9999 / `i128` envelope, so an out-of-range value never escapes into a stored value or key. |
 
 ### `value.*` — kind `runtime`
 
@@ -191,7 +191,7 @@ program.
 
 | Code | Meaning |
 |---|---|
-| `value.range` | A `date` or `instant` reaching the store codec lies outside Marrow's supported calendar range, years 0001-9999. This is a store-boundary integrity guard, not a source-arithmetic fault: every `.mw` temporal path (the compile-time-validated `date`/`instant` literal constructors, `date_add_days`, and `instant +/- duration` arithmetic) shares the same 0001-9999 envelope and rejects at check time or raises `run.temporal_overflow` before an out-of-range value can be produced, so no ordinary checked program reaches this code. It fires only if a value that bypasses those bounds reaches the canonical encoder or key projection. |
+| `value.range` | A `date` or `instant` reaching the store codec lies outside Marrow's supported calendar range, years 0001-9999. This is a store-boundary integrity guard, not a source-arithmetic fault: every `.mw` temporal path (the compile-time-validated `date`/`instant` literal constructors, `addDays`, and `instant +/- duration` arithmetic) shares the same 0001-9999 envelope and rejects at check time or raises `run.temporal_overflow` before an out-of-range value can be produced, so no ordinary checked program reaches this code. It fires only if a value that bypasses those bounds reaches the canonical encoder or key projection. |
 
 ### `store.*` — kind `storage`
 
