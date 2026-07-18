@@ -100,10 +100,11 @@ fn present_name(name: &str) -> Option<Value> {
     Some(Value::Optional(Some(Box::new(Value::Text(name.into())))))
 }
 
-/// One ephemeral attachment serves a sequence of invocations: `add` commits an
-/// asset, a later `assetName` reads it back, an unguarded `setLocation` on an absent
-/// asset faults `run.required_missing` and rolls its own region back, and a final
-/// read shows the prior commit intact and no asset created by the faulting call.
+/// One ephemeral attachment serves a sequence of invocations: `add` commits an asset
+/// across both roots, a later `assetName` reads it back, a committed `recordMove`
+/// advances the moves tally, then an unguarded `recordMove` on an absent asset faults
+/// `run.required_missing` and rolls its whole cross-root region back, and a final read
+/// shows both roots at their prior committed values with no asset created by the fault.
 #[test]
 fn add_read_rollback_final_read() {
     let image = compile_verify();
@@ -135,12 +136,12 @@ fn add_read_rollback_final_read() {
         Some(Value::Int(1)),
     );
 
-    // A committed cross-root edit: setLocation writes the ^assets field and advances
-    // the ^tallies "edits" counter together.
+    // A committed cross-root move: recordMove writes the ^assets `location` field and
+    // advances the ^tallies "moves" tally together.
     run(
         &image,
         &mut att,
-        "setLocation",
+        "recordMove",
         vec![Value::Int(1), Value::Text("Bay 3".into())],
     );
     assert_eq!(
@@ -148,26 +149,26 @@ fn add_read_rollback_final_read() {
         present_name("Bay 3"),
     );
     assert_eq!(
-        run(&image, &mut att, "editCount", vec![]),
+        run(&image, &mut att, "moveCount", vec![]),
         Some(Value::Int(1))
     );
 
-    // Cross-root rollback: the same setLocation on an absent asset stages a lone
-    // `location` on ^assets and an "edits" increment on ^tallies; the required-missing
-    // fault rolls the whole region back across BOTH roots.
+    // Cross-root rollback: recordMove on an absent asset stages a lone `location` on
+    // ^assets and a "moves" increment on ^tallies; the required-missing fault rolls the
+    // whole region back across BOTH roots.
     assert_eq!(
         run_faulting(
             &image,
             &mut att,
-            "setLocation",
+            "recordMove",
             vec![Value::Int(2), Value::Text("Bay 9".into())],
         ),
         "run.required_missing",
     );
 
     // Neither root moved: the prior asset and its location stand, no asset 2 exists,
-    // and the ^tallies counters (catalogued and edits) are exactly what committed
-    // before the fault — the edits counter was NOT advanced by the rolled-back region.
+    // and the ^tallies tallies (catalogued and moves) are exactly what committed before
+    // the fault — the moves tally was NOT advanced by the rolled-back region.
     assert_eq!(
         run(&image, &mut att, "assetName", vec![Value::Int(1)]),
         present_name("Cordless Drill"),
@@ -185,7 +186,7 @@ fn add_read_rollback_final_read() {
         Some(Value::Int(1)),
     );
     assert_eq!(
-        run(&image, &mut att, "editCount", vec![]),
+        run(&image, &mut att, "moveCount", vec![]),
         Some(Value::Int(1))
     );
 }

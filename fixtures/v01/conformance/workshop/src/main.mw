@@ -102,26 +102,41 @@ pub fn catalogued(): int {
     return ^tallies["catalogued"].count ?? 0
 }
 
-// The number of field edits that have committed, read from the `^tallies` counter
-// `setLocation` maintains.
-pub fn editCount(): int {
-    return ^tallies["edits"].count ?? 0
+// The number of relocations recorded to date, read from the `^tallies` counter
+// `recordMove` maintains — a keeper's tally of how many times tools have been moved.
+pub fn moveCount(): int {
+    return ^tallies["moves"].count ?? 0
 }
 
 // acts: sparse detail fields --------------------------------------------------
 
-// A cross-root unguarded set: the `location` field on `^assets` and the "edits"
-// counter on `^tallies` are staged in one region. When the asset exists both commit;
-// when it is absent the lone `location` cannot complete the required
-// `tag`/`name`/`category`, so the whole region rolls back across both roots with
-// `run.required_missing` — the counter is not advanced by an edit that never landed.
-// Guarded field updates take the `setCondition` shape.
-pub fn setLocation(id: int, location: string) {
+// A cross-root move record: relocating a tool sets its `location` on `^assets` and
+// advances the "moves" tally on `^tallies` in one region, so the tally can never drift
+// from the relocations that actually landed. Unguarded — when the asset is absent the
+// lone `location` cannot complete the required `tag`/`name`/`category`, so the whole
+// region rolls back across both roots with `run.required_missing` and the tally is not
+// advanced by a move that never happened.
+pub fn recordMove(id: int, location: string) {
     transaction {
         ^assets[id].location = location
-        const priorEdits = ^tallies["edits"].count ?? 0
-        ^tallies["edits"].count = priorEdits + 1
+        const priorMoves = ^tallies["moves"].count ?? 0
+        ^tallies["moves"].count = priorMoves + 1
     }
+}
+
+// A guarded single-root setter: the `place` proves the asset present, then updates the
+// one field of an entry known to exist without materializing the record or touching
+// another root.
+pub fn setLocation(id: int, location: string): bool {
+    var set = false
+    transaction {
+        place slot = ^assets[id]
+        if exists(slot) {
+            slot.location = location
+            set = true
+        }
+    }
+    return set
 }
 
 // A guarded field-exact update: the `place` proves the asset present, so the set
@@ -320,9 +335,11 @@ pub fn hasTag(tag: string): bool {
     return false
 }
 
-// A pure local reconstruction of who currently holds each tool, replayed from an
-// ordered checkout log: each line is "out <tag> <holder>" or "in <tag>". This is
-// the local working copy a caller reconciles before writing any of it back.
+// A local-working-copy demonstration, not a catalog export in its own right: a pure
+// reconstruction of who currently holds each tool, replayed from an ordered checkout
+// log ("out <tag> <holder>" or "in <tag>"). It stands in for the local copy a caller
+// builds and reconciles before writing any of it back durably, exercising `Map`
+// insert/`unset` and 1-based list reads on the way.
 pub fn holders(events: List<string>): Map<string, string> {
     var board: Map<string, string> = Map()
     for line in events {
@@ -346,18 +363,18 @@ test "example: add commits both roots in one transaction" {
     assert assetName(1) ?? "" == "Cordless Drill"
     assert noteText(1, 1) ?? "" == "catalogued"
     assert catalogued() == 1
-    assert editCount() == 0
+    assert moveCount() == 0
 }
 
-test "example: setLocation records an edit across both roots" {
+test "example: recordMove advances the moves tally across both roots" {
     assert add(10, "T-1000", "Router", "power", instant("2026-07-18T09:00:00Z"))
-    assert editCount() == 0
-    setLocation(10, "Bay 5")
+    assert moveCount() == 0
+    recordMove(10, "Bay 5")
     assert location(10) ?? "" == "Bay 5"
-    assert editCount() == 1
-    setLocation(10, "Bay 6")
+    assert moveCount() == 1
+    recordMove(10, "Bay 6")
     assert location(10) ?? "" == "Bay 6"
-    assert editCount() == 2
+    assert moveCount() == 2
 }
 
 test "example: label renders tag, name, category" {
@@ -366,7 +383,9 @@ test "example: label renders tag, name, category" {
     assert label(404) == "asset 404: (absent)"
 }
 
-test "a fresh catalog is empty" {
+test "a fresh catalog has no assets and nothing catalogued yet" {
+    // `catalogued()` is the `^tallies` ledger quantity, not a census of `^assets`: on a
+    // fresh attachment no asset is present and the ledger has recorded nothing yet.
     assert not exists(^assets[1])
     assert catalogued() == 0
 }
@@ -384,7 +403,7 @@ test "example: erase preserves the log branch" {
 
 test "example: replace drops sparse fields but keeps the log" {
     assert add(4, "T-400", "Table Saw", "power", instant("2026-07-18T12:00:00Z"))
-    setLocation(4, "Bay 3")
+    assert setLocation(4, "Bay 3")
     assert location(4) ?? "" == "Bay 3"
     assert replace(4, "T-400", "Table Saw", "cutting")
     assert (location(4) ?? "<none>") == "<none>"
