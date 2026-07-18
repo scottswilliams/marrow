@@ -63,6 +63,11 @@ fn service_for(source: &str) -> (Service, Id32) {
     (Service::build(image).expect("service"), export)
 }
 
+#[test]
+fn embedded_test_sources_compile_and_verify() {
+    let (_service, _export) = service_for(ADD);
+}
+
 fn connect(path: &Path) -> UnixStream {
     UnixStream::connect(path).expect("client connects")
 }
