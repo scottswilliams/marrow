@@ -226,9 +226,9 @@ fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
 }
 
-/// The canonical text of a returned value. `run`/`print` output and interpolation
-/// share one owner: this delegates to [`marrow_vm::render::value_text`], which renders
-/// every value shape (scalars, enums, identities, records, lists, maps, optionals).
+/// The canonical text of a returned value. `run` delegates to
+/// [`marrow_vm::render::value_text`], which renders every value shape (scalars, enums,
+/// identities, records, lists, maps, optionals).
 fn render_value_text(
     value: &Value,
     types: &[SealedRecordType],

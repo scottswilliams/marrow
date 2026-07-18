@@ -1,6 +1,6 @@
 //! Canonical value→text rendering: the single owner of the E03w text forms for every
 //! runtime value. The VM renders interpolation holes and `string(...)` through
-//! [`value_text`]; the CLI's `run`/`print` output delegates to the same owner, so one
+//! [`value_text`]; the CLI's `run` output delegates to the same owner, so one
 //! function renders each canonical form and no display path forks. The renderer is
 //! total over [`Value`] — an enum payload or a returned value can be any shape,
 //! including a record, list, map, or optional — so it never faults on a value the

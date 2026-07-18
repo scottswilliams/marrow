@@ -10,6 +10,62 @@ use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, 
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
 
+#[test]
+fn rendering_and_conversion_owner_comments_do_not_regress() {
+    let lower = include_str!("../../marrow-compile/src/lower.rs");
+    let render = include_str!("../src/render.rs");
+    let outcome = include_str!("../../marrow/src/outcome.rs");
+    let controls = include_str!("scalars_control.rs");
+    let checks = [
+        (
+            "crates/marrow-compile/src/lower.rs",
+            lower,
+            ["same closed", " conversions"].concat(),
+            0,
+        ),
+        (
+            "crates/marrow-compile/src/lower.rs",
+            lower,
+            ["Lower a closed scalar", " conversion"].concat(),
+            0,
+        ),
+        (
+            "crates/marrow-vm/src/render.rs",
+            render,
+            ["`run`/", "`print` output"].concat(),
+            0,
+        ),
+        (
+            "crates/marrow/src/outcome.rs",
+            outcome,
+            ["`run`/", "`print` output"].concat(),
+            0,
+        ),
+        (
+            "crates/marrow-vm/tests/scalars_control.rs",
+            controls,
+            ["The closed scalar", " conversions"].concat(),
+            0,
+        ),
+    ];
+
+    let mut stale = Vec::new();
+    for (path, source, phrase, expected_count) in checks {
+        let count = source.matches(&phrase).count();
+        if count != expected_count {
+            stale.push(format!(
+                "{path}: expected {expected_count} occurrences of `{phrase}`, found {count}"
+            ));
+        }
+    }
+
+    assert!(
+        stale.is_empty(),
+        "stale rendering/conversion owner comments remain:\n{}",
+        stale.join("\n")
+    );
+}
+
 /// Encode a one-function image `f(): ret` built by `build`, returning its bytes.
 fn encode(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Vec<u8> {
     let mut draft = ImageDraft::new();
@@ -244,7 +300,7 @@ fn text_ordering_is_lexicographic() {
     }
 }
 
-/// The closed scalar conversions: `string(int)`, `string(bool)`, `bytes(string)`.
+/// Instruction-level int/bool-to-string and string-to-bytes conversion controls.
 #[test]
 fn scalar_conversions_render_and_encode() {
     let to_string_int = build_and_run(|draft| {

@@ -4584,10 +4584,10 @@ impl<'a> FnLowerer<'a> {
 
     /// Lower an interpolated string `$"...{expr}..."` to a left-folded
     /// [`Instr::TextConcat`] over its parts. A literal text segment loads its
-    /// decoded text; a hole renders its value through the same closed conversions
-    /// `string(int)`/`string(bool)` expose, so an interpolable hole is a `string`,
-    /// `int`, or `bool`. The whole expression is a `string`, and an empty
-    /// interpolation is the empty string.
+    /// decoded text; a hole admits any nonoptional scalar, enum, or identity accepted
+    /// by [`is_interpolable`] and renders it through the canonical value-text owner.
+    /// The whole expression is a `string`, and an empty interpolation is the empty
+    /// string.
     fn lower_interpolation(
         &mut self,
         parts: &[InterpolationPart],
@@ -8696,9 +8696,6 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Lower a closed scalar conversion `target(value)`. The admitted set is
-    /// `string(int)`, `string(bool)`, and `bytes(string)`; any other conversion is a
-    /// typed `check.unsupported` on the beta line.
     /// Lower a temporal constructor `date("…")` / `instant("…")` / `duration("…")`.
     /// Construction is from exactly one static string literal, validated and folded
     /// at compile time: a malformed or out-of-range canonical form is a typed
