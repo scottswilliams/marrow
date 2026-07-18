@@ -14,10 +14,10 @@ pub fn add(title: string, shelf: string): Id(^books) {
     return id
 }
 
-pub fn title_of(id: int): string {
+pub fn titleOf(id: int): string {
     return ^books[id].title ?? ""
 }
 
-pub fn shelf_of(id: int): string {
+pub fn shelfOf(id: int): string {
     return ^books[id].shelf ?? ""
 }

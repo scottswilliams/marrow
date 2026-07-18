@@ -108,26 +108,20 @@ There is one collection ceiling, not a separate traversal-specific one.
 
 ## Ranges
 
-Range loops use `..` for an excluded end and `..=` for an included end:
+Range iteration is not implemented on the current beta line. The parser accepts a
+range `for` head, but the checker does not lower one, so a range loop is a
+`check.type` today; a `for` head currently iterates a local collection or a durable
+place (above). The syntax record is kept here because it parses: `..` marks an
+excluded end and `..=` an included end, with an optional `by` step.
 
-```mw
-module docs::ranges
-
-pub fn countEven(): int {
-    var count = 0
-    for value in 0..10 by 2 {
-        count += 1
-    }
-    return count
+```text
+for value in 0..10 by 2 {
+    count += 1
 }
 ```
 
-Endpoints may be `int`, `date`, or `instant`. Integer ranges default to step
-`1` and may descend with a negative step. Date ranges default to one calendar
-day and accept positive whole-day durations. Instant ranges require an explicit
-positive duration. A zero step is rejected. A step pointing away from the end
-produces no iterations when its direction is not statically known; a
-literal-provable dead range is rejected.
+Range iteration is a planned future addition; its endpoints, steps, and
+dead-range rules are not current behavior. See [Project status](../status.md).
 
 ## Local Collections
 
