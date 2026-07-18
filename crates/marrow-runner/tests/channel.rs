@@ -1,13 +1,16 @@
 //! The supervised-channel discipline and the handoff-boundary loss classification,
 //! exercised over a real Unix-domain socket.
 //!
-//! Every test here binds a Unix listener and connects to it, which the command
-//! sandbox denies with `EPERM`, so each is `#[ignore]`d and run explicitly with the
-//! sandbox disabled (mirroring the g02p spike's `run_probes.sh`):
+//! The six channel journeys bind a Unix listener and connect to it, which the
+//! command sandbox denies with `EPERM`, so those tests are `#[ignore]`d and run
+//! explicitly with the sandbox disabled:
 //!
 //! ```text
 //! cargo test -p marrow-runner --test channel -- --ignored
 //! ```
+//!
+//! A default-battery test compiles and verifies their shared source without
+//! opening a socket, so source-surface drift is not hidden by the ignore boundary.
 //!
 //! The runner side (which owns a non-`Send` `VerifiedImage`) stays on the test
 //! thread; the client side runs on a spawned thread and speaks the wire protocol
