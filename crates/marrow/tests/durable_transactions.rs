@@ -76,6 +76,24 @@ pub fn setThenMaybeDiverge(id: int, v: int, boom: bool) {
     }
 }
 
+pub fn setThenSpin(id: int, v: int) {
+    transaction {
+        ^counters[id] = Counter(value: v)
+        var n: int = 0
+        while n < 9000000000000000000 {
+            n = n + 1
+        }
+    }
+}
+
+pub fn spinReadOnly(id: int): int? {
+    var n: int = 0
+    while n < 9000000000000000000 {
+        n = n + 1
+    }
+    return ^counters[id].value
+}
+
 pub fn getValue(id: int): int? {
     return ^counters[id].value
 }
@@ -528,4 +546,79 @@ fn an_unreachable_fault_inside_a_transaction_rolls_back() {
         run(&image, &mut attachment, "getValue", vec![Value::Int(6)]),
         Some(Value::Optional(Some(Box::new(Value::Int(3)))))
     );
+}
+
+/// BF01 exit-gate evidence: an instruction-budget exhaustion raised inside a
+/// transaction is a source-uncatchable `run.budget` fault that rolls the whole
+/// region back and leaves the attachment usable — an abort, never a poison. A value
+/// committed by an earlier invocation survives the faulting one, and a *subsequent*
+/// mutating invocation on the same attachment commits normally. This is the
+/// budget-family instance of the rollback-isolation law already pinned above for
+/// overflow, required-missing, and unreachable faults; it fixes budget exhaustion as
+/// an ordinary rolling-back terminal fault before the E07 taxonomy freeze.
+///
+/// Ignored in the default suite: the instruction budget is a private VM constant
+/// (`1 << 26`) with no runner, CLI, or environment override by design, so the
+/// `setThenSpin` invocation burns the whole budget (~67M interpreted instructions;
+/// the seed and follow-up invocations are cheap). Run it with:
+///     cargo test -p marrow --test durable_transactions -- --ignored budget
+#[test]
+#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+fn a_budget_exhaustion_inside_a_transaction_rolls_back_without_poisoning() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+
+    // Seed a committed value in its own transaction.
+    run(
+        &image,
+        &mut attachment,
+        "set",
+        vec![Value::Int(7), Value::Int(1)],
+    );
+
+    // A transaction stages a replacement, then exhausts the instruction budget before
+    // reaching its commit; the terminal observes the typed `run.budget` fault.
+    let code = run_faulting(
+        &image,
+        &mut attachment,
+        "setThenSpin",
+        vec![Value::Int(7), Value::Int(9)],
+    );
+    assert_eq!(code, "run.budget");
+
+    // The staged replacement rolled back: the earlier committed value stands.
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(7)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(1))))),
+        "the budget fault rolled the region back to the pre-transaction state"
+    );
+
+    // A subsequent mutating invocation on the same attachment commits normally: the
+    // budget abort left the store usable rather than poisoning it.
+    run(
+        &image,
+        &mut attachment,
+        "set",
+        vec![Value::Int(7), Value::Int(42)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "getValue", vec![Value::Int(7)]),
+        Some(Value::Optional(Some(Box::new(Value::Int(42))))),
+        "a later transaction commits, so the budget abort did not poison the attachment"
+    );
+}
+
+/// BF01 out-of-region pin: the identical budget exhaustion outside any transaction is
+/// the plain source-uncatchable fault death. A read-only export carries no
+/// transaction region, so there is nothing to roll back and the behavior is
+/// unchanged — the terminal observes `run.budget` and no durable state is involved.
+///
+/// Ignored for the same private-budget reason as the sibling above.
+#[test]
+#[ignore = "burns the whole 1<<26 instruction budget (private VM const, no override) — ~1.3s debug; E07-gating evidence, run with --ignored"]
+fn a_budget_exhaustion_outside_a_region_is_the_plain_fault_death() {
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    let code = run_faulting(&image, &mut attachment, "spinReadOnly", vec![Value::Int(8)]);
+    assert_eq!(code, "run.budget");
 }
