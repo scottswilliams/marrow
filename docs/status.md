@@ -123,10 +123,13 @@ is a field-leaf range scan whose engine work is proportional to the present coun
 (`O(populated / page + 1)` scan calls), not the declared width, and the durable field
 width is bounded by the image byte ceiling at roughly 3100 declared fields. A
 materialized resource value is an ordinary by-value value: it is named by a
-`const`/`var` annotation, passed to a function parameter, and returned from a
-function, copied by value at each boundary so a callee's mutation never reaches the
-caller — the copy-part-and-save-back journey written through ordinary functions; an
-optional resource value is not yet composed. Persistent
+`const`/`var` annotation (bare or optional), passed to a bare function parameter,
+and returned (bare or optional) from a function, copied by value at each boundary
+so a callee's mutation never reaches the caller — the copy-part-and-save-back
+journey written through ordinary functions. An optional resource behaves like any
+optional record; only a resource composed under a generic (`Option<Book>`,
+`List<Book>`) is refused, since a resource is not a value argument to a built-in
+generic. Persistent
 execution is still in the trough: T01's in-process store open died at D00, so
 `marrow run` no longer opens a store and reports a durable export with the typed
 `cli.durable_unsupported` outcome until the persistent terminal path lands over a

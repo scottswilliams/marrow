@@ -138,13 +138,87 @@ pub fn make(): string {
     );
 }
 
-/// The boundary of the admitted subset: an *optional* resource value
-/// (`Book?`) is not composed today — a resource record is not a value argument to
-/// the reserved `Option` template — so an optional-resource parameter is a typed
-/// `check.unsupported` rejection rather than a silent acceptance. Ledgered so the
-/// lane that composes optional resources flips this expectation.
+/// An optional resource value (`Book?`) is an ordinary optional record: a binding
+/// annotated `Book?` holds a present resource and reads through `if const`, exactly
+/// as an optional `struct` does. Positive control for the admitted binding position.
 #[test]
-fn an_optional_resource_parameter_stays_refused() {
+fn an_optional_resource_binding_is_admitted() {
+    let temp = TempDir::new("optional-resource-binding");
+    project(
+        &temp,
+        r#"module main
+
+resource Book {
+    required title: string
+}
+
+pub fn make(): string {
+    const b: Book? = Book(title: "t")
+    if const got = b {
+        return got.title
+    }
+    return "none"
+}
+"#,
+    );
+    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "an optional-resource binding must run: {stdout}"
+    );
+    assert!(
+        stdout.contains(r#""data":"t""#),
+        "the optional-resource binding must read present: {stdout}"
+    );
+}
+
+/// A function may return `Book?`: the present and absent arms both lower, and the
+/// caller reads the result through `if const`. Positive control for the admitted
+/// return position.
+#[test]
+fn an_optional_resource_return_is_admitted() {
+    let temp = TempDir::new("optional-resource-return");
+    project(
+        &temp,
+        r#"module main
+
+resource Book {
+    required title: string
+}
+
+fn lookup(found: bool): Book? {
+    if found {
+        return Book(title: "t")
+    }
+    return absent
+}
+
+pub fn make(): string {
+    if const b = lookup(true) {
+        return b.title
+    }
+    return "none"
+}
+"#,
+    );
+    let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "an optional-resource return must run: {stdout}"
+    );
+    assert!(
+        stdout.contains(r#""data":"t""#),
+        "the optional-resource return must read present: {stdout}"
+    );
+}
+
+/// A `Book?` parameter is refused — not for a resource-specific reason, but under
+/// the general rule that a parameter is a bare value; an optional parameter of any
+/// type is `check.unsupported`. The boundary of the admitted parameter subset.
+#[test]
+fn an_optional_resource_parameter_is_refused_like_any_optional_parameter() {
     let temp = TempDir::new("optional-resource-param");
     project(
         &temp,
@@ -173,4 +247,94 @@ pub fn make(): string {
         stdout.contains(r#""code":"check.unsupported""#),
         "expected a check.unsupported for the optional-resource parameter: {stdout}"
     );
+}
+
+/// The `Option<Book>` and `List<Book>` generic forms are refused in every position:
+/// a resource type is not a value argument to a built-in generic template, so the
+/// type spelling itself does not resolve. Each position — binding, return, and
+/// parameter — is a typed `check.unsupported` rejection. Ledgered so the lane that
+/// composes resources into generics flips these expectations together.
+#[test]
+fn generic_composition_over_a_resource_is_refused_in_every_position() {
+    let cases = [
+        (
+            "option-binding",
+            r#"module main
+
+resource Book {
+    required title: string
+}
+
+pub fn make(): string {
+    const b: Option<Book> = some(Book(title: "t"))
+    return "x"
+}
+"#,
+        ),
+        (
+            "option-return",
+            r#"module main
+
+resource Book {
+    required title: string
+}
+
+fn maybe(): Option<Book> {
+    return some(Book(title: "t"))
+}
+
+pub fn make(): string {
+    return "x"
+}
+"#,
+        ),
+        (
+            "option-param",
+            r#"module main
+
+resource Book {
+    required title: string
+}
+
+fn take(b: Option<Book>): string {
+    return "x"
+}
+
+pub fn make(): string {
+    return "x"
+}
+"#,
+        ),
+        (
+            "list-param",
+            r#"module main
+
+resource Book {
+    required title: string
+}
+
+fn take(b: List<Book>): string {
+    return "x"
+}
+
+pub fn make(): string {
+    return "x"
+}
+"#,
+        ),
+    ];
+    for (name, source) in cases {
+        let temp = TempDir::new(name);
+        project(&temp, source);
+        let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.status.success(),
+            "{name}: generic composition over a resource must be refused: {stdout}"
+        );
+        assert!(
+            stdout.contains(r#""code":"check.unsupported""#),
+            "{name}: expected a check.unsupported: {stdout}"
+        );
+    }
 }

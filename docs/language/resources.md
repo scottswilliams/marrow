@@ -123,9 +123,9 @@ rather than a silent drop, until its lane lands. A keyed scalar leaf such as
 ## Local Resource Values
 
 A resource type names an ordinary by-value value. A constructor supplies named
-members; a `const` or `var` annotation may name the resource type; and a resource
-value is passed to a function parameter and returned from a function, sharing the
-record representation.
+members; a `const` or `var` annotation may name the resource type (bare or
+optional); and a resource value is passed to a bare parameter and returned from a
+function, sharing the record representation.
 
 ```mw
 module docs::resources::values
@@ -154,6 +154,20 @@ pub fn describe(book: Book): string {
     return book.subtitle ?? book.title
 }
 
+pub fn lookup(found: bool): Book? {
+    if found {
+        return Book(title: "Small Gods", author: "Terry Pratchett")
+    }
+    return absent
+}
+
+pub fn lookedUpTitle(found: bool): string {
+    if const book = lookup(found) {
+        return book.title
+    }
+    return "(absent)"
+}
+
 pub fn independentCopy(): string {
     var a = Book(title: "a", author: "x")
     var b = a
@@ -162,9 +176,10 @@ pub fn independentCopy(): string {
 }
 ```
 
-All required fields must be present before the value is used at a boundary that
-requires a valid complete resource. A local `var book: Book` may instead be
-built incrementally by member assignment and then returned, passed, or written.
+A resource value begins from a complete constructor: every required field must
+be present. A `var` binding may then set additional sparse members before the
+value is returned, passed, or written. An uninitialized `var book: Book` is a
+`check.unsupported` rejection; there is no empty resource to fill in.
 
 Sparse local member reads have type `T?`. Required members are bare once the
 containing local resource is valid and present.
@@ -174,10 +189,17 @@ returning one both copy: a callee that mutates its own binding leaves the
 caller's value unchanged, and assigning one local resource to another does not
 create a reference to the first binding.
 
-An optional resource value (`Book?`) is not yet composed: a resource type is
-outside the value-argument family the `Option` template accepts, so an
-optional-resource binding, parameter, or return is a `check.unsupported`
-rejection until its lane lands.
+An optional resource value (`Book?`) behaves like any other optional record. A
+`const`/`var` binding and a function return may have type `Book?`, read through
+`?.` and `??` or proven present with `if const`, exactly as an optional `struct`
+is. A `Book?` parameter is refused under the general rule that a parameter is a
+bare value — an optional parameter of any type is `check.unsupported` — not for a
+resource-specific reason.
+
+The generic forms `Option<Book>` and `List<Book>` are a separate matter: a
+resource type is not a value argument to a built-in generic, so those spellings
+are a `check.unsupported` rejection in every position — binding, parameter, and
+return — until generic composition over resources lands.
 
 ## Group Values
 

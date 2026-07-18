@@ -229,7 +229,7 @@ fn matrix() -> Vec<Row> {
             ops: "test \"direct whole-entry round trip\" {\n    ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    if const b = ^books[1] {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- Resource values at function boundaries (RV02). ----
+        // ---- Resource values at function boundaries. ----
         // A whole-entry read materializes a resource value that is passed to a helper
         // function, reworked on a local copy, returned, and written back inside the
         // owned region — the copy-part-and-save-back journey through ordinary

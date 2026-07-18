@@ -490,9 +490,9 @@ pub fn takesPoint(p: Point): int {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
-/// A resource record is admitted as a return type (RV02): it crosses the boundary
-/// by value like any other record. The full boundary matrix — annotation, parameter,
-/// return, value semantics — lives in the `resource_values` fixture and test.
+/// A resource record is admitted as a return type: it crosses the boundary by value
+/// like any other record. The full boundary matrix — annotation, parameter, return,
+/// value semantics — lives in the `resource_values` fixture and test.
 #[test]
 fn a_resource_return_is_admitted() {
     let temp = TempDir::new("resource-return");
