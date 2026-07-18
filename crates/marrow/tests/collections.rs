@@ -91,7 +91,7 @@ fn collection_conformance_fixture_passes_on_the_production_path() {
         .find(|line| line.contains(r#""kind":"summary""#))
         .unwrap_or_else(|| panic!("no summary record: {stdout}"));
     assert!(summary.contains(r#""failed":0"#), "{summary}");
-    assert!(summary.contains(r#""total":21"#), "{summary}");
+    assert!(summary.contains(r#""total":26"#), "{summary}");
 }
 
 /// A returned list renders as a JSON array (insertion order) under `--format jsonl`
@@ -248,6 +248,32 @@ pub fn f(): int {
         assert!(
             stdout.contains(&format!(r#""code":"{code}""#)),
             "{source:?} expected {code}: {stdout}"
+        );
+    }
+}
+
+/// Variadic `List(...)` is the literal-contents form; a `Map(...)` literal is
+/// deferred, mixed element types do not unify, and a named element argument is not a
+/// list element. Each is a typed `check.type`.
+#[test]
+fn variadic_construction_rejections_are_typed() {
+    let cases: [&str; 3] = [
+        "const m = Map(1, 2)",
+        "const xs = List(1, \"two\")",
+        "const xs = List(a: 1)",
+    ];
+    for body in cases {
+        let temp = TempDir::new("variadic-reject");
+        project(
+            &temp,
+            &format!("module main\n\npub fn f(): int {{\n\x20   {body}\n\x20   return 0\n}}\n"),
+        );
+        let output = run_in(&temp, &["run", "f", "--format", "jsonl"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{body} must fail: {stdout}");
+        assert!(
+            stdout.contains(r#""code":"check.type""#),
+            "{body}: {stdout}"
         );
     }
 }

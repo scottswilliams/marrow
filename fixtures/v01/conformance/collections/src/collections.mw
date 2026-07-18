@@ -16,11 +16,8 @@ test "an empty list has length zero and is empty" {
     assert isEmpty(xs)
 }
 
-test "append grows a list and iteration sums its elements" {
-    var xs: List<int> = List()
-    xs = append(xs, 10)
-    xs = append(xs, 20)
-    xs = append(xs, 12)
+test "variadic construction fills a list with its literal contents" {
+    const xs = List(10, 20, 12)
     assert length(xs) == 3
     assert not isEmpty(xs)
     var total: int = 0
@@ -28,6 +25,47 @@ test "append grows a list and iteration sums its elements" {
         total += x
     }
     assert total == 42
+}
+
+test "the variadic form is literal contents and append is growth" {
+    var xs = List(10, 20, 12)
+    xs = append(xs, 8)
+    assert length(xs) == 4
+    var total: int = 0
+    for x in xs {
+        total += x
+    }
+    assert total == 50
+}
+
+test "a single-element list constructs variadically" {
+    const xs = List(99)
+    assert length(xs) == 1
+    assert xs[1] ?? 0 == 99
+}
+
+test "a variadic list holds struct values" {
+    const pts = List(Point(x: 1, y: 2), Point(x: 3, y: 4))
+    var sum: int = 0
+    for p in pts {
+        sum = sum + p.x + p.y
+    }
+    assert sum == 10
+}
+
+test "a variadic list nests lists as elements" {
+    const rows = List(List(1, 2), List(3, 4, 5))
+    var count: int = 0
+    for r in rows {
+        count += length(r)
+    }
+    assert count == 5
+}
+
+test "an annotated variadic list checks its elements against the element type" {
+    var names: List<string> = List("ada", "grace")
+    names = append(names, "hopper")
+    assert length(names) == 3
 }
 
 test "list iteration preserves insertion order" {

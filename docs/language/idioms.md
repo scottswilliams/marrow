@@ -31,10 +31,7 @@ pub fn total(xs: List<int>): int {
 }
 
 test "example: total" {
-    var xs: List<int> = List()
-    xs = append(xs, 10)
-    xs = append(xs, 20)
-    xs = append(xs, 12)
+    const xs = List(10, 20, 12)
     assert total(xs) == 42
 }
 ```
@@ -45,6 +42,11 @@ in `total`. The current language has no `fold`, `map`, or `filter`; those depend
 closures, which are a future addition (see
 [`future/general-purpose-language.md`](../future/general-purpose-language.md)). The
 accumulator loop is the idiom for reducing a collection to a value.
+
+A list's literal contents are written with the variadic constructor, and later
+growth uses `append`: `List(10, 20, 12)` states the three elements a list starts
+with, while `append(xs, extra)` adds one more. A map is constructed empty with
+`Map()` and filled with `m[k] = v`; a map literal is not yet available.
 
 ## The Guard Prelude
 

@@ -648,12 +648,24 @@ field or store key is not a `List` or `Map`.
 
 An empty collection is constructed with `List()` or `Map()`, whose element and
 key/value types come from the expected type (an annotation, argument, return type,
-or coercion). The closed set of procedural collection operations is small — there
-is no method syntax:
+or coercion). A list's literal contents are written variadically: `List(a, b, c)`
+constructs a list of those elements in order, inferring `T` from the first argument
+and checking every element against it, so `const xs = List(10, 20, 12)` needs no
+annotation. An expected `List<T>` position instead directs the element type, so an
+annotated `var xs: List<T> = List(...)` checks each element against `T`. Because the
+unannotated form takes `T` from the first argument, a present/absent mix of
+optionals is inferred from that element alone; a presence-aware least-upper-bound
+over mixed elements is a precondition of any future optional-list-element work, not
+current behavior. The variadic form states literal contents; `append` adds later
+growth.
+A map literal is not yet available — a `Map` is constructed empty and filled with
+`m[k] = v`. The closed set of procedural collection operations is small — there is
+no method syntax:
 
 | Form | Result |
 |---|---|
 | `List()` / `Map()` | an empty collection of the expected type |
+| `List(a, b, c)` | a list of the given elements, `T` inferred from them |
 | `append(list, value)` | the list with `value` added after the last element |
 | `length(collection)` | the element or entry count as an `int` |
 | `isEmpty(collection)` | whether the collection has no elements |

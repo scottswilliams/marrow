@@ -491,19 +491,18 @@ pub(crate) fn reserved_builtin_name(file: &str, span: SourceSpan, name: &str) ->
     )
 }
 
-/// Classify an expression as an empty-collection constructor call `List()` or
-/// `Map()` (a zero-argument call on the reserved type name), returning the head.
-fn collection_ctor_call(expr: &Expression) -> Option<&'static str> {
+/// Classify an expression as a collection constructor call on the reserved type name
+/// `List`/`Map`, returning the head and its positional arguments. An empty argument
+/// list is the empty constructor; a non-empty one is variadic list construction (the
+/// map literal is deferred, rejected by the ctor lowering).
+fn collection_ctor_call(expr: &Expression) -> Option<(&'static str, &[Argument])> {
     let Expression::Call { callee, args, .. } = expr else {
         return None;
     };
-    if !args.is_empty() {
-        return None;
-    }
     match &**callee {
         Expression::Name { segments, .. } => match segments.as_slice() {
-            [n] if n == "List" => Some("List"),
-            [n] if n == "Map" => Some("Map"),
+            [n] if n == "List" => Some(("List", args)),
+            [n] if n == "Map" => Some(("Map", args)),
             _ => None,
         },
         _ => None,
@@ -4138,8 +4137,8 @@ impl<'a> FnLowerer<'a> {
         }
         // `List()` / `Map()` are empty-collection constructors directed by the
         // expected type, which supplies the exact instantiation.
-        if let Some(head) = collection_ctor_call(expr) {
-            return self.lower_collection_ctor(head, expr.span(), expected);
+        if let Some((head, args)) = collection_ctor_call(expr) {
+            return self.lower_collection_ctor(head, args, expr.span(), expected);
         }
         if let Expression::Absent { span } = expr {
             // `absent` supplies the vacant value of any optional type, including an
@@ -5125,9 +5124,23 @@ impl<'a> FnLowerer<'a> {
                 Builtin::DateAddDays | Builtin::DateDaysBetween => self
                     .lower_date_arith(builtin, args, span)
                     .map(CallResult::Value),
-                // `List()`/`Map()` are the empty-collection constructors; they infer
-                // nothing on their own, so they need an expected List/Map type (an
-                // annotation, argument, return, or coerced position).
+                // A variadic `List(a, b, c)` infers its element type from its arguments;
+                // the empty `List()`/`Map()` infer nothing and need an expected type. A
+                // `Map(...)` literal is deferred.
+                Builtin::List if !args.is_empty() => self
+                    .lower_list_literal_inferred(args, span)
+                    .map(CallResult::Value),
+                Builtin::Map if !args.is_empty() => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        "a map is constructed empty with `Map()` and filled with `m[k] = v`; \
+                         a map literal is not yet available"
+                            .to_string(),
+                    ));
+                    None
+                }
                 Builtin::List | Builtin::Map => {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -7806,7 +7819,17 @@ impl<'a> FnLowerer<'a> {
     /// constructor emits the `ListNew`/`MapNew` for that COLLTYPES index. A `List()`
     /// against a `Map` type (or the reverse), or against a non-collection type, is a
     /// typed diagnostic.
-    fn lower_collection_ctor(&mut self, head: &str, span: SourceSpan, expected: LTy) -> Option<()> {
+    /// Lower a collection constructor directed by an expected `List`/`Map` type. An
+    /// empty `List()`/`Map()` mints the fresh collection; a variadic `List(a, b, c)`
+    /// mints the list and then writes each element in order as a visible append. The
+    /// map literal is deferred, so `Map(...)` with arguments is refused.
+    fn lower_collection_ctor(
+        &mut self,
+        head: &str,
+        args: &[Argument],
+        span: SourceSpan,
+        expected: LTy,
+    ) -> Option<()> {
         let LTy::Collection {
             idx,
             optional: false,
@@ -7823,25 +7846,127 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let (instr, ok) = match (head, self.records.collection_spec(idx)) {
-            ("List", CollSpec::List { .. }) => (Instr::ListNew(idx), true),
-            ("Map", CollSpec::Map { .. }) => (Instr::MapNew(idx), true),
-            _ => (Instr::ListNew(idx), false),
+        match (head, self.records.collection_spec(idx)) {
+            ("List", CollSpec::List { elem }) => {
+                self.push(Instr::ListNew(idx), span);
+                let elem = garg_to_lty(elem);
+                self.append_list_elements(args, elem, span)
+            }
+            ("Map", CollSpec::Map { .. }) => {
+                if !args.is_empty() {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        "a map is constructed empty with `Map()` and filled with `m[k] = v`; \
+                         a map literal is not yet available"
+                            .to_string(),
+                    ));
+                    return None;
+                }
+                self.push(Instr::MapNew(idx), span);
+                Some(())
+            }
+            _ => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!(
+                        "`{head}()` does not construct {}",
+                        self.records.collection_spelling(idx)
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Write each argument of a variadic `List(...)` as a visible element append, in
+    /// source order, onto the freshly minted list already on the stack. The arity is
+    /// lexical — one append per argument, no hidden loop — and each element is typed by
+    /// the list's element type. A named argument is not a list element.
+    fn append_list_elements(
+        &mut self,
+        args: &[Argument],
+        elem: LTy,
+        span: SourceSpan,
+    ) -> Option<()> {
+        for arg in args {
+            if arg.name.is_some() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    "`List(...)` takes positional element values, not named arguments".to_string(),
+                ));
+                return None;
+            }
+            self.lower_as(&arg.value, elem)?;
+            self.push(Instr::ListAppend, span);
+        }
+        Some(())
+    }
+
+    /// Lower a variadic `List(a, b, c)` with no expected type: the element type is
+    /// inferred from the first argument and every later argument is checked against it.
+    /// The elements evaluate left to right into locals so the minted list can be filled
+    /// in source order once its element type is known.
+    fn lower_list_literal_inferred(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+        let [first, rest @ ..] = args else {
+            unreachable!("caller passes a non-empty argument list");
         };
-        if !ok {
+        if first.name.is_some() {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
                 span,
-                format!(
-                    "`{head}()` does not construct {}",
-                    self.records.collection_spelling(idx)
-                ),
+                "`List(...)` takes positional element values, not named arguments".to_string(),
             ));
             return None;
         }
-        self.push(instr, span);
-        Some(())
+        let elem = self.lower_expr(&first.value)?;
+        let Some(elem_garg) = elem.as_garg() else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                first.value.span(),
+                format!(
+                    "a list element is a value type, found {}",
+                    elem.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        let mut slots = Vec::with_capacity(args.len());
+        let first_slot = self.alloc_slot();
+        self.push(Instr::LocalSet(first_slot), span);
+        slots.push(first_slot);
+        for arg in rest {
+            if arg.name.is_some() {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    "`List(...)` takes positional element values, not named arguments".to_string(),
+                ));
+                return None;
+            }
+            self.lower_as(&arg.value, elem)?;
+            let slot = self.alloc_slot();
+            self.push(Instr::LocalSet(slot), span);
+            slots.push(slot);
+        }
+        let idx = self.records.instantiate_list(self.draft, elem_garg);
+        self.push(Instr::ListNew(idx), span);
+        for slot in slots {
+            self.push(Instr::LocalGet(slot), span);
+            self.push(Instr::ListAppend, span);
+        }
+        Some(LTy::Collection {
+            idx,
+            optional: false,
+        })
     }
 
     /// Lower `isEmpty(x)` over a string or a finite collection. A string routes to
