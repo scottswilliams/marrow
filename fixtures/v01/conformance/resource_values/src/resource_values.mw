@@ -1,0 +1,70 @@
+// Resource values at function boundaries. A resource value is an ordinary by-value
+// value: it is declared with an annotation, passed to a function parameter, and
+// returned from a function, sharing the record representation. Passing and
+// returning copy by value, so a mutation on a callee's local working copy never
+// reaches the caller's binding. A resource carrying an unkeyed `group` crosses the
+// boundary whole, group leaves included.
+module resource_values
+
+resource Book {
+    required title: string
+    required author: string
+    subtitle: string
+
+    details {
+        pages: int
+    }
+}
+
+// A `const`/`var` annotation names the resource type; the constructor fills it.
+pub fn annotatedTitle(): string {
+    const b: Book = Book(title: "Small Gods", author: "Pratchett")
+    return b.title
+}
+
+// A resource value is accepted as a parameter and read member by member.
+pub fn describe(b: Book): string {
+    return b.subtitle ?? b.title
+}
+
+pub fn describeConstructed(): string {
+    return describe(Book(title: "Small Gods", author: "Pratchett"))
+}
+
+// A resource value is returned from a function and used by the caller.
+pub fn draft(title: string, author: string): Book {
+    return Book(title: title, author: author)
+}
+
+pub fn draftedTitle(): string {
+    return draft("Mort", "Pratchett").title
+}
+
+// A helper takes a resource value, works on a local copy, and returns the reworked
+// whole value — the copy-part-and-save-back shape written through ordinary
+// functions. The group leaf crosses the boundary in both directions.
+pub fn revise(b: Book): Book {
+    var working = b
+    working.subtitle = "revised"
+    working.details.pages = 500
+    return working
+}
+
+pub fn revisedSubtitle(): string {
+    const original = Book(title: "Small Gods", author: "Pratchett")
+    const reworked = revise(original)
+    return reworked.subtitle ?? "none"
+}
+
+pub fn revisedPages(): int {
+    const reworked = revise(Book(title: "Small Gods", author: "Pratchett"))
+    return reworked.details.pages ?? 0
+}
+
+// Value semantics hold across the call: the mutation inside `revise` works on a
+// copy, so the caller's original resource is unchanged.
+pub fn originalUntouchedAfterCall(): string {
+    const original = Book(title: "Small Gods", author: "Pratchett")
+    const reworked = revise(original)
+    return original.subtitle ?? "untouched"
+}

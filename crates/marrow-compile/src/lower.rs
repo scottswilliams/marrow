@@ -1094,9 +1094,9 @@ impl FunctionRegistry {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY, site) {
-                        Some(LTy::Record { .. }) | None => {
-                            // A resource-record or unsupported return; the function's own
-                            // lowering reports it. Record Unit here so indices stay aligned.
+                        None => {
+                            // An unsupported return; the function's own lowering reports it.
+                            // Record Unit here so indices stay aligned.
                             RetType::Unit
                         }
                         Some(ty) => RetType::Value(ty),
@@ -1584,14 +1584,6 @@ impl<'a> FnLowerer<'a> {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, env, site) {
-                        Some(LTy::Record { .. }) => {
-                            diagnostics.push(unsupported(
-                                file,
-                                annotation.span(),
-                                "a resource return type",
-                            ));
-                            return None;
-                        }
                         Some(ty) => RetType::Value(ty),
                         None => {
                             diagnostics.push(unsupported(
@@ -5695,7 +5687,7 @@ impl<'a> FnLowerer<'a> {
             TypeEnv { params: &env },
             site,
         ) {
-            Some(LTy::Record { .. }) | None => RetType::Unit,
+            None => RetType::Unit,
             Some(ty) => RetType::Value(ty),
         }
     }
@@ -9214,9 +9206,11 @@ impl TypeEnv<'_> {
 }
 
 /// Resolve a parameter annotation to its lowered type: a bare scalar, a bare
-/// nominal, or a bare `struct` value. Optionals, the durable resource record, and
-/// unresolved names are outside the parameter subset. One owner for signature
-/// building and body lowering, so the two can never disagree on a parameter's type.
+/// nominal, a bare `struct`, or a bare resource-record value. Optionals and
+/// unresolved names are outside the parameter subset. A resource value crosses the
+/// boundary by value like any other record, sharing the image `Record` shape. One
+/// owner for signature building and body lowering, so the two can never disagree on
+/// a parameter's type.
 fn param_type(
     records: &TypeRegistry,
     draft: &mut ImageDraft,
@@ -9231,6 +9225,9 @@ fn param_type(
                 optional: false, ..
             }
             | LTy::Nominal {
+                optional: false, ..
+            }
+            | LTy::Record {
                 optional: false, ..
             }
             | LTy::Struct {

@@ -1,0 +1,28 @@
+// Layer: check+runtime (resource values at function boundaries). These drive the
+// storeless resource-value boundary model through the verified image: annotation,
+// parameter, return, the copy-part-and-save-back helper shape, and value semantics.
+module resource_values_checks
+
+test "a resource annotation names the resource type" {
+    assert resource_values::annotatedTitle() == "Small Gods"
+}
+
+test "a resource value is accepted as a parameter" {
+    assert resource_values::describeConstructed() == "Small Gods"
+}
+
+test "a resource value is returned from a function" {
+    assert resource_values::draftedTitle() == "Mort"
+}
+
+test "a helper reworks a resource value and returns it whole" {
+    assert resource_values::revisedSubtitle() == "revised"
+}
+
+test "a group leaf crosses the boundary in the reworked value" {
+    assert resource_values::revisedPages() == 500
+}
+
+test "a mutation inside the callee does not alias the caller's value" {
+    assert resource_values::originalUntouchedAfterCall() == "untouched"
+}

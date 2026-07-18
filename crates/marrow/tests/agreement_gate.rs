@@ -229,6 +229,25 @@ fn matrix() -> Vec<Row> {
             ops: "test \"direct whole-entry round trip\" {\n    ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    if const b = ^books[1] {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
             expect: Expect::RoundTrips { run: true },
         },
+        // ---- Resource values at function boundaries (RV02). ----
+        // A whole-entry read materializes a resource value that is passed to a helper
+        // function, reworked on a local copy, returned, and written back inside the
+        // owned region — the copy-part-and-save-back journey through ordinary
+        // functions. The verifier reconstructs the boundary types from the image, so a
+        // sealed image proves the resource value crosses the call by value.
+        Row {
+            label: "resource value read -> helper param -> return -> whole-entry write / in a region",
+            ops: "fn rework(b: Book): Book {\n    var working = b\n    working.subtitle = working.title\n    return working\n}\n\npub fn revise(id: int) {\n    transaction {\n        if const current = ^books[id] {\n            ^books[id] = rework(current)\n        }\n    }\n}",
+            expect: Expect::RoundTrips { run: false },
+        },
+        // The same journey run end to end: a driver test seeds an entry through an
+        // export, reworks it through a helper-returning export, and reads the reworked
+        // field back — each export call its own invocation boundary.
+        Row {
+            label: "resource value round trip through a helper / driver test",
+            ops: "fn withSubtitle(b: Book, s: string): Book {\n    var working = b\n    working.subtitle = s\n    return working\n}\n\npub fn seed(id: int, title: string, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: title, isbn: isbn)\n    }\n}\n\npub fn revise(id: int, s: string) {\n    transaction {\n        if const current = ^books[id] {\n            ^books[id] = withSubtitle(current, s)\n        }\n    }\n}\n\npub fn subtitleOf(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"resource value crosses a helper and writes back\" {\n    seed(4, \"dune\", \"i4\")\n    revise(4, \"revised\")\n    assert subtitleOf(4) ?? \"none\" == \"revised\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
         // ---- The review-of-record round trip, now whole (RV01 closes D1/D2/D3). ----
         // D2 (closed): a whole-entry read inside a region the export owns is coherent.
         // The owner lattice now runs for any export that owns a transaction, so a

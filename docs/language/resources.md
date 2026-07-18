@@ -122,14 +122,44 @@ rather than a silent drop, until its lane lands. A keyed scalar leaf such as
 
 ## Local Resource Values
 
-A constructor supplies named members:
+A resource type names an ordinary by-value value. A constructor supplies named
+members; a `const` or `var` annotation may name the resource type; and a resource
+value is passed to a function parameter and returned from a function, sharing the
+record representation.
 
-```text
-Book(
-    title: "Small Gods",
-    author: "Terry Pratchett",
-    subtitle: "A Discworld novel",
-)
+```mw
+module docs::resources::values
+
+resource Book {
+    required title: string
+    required author: string
+    subtitle: string
+}
+
+pub fn small(): Book {
+    return Book(
+        title: "Small Gods",
+        author: "Terry Pratchett",
+        subtitle: "A Discworld novel",
+    )
+}
+
+pub fn drafted(title: string, author: string): Book {
+    var book: Book = Book(title: title, author: author)
+    book.subtitle = "draft"
+    return book
+}
+
+pub fn describe(book: Book): string {
+    return book.subtitle ?? book.title
+}
+
+pub fn independentCopy(): string {
+    var a = Book(title: "a", author: "x")
+    var b = a
+    b.subtitle = "changed"
+    return a.subtitle ?? "a-untouched"
+}
 ```
 
 All required fields must be present before the value is used at a boundary that
@@ -139,38 +169,69 @@ built incrementally by member assignment and then returned, passed, or written.
 Sparse local member reads have type `T?`. Required members are bare once the
 containing local resource is valid and present.
 
-Resource values are copied by value. Assigning one local resource to another
-does not create a reference to the first binding.
+Resource values are copied by value. Passing a resource to a parameter and
+returning one both copy: a callee that mutates its own binding leaves the
+caller's value unchanged, and assigning one local resource to another does not
+create a reference to the first binding.
+
+An optional resource value (`Book?`) is not yet composed: a resource type is
+outside the value-argument family the `Option` template accepts, so an
+optional-resource binding, parameter, or return is a `check.unsupported`
+rejection until its lane lands.
 
 ## Group Values
 
 An unkeyed group is part of the materialized resource value as a nested value.
-Its leaves are read and assigned through the group name:
+Its leaves are read and assigned through the group name, and the whole group is a
+value unit read, assigned, and copied whole. The qualified constructor
+`Resource.group(field: value, …)` builds a group value, symmetric with the branch
+entry constructor, and it is supplied to the resource constructor as a named
+argument.
 
-```text
-var book = Book(title: "Small Gods", author: "Terry Pratchett")
-book.details.pages = 384
-const pages = book.details.pages    // pages: int?
+```mw
+module docs::resources::groups
+
+resource Book {
+    required title: string
+    required author: string
+
+    details {
+        pages: int
+        language: string
+    }
+}
+
+pub fn pagesAfterSet(): int {
+    var book = Book(title: "Small Gods", author: "Terry Pratchett")
+    book.details.pages = 384
+    return book.details.pages ?? 0
+}
+
+pub fn constructedPages(): int {
+    const book = Book(
+        title: "Small Gods",
+        author: "Terry Pratchett",
+        details: Book.details(pages: 384, language: "en"),
+    )
+    return book.details.pages ?? 0
+}
+
+pub fn copiedGroup(): int {
+    var a = Book(title: "a", author: "x")
+    a.details.pages = 7
+    var b = Book(title: "b", author: "y")
+    b.details = a.details
+    return b.details.pages ?? 0
+}
 ```
 
 A group leaf follows the same presence rule as a top-level member: a sparse leaf
 reads `T?` and a `required` leaf is bare once the containing resource is valid and
 present. Assigning a leaf sets it present; `unset book.details.pages` clears a
 sparse leaf back to absent. A group leaf assignment reads its containing group,
-updates the leaf, and writes the group back, so the group is not aliased.
-
-A group is a value unit: it is read, assigned, and copied whole. The qualified
-constructor `Resource.group(field: value, …)` builds a group value, symmetric with
-the branch entry constructor, and it is supplied to the resource constructor as a
-named argument:
-
-```text
-const book = Book(
-    title: "Small Gods",
-    details: Book.details(pages: 384, language: "en"),
-)
-const detail = book.details          // a group value, copied by value
-```
+updates the leaf, and writes the group back, so the group is not aliased. A group
+value is copied by value: assigning one group into another carries its leaves
+without aliasing the source.
 
 An omitted group whose leaves are all sparse defaults to present with vacant
 leaves. A group with a `required` leaf must be supplied, because a required

@@ -490,10 +490,11 @@ pub fn takesPoint(p: Point): int {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
-/// A resource record is still not admitted as a return type: that vertical is
-/// deferred, so it remains a `check.unsupported` diagnostic.
+/// A resource record is admitted as a return type (RV02): it crosses the boundary
+/// by value like any other record. The full boundary matrix — annotation, parameter,
+/// return, value semantics — lives in the `resource_values` fixture and test.
 #[test]
-fn a_resource_return_is_still_unsupported() {
+fn a_resource_return_is_admitted() {
     let temp = TempDir::new("resource-return");
     project(
         &temp,
@@ -501,15 +502,19 @@ fn a_resource_return_is_still_unsupported() {
     required title: string
 }
 
-pub fn make(): Book {
+pub fn make(): string {
+    return draft().title
+}
+
+fn draft(): Book {
     return Book(title: "t")
 }
 "#,
     );
     let output = run_in(&temp, &["run", "make", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!output.status.success(), "{stdout}");
-    assert!(stdout.contains(r#""code":"check.unsupported""#), "{stdout}");
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains(r#""data":"t""#), "{stdout}");
 }
 
 /// A struct field may itself be a struct: a nested value constructs, reads through
