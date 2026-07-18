@@ -18,21 +18,26 @@ resource Book {
         language: string
     }
 
-    tags[pos: int]: string
-
     notes[noteId: string] {
         required text: string
         createdAt: instant
     }
 }
 
-fn draft(title: string, author: string): Book {
-    return Book(title: title, author: author)
+store ^books[id: int]: Book
+
+pub fn add(id: int, title: string, author: string) {
+    transaction {
+        ^books[id].title = title
+        ^books[id].author = author
+    }
 }
 
-pub fn display(): string {
-    const book = draft("Small Gods", "Terry Pratchett")
-    return book.subtitle ?? book.title
+pub fn describe(id: int): string {
+    if const book = ^books[id] {
+        return book.subtitle ?? book.title
+    }
+    return "(absent)"
 }
 ```
 

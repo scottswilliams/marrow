@@ -218,8 +218,8 @@ a later addition.
 ## Effects
 
 The function syntax does not divide calls into separate function and procedure
-categories. A function body may read or write durable places, throw, print, or
-call a host-provided standard-library function. The checker records those
+categories. A function body may read or write durable places, throw, or call a
+host-provided standard-library function. The checker records those
 effects for contexts that restrict them, including transaction bodies,
 presence narrowing, and address expressions.
 
@@ -241,5 +241,5 @@ declarations. Imported module short names and declarations in the current
 module share the file namespace. Built-in names resolve when not shadowed by an
 allowed local binding.
 
-Module-level declarations cannot redefine built-ins such as `exists`, `print`,
-`Id`, or `Error`.
+Module-level declarations cannot redefine built-ins such as `exists`, `Id`, or
+`Error`.

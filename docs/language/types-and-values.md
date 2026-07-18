@@ -338,7 +338,7 @@ On the current beta line the implemented conversions are `string(value)` over an
 scalar, enum, or identity and `bytes(string)`; every other row above — including
 parsing an `int` or `decimal` from text — is documented direction that is not yet
 implemented and reports `check.unsupported`. `string(value)` renders through the
-same canonical owner interpolation and `marrow run`/`print` output use, so the text
+same canonical owner interpolation and `marrow run` output use, so the text
 is identical across all three. An interpolation hole (`$"{value}"`) is any value
 `string(value)` accepts — a scalar, an enum member (`Option<T>` and `Result<T, E>`
 included, rendered with their payload whatever its shape), or an entry identity; a
@@ -388,11 +388,11 @@ fn maybeLabel(enabled: bool): string? {
     return absent
 }
 
-pub fn show(enabled: bool) {
+pub fn show(enabled: bool): string {
     if const label = maybeLabel(enabled) {
-        print(label)
+        return label
     } else {
-        print("disabled")
+        return "disabled"
     }
 }
 ```
@@ -419,21 +419,25 @@ resource Book {
 
 store ^books[id: int]: Book
 
-pub fn display(id: int) {
+pub fn subtitle(id: int): string {
     if exists(^books[id].subtitle) {
-        print(^books[id].subtitle)
+        return ^books[id].subtitle ?? "(no subtitle)"
     }
+    return "(no subtitle)"
+}
 
+pub fn describe(id: int): string {
     if const book = ^books[id] {
-        print(book.title)
-        print(book.subtitle ?? "(no subtitle)")
+        return book.subtitle ?? book.title
     }
+    return "(absent)"
 }
 ```
 
-Within the first branch, the exact guarded place is present. Within the second,
-the materialized `Book` has a bare required `title` and an optional sparse
-`subtitle`.
+`exists` tests presence and guards the branch; a durable read is still typed
+optional, so it is resolved with `??` or `if const`. Materializing the entry with
+`if const book = ^books[id]` binds a `Book` whose required `title` is bare and
+whose sparse `subtitle` is optional.
 
 Presence knowledge is invalidated when code may change the relevant address or
 data. This includes mutation of a key expression, a write to the guarded durable

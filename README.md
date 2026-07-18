@@ -27,9 +27,9 @@ lane. A feature is absent until its lane lands it.
 
 ## Example
 
-This example shows the intended durable model. The retained parser accepts this
-syntax; the checker, VM, and durable runtime that give it meaning are being
-refounded, so it does not yet check or run on the beta line.
+This example shows the durable model. It checks on the beta line; durable
+execution runs through the ephemeral attachment `marrow test` provides, while the
+durable path of `marrow run` is still being refounded.
 
 ```mw
 module app::tasks
@@ -47,27 +47,26 @@ resource Task {
 store ^tasks[id: int]: Task
 
 pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
-    var task: Task
-    task.title = title
-    task.status = Status::open
-
-    ^tasks[id] = task
+    transaction {
+        ^tasks[id].title = title
+        ^tasks[id].status = Status::open
+    }
     return id
 }
 
 pub fn complete(id: Id(^tasks)): bool {
     if not exists(^tasks[id]) { return false }
 
-    ^tasks[id].status = Status::done
+    transaction {
+        ^tasks[id].status = Status::done
+    }
     return true
 }
 ```
 
-`resource` declarations, writes outside explicit transactions, and managed
-indexes were prototype behavior; their prototype implementations were deleted at
-B00 and are being refounded under the narrowed beta design. They are not
-assumptions for the v0.1 beta. [Project status](docs/status.md) identifies
-current and future work precisely.
+Every durable write occurs in an explicit `transaction`. The caller supplies the
+entry identity as an `Id(^tasks)` rather than the store minting one.
+[Project status](docs/status.md) identifies current and future work precisely.
 
 ## Purpose
 

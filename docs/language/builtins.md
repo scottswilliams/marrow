@@ -5,14 +5,14 @@ views, ordered navigation, durable identities, output, and conversion.
 
 ## Presence
 
-`exists(optional-or-place): bool` reports whether its subject is present. It
-accepts optional values and local or durable place reads that may be absent,
-including a user-function result. A definite local scalar is rejected as always
-present. A true branch narrows a stable place read, but testing one function
-call does not narrow a later call.
+`exists(place): bool` reports whether a durable path read that may be absent is
+present. Its subject is a durable path, not an arbitrary optional value: an
+optional value — a local optional, a local collection read, or a user-function
+result — is resolved with `if const`, `??`, or `?.` instead. A true branch
+narrows a stable durable path read.
 
-`if const`, `??`, and `?.` are language constructs rather than calls, but they
-resolve the same optional values:
+`if const`, `??`, and `?.` are language constructs rather than calls; they
+resolve any optional value:
 
 ```mw
 module docs::builtins_presence
@@ -23,8 +23,8 @@ fn maybeNumber(enabled: bool): int? {
 }
 
 pub fn number(enabled: bool): int {
-    if exists(maybeNumber(enabled)) { return maybeNumber(enabled) ?? 0 }
-    return 0
+    if const n = maybeNumber(enabled) { return n }
+    return maybeNumber(enabled) ?? 0
 }
 ```
 
@@ -38,19 +38,13 @@ decoding failure.
 
 ## Local Collection Views
 
-| Form | Result |
-|---|---|
-| `keys(local)` | `List<K>` of present keys |
-| `values(local)` | `List<V>` of present values |
-| `count(place)` | Number of immediate present children, or scalar presence |
+`length(collection): int` reports a `List` or `Map` element count. `isEmpty` also
+accepts a `string` (the text floor form below).
 
-`keys` and `values` accept local lists and maps. They do not accept a durable
-path. They materialize a new local list in key order.
-
-`count` returns `0` for an absent empty place, `1` for a present scalar or
-resource node without children, and otherwise the number of immediate present
-children. On a local collection it returns the number of entries. String and
-byte lengths are `std::text::length` and `std::bytes::length`.
+The collection views `keys(local)` and `values(local)` (the present keys or
+values as a new `List`), `count(place)` (the number of immediate present
+children, or scalar presence), and the `std::text::length`/`std::bytes::length`
+scalar lengths are **future**: the current compiler resolves none of them.
 
 ## Text
 
@@ -122,52 +116,32 @@ there.
 
 ## Positional Append
 
-`append(place, value): int` writes after the greatest populated positive integer
-position of a durable one-`int` keyed leaf and returns the written 1-based
-position. An empty leaf starts at `1`; holes are not filled. (The `append` that
-grows a local `List` is the collection form above, which yields the updated
-list.)
-
-```mw
-module docs::builtins_append
-
-resource Book {
-    required title: string
-    tags[pos: int]: string
-}
-
-store ^books[id: int]: Book
-
-pub fn addTag(id: Id(^books), tag: string): int {
-    return append(^books[id].tags, tag)
-}
-```
-
-`append` is a write even though it returns a value, so it is legal only in a
-transaction region.
+The `append` above grows a local `List` and yields the updated list. A durable
+positional `append` that writes to a keyed scalar leaf (`name[pos: int]: T`) and
+returns the written 1-based position is **future**: the current compiler does not
+check a keyed scalar leaf, so no durable form of `append` is current.
 
 ## Entry Identities
-
-`nextId(^root): Id(^root)` returns the current next integer identity candidate
-for a single-`int` keyed root. It does not reserve or create the candidate.
 
 `Id(^root, key...): Id(^root)` constructs an identity from explicit declared
 keys without reading the store.
 
-`key(id)` returns the raw key of an identity whose store has exactly one key
-column. It is rejected for a composite identity.
+`nextId(^root): Id(^root)` (a next integer identity candidate for a single-`int`
+keyed root) and `key(id)` (the raw key of a single-column identity) are
+**future**: the current compiler does not resolve either. A caller supplies the
+identity directly as an `Id(^root)` today.
 
 ## Output
 
-`print(value)` writes one renderable value followed by a newline. Scalars,
-enums, entry identities, and lists of renderable elements are supported.
-Resources and local or durable trees have no direct print representation.
+A program produces output by returning a value: `marrow run <export>` renders the
+value the export returns through the one canonical rendering owner, the same
+renderings `string(...)` and interpolation use. Scalars, enums, and entry
+identities render directly; bytes render as `0x`-prefixed lowercase hexadecimal,
+temporal values use canonical text, and enums use `Enum::member`. Resources and
+local or durable trees have no direct rendering.
 
-Interpolation and `print` use the same scalar renderings. Bytes render as
-`0x`-prefixed lowercase hexadecimal; temporal values use canonical text; enums
-use `Enum::member`.
-
-`print` returns no value and is forbidden inside a transaction.
+A streaming statement built-in that writes a value mid-program (`print`) is
+**future**: the current compiler has no output statement.
 
 ## Conversion
 
@@ -220,6 +194,5 @@ channel; the distinct failure kinds are described in
 
 ## Deletion
 
-`delete place` is a statement, not a call. It removes the addressed value and
-descendants under the rules in [Durable places](durable-places.md#deletion).
-Local collection elements may also be deleted.
+`delete place` is a statement, not a call. It removes the addressed durable value
+and descendants under the rules in [Durable places](durable-places.md#deletion).

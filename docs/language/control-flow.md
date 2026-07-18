@@ -28,11 +28,11 @@ fn maybeName(enabled: bool): string? {
     return absent
 }
 
-pub fn display(enabled: bool) {
+pub fn display(enabled: bool): string {
     if const name = maybeName(enabled) {
-        print(name)
+        return name
     } else {
-        print("(none)")
+        return "(none)"
     }
 }
 ```
@@ -161,10 +161,11 @@ fn hasNote(wanted: string): bool {
     return false
 }
 
-pub fn show(wanted: string) {
+pub fn show(wanted: string): string {
     if hasNote(wanted) {
-        print("found")
+        return "found"
     }
+    return "absent"
 }
 ```
 

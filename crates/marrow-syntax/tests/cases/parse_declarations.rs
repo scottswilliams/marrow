@@ -83,11 +83,16 @@ fn parses_reference_sample_structure() {
     )));
     assert!(book.members.iter().any(|member| matches!(
         member,
-        ResourceMember::Field(field)
-            if !field.required
-                && field.name == "tags"
-                && field.keys.len() == 1
-                && field.ty.to_string() == "string"
+        ResourceMember::Group(group)
+            if group.name == "notes"
+                && group.keys.len() == 1
+                && group.members.iter().any(|child| matches!(
+                    child,
+                    ResourceMember::Field(field)
+                        if field.required
+                            && field.name == "text"
+                            && field.ty.to_string() == "string"
+                ))
     )));
     assert!(book.members.iter().any(|member| matches!(
         member,
@@ -116,11 +121,11 @@ fn parses_reference_sample_structure() {
             .iter()
             .map(|param| param.name.as_str())
             .collect::<Vec<_>>(),
-        ["title", "author", "shelf", "changedAt"]
+        ["id", "title", "author", "shelf", "changedAt"]
     );
     assert_eq!(
         add.return_type.as_ref().map(ToString::to_string).as_deref(),
-        Some("Id(^books)")
+        None
     );
 }
 

@@ -21,11 +21,12 @@ fn label(value: int): string {
     return $"{greeting} {value}"
 }
 
-pub fn main() {
+pub fn main(): string {
     var count: int = 1
     if count == 1 {
-        print(label(count))
+        return label(count)
     }
+    return label(0)
 }
 ```
 
@@ -165,22 +166,23 @@ and `Result::ok(v)`/`Result::err(e)`, rendering their payload whatever its shape
 Duration units are `second`, `minute`, `hour`, `day`, and `week`, with singular
 and plural spellings. Months and years are not fixed durations.
 
-## Collection And Resource Construction
+## Collection And Value Construction
 
 Lists and maps are introduced by `var` declarations, constructed with `List()`
 or `Map()`, and grown with `append`; because collections are values, each `append`
 yields an updated collection that the binding is reassigned to. A map value is set
 with the bracket assignment `m[k] = value` and both are read with bracket lookup
 (`xs[i]`, `m[k]`).
-Resource constructors name the resource and use named members.
+A struct constructor names the struct and uses named members to build a local
+value. A resource constructor uses the same call form to write a whole durable
+entry (see [Durable places](durable-places.md)); a resource is not a local value.
 
 ```mw
 module docs::literals
 
-resource Point {
-    required x: int
-    required y: int
-    label: string
+struct Point {
+    x: int
+    y: int
 }
 
 pub fn origin(): Point {

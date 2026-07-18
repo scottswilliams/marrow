@@ -26,21 +26,25 @@ resource Task {
 store ^tasks[id: int]: Task
 
 pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
-    ^tasks[id].title = title
+    transaction {
+        ^tasks[id].title = title
+    }
     return id
 }
 
 pub fn complete(id: Id(^tasks)): bool {
     if not exists(^tasks[id]) { return false }
 
-    ^tasks[id].done = true
+    transaction {
+        ^tasks[id].done = true
+    }
     return true
 }
 ```
 
-`Task.title` is required. Creating an entry by field assignment therefore
-requires `title` to be present at the end of the current write or outer
-transaction. `done` is sparse: it is absent until assigned. `add` takes the
+`Task.title` is required. A durable write occurs in a `transaction`; creating an
+entry by field assignment therefore requires `title` to be present at the end of
+that transaction. `done` is sparse: it is absent until assigned. `add` takes the
 entry identity as an `Id(^tasks)` parameter: the caller supplies the identity
 rather than the store minting one.
 
