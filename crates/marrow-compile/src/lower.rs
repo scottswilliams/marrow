@@ -710,16 +710,29 @@ impl DurablePlace<'_> {
     }
 }
 
+/// Whether a resolved durable entry addresses a store root or a keyed `branch` — its
+/// durable node kind. A named `place` records this at its binding from the canonical
+/// resolved durable node and resolves its fields by it: a root against its entry site, a
+/// branch against its materialized record. The kind is independent of the key-column
+/// count — a composite-key root carries several key columns yet is still a root.
+#[derive(Clone, Copy)]
+enum PlaceNode {
+    Root,
+    Branch,
+}
+
 /// A source-local named `place`: a durable entry designation whose key columns were
 /// evaluated exactly once into `key_slots` at the binding. Whole-entry and field
 /// operations through the place read those slots rather than re-evaluating the key
-/// operands. A root place has one column; a branch place has two (`[root, branch]`)
-/// and addresses a nested entry, over which only whole-entry operations lower.
+/// operands. `node` records whether the place addresses a store root or a keyed branch —
+/// taken from the canonical resolved durable node — and drives field resolution
+/// independently of how many key columns the place carries.
 struct PlaceLocal {
     name: String,
     key_slots: Vec<(u16, ScalarType)>,
     entry_site: u16,
     record: TypeId,
+    node: PlaceNode,
 }
 
 /// A resolved source managed-index read `^root.index[keys]`: the index, the executable
@@ -733,20 +746,6 @@ struct IndexRead<'a, 'e> {
 }
 
 impl PlaceLocal {
-    /// Whether this place addresses a nested (branch) entry rather than the root.
-    ///
-    /// DEFERRAL (composite-key root conflation): a root place with a composite key has
-    /// more than one key slot, so this classifies it as nested and its field access
-    /// misroutes through `branch_by_record` instead of the root's record. Only the
-    /// place-bound composite-root field path is affected; the direct-address path
-    /// (`^root(k1, k2).field`, which does not build a `PlaceLocal`) is unaffected, and a
-    /// single-column root place — including every multi-root place — has one slot and is
-    /// classified correctly. Fix by distinguishing a place's node kind from its key arity
-    /// rather than inferring it from `key_slots.len()`.
-    fn is_nested(&self) -> bool {
-        self.key_slots.len() > 1
-    }
-
     /// This place's whole key-path as pre-evaluated slots (root-first) — the key-path a
     /// strict present-entry field set reads and a presence guard proves, for a root or a
     /// branch place uniformly.
@@ -774,6 +773,10 @@ enum DurTarget {
     Entry {
         entry_site: u16,
         record: TypeId,
+        /// The node kind of the addressed entry — a store root or a keyed branch. A `place`
+        /// binding records it so its later field access resolves against the right owner
+        /// independently of the key-column count; a whole-entry read/write/erase ignores it.
+        node: PlaceNode,
     },
     Field {
         site: u16,
@@ -784,10 +787,7 @@ enum DurTarget {
     },
     /// A whole root-level `group` (`^root(k).group`): read, replaced, or erased as one
     /// materialized `record` value through the `GroupEntry` site `entry_site`.
-    Group {
-        entry_site: u16,
-        record: TypeId,
-    },
+    Group { entry_site: u16, record: TypeId },
     /// One leaf of a root-level group (`^root(k).group.leaf`). A read materializes the
     /// whole group through `entry_site` and projects `slot`; a write or clear is a
     /// whole-group read-modify-write that rewrites `slot` on the read-back group record and
@@ -828,6 +828,15 @@ struct DurFieldRef {
 }
 
 impl<'a> DurNode<'a> {
+    /// This node's durable kind, recorded on a `place` that binds it so later field access
+    /// resolves against the right owner without re-inspecting the address.
+    fn place_node(&self) -> PlaceNode {
+        match self {
+            DurNode::Root(_) => PlaceNode::Root,
+            DurNode::Branch(_) => PlaceNode::Branch,
+        }
+    }
+
     fn entry_site(&self) -> u16 {
         match self {
             DurNode::Root(root) => root.entry_site,
@@ -896,6 +905,10 @@ struct TraversalTarget<'e> {
     /// The materialized record of the traversed family's entry — the shape a two-binding
     /// traversal's per-iteration address pin (`for k, p in …`) binds `p` over.
     record: TypeId,
+    /// The node kind of the traversed layer — a store root or a keyed branch — carried onto
+    /// the per-iteration address pin so its field access resolves by node kind, not by the
+    /// ancestor-plus-key slot count.
+    node: PlaceNode,
     ancestor_keys: Vec<DurKey<'e>>,
     span: SourceSpan,
 }
@@ -3342,6 +3355,7 @@ impl<'a> FnLowerer<'a> {
                     entry_site,
                     key_ty,
                     record,
+                    node: PlaceNode::Root,
                     ancestor_keys: Vec::new(),
                     span: *span,
                 })
@@ -3376,6 +3390,7 @@ impl<'a> FnLowerer<'a> {
                     entry_site,
                     key_ty,
                     record,
+                    node: PlaceNode::Branch,
                     ancestor_keys,
                     span: *span,
                 })
@@ -3532,6 +3547,7 @@ impl<'a> FnLowerer<'a> {
         // the `on more` block.
         let entry_site = target.entry_site;
         let record = target.record;
+        let node = target.node;
         let key_name = var.name.clone();
         let place_name = place_var.map(|name| name.name.clone());
         let break_jumps = self.lower_positional_walk(
@@ -3571,6 +3587,7 @@ impl<'a> FnLowerer<'a> {
                         key_slots,
                         entry_site,
                         record,
+                        node,
                     });
                 }
             },
@@ -7360,6 +7377,7 @@ impl<'a> FnLowerer<'a> {
                     target: DurTarget::Entry {
                         entry_site: place.entry_site,
                         record: place.record,
+                        node: place.node,
                     },
                     span: *span,
                 })
@@ -7378,23 +7396,25 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let place = self.lookup_place(name)?;
-                // The field-exact site comes from the node the place addresses: a branch
-                // place's branch record, or the flat root's record. Copy the key-path and
-                // the scalar facts out before any diagnostic borrow of `self`.
+                // The field-exact site comes from the node the place addresses, selected by
+                // its recorded node kind: a branch place resolves against its branch record,
+                // a root place against the root that owns its entry site. Copy the key-path
+                // and the scalar facts out before any diagnostic borrow of `self`.
                 let keys = place.bound_keys();
-                let nested = place.is_nested();
+                let node = place.node;
                 let record = place.record;
                 let entry_site = place.entry_site;
-                let field = if nested {
-                    self.durable
+                let field = match node {
+                    PlaceNode::Branch => self
+                        .durable
                         .branch_by_record(record)
                         .and_then(|branch| branch.field(field_name))
-                        .map(|field| (field.site, GArg::Scalar(field.scalar), field.required))
-                } else {
-                    self.durable
+                        .map(|field| (field.site, GArg::Scalar(field.scalar), field.required)),
+                    PlaceNode::Root => self
+                        .durable
                         .root_by_entry_site(entry_site)
                         .and_then(|root| root.field(field_name))
-                        .map(|field| (field.site, field.ty, field.required))
+                        .map(|field| (field.site, field.ty, field.required)),
                 };
                 match field {
                     Some((site, ty, required)) => Some(DurablePlace {
@@ -7403,16 +7423,17 @@ impl<'a> FnLowerer<'a> {
                         span: *span,
                     }),
                     None => {
-                        let container = if nested {
-                            self.durable
+                        let container = match node {
+                            PlaceNode::Branch => self
+                                .durable
                                 .branch_by_record(record)
                                 .map(|branch| branch.name.clone())
-                                .unwrap_or_default()
-                        } else {
-                            self.durable
+                                .unwrap_or_default(),
+                            PlaceNode::Root => self
+                                .durable
                                 .root_by_entry_site(entry_site)
                                 .map(|root| root.name.clone())
-                                .unwrap_or_default()
+                                .unwrap_or_default(),
                         };
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
@@ -7531,7 +7552,12 @@ impl<'a> FnLowerer<'a> {
             return;
         };
         let span = place.span;
-        let DurTarget::Entry { entry_site, record } = place.target else {
+        let DurTarget::Entry {
+            entry_site,
+            record,
+            node,
+        } = place.target
+        else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -7543,7 +7569,7 @@ impl<'a> FnLowerer<'a> {
         };
         // Evaluate each key column of the address exactly once into a fresh slot, root
         // column first, so every later operation through the place reads the slots
-        // rather than re-running the key operands. A branch place binds two columns.
+        // rather than re-running the key operands. A branch place binds its whole key-path.
         let mut key_slots = Vec::with_capacity(place.keys.len());
         for column in place.keys {
             let PlaceKey::Expr(key_expr) = column.key else {
@@ -7570,6 +7596,7 @@ impl<'a> FnLowerer<'a> {
             key_slots,
             entry_site,
             record,
+            node,
         });
     }
 
@@ -7600,6 +7627,7 @@ impl<'a> FnLowerer<'a> {
                     target: DurTarget::Entry {
                         entry_site: node.entry_site(),
                         record: node.record(),
+                        node: node.place_node(),
                     },
                     span: *span,
                 })
@@ -7845,7 +7873,9 @@ impl<'a> FnLowerer<'a> {
     fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
         self.emit_key_path(&place.keys, place.span)?;
         Some(match place.target {
-            DurTarget::Entry { entry_site, record } => {
+            DurTarget::Entry {
+                entry_site, record, ..
+            } => {
                 self.push(Instr::DurReadEntry(entry_site), place.span);
                 LTy::Record {
                     ty: record,
@@ -8972,7 +9002,9 @@ impl<'a> FnLowerer<'a> {
     /// field set.
     fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
         match place.target {
-            DurTarget::Entry { entry_site, record } => {
+            DurTarget::Entry {
+                entry_site, record, ..
+            } => {
                 let root_slot = place.root_bound_slot();
                 if self
                     .lower_upsert(&place.keys, entry_site, record, value, place.span)

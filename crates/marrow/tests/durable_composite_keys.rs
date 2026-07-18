@@ -69,6 +69,22 @@ pub fn sessionRoom(student: string, course: string, term: int, slot: int): strin
 }
 "#;
 
+// Place bindings over the composite-key root and the composite-key branch. A field read
+// through a `place` must resolve the field against the place's durable node — a root by
+// its entry site, a branch by its record — and the node kind is independent of how many
+// key columns the place carries. A composite-key root place has several key slots but is
+// still a root, so `e.grade` resolves the root's `grade`, not a (nonexistent) branch field.
+const PLACE_EXPORTS: &str = r#"pub fn gradeViaPlace(student: string, course: string): int? {
+    place e = ^enrollments[student, course]
+    return e.grade
+}
+
+pub fn roomViaPlace(student: string, course: string, term: int, slot: int): string? {
+    place x = ^enrollments[student, course].sessions[term, slot]
+    return x.room
+}
+"#;
+
 // The L2 review obligation: a depth-3 branch chain with FOUR key columns, all `int` (the
 // same type at every level), so no scalar-kind check can distinguish the columns — only
 // their pop order is correct end to end. Root `^grid(a, b)`, branch `cell(c)`, nested
@@ -309,6 +325,52 @@ fn a_composite_key_branch_keys_by_its_tuple_under_a_composite_root() {
         ),
         absent(),
         "a transposed root tuple locates a different (empty) branch layer",
+    );
+}
+
+/// A `place` over a composite-key root resolves its fields against the root node, exactly
+/// like an inline `^enrollments(student, course).grade` address: the two key columns do not
+/// reclassify it as a branch place. A composite-key branch place is the control — both node
+/// kinds run through the same place field-resolution family — and resolves `room` against
+/// its branch record.
+#[test]
+fn a_composite_root_place_reads_its_fields_by_the_root_node() {
+    let source = format!("{SOURCE_A}\n{PLACE_EXPORTS}");
+    let image = compile_verify(&source, IDS_A);
+    let mut attachment = attach(&image);
+
+    run(
+        &image,
+        &mut attachment,
+        "enroll",
+        vec![s("amy"), s("cs"), Value::Int(90)],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "gradeViaPlace",
+            vec![s("amy"), s("cs")]
+        ),
+        some_int(90),
+        "a composite-root place reads `grade` off the root node",
+    );
+
+    run(
+        &image,
+        &mut attachment,
+        "setSession",
+        vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2), s("A100")],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "roomViaPlace",
+            vec![s("amy"), s("cs"), Value::Int(1), Value::Int(2)]
+        ),
+        some_text("A100"),
+        "a composite-branch place reads `room` off its branch record",
     );
 }
 

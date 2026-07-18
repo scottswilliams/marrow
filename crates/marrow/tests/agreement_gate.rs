@@ -35,9 +35,10 @@ use marrow_vm::{
 
 /// The shared durable graph every composition is written against: a flat keyed
 /// root with a required and a sparse field, a root-level group, a keyed branch,
-/// a unique index (identity lookup), and a nonunique index (bounded scan). The
-/// identity ledger below pins one id per anchor, so the schema is identity
-/// complete on its own and each composition only appends operations.
+/// a unique index (identity lookup), a nonunique index (bounded scan), and a
+/// composite-key root (two key columns). The identity ledger below pins one id
+/// per anchor, so the schema is identity complete on its own and each
+/// composition only appends operations.
 const SCHEMA: &str = r#"resource Book {
     required title: string
     required isbn: string
@@ -56,6 +57,12 @@ store ^books[id: int]: Book {
     index byIsbn[isbn] unique
     index byShelf[title, id]
 }
+
+resource Grade {
+    required score: int
+}
+
+store ^grades[student: string, course: string]: Grade
 "#;
 
 /// The committed identity ledger for [`SCHEMA`]. Machine-minted from OS entropy
@@ -76,6 +83,11 @@ const IDS: &str = "marrow ids v0\n\
      id group Book.details d69902579081537e5b526739d66131be\n\
      id index books.byIsbn 711c5dcd42019503ab5bbf3470f989c4\n\
      id index books.byShelf f3f35e9ded68649a50bd977094452cc3\n\
+     id product Grade b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1\n\
+     id field Grade.score b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\n\
+     id root grades b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3\n\
+     id key grades.student b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4\n\
+     id key grades.course b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5\n\
      high-water 0\n\
      end\n";
 
@@ -227,6 +239,23 @@ fn matrix() -> Vec<Row> {
         Row {
             label: "whole-entry write + read-back / in a test body directly",
             ops: "test \"direct whole-entry round trip\" {\n    ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    if const b = ^books[1] {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // ---- PL01: a place over a composite-key root resolves fields by the root node. ----
+        // A composite-key root place carries several key columns but is still a root, so a
+        // field read through it (`g.score`) resolves the root's field — not a branch record.
+        // The node kind is recorded at the binding from the canonical resolved durable node,
+        // independent of key-column count.
+        Row {
+            label: "composite-root place field read / outside a transaction",
+            ops: "pub fn crPlaceRead(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}",
+            expect: Expect::RoundTrips { run: false },
+        },
+        // Driven end to end: a seed export writes a composite-root entry, then a composite-
+        // root place field read reads its `score` back — each export call its own boundary.
+        Row {
+            label: "composite-root place field read round trip / driver test",
+            ops: "pub fn crSeed(student: string, course: string, score: int) {\n    transaction {\n        ^grades[student, course] = Grade(score: score)\n    }\n}\n\npub fn crReadVia(student: string, course: string): int? {\n    place g = ^grades[student, course]\n    return g.score\n}\n\ntest \"composite-root place reads a seeded score back\" {\n    crSeed(\"amy\", \"cs\", 90)\n    assert crReadVia(\"amy\", \"cs\") ?? 0 == 90\n}",
             expect: Expect::RoundTrips { run: true },
         },
         // ---- Resource values at function boundaries. ----
