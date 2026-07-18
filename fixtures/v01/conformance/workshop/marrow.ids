@@ -1,0 +1,25 @@
+marrow ids v0
+machine-written by marrow; do not edit
+id application . f3909f7de75fb1a37fa82ea7eb40bf10
+id product Asset 6baccb5a5c39bbdac2535be2b682e13a
+id field Asset.acquiredOn ff0c7dd754adad9e9931b7e5eb9609b5
+id field Asset.category d7f844bc93206e70702a6805356b4e6e
+id field Asset.checkedOutTo 7bcecb68a81be4279067ca408c1be4df
+id field Asset.conditionNote ebf81448ab060ba7213308adba1c16a3
+id field Asset.location 93143c7bb6ed1873236ef8bb697e7d5a
+id field Asset.log.at 09bcee91b67e25857573172b96851176
+id field Asset.log.pinned 3215b4c9a25f5bdc57bdf19c1783e342
+id field Asset.log.text 13160e2b02de5178d1864efdffe9f581
+id field Asset.manufacturer 7b73abce40524feea2fb9b8750c07a94
+id field Asset.model a46dd13a2023d6b265733f1b61d6e678
+id field Asset.name c1203801921f783311bfc669d9c60b4d
+id field Asset.purchaseCents 2e0219b5b8cc03a9eddb829e294d2324
+id field Asset.tag c4f3586c7e345e0fcdf4662443c84460
+id root Asset.log e2aabfeda9e32266d903f761a78bdd52
+id root assets 88bbf579b710f31bdd56dbdddd7bce73
+id key Asset.log.seq 5b574cda13274026b3232d4e26bcdea2
+id key assets.id 4fbc0a883fdb7c5e180341a932bd5b7f
+id index assets.byCategory 4aaca0102a4c252c4da103188b3bee00
+id index assets.byTag 95fae10c5296ac88fd9339688c9264fb
+high-water 0
+end

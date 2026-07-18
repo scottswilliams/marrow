@@ -1,0 +1,424 @@
+// Workshop tool-crib catalog: a durable hierarchical model written the way the
+// language intends. An asset carries a few required fields for identity and
+// classification and many independently optional fields for the details a real
+// crib fills in over time. Each asset owns a nested `log` branch of dated entries
+// — the classic payload-plus-subnodes shape (`^ITEM(id)` and `^ITEM(id,"NOTE",n)`)
+// rendered natively as a keyed branch.
+//
+// Assets are addressed by their raw `int` id. An `Id(^assets)` appears where the
+// language hands one back — a unique-index lookup and the identity-keyed whole-entry
+// write that updates the entry the lookup found.
+
+// shape ----------------------------------------------------------------------
+
+resource Asset {
+    required tag: string
+    required name: string
+    required category: string
+
+    manufacturer: string
+    model: string
+    location: string
+    acquiredOn: date
+    purchaseCents: int
+    checkedOutTo: string
+    conditionNote: string
+
+    log[seq: int] {
+        required text: string
+        required at: instant
+        pinned: bool
+    }
+}
+
+// places ---------------------------------------------------------------------
+
+store ^assets[id: int]: Asset {
+    index byCategory[category, id]
+    index byTag[tag] unique
+}
+
+// acts: create, read, replace, erase ------------------------------------------
+
+// One transaction over two distinct durable nodes: the asset's own payload and its
+// first `log` branch entry commit together as one multi-place unit.
+pub fn add(id: int, tag: string, name: string, category: string, at: instant): bool {
+    var added = false
+    transaction {
+        if not exists(^assets[id]) {
+            ^assets[id] = Asset(tag: tag, name: name, category: category)
+            ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
+            added = true
+        }
+    }
+    return added
+}
+
+pub fn replace(id: int, tag: string, name: string, category: string): bool {
+    var replaced = false
+    transaction {
+        if exists(^assets[id]) {
+            ^assets[id] = Asset(tag: tag, name: name, category: category)
+            replaced = true
+        }
+    }
+    return replaced
+}
+
+pub fn erase(id: int): bool {
+    var erased = false
+    transaction {
+        if exists(^assets[id]) {
+            delete ^assets[id]
+            erased = true
+        }
+    }
+    return erased
+}
+
+pub fn present(id: int): bool {
+    return exists(^assets[id])
+}
+
+// The count of catalogued assets, derived by a bounded root walk. (A separate
+// keyed counter root would be the natural home, but the current compiler admits
+// only one store root per project, so the count is computed instead of stored.)
+pub fn catalogued(): int {
+    var count = 0
+    for id in ^assets at most 4096 {
+        if exists(^assets[id]) {
+            count += 1
+        }
+    } on more {
+        return -1
+    }
+    return count
+}
+
+// acts: sparse detail fields --------------------------------------------------
+
+// An unguarded sparse set: writing `location` on an asset that may be absent stages
+// the field, and at commit either updates the asset already there or — when none is —
+// rolls back with `run.required_missing`, since a lone `location` cannot complete the
+// required `tag`/`name`/`category`. Guarded field updates take the `setCondition` shape.
+pub fn setLocation(id: int, location: string) {
+    transaction {
+        ^assets[id].location = location
+    }
+}
+
+// A guarded field-exact update: the `place` proves the asset present, so the set
+// updates the one field of an entry known to exist without materializing the record.
+pub fn setCondition(id: int, note: string): bool {
+    var updated = false
+    transaction {
+        place slot = ^assets[id]
+        if exists(slot) {
+            slot.conditionNote = note
+            updated = true
+        }
+    }
+    return updated
+}
+
+pub fn checkout(id: int, holder: string): bool {
+    var done = false
+    transaction {
+        place slot = ^assets[id]
+        if exists(slot) {
+            slot.checkedOutTo = holder
+            done = true
+        }
+    }
+    return done
+}
+
+pub fn checkin(id: int): bool {
+    var done = false
+    transaction {
+        place slot = ^assets[id]
+        if exists(slot) {
+            slot.checkedOutTo = absent
+            done = true
+        }
+    }
+    return done
+}
+
+// The partial-copy round-trip: read the whole asset, let a helper rework a local
+// copy, and write the copy back. The read carries every field, so the exact write
+// back preserves the fields the move does not touch, and the `log` branch is left
+// in place by the payload-only whole-entry write.
+fn withLocation(asset: Asset, location: string): Asset {
+    var copy = asset
+    copy.location = location
+    return copy
+}
+
+fn withName(asset: Asset, name: string): Asset {
+    var copy = asset
+    copy.name = name
+    return copy
+}
+
+pub fn relocate(id: int, location: string): bool {
+    var moved = false
+    transaction {
+        if const current = ^assets[id] {
+            ^assets[id] = withLocation(current, location)
+            moved = true
+        }
+    }
+    return moved
+}
+
+// An identity-keyed whole-entry write: the unique index yields the asset's
+// `Id(^assets)`, and the found identity addresses the whole-entry write that
+// renames it — preserving the log branch through the payload-only write.
+pub fn renameByTag(tag: string, name: string): bool {
+    var renamed = false
+    transaction {
+        if const found = ^assets.byTag[tag] {
+            if const current = ^assets[found] {
+                ^assets[found] = withName(current, name)
+                renamed = true
+            }
+        }
+    }
+    return renamed
+}
+
+// acts: reads -----------------------------------------------------------------
+
+pub fn assetName(id: int): string? {
+    return ^assets[id].name
+}
+
+pub fn location(id: int): string? {
+    return ^assets[id].location
+}
+
+pub fn holderOf(id: int): string? {
+    return ^assets[id].checkedOutTo
+}
+
+pub fn conditionOf(id: int): string? {
+    return ^assets[id].conditionNote
+}
+
+pub fn label(id: int): string {
+    if const asset = ^assets[id] {
+        return $"{asset.tag}: {asset.name} [{asset.category}]"
+    }
+    return $"asset {id}: (absent)"
+}
+
+// acts: the nested log branch (payload-plus-subnodes) -------------------------
+
+pub fn addNote(id: int, seq: int, text: string, at: instant): bool {
+    var added = false
+    transaction {
+        if exists(^assets[id]) {
+            ^assets[id].log[seq] = Asset.log(text: text, at: at)
+            added = true
+        }
+    }
+    return added
+}
+
+pub fn pinNote(id: int, seq: int, text: string, at: instant): bool {
+    var added = false
+    transaction {
+        if exists(^assets[id]) {
+            ^assets[id].log[seq] = Asset.log(text: text, at: at, pinned: true)
+            added = true
+        }
+    }
+    return added
+}
+
+pub fn noteText(id: int, seq: int): string? {
+    if const entry = ^assets[id].log[seq] {
+        return entry.text
+    }
+    return absent
+}
+
+// Is this asset's log family populated at all? One at-most-one-child family read.
+pub fn hasLog(id: int): bool {
+    return exists(^assets[id].log)
+}
+
+// acts: bounded traversal and index reads -------------------------------------
+
+// A two-level bounded walk with a presence check at each level and a place-pinned
+// body address: the root pin proves the asset, and the log pin binds each entry.
+pub fn pinnedCount(): int {
+    var total = 0
+    for id, asset in ^assets at most 4096 {
+        if exists(asset) {
+            for seq, entry in ^assets[id].log at most 4096 {
+                if const e = entry {
+                    if e.pinned ?? false {
+                        total += 1
+                    }
+                }
+            } on more {
+                return -1
+            }
+        }
+    } on more {
+        return -1
+    }
+    return total
+}
+
+pub fn countInCategory(category: string): int {
+    var count = 0
+    for assetId in ^assets.byCategory[category] at most 4096 {
+        if exists(^assets[assetId]) {
+            count += 1
+        }
+    } on more {
+        return -1
+    }
+    return count
+}
+
+pub fn findByTag(tag: string): Id(^assets)? {
+    return ^assets.byTag[tag]
+}
+
+pub fn nameByTag(tag: string): string? {
+    if const id = ^assets.byTag[tag] {
+        return ^assets[id].name
+    }
+    return absent
+}
+
+pub fn hasTag(tag: string): bool {
+    if const id = ^assets.byTag[tag] {
+        return true
+    }
+    return false
+}
+
+// A pure local reconstruction of who currently holds each tool, replayed from an
+// ordered checkout log: each line is "out <tag> <holder>" or "in <tag>". This is
+// the local working copy a caller reconciles before writing any of it back.
+pub fn holders(events: List<string>): Map<string, string> {
+    var board: Map<string, string> = Map()
+    for line in events {
+        const parts = split(line, " ")
+        const action = parts[1] ?? ""
+        const tag = parts[2] ?? ""
+        if action == "out" {
+            const who = parts[3] ?? ""
+            board[tag] = who
+        } else if action == "in" {
+            unset board[tag]
+        }
+    }
+    return board
+}
+
+// checks ----------------------------------------------------------------------
+
+test "example: add then read back" {
+    assert add(1, "T-100", "Cordless Drill", "power", instant("2026-07-18T09:00:00Z"))
+    assert assetName(1) ?? "" == "Cordless Drill"
+    assert catalogued() == 1
+}
+
+test "example: label renders tag, name, category" {
+    assert add(2, "T-200", "Bench Vise", "clamp", instant("2026-07-18T09:00:00Z"))
+    assert label(2) == "T-200: Bench Vise [clamp]"
+    assert label(404) == "asset 404: (absent)"
+}
+
+test "a fresh catalog is empty" {
+    assert not exists(^assets[1])
+    assert catalogued() == 0
+}
+
+test "example: erase preserves the log branch" {
+    assert add(3, "T-300", "Angle Grinder", "power", instant("2026-07-18T10:00:00Z"))
+    assert addNote(3, 2, "blade replaced", instant("2026-07-18T11:00:00Z"))
+    assert hasLog(3)
+    assert erase(3)
+    assert not present(3)
+    assert noteText(3, 1) ?? "" == "catalogued"
+    assert noteText(3, 2) ?? "" == "blade replaced"
+    assert hasLog(3)
+}
+
+test "example: replace drops sparse fields but keeps the log" {
+    assert add(4, "T-400", "Table Saw", "power", instant("2026-07-18T12:00:00Z"))
+    setLocation(4, "Bay 3")
+    assert location(4) ?? "" == "Bay 3"
+    assert replace(4, "T-400", "Table Saw", "cutting")
+    assert (location(4) ?? "<none>") == "<none>"
+    assert noteText(4, 1) ?? "" == "catalogued"
+    assert countInCategory("cutting") == 1
+}
+
+test "example: relocate preserves the other fields" {
+    assert add(5, "T-500", "Drill Press", "power", instant("2026-07-18T13:00:00Z"))
+    assert checkout(5, "alice")
+    assert relocate(5, "Bay 7")
+    assert location(5) ?? "" == "Bay 7"
+    assert holderOf(5) ?? "" == "alice"
+}
+
+test "example: a guarded condition update lands only on a present asset" {
+    assert add(6, "T-600", "Lathe", "machine", instant("2026-07-18T14:00:00Z"))
+    assert setCondition(6, "needs oiling")
+    assert conditionOf(6) ?? "" == "needs oiling"
+    assert not setCondition(99, "no such asset")
+    assert checkout(6, "dana")
+    assert holderOf(6) ?? "" == "dana"
+    assert checkin(6)
+    assert (holderOf(6) ?? "<none>") == "<none>"
+}
+
+test "example: a duplicate add is rejected and leaves the first intact" {
+    assert add(7, "T-700", "Sander", "power", instant("2026-07-18T15:00:00Z"))
+    assert not add(7, "T-700X", "Impostor", "junk", instant("2026-07-18T16:00:00Z"))
+    assert assetName(7) ?? "" == "Sander"
+    assert catalogued() == 1
+}
+
+test "example: pinnedCount counts pinned log entries across assets" {
+    assert add(8, "T-800", "Planer", "power", instant("2026-07-18T09:00:00Z"))
+    assert add(9, "T-900", "Jointer", "power", instant("2026-07-18T09:00:00Z"))
+    assert pinNote(8, 5, "warranty", instant("2026-07-18T09:00:00Z"))
+    assert pinNote(9, 5, "recall notice", instant("2026-07-18T09:00:00Z"))
+    assert addNote(8, 6, "routine check", instant("2026-07-18T09:00:00Z"))
+    assert pinnedCount() == 2
+}
+
+test "example: holders replays a checkout log" {
+    const events = List("out T-100 alice", "out T-200 bob", "in T-100", "out T-300 carol")
+    const board = holders(events)
+    assert length(board) == 2
+    assert board["T-200"] ?? "" == "bob"
+    assert board["T-300"] ?? "" == "carol"
+    assert (board["T-100"] ?? "<none>") == "<none>"
+}
+
+test "example: unique tag lookup, identity write, and range seeding" {
+    var made = 0
+    for i in 1..=3 {
+        const id = 100 + i
+        if add(id, "W-" + string(100 + i), "Wrench", "hand", instant("2026-07-18T09:00:00Z")) {
+            made += 1
+        }
+    }
+    assert made == 3
+    assert countInCategory("hand") == 3
+    assert nameByTag("W-102") ?? "" == "Wrench"
+    assert not hasTag("W-999")
+    assert renameByTag("W-102", "Socket Wrench")
+    assert nameByTag("W-102") ?? "" == "Socket Wrench"
+    assert noteText(102, 1) ?? "" == "catalogued"
+}
