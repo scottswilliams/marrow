@@ -654,10 +654,14 @@ ordinary copied values with the same value semantics as every other type: passin
 returning, or reassigning one copies it, and there is no aliasing or shared
 mutation. The element type `T` and the value type `V` may be any value type,
 including a nested `List`, `Map`, `struct`, `enum`, or `Option`/`Result`. A map key
-`K` is drawn from the ordered key scalars — `int`, `bool`, `string`, `bytes`, or a
-nominal int type; a struct, enum, collection, or `decimal` key is a
-`check.unsupported`. Collections are values, never durable storage: a resource
-field or store key is not a `List` or `Map`.
+`K` is `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration`, or a
+nominal int type. A nominal Map key retains its source type and uses its base
+scalar for representation and ordering. Structs, enums, collections, optionals,
+entry identities, resources, `decimal`, `unknown`, and unresolved generic
+parameters are not Map keys and report `check.unsupported`.
+`ErrorCode` is not a local Map key and likewise reports `check.unsupported`.
+Collections are values, never durable storage: a resource field or store key is
+not a `List` or `Map`.
 
 An empty collection is constructed with `List()` or `Map()`, whose element and
 key/value types come from the expected type (an annotation, argument, return type,
@@ -763,21 +767,24 @@ exceed either faults `run.collection_limit` rather than allocating unboundedly.
 
 ## Key Types
 
-Store identity columns, resource keyed layers, and local keyed collections
-accept `int`, `bool`, `string`, `bytes`, `date`, `instant`, and `duration` keys.
-The `ErrorCode` spelling is also accepted, but current key compilation erases
-its refinement: the key behaves as `string` and is not grammar-validated.
-`decimal`, enums, entry identities, resources, collections, optionals, and
-`unknown` are not accepted in those key positions. A declared index component
-projects that same closed orderable-key scalar set — `int`, `bool`, `string`,
-`bytes`, `date`, or `instant`, a nominal erasing to its base scalar — so an
-enum, an entry identity, `decimal`, and every non-scalar field are not
-index-eligible.
+Local `Map<K, V>` keys use `int`, `bool`, `string`, `bytes`, `date`, `instant`,
+and `duration`, or a nominal int type. A nominal Map key retains its source type
+and uses its base scalar for representation and ordering. Structs, enums,
+collections, optionals, entry identities, resources, `decimal`, `unknown`, and
+unresolved generic parameters are not local Map keys and report `check.unsupported`.
+`ErrorCode` is not a local Map key and likewise reports `check.unsupported`.
+
+Durable key positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant`;
+`duration` and nominal source types are not durable keys. Managed-index key
+positions use `int`, `bool`, `string`, `bytes`, `date`, or `instant` when they
+project a durable identity key or a plain top-level stored field. A nominal stored
+field projects through its base scalar. Enums, entry identities stored in fields,
+`decimal`, and every non-scalar or nested field are not index-eligible.
 
 Key order is part of observable traversal behavior. Numeric and temporal keys
 use their natural order, `false` precedes `true`, and strings and bytes use
 lexicographic order. Composite key tuples are ordered lexicographically by
-column.
+position.
 
 ## Entry Identity
 
