@@ -4,8 +4,10 @@
 //! the instantiation bound, and the image-local (no stable identity) nature of
 //! monomorphized instances.
 
+use marrow_compile::compile_with_tests;
 use marrow_compile::{Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use std::fmt::Write as _;
 
 /// Capture a single-module project from source, the way the CLI adapter feeds the
 /// compiler, so these tests exercise the real capture + compile path.
@@ -32,8 +34,57 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     }
 }
 
+fn compile_tests_err(source: &str) -> Vec<SourceDiagnostic> {
+    match compile_with_tests(&project(source)) {
+        Ok(_) => panic!("expected a diagnostic, but the project tests compiled"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
+/// Capture and compile an exact set of module files so a diagnostic whose source
+/// expression and requesting call live in different files cannot mix their locations.
+fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let files = files
+        .iter()
+        .map(|(path, source)| CapturedFile::new((*path).to_string(), source.as_bytes().to_vec()))
+        .collect();
+    let project = marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
+        .expect("capture multi-file project");
+    match compile(&project) {
+        Ok(_) => panic!("expected a diagnostic, but the multi-file program compiled"),
+        Err(diagnostics) => diagnostics,
+    }
+}
+
 fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
     diagnostics.iter().any(|diagnostic| diagnostic.code == code)
+}
+
+fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column: u32) {
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "a limit refusal must not cascade: {diagnostics:#?}"
+    );
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, "check.instantiation_limit");
+    assert_eq!(diagnostic.file, "src/main.mw");
+    assert_eq!((diagnostic.line, diagnostic.column), (line, column));
+}
+
+fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, u32, u32)]) {
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.file == "src/main.mw"),
+        "every diagnostic must retain the source file: {diagnostics:#?}"
+    );
+    let actual: Vec<(&str, u32, u32)> = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code, diagnostic.line, diagnostic.column))
+        .collect();
+    assert_eq!(actual, expected, "{diagnostics:#?}");
 }
 
 /// A public generic function and every one of its monomorphized instances mint no
@@ -272,6 +323,831 @@ pub fn driver(): int {
         has_code(&diagnostics, "check.instantiation_limit"),
         "{diagnostics:#?}"
     );
+}
+
+/// A shared-count refusal after a nested `Option` mint and with an independently
+/// queued follower rejects the current body and stops the FIFO before a later
+/// instance can occupy an earlier reserved function index. Debug retains the
+/// reserved-versus-emitted assertion, while release must have the same typed result.
+#[test]
+fn reserved_option_limit_rejects_the_body_without_unwinding() {
+    let diagnostics = compile_err(
+        r#"module main
+
+fn identity<T>(x: T): T {
+    return x
+}
+
+fn grow<T>(x: T): int {
+    const y = some(x)
+    const next = grow(y)
+    const held = identity(x)
+    const z = some(y)
+    return next
+}
+
+pub fn driver(): int {
+    return grow(1)
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 11, 20);
+}
+
+/// An Option-free fan-out leaves a previously queued safe follower behind the first
+/// body whose second reservation reaches the shared bound. The driver must stop at
+/// that rejected reserved body before the follower can occupy its missing slot.
+#[test]
+fn function_limit_stops_before_an_option_free_queued_follower_fills_the_hole() {
+    let diagnostics = compile_err(
+        r#"module main
+
+fn leaf<T>(x: T): int {
+    return 0
+}
+
+fn grow<T>(x: T): int {
+    var xs: List<T> = List()
+    xs = append(xs, x)
+    const next = grow(xs)
+    const follower = leaf(x)
+    return next
+}
+
+pub fn driver(): int {
+    return grow(1)
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 11, 22);
+}
+
+/// Two independent growing roots are both queued before either recursive body is
+/// drained. Their shared instantiation budget has one owner: the first failed
+/// recursive reservation reports one located limit, and the other body cannot add
+/// a duplicate or continue into a secondary failure.
+#[test]
+fn two_queued_growing_bodies_share_one_instantiation_limit() {
+    let diagnostics = compile_err(
+        r#"module main
+
+fn left<T>(x: T): int {
+    var xs: List<T> = List()
+    xs = append(xs, x)
+    return left(xs)
+}
+
+fn right<T>(x: T): int {
+    var xs: List<T> = List()
+    xs = append(xs, x)
+    return right(xs)
+}
+
+pub fn driver(): int {
+    const first = left(1)
+    const second = right(1)
+    return first + second
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 6, 12);
+}
+
+/// A type-limit refusal can be left only in the registry when a bare-`?` constructor
+/// result is unused. The lowering exit must still transfer it before `finish`; the
+/// driver must then stop before either already-queued body is lowered into the slot.
+#[test]
+fn residual_type_limit_rejects_the_body_before_finish_and_queue_drain() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Seed<T> {
+    value: T
+}
+
+struct Held<T> {
+    value: T
+}
+
+fn leaf<T>(x: T): int {
+    return 0
+}
+
+fn grow<T>(x: T): int {
+    var xs: List<T> = List()
+    xs = append(xs, x)
+    const next = grow(xs)
+    const follower = leaf(x)
+    const dropped = Held(value: x)
+    return next
+}
+
+pub fn driver(): int {
+    const seed = Seed(value: 0)
+    return grow(1)
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 20, 21);
+}
+
+/// A depth refusal while resolving a generic function's return annotation is the
+/// limit itself. It cannot be substituted with Unit and then reported as a second
+/// return/body mismatch.
+#[test]
+fn depth_limit_in_a_generic_return_does_not_collapse_to_unit() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn deepen<T>(x: T): Grow<T> {
+    return deepen(x)
+}
+
+pub fn driver(): int {
+    const ignored = deepen(1)
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 7, 21);
+}
+
+/// A generic return instantiated from another module must keep the return template's
+/// real file together with its span. Pairing the caller's file with the template's
+/// line and column would manufacture a location that exists in neither source site.
+#[test]
+fn cross_file_generic_return_limit_keeps_one_coherent_template_location() {
+    let diagnostics = compile_files_err(&[
+        (
+            "src/library.mw",
+            r#"module library
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn deepen<T>(x: T): Grow<T> {
+    return deepen(x)
+}
+"#,
+        ),
+        (
+            "src/main.mw",
+            r#"module main
+use library
+
+pub fn driver(): int {
+    const ignored = library::deepen(1)
+    return 0
+}
+"#,
+        ),
+    ]);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, "check.instantiation_limit");
+    assert_eq!(diagnostic.file, "src/library.mw");
+    assert_eq!((diagnostic.line, diagnostic.column), (7, 25));
+}
+
+/// A monomorphic signature cannot silently drop a parameter whose generic type
+/// reaches the depth bound. The caller must not see a zero-parameter signature and
+/// invent a wrong-arity diagnostic after the one limit refusal.
+#[test]
+fn depth_limit_does_not_drop_a_monomorphic_signature_parameter() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn take(value: Grow<int>): int {
+    return 0
+}
+
+pub fn driver(): int {
+    return take(0)
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 7, 16);
+}
+
+/// A monomorphic signature return that reaches the depth bound must remain a
+/// refusal. Substituting Unit makes a value-position call report that the function
+/// returns nothing, even though its declaration has a value return.
+#[test]
+fn depth_limit_does_not_substitute_unit_for_a_monomorphic_signature_return() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn make(): Grow<int> {
+    unreachable("unreachable fixture")
+}
+
+pub fn driver(): int {
+    const value = make()
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 7, 12);
+}
+
+/// Resolving a local's explicit annotation is a lowering boundary. A limit there
+/// rejects the body directly; it is not an ordinary unsupported annotation layered
+/// on top of the shared limit.
+#[test]
+fn depth_limit_in_an_annotated_binding_is_not_reclassified_as_unsupported() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(): int {
+    const value: Grow<int> = 0
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 18);
+}
+
+/// A checked-result `const` resolves its annotation through `coerce_int_result`.
+/// A recursive generic depth refusal is the one located limit, not contextual
+/// Unsupported, and the unresolved binding cannot keep lowering the body.
+#[test]
+fn checked_const_annotation_preserves_a_limit_and_rejects_the_body() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(): int {
+    const value: Grow<int> = checked 1 + 2
+        on out_of_range return 0
+    return value.next
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 18);
+}
+
+/// The mutable checked-result binding takes the same `coerce_int_result` path. Its
+/// recursive annotation must reject the body with only the first real limit site.
+#[test]
+fn checked_var_annotation_preserves_a_limit_and_rejects_the_body() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(): int {
+    var value: Grow<int> = checked 1 + 2
+        on out_of_range return 0
+    return value.next
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 16);
+}
+
+/// The `if const` annotation path currently ignores a failed `resolve_type`. A
+/// shared limit must instead reject the body, without binding the optional's bare
+/// type as though the requested annotation had resolved.
+#[test]
+fn depth_limit_in_an_if_const_annotation_is_not_ignored() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(): int {
+    const maybe: int? = 1
+    if const value: Grow<int> = maybe {
+        return value
+    } else {
+        return 0
+    }
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 9, 21);
+}
+
+/// The concrete-struct declaration pass owns its contextual unsupported diagnostic.
+/// A depth refusal from a generic field type is the shared limit instead and must
+/// not be reclassified while `struct_fields` drops the field.
+#[test]
+fn depth_limit_in_a_concrete_struct_field_is_not_reclassified_as_unsupported() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+struct Holder {
+    value: Grow<int>
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 12);
+}
+
+/// The resource-record declaration pass has the same split: ordinary unsupported
+/// fields retain their contextual diagnostic, but a generic depth refusal is only
+/// the one shared located limit.
+#[test]
+fn depth_limit_in_a_resource_field_is_not_reclassified_as_unsupported() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+resource Holder {
+    value: Grow<int>
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 12);
+}
+
+/// An unkeyed group's materialized leaves resolve through `build_group_leaves`.
+/// That declaration consumer must propagate Limit without adding its ordinary
+/// unsupported-group-field diagnostic.
+#[test]
+fn depth_limit_in_a_group_leaf_is_not_reclassified_as_unsupported() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+resource Holder {
+    details {
+        value: Grow<int>
+    }
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 9, 16);
+}
+
+/// A direct generic-struct construction that reaches the shared count bound must
+/// reject its body at the mint. The missing construction cannot fall through and
+/// turn the later field use into a secondary name/type diagnostic.
+#[test]
+fn count_limit_at_a_direct_generic_struct_construction_rejects_the_body() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Held<T> {
+    value: T
+}
+
+fn identity<T>(x: T): T {
+    return x
+}
+
+fn grow<T>(x: T): int {
+    var xs: List<T> = List()
+    xs = append(xs, x)
+    const held = Held(value: x)
+    const observed = identity(held)
+    return grow(xs)
+}
+
+pub fn driver(): int {
+    return grow(1)
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 14, 18);
+}
+
+/// The sibling direct generic-enum constructor has the same refusal transfer: a
+/// failed mint cannot leave the binding absent and let the following match invent
+/// a secondary diagnostic.
+#[test]
+fn count_limit_at_a_direct_generic_enum_construction_rejects_the_body() {
+    const SHALLOW_SEED_TYPE_COUNT: usize = 64;
+
+    let mut source = String::from(
+        r#"module main
+
+enum Held<T> {
+    value(item: T)
+}
+
+"#,
+    );
+    for seed in 0..SHALLOW_SEED_TYPE_COUNT {
+        writeln!(source, "struct N{seed} {{").expect("write generated seed declaration");
+        source.push_str("    value: int\n}\n\n");
+    }
+    source.push_str(
+        r#"fn prime<A, B>(a: A, b: B): int {
+    return 0
+}
+
+pub fn driver(): int {
+    var sink: int = 0
+"#,
+    );
+    // The 64 × 64 ordered pairs mint 4,096 distinct, depth-one `prime<A, B>`
+    // instances before the direct `Held<int>` construction requests the next one.
+    for left in 0..SHALLOW_SEED_TYPE_COUNT {
+        for right in 0..SHALLOW_SEED_TYPE_COUNT {
+            writeln!(
+                source,
+                "    sink = prime(N{left}(value: 0), N{right}(value: 0))"
+            )
+            .expect("write generated prime application");
+        }
+    }
+
+    let constructor_line = source.lines().count() as u32 + 1;
+    assert_eq!(constructor_line, 4365, "generated source layout drifted");
+    source.push_str(
+        r#"    const held = Held::value(item: sink)
+    match held {
+        value(item) => {
+            return item
+        }
+    }
+}
+"#,
+    );
+    assert!(
+        source.len() < CaptureLimits::DEFAULT.max_file_bytes(),
+        "generated source must stay within the captured-file bound"
+    );
+
+    let diagnostics = compile_err(&source);
+    assert_one_located_limit(&diagnostics, constructor_line, 18);
+}
+
+/// A recursive type fill that refuses at a function signature must reject that
+/// signature before the placeholder-looking body can be lowered. This pins one
+/// located limit with no false field cascade; replay and cache mechanics belong to
+/// private owner KATs.
+#[test]
+fn a_failed_recursive_type_fill_rejects_the_signature_before_body_lowering() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn consume(value: Grow<int>): int {
+    value.next
+    return 0
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 7, 19);
+}
+
+/// Collection-payload `Unsupported` is independent of a later instantiation
+/// limit. It must not occupy the limit owner's single pending slot and suppress the
+/// located limit; cross-family order is canonical limit before payload.
+#[test]
+fn payload_rejection_before_a_limit_preserves_both_diagnostic_families() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn payloadOne(value: Option<List<int>>): int {
+    return 0
+}
+
+fn payloadTwo(value: Result<int, Map<int, int>>): int {
+    return 0
+}
+
+fn depth(value: Grow<int>): int {
+    return 0
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+    );
+    assert_diagnostic_sites(
+        &diagnostics,
+        &[
+            ("check.instantiation_limit", 15, 17),
+            ("check.unsupported", 7, 22),
+            ("check.unsupported", 11, 22),
+        ],
+    );
+}
+
+/// The reverse source order has the same canonical cross-family order and does not
+/// deduplicate the independent collection-payload rejection into the limit.
+#[test]
+fn limit_before_a_payload_rejection_preserves_both_diagnostic_families() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn depth(value: Grow<int>): int {
+    return 0
+}
+
+fn payloadOne(value: Option<List<int>>): int {
+    return 0
+}
+
+fn payloadTwo(value: Result<int, Map<int, int>>): int {
+    return 0
+}
+
+pub fn driver(): int {
+    return 0
+}
+"#,
+    );
+    assert_diagnostic_sites(
+        &diagnostics,
+        &[
+            ("check.instantiation_limit", 7, 17),
+            ("check.unsupported", 11, 22),
+            ("check.unsupported", 15, 22),
+        ],
+    );
+}
+
+/// Ordinary unsupported generic applications remain contextual `check.unsupported`
+/// and do not get promoted into the instantiation-limit family.
+#[test]
+fn ordinary_unsupported_generic_application_stays_unsupported() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Pair<T> {
+    value: T
+}
+
+pub fn driver(value: Pair<int, string>): int {
+    return 0
+}
+"#,
+    );
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].code, "check.unsupported");
+    assert_eq!(diagnostics[0].file, "src/main.mw");
+    assert_eq!((diagnostics[0].line, diagnostics[0].column), (7, 22));
+}
+
+/// A genuinely unsupported checked-result annotation remains the contextual
+/// `check.unsupported` owned by `coerce_int_result`; the limit-only transfer rules
+/// must not suppress or relabel it.
+#[test]
+fn checked_annotation_keeps_a_genuine_unsupported_contextual() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Pair<T> {
+    value: T
+}
+
+pub fn driver(): int {
+    const value: Pair<int, string> = checked 1 + 2
+        on out_of_range return 0
+    return value
+}
+"#,
+    );
+    assert_diagnostic_sites(&diagnostics, &[("check.unsupported", 8, 18)]);
+}
+
+/// An unused generic template is checked against an isolated registry clone. Its
+/// clone-local type limit and collection-payload refusal must both transfer to the
+/// real diagnostic coordinator in canonical limit-before-payload order. The later
+/// safe export only keeps the fixture free of an unrelated body diagnostic.
+#[test]
+fn proof_clone_transfers_its_limit_before_its_payload_diagnostic() {
+    let diagnostics = compile_err(
+        r#"module main
+
+fn payload<T>(value: Option<List<T>>): int {
+    return 0
+}
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn deepen<T>(x: T): Grow<T> {
+    return deepen(x)
+}
+
+pub fn safe(): int {
+    return 0
+}
+"#,
+    );
+    assert_diagnostic_sites(
+        &diagnostics,
+        &[
+            ("check.instantiation_limit", 11, 21),
+            ("check.unsupported", 3, 22),
+        ],
+    );
+}
+
+/// A body-time limit in an ordinary monomorphic function is taken before visiting
+/// later ordinary or test bodies. The concrete `Cycle` makes the currently
+/// unconditional value-cycle audit observable; that audit is also downstream of the
+/// stopped body pass.
+#[test]
+fn ordinary_body_limit_stops_later_bodies_and_the_value_cycle_audit() {
+    let diagnostics = compile_tests_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn first(): int {
+    const value: Grow<int> = 0
+    return 0
+}
+
+pub fn laterExport(): int {
+    const queued = identity(1)
+    return missing()
+}
+
+test "later test" {
+    const queued = identity(2)
+    assert missing()
+}
+
+fn identity<T>(x: T): T {
+    return x
+}
+
+struct Cycle {
+    next: Cycle
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 18);
+}
+
+/// Test bodies use the same coordinator boundary. Once the first test reaches a
+/// type limit, no later test body is visited, and the currently unconditional
+/// value-cycle audit remains downstream of that stop.
+#[test]
+fn test_body_limit_stops_later_test_bodies_and_the_value_cycle_audit() {
+    let diagnostics = compile_tests_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+test "first" {
+    const value: Grow<int> = 0
+}
+
+test "later" {
+    const queued = identity(1)
+    assert missing()
+}
+
+fn identity<T>(x: T): T {
+    return x
+}
+
+struct Cycle {
+    next: Cycle
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 8, 18);
+}
+
+/// `Inner<int>` can finish locally while its `outer` field points at the in-progress
+/// `Outer<int>`. If `Outer<int>` later fails through its `bad` sibling, production
+/// readers must not expose that failed placeholder through a Ready-looking
+/// `Inner<int>`. Atomic rejection of every provisional row in the mutually recursive
+/// dependency closure is left to the required private type-owner KAT
+/// `failed_fill_rejects_reverse_dependent_provisional_rows_without_poisoning_siblings`:
+/// the failed `Outer` and completed dependent `Inner` are rejected, an independent
+/// `Good` remains ready, no unresolved filling state remains, and fill depth returns
+/// to zero. Those private state assertions are not claims of this boundary test.
+#[test]
+fn completed_inner_reuse_never_exposes_failed_outer_placeholder() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Diverge<T> {
+    next: Diverge<List<T>>
+}
+
+struct Outer<T> {
+    inner: Inner<T>
+    bad: Diverge<T>
+}
+
+struct Inner<T> {
+    outer: Outer<T>
+}
+
+fn consume(value: Outer<int>): int {
+    return 0
+}
+
+fn reuse(value: Inner<int>): int {
+    value.outer.inner
+    return 0
+}
+
+pub fn safe(): int {
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 16, 19);
+}
+
+/// `Bad<int>` names an unavailable nested generic type. Resolving that application
+/// at a function parameter must produce the contextual `Unsupported` at that
+/// observable current site instead of exposing an incomplete type. Row identity,
+/// remint behavior, cache length and depth, and replay mechanics belong to private
+/// owner KATs rather than this production-path check.
+#[test]
+fn a_parameter_bound_nested_unsupported_resolution_is_contextually_refused() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Good<T> {
+    value: T
+}
+
+struct Bad<T> {
+    good: Good<T>
+    broken: Missing<T>
+}
+
+fn useBad(value: Bad<int>): int {
+    return 0
+}
+
+fn useGood(value: Good<int>): int {
+    return value.value
+}
+"#,
+    );
+    assert_diagnostic_sites(&diagnostics, &[("check.unsupported", 12, 18)]);
 }
 
 // --- user-definable generic value types (slice 3) ---

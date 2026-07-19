@@ -152,6 +152,41 @@ pub fn head(): int {
     assert!(stdout.contains(r#""data":11"#), "{stdout}");
 }
 
+/// The throwaway template check mints abstract `List<T>` and `Box<T>` rows, while
+/// the real concrete instance mints and uses the corresponding `int` rows. Clone
+/// state must not shift production type or collection indices: the CLI compiles and
+/// verifies the image, then the VM returns the boxed value through the real export.
+#[test]
+fn template_check_mints_do_not_shift_production_type_or_collection_indices() {
+    let temp = TempDir::new("template-check-indices");
+    project(
+        &temp,
+        r#"module main
+
+struct Box<T> {
+    value: T
+}
+
+fn unwrap<T>(value: T): T {
+    var values: List<T> = List()
+    values = append(values, value)
+    const boxed = Box(value: value)
+    return boxed.value
+}
+
+pub fn run(): int {
+    return unwrap(41)
+}
+"#,
+    );
+    let output = run_in(&temp, &["run", "run", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{output:?}\n{stdout}\n{stderr}");
+    assert_eq!(stderr, "", "a verified run has no stderr: {stderr}");
+    assert!(stdout.contains(r#""data":41"#), "{stdout}");
+}
+
 /// A `pub` generic function is not itself an invocable export: it has no single
 /// image entry, so `marrow run` on its name fails to resolve, evidencing that
 /// monomorphized instances carry no stable export identity.
@@ -183,5 +218,44 @@ pub fn concrete(): int {
         concrete.status.success(),
         "{}",
         String::from_utf8_lossy(&concrete.stdout)
+    );
+}
+
+/// The outer production command observes the same total shared-limit result as the
+/// compiler owner: one located diagnostic, no process unwind, and no value/artifact
+/// record after the rejected generic body.
+#[test]
+fn instantiation_limit_is_one_diagnostic_and_no_partial_cli_output() {
+    let temp = TempDir::new("instantiation-limit");
+    project(
+        &temp,
+        r#"module main
+
+fn identity<T>(x: T): T {
+    return x
+}
+
+fn grow<T>(x: T): int {
+    const y = some(x)
+    const next = grow(y)
+    const held = identity(x)
+    const z = some(y)
+    return next
+}
+
+pub fn driver(): int {
+    return grow(1)
+}
+"#,
+    );
+    let output = run_in(&temp, &["run", "driver", "--format", "jsonl"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stdout}");
+    assert_eq!(stderr, "", "the compiler process must not unwind: {stderr}");
+    assert_eq!(
+        stdout.as_ref(),
+        "{\"code\":\"check.instantiation_limit\",\"kind\":\"run\",\"outcome\":\"diagnostic\",\"span\":{\"column\":20,\"line\":11}}\n",
+        "one canonical diagnostic record and no partial output"
     );
 }
