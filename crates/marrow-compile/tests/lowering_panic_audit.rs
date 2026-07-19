@@ -48,32 +48,12 @@ struct AllowedPanicSite {
 
 const ALLOWED_PANIC_SITES: &[AllowedPanicSite] = &[
     AllowedPanicSite {
-        invocation: ".expect(\"a bare enum value resolves to enum variants\")",
-        class: InvariantClass::CheckerClassifiedType,
-        multiplicity: 1,
-    },
-    AllowedPanicSite {
         invocation: ".expect(\"classified as a nominal\")",
         class: InvariantClass::CheckerClassifiedType,
         multiplicity: 1,
     },
     AllowedPanicSite {
         invocation: ".expect(\"caller classified a nominal\")",
-        class: InvariantClass::CheckerClassifiedType,
-        multiplicity: 1,
-    },
-    AllowedPanicSite {
-        invocation: ".expect(\"the match guard proved this name resolves to a template\")",
-        class: InvariantClass::CheckerClassifiedType,
-        multiplicity: 1,
-    },
-    AllowedPanicSite {
-        invocation: ".expect(\"a struct template has struct fields\")",
-        class: InvariantClass::CheckerClassifiedType,
-        multiplicity: 1,
-    },
-    AllowedPanicSite {
-        invocation: "panic!(\"a bare struct type resolves to a struct info or instantiation\")",
         class: InvariantClass::CheckerClassifiedType,
         multiplicity: 1,
     },
@@ -143,6 +123,25 @@ const ALLOWED_PANIC_SITES: &[AllowedPanicSite] = &[
         multiplicity: 1,
     },
 ];
+
+/// The generic-enum call guard and constructor share an
+/// immutable registry borrow, so the successful template lookup is bound once rather
+/// than repeated behind an expectation.
+#[test]
+fn generic_enum_dispatch_binds_one_template_lookup() {
+    let body = LOWERING_SOURCE
+        .split_once("fn lower_call_core(")
+        .expect("lower_call_core remains present")
+        .1
+        .split_once("/// An unqualified call")
+        .expect("next owner boundary remains present")
+        .0;
+    assert_eq!(
+        body.matches("type_template_by_name(enum_name)").count(),
+        1,
+        "the immutable successful lookup must be consumed directly"
+    );
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct ExplicitPanicSite<'a> {

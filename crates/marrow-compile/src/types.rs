@@ -3435,7 +3435,26 @@ mod instantiation_state_tests {
         args: Vec<GArg>,
         id: TypeInstId,
         state: StableRowState,
+        body: Option<StableBody>,
         dependents: Vec<usize>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum StableBody {
+        Struct(Vec<(String, GArg)>),
+        Enum(Vec<(String, Vec<(String, GArg)>)>),
+    }
+
+    fn stable_body(body: &InstBody) -> StableBody {
+        match body {
+            InstBody::Struct(fields) => StableBody::Struct(fields.clone()),
+            InstBody::Enum(variants) => StableBody::Enum(
+                variants
+                    .iter()
+                    .map(|variant| (variant.name.clone(), variant.payload.clone()))
+                    .collect(),
+            ),
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -3459,13 +3478,17 @@ mod instantiation_state_tests {
             .type_insts
             .iter()
             .map(|inst| {
-                let state = match &inst.state {
-                    TypeInstState::Filling { staged: None } => StableRowState::Filling,
-                    TypeInstState::Filling { staged: Some(_) } => StableRowState::Staged,
-                    TypeInstState::Ready(_) => StableRowState::Ready,
-                    TypeInstState::Rejected(ResolveRefusal::Limit) => StableRowState::RejectedLimit,
+                let (state, body) = match &inst.state {
+                    TypeInstState::Filling { staged: None } => (StableRowState::Filling, None),
+                    TypeInstState::Filling { staged: Some(body) } => {
+                        (StableRowState::Staged, Some(stable_body(body)))
+                    }
+                    TypeInstState::Ready(body) => (StableRowState::Ready, Some(stable_body(body))),
+                    TypeInstState::Rejected(ResolveRefusal::Limit) => {
+                        (StableRowState::RejectedLimit, None)
+                    }
                     TypeInstState::Rejected(ResolveRefusal::Unsupported) => {
-                        StableRowState::RejectedUnsupported
+                        (StableRowState::RejectedUnsupported, None)
                     }
                 };
                 StableRow {
@@ -3473,6 +3496,7 @@ mod instantiation_state_tests {
                     args: inst.args.clone(),
                     id: inst.id,
                     state,
+                    body,
                     dependents: inst.dependents.clone(),
                 }
             })
@@ -3756,29 +3780,100 @@ mod instantiation_state_tests {
 
     #[test]
     fn proof_clone_is_stable_isolated_and_transfers_once() {
-        let registry = registry(vec![template("Good", vec![("value", name("T"))])]);
+        let registry = registry(vec![
+            template("Leaf", vec![("value", name("T"))]),
+            enum_template("Choice", apply("Leaf", vec![name("T")])),
+            template(
+                "Composite",
+                vec![
+                    ("scalar", name("T")),
+                    ("record", apply("Leaf", vec![name("T")])),
+                    ("enum", apply("Choice", vec![name("T")])),
+                    ("collection", apply("List", vec![name("T")])),
+                ],
+            ),
+        ]);
         let mut draft = ImageDraft::new();
-        registry
-            .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
-            .expect("stable seed mints");
+        let scalar = GArg::Scalar(ScalarType::Int);
+        let leaf_id = registry
+            .mint_type_instance(&mut draft, 0, &[scalar], site(2))
+            .expect("stable record seed mints");
+        let TypeInstId::Record(leaf_record) = leaf_id else {
+            panic!("Leaf is a struct template")
+        };
+        let choice_id = registry
+            .mint_type_instance(&mut draft, 1, &[scalar], site(3))
+            .expect("stable enum seed mints");
+        let TypeInstId::Enum(choice_enum) = choice_id else {
+            panic!("Choice is an enum template")
+        };
+        let collection = registry.instantiate_list(&mut draft, scalar);
+        let composite_id = registry
+            .mint_type_instance(&mut draft, 2, &[scalar], site(4))
+            .expect("representative record seed mints");
         registry.set_fn_base(37);
         let reserved = registry
-            .reserve_fn_instance(7, vec![GArg::Scalar(ScalarType::Int)], site(3))
+            .reserve_fn_instance(7, vec![scalar], site(5))
             .expect("stable function row reserves");
         assert_eq!(reserved, 37);
         let before = stable_snapshot(&registry);
+        assert_eq!(
+            before.rows,
+            vec![
+                StableRow {
+                    template: 0,
+                    args: vec![scalar],
+                    id: leaf_id,
+                    state: StableRowState::Ready,
+                    body: Some(StableBody::Struct(vec![("value".to_string(), scalar)])),
+                    dependents: Vec::new(),
+                },
+                StableRow {
+                    template: 1,
+                    args: vec![scalar],
+                    id: choice_id,
+                    state: StableRowState::Ready,
+                    body: Some(StableBody::Enum(vec![(
+                        "value".to_string(),
+                        vec![("item".to_string(), GArg::Struct(leaf_record))],
+                    )])),
+                    dependents: Vec::new(),
+                },
+                StableRow {
+                    template: 2,
+                    args: vec![scalar],
+                    id: composite_id,
+                    state: StableRowState::Ready,
+                    body: Some(StableBody::Struct(vec![
+                        ("scalar".to_string(), scalar),
+                        ("record".to_string(), GArg::Struct(leaf_record)),
+                        ("enum".to_string(), GArg::Enum(choice_enum)),
+                        ("collection".to_string(), GArg::Collection(collection)),
+                    ])),
+                    dependents: Vec::new(),
+                },
+            ]
+        );
+        assert_eq!(before.collections, vec![CollSpec::List { elem: scalar }]);
+        assert_eq!(before.fn_base, 37);
+        assert_eq!(before.functions, vec![(7, vec![scalar], reserved)]);
+        assert_eq!(before.queue, vec![(7, vec![scalar], reserved)]);
+        let draft_before = draft.encode().expect("stable draft encodes");
         let clone = registry
             .clone_for_generic_check()
             .expect("stable open registry clones");
         assert_eq!(stable_snapshot(&clone), before);
         assert_eq!(
-            clone.reserve_fn_instance(7, vec![GArg::Scalar(ScalarType::Int)], site(4)),
+            clone.reserve_fn_instance(7, vec![scalar], site(6)),
             Ok(reserved),
             "the clone reuses the exact nonzero function reservation"
         );
         assert_eq!(stable_snapshot(&clone), before);
 
         let mut local_draft = draft.clone();
+        let local_before = local_draft.encode().expect("proof draft clone encodes");
+        assert_eq!(local_before.bytes, draft_before.bytes);
+        assert_eq!(local_before.image_id, draft_before.image_id);
         let local_id = clone
             .mint_type_instance(
                 &mut local_draft,
@@ -3788,7 +3883,7 @@ mod instantiation_state_tests {
             )
             .expect("the clone mints a new isolated row");
         let TypeInstId::Record(local_record) = local_id else {
-            panic!("Good is a struct template")
+            panic!("Leaf is a struct template")
         };
         let clone_rows = stable_snapshot(&clone).rows;
         assert_eq!(clone_rows.len(), before.rows.len() + 1);
@@ -3800,11 +3895,25 @@ mod instantiation_state_tests {
         });
         assert_eq!(after_local.index(), local_record.index() + 1);
 
-        let collection = clone.instantiate_list(&mut local_draft, GArg::Scalar(ScalarType::Int));
-        clone.record_collection_payload_rejection(site(29), "Payload", "value", collection);
+        let local_collection =
+            clone.instantiate_list(&mut local_draft, GArg::Scalar(ScalarType::Text));
+        assert_eq!(
+            stable_snapshot(&clone).collections,
+            vec![
+                CollSpec::List { elem: scalar },
+                CollSpec::List {
+                    elem: GArg::Scalar(ScalarType::Text),
+                },
+            ],
+            "the proof clone gains a distinct collection without mutating the real registry",
+        );
+        clone.record_collection_payload_rejection(site(29), "Payload", "value", local_collection);
         clone.record_limit(site(30), "the proof clone reached its local bound");
         let outcome = clone.take_generic_diagnostics();
         assert_eq!(stable_snapshot(&registry), before);
+        let draft_after = draft.encode().expect("real draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
         registry.adopt_generic_diagnostics(outcome);
         let adopted = registry.take_generic_diagnostics().into_ordered();
         assert_eq!(adopted.len(), 2);
@@ -3890,9 +3999,234 @@ mod instantiation_state_tests {
         };
         registry.generics.borrow_mut().type_insts[0].state =
             TypeInstState::Filling { staged: Some(body) };
+        let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
             Err(ResolveRefusal::Limit)
         ));
+        assert_eq!(stable_snapshot(&registry), before);
+    }
+
+    /// An active mutable borrow of the generic owner is a private
+    /// coherence failure, not a RefCell unwind.
+    #[test]
+    fn proof_clone_generics_borrow_conflict_fails_without_unwinding() {
+        let registry = registry(Vec::new());
+        let before = stable_snapshot(&registry);
+        let guard = registry.generics.borrow_mut();
+        let result = registry.clone_for_generic_check();
+        drop(guard);
+
+        assert!(result.is_err());
+        assert_eq!(stable_snapshot(&registry), before);
+    }
+
+    /// Collection-owner contention is classified independently from
+    /// the generic owner and cannot unwind through RefCell.
+    #[test]
+    fn proof_clone_collections_borrow_conflict_fails_without_unwinding() {
+        let registry = registry(Vec::new());
+        let before = stable_snapshot(&registry);
+        let guard = registry.collections.borrow_mut();
+        let result = registry.clone_for_generic_check();
+        drop(guard);
+
+        assert!(result.is_err());
+        assert_eq!(stable_snapshot(&registry), before);
+    }
+
+    /// Committed reserved rows expose their exact arguments through
+    /// the dedicated Option/Result readers.
+    #[test]
+    fn ready_reserved_option_and_result_readers_preserve_arguments() {
+        let registry = registry(reserved_templates());
+        let mut draft = ImageDraft::new();
+        let option = registry
+            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
+            .expect("ready Option mints");
+        let result_template = registry.reserved_template(Reserved::Result);
+        let result = registry
+            .mint_type_instance(
+                &mut draft,
+                result_template,
+                &[
+                    GArg::Scalar(ScalarType::Text),
+                    GArg::Scalar(ScalarType::Bool),
+                ],
+                site(3),
+            )
+            .expect("ready Result mints");
+        let TypeInstId::Enum(result) = result else {
+            panic!("the reserved Result template is enum-shaped")
+        };
+
+        assert_eq!(
+            registry.as_option(option),
+            Some(GArg::Scalar(ScalarType::Int))
+        );
+        assert_eq!(
+            registry.as_result(result),
+            Some((
+                GArg::Scalar(ScalarType::Text),
+                GArg::Scalar(ScalarType::Bool)
+            ))
+        );
+        assert!(matches!(
+            registry.type_inst_body(TypeInstId::Enum(option)),
+            Some(InstBody::Enum(ref variants))
+                if variants.len() == 2
+                    && variants[0].name == "none"
+                    && variants[0].payload.is_empty()
+                    && variants[1].name == "some"
+                    && variants[1].payload
+                        == vec![("value".to_string(), GArg::Scalar(ScalarType::Int))]
+        ));
+        assert!(matches!(
+            registry.type_inst_body(TypeInstId::Enum(result)),
+            Some(InstBody::Enum(ref variants))
+                if variants.len() == 2
+                    && variants[0].name == "ok"
+                    && variants[0].payload
+                        == vec![("value".to_string(), GArg::Scalar(ScalarType::Text))]
+                    && variants[1].name == "err"
+                    && variants[1].payload
+                        == vec![("value".to_string(), GArg::Scalar(ScalarType::Bool))]
+        ));
+        assert_eq!(
+            registry.enum_anchor_spelling(option).as_deref(),
+            Some("Option[int]")
+        );
+        assert_eq!(
+            registry.enum_anchor_spelling(result).as_deref(),
+            Some("Result[string,bool]")
+        );
+    }
+
+    /// Absence of the reserved template is a typed owner failure, not
+    /// an expectation unwind.
+    #[test]
+    fn missing_reserved_template_fails_without_unwinding() {
+        let registry = registry(Vec::new());
+        let mut draft = ImageDraft::new();
+        assert!(
+            registry
+                .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2),)
+                .is_err()
+        );
+    }
+
+    /// A corrupted reserved-template kind fails before it can
+    /// unwind or expose the record id as an Option enum id.
+    #[test]
+    fn reserved_option_wrong_kind_fails_without_unwinding() {
+        let mut registry = registry(reserved_templates());
+        registry.type_templates[0].body =
+            TemplateBody::Struct(vec![("value".to_string(), name("T"))]);
+        let mut draft = ImageDraft::new();
+        assert!(
+            registry
+                .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2),)
+                .is_err()
+        );
+    }
+
+    /// A struct template paired with an enum image id fails
+    /// before interning field names or mutating either draft table.
+    #[test]
+    fn struct_body_with_enum_id_fails_before_draft_mutation() {
+        let registry = registry(vec![template("Good", vec![("value", name("T"))])]);
+        let mut draft = ImageDraft::new();
+        let wrong_name = draft.intern_string("Wrong");
+        let wrong_id = draft.add_enum_type(EnumTypeDef {
+            name: wrong_name,
+            variants: Vec::new(),
+        });
+        let registry_before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let result = registry.fill_type_body(
+            &mut draft,
+            0,
+            TypeInstId::Enum(wrong_id),
+            &[GArg::Scalar(ScalarType::Int)],
+            site(2),
+        );
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert!(result.is_err());
+        assert_eq!(stable_snapshot(&registry), registry_before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    /// An enum template paired with a record image id fails
+    /// before interning member names or mutating either draft table.
+    #[test]
+    fn enum_body_with_record_id_fails_before_draft_mutation() {
+        let registry = registry(vec![enum_template("Good", name("T"))]);
+        let mut draft = ImageDraft::new();
+        let wrong_name = draft.intern_string("Wrong");
+        let wrong_id = draft.add_record_type(RecordTypeDef {
+            name: wrong_name,
+            fields: Vec::new(),
+        });
+        let registry_before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let result = registry.fill_type_body(
+            &mut draft,
+            0,
+            TypeInstId::Record(wrong_id),
+            &[GArg::Scalar(ScalarType::Int)],
+            site(2),
+        );
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert!(result.is_err());
+        assert_eq!(stable_snapshot(&registry), registry_before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    /// A List cache/draft index mismatch fails at the resolving
+    /// owner, before a usable collection index can escape.
+    #[test]
+    fn list_cache_draft_misalignment_fails_without_exposing_an_index() {
+        let registry = registry(Vec::new());
+        let mut draft = ImageDraft::new();
+        draft.add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Text),
+        });
+        let before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let result = registry.resolve_garg(&mut draft, &apply("List", vec![name("int")]), site(2));
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert!(result.is_err());
+        assert_eq!(stable_snapshot(&registry), before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    /// The Map owner has the same no-index-on-misalignment boundary.
+    #[test]
+    fn map_cache_draft_misalignment_fails_without_exposing_an_index() {
+        let registry = registry(Vec::new());
+        let mut draft = ImageDraft::new();
+        draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Bool),
+        });
+        let before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let result = registry.resolve_garg(
+            &mut draft,
+            &apply("Map", vec![name("int"), name("string")]),
+            site(2),
+        );
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert!(result.is_err());
+        assert_eq!(stable_snapshot(&registry), before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
     }
 }

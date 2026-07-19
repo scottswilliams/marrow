@@ -30,14 +30,26 @@ fn compile_ok(source: &str) -> Compiled {
 fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the program compiled"),
-        Err(diagnostics) => diagnostics,
+        Err(diagnostics) => {
+            assert!(
+                !diagnostics.is_empty(),
+                "the public compiler failure boundary returned Err([])"
+            );
+            diagnostics
+        }
     }
 }
 
 fn compile_tests_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile_with_tests(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the project tests compiled"),
-        Err(diagnostics) => diagnostics,
+        Err(diagnostics) => {
+            assert!(
+                !diagnostics.is_empty(),
+                "the public compiler-with-tests failure boundary returned Err([])"
+            );
+            diagnostics
+        }
     }
 }
 
@@ -53,7 +65,13 @@ fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
         .expect("capture multi-file project");
     match compile(&project) {
         Ok(_) => panic!("expected a diagnostic, but the multi-file program compiled"),
-        Err(diagnostics) => diagnostics,
+        Err(diagnostics) => {
+            assert!(
+                !diagnostics.is_empty(),
+                "the public multi-file compiler failure boundary returned Err([])"
+            );
+            diagnostics
+        }
     }
 }
 

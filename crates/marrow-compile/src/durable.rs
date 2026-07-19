@@ -1637,3 +1637,93 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
         format!("{subject} is not yet supported on the beta line"),
     )
 }
+
+#[cfg(test)]
+mod generic_enum_shape_tests {
+    use super::*;
+    use crate::types::MintSite;
+
+    /// A committed reserved enum reaches the durable-shape owner
+    /// with its exact member and payload layout. Missing ledger rows may make the
+    /// enclosing graph incomplete, but do not turn a Ready enum into an unavailable
+    /// generic row.
+    #[test]
+    fn ready_option_reaches_the_durable_enum_shape_owner() {
+        let mut draft = ImageDraft::new();
+        let mut build_diagnostics = Vec::new();
+        let records =
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
+        assert!(build_diagnostics.is_empty());
+        let option = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: SourceSpan {
+                        line: 1,
+                        column: 1,
+                        ..SourceSpan::default()
+                    },
+                },
+            )
+            .expect("Ready Option mints");
+
+        let mut diagnostics = Vec::new();
+        let mut resolver =
+            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+        let shape = resolver.build_enum_value_shape(&records, option, 0);
+        let DurableValueShape::Enum { members, .. } = shape else {
+            panic!("a Ready Option remains enum-shaped")
+        };
+        assert_eq!(members.len(), 2);
+        assert!(members[0].payload.is_empty());
+        assert_eq!(members[1].payload.len(), 1);
+        assert_eq!(
+            members[1].payload[0],
+            DurableValueShape::Scalar(ScalarType::Int.image())
+        );
+        assert!(resolver.seen_enums.contains("Option[int]"));
+        assert!(
+            !resolver.complete,
+            "the test intentionally supplies no ledger"
+        );
+        drop(resolver);
+        assert_eq!(diagnostics.len(), 3, "sum plus two member identity gaps");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == Code::CheckDurableIdentity.as_str())
+        );
+    }
+
+    /// An image enum with no Ready semantic row is refused before
+    /// durable identity spelling or member resolution can observe it.
+    #[test]
+    fn unavailable_enum_stops_before_durable_identity_resolution() {
+        let mut draft = ImageDraft::new();
+        let mut build_diagnostics = Vec::new();
+        let records =
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
+        assert!(build_diagnostics.is_empty());
+        let name = draft.intern_string("Unavailable");
+        let unavailable = draft.add_enum_type(marrow_image::EnumTypeDef {
+            name,
+            variants: Vec::new(),
+        });
+        let mut diagnostics = Vec::new();
+        let mut resolver =
+            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+
+        assert_eq!(
+            resolver.build_enum_value_shape(&records, unavailable, 0),
+            DurableValueShape::Scalar(ScalarType::Int.image())
+        );
+        assert!(!resolver.complete);
+        assert!(resolver.seen_enums.is_empty());
+        drop(resolver);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, Code::CheckUnsupported.as_str());
+        assert!(diagnostics[0].identity.is_none());
+    }
+}

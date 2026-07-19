@@ -10456,3 +10456,154 @@ fn logic_operand(
         ),
     )
 }
+
+#[cfg(test)]
+mod generic_cache_boundary_tests {
+    use super::*;
+    use marrow_image::{EnumTypeDef, RecordTypeDef};
+
+    fn span() -> SourceSpan {
+        SourceSpan {
+            line: 1,
+            column: 1,
+            ..SourceSpan::default()
+        }
+    }
+
+    fn name(name: &str) -> Expression {
+        Expression::Name {
+            segments: vec![name.to_string()],
+            segment_spans: vec![span()],
+            span: span(),
+        }
+    }
+
+    fn generic_enum_registry(draft: &mut ImageDraft) -> TypeRegistry {
+        let mut diagnostics = Vec::new();
+        TypeRegistry::build(draft, &[], &[], &[], &[], &[], &mut diagnostics)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lowerer<'a>(
+        draft: &'a mut ImageDraft,
+        records: &'a TypeRegistry,
+        durable: &'a DurableRegistry,
+        functions: &'a FunctionRegistry,
+        generics: &'a GenericRegistry<'a>,
+        consts: &'a ConstRegistry,
+        diagnostics: &'a mut Vec<SourceDiagnostic>,
+    ) -> FnLowerer<'a> {
+        FnLowerer::new(
+            draft,
+            records,
+            durable,
+            functions,
+            generics,
+            consts,
+            diagnostics,
+            "src/main.mw",
+            "main",
+            RetType::Unit,
+            BodyKind::Function,
+        )
+    }
+
+    /// An enum-shaped local whose row is not semantically Ready is a
+    /// typed internal failure, not an `enum_variants` expectation unwind.
+    #[test]
+    fn bare_enum_without_ready_variants_fails_without_unwinding() {
+        let mut draft = ImageDraft::new();
+        let name_id = draft.intern_string("Orphan");
+        let enum_id = draft.add_enum_type(EnumTypeDef {
+            name: name_id,
+            variants: Vec::new(),
+        });
+        let records = TypeRegistry::default();
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        lowerer.locals.push(Local {
+            name: "value".to_string(),
+            ty: LTy::Enum {
+                ty: enum_id,
+                optional: false,
+            },
+            mutable: false,
+            slot: 0,
+        });
+
+        let _ = lowerer.lower_match(&name("value"), &[], span());
+    }
+
+    /// An enum template routed to the generic-struct constructor is
+    /// classified by the template owner rather than unwinding at `expect`.
+    #[test]
+    fn enum_template_at_struct_constructor_fails_without_unwinding() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+
+        let _ = lowerer.lower_generic_struct_literal(0, &[], span());
+    }
+
+    /// A bare struct id with no Ready body is a typed internal
+    /// failure, not a cache-body panic.
+    #[test]
+    fn bare_struct_without_ready_body_fails_without_unwinding() {
+        let mut draft = ImageDraft::new();
+        let name = draft.intern_string("Orphan");
+        let type_id = draft.add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        });
+        let records = TypeRegistry::default();
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+
+        let _ = lowerer.resolve_product_field(
+            LTy::Struct {
+                ty: type_id,
+                optional: false,
+            },
+            "value",
+            span(),
+            span(),
+        );
+    }
+}
