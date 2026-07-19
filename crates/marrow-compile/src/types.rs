@@ -17,7 +17,7 @@
 //! sole nesting restriction is acyclicity.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use marrow_codes::Code;
 use marrow_image::{
@@ -207,6 +207,27 @@ pub(crate) const MAX_INSTANTIATIONS: usize = 4096;
 /// before it can exhaust the native stack, reporting `check.instantiation_limit`.
 pub(crate) const MINT_DEPTH_LIMIT: usize = 256;
 
+/// Why resolution of a generic value type could not produce a usable type.
+/// `Limit` is diagnosed once by the shared monomorphization owner; `Unsupported`
+/// is contextualized by each declaration or lowering consumer at its current site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResolveRefusal {
+    Limit,
+    Unsupported,
+}
+
+impl ResolveRefusal {
+    /// Combine refusals for one provisional row. A terminal shared limit dominates
+    /// a contextual unsupported use regardless of discovery or edge order.
+    fn join(self, other: Self) -> Self {
+        if matches!(self, Self::Limit) || matches!(other, Self::Limit) {
+            Self::Limit
+        } else {
+            Self::Unsupported
+        }
+    }
+}
+
 /// Whether `name` is a reserved generic type name the user cannot redeclare. The
 /// toolchain owns `Option`/`Result` (as generic enums) and `List`/`Map` (as
 /// compiler collections).
@@ -293,6 +314,24 @@ pub(crate) enum TypeInstId {
     Enum(EnumId),
 }
 
+/// A sortable active-batch key for a generic type row. Image IDs are insertion
+/// ordered within their own record/enum tables; the variant keeps those domains
+/// disjoint without searching the stable cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TypeInstKey {
+    Record(u16),
+    Enum(u16),
+}
+
+impl From<TypeInstId> for TypeInstKey {
+    fn from(id: TypeInstId) -> Self {
+        match id {
+            TypeInstId::Record(ty) => Self::Record(ty.index()),
+            TypeInstId::Enum(id) => Self::Enum(id.index()),
+        }
+    }
+}
+
 /// One minted generic type instantiation: which template and concrete arguments
 /// produced it, the image index it occupies, and its resolved member shape.
 #[derive(Clone)]
@@ -300,7 +339,19 @@ struct TypeInst {
     template: usize,
     args: Vec<GArg>,
     id: TypeInstId,
-    body: InstBody,
+    state: TypeInstState,
+    /// Provisional rows that semantically refer to this row during the active fill
+    /// batch. Empty for every settled row.
+    dependents: Vec<usize>,
+}
+
+/// A reserved type row is visible to recursive filling before its body is
+/// committed, but semantic consumers can observe only `Ready` rows.
+#[derive(Clone)]
+enum TypeInstState {
+    Filling { staged: Option<InstBody> },
+    Ready(InstBody),
+    Rejected(ResolveRefusal),
 }
 
 /// One minted generic function instantiation awaiting body lowering: its function
@@ -324,24 +375,66 @@ pub(crate) struct MintSite<'a> {
     pub(crate) span: SourceSpan,
 }
 
+/// The lifecycle of the one terminal instantiation-limit diagnostic. The first
+/// refusal owns its source location; taking it advances the owner to `Reported`, so
+/// cached `Rejected(Limit)` rows replay without duplicating or relocating it.
+#[derive(Default)]
+enum LimitState {
+    #[default]
+    Open,
+    Pending(SourceDiagnostic),
+    Reported,
+}
+
+/// One owner-ordered transfer from an isolated generic proof pass: the optional
+/// terminal limit first, followed by payload diagnostics gathered before it.
+#[must_use = "generic diagnostics must be adopted or reported as one ordered outcome"]
+pub(crate) struct GenericDiagnostics {
+    limit: Option<SourceDiagnostic>,
+    payloads: Vec<SourceDiagnostic>,
+}
+
+impl GenericDiagnostics {
+    /// Consume this transfer in its canonical owner order.
+    pub(crate) fn into_ordered(self) -> Vec<SourceDiagnostic> {
+        let mut diagnostics =
+            Vec::with_capacity(self.payloads.len() + usize::from(self.limit.is_some()));
+        if let Some(limit) = self.limit {
+            diagnostics.push(limit);
+        }
+        diagnostics.extend(self.payloads);
+        diagnostics
+    }
+}
+
 /// The single owner of generic instantiation identity across functions and value
 /// types. Interior-mutable so a shared `&TypeRegistry` mints instances during field
 /// resolution and body lowering. Type instantiations mint their image record/enum
 /// eagerly (declare-then-fill, so a self-referential instantiation terminates and
 /// the containment-cycle check rejects it); function instantiations reserve an image
-/// index and enqueue their body for the driver to drain in mint order.
-#[derive(Default, Clone)]
+/// index and enqueue their body for the driver to drain in mint order. The explicit
+/// [`TypeRegistry::clone_for_generic_check`] boundary is the only supported way to
+/// copy stable owner state into an isolated proof pass.
+#[derive(Default)]
 struct Monomorph {
     type_insts: Vec<TypeInst>,
     fn_base: u16,
     fn_insts: Vec<FnInst>,
-    fn_queue: std::collections::VecDeque<FnInst>,
-    /// The current native recursion depth of type-instantiation minting, bounded by
-    /// [`MINT_DEPTH_LIMIT`] so a divergent chain cannot overflow the stack.
-    fill_depth: usize,
-    /// Diagnostics recorded while minting type instantiations (the instantiation
-    /// limit), drained once by the driver after all resolution.
-    pending: Vec<SourceDiagnostic>,
+    fn_queue: VecDeque<FnInst>,
+    /// The first row appended by the active outermost synchronous fill. Settlement
+    /// touches only this contiguous suffix, never the stable prefix.
+    fill_batch_start: Option<usize>,
+    /// Direct image-id lookup for rows in that active suffix. Cleared atomically at
+    /// settlement, so semantic dependency discovery never scans the stable cache.
+    fill_rows: BTreeMap<TypeInstKey, usize>,
+    /// The active synchronous fill stack. Its length is the native recursion depth
+    /// bounded by [`MINT_DEPTH_LIMIT`].
+    fill_stack: Vec<usize>,
+    fill_failures: Vec<(usize, ResolveRefusal)>,
+    /// One owner for the shared type/function instantiation limit, kept separate
+    /// from ordered collection-payload diagnostics.
+    limit: LimitState,
+    collection_payloads: Vec<SourceDiagnostic>,
 }
 
 /// The closed capability set a nominal declaration's `supports` list unlocks.
@@ -521,11 +614,14 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         inner: GArg,
         site: MintSite<'_>,
-    ) -> EnumId {
+    ) -> Result<EnumId, ResolveRefusal> {
         let template = self.reserved_template(Reserved::Option);
         match self.mint_type_instance(draft, template, &[inner], site) {
-            Some(TypeInstId::Enum(id)) => id,
-            _ => unreachable!("the reserved Option template mints an enum for one value argument"),
+            Ok(TypeInstId::Enum(id)) => Ok(id),
+            Ok(TypeInstId::Record(_)) => {
+                unreachable!("the reserved Option template mints an enum for one value argument")
+            }
+            Err(refusal) => Err(refusal),
         }
     }
 
@@ -609,7 +705,7 @@ impl TypeRegistry {
         draft: &mut ImageDraft,
         annotation: &TypeExpr,
         site: MintSite<'_>,
-    ) -> Option<GArg> {
+    ) -> Result<GArg, ResolveRefusal> {
         self.resolve_garg_expanded(draft, &self.expand(annotation), &[], site)
     }
 
@@ -622,7 +718,7 @@ impl TypeRegistry {
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
-    ) -> Option<GArg> {
+    ) -> Result<GArg, ResolveRefusal> {
         self.resolve_garg_expanded(draft, &self.expand(ty), subst, site)
     }
 
@@ -632,44 +728,50 @@ impl TypeRegistry {
         ty: &TypeExpr,
         subst: &[(String, GArg)],
         site: MintSite<'_>,
-    ) -> Option<GArg> {
+    ) -> Result<GArg, ResolveRefusal> {
         match ty {
             TypeExpr::Name { text, .. } => {
                 if let Some((_, arg)) = subst.iter().find(|(name, _)| name == text) {
-                    Some(*arg)
+                    Ok(*arg)
                 } else if let Some(scalar) = ScalarType::from_spelling(text) {
-                    Some(GArg::Scalar(scalar))
+                    Ok(GArg::Scalar(scalar))
                 } else if let Some((id, _)) = self.nominal_by_name(text) {
-                    Some(GArg::Nominal(id))
+                    Ok(GArg::Nominal(id))
                 } else if let Some(info) = self.struct_by_name(text) {
-                    Some(GArg::Struct(info.type_id))
+                    Ok(GArg::Struct(info.type_id))
                 } else {
-                    self.enum_by_name(text).map(|info| GArg::Enum(info.enum_id))
+                    self.enum_by_name(text)
+                        .map(|info| GArg::Enum(info.enum_id))
+                        .ok_or(ResolveRefusal::Unsupported)
                 }
             }
             TypeExpr::Apply { head, args, .. } => match head.as_str() {
                 "List" => {
-                    let [elem] = args.as_slice() else { return None };
+                    let [elem] = args.as_slice() else {
+                        return Err(ResolveRefusal::Unsupported);
+                    };
                     let elem =
                         self.resolve_garg_expanded(draft, &self.expand(elem), subst, site)?;
-                    Some(GArg::Collection(self.instantiate_list(draft, elem)))
+                    Ok(GArg::Collection(self.instantiate_list(draft, elem)))
                 }
                 "Map" => {
                     let [key, value] = args.as_slice() else {
-                        return None;
+                        return Err(ResolveRefusal::Unsupported);
                     };
                     let key = self.resolve_garg_expanded(draft, &self.expand(key), subst, site)?;
                     // A map key is drawn from the durable-key scalar family; a struct,
                     // enum, collection, or decimal key is not admitted.
                     if !key.is_key_type() {
-                        return None;
+                        return Err(ResolveRefusal::Unsupported);
                     }
                     let value =
                         self.resolve_garg_expanded(draft, &self.expand(value), subst, site)?;
-                    Some(GArg::Collection(self.instantiate_map(draft, key, value)))
+                    Ok(GArg::Collection(self.instantiate_map(draft, key, value)))
                 }
                 _ => {
-                    let template = self.type_template_by_name(head)?;
+                    let template = self
+                        .type_template_by_name(head)
+                        .ok_or(ResolveRefusal::Unsupported)?;
                     let mut resolved = Vec::with_capacity(args.len());
                     for arg in args {
                         resolved.push(self.resolve_garg_expanded(
@@ -680,7 +782,7 @@ impl TypeRegistry {
                         )?);
                     }
                     if resolved.len() != self.type_templates[template].type_params.len() {
-                        return None;
+                        return Err(ResolveRefusal::Unsupported);
                     }
                     // Concrete constraint revalidation: every resolved argument (a
                     // `Param` only reaches here in the throwaway template-check draft)
@@ -694,7 +796,7 @@ impl TypeRegistry {
                             && !matches!(arg, GArg::Param(_))
                             && !arg.satisfies(*constraint)
                         {
-                            return None;
+                            return Err(ResolveRefusal::Unsupported);
                         }
                     }
                     self.mint_type_instance(draft, template, &resolved, site)
@@ -704,100 +806,143 @@ impl TypeRegistry {
                         })
                 }
             },
-            _ => None,
+            _ => Err(ResolveRefusal::Unsupported),
         }
     }
 
     /// Mint (or reuse) the instantiation of a generic type template at concrete
-    /// arguments, returning its image index. Declare-then-fill: the reserved record/
-    /// enum and a placeholder body are recorded before the members are resolved, so a
-    /// self-referential instantiation dedups against the reserved entry and
-    /// terminates; the containment-cycle check then rejects a real value cycle.
-    /// `None` once the shared instantiation bound is exceeded (a divergent
-    /// monomorphization), recording one `check.instantiation_limit`.
+    /// arguments, returning its image index. Declare-then-fill reserves the record or
+    /// enum and a provisional cache row before resolving members, so recursive lookup
+    /// can reuse its identity without exposing a semantic body. The outermost fill
+    /// settles every provisional row to `Ready` or `Rejected` through the recorded
+    /// dependency graph; the containment-cycle check then rejects a real value cycle.
+    /// A shared bound or depth refusal returns `Err(Limit)` and records the one owned
+    /// `check.instantiation_limit` diagnostic.
     pub(crate) fn mint_type_instance(
         &self,
         draft: &mut ImageDraft,
         template: usize,
         args: &[GArg],
         site: MintSite<'_>,
-    ) -> Option<TypeInstId> {
-        if let Some(inst) = self
+    ) -> Result<TypeInstId, ResolveRefusal> {
+        let existing = self
             .generics
             .borrow()
             .type_insts
             .iter()
-            .find(|inst| inst.template == template && inst.args == args)
-        {
-            return Some(inst.id);
+            .position(|inst| inst.template == template && inst.args == args);
+        if let Some(index) = existing {
+            self.record_active_dependency(index);
+            let generics = self.generics.borrow();
+            let inst = &generics.type_insts[index];
+            return match inst.state {
+                TypeInstState::Ready(_) | TypeInstState::Filling { .. } => Ok(inst.id),
+                TypeInstState::Rejected(refusal) => Err(refusal),
+            };
         }
         {
             let generics = self.generics.borrow();
             let over_count =
                 generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS;
-            let over_depth = generics.fill_depth >= MINT_DEPTH_LIMIT;
+            let over_depth = generics.fill_stack.len() >= MINT_DEPTH_LIMIT;
             if over_count || over_depth {
                 drop(generics);
-                let tmpl = &self.type_templates[template];
-                let mut generics = self.generics.borrow_mut();
-                if generics.pending.is_empty() {
-                    generics.pending.push(SourceDiagnostic::at(
-                        Code::CheckInstantiationLimit.as_str(),
-                        &tmpl.file,
-                        tmpl.name_span,
-                        format!(
-                            "monomorphizing this program requires more than {MAX_INSTANTIATIONS} \
-                             generic instantiations; a generic type likely nests inside itself over \
-                             an ever-growing type"
-                        ),
-                    ));
-                }
-                return None;
+                let fallback = &self.type_templates[template];
+                let site = if site.file.is_empty() {
+                    MintSite {
+                        file: &fallback.file,
+                        span: fallback.name_span,
+                    }
+                } else {
+                    site
+                };
+                self.record_limit(
+                    site,
+                    "a generic type likely nests inside itself over an ever-growing type",
+                );
+                return Err(ResolveRefusal::Limit);
             }
         }
-        // Reserve the image index and a placeholder body before filling, so a member
-        // that names this same instantiation finds it and the fill terminates.
+        // Reserve the image index and a provisional cache row before filling, so a
+        // member that names this same instantiation finds its identity and the fill
+        // terminates without making an unfinished body semantically readable.
         let name_id = draft.intern_string(&self.type_templates[template].name);
-        let (id, placeholder) = if self.type_templates[template].is_enum() {
+        let id = if self.type_templates[template].is_enum() {
             let enum_id = draft.add_enum_type(EnumTypeDef {
                 name: name_id,
                 variants: Vec::new(),
             });
-            (TypeInstId::Enum(enum_id), InstBody::Enum(Vec::new()))
+            TypeInstId::Enum(enum_id)
         } else {
             let type_id = draft.add_record_type(RecordTypeDef {
                 name: name_id,
                 fields: Vec::new(),
             });
-            (TypeInstId::Record(type_id), InstBody::Struct(Vec::new()))
+            TypeInstId::Record(type_id)
         };
         let inst_index = {
             let mut generics = self.generics.borrow_mut();
             let index = generics.type_insts.len();
+            if generics.fill_stack.is_empty() && generics.fill_batch_start.is_none() {
+                generics.fill_batch_start = Some(index);
+            }
             generics.type_insts.push(TypeInst {
                 template,
                 args: args.to_vec(),
                 id,
-                body: placeholder,
+                state: TypeInstState::Filling { staged: None },
+                dependents: Vec::new(),
             });
+            generics.fill_rows.insert(id.into(), index);
             index
         };
+        self.record_active_dependency(inst_index);
+        self.record_semantic_dependencies(inst_index, args.iter().copied());
         // Fill the reserved members. A member may recursively mint further
-        // instantiations; the depth counter bounds that native recursion so a
+        // instantiations; the fill-stack length bounds that native recursion so a
         // divergent chain (an ever-growing argument) trips the limit before it can
         // overflow the stack, while any finite nesting (source nesting is itself
         // depth-bounded) completes.
-        self.generics.borrow_mut().fill_depth += 1;
+        {
+            let mut generics = self.generics.borrow_mut();
+            generics.fill_stack.push(inst_index);
+        }
         let filled = self.fill_type_body(draft, template, id, args, site);
-        self.generics.borrow_mut().fill_depth -= 1;
-        let filled = filled?;
-        self.generics.borrow_mut().type_insts[inst_index].body = filled;
-        Some(id)
+        let outermost = {
+            let mut generics = self.generics.borrow_mut();
+            let popped = generics.fill_stack.pop();
+            debug_assert_eq!(popped, Some(inst_index));
+            generics.fill_stack.is_empty()
+        };
+        let immediate_refusal = match filled {
+            Ok(body) => {
+                self.record_inst_body_dependencies(inst_index, &body);
+                self.generics.borrow_mut().type_insts[inst_index].state =
+                    TypeInstState::Filling { staged: Some(body) };
+                None
+            }
+            Err(refusal) => {
+                self.generics
+                    .borrow_mut()
+                    .fill_failures
+                    .push((inst_index, refusal));
+                Some(refusal)
+            }
+        };
+        if outermost {
+            self.settle_fill_batch()?;
+            return self.settled_type_result(inst_index, id);
+        }
+        match immediate_refusal {
+            Some(refusal) => Err(refusal),
+            None => Ok(id),
+        }
     }
 
     /// Resolve a reserved type instantiation's members under its argument
     /// substitution, writing the image record/enum fields and returning the resolved
-    /// body. `None` if any member type fails to resolve or the depth bound is hit.
+    /// body. A member refusal returns its typed `Unsupported` or `Limit` variant for
+    /// outermost dependency settlement.
     fn fill_type_body(
         &self,
         draft: &mut ImageDraft,
@@ -805,7 +950,7 @@ impl TypeRegistry {
         id: TypeInstId,
         args: &[GArg],
         site: MintSite<'_>,
-    ) -> Option<InstBody> {
+    ) -> Result<InstBody, ResolveRefusal> {
         let subst: Vec<(String, GArg)> = self.type_templates[template]
             .type_params
             .iter()
@@ -813,7 +958,7 @@ impl TypeRegistry {
             .zip(args.iter().copied())
             .collect();
         let body = self.type_templates[template].body.clone();
-        Some(match body {
+        Ok(match body {
             TemplateBody::Struct(fields) => {
                 let mut resolved = Vec::with_capacity(fields.len());
                 let mut defs = Vec::with_capacity(fields.len());
@@ -877,6 +1022,211 @@ impl TypeRegistry {
         })
     }
 
+    fn record_active_dependency(&self, dependency: usize) {
+        let mut generics = self.generics.borrow_mut();
+        let Some(&dependent) = generics.fill_stack.last() else {
+            return;
+        };
+        let dependency_is_provisional = generics
+            .type_insts
+            .get(dependency)
+            .is_some_and(|inst| matches!(inst.state, TypeInstState::Filling { .. }));
+        if dependent == dependency || !dependency_is_provisional {
+            return;
+        }
+        if let Some(inst) = generics.type_insts.get_mut(dependency) {
+            inst.dependents.push(dependent);
+        }
+    }
+
+    fn record_semantic_dependencies(&self, dependent: usize, args: impl IntoIterator<Item = GArg>) {
+        let mut pending: Vec<GArg> = args.into_iter().collect();
+        let mut dependency_ids = Vec::new();
+        while let Some(arg) = pending.pop() {
+            match arg {
+                GArg::Struct(ty) => dependency_ids.push(TypeInstId::Record(ty)),
+                GArg::Enum(id) => dependency_ids.push(TypeInstId::Enum(id)),
+                GArg::Collection(index) => match self.collection_spec(index) {
+                    CollSpec::List { elem } => pending.push(elem),
+                    CollSpec::Map { key, value } => {
+                        pending.push(key);
+                        pending.push(value);
+                    }
+                },
+                GArg::Scalar(_) | GArg::Nominal(_) | GArg::Group(_) | GArg::Param(_) => {}
+            }
+        }
+        let mut generics = self.generics.borrow_mut();
+        for dependency_id in dependency_ids {
+            let Some(&dependency) = generics.fill_rows.get(&dependency_id.into()) else {
+                continue;
+            };
+            let dependency_is_provisional = generics
+                .type_insts
+                .get(dependency)
+                .is_some_and(|inst| matches!(inst.state, TypeInstState::Filling { .. }));
+            if dependent != dependency && dependency_is_provisional {
+                generics.type_insts[dependency].dependents.push(dependent);
+            }
+        }
+    }
+
+    fn record_inst_body_dependencies(&self, dependent: usize, body: &InstBody) {
+        let args: Vec<GArg> = match body {
+            InstBody::Struct(fields) => fields.iter().map(|(_, arg)| *arg).collect(),
+            InstBody::Enum(variants) => variants
+                .iter()
+                .flat_map(|variant| variant.payload.iter().map(|(_, arg)| *arg))
+                .collect(),
+        };
+        self.record_semantic_dependencies(dependent, args);
+    }
+
+    fn strengthen_refusal(
+        refusals: &mut [Option<ResolveRefusal>],
+        start: usize,
+        index: usize,
+        incoming: ResolveRefusal,
+    ) -> Result<bool, ResolveRefusal> {
+        let Some(offset) = index.checked_sub(start) else {
+            return Err(ResolveRefusal::Unsupported);
+        };
+        let Some(slot) = refusals.get_mut(offset) else {
+            return Err(ResolveRefusal::Unsupported);
+        };
+        let joined = slot.map_or(incoming, |current| current.join(incoming));
+        if *slot == Some(joined) {
+            Ok(false)
+        } else {
+            *slot = Some(joined);
+            Ok(true)
+        }
+    }
+
+    fn settle_fill_batch(&self) -> Result<(), ResolveRefusal> {
+        let mut generics = self.generics.borrow_mut();
+        let Some(start) = generics.fill_batch_start.take() else {
+            return Err(ResolveRefusal::Unsupported);
+        };
+        let end = generics.type_insts.len();
+        let Some(active_len) = end.checked_sub(start) else {
+            return Err(ResolveRefusal::Unsupported);
+        };
+        let fill_rows = std::mem::take(&mut generics.fill_rows);
+        let mut coherent = fill_rows.len() == active_len
+            && fill_rows.iter().all(|(key, index)| {
+                (*index >= start)
+                    && (*index < end)
+                    && generics
+                        .type_insts
+                        .get(*index)
+                        .is_some_and(|inst| TypeInstKey::from(inst.id) == *key)
+            });
+        let mut refusals = vec![None; active_len];
+        let mut pending = VecDeque::new();
+
+        // A provisional row with no completed body is itself unsupported. Seed it
+        // before propagation so none of its reverse dependents can be promoted.
+        for index in start..end {
+            if matches!(
+                generics.type_insts[index].state,
+                TypeInstState::Filling { staged: None }
+            ) && Self::strengthen_refusal(
+                &mut refusals,
+                start,
+                index,
+                ResolveRefusal::Unsupported,
+            )? {
+                pending.push_back(index);
+            }
+        }
+
+        for (index, refusal) in std::mem::take(&mut generics.fill_failures) {
+            if Self::strengthen_refusal(&mut refusals, start, index, refusal)? {
+                pending.push_back(index);
+            }
+        }
+
+        let reverse: Vec<Vec<usize>> = generics.type_insts[start..]
+            .iter_mut()
+            .map(|inst| std::mem::take(&mut inst.dependents))
+            .collect();
+        while let Some(dependency) = pending.pop_front() {
+            let offset = dependency
+                .checked_sub(start)
+                .ok_or(ResolveRefusal::Unsupported)?;
+            let refusal = refusals
+                .get(offset)
+                .copied()
+                .flatten()
+                .ok_or(ResolveRefusal::Unsupported)?;
+            let dependents = reverse.get(offset).ok_or(ResolveRefusal::Unsupported)?;
+            for &dependent in dependents {
+                if Self::strengthen_refusal(&mut refusals, start, dependent, refusal)? {
+                    pending.push_back(dependent);
+                }
+            }
+        }
+
+        for (offset, inst) in generics.type_insts[start..].iter_mut().enumerate() {
+            let refusal = refusals[offset];
+            let prior = std::mem::replace(
+                &mut inst.state,
+                TypeInstState::Rejected(ResolveRefusal::Unsupported),
+            );
+            inst.state = match prior {
+                TypeInstState::Filling { staged } => match (refusal, staged) {
+                    (Some(refusal), _) => TypeInstState::Rejected(refusal),
+                    (None, Some(body)) => TypeInstState::Ready(body),
+                    (None, None) => TypeInstState::Rejected(ResolveRefusal::Unsupported),
+                },
+                stable @ (TypeInstState::Ready(_) | TypeInstState::Rejected(_)) => {
+                    coherent = false;
+                    stable
+                }
+            };
+        }
+        if coherent {
+            Ok(())
+        } else {
+            Err(ResolveRefusal::Unsupported)
+        }
+    }
+
+    fn settled_type_result(
+        &self,
+        index: usize,
+        id: TypeInstId,
+    ) -> Result<TypeInstId, ResolveRefusal> {
+        let mut generics = self.generics.borrow_mut();
+        let Some(inst) = generics.type_insts.get_mut(index) else {
+            return Err(ResolveRefusal::Unsupported);
+        };
+        match inst.state {
+            TypeInstState::Ready(_) => Ok(id),
+            TypeInstState::Rejected(refusal) => Err(refusal),
+            TypeInstState::Filling { .. } => {
+                inst.state = TypeInstState::Rejected(ResolveRefusal::Unsupported);
+                Err(ResolveRefusal::Unsupported)
+            }
+        }
+    }
+
+    fn record_limit(&self, site: MintSite<'_>, subject: &str) {
+        let mut generics = self.generics.borrow_mut();
+        if matches!(generics.limit, LimitState::Open) {
+            generics.limit = LimitState::Pending(SourceDiagnostic::at(
+                Code::CheckInstantiationLimit.as_str(),
+                site.file,
+                site.span,
+                format!(
+                    "monomorphizing this program requires more than {MAX_INSTANTIATIONS} generic \
+                     instantiations; {subject}"
+                ),
+            ));
+        }
+    }
+
     /// Record the mint-time rejection of a collection payload leaf at the construction
     /// or annotation site. The instantiation still fills its body so the shared
     /// instance cache stays consistent; the non-empty pending queue makes the driver
@@ -895,7 +1245,7 @@ impl TypeRegistry {
         };
         self.generics
             .borrow_mut()
-            .pending
+            .collection_payloads
             .push(SourceDiagnostic::at(
                 Code::CheckUnsupported.as_str(),
                 site.file,
@@ -917,28 +1267,29 @@ impl TypeRegistry {
             .borrow()
             .type_insts
             .iter()
-            .find(|inst| inst.id == id)
+            .find(|inst| inst.id == id && matches!(inst.state, TypeInstState::Ready(_)))
             .map(|inst| (inst.template, inst.args.clone()))
     }
 
     /// The resolved member shape of a minted type instantiation, if `id` names one.
     pub(crate) fn type_inst_body(&self, id: TypeInstId) -> Option<InstBody> {
-        self.generics
-            .borrow()
-            .type_insts
-            .iter()
-            .find(|inst| inst.id == id)
-            .map(|inst| inst.body.clone())
+        self.generics.borrow().type_insts.iter().find_map(|inst| {
+            (inst.id == id)
+                .then_some(&inst.state)
+                .and_then(|state| match state {
+                    TypeInstState::Ready(body) => Some(body.clone()),
+                    TypeInstState::Filling { .. } | TypeInstState::Rejected(_) => None,
+                })
+        })
     }
 
     /// The `Option<T>` argument an enum instantiation carries, if it is the reserved
     /// `Option` template's.
     pub(crate) fn as_option(&self, id: EnumId) -> Option<GArg> {
         let generics = self.generics.borrow();
-        let inst = generics
-            .type_insts
-            .iter()
-            .find(|inst| inst.id == TypeInstId::Enum(id))?;
+        let inst = generics.type_insts.iter().find(|inst| {
+            inst.id == TypeInstId::Enum(id) && matches!(inst.state, TypeInstState::Ready(_))
+        })?;
         (self.type_templates[inst.template].reserved == Some(Reserved::Option))
             .then(|| inst.args[0])
     }
@@ -947,10 +1298,9 @@ impl TypeRegistry {
     /// reserved `Result` template's.
     pub(crate) fn as_result(&self, id: EnumId) -> Option<(GArg, GArg)> {
         let generics = self.generics.borrow();
-        let inst = generics
-            .type_insts
-            .iter()
-            .find(|inst| inst.id == TypeInstId::Enum(id))?;
+        let inst = generics.type_insts.iter().find(|inst| {
+            inst.id == TypeInstId::Enum(id) && matches!(inst.state, TypeInstState::Ready(_))
+        })?;
         (self.type_templates[inst.template].reserved == Some(Reserved::Result))
             .then(|| (inst.args[0], inst.args[1]))
     }
@@ -1003,12 +1353,11 @@ impl TypeRegistry {
     /// family): the two never call each other, so changing a user-facing diagnostic
     /// delimiter can never move an opaque durable identity byte. The near-duplication
     /// is the isolation boundary, not accidental repetition.
-    pub(crate) fn enum_anchor_spelling(&self, id: EnumId) -> String {
+    pub(crate) fn enum_anchor_spelling(&self, id: EnumId) -> Option<String> {
         if let Some(info) = self.enum_by_id(id) {
-            return info.name.clone();
+            return Some(info.name.clone());
         }
         self.inst_anchor_spelling(TypeInstId::Enum(id))
-            .unwrap_or_else(|| format!("enum#{}", id.index()))
     }
 
     /// The durable-anchor spelling of a generic instantiation, `Name[arg,arg]` with a
@@ -1017,7 +1366,10 @@ impl TypeRegistry {
     /// family.
     fn inst_anchor_spelling(&self, id: TypeInstId) -> Option<String> {
         let generics = self.generics.borrow();
-        let inst = generics.type_insts.iter().find(|inst| inst.id == id)?;
+        let inst = generics
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == id && matches!(inst.state, TypeInstState::Ready(_)))?;
         let name = self.type_templates[inst.template].name.clone();
         let args: Vec<String> = inst
             .args
@@ -1046,7 +1398,10 @@ impl TypeRegistry {
     /// cycle labels; durable identity uses [`enum_anchor_spelling`](Self::enum_anchor_spelling).
     pub(crate) fn inst_spelling(&self, id: TypeInstId) -> Option<String> {
         let generics = self.generics.borrow();
-        let inst = generics.type_insts.iter().find(|inst| inst.id == id)?;
+        let inst = generics
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == id && !matches!(inst.state, TypeInstState::Filling { .. }))?;
         let name = self.type_templates[inst.template].name.clone();
         let args: Vec<String> = inst
             .args
@@ -1063,19 +1418,29 @@ impl TypeRegistry {
     }
 
     /// Reserve the image function index for `(fn template, args)`, minting and
-    /// enqueuing a fresh instance on first request and reusing it thereafter. `None`
-    /// once the shared instantiation bound is exceeded.
-    pub(crate) fn reserve_fn_instance(&self, template: usize, args: Vec<GArg>) -> Option<u16> {
+    /// enqueuing a fresh instance on first request and reusing it thereafter. A shared
+    /// bound refusal records the first coherent mint site and returns `Err(Limit)`.
+    pub(crate) fn reserve_fn_instance(
+        &self,
+        template: usize,
+        args: Vec<GArg>,
+        site: MintSite<'_>,
+    ) -> Result<u16, ResolveRefusal> {
         let mut generics = self.generics.borrow_mut();
         if let Some(inst) = generics
             .fn_insts
             .iter()
             .find(|inst| inst.template == template && inst.args == args)
         {
-            return Some(inst.func);
+            return Ok(inst.func);
         }
         if generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS {
-            return None;
+            drop(generics);
+            self.record_limit(
+                site,
+                "a generic function likely recurses over an ever-growing type",
+            );
+            return Err(ResolveRefusal::Limit);
         }
         let func = generics.fn_base + generics.fn_insts.len() as u16;
         let inst = FnInst {
@@ -1085,7 +1450,7 @@ impl TypeRegistry {
         };
         generics.fn_insts.push(inst.clone());
         generics.fn_queue.push_back(inst);
-        Some(func)
+        Ok(func)
     }
 
     /// The next generic function instance awaiting body lowering: its template index,
@@ -1098,11 +1463,40 @@ impl TypeRegistry {
             .map(|inst| (inst.template, inst.args, inst.func))
     }
 
-    /// Drain the diagnostics recorded while minting type instantiations (currently
-    /// the instantiation-limit diagnostic), reported once by the driver after all
-    /// resolution has completed.
-    pub(crate) fn take_generic_diagnostics(&self) -> Vec<SourceDiagnostic> {
-        std::mem::take(&mut self.generics.borrow_mut().pending)
+    /// Drain the one owner-ordered generic outcome. Taking a pending limit advances
+    /// its owner to `Reported`, so cached `Rejected(Limit)` rows replay silently.
+    pub(crate) fn take_generic_diagnostics(&self) -> GenericDiagnostics {
+        let mut generics = self.generics.borrow_mut();
+        let limit = match std::mem::replace(&mut generics.limit, LimitState::Reported) {
+            LimitState::Open => {
+                generics.limit = LimitState::Open;
+                None
+            }
+            LimitState::Pending(diagnostic) => Some(diagnostic),
+            LimitState::Reported => None,
+        };
+        GenericDiagnostics {
+            limit,
+            payloads: std::mem::take(&mut generics.collection_payloads),
+        }
+    }
+
+    pub(crate) fn has_instantiation_limit(&self) -> bool {
+        !matches!(self.generics.borrow().limit, LimitState::Open)
+    }
+
+    pub(crate) fn adopt_generic_diagnostics(&self, outcome: GenericDiagnostics) {
+        let GenericDiagnostics {
+            limit,
+            mut payloads,
+        } = outcome;
+        let mut generics = self.generics.borrow_mut();
+        if matches!(generics.limit, LimitState::Open)
+            && let Some(diagnostic) = limit
+        {
+            generics.limit = LimitState::Pending(diagnostic);
+        }
+        generics.collection_payloads.append(&mut payloads);
     }
 
     /// The image COLLTYPES index of `List[elem]`, minting it into `draft` on first
@@ -1309,25 +1703,51 @@ impl TypeRegistry {
         registry
     }
 
-    /// A full copy of this registry, including the collection and built-in-generic
-    /// instantiation tables. The once-checked template pass of a generic function
+    /// A stable semantic copy of this registry, including the collection and
+    /// built-in-generic instantiation tables. The once-checked template pass of a generic function
     /// runs against this clone paired with a clone of the in-progress
     /// [`ImageDraft`], so it sees every already-minted collection/enum at the same
-    /// index the real image records — a concrete function signature it references
-    /// stays consistent — while any new instantiation it mints over abstract type
-    /// parameters lands only in the discarded clones. The pass discards its emitted
-    /// code, so nothing crosses back into the real image.
-    pub(crate) fn clone_for_generic_check(&self) -> Self {
-        Self {
+    /// index the real image records. Stable type rows and function reservations are
+    /// copied without reindexing, so the shared bound has the same headroom; any new
+    /// type instantiation over abstract parameters lands only in the discarded clone.
+    /// The clone starts a fresh diagnostic/fill owner, and the pass discards its
+    /// emitted code, so nothing crosses back except the consumed diagnostic outcome.
+    pub(crate) fn clone_for_generic_check(&self) -> Result<Self, ResolveRefusal> {
+        let generics = self.generics.borrow();
+        let has_unstable_row = generics.type_insts.iter().any(|inst| {
+            matches!(inst.state, TypeInstState::Filling { .. }) || !inst.dependents.is_empty()
+        });
+        if generics.fill_batch_start.is_some()
+            || !generics.fill_rows.is_empty()
+            || !generics.fill_stack.is_empty()
+            || !generics.fill_failures.is_empty()
+            || has_unstable_row
+            || !matches!(generics.limit, LimitState::Open)
+        {
+            return Err(ResolveRefusal::Limit);
+        }
+        let clone = Self {
             aliases: self.aliases.clone(),
             nominals: self.nominals.clone(),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
             records: self.records.clone(),
             type_templates: self.type_templates.clone(),
-            generics: RefCell::new(self.generics.borrow().clone()),
+            generics: RefCell::new(Monomorph {
+                type_insts: generics.type_insts.clone(),
+                fn_base: generics.fn_base,
+                fn_insts: generics.fn_insts.clone(),
+                fn_queue: generics.fn_queue.clone(),
+                fill_batch_start: None,
+                fill_rows: BTreeMap::new(),
+                fill_stack: Vec::new(),
+                fill_failures: Vec::new(),
+                limit: LimitState::Open,
+                collection_payloads: Vec::new(),
+            }),
             collections: RefCell::new(self.collections.borrow().clone()),
-        }
+        };
+        Ok(clone)
     }
 }
 
@@ -2099,17 +2519,24 @@ fn struct_fields(
             ok = false;
             continue;
         }
-        let Some(field_ty) = registry.resolve_garg(
+        let field_ty = match registry.resolve_garg(
             draft,
             &field.ty,
             MintSite {
                 file,
                 span: field.ty.span(),
             },
-        ) else {
-            diagnostics.push(unsupported(file, field.ty.span(), "this struct field type"));
-            ok = false;
-            continue;
+        ) {
+            Ok(ty) => ty,
+            Err(ResolveRefusal::Unsupported) => {
+                diagnostics.push(unsupported(file, field.ty.span(), "this struct field type"));
+                ok = false;
+                continue;
+            }
+            Err(ResolveRefusal::Limit) => {
+                ok = false;
+                continue;
+            }
         };
         let field_name_id = draft.intern_string(&field.name);
         field_defs.push(FieldDef {
@@ -2437,13 +2864,14 @@ fn fill_record(
                         span: field.ty.span(),
                     },
                 ) {
-                    Some(
+                    Ok(
                         ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_)),
                     ) => ty,
-                    _ => {
+                    Ok(_) | Err(ResolveRefusal::Unsupported) => {
                         diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
                         continue;
                     }
+                    Err(ResolveRefusal::Limit) => continue,
                 };
                 let field_name_id = draft.intern_string(&field.name);
                 field_defs.push(FieldDef {
@@ -2542,11 +2970,12 @@ fn build_group_leaves(
                 span: field.ty.span(),
             },
         ) {
-            Some(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
-            _ => {
+            Ok(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
+            Ok(_) | Err(ResolveRefusal::Unsupported) => {
                 diagnostics.push(unsupported(file, field.ty.span(), "this group field type"));
                 continue;
             }
+            Err(ResolveRefusal::Limit) => continue,
         };
         let field_name_id = draft.intern_string(&field.name);
         field_defs.push(FieldDef {
@@ -2603,6 +3032,9 @@ pub(crate) fn reject_value_cycles(
     // template's declaration.
     let mut reported: Vec<usize> = Vec::new();
     for inst in &registry.generics.borrow().type_insts {
+        if !matches!(inst.state, TypeInstState::Ready(_)) {
+            continue;
+        }
         let node = match inst.id {
             TypeInstId::Record(ty) => ValueNode::Record(ty),
             TypeInstId::Enum(id) => ValueNode::Enum(id),
@@ -2675,6 +3107,9 @@ impl ValueGraph {
             push(ValueNode::Enum(info.enum_id), info.name.clone());
         }
         for inst in &registry.generics.borrow().type_insts {
+            if !matches!(inst.state, TypeInstState::Ready(_)) {
+                continue;
+            }
             let node = match inst.id {
                 TypeInstId::Record(ty) => ValueNode::Record(ty),
                 TypeInstId::Enum(id) => ValueNode::Enum(id),
@@ -2708,12 +3143,17 @@ impl ValueGraph {
                     (ValueNode::Enum(a), TypeInstId::Enum(b)) => a == b,
                     _ => false,
                 })
-                .map(|inst| match &inst.body {
-                    InstBody::Struct(fields) => fields.iter().map(|(_, arg)| *arg).collect(),
-                    InstBody::Enum(variants) => variants
-                        .iter()
-                        .flat_map(|variant| variant.payload.iter().map(|(_, arg)| *arg))
-                        .collect(),
+                .and_then(|inst| match &inst.state {
+                    TypeInstState::Ready(InstBody::Struct(fields)) => {
+                        Some(fields.iter().map(|(_, arg)| *arg).collect())
+                    }
+                    TypeInstState::Ready(InstBody::Enum(variants)) => Some(
+                        variants
+                            .iter()
+                            .flat_map(|variant| variant.payload.iter().map(|(_, arg)| *arg))
+                            .collect(),
+                    ),
+                    TypeInstState::Filling { .. } | TypeInstState::Rejected(_) => None,
                 })
         };
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
@@ -2885,4 +3325,574 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
         span,
         format!("{subject} is not yet supported on the beta line"),
     )
+}
+
+#[cfg(test)]
+mod instantiation_state_tests {
+    use super::*;
+
+    fn name(text: &str) -> TypeExpr {
+        TypeExpr::Name {
+            text: text.to_string(),
+            span: SourceSpan::default(),
+        }
+    }
+
+    fn apply(head: &str, args: Vec<TypeExpr>) -> TypeExpr {
+        TypeExpr::Apply {
+            head: head.to_string(),
+            args,
+            span: SourceSpan::default(),
+        }
+    }
+
+    fn template(name: &str, fields: Vec<(&str, TypeExpr)>) -> TypeTemplate {
+        TypeTemplate {
+            name: name.to_string(),
+            file: "src/main.mw".to_string(),
+            name_span: SourceSpan::default(),
+            reserved: None,
+            type_params: vec![("T".to_string(), None)],
+            body: TemplateBody::Struct(
+                fields
+                    .into_iter()
+                    .map(|(field, ty)| (field.to_string(), ty))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn enum_template(name: &str, payload: TypeExpr) -> TypeTemplate {
+        TypeTemplate {
+            name: name.to_string(),
+            file: "src/main.mw".to_string(),
+            name_span: SourceSpan::default(),
+            reserved: None,
+            type_params: vec![("T".to_string(), None)],
+            body: TemplateBody::Enum(vec![TemplateVariant {
+                name: "value".to_string(),
+                payload: vec![TemplatePayload {
+                    name: "item".to_string(),
+                    ty: payload,
+                }],
+            }]),
+        }
+    }
+
+    fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
+        TypeRegistry {
+            aliases: BTreeMap::new(),
+            nominals: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+            records: Vec::new(),
+            type_templates: templates,
+            generics: RefCell::default(),
+            collections: RefCell::default(),
+        }
+    }
+
+    fn site(line: u32) -> MintSite<'static> {
+        MintSite {
+            file: "src/main.mw",
+            span: SourceSpan {
+                line,
+                column: 9,
+                ..SourceSpan::default()
+            },
+        }
+    }
+
+    fn row<'a>(registry: &'a TypeRegistry, name: &str) -> std::cell::Ref<'a, TypeInst> {
+        std::cell::Ref::map(registry.generics.borrow(), |generics| {
+            generics
+                .type_insts
+                .iter()
+                .find(|inst| registry.type_templates[inst.template].name == name)
+                .expect("named row exists")
+        })
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum StableLimit {
+        Open,
+        Pending(SourceDiagnostic),
+        Reported,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum StableRowState {
+        Filling,
+        Staged,
+        Ready,
+        RejectedLimit,
+        RejectedUnsupported,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct StableRow {
+        template: usize,
+        args: Vec<GArg>,
+        id: TypeInstId,
+        state: StableRowState,
+        dependents: Vec<usize>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct StableSnapshot {
+        rows: Vec<StableRow>,
+        collections: Vec<CollSpec>,
+        fn_base: u16,
+        functions: Vec<(usize, Vec<GArg>, u16)>,
+        queue: Vec<(usize, Vec<GArg>, u16)>,
+        fill_batch_start: Option<usize>,
+        fill_rows: Vec<(TypeInstKey, usize)>,
+        fill_stack: Vec<usize>,
+        fill_failures: Vec<(usize, ResolveRefusal)>,
+        limit: StableLimit,
+        payloads: Vec<SourceDiagnostic>,
+    }
+
+    fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
+        let generics = registry.generics.borrow();
+        let rows = generics
+            .type_insts
+            .iter()
+            .map(|inst| {
+                let state = match &inst.state {
+                    TypeInstState::Filling { staged: None } => StableRowState::Filling,
+                    TypeInstState::Filling { staged: Some(_) } => StableRowState::Staged,
+                    TypeInstState::Ready(_) => StableRowState::Ready,
+                    TypeInstState::Rejected(ResolveRefusal::Limit) => StableRowState::RejectedLimit,
+                    TypeInstState::Rejected(ResolveRefusal::Unsupported) => {
+                        StableRowState::RejectedUnsupported
+                    }
+                };
+                StableRow {
+                    template: inst.template,
+                    args: inst.args.clone(),
+                    id: inst.id,
+                    state,
+                    dependents: inst.dependents.clone(),
+                }
+            })
+            .collect();
+        let functions = generics
+            .fn_insts
+            .iter()
+            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+            .collect();
+        let queue = generics
+            .fn_queue
+            .iter()
+            .map(|inst| (inst.template, inst.args.clone(), inst.func))
+            .collect();
+        let limit = match &generics.limit {
+            LimitState::Open => StableLimit::Open,
+            LimitState::Pending(diagnostic) => StableLimit::Pending(diagnostic.clone()),
+            LimitState::Reported => StableLimit::Reported,
+        };
+        StableSnapshot {
+            rows,
+            collections: registry.collections.borrow().clone(),
+            fn_base: generics.fn_base,
+            functions,
+            queue,
+            fill_batch_start: generics.fill_batch_start,
+            fill_rows: generics
+                .fill_rows
+                .iter()
+                .map(|(key, index)| (*key, *index))
+                .collect(),
+            fill_stack: generics.fill_stack.clone(),
+            fill_failures: generics.fill_failures.clone(),
+            limit,
+            payloads: generics.collection_payloads.clone(),
+        }
+    }
+
+    #[test]
+    fn failed_fill_rejects_reverse_dependent_rows_without_poisoning_siblings() {
+        let registry = registry(vec![
+            template("Good", vec![("value", name("T"))]),
+            template(
+                "Outer",
+                vec![
+                    ("good", apply("Good", vec![name("T")])),
+                    ("inner", apply("Inner", vec![name("T")])),
+                    ("bad", apply("Missing", vec![name("T")])),
+                ],
+            ),
+            template("Inner", vec![("outer", apply("Outer", vec![name("T")]))]),
+        ]);
+        let mut draft = ImageDraft::new();
+        assert_eq!(
+            registry.mint_type_instance(&mut draft, 1, &[GArg::Scalar(ScalarType::Int)], site(10),),
+            Err(ResolveRefusal::Unsupported)
+        );
+
+        assert!(matches!(
+            row(&registry, "Good").state,
+            TypeInstState::Ready(_)
+        ));
+        assert!(matches!(
+            row(&registry, "Outer").state,
+            TypeInstState::Rejected(ResolveRefusal::Unsupported)
+        ));
+        assert!(matches!(
+            row(&registry, "Inner").state,
+            TypeInstState::Rejected(ResolveRefusal::Unsupported)
+        ));
+        let (outer_id, before) = {
+            let generics = registry.generics.borrow();
+            (generics.type_insts[0].id, generics.type_insts.len())
+        };
+        assert_eq!(
+            registry.mint_type_instance(&mut draft, 1, &[GArg::Scalar(ScalarType::Int)], site(20),),
+            Err(ResolveRefusal::Unsupported)
+        );
+        let generics = registry.generics.borrow();
+        assert_eq!(generics.type_insts.len(), before);
+        assert_eq!(generics.type_insts[0].id, outer_id);
+        assert!(generics.fill_stack.is_empty());
+        assert!(
+            generics
+                .type_insts
+                .iter()
+                .all(|inst| !matches!(inst.state, TypeInstState::Filling { .. }))
+        );
+    }
+
+    #[test]
+    fn collection_substitution_edges_reject_dependents_of_a_failed_outer_row() {
+        let registry = registry(vec![
+            template(
+                "Outer",
+                vec![
+                    (
+                        "child",
+                        apply(
+                            "Child",
+                            vec![apply("List", vec![apply("Outer", vec![name("T")])])],
+                        ),
+                    ),
+                    ("bad", apply("Missing", vec![name("T")])),
+                ],
+            ),
+            template("Child", vec![("value", name("T"))]),
+        ]);
+        let mut draft = ImageDraft::new();
+        assert_eq!(
+            registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(10),),
+            Err(ResolveRefusal::Unsupported)
+        );
+        assert!(matches!(
+            row(&registry, "Outer").state,
+            TypeInstState::Rejected(ResolveRefusal::Unsupported)
+        ));
+        assert!(matches!(
+            row(&registry, "Child").state,
+            TypeInstState::Rejected(ResolveRefusal::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn mixed_fill_refusals_join_to_limit_without_poisoning_an_independent_row() {
+        for failures in [
+            vec![(0, ResolveRefusal::Unsupported), (1, ResolveRefusal::Limit)],
+            vec![(1, ResolveRefusal::Limit), (0, ResolveRefusal::Unsupported)],
+        ] {
+            let registry = registry(vec![
+                template("Outer", vec![("value", name("T"))]),
+                template("Dependency", vec![("value", name("T"))]),
+                template("Sibling", vec![("value", name("T"))]),
+            ]);
+            let mut draft = ImageDraft::new();
+            for template in 0..3 {
+                registry
+                    .mint_type_instance(
+                        &mut draft,
+                        template,
+                        &[GArg::Scalar(ScalarType::Int)],
+                        site(template as u32 + 1),
+                    )
+                    .expect("seed row mints ready");
+            }
+
+            let outer_id = {
+                let mut generics = registry.generics.borrow_mut();
+                for inst in &mut generics.type_insts {
+                    let prior = std::mem::replace(
+                        &mut inst.state,
+                        TypeInstState::Rejected(ResolveRefusal::Unsupported),
+                    );
+                    let TypeInstState::Ready(body) = prior else {
+                        panic!("seed row is ready")
+                    };
+                    inst.state = TypeInstState::Filling { staged: Some(body) };
+                }
+                generics.fill_batch_start = Some(0);
+                generics.fill_rows = generics
+                    .type_insts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, inst)| (TypeInstKey::from(inst.id), index))
+                    .collect();
+                // Outer depends on Dependency; Sibling is in the same batch but has
+                // no path to either refusal and must remain Ready.
+                generics.type_insts[1].dependents.push(0);
+                generics.fill_failures = failures;
+                generics.type_insts[0].id
+            };
+
+            registry
+                .settle_fill_batch()
+                .expect("well-formed provisional batch settles");
+            assert_eq!(
+                registry.settled_type_result(0, outer_id),
+                Err(ResolveRefusal::Limit),
+                "the settled row, not its local Unsupported, owns the return"
+            );
+            assert!(matches!(
+                row(&registry, "Outer").state,
+                TypeInstState::Rejected(ResolveRefusal::Limit)
+            ));
+            assert!(matches!(
+                row(&registry, "Dependency").state,
+                TypeInstState::Rejected(ResolveRefusal::Limit)
+            ));
+            assert!(matches!(
+                row(&registry, "Sibling").state,
+                TypeInstState::Ready(_)
+            ));
+            let generics = registry.generics.borrow();
+            assert!(generics.fill_batch_start.is_none());
+            assert!(generics.fill_rows.is_empty());
+            assert!(generics.fill_stack.is_empty());
+            assert!(generics.fill_failures.is_empty());
+            assert!(generics.type_insts.iter().all(|inst| {
+                !matches!(inst.state, TypeInstState::Filling { .. }) && inst.dependents.is_empty()
+            }));
+        }
+    }
+
+    #[test]
+    fn divergent_limit_rejects_dependents_and_reports_once() {
+        let registry = registry(vec![template(
+            "Grow",
+            vec![("next", apply("Grow", vec![apply("List", vec![name("T")])]))],
+        )]);
+        let mut draft = ImageDraft::new();
+        assert_eq!(
+            registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(10),),
+            Err(ResolveRefusal::Limit)
+        );
+        let before = registry.generics.borrow().type_insts.len();
+        assert!(
+            registry
+                .generics
+                .borrow()
+                .type_insts
+                .iter()
+                .all(|inst| matches!(inst.state, TypeInstState::Rejected(ResolveRefusal::Limit)))
+        );
+        assert!(registry.generics.borrow().fill_stack.is_empty());
+        let first = registry.take_generic_diagnostics().into_ordered();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].code, Code::CheckInstantiationLimit.as_str());
+        assert_eq!((first[0].line, first[0].column), (10, 9));
+        assert_eq!(
+            registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(20),),
+            Err(ResolveRefusal::Limit)
+        );
+        assert_eq!(registry.generics.borrow().type_insts.len(), before);
+        assert!(
+            registry
+                .take_generic_diagnostics()
+                .into_ordered()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejected_rows_are_displayable_but_not_semantic_or_anchor_ready() {
+        let registry = registry(vec![enum_template(
+            "Bad",
+            apply("Missing", vec![name("T")]),
+        )]);
+        let mut draft = ImageDraft::new();
+        assert_eq!(
+            registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(10),),
+            Err(ResolveRefusal::Unsupported)
+        );
+        let id = row(&registry, "Bad").id;
+        let TypeInstId::Enum(enum_id) = id else {
+            panic!("enum template reserves an enum id")
+        };
+        assert_eq!(registry.inst_spelling(id).as_deref(), Some("Bad<int>"));
+        assert!(registry.instantiation_of(id).is_none());
+        assert!(registry.type_inst_body(id).is_none());
+        assert!(registry.enum_variants(enum_id).is_none());
+        assert!(registry.enum_anchor_spelling(enum_id).is_none());
+        assert!(
+            ValueGraph::build(&registry)
+                .nodes
+                .iter()
+                .all(|node| *node != ValueNode::Enum(enum_id))
+        );
+
+        registry.generics.borrow_mut().type_insts[0].state =
+            TypeInstState::Filling { staged: None };
+        assert!(registry.inst_spelling(id).is_none());
+        assert!(registry.instantiation_of(id).is_none());
+        assert!(registry.type_inst_body(id).is_none());
+        assert!(registry.enum_variants(enum_id).is_none());
+        assert!(registry.enum_anchor_spelling(enum_id).is_none());
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+    }
+
+    #[test]
+    fn proof_clone_is_stable_isolated_and_transfers_once() {
+        let registry = registry(vec![template("Good", vec![("value", name("T"))])]);
+        let mut draft = ImageDraft::new();
+        registry
+            .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
+            .expect("stable seed mints");
+        registry.set_fn_base(37);
+        let reserved = registry
+            .reserve_fn_instance(7, vec![GArg::Scalar(ScalarType::Int)], site(3))
+            .expect("stable function row reserves");
+        assert_eq!(reserved, 37);
+        let before = stable_snapshot(&registry);
+        let clone = registry
+            .clone_for_generic_check()
+            .expect("stable open registry clones");
+        assert_eq!(stable_snapshot(&clone), before);
+        assert_eq!(
+            clone.reserve_fn_instance(7, vec![GArg::Scalar(ScalarType::Int)], site(4)),
+            Ok(reserved),
+            "the clone reuses the exact nonzero function reservation"
+        );
+        assert_eq!(stable_snapshot(&clone), before);
+
+        let mut local_draft = draft.clone();
+        let local_id = clone
+            .mint_type_instance(
+                &mut local_draft,
+                0,
+                &[GArg::Scalar(ScalarType::Text)],
+                site(28),
+            )
+            .expect("the clone mints a new isolated row");
+        let TypeInstId::Record(local_record) = local_id else {
+            panic!("Good is a struct template")
+        };
+        let clone_rows = stable_snapshot(&clone).rows;
+        assert_eq!(clone_rows.len(), before.rows.len() + 1);
+        assert_eq!(clone_rows[before.rows.len()].id, local_id);
+        let marker_name = local_draft.intern_string("after-proof-clone");
+        let after_local = local_draft.add_record_type(RecordTypeDef {
+            name: marker_name,
+            fields: Vec::new(),
+        });
+        assert_eq!(after_local.index(), local_record.index() + 1);
+
+        let collection = clone.instantiate_list(&mut local_draft, GArg::Scalar(ScalarType::Int));
+        clone.record_collection_payload_rejection(site(29), "Payload", "value", collection);
+        clone.record_limit(site(30), "the proof clone reached its local bound");
+        let outcome = clone.take_generic_diagnostics();
+        assert_eq!(stable_snapshot(&registry), before);
+        registry.adopt_generic_diagnostics(outcome);
+        let adopted = registry.take_generic_diagnostics().into_ordered();
+        assert_eq!(adopted.len(), 2);
+        assert_eq!(adopted[0].code, Code::CheckInstantiationLimit.as_str());
+        assert_eq!(adopted[1].code, Code::CheckUnsupported.as_str());
+        assert!(
+            registry
+                .take_generic_diagnostics()
+                .into_ordered()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn proof_clone_refuses_every_unstable_fill_or_diagnostic_owner_state() {
+        let registry = registry(vec![template("Good", vec![("value", name("T"))])]);
+        let mut draft = ImageDraft::new();
+        registry
+            .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
+            .expect("stable seed mints");
+
+        registry.generics.borrow_mut().fill_batch_start = Some(0);
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+        registry.generics.borrow_mut().fill_batch_start = None;
+
+        let key = TypeInstKey::from(registry.generics.borrow().type_insts[0].id);
+        registry.generics.borrow_mut().fill_rows.insert(key, 0);
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+        registry.generics.borrow_mut().fill_rows.clear();
+
+        registry.generics.borrow_mut().fill_stack.push(0);
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+        registry.generics.borrow_mut().fill_stack.clear();
+
+        registry
+            .generics
+            .borrow_mut()
+            .fill_failures
+            .push((0, ResolveRefusal::Unsupported));
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+        registry.generics.borrow_mut().fill_failures.clear();
+
+        registry.generics.borrow_mut().type_insts[0]
+            .dependents
+            .push(0);
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+        registry.generics.borrow_mut().type_insts[0]
+            .dependents
+            .clear();
+
+        registry.record_limit(site(9), "the real owner is no longer open");
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+        registry.generics.borrow_mut().limit = LimitState::Open;
+
+        let body = {
+            let mut generics = registry.generics.borrow_mut();
+            let prior = std::mem::replace(
+                &mut generics.type_insts[0].state,
+                TypeInstState::Rejected(ResolveRefusal::Unsupported),
+            );
+            let TypeInstState::Ready(body) = prior else {
+                panic!("seed row is ready")
+            };
+            body
+        };
+        registry.generics.borrow_mut().type_insts[0].state =
+            TypeInstState::Filling { staged: Some(body) };
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ResolveRefusal::Limit)
+        ));
+    }
 }

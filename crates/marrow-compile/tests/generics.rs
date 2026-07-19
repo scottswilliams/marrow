@@ -87,6 +87,47 @@ fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, 
     assert_eq!(actual, expected, "{diagnostics:#?}");
 }
 
+const SHALLOW_SEED_TYPE_COUNT: usize = 64;
+
+/// Build 4,096 distinct depth-one generic function instances without generic
+/// recursion. A caller appends the expression that requests the next shared
+/// instantiation, so count-limit tests can isolate that exact source site.
+fn shallow_function_reservation_fixture() -> String {
+    let mut source = String::from(
+        r#"module main
+
+enum Held<T> {
+    value(item: T)
+}
+
+"#,
+    );
+    for seed in 0..SHALLOW_SEED_TYPE_COUNT {
+        writeln!(source, "struct N{seed} {{").expect("write generated seed declaration");
+        source.push_str("    value: int\n}\n\n");
+    }
+    source.push_str(
+        r#"fn prime<A, B>(a: A, b: B): int {
+    return 0
+}
+
+pub fn driver(): int {
+    var sink: int = 0
+"#,
+    );
+    // The 64 x 64 ordered pairs mint 4,096 distinct `prime<A, B>` rows.
+    for left in 0..SHALLOW_SEED_TYPE_COUNT {
+        for right in 0..SHALLOW_SEED_TYPE_COUNT {
+            writeln!(
+                source,
+                "    sink = prime(N{left}(value: 0), N{right}(value: 0))"
+            )
+            .expect("write generated prime application");
+        }
+    }
+    source
+}
+
 /// A public generic function and every one of its monomorphized instances mint no
 /// export (stable hash identity): only public monomorphic functions appear in the
 /// export directory, however many times the generic is instantiated.
@@ -763,41 +804,7 @@ pub fn driver(): int {
 /// a secondary diagnostic.
 #[test]
 fn count_limit_at_a_direct_generic_enum_construction_rejects_the_body() {
-    const SHALLOW_SEED_TYPE_COUNT: usize = 64;
-
-    let mut source = String::from(
-        r#"module main
-
-enum Held<T> {
-    value(item: T)
-}
-
-"#,
-    );
-    for seed in 0..SHALLOW_SEED_TYPE_COUNT {
-        writeln!(source, "struct N{seed} {{").expect("write generated seed declaration");
-        source.push_str("    value: int\n}\n\n");
-    }
-    source.push_str(
-        r#"fn prime<A, B>(a: A, b: B): int {
-    return 0
-}
-
-pub fn driver(): int {
-    var sink: int = 0
-"#,
-    );
-    // The 64 × 64 ordered pairs mint 4,096 distinct, depth-one `prime<A, B>`
-    // instances before the direct `Held<int>` construction requests the next one.
-    for left in 0..SHALLOW_SEED_TYPE_COUNT {
-        for right in 0..SHALLOW_SEED_TYPE_COUNT {
-            writeln!(
-                source,
-                "    sink = prime(N{left}(value: 0), N{right}(value: 0))"
-            )
-            .expect("write generated prime application");
-        }
-    }
+    let mut source = shallow_function_reservation_fixture();
 
     let constructor_line = source.lines().count() as u32 + 1;
     assert_eq!(constructor_line, 4365, "generated source layout drifted");
@@ -818,6 +825,47 @@ pub fn driver(): int {
 
     let diagnostics = compile_err(&source);
     assert_one_located_limit(&diagnostics, constructor_line, 18);
+}
+
+/// Interpolation ordinarily accumulates independent part diagnostics. A shared
+/// instantiation-limit refusal is terminal instead: once the first hole refuses,
+/// no later hole may manufacture a secondary diagnostic from a rejected body.
+#[test]
+fn interpolation_stops_after_a_part_reaches_the_instantiation_limit() {
+    let mut source = shallow_function_reservation_fixture();
+    let constructor_line = source.lines().count() as u32 + 1;
+    assert_eq!(constructor_line, 4365, "generated source layout drifted");
+    source.push_str(
+        r#"    const rendered = $"{Held::value(item: sink)} {missing()}"
+    return 0
+}
+"#,
+    );
+    assert!(
+        source.len() < CaptureLimits::DEFAULT.max_file_bytes(),
+        "generated source must stay within the captured-file bound"
+    );
+
+    let diagnostics = compile_err(&source);
+    assert_one_located_limit(&diagnostics, constructor_line, 25);
+}
+
+/// Ordinary failed holes remain independent: only the terminal shared limit changes
+/// interpolation's established multi-part diagnostic accumulation.
+#[test]
+fn interpolation_keeps_accumulating_ordinary_part_diagnostics() {
+    let diagnostics = compile_err(
+        r#"module main
+
+pub fn driver(): string {
+    return $"{firstMissing()} {secondMissing()}"
+}
+"#,
+    );
+    assert_diagnostic_sites(
+        &diagnostics,
+        &[("check.type", 4, 15), ("check.type", 4, 32)],
+    );
 }
 
 /// A recursive type fill that refuses at a function signature must reject that
@@ -1075,15 +1123,178 @@ struct Cycle {
     assert_one_located_limit(&diagnostics, 8, 18);
 }
 
+/// A generic template can reach the type-instantiation limit while resolving a
+/// parameter before its first statement. The rejected signature stops that template
+/// body immediately, so the statement cannot add a secondary name diagnostic.
+#[test]
+fn template_parameter_limit_stops_before_the_first_body_statement() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+fn inspect<T>(value: Grow<T>): int {
+    return missing()
+}
+
+pub fn safe(): int {
+    return 0
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 7, 22);
+}
+
+/// Once an `if` branch reaches the shared limit, no later branch is semantically
+/// visited and no enclosing fallthrough diagnostic is manufactured.
+#[test]
+fn nested_if_limit_stops_later_branches_and_structural_diagnostics() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(flag: bool): int {
+    if flag {
+        const value: Grow<int> = 0
+        return 1
+    } else {
+        return missing()
+    }
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 9, 22);
+}
+
+/// The present branch of `if const` owns the same nested-block stop. Its absent
+/// tail is not visited after a limit, and the enclosing value-return check stays
+/// downstream of that stop.
+#[test]
+fn nested_if_const_limit_stops_the_absent_tail() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(): int {
+    const maybe: int? = 1
+    if const present = maybe {
+        const value: Grow<int> = 0
+        return 1
+    } else {
+        return missing()
+    }
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 10, 22);
+}
+
+/// A limit in one enum arm stops arm dispatch before later arm bodies and before
+/// the match owner's exhaustiveness/termination diagnostics.
+#[test]
+fn nested_match_arm_limit_stops_later_arms_and_match_diagnostics() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+enum Choice {
+    first
+    second
+}
+
+pub fn driver(choice: Choice): int {
+    match choice {
+        first => {
+            const value: Grow<int> = 0
+            return 1
+        }
+        second => return missing()
+    }
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 15, 26);
+}
+
+/// Checked-fault arms are nested control owners too. A limit in the first branch
+/// of the handler stops its later branch and suppresses the handler-divergence
+/// diagnostic that would otherwise be layered on the rejected body.
+#[test]
+fn nested_checked_arm_limit_stops_later_control_and_arm_diagnostics() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Grow<T> {
+    next: Grow<List<T>>
+}
+
+pub fn driver(flag: bool): int {
+    const value = checked 1 + 2
+        on out_of_range {
+            if flag {
+                const nested: Grow<int> = 0
+            } else {
+                return missing()
+            }
+        }
+    return value
+}
+"#,
+    );
+    assert_one_located_limit(&diagnostics, 11, 31);
+}
+
+/// Reusing one rejected generic application at two real signature consumers keeps
+/// cache identity private while each consumer owns a truthful contextual
+/// `check.unsupported` at its current source site.
+#[test]
+fn rejected_unsupported_replay_is_contextual_at_each_consumer_site() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Bad<T> {
+    broken: Missing<T>
+}
+
+fn first(value: Bad<int>): int {
+    return 0
+}
+
+fn second(value: Bad<int>): int {
+    return 0
+}
+
+pub fn safe(): int {
+    return 0
+}
+"#,
+    );
+    assert_diagnostic_sites(
+        &diagnostics,
+        &[("check.unsupported", 7, 17), ("check.unsupported", 11, 18)],
+    );
+}
+
 /// `Inner<int>` can finish locally while its `outer` field points at the in-progress
 /// `Outer<int>`. If `Outer<int>` later fails through its `bad` sibling, production
 /// readers must not expose that failed placeholder through a Ready-looking
 /// `Inner<int>`. Atomic rejection of every provisional row in the mutually recursive
 /// dependency closure is left to the required private type-owner KAT
-/// `failed_fill_rejects_reverse_dependent_provisional_rows_without_poisoning_siblings`:
+/// `failed_fill_rejects_reverse_dependent_rows_without_poisoning_siblings`:
 /// the failed `Outer` and completed dependent `Inner` are rejected, an independent
-/// `Good` remains ready, no unresolved filling state remains, and fill depth returns
-/// to zero. Those private state assertions are not claims of this boundary test.
+/// `Good` remains ready, no unresolved filling state remains, and the fill stack is
+/// empty. Those private state assertions are not claims of this boundary test.
 #[test]
 fn completed_inner_reuse_never_exposes_failed_outer_placeholder() {
     let diagnostics = compile_err(

@@ -339,6 +339,10 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         &resources,
         &mut diagnostics,
     );
+    if records.has_instantiation_limit() {
+        diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+        return Err(diagnostics);
+    }
     let stores: Vec<(String, &StoreDecl)> = parsed
         .iter()
         .flat_map(|module| {
@@ -359,14 +363,18 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         project.identity_ledger(),
         &mut diagnostics,
     );
-    let signatures = FunctionRegistry::build(
+    let Some(signatures) = FunctionRegistry::build(
         &records,
         &mut draft,
         &durable,
         &functions,
         module_names,
         imports,
-    );
+        &mut diagnostics,
+    ) else {
+        diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+        return Err(diagnostics);
+    };
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
     let generic_functions: Vec<(String, String, &FunctionDecl)> = parsed
@@ -406,16 +414,27 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // is instantiated — so an unconstrained parameter used with `==`/`<`, or any
     // other constraint violation, is caught here rather than per instantiation.
     for template in generics.templates() {
-        FnLowerer::check_template(
+        let Ok(outcome) = FnLowerer::check_template(
             &draft,
             &records,
             &durable,
             &signatures,
             &generics,
             &constants,
-            &mut diagnostics,
             template,
-        );
+        ) else {
+            diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+            return Err(diagnostics);
+        };
+        diagnostics.extend(outcome.diagnostics);
+        records.adopt_generic_diagnostics(outcome.generic);
+        if records.has_instantiation_limit() {
+            break;
+        }
+    }
+    if records.has_instantiation_limit() {
+        diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+        return Err(diagnostics);
     }
 
     // Generic instances are image functions with no stable identity, indexed after
@@ -442,7 +461,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // monomorphized on demand and drained below.
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut lowered: Vec<LoweredFn> = Vec::new();
-    for module in &parsed {
+    'function_bodies: for module in &parsed {
         for declaration in &module.parsed.file.declarations {
             match declaration {
                 Declaration::Function(function) if !function.type_params.is_empty() => {
@@ -462,6 +481,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                         &module.name,
                         function,
                     ) else {
+                        if records.has_instantiation_limit() {
+                            break 'function_bodies;
+                        }
                         continue;
                     };
                     lowered.push(LoweredFn {
@@ -505,6 +527,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                             id,
                         });
                     }
+                    if records.has_instantiation_limit() {
+                        break 'function_bodies;
+                    }
                 }
                 // Constants are evaluated into the const registry above; aliases,
                 // resources, and stores are handled by their own registries; test
@@ -527,8 +552,8 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // are lowered after every function so their bodies' calls resolve and their own
     // indices follow the functions'. Titles are unique across the project.
     let mut tests: Vec<TestEntry> = Vec::new();
-    if mode == TestMode::Include {
-        for module in &parsed {
+    if mode == TestMode::Include && !records.has_instantiation_limit() {
+        'test_bodies: for module in &parsed {
             for declaration in &module.parsed.file.declarations {
                 let Declaration::Test(test) = declaration else {
                     continue;
@@ -555,6 +580,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     &test.name,
                     &test.body,
                 ) else {
+                    if records.has_instantiation_limit() {
+                        break 'test_bodies;
+                    }
                     continue;
                 };
                 lowered.push(LoweredFn {
@@ -579,6 +607,9 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     line: test.name_span.line,
                     column: test.name_span.column,
                 });
+                if records.has_instantiation_limit() {
+                    break 'test_bodies;
+                }
             }
         }
     }
@@ -589,7 +620,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // may mint further instances, which the loop continues to drain. Only run when the
     // monomorphic pass is clean, so every function and test has already consumed its
     // image index and instances append after them.
-    if diagnostics.is_empty() {
+    if diagnostics.is_empty() && !records.has_instantiation_limit() {
         while let Some((template_index, args, reserved)) = records.next_fn_pending() {
             let template = &generics.templates()[template_index];
             let Some(result) = FnLowerer::lower_instance(
@@ -603,7 +634,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 template,
                 &args,
             ) else {
-                continue;
+                break;
             };
             debug_assert_eq!(
                 result.func.index(),
@@ -631,7 +662,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // full set of concrete types and generic instantiations minted anywhere (a
     // monomorphized `Tree[int]` containing `Tree[int]` is an ordinary record cycle),
     // now that every field and body annotation has been resolved.
-    diagnostics.extend(records.take_generic_diagnostics());
+    let stopped_on_limit = records.has_instantiation_limit();
+    diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+    if stopped_on_limit {
+        return Err(diagnostics);
+    }
     crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics);
 
     // The compiled subset does not admit recursion: the direct-call graph must be

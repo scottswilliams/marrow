@@ -822,7 +822,10 @@ impl<'a> IdentityResolver<'a> {
         enum_id: marrow_image::EnumId,
         depth: usize,
     ) -> DurableValueShape {
-        let spelling = records.enum_anchor_spelling(enum_id);
+        let Some(spelling) = records.enum_anchor_spelling(enum_id) else {
+            self.reject_value("this enum value");
+            return DurableValueShape::Scalar(ScalarType::Int.image());
+        };
         let Some(variants) = records.enum_variants(enum_id) else {
             self.reject_value("this enum value");
             return DurableValueShape::Scalar(ScalarType::Int.image());

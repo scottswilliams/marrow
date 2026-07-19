@@ -57,8 +57,8 @@ use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
-    CollSpec, GArg, MAX_INSTANTIATIONS, MintSite, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR,
-    RESULT_OK, SupportSet, TypeConstraint, TypeInstId, TypeRegistry,
+    CollSpec, GArg, GenericDiagnostics, MintSite, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR,
+    RESULT_OK, ResolveRefusal, SupportSet, TypeConstraint, TypeInstId, TypeRegistry,
 };
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
@@ -600,12 +600,22 @@ fn branch_ctor_display(resource: &str, path: &[&str]) -> String {
         .join(".")
 }
 
-/// Whether control continues past a statement or block, or leaves it (via `return`,
-/// `break`, or `continue`).
+/// Whether control continues past a statement or block, leaves it (via `return`,
+/// `break`, or `continue`), or is rejected by the shared instantiation-limit owner.
+/// `Rejected` is propagated by every nested control owner, so later branches and
+/// structural checks cannot observe a partially lowered body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Fallthrough,
     Terminates,
+    Rejected,
+}
+
+/// The only two outcomes of a finite positional walk: completed lowering with its
+/// deferred `break` jumps, or terminal rejection by the shared instantiation owner.
+enum PositionalWalkOutcome {
+    Complete(Vec<usize>),
+    Rejected,
 }
 
 /// The declared return shape of a function.
@@ -1122,6 +1132,11 @@ pub(crate) struct FunctionRegistry {
     imports: BTreeMap<String, Vec<(String, String)>>,
 }
 
+pub(crate) struct TemplateProofOutcome {
+    pub(crate) diagnostics: Vec<SourceDiagnostic>,
+    pub(crate) generic: GenericDiagnostics,
+}
+
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
@@ -1133,8 +1148,10 @@ impl FunctionRegistry {
         functions: &[(String, String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
-    ) -> Self {
+        diagnostics: &mut Vec<SourceDiagnostic>,
+    ) -> Option<Self> {
         let mut sigs = Vec::with_capacity(functions.len());
+        let mut accepted = true;
         // Only monomorphic functions take an image index and enter the signature
         // table; a generic function is a template with no single image entry (its
         // per-application instances are minted lazily), so it is skipped here and
@@ -1152,10 +1169,13 @@ impl FunctionRegistry {
                     file,
                     span: param.ty.span(),
                 };
-                if let Some(ty) =
-                    param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site)
-                {
-                    params.push(ty);
+                match param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site) {
+                    Ok(ty) => params.push(ty),
+                    Err(ResolveRefusal::Unsupported) => {
+                        diagnostics.push(unsupported(file, param.ty.span(), "this parameter type"));
+                        accepted = false;
+                    }
+                    Err(ResolveRefusal::Limit) => accepted = false,
                 }
             }
             let ret = match &function.return_type {
@@ -1166,12 +1186,20 @@ impl FunctionRegistry {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY, site) {
-                        None => {
-                            // An unsupported return; the function's own lowering reports it.
-                            // Record Unit here so indices stay aligned.
+                        Err(ResolveRefusal::Unsupported) => {
+                            diagnostics.push(unsupported(
+                                file,
+                                annotation.span(),
+                                "this return type",
+                            ));
+                            accepted = false;
                             RetType::Unit
                         }
-                        Some(ty) => RetType::Value(ty),
+                        Err(ResolveRefusal::Limit) => {
+                            accepted = false;
+                            RetType::Unit
+                        }
+                        Ok(ty) => RetType::Value(ty),
                     }
                 }
             };
@@ -1185,11 +1213,11 @@ impl FunctionRegistry {
             });
             index += 1;
         }
-        Self {
+        accepted.then_some(Self {
             sigs,
             modules,
             imports,
-        }
+        })
     }
 
     /// The number of monomorphic functions, which is the number of image FUNCTIONS
@@ -1590,17 +1618,17 @@ impl<'a> FnLowerer<'a> {
         functions: &FunctionRegistry,
         generics: &GenericRegistry,
         consts: &ConstRegistry,
-        diagnostics: &mut Vec<SourceDiagnostic>,
         template: &GenericTemplate,
-    ) {
+    ) -> Result<TemplateProofOutcome, ResolveRefusal> {
         let file = &template.file;
         let module = &template.module;
         // Clone the registry and the in-progress draft together so the template body
         // sees every already-minted type at its real index (a concrete callee's
         // signature stays consistent), while abstract-parameter instantiations and
         // the emitted code land only in the discarded clones.
-        let check_records = records.clone_for_generic_check();
+        let check_records = records.clone_for_generic_check()?;
         let mut throwaway = draft.clone();
+        let mut diagnostics = Vec::new();
         // Each parameter's position in this vector is its abstract `LTy::Param`
         // index, and its constraint is read back from here by `constraint_at`.
         let type_env = template
@@ -1618,13 +1646,18 @@ impl<'a> FnLowerer<'a> {
             functions,
             generics,
             consts,
-            diagnostics,
+            &mut diagnostics,
             file,
             module,
             template.decl,
             type_env,
             LowerMode::Template,
         );
+        let generic = check_records.take_generic_diagnostics();
+        Ok(TemplateProofOutcome {
+            diagnostics,
+            generic,
+        })
     }
 
     /// The shared driver for an ordinary function, a generic instance, and the
@@ -1656,8 +1689,8 @@ impl<'a> FnLowerer<'a> {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, env, site) {
-                        Some(ty) => RetType::Value(ty),
-                        None => {
+                        Ok(ty) => RetType::Value(ty),
+                        Err(ResolveRefusal::Unsupported) => {
                             diagnostics.push(unsupported(
                                 file,
                                 annotation.span(),
@@ -1665,6 +1698,7 @@ impl<'a> FnLowerer<'a> {
                             ));
                             return None;
                         }
+                        Err(ResolveRefusal::Limit) => return None,
                     }
                 }
             }
@@ -1696,6 +1730,9 @@ impl<'a> FnLowerer<'a> {
                 lowerer.fail(reserved_builtin_name(file, function.span, &param.name));
             }
             let Some(ty) = lowerer.param_type(&param.ty) else {
+                if lowerer.records.has_instantiation_limit() {
+                    return None;
+                }
                 continue;
             };
             let slot = lowerer.alloc_slot();
@@ -1718,6 +1755,10 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
+        if lowerer.records.has_instantiation_limit() {
+            return None;
+        }
+
         let body_flow = lowerer.lower_block(&function.body);
         match (body_flow, lowerer.ret) {
             (Flow::Terminates, _) => {}
@@ -1732,6 +1773,7 @@ impl<'a> FnLowerer<'a> {
                     "not all paths return a value".to_string(),
                 ));
             }
+            (Flow::Rejected, _) => return None,
         }
 
         let params: Vec<ImageType> = function
@@ -1784,8 +1826,10 @@ impl<'a> FnLowerer<'a> {
         );
         // A test body is a unit-returning block: control that falls through ends with
         // an implicit return, exactly like a unit function.
-        if lowerer.lower_block(body) == Flow::Fallthrough {
-            lowerer.push(Instr::Return, body.span);
+        match lowerer.lower_block(body) {
+            Flow::Fallthrough => lowerer.push(Instr::Return, body.span),
+            Flow::Terminates => {}
+            Flow::Rejected => return None,
         }
         lowerer.finish(name, Vec::new(), ImageType::Unit)
     }
@@ -1794,7 +1838,7 @@ impl<'a> FnLowerer<'a> {
     /// and return its identity — the shared tail of function and test lowering. A
     /// body that failed to lower returns `None`.
     fn finish(mut self, name: &str, params: Vec<ImageType>, ret_ref: ImageType) -> Option<Lowered> {
-        if self.failed {
+        if self.failed || self.records.has_instantiation_limit() {
             return None;
         }
         let name_id = self.draft.intern_string(name);
@@ -1895,6 +1939,13 @@ impl<'a> FnLowerer<'a> {
         self.failed = true;
     }
 
+    fn reject_resolution(&mut self, refusal: ResolveRefusal, span: SourceSpan, subject: &str) {
+        match refusal {
+            ResolveRefusal::Limit => self.failed = true,
+            ResolveRefusal::Unsupported => self.fail(unsupported(self.file, span, subject)),
+        }
+    }
+
     /// Resolve the store root named `name` to its executable descriptor, reporting the
     /// precise diagnostic on failure: a not-yet-executable rejection when a root of that
     /// name is declared but parked (a singleton root, or a root whose resource declares a
@@ -1927,6 +1978,9 @@ impl<'a> FnLowerer<'a> {
     // --- statements ---
 
     fn lower_block(&mut self, block: &Block) -> Flow {
+        if self.records.has_instantiation_limit() {
+            return Flow::Rejected;
+        }
         let mark = self.locals.len();
         let place_mark = self.places.len();
         // Presence facts established inside this block (e.g. after an upsert) do not
@@ -1945,6 +1999,10 @@ impl<'a> FnLowerer<'a> {
                 break;
             }
             flow = self.lower_statement(statement);
+            if flow == Flow::Rejected || self.records.has_instantiation_limit() {
+                flow = Flow::Rejected;
+                break;
+            }
         }
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
@@ -2107,6 +2165,9 @@ impl<'a> FnLowerer<'a> {
                 self.txn_depth += 1;
                 let body_flow = self.lower_block(body);
                 self.txn_depth -= 1;
+                if body_flow == Flow::Rejected {
+                    return Flow::Rejected;
+                }
                 // The closing brace is a commit site only for a path that falls out of
                 // the region. When every path returns from inside (each in-region
                 // `return` is its own commit site), the region has no fall-through: no
@@ -2192,13 +2253,12 @@ impl<'a> FnLowerer<'a> {
             return;
         }
         let ty = if let Some(annotation) = annotation {
-            let Some(expected) = self.resolve(annotation) else {
-                self.fail(unsupported(
-                    self.file,
-                    annotation.span(),
-                    "this type annotation",
-                ));
-                return;
+            let expected = match self.resolve(annotation) {
+                Ok(expected) => expected,
+                Err(refusal) => {
+                    self.reject_resolution(refusal, annotation.span(), "this type annotation");
+                    return;
+                }
             };
             if self.lower_as(value, expected).is_none() {
                 return;
@@ -2604,7 +2664,11 @@ impl<'a> FnLowerer<'a> {
             // block: a sparse-field set through `p` there lowers to the strict form.
             let guard_path = self.exists_guard_path(cond);
             if self.lower_condition(cond).is_none() {
-                return Flow::Fallthrough;
+                return if self.records.has_instantiation_limit() {
+                    Flow::Rejected
+                } else {
+                    Flow::Fallthrough
+                };
             }
             let jif = self.push_jif(cond.span());
             let present_mark = self.present_places.len();
@@ -2613,6 +2677,9 @@ impl<'a> FnLowerer<'a> {
             }
             let flow = self.lower_block(block);
             self.present_places.truncate(present_mark);
+            if flow == Flow::Rejected {
+                return Flow::Rejected;
+            }
             all_terminate &= flow == Flow::Terminates;
             if flow == Flow::Fallthrough {
                 end_jumps.push(self.push_jump(block.span));
@@ -2623,6 +2690,9 @@ impl<'a> FnLowerer<'a> {
 
         if let Some(else_block) = else_block {
             let flow = self.lower_block(else_block);
+            if flow == Flow::Rejected {
+                return Flow::Rejected;
+            }
             all_terminate &= flow == Flow::Terminates;
         }
 
@@ -2680,12 +2750,19 @@ impl<'a> FnLowerer<'a> {
         let Some(fail_jumps) = self.lower_if_const_head(bindings, condition) else {
             self.present_places.truncate(present_mark);
             self.locals.truncate(mark);
-            return Flow::Fallthrough;
+            return if self.records.has_instantiation_limit() {
+                Flow::Rejected
+            } else {
+                Flow::Fallthrough
+            };
         };
 
         let then_flow = self.lower_block(then_block);
         self.present_places.truncate(present_mark);
         self.locals.truncate(mark);
+        if then_flow == Flow::Rejected {
+            return Flow::Rejected;
+        }
 
         let mut end_jumps = Vec::new();
         if then_flow == Flow::Fallthrough {
@@ -2700,6 +2777,9 @@ impl<'a> FnLowerer<'a> {
             .map(|else_if| (&else_if.condition, &else_if.block))
             .collect();
         let else_flow = self.lower_cond_chain(&branches, else_block);
+        if else_flow == Flow::Rejected {
+            return Flow::Rejected;
+        }
 
         let end = self.here();
         self.patch_all(end_jumps, end);
@@ -2752,18 +2832,24 @@ impl<'a> FnLowerer<'a> {
                 return None;
             }
             let bound = optional.to_bare();
-            if let Some(annotation) = annotation
-                && let Some(declared) = self.resolve(annotation)
-                && declared != bound
-            {
-                self.fail(type_mismatch(
-                    self.records,
-                    self.file,
-                    annotation.span(),
-                    bound,
-                    declared,
-                ));
-                return None;
+            if let Some(annotation) = annotation {
+                match self.resolve(annotation) {
+                    Ok(declared) if declared != bound => {
+                        self.fail(type_mismatch(
+                            self.records,
+                            self.file,
+                            annotation.span(),
+                            bound,
+                            declared,
+                        ));
+                        return None;
+                    }
+                    Ok(_) => {}
+                    Err(refusal) => {
+                        self.reject_resolution(refusal, annotation.span(), "this type annotation");
+                        return None;
+                    }
+                }
             }
 
             // Present edge falls through with the unwrapped bare value; absent edge
@@ -2821,7 +2907,11 @@ impl<'a> FnLowerer<'a> {
         let Some(fail_jumps) = self.lower_if_const_head(&[(name, annotation, value)], None) else {
             self.locals.truncate(mark);
             self.present_places.truncate(present_mark);
-            return Flow::Fallthrough;
+            return if self.records.has_instantiation_limit() {
+                Flow::Rejected
+            } else {
+                Flow::Fallthrough
+            };
         };
         // The head bound `x` (and, for a durable entry read, a presence fact) on the
         // present edge. They belong to the continuation after the statement, not to
@@ -2844,6 +2934,9 @@ impl<'a> FnLowerer<'a> {
         let absent = self.here();
         self.patch_all(fail_jumps, absent);
         let else_flow = self.lower_block(else_block);
+        if else_flow == Flow::Rejected {
+            return Flow::Rejected;
+        }
         if else_flow != Flow::Terminates {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -2875,7 +2968,11 @@ impl<'a> FnLowerer<'a> {
     /// positional payload reads (`EnumPayloadGet`) sound.
     fn lower_match(&mut self, scrutinee: &Expression, arms: &[MatchArm], span: SourceSpan) -> Flow {
         let Some(scrut_ty) = self.lower_expr(scrutinee) else {
-            return Flow::Fallthrough;
+            return if self.records.has_instantiation_limit() {
+                Flow::Rejected
+            } else {
+                Flow::Fallthrough
+            };
         };
         let Some(enum_id) = scrut_ty.bare_enum() else {
             self.fail(SourceDiagnostic::at(
@@ -2992,6 +3089,9 @@ impl<'a> FnLowerer<'a> {
             }
             let flow = self.lower_block(&arm.block);
             self.locals.truncate(mark);
+            if flow == Flow::Rejected {
+                return Flow::Rejected;
+            }
             all_terminate &= flow == Flow::Terminates;
             if flow == Flow::Fallthrough && !is_last {
                 end_jumps.push(self.push_jump(arm.block.span));
@@ -3237,12 +3337,15 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
-        if body_flow == Flow::Fallthrough {
-            self.push(Instr::Jump(advance as u32), body.span);
-        }
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
+        if body_flow == Flow::Rejected {
+            return Flow::Rejected;
+        }
+        if body_flow == Flow::Fallthrough {
+            self.push(Instr::Jump(advance as u32), body.span);
+        }
 
         let after_loop = self.here();
         self.patch(exit_jif, after_loop);
@@ -3552,7 +3655,7 @@ impl<'a> FnLowerer<'a> {
         let node_kind = target.node_kind;
         let key_name = var.name.clone();
         let place_name = place_var.map(|name| name.name.clone());
-        let break_jumps = self.lower_positional_walk(
+        let break_jumps = match self.lower_positional_walk(
             coll_slot,
             Instr::ListLen,
             body,
@@ -3593,13 +3696,18 @@ impl<'a> FnLowerer<'a> {
                     });
                 }
             },
-        );
+        ) {
+            PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
+            PositionalWalkOutcome::Rejected => return Flow::Rejected,
+        };
 
         // Normal exhaustion falls through to here: run `on more` iff a further key
         // existed.
         self.push(Instr::LocalGet(more_slot), span);
         let skip_on_more = self.push_jif(span);
-        self.lower_block(on_more);
+        if self.lower_block(on_more) == Flow::Rejected {
+            return Flow::Rejected;
+        }
         let end = self.here();
         self.patch(skip_on_more, end);
         // A body break jumps past the whole loop, skipping the `on more` decision.
@@ -3738,7 +3846,7 @@ impl<'a> FnLowerer<'a> {
         // into the source `Id(^root)` the loop variable binds — the scanned root's identity.
         let key_name = var.name.clone();
         let scan_root_id = root.root_id;
-        let break_jumps = self.lower_positional_walk(
+        let break_jumps = match self.lower_positional_walk(
             coll_slot,
             Instr::ListLen,
             body,
@@ -3766,11 +3874,16 @@ impl<'a> FnLowerer<'a> {
                     slot: id_slot,
                 });
             },
-        );
+        ) {
+            PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
+            PositionalWalkOutcome::Rejected => return Flow::Rejected,
+        };
 
         self.push(Instr::LocalGet(more_slot), span);
         let skip_on_more = self.push_jif(span);
-        self.lower_block(on_more);
+        if self.lower_block(on_more) == Flow::Rejected {
+            return Flow::Rejected;
+        }
         let end = self.here();
         self.patch(skip_on_more, end);
         self.patch_all(break_jumps, end);
@@ -3896,8 +4009,12 @@ impl<'a> FnLowerer<'a> {
             CollSpec::Map { .. } => Instr::MapLen,
         };
 
-        let break_jumps =
-            self.lower_positional_walk(coll_slot, len_instr, body, span, |lower, index_slot| {
+        let break_jumps = match self.lower_positional_walk(
+            coll_slot,
+            len_instr,
+            body,
+            span,
+            |lower, index_slot| {
                 // Bind the loop variable(s) from the current position.
                 let bind_var = |lower: &mut Self, name: &str, ty: LTy, at: Instr| {
                     let slot = lower.alloc_slot();
@@ -3924,7 +4041,11 @@ impl<'a> FnLowerer<'a> {
                         bind_var(lower, &binding.names[1].name, value, Instr::MapValueAt);
                     }
                 }
-            });
+            },
+        ) {
+            PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
+            PositionalWalkOutcome::Rejected => return Flow::Rejected,
+        };
         self.patch_all(break_jumps, self.here());
         Flow::Fallthrough
     }
@@ -3939,7 +4060,8 @@ impl<'a> FnLowerer<'a> {
     /// patched to fall through immediately after the loop, and the returned break
     /// jumps are left unpatched so the caller can route them past whatever trailing
     /// code it emits (a bounded traversal skips them past its `on more` block; a
-    /// plain collection walk patches them to the same fall-through point).
+    /// plain collection walk patches them to the same fall-through point). A body
+    /// limit returns `Rejected` only after unwinding the loop and scoped bindings.
     fn lower_positional_walk(
         &mut self,
         coll_slot: u16,
@@ -3947,7 +4069,7 @@ impl<'a> FnLowerer<'a> {
         body: &Block,
         span: SourceSpan,
         bind: impl FnOnce(&mut Self, u16),
-    ) -> Vec<usize> {
+    ) -> PositionalWalkOutcome {
         // The cursor starts at -1 so the increment at the loop top reaches 0 first,
         // which lets `continue` jump to that increment and always make progress.
         let index_slot = self.alloc_slot();
@@ -3977,24 +4099,31 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
-        if body_flow == Flow::Fallthrough {
-            self.push(Instr::Jump(top as u32), body.span);
-        }
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
         // A two-binding durable traversal binds a per-iteration address pin as a place;
         // drop it with the loop-variable locals so it does not escape the body.
         self.places.truncate(place_mark);
+        if body_flow == Flow::Rejected {
+            return PositionalWalkOutcome::Rejected;
+        }
+        if body_flow == Flow::Fallthrough {
+            self.push(Instr::Jump(top as u32), body.span);
+        }
 
         let after_loop = self.here();
         self.patch(exit, after_loop);
-        ctx.break_jumps
+        PositionalWalkOutcome::Complete(ctx.break_jumps)
     }
 
     fn lower_while(&mut self, condition: &Expression, body: &Block) -> Flow {
         let top = self.here();
         if self.lower_condition(condition).is_none() {
-            return Flow::Fallthrough;
+            return if self.records.has_instantiation_limit() {
+                Flow::Rejected
+            } else {
+                Flow::Fallthrough
+            };
         }
         let exit = self.push_jif(condition.span());
         self.loops.push(LoopCtx {
@@ -4002,10 +4131,13 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
+        let ctx = self.loops.pop().expect("loop was pushed");
+        if body_flow == Flow::Rejected {
+            return Flow::Rejected;
+        }
         if body_flow == Flow::Fallthrough {
             self.push(Instr::Jump(top as u32), body.span);
         }
-        let ctx = self.loops.pop().expect("loop was pushed");
         let end = self.here();
         self.patch(exit, end);
         self.patch_all(ctx.break_jumps, end);
@@ -4106,12 +4238,20 @@ impl<'a> FnLowerer<'a> {
         let (checked, lb) = match wrapped {
             Wrapped::Binary(bop, left, right) => {
                 if self.lower_as(left, int).is_none() {
-                    return Flow::Fallthrough;
+                    return if self.records.has_instantiation_limit() {
+                        Flow::Rejected
+                    } else {
+                        Flow::Fallthrough
+                    };
                 }
                 self.push(Instr::LocalSet(la), span);
                 let lb = self.alloc_slot();
                 if self.lower_as(right, int).is_none() {
-                    return Flow::Fallthrough;
+                    return if self.records.has_instantiation_limit() {
+                        Flow::Rejected
+                    } else {
+                        Flow::Fallthrough
+                    };
                 }
                 self.push(Instr::LocalSet(lb), span);
                 let checked = match bop {
@@ -4126,7 +4266,11 @@ impl<'a> FnLowerer<'a> {
             }
             Wrapped::Neg(operand) => {
                 if self.lower_as(operand, int).is_none() {
-                    return Flow::Fallthrough;
+                    return if self.records.has_instantiation_limit() {
+                        Flow::Rejected
+                    } else {
+                        Flow::Fallthrough
+                    };
                 }
                 self.push(Instr::LocalSet(la), span);
                 (Instr::IntNegChecked(0), None)
@@ -4143,7 +4287,11 @@ impl<'a> FnLowerer<'a> {
             self.push(Instr::ConstLoad(zero.index()), span);
             self.push(Instr::EqInt, span);
             let to_nonzero = self.push_jif(span);
-            if self.lower_block(zero_block) != Flow::Terminates {
+            let zero_flow = self.lower_block(zero_block);
+            if zero_flow == Flow::Rejected {
+                return Flow::Rejected;
+            }
+            if zero_flow != Flow::Terminates {
                 self.fail(checked_arm_error(
                     self.file,
                     zero_block.span,
@@ -4168,12 +4316,19 @@ impl<'a> FnLowerer<'a> {
         // `const`/`var` binding (`pending` is `Some`) falls through and jumps over the
         // handler; a `return` binding leaves the frame, so no skip jump is needed.
         let pending = self.store_checked_result(bind, span);
+        if self.records.has_instantiation_limit() {
+            return Flow::Rejected;
+        }
         let end_jump = pending.is_some().then(|| self.push_jump(span));
 
         // The out-of-range handler.
         let handler = self.here();
         self.patch(checked_at, handler);
-        if self.lower_block(out_of_range) != Flow::Terminates {
+        let out_of_range_flow = self.lower_block(out_of_range);
+        if out_of_range_flow == Flow::Rejected {
+            return Flow::Rejected;
+        }
+        if out_of_range_flow != Flow::Terminates {
             self.fail(checked_arm_error(
                 self.file,
                 out_of_range.span,
@@ -4205,7 +4360,7 @@ impl<'a> FnLowerer<'a> {
         match bind {
             CheckedBind::Const { name, ty } | CheckedBind::Var { name, ty } => {
                 let mutable = matches!(bind, CheckedBind::Var { .. });
-                let target = self.coerce_int_result(ty.as_ref(), int, span);
+                let target = self.coerce_int_result(ty.as_ref(), int, span)?;
                 let slot = self.alloc_slot();
                 self.push(Instr::LocalSet(slot), span);
                 Some(Local {
@@ -4244,20 +4399,27 @@ impl<'a> FnLowerer<'a> {
         annotation: Option<&TypeExpr>,
         int: LTy,
         span: SourceSpan,
-    ) -> LTy {
+    ) -> Option<LTy> {
         let Some(annotation) = annotation else {
-            return int;
+            return Some(int);
         };
-        let Some(declared) = self.resolve(annotation) else {
-            self.fail(unsupported(
-                self.file,
-                annotation.span(),
-                "this type annotation",
-            ));
-            return int;
+        let declared = match self.resolve(annotation) {
+            Ok(declared) => declared,
+            Err(ResolveRefusal::Limit) => {
+                self.failed = true;
+                return None;
+            }
+            Err(ResolveRefusal::Unsupported) => {
+                self.fail(unsupported(
+                    self.file,
+                    annotation.span(),
+                    "this type annotation",
+                ));
+                return Some(int);
+            }
         };
         self.coerce_bare_int_to(declared, annotation.span(), span);
-        declared
+        Some(declared)
     }
 
     /// Coerce the bare-int result already on the stack to `target` (`int` or `int?`),
@@ -4597,6 +4759,9 @@ impl<'a> FnLowerer<'a> {
         let mut ok = true;
         for part in parts {
             let part_ok = self.lower_interpolation_part(part);
+            if !part_ok && self.records.has_instantiation_limit() {
+                return None;
+            }
             ok &= part_ok;
             if part_ok {
                 if pushed {
@@ -5736,7 +5901,23 @@ impl<'a> FnLowerer<'a> {
         // Resolve the return type against the concrete substitution, minting any
         // collection/enum instantiation the return shape needs into the draft (the
         // real draft for an instance, the throwaway draft for the template pass).
-        let ret = self.resolve_generic_return(template, &concrete);
+        let ret = match self.resolve_generic_return(template, &concrete) {
+            Ok(ret) => ret,
+            Err(ResolveRefusal::Limit) => {
+                self.failed = true;
+                return None;
+            }
+            Err(ResolveRefusal::Unsupported) => {
+                let span = template
+                    .decl
+                    .return_type
+                    .as_ref()
+                    .map(TypeExpr::span)
+                    .unwrap_or(template.decl.span);
+                self.fail(unsupported(&template.file, span, "this return type"));
+                return None;
+            }
+        };
         match self.mode {
             LowerMode::Template => {
                 // The once-checked pass validates the call shape but cannot
@@ -5752,19 +5933,17 @@ impl<'a> FnLowerer<'a> {
                 })
             }
             LowerMode::Concrete => {
-                let func = match self.records.reserve_fn_instance(template_index, concrete) {
-                    Some(func) => func,
-                    None => {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckInstantiationLimit.as_str(),
-                            self.file,
-                            span,
-                            format!(
-                                "monomorphizing this program requires more than {MAX_INSTANTIATIONS} \
-                                 generic instantiations; a generic function likely recurses over an \
-                                 ever-growing type"
-                            ),
-                        ));
+                let func = match self.records.reserve_fn_instance(
+                    template_index,
+                    concrete,
+                    MintSite {
+                        file: self.file,
+                        span,
+                    },
+                ) {
+                    Ok(func) => func,
+                    Err(refusal) => {
+                        self.reject_resolution(refusal, span, "this generic function call");
                         return None;
                     }
                 };
@@ -5780,9 +5959,13 @@ impl<'a> FnLowerer<'a> {
 
     /// Resolve a generic template's return type under a concrete substitution,
     /// minting any instantiation it needs into the current draft.
-    fn resolve_generic_return(&mut self, template: &GenericTemplate, concrete: &[GArg]) -> RetType {
+    fn resolve_generic_return(
+        &mut self,
+        template: &GenericTemplate,
+        concrete: &[GArg],
+    ) -> Result<RetType, ResolveRefusal> {
         let Some(annotation) = &template.decl.return_type else {
-            return RetType::Unit;
+            return Ok(RetType::Unit);
         };
         let env: Vec<TypeParamSlot> = template
             .type_params
@@ -5794,20 +5977,18 @@ impl<'a> FnLowerer<'a> {
             })
             .collect();
         let site = MintSite {
-            file: self.file,
+            file: &template.file,
             span: annotation.span(),
         };
-        match resolve_type(
+        resolve_type(
             self.records,
             self.draft,
             self.durable,
             annotation,
             TypeEnv { params: &env },
             site,
-        ) {
-            None => RetType::Unit,
-            Some(ty) => RetType::Value(ty),
-        }
+        )
+        .map(RetType::Value)
     }
 
     /// Lower a nominal construction `Age(n)`: coerce the one positional argument
@@ -6374,10 +6555,17 @@ impl<'a> FnLowerer<'a> {
             file: self.file,
             span,
         };
-        let TypeInstId::Record(type_id) = self
+        let minted = match self
             .records
-            .mint_type_instance(self.draft, template, &concrete, site)?
-        else {
+            .mint_type_instance(self.draft, template, &concrete, site)
+        {
+            Ok(minted) => minted,
+            Err(refusal) => {
+                self.reject_resolution(refusal, span, "this generic struct construction");
+                return None;
+            }
+        };
+        let TypeInstId::Record(type_id) = minted else {
             return None;
         };
         self.push(Instr::RecordNew(type_id.index()), span);
@@ -6456,10 +6644,17 @@ impl<'a> FnLowerer<'a> {
             file: self.file,
             span,
         };
-        let TypeInstId::Enum(enum_id) = self
+        let minted = match self
             .records
-            .mint_type_instance(self.draft, template, &concrete, site)?
-        else {
+            .mint_type_instance(self.draft, template, &concrete, site)
+        {
+            Ok(minted) => minted,
+            Err(refusal) => {
+                self.reject_resolution(refusal, span, "this generic enum construction");
+                return None;
+            }
+        };
+        let TypeInstId::Enum(enum_id) = minted else {
             return None;
         };
         let variant_index = self
@@ -6712,13 +6907,21 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// The image enum index of the reserved `Option[inner]`, minting it on first use.
-    fn opt_enum(&mut self, inner: GArg, span: SourceSpan) -> EnumId {
+    fn opt_enum(&mut self, inner: GArg, span: SourceSpan) -> Option<EnumId> {
         let site = MintSite {
             file: self.file,
             span,
         };
-        self.records
+        match self
+            .records
             .instantiate_reserved_option(self.draft, inner, site)
+        {
+            Ok(id) => Some(id),
+            Err(refusal) => {
+                self.reject_resolution(refusal, span, "this inferred Option type");
+                None
+            }
+        }
     }
 
     /// Lower a reserved `Option`/`Result` constructor directed by an expected type:
@@ -6862,7 +7065,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let id = self.opt_enum(inner, arg.value.span());
+        let id = self.opt_enum(inner, arg.value.span())?;
         self.push(
             Instr::EnumConstruct {
                 enum_idx: id.index(),
@@ -9339,7 +9542,7 @@ impl<'a> FnLowerer<'a> {
 
     // --- type resolution ---
 
-    fn resolve(&mut self, annotation: &TypeExpr) -> Option<LTy> {
+    fn resolve(&mut self, annotation: &TypeExpr) -> Result<LTy, ResolveRefusal> {
         let env = TypeEnv {
             params: &self.type_env,
         };
@@ -9366,9 +9569,9 @@ impl<'a> FnLowerer<'a> {
             span: ty.span(),
         };
         match param_type(self.records, self.draft, self.durable, ty, env, site) {
-            Some(param) => Some(param),
-            None => {
-                self.fail(unsupported(self.file, ty.span(), "this parameter type"));
+            Ok(param) => Some(param),
+            Err(refusal) => {
+                self.reject_resolution(refusal, ty.span(), "this parameter type");
                 None
             }
         }
@@ -9434,9 +9637,9 @@ fn param_type(
     ty: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Option<LTy> {
+) -> Result<LTy, ResolveRefusal> {
     match resolve_type(records, draft, durable, ty, env, site) {
-        Some(
+        Ok(
             param @ (LTy::Scalar {
                 optional: false, ..
             }
@@ -9466,8 +9669,9 @@ fn param_type(
             | LTy::Identity {
                 optional: false, ..
             }),
-        ) => Some(param),
-        _ => None,
+        ) => Ok(param),
+        Ok(_) | Err(ResolveRefusal::Unsupported) => Err(ResolveRefusal::Unsupported),
+        Err(ResolveRefusal::Limit) => Err(ResolveRefusal::Limit),
     }
 }
 
@@ -9482,7 +9686,7 @@ fn resolve_type(
     annotation: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Option<LTy> {
+) -> Result<LTy, ResolveRefusal> {
     resolve_expanded(
         records,
         draft,
@@ -9500,13 +9704,13 @@ fn resolve_expanded(
     annotation: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Option<LTy> {
+) -> Result<LTy, ResolveRefusal> {
     match annotation {
         TypeExpr::Name { text, .. } => {
             // A type-parameter name resolves before scalar/named-type classification,
             // so a parameter cannot be shadowed by a same-named scalar spelling.
             if let Some((index, binding)) = env.lookup(text) {
-                return Some(match binding {
+                return Ok(match binding {
                     ParamBinding::Abstract(_) => LTy::Param {
                         index,
                         optional: false,
@@ -9515,35 +9719,38 @@ fn resolve_expanded(
                 });
             }
             if let Some(scalar) = ScalarType::from_spelling(text) {
-                Some(LTy::bare_scalar(scalar))
+                Ok(LTy::bare_scalar(scalar))
             } else if let Some((id, _)) = records.nominal_by_name(text) {
-                Some(LTy::Nominal {
+                Ok(LTy::Nominal {
                     id,
                     optional: false,
                 })
             } else if let Some(info) = records.struct_by_name(text) {
-                Some(LTy::Struct {
+                Ok(LTy::Struct {
                     ty: info.type_id,
                     optional: false,
                 })
             } else if let Some(info) = records.enum_by_name(text) {
-                Some(LTy::Enum {
+                Ok(LTy::Enum {
                     ty: info.enum_id,
                     optional: false,
                 })
             } else {
-                records.by_name(text).map(|record| LTy::Record {
-                    ty: record.type_id,
-                    optional: false,
-                })
+                records
+                    .by_name(text)
+                    .map(|record| LTy::Record {
+                        ty: record.type_id,
+                        optional: false,
+                    })
+                    .ok_or(ResolveRefusal::Unsupported)
             }
         }
         TypeExpr::Optional { inner, .. } => {
             let inner = resolve_expanded(records, draft, durable, inner, env, site)?;
             if inner.is_optional() {
-                None
+                Err(ResolveRefusal::Unsupported)
             } else {
-                Some(inner.to_optional())
+                Ok(inner.to_optional())
             }
         }
         TypeExpr::Apply { head, args, .. } => {
@@ -9554,8 +9761,10 @@ fn resolve_expanded(
         // declared, or over a not-yet-executable root, is an unsupported type (`None`),
         // reported by the caller like any other unresolved annotation.
         TypeExpr::Identity(identity) => {
-            let root = durable.root_by_name(&identity.root)?;
-            Some(LTy::Identity {
+            let root = durable
+                .root_by_name(&identity.root)
+                .ok_or(ResolveRefusal::Unsupported)?;
+            Ok(LTy::Identity {
                 root: root.root_id,
                 optional: false,
             })
@@ -9579,41 +9788,56 @@ fn resolve_generic(
     args: &[TypeExpr],
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Option<LTy> {
+) -> Result<LTy, ResolveRefusal> {
     match head {
         "List" => {
-            let [elem] = args else { return None };
-            let elem = resolve_expanded(records, draft, durable, elem, env, site)?.as_garg()?;
-            Some(LTy::Collection {
+            let [elem] = args else {
+                return Err(ResolveRefusal::Unsupported);
+            };
+            let elem = resolve_expanded(records, draft, durable, elem, env, site)?
+                .as_garg()
+                .ok_or(ResolveRefusal::Unsupported)?;
+            Ok(LTy::Collection {
                 idx: records.instantiate_list(draft, elem),
                 optional: false,
             })
         }
         "Map" => {
-            let [key, value] = args else { return None };
-            let key = resolve_expanded(records, draft, durable, key, env, site)?.as_garg()?;
+            let [key, value] = args else {
+                return Err(ResolveRefusal::Unsupported);
+            };
+            let key = resolve_expanded(records, draft, durable, key, env, site)?
+                .as_garg()
+                .ok_or(ResolveRefusal::Unsupported)?;
             // A type parameter is not admitted as a map key: keys are drawn from the
             // durable-key scalar family, and a generic key would need an order
             // constraint the collection contract does not model here.
             if !key.is_key_type() {
-                return None;
+                return Err(ResolveRefusal::Unsupported);
             }
-            let value = resolve_expanded(records, draft, durable, value, env, site)?.as_garg()?;
-            Some(LTy::Collection {
+            let value = resolve_expanded(records, draft, durable, value, env, site)?
+                .as_garg()
+                .ok_or(ResolveRefusal::Unsupported)?;
+            Ok(LTy::Collection {
                 idx: records.instantiate_map(draft, key, value),
                 optional: false,
             })
         }
         _ => {
-            let template = records.type_template_by_name(head)?;
+            let template = records
+                .type_template_by_name(head)
+                .ok_or(ResolveRefusal::Unsupported)?;
             let params = records.template_type_params(template);
             if args.len() != params.len() {
-                return None;
+                return Err(ResolveRefusal::Unsupported);
             }
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved
-                    .push(resolve_expanded(records, draft, durable, arg, env, site)?.as_garg()?);
+                resolved.push(
+                    resolve_expanded(records, draft, durable, arg, env, site)?
+                        .as_garg()
+                        .ok_or(ResolveRefusal::Unsupported)?,
+                );
             }
             // Per-application constraint revalidation: a concrete argument must
             // support the constraint; an abstract parameter satisfies it when its own
@@ -9633,16 +9857,16 @@ fn resolve_generic(
                         other => other.satisfies(*constraint),
                     };
                     if !satisfied {
-                        return None;
+                        return Err(ResolveRefusal::Unsupported);
                     }
                 }
             }
             match records.mint_type_instance(draft, template, &resolved, site)? {
-                TypeInstId::Record(ty) => Some(LTy::Struct {
+                TypeInstId::Record(ty) => Ok(LTy::Struct {
                     ty,
                     optional: false,
                 }),
-                TypeInstId::Enum(id) => Some(LTy::Enum {
+                TypeInstId::Enum(id) => Ok(LTy::Enum {
                     ty: id,
                     optional: false,
                 }),
