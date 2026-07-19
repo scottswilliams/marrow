@@ -13,6 +13,7 @@
 //! is a precise `check.unsupported`.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
+use marrow_image::{ImageType, Scalar};
 use marrow_verify::DurableContractId;
 
 fn compile(source: &str, ids: &str) -> Result<Compiled, Vec<SourceDiagnostic>> {
@@ -96,10 +97,135 @@ const ACCOUNT_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
+const NOMINAL_BRANCH_SOURCE: &str = r#"type Money: int in 0..=1000000
+
+resource Ledger {
+    required label: string
+
+    entries[amount: Money] {
+        required note: string
+    }
+}
+
+store ^ledgers[id: int]: Ledger
+
+pub fn label(): string {
+    return "ledgers"
+}
+"#;
+
+const NOMINAL_BRANCH_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 70707070707070707070707070707070\n\
+     id product Ledger 71717171717171717171717171717171\n\
+     id root ledgers 72727272727272727272727272727272\n\
+     id key ledgers.id 73737373737373737373737373737373\n\
+     id field Ledger.label 74747474747474747474747474747474\n\
+     id root Ledger.entries 75757575757575757575757575757575\n\
+     id field Ledger.entries.note 76767676767676767676767676767676\n\
+     high-water 0\n\
+     end\n";
+
 #[test]
 fn a_widened_field_resource_completes_its_identity_and_verifies() {
     let id = contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS);
     assert_eq!(id, contract_of(ACCOUNT_SOURCE, ACCOUNT_IDS), "stable");
+}
+
+#[test]
+fn nominal_durable_positions_and_reference_agree() {
+    let compiled = compile(ACCOUNT_SOURCE, ACCOUNT_IDS).expect("nominal field admission");
+    let image = marrow_verify::verify(&compiled.image.bytes).expect("independent verification");
+    let root = image
+        .roots()
+        .iter()
+        .find(|root| root.name() == "accounts")
+        .expect("accounts root");
+    let balance = image
+        .record_type(root.record())
+        .fields()
+        .iter()
+        .find(|field| field.name.as_ref() == "balance")
+        .expect("balance field");
+    assert_eq!(balance.ty, ImageType::scalar(Scalar::Int));
+    assert!(!balance.required, "balance remains sparse");
+
+    let nominal_root_key = ACCOUNT_SOURCE.replace(
+        "store ^accounts[id: int]: Account",
+        "store ^accounts[id: Money]: Account",
+    );
+    let diagnostics =
+        compile(&nominal_root_key, ACCOUNT_IDS).expect_err("nominal root key must fail");
+    assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
+
+    let diagnostics = compile(NOMINAL_BRANCH_SOURCE, NOMINAL_BRANCH_IDS)
+        .expect_err("nominal branch key must fail");
+    assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
+
+    let nominal_constant = ACCOUNT_SOURCE.replace(
+        "store ^accounts[id: int]: Account",
+        "const LIMIT: Money = 1\n\nstore ^accounts[id: int]: Account",
+    );
+    let diagnostics =
+        compile(&nominal_constant, ACCOUNT_IDS).expect_err("nominal constant must fail");
+    assert_eq!(codes(&diagnostics), vec!["check.unsupported"]);
+
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let types = normalize(include_str!("../../../docs/language/types-and-values.md"));
+    let durable = normalize(include_str!("../../../docs/language/durable-places.md"));
+
+    assert!(types.contains(
+        "A nominal int type is admitted as a resource field. It retains its nominal source type, while its image record and durable stored shape use base `int`; sparse requiredness is recorded separately."
+    ));
+    assert!(types.contains(
+        "Operations over a root containing a nominal field remain unimplemented and report `check.unsupported`."
+    ));
+    assert!(types.contains(
+        "Nominal types are not admitted as store-root keys, branch keys, or module-constant types; each position reports `check.unsupported`."
+    ));
+    assert!(durable.contains(
+        "Nominal source types are not durable identity keys and report `check.unsupported`."
+    ));
+    assert!(!types.contains("Nominal types are not yet admitted as resource field types"));
+    assert!(
+        !types.contains(
+            "A nominal-typed stored field reports `check.unsupported` until its lane lands"
+        )
+    );
+    assert!(
+        !durable.contains("(a nominal type over one of these is admitted through its base scalar)")
+    );
+    assert!(types.contains(
+        "A nominal Map key retains its source type and uses its base scalar for representation and ordering."
+    ));
+    assert!(types.contains("`duration` and nominal source types are not durable keys."));
+    assert!(types.contains("A nominal stored field projects through its base scalar."));
+
+    let test_source = include_str!("durable_field_widening.rs");
+    let disallowed = [
+        ["ro", "w"].concat(),
+        ["ro", "ws"].concat(),
+        ["col", "umn"].concat(),
+        ["col", "umns"].concat(),
+        ["ta", "ble"].concat(),
+        ["ta", "bles"].concat(),
+    ];
+    for (name, text) in [
+        ("types and values", types.as_str()),
+        ("durable places", durable.as_str()),
+        ("durable field widening", test_source),
+    ] {
+        let found = text
+            .split(|ch: char| !ch.is_ascii_alphabetic())
+            .filter(|word| {
+                !word.is_empty()
+                    && disallowed
+                        .iter()
+                        .any(|term| word.eq_ignore_ascii_case(term))
+            })
+            .collect::<Vec<_>>();
+        assert!(found.is_empty(), "{name}: {found:?}");
+    }
 }
 
 /// The enum sum/member ids (and every other kind) cannot drift under an unrelated
