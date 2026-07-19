@@ -10458,6 +10458,10 @@ fn logic_operand(
 }
 
 #[cfg(test)]
+#[path = "lower_metadata_successor_tests.rs"]
+mod lower_metadata_successor_tests;
+
+#[cfg(test)]
 mod generic_cache_boundary_tests {
     use super::*;
     use crate::types::{GenericInvariant, TypeInstKind};

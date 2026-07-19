@@ -3328,6 +3328,10 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
 }
 
 #[cfg(test)]
+#[path = "types_metadata_successor_tests.rs"]
+mod types_metadata_successor_tests;
+
+#[cfg(test)]
 mod instantiation_state_tests {
     use super::*;
 
